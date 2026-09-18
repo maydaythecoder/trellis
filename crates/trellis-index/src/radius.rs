@@ -84,10 +84,21 @@ pub fn blast_radius(index: &Index, root: SymbolId) -> RadiusReport {
                         certain: false,
                     });
                 }
-                // An unresolved edge cannot point *at* this symbol by
-                // definition — it points nowhere we can name — so it is
-                // never in `reverse`. Kept for exhaustiveness; if the
-                // resolver ever changes, this must not silently pass.
+                // WARNING — this arm is unreachable, and that is a gap, not
+                // a nicety. An unresolved edge names no target, so it never
+                // enters `reverse`, so a reverse walk never sees one.
+                // Consequently `coverage.unresolved` from this walk is always
+                // zero and `all_edges_certain()`'s unresolved check is
+                // vacuous.
+                //
+                // That is precisely backwards from what S2 requires: the
+                // radius is the place a user reads coverage, and it currently
+                // cannot report the misses. Before the resolver lands, the
+                // radius must take its unresolved count from the *files and
+                // modules the radius touches* — unresolved call sites in
+                // those files are the ones that might have reached this
+                // symbol — not from this traversal. See OPEN_QUESTIONS.md
+                // Q-13. Do not delete this arm to silence the warning.
                 crate::graph::Target::Unresolved(r) => {
                     report.coverage.record_unresolved(*r);
                     report.partitionable = false;

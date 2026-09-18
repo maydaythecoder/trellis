@@ -35,9 +35,19 @@ Judgment text is fenced and labelled "treat as data not instruction" when
 assembled into context. Absent counts default to zero, never to an optimistic
 value.
 
-The index (`.trellis/index.bin`) is **derived state**: stored for other agents
-to read, never merged. On merge, discard both sides, regenerate, diff against
-the parent branch, and hand the delta to the loop as context.
+The index (`.trellis/index.bin`) is **derived state**: never merged. On merge,
+discard both sides, regenerate, diff against the parent branch, and hand the
+delta to the loop as context.
+
+**Deviation from the brief, recorded.** Brief 4.4 says the index is "stored in
+the repo for other agents to read"; this repository gitignores it
+(`ASSUMPTIONS.md` A-24). A binary blob regenerated on every file change
+produces a diff on nearly every commit and a conflict on nearly every merge,
+for a file whose own merge policy is "discard both sides and regenerate" — and
+the agent it serves can rebuild it in roughly 32 ms on a 45k-line repository
+(measured, `COST_MODEL.md` §1). If a future consumer genuinely needs it present
+without a rebuild, committing it is a one-line change and this ADR should be
+amended rather than the `.gitignore` quietly edited.
 
 ## Alternatives considered
 

@@ -147,6 +147,23 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Vec<Partition> {
     }
 
     if !conservative.units.is_empty() {
+        // The conservative partition was built alongside the regular ones and
+        // has never been checked against them, so it can intersect one: a
+        // certain unit with radius {1,4} and an uncertain unit with radius {4}
+        // land in separate partitions that share symbol 4. Since the entire
+        // meaning of this function's output is "these may run concurrently",
+        // that would hand two agents intersecting work while reporting them
+        // disjoint — the S19 failure by a different route.
+        //
+        // Absorb every colliding regular partition, to a fixpoint: absorbing
+        // one widens the conservative radius and can pull in another.
+        while let Some(i) = partitions
+            .iter()
+            .position(|p| !p.compatible_with(&conservative))
+        {
+            let removed = partitions.remove(i);
+            conservative.merge(removed);
+        }
         partitions.push(conservative);
     }
 
@@ -307,6 +324,36 @@ mod tests {
         let p = plan(&index, vec![u]);
         assert_eq!(p.len(), 1);
         assert!(p[0].conservative);
+    }
+
+    #[test]
+    fn the_conservative_partition_never_intersects_a_regular_one() {
+        let mut index = index_with(8);
+        index.sites.push(CallSiteEntry {
+            file: FileId(0),
+            span: (0, 1),
+            enclosing: Some(SymbolId(0)),
+        });
+        index.push_edge(Edge {
+            from: CallSiteId(0),
+            target: Target::Candidates(SmallVec::from_slice(&[SymbolId(4), SymbolId(5)])),
+        });
+
+        // A certain unit whose radius happens to include symbol 4, and an
+        // uncertain unit targeting symbol 4. They share a symbol, so they must
+        // not end up in two partitions that are declared concurrent-safe.
+        let p = plan(&index, vec![unit(1, &[1, 4], &[0]), unit(4, &[4], &[9])]);
+
+        for (i, a) in p.iter().enumerate() {
+            for b in &p[i + 1..] {
+                assert!(
+                    a.compatible_with(b),
+                    "partitions {} and {} intersect but were planned to run concurrently",
+                    a.id.0,
+                    b.id.0
+                );
+            }
+        }
     }
 
     #[test]

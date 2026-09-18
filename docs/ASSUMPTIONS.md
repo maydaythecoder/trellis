@@ -29,6 +29,8 @@ inherited.
 | A-21 | Test fixtures pin `core.autocrlf=false` | Windows git rewrites line endings on checkout, making byte-exact assertions platform-dependent | n/a |
 | A-22 | Ground-truth sample seed is recorded in the run artefact | A reproducible sample is auditable; an unrecorded one is not | n/a |
 | A-23 | v1.0 supported repository size 100k–300k lines | S9. scrapy at 93.7k sits just under; nothing is claimed above | Widens with measurement |
+| A-24 | `.trellis/index.bin` is **gitignored**, not committed | **Deviation from the brief.** Brief 4.4 says the index is "stored in the repo for other agents to read, never merged", which implies committing it. Committing a binary blob that is regenerated on every file change produces a diff on nearly every commit and a merge conflict on nearly every merge, for a file whose stated merge policy is "discard both sides and regenerate". The reader it serves is a process that can rebuild it in ~32 ms on a 45k-line repo (measured). Ignoring it costs that rebuild; committing it costs every user every merge | Easy — flip one `.gitignore` line, and update ADR 0007 |
+| A-25 | `trellis check` with no paths defaults to `.` | The documented default was "the whole repository"; an empty argv would instead invoke the checker with no arguments, which most tools treat as an error | Trivial |
 
 ## Where this build stopped, and why
 

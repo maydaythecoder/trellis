@@ -19,7 +19,7 @@ Last updated 2026-09-18.
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
 | 10 | One main loop with tools, not a verification fan-out, ADR says why | **ADR done. Loop not built** | ADR 0005 |
 | 11 | Multi-agent parallelizes work only, ADR says why | **Done in design and rules; no concurrent execution yet** | ADR 0005, `trellis-loop/src/partition.rs` |
-| 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and tested. Rule 2 documented; enforced when integration is built** | `partition::plan`, `Index::is_partitionable` |
+| 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented, and the pairwise-disjointness invariant is property-tested over 400 seeds. Rule 2 documented; enforced when integration is built** | `partition::plan`, `tests/partition_invariants.rs` |
 | 13 | `trellis doctor` reports batching capability and multi-agent tier | **Types and reporting done; probing not implemented** — reports `Unknown`, and says so | `trellis-model/src/tier.rs` |
 | 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite. No CI configured yet** | `trellis-vcs/src/lib.rs` tests |
 | 15 | Bidirectionality verified by property test | **Done** — 199 random graphs | `trellis-index/tests/bidirectional.rs` |
@@ -58,6 +58,17 @@ loop. Everything that *could* be settled from a standing start has been.
   would be a public constructor from arbitrary JSON, defeating the seal and
   opening exactly the S10 hole. `Verdict` is `Serialize`-only; trails read back
   as inert `RecordedCheck`.
+
+## Known gap, recorded rather than fixed
+
+`RadiusReport::coverage.unresolved` is structurally always zero: the reverse
+walk cannot see an unresolved edge, because an unresolved edge names no target
+and so never enters `reverse`. `all_edges_certain()`'s unresolved check is
+therefore vacuous today. This is backwards from what S2 requires and must be
+settled when the resolver lands — the count has to come from the files the
+radius touches, not from the traversal. Marked in `radius.rs` and tracked as
+`OPEN_QUESTIONS.md` Q-13. It is not a live defect only because no resolver
+produces unresolved edges yet.
 
 ## Next, in order
 

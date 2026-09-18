@@ -71,6 +71,20 @@ build complexity and hardware coverage. ADR 0006 is deliberately left
 **Proposed** on this point. Contained: tiers 1, 2 and 4 need no logit access, so
 a poor choice degrades rather than blocks. → Owner: v0.2.
 
+**Q-13 — Where does a blast radius get its unresolved count from?**
+`blast_radius` walks `reverse` adjacency, but an unresolved edge names no
+target and therefore never enters `reverse`. So the walk structurally cannot
+see one, `RadiusReport::coverage.unresolved` is always zero, and
+`all_edges_certain()`'s unresolved check is vacuous. This is backwards from
+what S2 requires — the radius is exactly where a user reads coverage. The fix
+is to source the count from the files and modules the radius touches
+(unresolved call sites in those files are the ones that might have reached the
+symbol) rather than from the traversal, but the right scope for "touches" is
+not obvious: the whole file, the enclosing module, or the transitive import
+closure. Each trades false reassurance against noise. **Must be settled when
+the resolver lands**, not after. → Owner: v0.1. Marked in
+`trellis-index/src/radius.rs`.
+
 ---
 
 ## Answered by a person (product judgment)

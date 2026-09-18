@@ -196,6 +196,14 @@ fn which(program: &str) -> bool {
 
 fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
     let cfg = trellis_checks::CheckConfig::default();
+    // An empty path list would invoke the checker with no arguments, which
+    // most tools treat as an error rather than as "everything". Make the
+    // documented default real.
+    let paths = if paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        paths
+    };
     let rt = tokio::runtime::Runtime::new()?;
 
     let verdicts = rt.block_on(async {
