@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+
+# Derived state: regenerated from the file set, never merged.
+# See docs/ADRs/0007-trail-format.md.
+.trellis/index.bin
+.trellis/work/

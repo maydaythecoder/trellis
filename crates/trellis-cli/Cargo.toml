@@ -1,0 +1,30 @@
+[package]
+name = "trellis-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "trellis"
+path = "src/main.rs"
+
+[dependencies]
+trellis-core.workspace = true
+trellis-index.workspace = true
+trellis-checks.workspace = true
+trellis-model.workspace = true
+trellis-loop.workspace = true
+trellis-trail.workspace = true
+trellis-vcs.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+walkdir.workspace = true
+
+[lints]
+workspace = true

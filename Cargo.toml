@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.93"
+license = "Apache-2.0"
+
+# Versions below were resolved by `cargo add` on 2026-09-18 and their licenses
+# checked (see docs/ADRs/0006-adapter-tiers-and-inference-path.md and
+# OPEN_QUESTIONS.md). Do not bump tree-sitter and tree-sitter-python
+# independently: the grammar and the library share an ABI. The pairing
+# 0.27 / 0.25 is verified by crates/trellis-index/tests/grammar_abi.rs.
+[workspace.dependencies]
+tree-sitter        = "0.27.0"
+tree-sitter-python = "0.25.0"
+llguidance         = "1.8.0"
+serde              = { version = "1.0.229", features = ["derive"] }
+serde_json         = "1.0.151"
+schemars           = "1.2.2"
+tokio              = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "process", "time"] }
+rayon              = "1.12.0"
+postcard           = { version = "1.1.3", features = ["use-std"] }
+git2               = "0.21.0"
+clap               = { version = "4.6.7", features = ["derive"] }
+toml               = "1.1.6"
+thiserror          = "2.0.20"
+anyhow             = "1.0.104"
+tracing            = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+smallvec           = { version = "1.16.1", features = ["serde", "union"] }
+walkdir            = "2.5.0"
+insta              = "1.48.0"
+
+trellis-core   = { path = "crates/trellis-core" }
+trellis-index  = { path = "crates/trellis-index" }
+trellis-checks = { path = "crates/trellis-checks" }
+trellis-model  = { path = "crates/trellis-model" }
+trellis-loop   = { path = "crates/trellis-loop" }
+trellis-trail  = { path = "crates/trellis-trail" }
+trellis-vcs    = { path = "crates/trellis-vcs" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
