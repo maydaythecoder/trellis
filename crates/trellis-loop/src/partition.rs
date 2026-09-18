@@ -223,10 +223,7 @@ mod tests {
     #[test]
     fn disjoint_units_partition_separately() {
         let index = index_with(8);
-        let p = plan(
-            &index,
-            vec![unit(1, &[1, 2], &[0]), unit(3, &[3, 4], &[1])],
-        );
+        let p = plan(&index, vec![unit(1, &[1, 2], &[0]), unit(3, &[3, 4], &[1])]);
         assert_eq!(p.len(), 2);
         assert!(p[0].compatible_with(&p[1]));
     }
@@ -234,10 +231,7 @@ mod tests {
     #[test]
     fn units_sharing_a_symbol_are_serialized_into_one_partition() {
         let index = index_with(8);
-        let p = plan(
-            &index,
-            vec![unit(1, &[1, 2], &[0]), unit(3, &[2, 3], &[1])],
-        );
+        let p = plan(&index, vec![unit(1, &[1, 2], &[0]), unit(3, &[2, 3], &[1])]);
         assert_eq!(p.len(), 1, "intersecting radii must not run in parallel");
         assert_eq!(p[0].units.len(), 2);
     }
@@ -245,10 +239,7 @@ mod tests {
     #[test]
     fn units_sharing_only_a_file_are_still_serialized() {
         let index = index_with(8);
-        let p = plan(
-            &index,
-            vec![unit(1, &[1], &[0]), unit(2, &[2], &[0])],
-        );
+        let p = plan(&index, vec![unit(1, &[1], &[0]), unit(2, &[2], &[0])]);
         assert_eq!(
             p.len(),
             1,

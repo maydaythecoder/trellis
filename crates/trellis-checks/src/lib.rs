@@ -79,11 +79,7 @@ pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 /// that raises at module scope.
 #[tracing::instrument(skip(cfg))]
 pub async fn import_check(root: &Path, cfg: &CheckConfig, module: &str) -> Verdict {
-    let argv = vec![
-        cfg.python.clone(),
-        "-c".into(),
-        format!("import {module}"),
-    ];
+    let argv = vec![cfg.python.clone(), "-c".into(), format!("import {module}")];
     Verdict::from_import(run(root, &argv).await)
 }
 

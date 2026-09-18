@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -102,7 +102,7 @@ fn main() -> Result<()> {
 /// Resolution (Pass 2 and the bind step) is v0.1 work, so this reports
 /// counts rather than a coverage figure. It deliberately does not print a
 /// percentage it cannot yet compute.
-fn cmd_index(root: &PathBuf) -> Result<()> {
+fn cmd_index(root: &Path) -> Result<()> {
     use rayon::prelude::*;
 
     let files: Vec<PathBuf> = walkdir::WalkDir::new(root)
@@ -158,7 +158,7 @@ fn cmd_index(root: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_doctor(root: &PathBuf) -> Result<()> {
+fn cmd_doctor(root: &Path) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
     let cfg = trellis_checks::CheckConfig::default();
@@ -194,7 +194,7 @@ fn which(program: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-fn cmd_check(root: &PathBuf, paths: Vec<PathBuf>) -> Result<()> {
+fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
     let cfg = trellis_checks::CheckConfig::default();
     let rt = tokio::runtime::Runtime::new()?;
 
@@ -216,8 +216,16 @@ fn cmd_check(root: &PathBuf, paths: Vec<PathBuf>) -> Result<()> {
         println!("  command: {}", d.command);
         if !v.passed() {
             all_passed = false;
-            let tail: String = d.stdout.lines().rev().take(20).collect::<Vec<_>>()
-                .into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail: String = d
+                .stdout
+                .lines()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             if !tail.trim().is_empty() {
                 println!("{tail}");
             }

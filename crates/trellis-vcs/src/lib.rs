@@ -121,12 +121,7 @@ pub struct Worktree {
 
 impl Worktree {
     /// Creates `.trellis/work/<run>/partition-<n>/` branched from `base`.
-    pub fn create(
-        root: &Path,
-        run: &str,
-        partition: u32,
-        base: &str,
-    ) -> Result<Self, VcsError> {
+    pub fn create(root: &Path, run: &str, partition: u32, base: &str) -> Result<Self, VcsError> {
         let path = root
             .join(".trellis")
             .join("work")
@@ -159,7 +154,12 @@ impl Worktree {
     pub fn discard(&self) -> Result<(), VcsError> {
         git(
             &self.parent,
-            &["worktree", "remove", "--force", &self.path.display().to_string()],
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                &self.path.display().to_string(),
+            ],
         )?;
         git(&self.parent, &["branch", "-D", &self.branch])?;
         Ok(())
@@ -224,7 +224,10 @@ mod tests {
             std::fs::read_to_string(dir.join("a.py")).unwrap(),
             "def f():\n    return 1\n"
         );
-        assert!(!dir.join("new_module.py").exists(), "untracked file left behind");
+        assert!(
+            !dir.join("new_module.py").exists(),
+            "untracked file left behind"
+        );
         assert!(!dir.join("pkg").exists(), "untracked directory left behind");
 
         let _ = std::fs::remove_dir_all(&dir);

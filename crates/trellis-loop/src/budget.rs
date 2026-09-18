@@ -68,9 +68,7 @@ impl Exhaustion {
     /// supposed to be boring (goal state 4).
     pub fn explain(self) -> &'static str {
         match self {
-            Exhaustion::Iterations => {
-                "iteration ceiling reached without converging; rolled back"
-            }
+            Exhaustion::Iterations => "iteration ceiling reached without converging; rolled back",
             Exhaustion::WallClock => "wall-clock ceiling reached; rolled back",
             Exhaustion::Tokens => "token ceiling reached; rolled back",
         }

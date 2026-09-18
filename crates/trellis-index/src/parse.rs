@@ -327,19 +327,31 @@ class C:
         assert_eq!(f.imports[0].level, 0);
 
         // `import os.path as osp` binds `osp`.
-        assert_eq!(f.imports[1].names, [("os.path".to_string(), "osp".to_string())]);
+        assert_eq!(
+            f.imports[1].names,
+            [("os.path".to_string(), "osp".to_string())]
+        );
 
         // `from . import sibling` — level 1, no module.
         assert_eq!(f.imports[2].level, 1);
         assert_eq!(f.imports[2].module, "");
-        assert_eq!(f.imports[2].names, [("sibling".to_string(), "sibling".to_string())]);
+        assert_eq!(
+            f.imports[2].names,
+            [("sibling".to_string(), "sibling".to_string())]
+        );
 
         // `from ..pkg import thing as renamed`
         assert_eq!(f.imports[3].level, 2);
         assert_eq!(f.imports[3].module, "pkg");
-        assert_eq!(f.imports[3].names, [("thing".to_string(), "renamed".to_string())]);
+        assert_eq!(
+            f.imports[3].names,
+            [("thing".to_string(), "renamed".to_string())]
+        );
 
-        assert!(f.imports[4].is_star, "star import must be flagged, not guessed");
+        assert!(
+            f.imports[4].is_star,
+            "star import must be flagged, not guessed"
+        );
     }
 
     #[test]

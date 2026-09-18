@@ -29,7 +29,11 @@ impl Rng {
     }
 
     fn below(&mut self, n: u32) -> u32 {
-        if n == 0 { 0 } else { (self.next() % u64::from(n)) as u32 }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % u64::from(n)) as u32
+        }
     }
 }
 

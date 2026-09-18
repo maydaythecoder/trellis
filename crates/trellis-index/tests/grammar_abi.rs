@@ -8,8 +8,8 @@
 //!
 //! Verified pairing: tree-sitter 0.27.0 / tree-sitter-python 0.25.0.
 
-use trellis_index::parse::{self, CalleeShape};
 use trellis_core::FileId;
+use trellis_index::parse::{self, CalleeShape};
 
 #[test]
 fn grammar_and_library_abi_match() {
@@ -25,7 +25,11 @@ fn node_kinds_pass_one_depends_on_still_exist() {
     let facts = parse::collect(src, FileId(0));
 
     assert_eq!(facts.imports.len(), 1, "import_statement");
-    assert_eq!(facts.defs.len(), 3, "function_definition + class_definition");
+    assert_eq!(
+        facts.defs.len(),
+        3,
+        "function_definition + class_definition"
+    );
     assert_eq!(facts.defs[0].decorators, ["deco"], "decorated_definition");
     assert!(
         facts.call_sites.iter().any(|c| matches!(

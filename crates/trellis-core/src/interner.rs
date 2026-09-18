@@ -9,7 +9,9 @@
 use std::collections::HashMap;
 
 /// A handle to an interned string. Dense and `Copy`.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct Sym(pub u32);
 
 #[derive(Default, Debug, serde::Serialize, serde::Deserialize)]

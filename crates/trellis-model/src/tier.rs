@@ -189,7 +189,9 @@ mod tests {
         assert!(!AdapterTier::ValidateAndRetry.is_constrained());
         assert!(AdapterTier::HarnessConstrained.is_constrained());
         assert!(
-            AdapterTier::ValidateAndRetry.degradation().contains("retried"),
+            AdapterTier::ValidateAndRetry
+                .degradation()
+                .contains("retried"),
             "the doctor line must name what degrades, not reassure"
         );
     }
