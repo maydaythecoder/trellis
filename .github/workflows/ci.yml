@@ -1,0 +1,90 @@
+name: CI
+
+# v1.0 gate condition 4 is "induced mid-run failure returns the repo to its
+# exact pre-run state, verified in CI". The test existed before this file did;
+# the gate asks for it to run somewhere other than the author's machine, which
+# is the part that makes it evidence.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The index asserts byte spans. Windows git rewrites line endings on
+      # checkout by default, which makes those assertions platform-dependent
+      # for reasons that have nothing to do with the code (A-21).
+      - name: Pin line endings
+        run: git config --global core.autocrlf false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+  # Called out as its own job so a failure names the gate condition rather
+  # than appearing as one line in a list of 100 passing tests.
+  rollback-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Git identity for the test fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+
+      - name: v1.0 gate condition 4 — induced mid-run failure rolls back
+        run: |
+          cargo test -p trellis-vcs -- --nocapture \
+            rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state \
+            rollback_restores_tracked_edits_and_removes_new_files \
+            rollback_is_idempotent
+
+  # The graph's two structural guarantees, likewise named so a regression is
+  # legible without reading the log.
+  index-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Bidirectionality of forward/reverse adjacency
+        run: cargo test -p trellis-index --test bidirectional
+
+      - name: Resolver rules, soundness cases first
+        run: cargo test -p trellis-index --test resolve_rules
+
+      - name: Partition disjointness invariant (S19)
+        run: cargo test -p trellis-loop --test partition_invariants
+
+      # tree-sitter and its grammar share a C ABI and fail at runtime, not at
+      # compile time, when mismatched. This turns that into a test failure.
+      - name: Grammar/library ABI pairing
+        run: cargo test -p trellis-index --test grammar_abi
