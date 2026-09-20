@@ -59,12 +59,25 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
 
-      - name: v1.0 gate condition 4 — induced mid-run failure rolls back
+      - name: v1.0 condition 4 - rollback at every injection point
         run: |
-          cargo test -p trellis-vcs -- --nocapture \
-            rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state \
-            rollback_restores_tracked_edits_and_removes_new_files \
-            rollback_is_idempotent
+          cargo test -p trellis-vcs -- --nocapture             rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state             rollback_restores_tracked_edits_and_removes_new_files             rollback_is_idempotent             rollback_mid_edit_between_two_writes             rollback_after_a_killed_check_subprocess             rollback_after_checks_pass_but_before_approval             rollback_still_restores_when_the_trail_write_fails             a_rollback_that_fails_is_loud_and_leaves_a_manual_path
+
+      - name: v1.0 condition 4 - a dead orchestrator writes nothing and stops
+        run: |
+          cargo test -p trellis-loop -- --nocapture             a_dead_orchestrator_stops_the_run_instead_of_spending_the_budget
+
+      - name: v1.0 condition 4 - what an interrupt does, without the signal
+        run: cargo test -p trellis-cli -- --nocapture interrupt_tests
+
+      # The one injection point no unit test reaches: a real SIGINT delivered
+      # to a real process mid-run. Linux only - MSYS `kill -INT` raises no
+      # console Ctrl-C event for a native binary, so on Windows this would
+      # pass by never testing anything.
+      - name: v1.0 condition 4 - SIGINT mid-run, for real
+        run: |
+          cargo build --release -p trellis-cli
+          bash docs/bench/interrupt_test.sh "$PWD/target/release/trellis"
 
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.

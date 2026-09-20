@@ -118,6 +118,16 @@ impl Handle {
         self.ask(|reply| Request::Touched { reply }, Vec::new).await
     }
 
+    /// Whether the orchestrator is still there to answer.
+    ///
+    /// `ask` already degrades safely when it is not — every call returns its
+    /// `on_dead` value — but degrading safely and *noticing* are different
+    /// things. Without this the loop reads a dead actor as a run of tool
+    /// errors and spends the entire budget discovering that nothing works.
+    pub fn is_alive(&self) -> bool {
+        !self.0.is_closed()
+    }
+
     pub async fn has_governance_rules(&self) -> bool {
         self.ask(|reply| Request::HasRules { reply }, || false)
             .await

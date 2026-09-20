@@ -104,6 +104,11 @@ pub enum NotConverged {
         repeated: String,
         times: u32,
     },
+    /// The orchestrator task ended while the run was still going — a panic
+    /// in the actor, or a runtime shutting down under it. Not a model
+    /// failure, and named separately so a user is not sent looking at their
+    /// prompt for a bug in this process.
+    OrchestratorGone,
     /// The checks passed and a project rule was broken. Separate from
     /// `StoppedWithoutPassingChecks` because the user's next move is
     /// different: the code is correct and not allowed.
@@ -123,11 +128,17 @@ impl NotConverged {
             ),
             NotConverged::BudgetExhausted(e) => format!("budget exhausted: {}", e.explain()),
             NotConverged::ModelFailed(e) => format!("the model could not continue: {e}"),
+            NotConverged::OrchestratorGone => concat!(
+                "the orchestrator task ended mid-run, so no further tool call ",
+                "could be served. Nothing was accepted, and the working tree is ",
+                "untouched: the orchestrator owns the only write path, so an ",
+                "orchestrator that is gone has written nothing."
+            )
+            .to_string(),
             NotConverged::GovernanceViolation { detail } => format!(
                 concat!(
                     "the checks passed and a project rule was broken, so the ",
-                    "run did not converge and nothing was accepted:
-{}"
+                    "run did not converge and nothing was accepted:\n{}"
                 ),
                 detail
             ),
@@ -440,6 +451,22 @@ pub async fn run_seeded<M: Model>(
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
                 let result = dispatch(orch, &call).await;
+                // The orchestrator owns the index and the only write path. If
+                // its task is gone every remaining call returns an error, and
+                // without this the run reads that as a model going nowhere and
+                // spends the whole budget finding out. The tree is untouched
+                // either way — a dead actor writes nothing — so the only cost
+                // of missing it is the user's wall clock.
+                if !orch.is_alive() {
+                    tracing::error!("the orchestrator task is gone; stopping");
+                    return (
+                        Outcome::NotConverged {
+                            reason: NotConverged::OrchestratorGone,
+                            iterations,
+                        },
+                        t,
+                    );
+                }
                 let verdict_passed = match &result {
                     ToolResult::Checks(v) => Some(v.passed()),
                     _ => None,
@@ -1660,5 +1687,74 @@ rank = \"non-negotiable\"
         };
         let e = r.explain();
         assert!(e.contains("only an executed check"), "{e}");
+    }
+
+    /// v1.0 injection point 5: the orchestrator task ends mid-run.
+    ///
+    /// `04-v1.0-harness.md` calls this one of the two usually missed. The
+    /// danger it names is "a panicking orchestrator task must not leave a
+    /// half-applied change set" — and here it structurally cannot, because
+    /// the orchestrator owns the only write path to the tree. An orchestrator
+    /// that is gone has written nothing. What was missing was *noticing*.
+    #[tokio::test]
+    async fn a_dead_orchestrator_stops_the_run_instead_of_spending_the_budget() {
+        let d = repo();
+        let before = std::fs::read_to_string(d.path().join("app/util.py")).unwrap();
+        let (h, join) = Orchestrator::new(d.path(), checker(0)).spawn();
+
+        // The actor is gone. `abort` and a panic inside it are the same event
+        // at this boundary: the task ends, its receiver drops, and every
+        // later `ask` takes its `on_dead` path.
+        join.abort();
+        let _ = join.await;
+
+        // A budget far larger than the run should need, so a loop that failed
+        // to notice would be caught by the iteration count rather than by
+        // running out of test patience.
+        let mut m = Scripted::new(
+            (0..40)
+                .map(|i| {
+                    Step::Call(ToolCall::BlastRadius {
+                        symbol: format!("helper{i}"),
+                    })
+                })
+                .collect(),
+        );
+        let (outcome, t) = run("do something", &mut m, &h, &budget()).await;
+
+        match outcome {
+            Outcome::NotConverged {
+                reason: NotConverged::OrchestratorGone,
+                iterations,
+            } => assert!(
+                iterations <= 1,
+                "a dead orchestrator must stop the run at once, not after the \
+                 budget discovers that every call fails: took {iterations}"
+            ),
+            other => panic!("expected OrchestratorGone, got {other:?}"),
+        }
+        assert!(
+            t.turns.is_empty(),
+            "a call the orchestrator never served is not a turn"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("app/util.py")).unwrap(),
+            before,
+            "the tree must be byte-identical: the only writer is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_dead_orchestrator_message_names_the_process_not_the_prompt() {
+        // A user reading "the model could not continue" would go and rewrite
+        // their task. The failure is in this process and the message says so.
+        let e = NotConverged::OrchestratorGone.explain();
+        assert!(e.contains("orchestrator"), "{e}");
+        assert!(
+            e.contains("working tree is untouched") || e.contains("written nothing"),
+            "it must say the tree is safe, which is the first thing a user \
+             wants to know: {e}"
+        );
+        assert!(!e.contains("  "), "{e:?}");
     }
 }

@@ -119,7 +119,7 @@ a real one, and three need measurement rather than code.
 | 1 | Recall on the benchmark repo meets the v0.1 threshold | **No. 72.0%** against 85%, CI [63.2%, 80.8%]. In the S1 fallback band, which requires a further backstop. Both candidate backstops are measured and neither is worth building — see below. **Now tracked rather than remembered**: the `precision-gate` CI job regenerates the resolver's verdicts and re-scores both seeds against the committed human judgements, failing below the recorded figures |
 | 2 | Zero unsound edges; every `Resolved` edge verified real | **All three mechanical checks now pass over the full corpus**, not a sample: name match 5,908/5,908, and **import reachability 0 disconnected, 0 ambiguous** — the check that reaches "the wrong `foo` in another module", which the name check explicitly cannot (`docs/bench/precision-20260920.md`). Precision 100% on two hand audits. A third independent audit is still required before the claim (A-34) |
 | 3 | A real change to human approval, complete trail, grounded checks | **Partial.** Done end to end on poetry with a scripted model (`wedge-20260920.md`): defect, blast radius, failing check, edit, passing check, human `git commit`, trail, cold resume. Never with a model making the judgments |
-| 4 | Induced mid-run failure returns the repo to its exact pre-run state | **Yes**, with a named `rollback-gate` CI job |
+| 4 | Induced mid-run failure returns the repo to its exact pre-run state | **Yes, at seven injection points**, up from one — including a real SIGINT delivered mid-run and a dead orchestrator, the two `04-v1.0-harness.md` calls usually missed. Recovery-path failure handled: a rollback that cannot finish is loud, names the worktree, gives the commands, and no longer swallows the trail. `docs/bench/rollback-20260920.md` |
 | 5 | Resumption works | **Yes**, demonstrated cold on the benchmark repo |
 | + | Acceptable operation on a local open-weight model at or above the floor | **No, and the floor is not located.** Two configurations measured, both below it: 0.5B 0/20, Coder-3B 0/17 |
 
@@ -141,13 +141,13 @@ of the gate needs it.
 1. ~~Full precision audit; fix every unsound edge found.~~ **Done** —
    `docs/bench/precision-20260920.md`. No unsound edge found, so nothing to
    fix. The new check is `examples/check_reachability.rs` and it runs in CI.
-2. **Rollback hardening** across all injection points, including **SIGINT and
-   orchestrator panic** — the doc calls these two the ones usually missed, and
-   only one injection point is currently tested. Six or more required.
-3. **Recovery-path failure handling.** What happens when `git reset --hard`
-   itself fails: disk full, permissions, a lock held elsewhere. Report loudly,
-   leave the worktree path, never fail silently on the path that exists to
-   recover from failure.
+2. ~~Rollback hardening across all injection points.~~ **Done** —
+   `docs/bench/rollback-20260920.md`. Seven, up from one. SIGINT needed code
+   and a real signal to test; the orchestrator case needed code to *notice*.
+3. ~~Recovery-path failure handling.~~ **Done**, with the same artifact. A
+   rollback that cannot finish is loud, names the worktree, gives the exact
+   commands, attempts both steps rather than stopping at the first, and no
+   longer swallows the trail.
 4. **Degradation UX (S6)** — the summary line, actionable reasons, severity
    differentiation, three one-key approval paths. Designed for the tenth
    partial-coverage run in an hour, not the first.
@@ -251,6 +251,49 @@ into an exclusion and recall becomes unfalsifiable.
 
 Next: implement that, re-run the audit on a fresh sample, and report both
 denominators.
+
+## Rollback hardening: seven injection points, two that needed code
+
+v1.0 task items 2 and 3. Full write-up in `docs/bench/rollback-20260920.md`.
+
+**There was no signal handling anywhere in the codebase.** An unhandled SIGINT
+killed the process with the run's edits still in the tree — the one state
+TRELLIS promises never to leave — and because a run refuses to start on a dirty
+worktree, Ctrl-C became a wall for the *next* run too. `Step::Done` is now
+raced against `tokio::signal::ctrl_c()`, which is safe to cancel precisely
+because of the actor design: the orchestrator is a separate task owning the
+only write path, so dropping the loop's future cannot interrupt a write
+half-done.
+
+**Verified with a real signal, which took three failed attempts to get
+honest.** `kill -INT` from Git Bash on Windows raises no console Ctrl-C event
+for a native binary, so the run completed every time and the signal never
+arrived — a test that would have passed by never testing anything. It runs
+under WSL and on Linux in CI. The mutation confirms it: replace the `ctrl_c()`
+arm with a future that never completes and the run converges, exits 0, and
+leaves the edit in the tree.
+
+**A dead orchestrator could not corrupt the tree and could waste the whole
+budget.** It owns the only write path, so an orchestrator that is gone has
+written nothing — but the loop read a dead actor as a model going nowhere.
+`Handle::is_alive()` and `NotConverged::OrchestratorGone` stop at the first
+unserved call, and the message names this process rather than the user's
+prompt.
+
+Three smaller findings:
+
+- **A trail committed *before* a rollback is destroyed by it.** `reset --hard`
+  returns HEAD to the snapshot, which is behind the trail commit. `cmd_run`
+  already did it in the right order with a comment saying why; there is a test
+  under that comment now.
+- **A failed rollback swallowed the trail.** `cmd_run` used `?`, so the one run
+  whose record matters most — the tree is in an unknown state — was the one
+  run that never got a trail written. Exit codes now separate the cases: 1 not
+  converged and restored, 2 not restored, 130 deliberate abort.
+- **The string-folding defect, a sixth time**, in the rollback-failure message
+  itself. Caught by my own assertion — *"no folded indentation in text a user
+  reads under pressure"* — which is the first time it has been caught by a test
+  rather than by reading output.
 
 ## The precision audit, and a stale artifact it found
 

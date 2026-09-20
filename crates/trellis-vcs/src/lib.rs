@@ -29,6 +29,52 @@ pub enum VcsError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// The recovery path itself failed.
+    ///
+    /// Disk full, a permission denied, an `index.lock` held by another
+    /// process. This is the one failure that must never be quiet: every other
+    /// error leaves the repository as the user last saw it, and this one
+    /// leaves it mid-run. The message carries the commands to finish the job
+    /// by hand, because a user who has just been told their worktree is in an
+    /// unknown state should not also have to work out the SHA.
+    //
+    // The text is built in `rollback_failure_message` rather than written
+    // into this attribute. A multi-line literal here picks up the source
+    // indentation of every continuation line, which is the `cargo fmt`
+    // string-folding defect this repository has now hit six times — and the
+    // last place it should appear is the one message a user reads while
+    // being told their worktree is in an unknown state.
+    #[error("{}", rollback_failure_message(.root, .head, .detail))]
+    RollbackFailed {
+        root: String,
+        head: String,
+        detail: String,
+    },
+}
+
+/// What to print when the recovery path itself fails.
+///
+/// Every other error in TRELLIS leaves the repository as the user last saw
+/// it. This one leaves it mid-run, so it names the worktree, gives the exact
+/// commands rather than describing them, and says what to suspect when those
+/// also fail.
+fn rollback_failure_message(root: &str, head: &str, detail: &str) -> String {
+    format!(
+        concat!(
+            "ROLLBACK FAILED — the worktree is NOT restored and still holds ",
+            "this run's edits.\n\n  {detail}\n\nRecover by hand:\n\n",
+            "  git -C {root} reset --hard {head}\n",
+            "  git -C {root} clean -fd\n\n",
+            "If that also fails something outside TRELLIS is holding the ",
+            "repository: a running process, a lock file at .git/index.lock, ",
+            "or a read-only mount.\n",
+            "`git -C {root} status` will say what is still there."
+        ),
+        detail = detail,
+        root = root,
+        head = head
+    )
 }
 
 /// A recorded point to return to.
@@ -165,11 +211,35 @@ impl Snapshot {
     /// is a mystery".
     ///
     /// v1.0 gate condition 4 verifies this by inducing a mid-run panic.
+    /// Both steps are attempted even when the first fails. A `clean` that
+    /// succeeds after a failed `reset` removes this run's new files, which is
+    /// strictly better than leaving both kinds of residue; stopping at the
+    /// first error would make the recovery path give up earlier than it
+    /// needs to.
     #[tracing::instrument(skip(self), fields(head = %self.head))]
     pub fn rollback(&self) -> Result<(), VcsError> {
-        git(&self.root, &["reset", "--hard", &self.head])?;
-        git(&self.root, &["clean", "-fd"])?;
-        Ok(())
+        let reset = git(&self.root, &["reset", "--hard", &self.head]);
+        let clean = git(&self.root, &["clean", "-fd"]);
+        match (reset, clean) {
+            (Ok(_), Ok(_)) => Ok(()),
+            (r, c) => {
+                let mut detail = String::new();
+                if let Err(e) = r {
+                    detail.push_str(&format!("reset --hard: {e}"));
+                }
+                if let Err(e) = c {
+                    if !detail.is_empty() {
+                        detail.push_str("\n  ");
+                    }
+                    detail.push_str(&format!("clean -fd: {e}"));
+                }
+                Err(VcsError::RollbackFailed {
+                    root: self.root.display().to_string(),
+                    head: self.head.clone(),
+                    detail,
+                })
+            }
+        }
     }
 
     /// Whether the worktree currently matches the snapshot exactly.
@@ -379,6 +449,199 @@ mod tests {
         assert!(snap.is_restored().unwrap());
         assert!(!dir.join("stray.py").exists());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- v1.0 gate condition 4: six injection points -------------------
+    //
+    // `04-v1.0-harness.md` asks for failure injected at each stage of a run,
+    // with clean restoration proven at every one. A single induced panic
+    // establishes that rollback works when the stack unwinds tidily; it says
+    // nothing about a run killed between two writes, or one whose check
+    // subprocess died holding a file open.
+    //
+    // The two the doc calls out as usually missed — orchestrator panic and
+    // SIGINT — live in `trellis-loop` and `trellis-cli`, where the thing
+    // being interrupted actually is.
+
+    /// Injection point 1: between two file writes.
+    #[test]
+    fn rollback_mid_edit_between_two_writes() {
+        // A run that edited one file and died before the second leaves a tree
+        // that is internally inconsistent in a way no single-file test
+        // reaches: `a.py` now calls a helper that `b.py` was going to define.
+        let dir = temp_repo("inject-mid-edit");
+        std::fs::write(dir.join("b.py"), "def helper():\n    return 1\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &["commit", "-qm", "two files"]).unwrap();
+        let snap = snapshot(&dir).unwrap();
+
+        std::fs::write(
+            dir.join("a.py"),
+            "from b import helper\n\ndef f():\n    return helper(2)\n",
+        )
+        .unwrap();
+        // ... and the process dies here, before b.py gains the parameter.
+
+        snap.rollback().unwrap();
+        assert!(snap.is_restored().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Injection point 2: a check subprocess killed while running.
+    #[test]
+    fn rollback_after_a_killed_check_subprocess() {
+        // The case that worries: a killed child can leave the repository with
+        // an open handle or a stale lock, and on Windows an open handle is
+        // enough to make a delete fail. Rollback has to work anyway.
+        let dir = temp_repo("inject-killed-check");
+        let snap = snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        std::fs::write(dir.join("scratch.txt"), "partial check output").unwrap();
+
+        // A real child process, killed mid-flight, with the repo as its cwd.
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sleep" })
+            .args(if cfg!(windows) {
+                vec!["/C", "ping -n 30 127.0.0.1 > nul"]
+            } else {
+                vec!["30"]
+            })
+            .current_dir(&dir)
+            .spawn()
+            .expect("spawn a check-like child");
+        child.kill().expect("kill it mid-run");
+        let _ = child.wait();
+
+        snap.rollback().unwrap();
+        assert!(
+            snap.is_restored().unwrap(),
+            "a killed check subprocess must not block restoration"
+        );
+        assert!(!dir.join("scratch.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Injection point 3: after the checks pass, before the user approves.
+    #[test]
+    fn rollback_after_checks_pass_but_before_approval() {
+        // The state a converged run actually leaves: edits in the tree,
+        // nothing committed, approval outstanding. A user who aborts here —
+        // or a machine that loses power — must get their repository back,
+        // and the trail must survive, because a converged-but-unapproved run
+        // is exactly the one worth having a record of.
+        let dir = temp_repo("inject-before-approval");
+        let snap = snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 42\n").unwrap();
+
+        // Writing the trail here — committed, before the rollback — is the
+        // obvious thing and it is wrong. `reset --hard` returns HEAD to the
+        // snapshot, which is *behind* the trail commit, so the record of the
+        // run goes with it.
+        std::fs::create_dir_all(dir.join(".trellis/runs")).unwrap();
+        std::fs::write(dir.join(".trellis/runs/early.json"), "{\"task\":\"x\"}").unwrap();
+        commit_paths(&dir, &[".trellis/runs/early.json"], "trellis: trail").unwrap();
+
+        snap.rollback().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "the unapproved edit is gone"
+        );
+        assert!(
+            !dir.join(".trellis/runs/early.json").exists(),
+            "a trail committed BEFORE the rollback is destroyed by it — this is \
+             why cmd_run writes the trail after rolling back, and the comment \
+             there now has a test under it"
+        );
+
+        // Written after the rollback, as the run path actually does it: the
+        // trail survives, because nothing resets past it again.
+        std::fs::create_dir_all(dir.join(".trellis/runs")).unwrap();
+        std::fs::write(dir.join(".trellis/runs/late.json"), "{\"task\":\"x\"}").unwrap();
+        commit_paths(&dir, &[".trellis/runs/late.json"], "trellis: trail").unwrap();
+        assert!(dir.join(".trellis/runs/late.json").exists());
+        assert!(
+            snapshot(&dir).is_ok(),
+            "and the worktree is clean again, so the next run can start"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Injection point 4: the trail write itself fails.
+    #[test]
+    fn rollback_still_restores_when_the_trail_write_fails() {
+        // A failure writing the record must not become a failure to recover.
+        // The trail is the thing TRELLIS is for, but the worktree is the
+        // thing the user has to keep working in.
+        let dir = temp_repo("inject-trail-write");
+        let snap = snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 7\n").unwrap();
+
+        // A directory where the trail file wants to be: every write to that
+        // path fails, on every platform.
+        std::fs::create_dir_all(dir.join(".trellis/runs/r.json")).unwrap();
+        let wrote = std::fs::write(dir.join(".trellis/runs/r.json"), "{}");
+        assert!(wrote.is_err(), "the trail write must actually have failed");
+
+        snap.rollback().unwrap();
+        assert!(
+            snap.is_restored().unwrap(),
+            "a failed trail write must not leave the worktree unrestored"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The recovery path's own failure (`04-v1.0-harness.md`, task item 3).
+    #[test]
+    fn a_rollback_that_fails_is_loud_and_leaves_a_manual_path() {
+        // Every other error in TRELLIS leaves the repository as the user last
+        // saw it. This one leaves it mid-run, so it is the one that must
+        // never be quiet — and the user should not have to work out the SHA
+        // themselves while being told their worktree is in an unknown state.
+        let dir = temp_repo("inject-recovery-fails");
+        let mut snap = snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 3\n").unwrap();
+        std::fs::write(dir.join("stray.py"), "x = 1\n").unwrap();
+
+        // A commit that is not in this repository: `reset --hard` cannot
+        // succeed, which is the shape of a disk-full or locked-index failure
+        // without needing either.
+        snap.head = "0".repeat(40);
+
+        let err = snap.rollback().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ROLLBACK FAILED"), "{msg}");
+        assert!(
+            msg.contains("NOT restored"),
+            "it must say the worktree still holds the edits: {msg}"
+        );
+        assert!(
+            msg.contains(&dir.display().to_string()),
+            "it must name the worktree, or the user cannot act: {msg}"
+        );
+        assert!(
+            msg.contains("git -C") && msg.contains("reset --hard") && msg.contains("clean -fd"),
+            "it must give the commands, not describe them: {msg}"
+        );
+        assert!(
+            msg.contains("index.lock"),
+            "it must name the likely cause when the manual path also fails: {msg}"
+        );
+        assert!(
+            !msg.contains("  \n"),
+            "no folded indentation in text a user reads under pressure: {msg:?}"
+        );
+
+        // The half that could still succeed did: `clean` runs even though
+        // `reset` failed, so this run's new files are gone.
+        assert!(
+            !dir.join("stray.py").exists(),
+            "stopping at the first error gives up earlier than necessary"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

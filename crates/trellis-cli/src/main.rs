@@ -765,18 +765,37 @@ fn cmd_run(
         // The loop is generic over the model, so each driver gets its own
         // call rather than a trait object — the `Model` trait uses `async fn`
         // and is not dyn-compatible.
-        let out = match &mut driver {
-            Driver::Scripted(m) => {
-                trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
-            }
-            Driver::Runtime(m) => {
-                trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
-            }
+        //
+        // Raced against Ctrl-C, because Ctrl-C is how a user actually aborts
+        // a run that is going nowhere, and an unhandled SIGINT kills the
+        // process with this run's edits still in the tree — the one state
+        // TRELLIS promises never to leave behind. Cancelling here is safe
+        // precisely because the orchestrator is a separate task that owns
+        // the only write path: dropping this future cannot interrupt a write
+        // half-done, it can only stop new ones being asked for.
+        let out = tokio::select! {
+            out = async {
+                match &mut driver {
+                    Driver::Scripted(m) => {
+                        trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
+                    }
+                    Driver::Runtime(m) => {
+                        trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
+                    }
+                }
+            } => Some(out),
+            _ = tokio::signal::ctrl_c() => None,
         };
+        // Asked after the race either way: the orchestrator is still alive
+        // and still knows what this run wrote, which is what the rollback and
+        // the trail both need.
         let touched = handle.touched().await;
         (out, touched)
     });
 
+    let Some(outcome) = outcome else {
+        return interrupted_run(root, task, &transcript, &snapshot, model_spec);
+    };
     let (outcome, turns) = outcome;
     println!();
     for (i, t) in turns.turns.iter().enumerate() {
@@ -833,15 +852,12 @@ fn cmd_run(
             println!();
             println!("NOT CONVERGED after {iterations} iterations.");
             println!("  {}", reason.explain());
-            snapshot
-                .rollback()
-                .context("rollback failed — inspect the worktree by hand before continuing")?;
-            let restored = snapshot.is_restored().unwrap_or(false);
-            println!();
-            println!(
-                "Rolled back to {}. Worktree restored: {restored}.",
-                snapshot.head
-            );
+            // Deliberately not `?`. A failed rollback used to propagate here,
+            // which meant the one run whose record matters most — the tree is
+            // in an unknown state — was also the one run that never got a
+            // trail written. The failure is reported loudly and the recording
+            // continues.
+            let restored = rollback_or_explain(&snapshot);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -858,7 +874,11 @@ fn cmd_run(
                 Ok(p) => println!("trail:    {} (survives the rollback)", p.display()),
                 Err(e) => println!("could not write the trail: {e}"),
             }
-            std::process::exit(1);
+            // 1 means the run did not converge and the tree is back as it
+            // was. 2 means the tree is NOT back, which a script wrapping
+            // TRELLIS must not treat as an ordinary failed run — the next one
+            // will refuse to start, and it should.
+            std::process::exit(if restored { 1 } else { 2 });
         }
     }
 }
@@ -900,6 +920,124 @@ make the run converge — only a check executed in that session ",
         "can do that."
     ));
     Ok(())
+}
+
+/// Ctrl-C during a run.
+///
+/// v1.0 gate condition 4 lists SIGINT as an injection point, and
+/// `04-v1.0-harness.md` calls it one of the two usually missed: "Ctrl-C is how
+/// users will actually abort." An unhandled SIGINT kills the process with the
+/// run's edits still in the tree, which is the one state TRELLIS promises
+/// never to leave behind — and the next run would then refuse to start on a
+/// dirty worktree, so the user's escape hatch becomes a wall.
+///
+/// Exits 130, the shell convention for a process terminated by SIGINT, so a
+/// script wrapping TRELLIS can tell an abort from a failed run.
+fn interrupted_run(
+    root: &Path,
+    task: &str,
+    touched: &[String],
+    snapshot: &trellis_vcs::Snapshot,
+    model_spec: &str,
+) -> Result<()> {
+    std::process::exit(handle_interrupt(root, task, touched, snapshot, model_spec));
+}
+
+/// Everything an interrupt does, minus the exit.
+///
+/// Split out so it can be tested. Whether `tokio::signal::ctrl_c()` fires is
+/// tokio's contract; what TRELLIS does once it has fired is this project's,
+/// and that is the half worth a test — a rollback that did not happen, or a
+/// trail that was never written, would both be invisible from the outside
+/// until a user hit it.
+fn handle_interrupt(
+    root: &Path,
+    task: &str,
+    touched: &[String],
+    snapshot: &trellis_vcs::Snapshot,
+    model_spec: &str,
+) -> i32 {
+    println!();
+    println!("INTERRUPTED. Rolling back — nothing is accepted on an abort.");
+    if !touched.is_empty() {
+        println!("files this run had written: {}", touched.join(", "));
+    }
+
+    let restored = rollback_or_explain(snapshot);
+
+    // The turn list cannot be recovered: it lives in the loop's future, which
+    // was just cancelled. The factual half that matters survives, because the
+    // orchestrator holds it — the task, the base commit, and every file the
+    // run wrote. A trail saying "this happened and here is what it touched"
+    // is worth more than no record of the run at all, and it must not imply
+    // turns were inspected when none were.
+    let turns = trellis_loop::Transcript {
+        task: task.to_string(),
+        turns: Vec::new(),
+        final_notice: false,
+        prior: None,
+        repo: trellis_loop::RepoContext::default(),
+    };
+    match record_trail(
+        root,
+        task,
+        &turns,
+        touched,
+        trellis_trail::Approval::None,
+        &snapshot.head,
+        Some(model_spec),
+    ) {
+        Ok(p) => {
+            println!("trail:    {} (interrupted; no turns recorded)", p.display());
+        }
+        Err(e) => println!("could not write the trail: {e}"),
+    }
+
+    // 130 is the shell convention for a process terminated by SIGINT, so a
+    // script wrapping TRELLIS can tell a deliberate abort from a failed run.
+    // An abort that could not restore the tree is not an ordinary abort, and
+    // gets the same code a failed rollback gets anywhere else.
+    if restored { 130 } else { 2 }
+}
+
+/// Rolls back, and if that fails says so at the top of its voice.
+///
+/// `04-v1.0-harness.md`, task item 3: "Never fail silently on the recovery
+/// path." Every other error leaves the repository as the user last saw it;
+/// this one leaves it mid-run, so it goes to stderr with the exact commands
+/// rather than into an error type someone may or may not print.
+///
+/// Returns whether the worktree was restored, so the caller can pick an exit
+/// code that says which.
+fn rollback_or_explain(snapshot: &trellis_vcs::Snapshot) -> bool {
+    match snapshot.rollback() {
+        Ok(()) => {
+            let restored = snapshot.is_restored().unwrap_or(false);
+            println!();
+            println!(
+                "Rolled back to {}. Worktree restored: {restored}.",
+                snapshot.head
+            );
+            if !restored {
+                eprintln!();
+                eprintln!(
+                    "{}",
+                    concat!(
+                        "WARNING: git reported success but the worktree still ",
+                        "differs from the snapshot. Check `git status` before ",
+                        "continuing; something changed the tree after the ",
+                        "rollback ran."
+                    )
+                );
+            }
+            restored
+        }
+        Err(e) => {
+            eprintln!();
+            eprintln!("{e}");
+            false
+        }
+    }
 }
 
 /// Records what happened, factual and judgment kept apart.
@@ -1464,4 +1602,130 @@ fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod interrupt_tests {
+    use super::*;
+
+    fn temp_repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("trellis-cli-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@example.invalid"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "core.autocrlf", "false"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-qm", "init"]] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+        }
+        dir
+    }
+
+    /// v1.0 injection point 6: SIGINT mid-run.
+    ///
+    /// Whether `tokio::signal::ctrl_c()` fires is tokio's contract. What
+    /// TRELLIS does once it has is this: roll back, record, exit 130.
+    #[test]
+    fn an_interrupt_rolls_back_and_still_records_the_run() {
+        let dir = temp_repo("interrupt");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+
+        // The state an interrupt actually catches: the run has written.
+        std::fs::write(dir.join("a.py"), "def f():\n    return 999\n").unwrap();
+        std::fs::write(dir.join("scratch.py"), "x = 1\n").unwrap();
+
+        let code = handle_interrupt(
+            &dir,
+            "a task that was interrupted",
+            &["a.py".to_string()],
+            &snap,
+            "scripted:none",
+        );
+
+        assert_eq!(code, 130, "the shell convention for a SIGINT abort");
+
+        // Deliberately not `is_restored()`, which also requires HEAD to be
+        // unchanged. Committing the trail moves HEAD forward by exactly one,
+        // on purpose — that is how the record survives the rollback. The
+        // property an abort owes the user is about the *working tree*: no
+        // edit of this run left in it, and clean enough that the next run can
+        // start, because a Ctrl-C that blocks the next run is a wall.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        assert!(!dir.join("scratch.py").exists());
+        assert!(
+            trellis_vcs::snapshot(&dir).is_ok(),
+            "the worktree must be clean, or Ctrl-C has become a wall"
+        );
+
+        // And the run is still on the record. A trail written after the
+        // rollback survives it; one written before would have been cleaned.
+        let runs: Vec<_> = std::fs::read_dir(dir.join(".trellis/runs"))
+            .expect("the trail directory exists")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(runs.len(), 1, "an interrupted run is still a run");
+        let body = std::fs::read_to_string(runs[0].path()).unwrap();
+        assert!(
+            body.contains("a task that was interrupted"),
+            "the trail records what was being attempted: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_interrupt_whose_rollback_fails_exits_differently() {
+        // Exit 2 rather than 130: a script wrapping TRELLIS must not treat a
+        // worktree still holding a half-finished run as an ordinary abort.
+        let dir = temp_repo("interrupt-unrestorable");
+        let mut snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 999\n").unwrap();
+        snap.head = "0".repeat(40);
+
+        let code = handle_interrupt(&dir, "t", &["a.py".to_string()], &snap, "scripted:none");
+        assert_eq!(code, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_rollback_reports_false_rather_than_claiming_success() {
+        let dir = temp_repo("recovery-reports");
+        let mut snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "broken\n").unwrap();
+        snap.head = "0".repeat(40);
+
+        assert!(
+            !rollback_or_explain(&snap),
+            "the recovery path must never report a restoration it did not make"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clean_rollback_reports_true() {
+        let dir = temp_repo("recovery-clean");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 5\n").unwrap();
+
+        assert!(rollback_or_explain(&snap));
+        assert!(snap.is_restored().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
