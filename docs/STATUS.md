@@ -152,10 +152,10 @@ code.
 
 ### Not on the critical path, but real
 
-- **The session is a REPL, not a TUI.** No history, no line editing, no
-  completion, no live status pane. `rustyline` would buy history and editing
-  for one dependency; a real full-screen interface is a much larger piece and
-  has not been costed.
+- **The session is a REPL, not a TUI.** It has line editing and per-repository
+  history now (`rustyline`, default features off, seven transitive packages).
+  Still no completion and no live status pane; a full-screen interface is a
+  much larger piece and has not been costed.
 - **`discover()` does not read `.gitignore`.** It skips a fixed list — `.venv`,
   `node_modules`, `site-packages`, `__pycache__`, `build`, `dist` — which
   covers the cases that matter in practice. A repository with a large ignored
@@ -266,6 +266,16 @@ name the test that would fail if it were reverted.
   run: the model called it with no paths, mypy chose the whole repository,
   poetry's pre-existing errors came back looking like the model's own, and it
   edited a file it saw in that output.
+- **Pressing up-arrow in the session ran an agent task.** Without raw mode the
+  key arrived as `ESC [ A`, which does not begin with `/`, so it fell past the
+  command match into the model: slugified to "a", a trail written under that
+  name, files edited. Control characters are refused in the read loop now, and
+  `rustyline` makes the key do what it should. Reflex input must never start
+  work.
+- **History in `.trellis/history` would have broken the tool.** Untracked, so
+  it dirtied the worktree — and a dirty worktree blocks the next run. A
+  convenience feature re-erecting the wall `/accept` was added to knock down,
+  two commits later. It lives in user state now, keyed by repository.
 - **An interactive session** (`trellis` with no subcommand). One-shot was the
   wrong default: every invocation re-derived the index, answered one question
   and threw it away, while the orchestrator owns the index as a single-owner
