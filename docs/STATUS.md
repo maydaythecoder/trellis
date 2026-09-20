@@ -112,7 +112,7 @@ OPEN_QUESTIONS Q-13.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-Two items remain, and **neither is blocked on code**. One needs bandwidth, the
+Two items remain and **neither is blocked on code**. One needs bandwidth, the
 other needs a person.
 
 1. **The model floor (S7), second configuration.** One configuration is
@@ -120,11 +120,11 @@ other needs a person.
    model and not the harness. Locating the floor needs a configuration that
    *passes*.
 
-   Qwen2.5-Coder-3B Q4_K_M is at **1,352 MB of 2,105 MB** (64%) after 62
-   resumed attempts, gaining roughly 190 MB/hour — about four hours out.
+   Qwen2.5-Coder-3B Q4_K_M is at **1,521 MB of 2,105 MB** (72%) after 72
+   resumed attempts, gaining roughly 190 MB/hour — about three hours out.
    `.bench/models/fetch.sh` resumes by HTTP range and appends to the partial
-   file, which is the only reason it has survived those 62 attempts; if a
-   session ends with it incomplete, restart it rather than re-fetching.
+   file; if a session ends with it incomplete, restart it rather than
+   re-fetching.
 
    When it lands: start the probe server on the new weights, then
    `python docs/bench/run_floor.py .bench/floor docs/bench/floor_tasks.json
@@ -137,8 +137,7 @@ other needs a person.
    **The packet is ready to produce and the pipeline is validated.** Two
    commands, no network: `audit_sample ... 1000 <fresh-seed>` then
    `split_audit.py <dir> 40`, giving 25 blind chunks of 40. Round-tripped
-   through split, merge and score with 1,000 synthetic judgements, which
-   caught the filled-chunk format before an auditor would have hit it.
+   through split, merge and score with 1,000 synthetic judgements.
 
    It must report **wrongly excluded** as well as recall: ADR 0015 lets a site
    leave the denominator on the strength of an annotation, and no automated
@@ -146,9 +145,23 @@ other needs a person.
    scoring, regenerate `answers.json` — the seed reproduces the sites, not the
    verdicts.
 
-**v0.1, v0.2 and v0.3 are complete**, and every known latent unsound edge is
-closed. What remains before v1.0 is the 85% recall gate, and the next honest
-step there is measurement rather than code.
+**v0.1, v0.2 and v0.3 are complete**, every known latent unsound edge is
+closed, and the tool has an interactive session. What remains before v1.0 is
+the 85% recall gate, and the next honest step there is measurement rather than
+code.
+
+### Not on the critical path, but real
+
+- **The session is a REPL, not a TUI.** No history, no line editing, no
+  completion, no live status pane. `rustyline` would buy history and editing
+  for one dependency; a real full-screen interface is a much larger piece and
+  has not been costed.
+- **`discover()` does not read `.gitignore`.** It skips a fixed list — `.venv`,
+  `node_modules`, `site-packages`, `__pycache__`, `build`, `dist` — which
+  covers the cases that matter in practice. A repository with a large ignored
+  Python tree gets it indexed anyway; in this one that is `.bench/`, 914 files.
+  Changing it would move the corpus and therefore every measurement, so it is
+  recorded rather than done.
 
 ## The 85% backstop: both candidates measured, both too small, and a third found
 
@@ -253,6 +266,16 @@ name the test that would fail if it were reverted.
   run: the model called it with no paths, mypy chose the whole repository,
   poetry's pre-existing errors came back looking like the model's own, and it
   edited a file it saw in that output.
+- **An interactive session** (`trellis` with no subcommand). One-shot was the
+  wrong default: every invocation re-derived the index, answered one question
+  and threw it away, while the orchestrator owns the index as a single-owner
+  actor precisely so it can be held. The session holds the index, the model,
+  and what the last run left pending.
+  It closed a real wall: a converged run leaves its edits uncommitted on
+  purpose, which blocks the next task, so /diff, /accept and /revert close
+  that loop and the prompt shows the block before you walk into it. Eleven
+  tests, the load-bearing one being that an unknown slash command is never run
+  as a task.
 - **Q-14 closed** — the last known latent unsound edge. A class-scope
   assignment shadowing a method (`run = staticmethod(run)`) still produced a
   confident edge to the `def`. Fixed; `ShadowedAmbiguous` occurs zero times in
