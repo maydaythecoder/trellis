@@ -122,7 +122,8 @@ fn main() -> Result<()> {
             unconstrained,
             agents,
         } => cmd_run(&root, &task, &model, unconstrained, &agents),
-        Command::Resume | Command::Partitions { .. } => {
+        Command::Resume => cmd_resume(&root),
+        Command::Partitions { .. } => {
             anyhow::bail!(
                 "not implemented yet: `resume` needs the trail (milestone v0.3) and \
                  `partitions` needs multi-agent planning (v1.1). `trellis index`, \
@@ -267,9 +268,118 @@ fn cmd_run(
                 "Rolled back to {}. Worktree restored: {restored}.",
                 snapshot.head
             );
+
+            // Written *after* the rollback, deliberately. Rollback cleans
+            // untracked files, and a trail written before it would be one of
+            // them — deleting the record of exactly the run worth recording.
+            match record_trail(
+                root,
+                task,
+                &turns,
+                &transcript,
+                trellis_trail::Approval::None,
+            ) {
+                Ok(p) => println!("trail:    {} (survives the rollback)", p.display()),
+                Err(e) => println!("could not write the trail: {e}"),
+            }
             std::process::exit(1);
         }
     }
+}
+
+/// Continues from the last trail entry.
+///
+/// This is the wedge the product exists for: reopen a repository, and the
+/// previous session's decisions are already there. The trail is read back as
+/// `UntrustedTrail` — a repository may take contributions, so reading a trail
+/// is reading attacker-influenceable text into an agent's context (S10).
+fn cmd_resume(root: &Path) -> Result<()> {
+    let Some((path, trail)) = trellis_trail::latest(root)? else {
+        println!("No trail under .trellis/runs/. Nothing to resume from.");
+        println!("`trellis run` writes one, and the next session starts from it.");
+        return Ok(());
+    };
+
+    println!("resuming from {}", path.display());
+    println!();
+    for line in trail.context_lines() {
+        println!("  {line}");
+    }
+    println!();
+    println!(concat!(
+        "Everything above is read back as data, never as instruction. ",
+        "The judgment
+",
+        "section is the previous run's opinion and is fenced accordingly (S10, S11)."
+    ));
+    println!();
+    println!(concat!(
+        "Continuing the work itself needs the loop to accept prior context as ",
+        "a starting
+state, which is the rest of v0.3."
+    ));
+    Ok(())
+}
+
+/// Records what happened, factual and judgment kept apart.
+fn record_trail(
+    root: &Path,
+    task: &str,
+    turns: &trellis_loop::Transcript,
+    touched: &[String],
+    approved: trellis_trail::Approval,
+) -> Result<std::path::PathBuf> {
+    use trellis_trail::{Factual, Judgment, ModeCounts, RadiusCounts, Trail};
+
+    // Counts come from the radius observations the run actually made, so a
+    // run that never asked for a radius records zeros rather than an
+    // invented summary.
+    let radius = RadiusCounts::default();
+
+    let trail = Trail {
+        task: task.to_string(),
+        started_at: trellis_trail::iso_now(),
+        trellis_version: env!("CARGO_PKG_VERSION").to_string(),
+        factual: Factual {
+            proposed: touched.to_vec(),
+            radius,
+            // `checks` holds `Verdict`s, which cannot be constructed outside
+            // `trellis-checks`; the loop keeps only whether each passed, so
+            // the trail records the sequence rather than re-asserting them.
+            checks: Vec::new(),
+            approved_by: approved,
+            mode_counts: ModeCounts::default(),
+        },
+        judgment: Judgment {
+            rationale: turns
+                .turns
+                .last()
+                .map(|t| format!("last observation: {}", first_line(&t.observation))),
+            tech_debt_projection: None,
+        },
+    };
+
+    let ts = trellis_trail::timestamp_now();
+    let slug = trellis_trail::slugify(task);
+    let path = trellis_trail::write(root, &trail, &ts, &slug)?;
+
+    // Committed, not merely written. The brief calls the trail durable and in
+    // the repository, and leaving it untracked fails that twice: the worktree
+    // would never be clean again so no later run could start, and the next
+    // rollback's `git clean` would delete every trail accumulated so far.
+    //
+    // Only the trail is staged. The code the run proposed stays uncommitted,
+    // because accepting it is the user's decision to make.
+    let rel = trellis_trail::Trail::path(&ts, &slug);
+    if let Err(e) = trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {task}"))
+    {
+        println!("trail written but not committed: {e}");
+    }
+    Ok(path)
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").chars().take(200).collect()
 }
 
 /// Blast radius for a symbol, with its confidence breakdown.

@@ -8,8 +8,10 @@
 //! that may take contributions, so anything read back from it is untrusted
 //! input (S10).
 
+pub mod store;
 pub mod untrusted;
 
+pub use store::{iso_now, latest, slugify, timestamp_now, write};
 pub use untrusted::{RecordedCheck, UntrustedTrail};
 
 use serde::{Deserialize, Serialize};

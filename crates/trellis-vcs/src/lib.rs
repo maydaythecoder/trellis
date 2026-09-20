@@ -61,6 +61,32 @@ fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Commits exactly the given paths, and nothing else.
+///
+/// Used for the decision trail. The brief calls for the trail to be
+/// *committed* — durable, in the repository, readable by the next session —
+/// and leaving it untracked would fail that twice over: the worktree would
+/// never be clean again, so no later run could start, and the next rollback's
+/// `git clean` would delete every accumulated trail.
+///
+/// Deliberately narrow. It stages the named paths only, so a run never
+/// commits the code changes it proposed: acceptance of those is the user's,
+/// and a tool that commits work nobody approved has taken that decision away.
+pub fn commit_paths(root: &Path, paths: &[&str], message: &str) -> Result<(), VcsError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut add: Vec<&str> = vec!["add", "--"];
+    add.extend_from_slice(paths);
+    git(root, &add)?;
+
+    // `--only` so staged-but-unrelated changes cannot ride along.
+    let mut commit: Vec<&str> = vec!["commit", "--only", "-m", message, "--"];
+    commit.extend_from_slice(paths);
+    git(root, &commit)?;
+    Ok(())
+}
+
 /// Records `HEAD`, refusing if the worktree is dirty.
 pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
     if !root.join(".git").exists() {
@@ -185,6 +211,40 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-qm", "init"]).unwrap();
         dir
+    }
+
+    #[test]
+    fn committing_the_trail_leaves_other_changes_alone() {
+        // The property that matters: a run must never commit the code it
+        // proposed. Acceptance of that is the user's.
+        let dir = temp_repo("commit-narrow");
+        std::fs::write(
+            dir.join("a.py"),
+            "def f():
+    return 99
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join(".trellis/runs")).unwrap();
+        std::fs::write(dir.join(".trellis/runs/t.json"), "{}").unwrap();
+
+        commit_paths(&dir, &[".trellis/runs/t.json"], "trellis: trail").unwrap();
+
+        let status = git(&dir, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.contains("a.py"),
+            "the proposed change must still be uncommitted: {status}"
+        );
+        assert!(
+            !status.contains("t.json"),
+            "the trail must have been committed: {status}"
+        );
+    }
+
+    #[test]
+    fn committing_nothing_is_not_an_error() {
+        let dir = temp_repo("commit-empty");
+        assert!(commit_paths(&dir, &[], "empty").is_ok());
     }
 
     #[test]
