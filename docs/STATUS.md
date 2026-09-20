@@ -230,7 +230,7 @@ denominators.
 
 I had been calling v0.2 complete on the strength of the milestone documents in
 `docs/`. Re-reading `02-v0.2-loop.md`'s own gate and checking each line against
-the source says otherwise. Four met, four partial, two not — recorded here
+the source says otherwise. Five met, three partial, two not — recorded here
 because "complete" was the same defect as S20: a claim the code does not
 support, in the document a reader consults to find out.
 
@@ -245,7 +245,7 @@ support, in the document a reader consults to find out.
 | Budgets enforce; exceeding one escalates then rolls back | **Yes** |
 | `trellis doctor` reports the active tier and what degrades | **Yes** |
 | `Verified` and `Reviewed` tracked separately and shown at approval | **Partial.** The type forbids collapsing them (no `total()`), and every trail records `0/0`. No coverage mapping exists, so nothing ever populates them |
-| Instrumentation: iterations, tokens, wall-clock, **context fill** | **Partial.** First three recorded; context fill is not measured at all |
+| Instrumentation: iterations, tokens, wall-clock, **context fill** | **Yes**, as of 2026-09-20. Context fill was not measured anywhere; each turn now records the prompt that produced it, in bytes, and the trail records first, peak and turns measured |
 
 ### The two that matter
 
