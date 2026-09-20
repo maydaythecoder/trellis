@@ -4,42 +4,71 @@ A Rust agent harness for Python repositories. It maps the blast radius of a
 change, runs the repository's own checks, and commits a record of what
 happened.
 
-`trellis.exe` in this folder is a self-contained binary. Nothing to install.
+## Getting `trellis` on your PATH
+
+```
+cargo install --path crates/trellis-cli
+```
+
+That drops `trellis.exe` into `~/.cargo/bin`, which is already on your PATH if
+you have Rust. Otherwise copy `dist/trellis.exe` into any directory that is.
+
+Then `trellis` works from anywhere. **It finds the repository root by walking
+up**, the way git does, so `trellis index` three directories deep indexes the
+whole repository rather than the empty subdirectory you happen to be standing
+in. It prints the root it chose whenever that is not where you are:
+
+```
+C:\repo\app\deep\nested> trellis index
+root:     C:\repo (repository root)
+indexed 4 files in 1.4ms
+```
+
+With no git repository anywhere above, it reads the current directory only —
+and says so, because typing `trellis index` in a home folder would otherwise
+walk everything underneath it without explaining why.
+
+`--root <path>` always wins over both.
 
 ---
 
 ## What it needs
 
-- **A git repository** with a clean worktree. Runs snapshot `HEAD` before
-  writing so a failure can be rolled back; a dirty tree is refused rather than
-  half-restored.
+- **A git repository** with a clean worktree, for `run`. Runs snapshot `HEAD`
+  before writing so a failure can be rolled back; a dirty tree is refused
+  rather than half-restored.
 - **Python, and your checker on PATH.** `mypy` and `pytest` by default,
   configurable. `trellis doctor` tells you what it found.
-- **A model, only for `trellis run`.** Everything else — `index`, `radius`,
-  `check`, `doctor` — works with no model at all.
+- **A model, only for `run`.** Everything else — `index`, `radius`, `check`,
+  `doctor` — works with no model at all.
+
+Vendored and generated trees are skipped: `.venv`, `venv`, `node_modules`,
+`site-packages`, `__pycache__`, `build`, `dist` and the rest. Pointing it at a
+project with a virtualenv in it will not index the virtualenv.
 
 ---
 
 ## Five minutes
 
 ```
-trellis doctor --root C:\path\to\your\repo
+cd your-repo
+trellis doctor
 ```
 
 Reports what it found and what it could not determine. It does not guess: with
-no `--model` it says the adapter tier is *not probed* rather than printing a
+no `--model` it says the adapter tier is **not probed** rather than printing a
 default.
 
 ```
-trellis index --root C:\path\to\your\repo
+trellis index
 ```
 
 Parses the repository and prints coverage. **Read the last paragraph it
-prints.** The percentage is what the resolver *bound*, not recall — a lower
-bound, and not comparable to any threshold.
+prints.** The percentage is what the resolver *bound* — a lower bound on
+recall, not recall, and not comparable to any threshold.
 
 ```
-trellis radius SomeFunction --root C:\path\to\your\repo
+trellis radius SomeFunction
 ```
 
 Who calls it, in two separately-counted blocks: **reach** (call sites that
@@ -49,7 +78,7 @@ them — an earlier version did, and printed "3.7% resolved" for a resolver that
 audits at 72%.
 
 ```
-trellis check --root C:\path\to\your\repo
+trellis check
 ```
 
 Runs the configured checks and exits non-zero if any fail.
@@ -59,7 +88,7 @@ Runs the configured checks and exits non-zero if any fail.
 ## Running the loop
 
 ```
-trellis run --root C:\repo --model scripted:fix.json "fix the type error in app/calc.py"
+trellis run --model scripted:fix.json "fix the type error in app/calc.py"
 ```
 
 `scripted:` replays a fixed list of tool calls. Real files, real checks, real
@@ -69,9 +98,9 @@ model, and **never a measure of what a model can do**.
 Against a real model, point at a serving runtime:
 
 ```
-trellis run --root C:\repo --model llamacpp:http://127.0.0.1:8080 "..."
-trellis run --root C:\repo --model vllm:http://127.0.0.1:8000 "..."
-trellis run --root C:\repo --model sglang:http://127.0.0.1:30000 "..."
+trellis run --model llamacpp:http://127.0.0.1:8080 "..."
+trellis run --model vllm:http://127.0.0.1:8000     "..."
+trellis run --model sglang:http://127.0.0.1:30000  "..."
 ```
 
 Check the runtime honours guided decoding first — `trellis doctor --model ...`
@@ -79,12 +108,10 @@ reports `RuntimeConstrained` if it does. If it does not, add `--unconstrained`
 to make that explicit; runs can then fail on output format alone.
 
 `--resume` starts from the last recorded run, so the model is not re-told what
-the previous one established.
-
-After a run:
+the previous one established. Afterwards:
 
 ```
-trellis resume --root C:\repo
+trellis resume
 ```
 
 ---
@@ -134,8 +161,8 @@ a security boundary; the rules live in the repository being edited.
 
 `--no-incremental` on mypy is a correctness flag, not a preference. mypy's
 cache keys on size and mtime, so a rollback that restores a file of the same
-length looks unchanged to it and it will report a cached pass for code it never
-read.
+length looks unchanged to it, and it will report a cached pass for code it
+never read.
 
 `.trellis/context.md`, if present, is read into the model's prompt as the
 project's own conventions. Nothing in it can authorise skipping a check.
@@ -156,6 +183,6 @@ project's own conventions. Nothing in it can authorise skipping a check.
   from below without locating it. See `docs/BENCHMARK_AND_EVAL.md` §5.
 
 Recall on the benchmark corpus is **72.0%** on a hand-audited sample
-(n=100 first-party sites), precision 100%. The v1.0 gate wants 85% and a
-larger audit; neither has happened. `docs/STATUS.md` is the honest state of
-every claim.
+(n=100 first-party sites), precision 100%. The v1.0 gate wants 85% and a larger
+audit; neither has happened. `docs/STATUS.md` is the honest state of every
+claim.
