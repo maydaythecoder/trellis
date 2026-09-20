@@ -1132,6 +1132,7 @@ dependencies = [
  "insta",
  "rayon",
  "serde",
+ "serde_json",
  "smallvec",
  "tracing",
  "tree-sitter",

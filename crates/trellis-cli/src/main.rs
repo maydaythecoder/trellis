@@ -85,75 +85,192 @@ fn main() -> Result<()> {
         Command::Index => cmd_index(&root),
         Command::Doctor => cmd_doctor(&root),
         Command::Check { paths } => cmd_check(&root, paths),
-        Command::Radius { .. }
-        | Command::Run { .. }
-        | Command::Resume
-        | Command::Partitions { .. } => {
+        Command::Radius { symbol } => cmd_radius(&root, &symbol),
+        Command::Run { .. } | Command::Resume | Command::Partitions { .. } => {
             anyhow::bail!(
-                "not implemented yet: this command needs the resolver and the agent loop \
-                 (milestone v0.2). `trellis index`, `trellis check` and `trellis doctor` work today."
+                "not implemented yet: this command needs the agent loop (milestone v0.2). \
+                 `trellis index`, `trellis radius`, `trellis check` and `trellis doctor` \
+                 work today."
             )
         }
     }
 }
 
-/// Pass 1 across the repository, reporting what it found.
+/// Blast radius for a symbol, with its confidence breakdown.
 ///
-/// Resolution (Pass 2 and the bind step) is v0.1 work, so this reports
-/// counts rather than a coverage figure. It deliberately does not print a
-/// percentage it cannot yet compute.
-fn cmd_index(root: &Path) -> Result<()> {
-    use rayon::prelude::*;
+/// The coverage block is printed unconditionally and the unresolved count is
+/// never suppressed when it is inconvenient: a radius that omits what it
+/// could not see is the failure mode the whole design exists to prevent.
+fn cmd_radius(root: &Path, query: &str) -> Result<()> {
+    let index = trellis_index::build(root);
 
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(root)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .filter(|p| p.extension().is_some_and(|x| x == "py"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == ".git"))
-        .collect();
+    let qualified = |s: &trellis_index::SymbolEntry| {
+        format!(
+            "{}.{}",
+            index.files[s.file.index()].module,
+            index.interner.resolve(s.name)
+        )
+    };
 
-    let started = std::time::Instant::now();
-    let facts: Vec<_> = files
-        .par_iter()
+    let matches: Vec<trellis_core::SymbolId> = index
+        .symbols
+        .iter()
         .enumerate()
-        .filter_map(|(i, path)| {
-            let src = std::fs::read_to_string(path).ok()?;
-            Some(trellis_index::parse::collect(
-                &src,
-                trellis_core::FileId::from_index(i),
-            ))
+        .filter(|(_, s)| {
+            let q = qualified(s);
+            q == query
+                || q.ends_with(&format!(".{query}"))
+                || index.interner.resolve(s.name) == query
         })
+        .map(|(i, _)| trellis_core::SymbolId::from_index(i))
         .collect();
 
-    let defs: usize = facts.iter().map(|f| f.defs.len()).sum();
-    let imports: usize = facts.iter().map(|f| f.imports.len()).sum();
-    let sites: usize = facts.iter().map(|f| f.call_sites.len()).sum();
-    let decorated: usize = facts
-        .iter()
-        .flat_map(|f| &f.defs)
-        .filter(|d| !d.decorators.is_empty())
-        .count();
-    let star: usize = facts
-        .iter()
-        .flat_map(|f| &f.imports)
-        .filter(|i| i.is_star)
-        .count();
-    let dynamic: usize = facts
-        .iter()
-        .flat_map(|f| &f.call_sites)
-        .filter(|c| matches!(c.shape, trellis_index::CalleeShape::Dynamic))
-        .count();
+    match matches.len() {
+        0 => anyhow::bail!(
+            "no first-party definition matches `{query}`. \
+             Note that only definitions inside the repository root are indexed."
+        ),
+        1 => {}
+        n => {
+            eprintln!("`{query}` matches {n} definitions:");
+            for &m in &matches {
+                let s = &index.symbols[m.index()];
+                eprintln!(
+                    "  {}  ({}, byte {})",
+                    qualified(s),
+                    index.files[s.file.index()].path,
+                    s.span.0
+                );
+            }
+            anyhow::bail!("ambiguous symbol: qualify it further");
+        }
+    }
 
-    println!("parsed {} files in {:?}", files.len(), started.elapsed());
-    println!("  definitions:     {defs} ({decorated} decorated)");
-    println!("  imports:         {imports} ({star} star imports)");
-    println!("  call sites:      {sites} ({dynamic} syntactically dynamic)");
+    let target = matches[0];
+    let report = trellis_index::radius::blast_radius(&index, target);
+    let s = &index.symbols[target.index()];
+
+    println!("{}  ({})", qualified(s), index.files[s.file.index()].path);
+    println!();
+    println!("  reached by {} call sites", report.site_count());
+    println!("    verified-resolved  {:>6}", report.certain.len());
+    println!(
+        "    ambiguous          {:>6}  one of several, none chosen",
+        report.ambiguous.len()
+    );
+    println!("  transitive symbols   {:>6}", report.symbols.len());
+    println!();
+
+    // S2: every consumer reads coverage alongside the radius, and the
+    // unresolved figure here is the over-approximation from the files this
+    // radius touches — see `radius::add_touched_file_misses`.
+    println!("coverage");
+    println!("  {}", report.coverage.summary());
+    if report.coverage.unresolved > 0 {
+        println!();
+        println!(
+            "  {} call sites in the files this radius touches could not be bound.",
+            report.coverage.unresolved
+        );
+        println!("  Any of them may also reach this symbol. Breakdown:");
+        let mut reasons: Vec<_> = report.coverage.by_reason.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        for (reason, n) in reasons {
+            println!("      {reason:<24} {n:>6}");
+        }
+    }
     println!();
     println!(
-        "Resolution is not implemented yet (milestone v0.1), so no coverage figure \
-         is reported.\nCounts above are Pass 1 only."
+        "  partitionable: {}  {}",
+        report.partitionable,
+        if report.partitionable {
+            "(every edge involved was resolved)"
+        } else {
+            "(reached through an uncertain edge; must not be split across agents — S19)"
+        }
+    );
+    println!();
+    println!(
+        "This is not a complete list of callers. Roughly three call edges in ten are \
+         statically\ninvisible in Python (Constraint 1); the unresolved count above is \
+         what we know we missed."
+    );
+    Ok(())
+}
+
+/// Builds the whole index and reports coverage.
+///
+/// The coverage line is the product's honesty mechanism, so it is printed
+/// every time and never abbreviated to a bare "complete". `resolved` is the
+/// only figure that carries a blast-radius claim; `ambiguous` and
+/// `unresolved` are the cost the user is asked to read.
+fn cmd_index(root: &Path) -> Result<()> {
+    let started = std::time::Instant::now();
+    let index = trellis_index::build(root);
+    let elapsed = started.elapsed();
+
+    let c = &index.coverage;
+    println!("indexed {} files in {:?}", index.files.len(), elapsed);
+    println!("  definitions:     {}", index.symbols.len());
+    println!("  call sites:      {}", index.sites.len());
+    println!("  first-party:     {} (the recall denominator)", c.total());
+    println!(
+        "  external:        {} (excluded: stdlib, site-packages)",
+        c.external
+    );
+    println!();
+    println!("{}", c.summary());
+
+    if let Some(f) = c.resolved_fraction() {
+        println!();
+        println!("  resolved         {:>6} ({:>5.1}%)", c.resolved, f * 100.0);
+        let pct = |n: u32| f64::from(n) / f64::from(c.total()) * 100.0;
+        println!(
+            "  ambiguous        {:>6} ({:>5.1}%)  known finite set, none chosen",
+            c.candidates,
+            pct(c.candidates)
+        );
+        println!(
+            "  unresolved       {:>6} ({:>5.1}%)",
+            c.unresolved,
+            pct(c.unresolved)
+        );
+        let mut reasons: Vec<_> = c.by_reason.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        for (reason, n) in reasons {
+            println!("      {reason:<24} {n:>6} ({:>5.1}%)", pct(*n));
+        }
+
+        // BENCHMARK_AND_EVAL.md §2: a pooled figure hides the case that
+        // matters. `Name` and `Attribute` have different fallback decisions.
+        println!();
+        println!("by callee shape");
+        println!(
+            "  {:<12} {:>8} {:>10} {:>10} {:>10}",
+            "shape", "bound", "of 1st-party", "unresolved", "external"
+        );
+        for (shape, sc) in &index.by_shape {
+            let bound = sc.resolved_fraction().map_or_else(
+                || "     n/a".to_string(),
+                |v| format!("{:>7.1}%", v * 100.0),
+            );
+            println!(
+                "  {:<12} {:>8} {:>10} {:>10} {:>10}",
+                shape,
+                bound,
+                sc.total(),
+                sc.unresolved,
+                sc.external
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "Recall is measured over call sites whose true callee is first-party \
+         (BENCHMARK_AND_EVAL.md §2).\nThe figure above is what the resolver bound, \
+         not a verified recall figure: it counts\nagreement with itself. Only the \
+         hand-audited sample measures recall."
     );
     Ok(())
 }

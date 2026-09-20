@@ -15,6 +15,17 @@ pub struct Coverage {
     pub resolved: u32,
     pub candidates: u32,
     pub unresolved: u32,
+    /// Call sites whose callee is provably *not* first-party — `os.path.join`,
+    /// `len`, anything reached through an import that resolves outside the
+    /// repository root.
+    ///
+    /// Deliberately **not** part of `total()`. Pass 2 discards third-party
+    /// names by design, so counting them as misses would understate recall by
+    /// roughly the third-party share of all calls, which is large.
+    /// `BENCHMARK_AND_EVAL.md` §2 defines recall over call sites whose true
+    /// callee is first-party; this field is that exclusion, made auditable
+    /// rather than assumed.
+    pub external: u32,
     /// Distribution over `Reason`, instrumented from day one because it is
     /// the input to the v0.1 gate and to the S1 fallback decision.
     /// `BTreeMap` for deterministic ordering in snapshots and trail output.
@@ -50,6 +61,24 @@ impl Coverage {
         *self.by_reason.entry(format!("{r:?}")).or_insert(0) += 1;
     }
 
+    /// Records a call site excluded from the denominator because its callee
+    /// is not first-party.
+    pub fn record_external(&mut self) {
+        self.external += 1;
+    }
+
+    /// Folds another coverage into this one. Used to aggregate per-file
+    /// resolution into a repository figure.
+    pub fn merge(&mut self, other: &Coverage) {
+        self.resolved += other.resolved;
+        self.candidates += other.candidates;
+        self.unresolved += other.unresolved;
+        self.external += other.external;
+        for (k, v) in &other.by_reason {
+            *self.by_reason.entry(k.clone()).or_insert(0) += v;
+        }
+    }
+
     /// One line, honest, for the CLI and the trail.
     ///
     /// Never emits a bare "complete": a tool that confidently reports a
@@ -58,12 +87,14 @@ impl Coverage {
         match self.resolved_fraction() {
             None => "no call sites examined".to_string(),
             Some(f) => format!(
-                "{} of {} call sites resolved ({:.1}%); {} ambiguous, {} unresolved",
+                "{} of {} first-party call sites resolved ({:.1}%); \
+                 {} ambiguous, {} unresolved; {} external (excluded)",
                 self.resolved,
                 self.total(),
                 f * 100.0,
                 self.candidates,
                 self.unresolved,
+                self.external,
             ),
         }
     }
@@ -95,5 +126,41 @@ mod tests {
         assert_eq!(c.by_reason["DecoratorIndirection"], 2);
         assert_eq!(c.by_reason["StarImport"], 1);
         assert!(c.summary().contains("2 of 6"));
+    }
+
+    #[test]
+    fn external_sites_stay_out_of_the_denominator() {
+        let mut c = Coverage::default();
+        c.record_resolved();
+        c.record_unresolved(Reason::MethodDispatchUntyped);
+        for _ in 0..50 {
+            c.record_external();
+        }
+
+        // Recall is defined over call sites whose true callee is first-party.
+        // 50 calls into the standard library must not move it.
+        assert_eq!(c.total(), 2);
+        assert_eq!(c.resolved_fraction(), Some(0.5));
+        assert!(c.summary().contains("50 external"));
+    }
+
+    #[test]
+    fn merge_folds_counts_and_reasons() {
+        let mut a = Coverage::default();
+        a.record_resolved();
+        a.record_unresolved(Reason::LocalBinding);
+        a.record_external();
+
+        let mut b = Coverage::default();
+        b.record_resolved();
+        b.record_unresolved(Reason::LocalBinding);
+        b.record_unresolved(Reason::UnboundName);
+
+        a.merge(&b);
+        assert_eq!(a.resolved, 2);
+        assert_eq!(a.unresolved, 3);
+        assert_eq!(a.external, 1);
+        assert_eq!(a.by_reason["LocalBinding"], 2);
+        assert_eq!(a.by_reason["UnboundName"], 1);
     }
 }

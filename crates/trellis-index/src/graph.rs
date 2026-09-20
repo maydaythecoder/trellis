@@ -30,6 +30,22 @@ pub enum Reason {
     ReexportUnfollowed,
     /// A binding shadowed in a way the resolver cannot disambiguate.
     ShadowedAmbiguous,
+    /// The callee names a parameter or local variable, so the true callee is
+    /// whatever was passed in. `def f(cb): cb()`.
+    ///
+    /// Added deliberately (ADR 0002 keeps the enum closed so that additions
+    /// are considered). Binding these is what stops the resolver inventing an
+    /// edge to any module-level definition that happens to share the name —
+    /// an unsound `Resolved` edge, which the v1.0 gate forbids outright. The
+    /// true callee is frequently first-party, so this is an honest miss and
+    /// counts against recall rather than being excluded.
+    LocalBinding,
+    /// The name is bound nowhere the resolver can see, and is not a builtin.
+    ///
+    /// Counted as a miss rather than as external, which understates recall.
+    /// That is the honest direction: the alternative silently discards the
+    /// resolver's own blind spots from its own denominator.
+    UnboundName,
 }
 
 /// What a call site resolved to.
@@ -123,6 +139,21 @@ pub struct Index {
     /// symbol -> indices into `edges` for calls that reach that symbol.
     reverse: Vec<SmallVec<[u32; 4]>>,
     pub interner: Interner,
+    /// Repository-wide coverage, computed during the bind step.
+    ///
+    /// Held on the index rather than recomputed from `edges` because the
+    /// external count cannot be recovered from them: an external call site
+    /// deliberately produces no edge, so `edges` *is* the recall denominator
+    /// and the exclusions live here. Closes OPEN_QUESTIONS Q-13 for the
+    /// repository-wide figure.
+    pub coverage: crate::coverage::Coverage,
+    /// Coverage split by callee shape (`Name`, `Attribute`, `Dynamic`).
+    ///
+    /// Required by `BENCHMARK_AND_EVAL.md` §2: a single pooled figure hides
+    /// the case that matters. A resolver at 95% on `Name` and 20% on
+    /// `Attribute` has a very different fallback decision from one that is
+    /// uniformly 75%, and only the split distinguishes them.
+    pub by_shape: std::collections::BTreeMap<String, crate::coverage::Coverage>,
 }
 
 impl Index {

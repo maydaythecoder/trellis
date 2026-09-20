@@ -5,3 +5,6 @@
 # See docs/ADRs/0007-trail-format.md.
 .trellis/index.bin
 .trellis/work/
+
+# Benchmark corpora: cloned, pinned by SHA in docs/BENCHMARK_AND_EVAL.md.
+.bench/

@@ -84,21 +84,13 @@ pub fn blast_radius(index: &Index, root: SymbolId) -> RadiusReport {
                         certain: false,
                     });
                 }
-                // WARNING — this arm is unreachable, and that is a gap, not
-                // a nicety. An unresolved edge names no target, so it never
-                // enters `reverse`, so a reverse walk never sees one.
-                // Consequently `coverage.unresolved` from this walk is always
-                // zero and `all_edges_certain()`'s unresolved check is
-                // vacuous.
-                //
-                // That is precisely backwards from what S2 requires: the
-                // radius is the place a user reads coverage, and it currently
-                // cannot report the misses. Before the resolver lands, the
-                // radius must take its unresolved count from the *files and
-                // modules the radius touches* — unresolved call sites in
-                // those files are the ones that might have reached this
-                // symbol — not from this traversal. See OPEN_QUESTIONS.md
-                // Q-13. Do not delete this arm to silence the warning.
+                // Structurally unreachable: an unresolved edge names no
+                // target, so it never enters `reverse`. The unresolved count
+                // is therefore taken from the files the radius touches, after
+                // the walk — see `add_touched_file_misses` below, which is
+                // what closes OPEN_QUESTIONS Q-13. The arm stays because
+                // `Target` is the authority on what an edge can be, and a
+                // wildcard here would silently absorb a future variant.
                 crate::graph::Target::Unresolved(r) => {
                     report.coverage.record_unresolved(*r);
                     report.partitionable = false;
@@ -126,7 +118,47 @@ pub fn blast_radius(index: &Index, root: SymbolId) -> RadiusReport {
         v.sort_unstable();
         v
     };
+
+    add_touched_file_misses(index, &mut report);
     report
+}
+
+/// Adds the unresolved call sites in the files this radius touches.
+///
+/// Closes OPEN_QUESTIONS Q-13. The reverse walk cannot see an unresolved
+/// edge — such an edge names no target, so it never enters `reverse` — which
+/// left the radius reporting zero misses no matter how incomplete it was.
+/// That is exactly backwards from what S2 requires, because the radius is
+/// where the user reads coverage.
+///
+/// The honest substitute: an unresolved call site *in a file the radius
+/// already touches* is a site that might have reached this symbol and that we
+/// could not bind. It is an over-approximation — some of those calls go
+/// elsewhere entirely — and over-approximating the doubt is the safe
+/// direction. Under-reporting it is how a tool produces a blast radius
+/// missing the thing that breaks.
+fn add_touched_file_misses(index: &Index, report: &mut RadiusReport) {
+    use crate::graph::Target;
+
+    let mut touched: HashSet<trellis_core::FileId> = HashSet::new();
+    touched.insert(index.symbols[report.root.index()].file);
+    for s in &report.symbols {
+        touched.insert(index.symbols[s.index()].file);
+    }
+    for e in report.certain.iter().chain(&report.ambiguous) {
+        touched.insert(index.sites[e.site.index()].file);
+    }
+
+    for edge in &index.edges {
+        if let Target::Unresolved(r) = &edge.target
+            && touched.contains(&index.sites[edge.from.index()].file)
+        {
+            report.coverage.record_unresolved(*r);
+            // An unbindable call in a file this radius touches means the
+            // radius cannot be trusted to be disjoint from another (S19).
+            report.partitionable = false;
+        }
+    }
 }
 
 /// Records that a call site could not be bound, for the coverage figures

@@ -7,8 +7,10 @@ pub mod coverage;
 pub mod graph;
 pub mod parse;
 pub mod radius;
+pub mod resolve;
 
 pub use coverage::Coverage;
 pub use graph::{CallSiteEntry, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target};
-pub use parse::{CallFact, CalleeShape, DefFact, FileFacts, ImportFact};
+pub use parse::{BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact};
 pub use radius::RadiusReport;
+pub use resolve::{build, build_from_sources, discover, module_path_of};

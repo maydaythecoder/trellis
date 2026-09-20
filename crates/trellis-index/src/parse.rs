@@ -59,12 +59,32 @@ pub struct CallFact {
     pub scope: Vec<String>,
 }
 
+/// A non-definition name binding: a parameter, an assignment target, a loop
+/// variable, a `with`/`except` alias, a comprehension variable.
+///
+/// These exist for soundness, not for reach. Without them
+/// `def f(callback): callback()` binds `callback` to any module-level
+/// definition of that name, which is an unsound `Resolved` edge — precisely
+/// what the v1.0 gate forbids. A call whose name hits one of these is
+/// reported `Unresolved(LocalBinding)`: the true callee is whatever was
+/// passed in, which may well be first-party, so it is an honest miss rather
+/// than an exclusion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingFact {
+    pub name: String,
+    /// The scope chain the binding is visible in. Python scopes at function
+    /// granularity, not block, so a binding anywhere in a function body is
+    /// recorded against that function.
+    pub scope: Vec<String>,
+}
+
 /// Everything Pass 1 extracts from one file.
 #[derive(Debug, Clone, Default)]
 pub struct FileFacts {
     pub defs: Vec<DefFact>,
     pub imports: Vec<ImportFact>,
     pub call_sites: Vec<CallFact>,
+    pub bindings: Vec<BindingFact>,
 }
 
 /// Builds a Python parser.
@@ -127,6 +147,11 @@ fn walk(node: tree_sitter::Node<'_>, src: &str, scope: &mut Vec<String>, out: &m
                 });
 
                 scope.push(name);
+                // Parameters bind inside the function, so they are collected
+                // after the scope is pushed.
+                if let Some(params) = child.child_by_field_name("parameters") {
+                    collect_params(params, src, scope, out);
+                }
                 walk(child, src, scope, out);
                 scope.pop();
             }
@@ -142,7 +167,101 @@ fn walk(node: tree_sitter::Node<'_>, src: &str, scope: &mut Vec<String>, out: &m
                 // Arguments frequently contain further calls: f(g(x)).
                 walk(child, src, scope, out);
             }
+            "assignment" | "augmented_assignment" => {
+                if let Some(l) = child.child_by_field_name("left") {
+                    collect_bound_names(l, src, scope, out);
+                }
+                walk(child, src, scope, out);
+            }
+            "for_statement" | "for_in_clause" => {
+                if let Some(l) = child.child_by_field_name("left") {
+                    collect_bound_names(l, src, scope, out);
+                }
+                walk(child, src, scope, out);
+            }
+            // `with x as y`, `except E as e`, `match ... as p`.
+            "as_pattern" => {
+                let alias = child.child_by_field_name("alias").or_else(|| {
+                    let n = u32::try_from(child.named_child_count()).unwrap_or(0);
+                    child.named_child(n.saturating_sub(1))
+                });
+                if let Some(a) = alias {
+                    collect_bound_names(a, src, scope, out);
+                }
+                walk(child, src, scope, out);
+            }
+            // The walrus operator binds in the enclosing scope.
+            "named_expression" => {
+                if let Some(n) = child.child_by_field_name("name") {
+                    collect_bound_names(n, src, scope, out);
+                }
+                walk(child, src, scope, out);
+            }
+            // A lambda's parameters shadow within its body. Recording them
+            // against the enclosing function is conservative — it can only
+            // suppress a resolution, never invent one.
+            "lambda" => {
+                if let Some(p) = child.child_by_field_name("parameters") {
+                    collect_params(p, src, scope, out);
+                }
+                walk(child, src, scope, out);
+            }
             _ => walk(child, src, scope, out),
+        }
+    }
+}
+
+/// Records identifiers bound by an assignment or loop target.
+///
+/// Deliberately skips `attribute` and `subscript` targets: `self.x = 1`
+/// binds an attribute, not the local name `x`, and recording `x` would
+/// shadow a real definition and cost recall for no soundness gain.
+fn collect_bound_names(
+    node: tree_sitter::Node<'_>,
+    src: &str,
+    scope: &[String],
+    out: &mut FileFacts,
+) {
+    match node.kind() {
+        "identifier" => out.bindings.push(BindingFact {
+            name: text(node, src).to_string(),
+            scope: scope.to_vec(),
+        }),
+        // Binds a field of something else, not a name in this scope.
+        "attribute" | "subscript" => {}
+        _ => {
+            let mut cursor = node.walk();
+            for c in node.named_children(&mut cursor) {
+                collect_bound_names(c, src, scope, out);
+            }
+        }
+    }
+}
+
+/// Records parameter names, without descending into type annotations or
+/// default-value expressions — `def f(x: Handler = default)` binds `x`, and
+/// collecting `Handler` or `default` would shadow real definitions.
+fn collect_params(params: tree_sitter::Node<'_>, src: &str, scope: &[String], out: &mut FileFacts) {
+    let mut cursor = params.walk();
+    for p in params.named_children(&mut cursor) {
+        match p.kind() {
+            "identifier" => out.bindings.push(BindingFact {
+                name: text(p, src).to_string(),
+                scope: scope.to_vec(),
+            }),
+            // `x: int`, `x = 1`, `x: int = 1` — the name is the `name` field
+            // or the first child; the rest is annotation or default.
+            "typed_parameter" | "default_parameter" | "typed_default_parameter" => {
+                if let Some(n) = p.child_by_field_name("name").or_else(|| p.named_child(0)) {
+                    collect_bound_names(n, src, scope, out);
+                }
+            }
+            // `*args`, `**kwargs`.
+            "list_splat_pattern" | "dictionary_splat_pattern" => {
+                collect_bound_names(p, src, scope, out);
+            }
+            // Bare `*` and `/` markers carry no name.
+            _ => {}
         }
     }
 }
