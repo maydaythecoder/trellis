@@ -337,7 +337,7 @@ fn render(call: &ToolCall, r: &ToolResult) -> String {
                 d.kind,
                 if v.passed() { "passed" } else { "FAILED" },
                 d.command,
-                unrun_note(call, d.kind),
+                format!("{}{}", scope_note(call), unrun_note(call, d.kind)),
                 tail(&d.stdout, 40)
             )
         }
@@ -362,6 +362,33 @@ fn render(call: &ToolCall, r: &ToolResult) -> String {
 /// (ADR 0004). Adding a test-only constructor there would widen the seal that
 /// makes Constraint 2 structural — so the logic comes out to meet the test
 /// instead of the seal opening to meet the logic.
+/// Says what a pathless check actually checked.
+///
+/// `paths` defaults to empty in the wire schema, and an empty argv means the
+/// checker picks its own scope — for mypy, the whole repository. On a corpus
+/// with pre-existing errors that returns a wall of failures from files the
+/// task never mentioned, and the observation gave no hint that this had
+/// happened: it looked exactly like a report about the model's own change.
+///
+/// Measured, not assumed. In the first S7 floor run the model opened every
+/// task with `RunChecks { paths: [] }`, read the tail of the repository-wide
+/// output, and edited a file named there instead of the one the task named.
+/// Choosing not to pass the path is the model's error and is counted as one.
+/// Leaving it unable to tell that its own error is what happened is ours.
+fn scope_note(call: &ToolCall) -> String {
+    match call {
+        ToolCall::RunChecks { paths, .. } if paths.is_empty() => concat!(
+            "
+SCOPE: no paths were given, so this checked whatever the ",
+            "checker picks by default — usually the whole repository, ",
+            "including failures that were already there and are not yours. ",
+            "Pass `paths` to check only the files the task names."
+        )
+        .to_string(),
+        _ => String::new(),
+    }
+}
+
 fn unrun_note(call: &ToolCall, ran: trellis_checks::CheckKind) -> String {
     let ToolCall::RunChecks { kinds, .. } = call else {
         return String::new();
@@ -523,6 +550,59 @@ mod tests {
             obs.contains("files this radius touches"),
             "the doubt count is meaningless without the scale it ranges over: {obs}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_pathless_check_says_what_it_actually_checked() {
+        // S7, first floor run: the model opened every task with
+        // `RunChecks { paths: [] }`, which for mypy means the whole
+        // repository. On a corpus with pre-existing errors that returns
+        // failures from files the task never mentioned, and the observation
+        // read exactly like a report about the model's own change — so the
+        // model edited a file it saw in that output instead of the one named
+        // in the task.
+        //
+        // Passing no path is the model's error. Not being able to tell that
+        // is the harness's, and this is the line that fixes it.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::RunChecks {
+                paths: vec![],
+                kinds: vec![trellis_checks::CheckKind::Import],
+            }),
+            Step::Done {
+                summary: "done".into(),
+            },
+        ]);
+
+        let (_, t) = run("task", &mut m, &h, &budget()).await;
+        let obs = &t.turns[0].observation;
+        assert!(obs.contains("SCOPE:"), "{obs}");
+        assert!(
+            obs.contains("already there and are not yours"),
+            "the note has to name the failure mode, not merely mention scope: {obs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_check_with_paths_carries_no_scope_note() {
+        // The note must not become background noise on every check, or it
+        // stops being read on the one call where it matters.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![trellis_checks::CheckKind::Import],
+            }),
+            Step::Done {
+                summary: "done".into(),
+            },
+        ]);
+
+        let (_, t) = run("task", &mut m, &h, &budget()).await;
+        assert!(!t.turns[0].observation.contains("SCOPE:"));
     }
 
     #[tokio::test]
