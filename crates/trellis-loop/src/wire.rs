@@ -82,9 +82,32 @@ impl ToolCallWire {
     }
 
     /// The JSON Schema a constrained runtime is given.
+    ///
+    /// Carries `x-guidance: { whitespace_flexible: false }`, which is not
+    /// cosmetic. JSON permits arbitrary whitespace between tokens, so a
+    /// schema-constrained model is free to emit spaces forever and still be
+    /// producing valid JSON — the grammar has no reason to stop it.
+    ///
+    /// Measured on a 0.5B under greedy sampling: asked for one boolean field,
+    /// it opened the object, emitted the key, and then produced 35 consecutive
+    /// spaces until the token budget ran out. With flexible whitespace off it
+    /// produced a complete object in 13 tokens. The difference is not
+    /// marginal, and the failure is the kind that looks like a bad model
+    /// rather than a bad grammar.
+    ///
+    /// `x-guidance` is read by llguidance itself, which is the grammar engine
+    /// inside llama.cpp, vLLM and SGLang — so this travels with the schema and
+    /// applies on tier 2, not only where TRELLIS owns the sampler.
     pub fn schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(ToolCallWire))
-            .expect("a derived schema is always serializable")
+        let mut s = serde_json::to_value(schemars::schema_for!(ToolCallWire))
+            .expect("a derived schema is always serializable");
+        if let Some(obj) = s.as_object_mut() {
+            obj.insert(
+                "x-guidance".into(),
+                serde_json::json!({ "whitespace_flexible": false }),
+            );
+        }
+        s
     }
 }
 
@@ -100,6 +123,18 @@ mod tests {
         for tool in ["blast_radius", "read_file", "edit", "run_checks", "done"] {
             assert!(s.contains(tool), "schema omits `{tool}`: {s}");
         }
+    }
+
+    #[test]
+    fn the_schema_forbids_flexible_whitespace() {
+        // Without this a constrained weak model can emit spaces until its
+        // token budget runs out and never reach a value, which reads as a
+        // model failure and is a grammar one.
+        let s = ToolCallWire::schema();
+        assert_eq!(
+            s["x-guidance"]["whitespace_flexible"],
+            serde_json::json!(false)
+        );
     }
 
     #[test]

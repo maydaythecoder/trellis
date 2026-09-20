@@ -238,6 +238,11 @@ impl RuntimeClient {
     pub async fn probe_constraint(&self) -> Result<bool, RuntimeError> {
         let schema = json!({
             "type": "object",
+            // Without this the probe measures whitespace patience rather than
+            // schema support: JSON allows unlimited spaces, and a weak model
+            // will fill the token budget with them before reaching a value.
+            // See `ToolCallWire::schema`.
+            "x-guidance": { "whitespace_flexible": false },
             "properties": { "trellis_probe_ok": { "type": "boolean" } },
             "required": ["trellis_probe_ok"],
             "additionalProperties": false
