@@ -180,6 +180,25 @@ and whether it is first-party. Sites with a third-party callee are excluded
 from the denominator and counted separately, so the exclusion is auditable
 rather than assumed.
 
+**The resolver applies the same definition, and until 2026-09-20 it did not.**
+`typed_receiver` recorded a receiver whose stated type was not a first-party
+class as `MethodDispatchUntyped` — a first-party miss. So `def go(val: str):
+val.lower()` counted against recall, although the source states the receiver is
+a `str` and the callee is a standard-library method. ADR 0015 corrected it: a
+site leaves the denominator when its type is *demonstrably* not first-party (a
+builtin nothing shadows, or a name whose every binding resolves outside the
+root), and a type the resolver merely fails to resolve stays a miss.
+
+That asymmetry is what keeps this figure falsifiable. If failure to resolve
+were an exclusion, every resolver gap would remove itself from its own
+denominator and recall could only rise.
+
+**A wrong exclusion is invisible to everything except this audit.** An excluded
+site emits no edge, so `examples/check_soundness.rs` cannot see one, and the
+repository-wide report cannot count what it has excluded from itself. That is
+why `audit_score` reports **wrongly excluded** as a first-class figure: sites
+dropped as external that the auditor found first-party. Recorded as S21.
+
 ### Definitions
 
 - **Recall** = (sites where `Resolved` names the true callee) / (sites whose
@@ -195,47 +214,86 @@ rather than assumed.
 
 ### What the resolver bound, which is **not** recall
 
-Measured 2026-09-19 on the pinned corpus. Read the caveat before the numbers.
+Measured 2026-09-20 on the pinned corpus, after ADR 0012 (receiver typing) and
+ADR 0015 (the denominator correction). Read the caveat before the numbers.
 
 | | sites | bound | share |
 |---|---|---|---|
-| **all first-party** | 15,707 | 4,443 | **28.3%** |
-| `Name` shape | 4,072 | 3,510 | **86.2%** |
-| `Attribute` shape | 11,613 | 933 | **8.0%** |
+| **all first-party** | 13,510 | 5,908 | **43.7%** |
+| `Name` shape | 4,072 | 3,472 | **85.3%** |
+| `Attribute` shape | 9,416 | 2,436 | **25.9%** |
 | `Dynamic` shape | 22 | 0 | 0% |
 
-Unresolved reasons, over the 11,233 unresolved sites: `MethodDispatchUntyped`
-10,646 (67.8% of first-party sites), `LocalBinding` 558 (3.6%),
-`DynamicAttribute` 22, `DecoratorIndirection` 3, `StarImport` 2,
-`UnboundName` 2. Ambiguous: 31.
+Unresolved reasons, over the 6,737 unresolved sites: `MethodDispatchUntyped`
+6,090, `LocalBinding` 558, `DecoratorIndirection` 63, `DynamicAttribute` 22,
+`StarImport` 2, `UnboundName` 2. Ambiguous: 865. Excluded as external: 8,284.
+
+**Two corrections are folded into that table, and neither is a recall
+improvement in the same sense.**
+
+ADR 0012's receiver typing genuinely resolved more sites: `Attribute` binding
+rose because annotations and constructor assignments now type receivers.
+
+ADR 0015 changed the *denominator*, not the numerator. It moved 15,707 to
+13,510 while `resolved` stayed at 5,908 — **not one additional call site became
+resolvable**. Quoting 37.6% → 43.7% without that sentence describes an
+improvement that did not happen.
+
+| | before ADR 0015 | after |
+|---|---|---|
+| Denominator | 15,707 | 13,510 |
+| Excluded as external | 6,087 | 8,284 |
+| **Resolved** | **5,908** | **5,908** |
+| Bound | 37.6% | 43.7% |
 
 **This figure is a lower bound on recall and must not be compared to the §3
 thresholds.** Recall is defined over call sites whose *true callee* is
 first-party. The resolver cannot tell whether `logger.info()` or
 `session.query()` ends up in the standard library, so it counts every
-unknown-receiver call as a miss — including the many whose true callee §2
-excludes from the denominator outright. The 28.3% therefore understates recall
-by however large that share turns out to be, and only the audit can say. This
-is recorded as A-30.
+unknown-receiver call as a miss whenever it cannot show otherwise. ADR 0015
+removed the cases where it *can* show otherwise; what remains is every call on
+a receiver whose type is simply unknown, and some unknown share of those are
+third-party. The 43.7% therefore still understates recall, and only the audit
+can say by how much. This is recorded as A-30.
 
 Two observations that do not depend on the audit:
 
-1. **The loss is almost entirely in `Attribute`.** `Name` binds at 86.2%;
-   `Attribute` at 8.0% while carrying 74% of all first-party sites. A pooled
+1. **The loss is almost entirely in `Attribute`.** `Name` binds at 85.3%;
+   `Attribute` at 25.9% while carrying 70% of all first-party sites. A pooled
    figure would have hidden this completely, which is why §2 requires the
    split.
 2. **The brief's prediction about decorators did not hold.** It expected
-   `DecoratorIndirection` to dominate the misses. It is 3 sites out of 11,233.
+   `DecoratorIndirection` to dominate the misses. It is 63 sites out of 6,737.
    The dominant reason is `MethodDispatchUntyped` — unknown receiver types —
-   by three orders of magnitude. If a semantic backstop is adopted under S1,
+   by two orders of magnitude. If a semantic backstop is adopted under S1,
    this says it must be a *type inference* for receivers, not the decorator
    unwrapping the brief anticipated.
 
-Counted directly in the corpus for scale: only 1,052 of the 11,613 first-party
+Counted directly in the corpus for scale: only 1,052 of the first-party
 `Attribute` sites are direct `self.x(...)` calls. Following base classes to
 resolve inherited `self` dispatch — the obvious next resolver feature — can
-therefore address at most about 9% of the `Attribute` gap, and is not the
-lever it appears to be.
+therefore address a small share of the `Attribute` gap, and is not the lever
+it appears to be.
+
+**Two candidate backstops measured 2026-09-20 and rejected**, both of which the
+roadmap had expected to be the answer (`docs/bench/`):
+
+- **pytest fixture return types: already closed.** Parameter annotations have
+  been collected as type facts since ADR 0012. poetry annotates its fixture
+  parameters, so exactly **10** call sites in the corpus have an *unannotated*
+  test-function parameter as receiver, and none of those names a fixture.
+- **Return-type propagation: 67 sites.** One hop, both `f().m()` and
+  `x = f(); x.m()`, requiring the callee first-party and return-annotated, the
+  return type a first-party class, and the method present on it. Sixty-seven
+  sites is **0.4 percentage points**, against a rule whose every application is
+  a fresh chance to emit an unsound edge.
+
+Classifying every attribute-shaped call site by receiver shape
+(`docs/bench/receiver_shapes.py`) is what found ADR 0015's denominator error
+instead. The remaining bulk sits in `attribute chain (a.b.m())` (1,969 sites)
+and locals whose type is not derivable within one file (1,883) — both requiring
+cross-file type propagation, which is a larger commitment than anything
+attempted so far and has not been costed.
 
 > **These are the FIRST-measurement figures.** They fired the S16 pivot
 > trigger, which was then averted by the ADR 0012 backstop. For the
