@@ -228,19 +228,34 @@ until `max_tokens` ran out, and no grammar can bound a string's length.
   pathless check and the no-op edit. Both flattered a weak model into looking
   like it was progressing.
 
-### The A/B, running
+### The A/B: the harness was not the constraint
 
-The same configuration against the fixed harness. It is the only thing that
-separates "this model is below the floor" from "this harness withheld what it
-needed", and the conclusion is not entitled to the first reading without it.
+The same configuration against the harness carrying both fixes. It is the only
+thing separating "this model is below the floor" from "this harness withheld
+what it needed". Stopped by the host at task 9 for system memory pressure,
+which is unrelated to the run; reported at the size it reached.
 
-Under greedy decoding the readout is **per-task divergence, not the tally**:
-each task's first move is identical to run 1, so trajectories can only diverge
-after the first observation the fixes changed — the `SCOPE:` line, or the
-refusal of a no-op edit. If the model reads `SCOPE:` and then passes paths,
-the harness mattered. If it reads it and emits the same edit, the model is the
-constraint. The truncation-message change does not contaminate this: adapter
-retries are internal and that text never reaches the model's prompt.
+```
+8 of 9 trajectories byte-identical to run 1
+0 repaired, either run
+0 of 10 run_checks calls passed a path, after the SCOPE: line
+1 read_file call in 81 turns
+```
+
+The last two lines carry it. `SCOPE:` states in plain words that no paths were
+given, that the whole repository was checked, that pre-existing failures are
+not the model's, and that `paths` should name what the task names — and the
+task names its file in its first sentence. The model passed no path in any
+call, and read a file once in 81 turns.
+
+The single divergence, t04, diverged into more of the same: run 1 ended at
+three iterations on a format failure, run 2 spent all nine producing further
+`old == new` edits with control characters for path separators. The fix made
+the failure longer, not better, which is what a legible failure looks like
+when the thing failing is judgment.
+
+So the table above reads as a model result rather than a harness artefact —
+for *this* configuration, on 9 tasks. It says nothing about a stronger one.
 
 Cost on this rig: median 209 s per task, 9 turns each. Per-turn time grows
 through a run because the probe re-prefills the whole transcript every call —
