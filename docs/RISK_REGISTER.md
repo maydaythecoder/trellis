@@ -178,11 +178,29 @@ output into the context.
 Partial coverage will be routine, not exceptional. Whether that reads as honest
 or as useless is a UI question, and it is currently unanswered.
 
-**Failure scenario.** The tenth partial-coverage run in an hour. Each prints
-three unresolved call sites with reason codes. The user has stopped reading
-them, clicks through, and the mechanism that makes the product honest has become
-the mechanism that trains the user to ignore it. This is the most likely way
-the design fails in practice while every component works as specified.
+**Severity raised to critical on 2026-09-19, and the failure scenario below
+was written far too optimistically.**
+
+It assumed a partial-coverage run prints *three* unresolved call sites. With a
+working resolver the real number is measured, and it is not three. `trellis
+radius Factory` on the benchmark corpus reports **123 resolved call sites
+alongside 3,023 unresolved ones** in the files the radius touches. That is the
+honest report — S2 requires it and Q-13 exists because suppressing it was
+worse — and it is also not something a person can read.
+
+**Failure scenario, as originally written.** The tenth partial-coverage run in
+an hour. Each prints three unresolved call sites with reason codes. The user
+has stopped reading them, clicks through, and the mechanism that makes the
+product honest has become the mechanism that trains the user to ignore it.
+This is the most likely way the design fails in practice while every component
+works as specified.
+
+**Failure scenario, as measured.** The *first* run. 3,023 items is not a list
+a user skims and dismisses; it is a screen they close. The honesty mechanism
+does not erode over ten runs — it fails on contact. Whatever the outcome of the
+S1/S16 decision, this makes degradation UX a v0.3 blocker rather than the v1.x
+item the brief scheduled, because it is now load-bearing for whether the tool
+is usable at all. → `OPEN_QUESTIONS.md` Q-16.
 
 **Patch.** Design the tenth run, not the first. Specifically: aggregate
 repeated reasons across a session rather than re-reporting per run; make the
