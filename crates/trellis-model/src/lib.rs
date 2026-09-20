@@ -8,10 +8,12 @@
 //! inference code here at all. See `docs/adr/0013-inference-path.md`, which
 //! settled the question S17 left open.
 
+pub mod catalog;
 pub mod grammar;
 pub mod runtime;
 pub mod tier;
 
+pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
 pub use grammar::{GrammarError, ToolGrammar};
 pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use tier::{AdapterTier, BatchingCapability, Probe};

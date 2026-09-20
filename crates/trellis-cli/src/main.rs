@@ -111,6 +111,23 @@ enum Command {
 
     /// Dry run: show the partition plan and why.
     Partitions { task: String },
+
+    /// List, fetch, or locate the models TRELLIS knows about.
+    ///
+    /// Weights are fetched rather than bundled, and every catalogue entry is
+    /// Apache-2.0 or MIT so the default is usable for commercial work.
+    Model {
+        #[command(subcommand)]
+        action: Option<ModelAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelAction {
+    /// Download weights, resuming an interrupted fetch.
+    Pull { name: Option<String> },
+    /// Print where the weights live, fetched or not.
+    Path { name: Option<String> },
 }
 
 fn main() -> Result<()> {
@@ -160,6 +177,10 @@ fn main() -> Result<()> {
             resume,
         } => cmd_run(&root, &task, &model, unconstrained, &agents, resume),
         Command::Resume => cmd_resume(&root),
+        // Deliberately before the root is used for anything: models are user
+        // state, not repository state, and `trellis model` must work outside
+        // a repository.
+        Command::Model { action } => cmd_models(action),
         Command::Partitions { .. } => {
             anyhow::bail!(concat!(
                 "not implemented yet: `partitions` needs concurrent multi-agent ",
@@ -225,6 +246,165 @@ fn root_from(start: &Path) -> Option<PathBuf> {
         }
         dir = dir.parent()?;
     }
+}
+
+/// Where fetched weights live: user state, never the repository.
+///
+/// Same reasoning as the session's history file, and more forcefully — a 5.5 GB
+/// blob inside a git worktree would dirty it permanently, and a dirty worktree
+/// blocks every run.
+fn models_dir() -> Result<PathBuf> {
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
+    }
+    .context("no LOCALAPPDATA, XDG_DATA_HOME or HOME to put weights in")?;
+    Ok(base.join("trellis").join("models"))
+}
+
+/// The local path for a catalogue entry, downloaded or not.
+fn weights_path(e: &trellis_model::CatalogEntry) -> Result<PathBuf> {
+    Ok(models_dir()?.join(e.file))
+}
+
+fn cmd_models(action: Option<ModelAction>) -> Result<()> {
+    match action {
+        None => list_models(),
+        Some(ModelAction::Pull { name }) => pull_model(name.as_deref()),
+        Some(ModelAction::Path { name }) => {
+            let e = resolve(name.as_deref())?;
+            println!("{}", weights_path(e)?.display());
+            Ok(())
+        }
+    }
+}
+
+fn resolve(name: Option<&str>) -> Result<&'static trellis_model::CatalogEntry> {
+    let name = name.unwrap_or(trellis_model::DEFAULT);
+    trellis_model::catalog::find(name).ok_or_else(|| {
+        let known: Vec<&str> = trellis_model::CATALOG.iter().map(|e| e.name).collect();
+        anyhow::anyhow!("no model named `{name}`. Known: {}", known.join(", "))
+    })
+}
+
+fn list_models() -> Result<()> {
+    let dir = models_dir()?;
+    println!("weights in {}", dir.display());
+    println!();
+    for e in trellis_model::CATALOG {
+        let path = dir.join(e.file);
+        let have = std::fs::metadata(&path).ok().map(|m| m.len());
+        let state = match have {
+            Some(n) if n >= e.bytes => "downloaded".to_string(),
+            // A partial file is worth naming rather than hiding: on a slow
+            // link the difference between resuming and restarting is hours.
+            Some(n) => format!("partial {:.0}%", n as f64 / e.bytes as f64 * 100.0),
+            None => "not fetched".to_string(),
+        };
+        let marker = if e.name == trellis_model::DEFAULT {
+            " (default)"
+        } else {
+            ""
+        };
+        println!("  {}{}", e.name, marker);
+        println!(
+            "      {:.1} GiB download, ~{:.1} GB resident, {} — {}",
+            e.gib(),
+            e.resident_gb,
+            e.license,
+            state
+        );
+        println!("      {}", e.expectation);
+        println!();
+    }
+    println!("  trellis model pull [name]   fetch (resumable)");
+    println!("  trellis model path [name]   where it would live");
+    println!();
+    println!(
+        "{}",
+        concat!(
+            "Weights are fetched, never bundled: a multi-gigabyte payload inside ",
+            "the binary\nis not a distribution anyone wants. Every entry is ",
+            "Apache-2.0 or MIT, so the\ndefault is usable for commercial work."
+        )
+    );
+    Ok(())
+}
+
+fn pull_model(name: Option<&str>) -> Result<()> {
+    let e = resolve(name)?;
+    let dir = models_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(e.file);
+
+    let have = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if have >= e.bytes {
+        println!("{} is already here: {}", e.name, path.display());
+        return Ok(());
+    }
+
+    println!("{}  {}", e.name, e.license);
+    println!("  from {}", e.url());
+    println!("  to   {}", path.display());
+    if have > 0 {
+        println!(
+            "  resuming at {:.1} GiB of {:.1}",
+            have as f64 / 1_073_741_824.0,
+            e.gib()
+        );
+    } else {
+        println!("  {:.1} GiB", e.gib());
+    }
+    println!();
+
+    // curl rather than an HTTP client of our own, and `-C -` rather than a
+    // fresh GET. This is not laziness: fetching multi-gigabyte weights over a
+    // connection that drops is the normal case, and a range-resuming fetch
+    // that survives a hundred attempts is worth more here than avoiding a
+    // dependency on a binary every platform already ships.
+    let status = std::process::Command::new("curl")
+        .args([
+            "-L",
+            "-C",
+            "-",
+            "--retry",
+            "0",
+            "--fail",
+            "-o",
+            &path.display().to_string(),
+            &e.url(),
+        ])
+        .status()
+        .context("could not run curl; it is needed to fetch weights")?;
+
+    let now = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if now >= e.bytes {
+        println!();
+        println!("complete: {} bytes", now);
+        println!("serve it with llama.cpp, then:");
+        println!("  trellis run --model llamacpp:http://127.0.0.1:8080 \"<task>\"");
+        return Ok(());
+    }
+
+    // An incomplete download is not a failure to start over from. Saying so
+    // is the difference between a user re-fetching gigabytes and resuming.
+    anyhow::bail!(
+        "incomplete: {} of {} bytes ({:.0}%){}. \
+         Run the same command again to resume — the partial file is kept.",
+        now,
+        e.bytes,
+        now as f64 / e.bytes as f64 * 100.0,
+        if status.success() {
+            ""
+        } else {
+            ", and curl reported a failure"
+        }
+    )
 }
 
 /// What drives the loop this run.
