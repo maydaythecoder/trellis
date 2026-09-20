@@ -120,9 +120,23 @@ pub struct Probe {
     /// "unknown" is the honest answer before anything has been asked.
     pub tier: Option<AdapterTier>,
     pub batching: BatchingCapability,
-    /// Present only when the repository's configured checks were found.
-    pub typecheck_found: bool,
-    pub tests_found: bool,
+    /// The configured type checker's version, or `None` when it could not be
+    /// run at all.
+    ///
+    /// A version rather than a yes: `04-v1.0-harness.md` asks doctor to print
+    /// `pyright 1.1.x`, and the reason is diagnostic. "found" cannot
+    /// distinguish the checker the user configured from a different one
+    /// earlier on `PATH`, and a verdict is only as good as the process that
+    /// produced it.
+    pub typecheck: Option<String>,
+    pub tests: Option<String>,
+    /// Whether a coverage plugin is available to the test runner.
+    ///
+    /// Not required, and not a check TRELLIS runs. It is reported because
+    /// `Verified` versus `Reviewed` (S3) is the distinction the product turns
+    /// on, and without coverage data nothing can ever populate `Verified` —
+    /// so a user should know that before reading `0 verified` as a result.
+    pub coverage_available: bool,
 }
 
 impl Probe {
@@ -152,22 +166,38 @@ impl Probe {
                 .to_string(),
         });
 
-        out.push(format!(
-            "typecheck:  {}",
-            if self.typecheck_found {
-                "found"
-            } else {
-                "NOT FOUND — typecheck verdicts unavailable"
-            }
-        ));
-        out.push(format!(
-            "tests:      {}",
-            if self.tests_found {
-                "found"
-            } else {
-                "NOT FOUND — TRELLIS requires a test suite (v1 non-goal: repos without one)"
-            }
-        ));
+        // Every line that can be wrong says what to do about it. A diagnostic
+        // that reports a problem without a next step has only told the user
+        // they are stuck.
+        out.push(match &self.typecheck {
+            Some(v) => format!("typecheck:  {v}"),
+            None => concat!(
+                "typecheck:  NOT FOUND — no typecheck verdict can be produced, so no run ",
+                "can converge.
+",
+                "            Install it, or set [checks] typecheck in .trellis/config.toml ",
+                "to the command you use."
+            )
+            .to_string(),
+        });
+        out.push(match (&self.tests, self.coverage_available) {
+            (Some(v), true) => format!("tests:      {v}, coverage available"),
+            (Some(v), false) => format!(
+                concat!(
+                    "tests:      {}; no coverage plugin, so Verified stays 0 and ",
+                    "every covered\n            call reads as Reviewed (S3)"
+                ),
+                v
+            ),
+            (None, _) => concat!(
+                "tests:      NOT FOUND — the grounding contract has nothing to ground on.
+",
+                "            Install it, or set [checks] tests in .trellis/config.toml. A ",
+                "repository
+            without a test suite is a stated v1.0 non-goal."
+            )
+            .to_string(),
+        });
         out
     }
 }
@@ -182,8 +212,9 @@ mod tests {
             runtime: "not configured".into(),
             tier: None,
             batching: BatchingCapability::Unknown,
-            typecheck_found: true,
-            tests_found: true,
+            typecheck: Some("mypy 1.0".into()),
+            tests: Some("pytest 8.0".into()),
+            coverage_available: true,
         }
     }
 
@@ -257,6 +288,87 @@ mod tests {
                 .degradation()
                 .contains("retried"),
             "the doctor line must name what degrades, not reassure"
+        );
+    }
+
+    /// The seventh recurrence of the `cargo fmt` string-continuation defect
+    /// landed in this file, and was caught by reading terminal output rather
+    /// than by a test. Every other place it appeared got a local assertion;
+    /// this one covers the whole report at once.
+    ///
+    /// A backslash-continued literal that loses its escape folds the source
+    /// indentation into the string, leaving runs of spaces mid-sentence in
+    /// text a user reads while trying to work out why their run will not
+    /// start.
+    #[test]
+    fn no_report_line_carries_folded_indentation() {
+        let cases = [
+            Probe {
+                model_id: "m".into(),
+                runtime: "r".into(),
+                tier: Some(AdapterTier::ValidateAndRetry),
+                batching: BatchingCapability::SingleStream,
+                typecheck: Some("mypy 1.0".into()),
+                tests: Some("pytest 8.0".into()),
+                coverage_available: false,
+            },
+            Probe {
+                model_id: "m".into(),
+                runtime: "r".into(),
+                tier: None,
+                batching: BatchingCapability::Unknown,
+                typecheck: None,
+                tests: None,
+                coverage_available: true,
+            },
+        ];
+        for p in cases {
+            for line in p.report() {
+                for seg in line.lines() {
+                    // Past the label column. `model:      m` is deliberate
+                    // alignment; a run of spaces after that is the defect,
+                    // and so is one on an indented continuation line.
+                    let body = seg
+                        .split_once(':')
+                        .map_or(seg, |(_, rest)| rest)
+                        .trim_start();
+                    assert!(
+                        !body.contains("  "),
+                        "folded indentation in a user-facing line: {body:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every line that can be wrong has to say what to do about it.
+    ///
+    /// `04-v1.0-harness.md`: "Every line that can be wrong should say what to
+    /// do about it." A diagnostic that reports a problem and stops there has
+    /// only told the user they are stuck.
+    #[test]
+    fn a_missing_tool_says_what_to_do_about_it() {
+        let p = Probe {
+            model_id: "m".into(),
+            runtime: "r".into(),
+            tier: None,
+            batching: BatchingCapability::Unknown,
+            typecheck: None,
+            tests: None,
+            coverage_available: false,
+        };
+        let text = p.report().join(
+            "
+",
+        );
+        assert!(text.contains("NOT FOUND"), "{text}");
+        assert!(
+            text.contains(".trellis/config.toml"),
+            "a missing checker must name where to configure one: {text}"
+        );
+        assert!(
+            text.matches(".trellis/config.toml").count() >= 2,
+            "both the checker and the test runner need the remedy, not just              whichever is listed first: {text}"
         );
     }
 }

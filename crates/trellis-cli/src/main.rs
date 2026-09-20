@@ -850,10 +850,8 @@ fn cmd_run(
             // is the right trade for a figure that describes the tree the
             // user is about to look at.
             if !transcript.is_empty() {
-                let doubt = trellis_index::doubt_in_files(
-                    &trellis_index::build_cached(root),
-                    &transcript,
-                );
+                let doubt =
+                    trellis_index::doubt_in_files(&trellis_index::build_cached(root), &transcript);
                 if doubt.unbound > 0 {
                     println!("coverage: {}", doubt.one_line());
                     println!(
@@ -1452,7 +1450,8 @@ fn cmd_index(root: &Path) -> Result<()> {
 fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
-    let cfg = config::RepoConfig::load(root)?.checks();
+    let repo_cfg = config::RepoConfig::load(root)?;
+    let cfg = repo_cfg.checks();
 
     // Unknown until measured. Reporting an optimistic guess is the failure
     // S17 and S18 both describe: the user cannot tell tier 2 from tier 4, or
@@ -1543,11 +1542,16 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
         runtime,
         tier,
         batching,
-        typecheck_found: which(&cfg.typecheck[0]),
-        tests_found: which(&cfg.tests[0]),
+        typecheck: version_of(&cfg.typecheck),
+        tests: version_of(&cfg.tests),
+        coverage_available: coverage_available(&cfg.tests),
     };
 
     for line in probe.report() {
+        println!("{line}");
+    }
+    println!("{}", floor_line(model_spec.is_some()));
+    for line in repo_lines(root, &repo_cfg) {
         println!("{line}");
     }
     println!("root:       {}", root.display());
@@ -1568,13 +1572,148 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn which(program: &str) -> bool {
-    std::process::Command::new(program)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Runs `<program> --version` and returns the first line, trimmed.
+///
+/// A version rather than a yes/no. "found" cannot tell the checker the user
+/// configured from a different one earlier on `PATH`, and a verdict is only
+/// as good as the process that produced it.
+fn version_of(cmd: &[String]) -> Option<String> {
+    let (program, pre) = cmd.split_first()?;
+    // The configured command may be `python -m mypy`, where `--version` has
+    // to follow the module, not the interpreter.
+    let mut c = std::process::Command::new(program);
+    c.args(pre).arg("--version");
+    let out = c.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = if out.stdout.is_empty() {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    } else {
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// Whether the test runner has a coverage plugin available.
+///
+/// Reported because `Verified` versus `Reviewed` (S3) is the distinction the
+/// product turns on, and with no coverage data nothing can populate
+/// `Verified` — a user reading `0 verified` should know whether that is a
+/// result or a missing tool.
+fn coverage_available(tests: &[String]) -> bool {
+    let Some((program, pre)) = tests.split_first() else {
+        return false;
+    };
+    let mut c = std::process::Command::new(program);
+    c.args(pre).arg("--help");
+    c.output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let text = String::from_utf8_lossy(&o.stdout).to_lowercase();
+            text.contains("--cov")
+        })
+        .unwrap_or(false)
+}
+
+/// The repository-side half of `doctor`: index, worktree, budget, floor.
+///
+/// `04-v1.0-harness.md` asks for these four alongside the model probe, and
+/// every line that can be wrong says what to do about it.
+fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
+    let mut out = Vec::new();
+
+    // Index. Deliberately NOT the milestone document's "91.3% resolved".
+    //
+    // CLAUDE.md: what the resolver bound is a lower bound on recall, not
+    // recall, and it must never be compared to the thresholds. Printing it
+    // bare next to a tick would make `doctor` the place that claim finally
+    // escapes — the same failure ADR 0014 fixed in `radius`, which had
+    // printed "3.7% resolved" for a resolver audited at 72%.
+    let started = std::time::Instant::now();
+    let index = trellis_index::build_cached(root);
+    let built = started.elapsed();
+    let c = &index.coverage;
+    if index.files.is_empty() {
+        out.push(
+            concat!(
+                "index:      EMPTY — no Python sources found under this root.\n",
+                "            Check --root, or whether the tree is one `discover` skips ",
+                "(.venv,\n            site-packages, build, dist, __pycache__)."
+            )
+            .to_string(),
+        );
+    } else {
+        out.push(format!(
+            "index:      {} definitions across {} files · {} of {} first-party call sites \
+             bound\n            ({:.1}% — a lower bound on recall, NOT recall; only the \
+             hand audit is\n            comparable to the gate. See CLAUDE.md) · {} ms",
+            index.symbols.len(),
+            index.files.len(),
+            c.resolved,
+            c.total(),
+            c.resolved_fraction().unwrap_or(0.0) * 100.0,
+            built.as_millis()
+        ));
+    }
+
+    // Worktree. The first wall users hit, so it says how to get past it.
+    match trellis_vcs::pending(root) {
+        Ok(p) if p.is_empty() => out.push("worktree:   clean".to_string()),
+        Ok(p) => out.push(format!(
+            "worktree:   {} uncommitted change(s) — `trellis run` will refuse to start.\n\
+             {:12}Commit them, stash them, or `/revert` in a session. A run needs a clean\n\
+             {:12}tree so rollback is exact (ADR 0009).",
+            p.len(),
+            "",
+            ""
+        )),
+        Err(e) => out.push(format!(
+            "worktree:   cannot read git status: {e}\n\
+             {:12}TRELLIS needs a git repository; `git init` if this is not one.",
+            ""
+        )),
+    }
+
+    // Budget, in the units it is actually enforced in.
+    let b = cfg.budget();
+    out.push(format!(
+        "budget:     {:?} — {} iterations / {} s / {} tokens",
+        b.regime,
+        b.max_iterations,
+        b.max_wall_clock.as_secs(),
+        b.max_tokens
+    ));
+
+    out
+}
+
+/// The model floor line.
+///
+/// The milestone document's mockup shows `Floor  above measured minimum ✓`.
+/// **TRELLIS cannot know that**, and saying it would be the exact failure S7
+/// exists to prevent. A floor is an interval located by a configuration that
+/// *passes*; two have been measured and both are below it, so there is no
+/// minimum to be above. The honest line says so and points at the evidence.
+fn floor_line(model_configured: bool) -> String {
+    if model_configured {
+        concat!(
+            "floor:      unknown for this model. The S7 floor is not located: two ",
+            "configurations\n            have been measured (0.5B, Coder-3B) and both ",
+            "failed every task, so\n            there is no measured minimum to be above. ",
+            "See BENCHMARK_AND_EVAL.md §5."
+        )
+        .to_string()
+    } else {
+        concat!(
+            "floor:      not applicable without --model. The S7 floor is not located ",
+            "either:\n            two configurations measured, both below it. See ",
+            "BENCHMARK_AND_EVAL.md §5."
+        )
+        .to_string()
+    }
 }
 
 fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
@@ -1754,6 +1893,155 @@ mod interrupt_tests {
 
         assert!(rollback_or_explain(&snap));
         assert!(snap.is_restored().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+
+    fn repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("trellis-doctor-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@example.invalid"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "core.autocrlf", "false"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(
+            dir.join("app/util.py"),
+            "def helper():
+    return 1
+",
+        )
+        .unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-qm", "init"]] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+        }
+        dir
+    }
+
+    /// The milestone mockup prints `Index  48,102 symbols · 91.3% resolved ✓`.
+    /// CLAUDE.md forbids exactly that: what the resolver bound is a lower
+    /// bound on recall, and comparing it to the gate thresholds is the error
+    /// ADR 0014 already fixed once in `radius`, which printed "3.7% resolved"
+    /// for a resolver audited at 72%.
+    #[test]
+    fn the_index_line_refuses_to_present_the_bound_as_recall() {
+        let dir = repo("index-line");
+        let cfg = config::RepoConfig::load(&dir).unwrap();
+        let lines = repo_lines(&dir, &cfg).join(
+            "
+",
+        );
+
+        assert!(lines.contains("index:"), "{lines}");
+        assert!(
+            lines.contains("NOT recall"),
+            "the caveat is the point of the line: {lines}"
+        );
+        assert!(
+            lines.contains("hand audit"),
+            "and it must name what IS comparable: {lines}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Every line that can be wrong should say what to do about it."
+    #[test]
+    fn a_dirty_worktree_says_how_to_get_past_it() {
+        let dir = repo("dirty");
+        std::fs::write(
+            dir.join("app/util.py"),
+            "def helper():
+    return 2
+",
+        )
+        .unwrap();
+        let cfg = config::RepoConfig::load(&dir).unwrap();
+        let lines = repo_lines(&dir, &cfg).join(
+            "
+",
+        );
+
+        assert!(lines.contains("uncommitted change"), "{lines}");
+        assert!(
+            lines.contains("Commit them") || lines.contains("stash"),
+            "the first wall users hit must name the way through: {lines}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clean_worktree_says_so_plainly() {
+        let dir = repo("clean");
+        let cfg = config::RepoConfig::load(&dir).unwrap();
+        let lines = repo_lines(&dir, &cfg).join(
+            "
+",
+        );
+        assert!(lines.contains("worktree:   clean"), "{lines}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mockup's `Floor  above measured minimum ✓` is a claim TRELLIS
+    /// cannot make. A floor is located by a configuration that *passes*; two
+    /// have been measured and both failed every task, so there is no minimum
+    /// to be above. Printing the tick would be the exact failure S7 exists to
+    /// prevent.
+    #[test]
+    fn the_floor_line_never_claims_a_minimum_that_was_never_located() {
+        for configured in [true, false] {
+            let line = floor_line(configured);
+            assert!(
+                line.contains("not located"),
+                "the floor is an interval and neither endpoint passes: {line}"
+            );
+            assert!(
+                !line.contains("above measured minimum"),
+                "TRELLIS cannot know this and must not print it: {line}"
+            );
+            assert!(
+                line.contains("BENCHMARK_AND_EVAL"),
+                "and it must point at the evidence: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_index_says_what_to_check_rather_than_reporting_zero() {
+        // Zero definitions reads as a repository with no code. The likelier
+        // cause is a wrong --root or a tree `discover` skips, and the line
+        // says so instead of leaving a user staring at 0.
+        let dir = std::env::temp_dir().join("trellis-doctor-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let cfg = config::RepoConfig::load(&dir).unwrap();
+        let lines = repo_lines(&dir, &cfg).join(
+            "
+",
+        );
+
+        assert!(lines.contains("index:      EMPTY"), "{lines}");
+        assert!(lines.contains("--root"), "{lines}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

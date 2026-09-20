@@ -151,8 +151,9 @@ of the gate needs it.
 4. ~~Degradation UX (S6).~~ **Done** — `docs/bench/degradation-ux-20260920.md`.
    The approval moment had nothing; it now carries a scoped one-line coverage
    note and three paths, and never blocks.
-5. **`trellis doctor` completion**, every line that can be wrong saying what to
-   do about it.
+5. ~~`trellis doctor` completion.~~ **Done.** All eight lines the milestone
+   mockup asks for, each with a remedy — and two of them corrected where the
+   mockup would have had TRELLIS claim something it cannot know.
 6. **Re-run the v0.1 measurement for condition 1.** Largely absorbed into the
    `precision-gate` CI job, which now does it on every push.
 7. **`trellis init`**, first-run prerequisite detection, and a good error for
@@ -251,6 +252,47 @@ into an exclusion and recall becomes unfalsifiable.
 
 Next: implement that, re-run the audit on a fresh sample, and report both
 denominators.
+
+## `trellis doctor`: complete, minus two claims the mockup asks for
+
+v1.0 task item 5. `doctor` reported model, runtime, tier, batching and two
+yes/no tool lines. It now reports all eight lines `04-v1.0-harness.md` asks
+for, and every line that can be wrong says what to do about it — a diagnostic
+that reports a problem without a next step has only told the user they are
+stuck.
+
+Added: **floor**, **index**, **worktree**, **budget**; the tool lines carry
+versions (`mypy 2.3.1`, `pytest 9.1.1`) rather than "found", because "found"
+cannot distinguish the checker the user configured from a different one
+earlier on `PATH`, and a verdict is only as good as the process that produced
+it. The tests line also reports whether a coverage plugin exists, since
+without one nothing can ever populate `Verified` and a user reading
+`0 verified` should know whether that is a result or a missing tool (S3).
+
+**Two lines deliberately do not match the mockup, and both would have been
+this project's own documented failure:**
+
+- The mockup prints `Index  48,102 symbols · 91.3% resolved ✓`. CLAUDE.md
+  forbids exactly that — what the resolver *bound* is a lower bound on recall,
+  never recall, and printing it beside a tick is how that claim finally
+  escapes. This is the failure ADR 0014 already fixed once in `radius`, which
+  printed "3.7% resolved" for a resolver hand-audited at 72%. The line states
+  the bound, says **NOT recall** in the same breath, and names the hand audit
+  as the only comparable figure.
+- The mockup prints `Floor  above measured minimum ✓`. **TRELLIS cannot know
+  that.** A floor is an interval located by a configuration that *passes*; two
+  have been measured and both failed every task, so there is no minimum to be
+  above. The line says the floor is not located and points at the evidence.
+
+Both are tested as refusals rather than as formatting.
+
+### The string-folding defect, a seventh time — now a test
+
+It landed in the new `tests:` line and was caught by reading terminal output,
+which is how all seven were caught. Every previous fix added a local
+assertion; this one guards the whole report at once: no line may carry a
+double space past its label column, checked across probe states, and
+mutation-verified by reintroducing a folded string.
 
 ## Degradation UX: the approval moment had nothing
 
