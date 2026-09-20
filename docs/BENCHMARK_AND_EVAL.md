@@ -436,6 +436,10 @@ before committing to Pyright, and record the result in an ADR.
 
 ## 5. Model floor spike (S7)
 
+**Measured, one configuration, 2026-09-20.** The design below is unchanged;
+what follows it is what was actually run, what it establishes, and what it
+does not.
+
 Run under grammar constraint throughout, so the floor measured is about
 **judgment, not format**. Constrained decoding guarantees a well-formed call,
 not a sensible one: a 3B model will reliably emit valid JSON calling the wrong
@@ -469,8 +473,135 @@ function.
    the context budget in S5.
 7. **Wall-clock per task**, including constraint overhead.
 
+### 5.1 What was run
+
+| | |
+|---|---|
+| Configuration | Qwen2.5-0.5B-Instruct, **Q4_K_M**, candle on CPU, tier 2 (llguidance) |
+| Corpus | poetry 2.5.0, SHA-256 in `01-v0.1-measure.md` §2 |
+| Tasks | 20, `docs/bench/floor_tasks.json` |
+| Checker | `mypy --ignore-missing-imports --no-error-summary --no-color-output --hide-error-context --follow-imports=silent --no-incremental` |
+| Budget | 8 iterations, 600 s wall clock, plus the one escalation turn |
+| Harness | `docs/bench/run_floor.py`; report `docs/bench/floor-qwen2.5-0.5b-q4km.json` |
+
+The serving runtime is a throwaway probe (`.bench/probe`) speaking llama.cpp's
+`/completion`, so the **real** `RuntimeModel` adapter drove it unchanged. A
+probe with its own model path would have measured a code path no user runs,
+and the adapter's behaviour under a weak model is precisely what is in
+question.
+
+### 5.2 Result
+
+```
+outcomes          budget-exhausted 16    format-failure 3    no-recovery 1
+check-recovery    0 repaired of 20 attempted
+error counts      errors_after == errors_before on all 20 tasks
+wall clock        median 209 s per task, 4014 s total
+```
+
+**Nothing was repaired, and nothing was made worse.** The second half matters:
+the model never increased a file's error count, so this is not a configuration
+that damages a repository. It is one that does not move it.
+
+The tasks are not uniform — each defect raises its file's error count by a
+verified amount between one and five — so repair is scored as a return to the
+count measured on the clean tree immediately before the defect was applied, by
+re-running the checker in the scoring harness. Never by reading the run's own
+verdict.
+
+### 5.3 What this establishes, and what it does not
+
+**It does not locate the floor.** One configuration measured below it gives a
+lower bound: the floor is somewhere above Qwen2.5-0.5B-Instruct Q4_K_M. A floor
+is an interval, and finding it needs a configuration that passes. The second
+(Qwen2.5-Coder-3B Q4_K_M) was still downloading when this was written.
+
+Three findings do not depend on the remaining configurations.
+
+**1. Constraint eliminates the format-*shape* failure, and not termination.**
+Unconstrained, the same model emitted a fenced ` ```json ` block containing
+`repo.edit` — an invented tool, wrapped in prose. Under tier 2 every generation
+was schema-valid.
+
+Three tasks still failed on format, and the mechanism is worth stating because
+it is not a broken constraint. The model emitted
+
+```
+{"path":"...","old":"<error>Error: <error>...<warning>Warning: ...
+```
+
+and kept going until `max_tokens` ran out. Every token was schema-valid: a JSON
+string may be arbitrarily long, so no grammar can stop it, and the
+`whitespace_flexible: false` setting that solved an earlier stall does not reach
+inside a string value. **Constraint guarantees prefix validity, not
+termination.** Any claim that tier 2 makes output "well-formed by construction"
+has to carry that qualification.
+
+The adapter reported this as "no JSON object in output", which is true and
+misdiagnoses it — that is the message an *ignored* schema produces, and it
+sends a reader to check whether their runtime supports guided decoding when the
+answer is that it does. The two are now told apart on a local discriminator: an
+object that opened and never closed was truncated; no brace at all means the
+schema was ignored.
+
+**2. Constraint guarantees nothing whatever about content.** Among the valid
+calls this configuration produced:
+
+```
+edit{path: "src/…/config_source.py", old: "src/…/config_source.py", new: "src/…/config_source.py"}
+edit{path: "…/file_config_source.py", old: "<old value>", new: "<new value>"}
+edit{path: "…/dict_config_source.py", old: "...", new: "..."}
+edit{path: "tests\u{1}installation\u{1}test_chef.py", old: "156", new: "156"}
+```
+
+Schema placeholders echoed back, the file path filled into all three fields,
+line numbers used as edit anchors, control characters as path separators. This
+is the distinction the spike exists to measure, and it is now demonstrated
+rather than asserted.
+
+**3. The run found two harness defects, both of which flattered the model.**
+Neither was visible from reading the code.
+
+- `run_checks` with no `paths` reached mypy as `.`, so it checked the whole
+  repository and returned poetry's **pre-existing** errors. The observation gave
+  no hint this had happened, so it read as a report about the model's own
+  change — and the model edited a file it saw in that output. Passing no path is
+  the model's error; being unable to tell is the harness's. There is now a
+  `SCOPE:` line when and only when `paths` is empty.
+- An edit whose `old` equals its `new` wrote identical bytes back and reported
+  `applied: true`. The model was told it had acted, the file entered the
+  rollback set and the trail's proposed list, and an iteration was spent.
+  Refused now.
+
+Both are fixed, and the same configuration is re-run against the fixed harness
+as a second line in the table below. That A/B is the only thing separating
+"this model is below the floor" from "this harness withheld what it needed",
+and the conclusion is not entitled to the first reading without it.
+
+### 5.4 Deviations from the design above, each with its reason
+
+| Design | What was done | Why |
+|---|---|---|
+| 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
+| 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 |
+| Floor as a configuration | One configuration, below the floor | The second was still downloading. Reported as a lower bound, not a floor |
+| Metric 3, argument correctness against a gold trace | Not measured | No gold trace, per the first row. Partly substituted by the verbatim calls in §5.3 |
+| Metric 5, run-to-run variance | Not measured | Nothing varies at temperature 0 |
+| Metric 6, context degradation at 25/50/75% fill | Not measured | Needs a configuration that succeeds at low fill, so degradation has something to degrade from |
+
+### 5.5 Cost, and what the figure is a property of
+
+Median 209 s per task, 9 turns each, on CPU. Per-turn cost grows through a run
+because the probe re-prefills the whole transcript on every call — it holds no
+KV cache between requests. **That growth is a property of the probe rig, not of
+TRELLIS**, and the figure must not be quoted as the harness's overhead. What it
+bounds honestly is this measurement: a 20-task sweep costs about 70 minutes of
+wall clock per configuration on this machine.
+
 ### Exit criteria for v0.1
 
-A measured recall figure; a stated threshold with reasoning (§3, already
-recorded); a known model floor as a configuration; and an ADR on whether a
-semantic backstop is needed.
+A measured recall figure — **done**, §2. A stated threshold with reasoning —
+**done**, §3. An ADR on whether a semantic backstop is needed — **done**,
+ADR 0012. A known model floor as a configuration — **partial**: one
+configuration is measured and it is below the floor, which bounds the floor
+from below without locating it.
