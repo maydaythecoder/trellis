@@ -1,7 +1,7 @@
 # TRELLIS repository configuration.
 #
 # WARNING: this file is committed. Never put an API key here — read keys from
-# the environment. See docs/ADRs/0010-byok-and-key-handling.md.
+# the environment. See docs/adr/0010-byok-and-key-handling.md.
 
 [checks]
 # Commands are configured, not detected. A wrong guess produces a confident

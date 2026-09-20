@@ -9,7 +9,7 @@ rust-version = "1.93"
 license = "Apache-2.0"
 
 # Versions below were resolved by `cargo add` on 2026-09-18 and their licenses
-# checked (see docs/ADRs/0006-adapter-tiers-and-inference-path.md and
+# checked (see docs/adr/0006-adapter-tiers-and-inference-path.md and
 # OPEN_QUESTIONS.md). Do not bump tree-sitter and tree-sitter-python
 # independently: the grammar and the library share an ABI. The pairing
 # 0.27 / 0.25 is verified by crates/trellis-index/tests/grammar_abi.rs.

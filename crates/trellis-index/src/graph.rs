@@ -152,7 +152,7 @@ pub struct CallSiteEntry {
 /// The call graph.
 ///
 /// Owned outright by the orchestrator: no `Arc<RwLock<Index>>`, no shared
-/// mutable graph. See `docs/ADRs/0005-loop-shape.md`.
+/// mutable graph. See `docs/adr/0005-loop-shape.md`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Index {
     pub files: Vec<FileEntry>,

@@ -91,7 +91,7 @@ resting it on a type checker barely cares which model you use.
 ### What would make this positioning wrong
 
 If measured recall on the benchmark repository comes in below the pivot
-threshold in `docs/ADRs/0002-edge-confidence-model.md`, goal state 2 is not
+threshold in `docs/adr/0002-edge-confidence-model.md`, goal state 2 is not
 deliverable and the blast-radius claim dies. What survives is context
 continuity, governance enforcement, test-anchored checks, and the committed
 trail — a smaller product that still addresses the problem above, with the

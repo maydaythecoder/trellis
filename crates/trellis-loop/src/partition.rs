@@ -8,7 +8,7 @@
 //! centralized coordination containing it to 4.4-fold. So: coordination
 //! centralized, judgment mechanical.
 //!
-//! See `docs/ADRs/0005-loop-shape.md`.
+//! See `docs/adr/0005-loop-shape.md`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

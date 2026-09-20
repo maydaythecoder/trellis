@@ -1,7 +1,7 @@
 //! The call graph: high precision, explicitly incomplete.
 //!
 //! This crate depends on no model and never will. See
-//! `docs/ADRs/0001-resolver-scope.md`.
+//! `docs/adr/0001-resolver-scope.md`.
 
 pub mod cache;
 pub mod coverage;

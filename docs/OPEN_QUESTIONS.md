@@ -52,7 +52,7 @@ after an unrelated merge.
 **Q-6 — Is degradation-warning suppression per-session or persisted?**
 Persisting repeat suppression across sessions is more useful and is also a way
 to permanently hide a warning the user should keep seeing. This is the S6
-tension in its sharpest form. → `docs/ADRs/0003-degradation-policy.md`.
+tension in its sharpest form. → `docs/adr/0003-degradation-policy.md`.
 
 **Q-7 — What happens when trails grow large enough to dominate context?**
 Summarization is the obvious answer; the question is whether a summary is

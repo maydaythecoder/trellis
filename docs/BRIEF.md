@@ -747,7 +747,7 @@ Alongside the code:
 3. **`RISK_REGISTER.md`** — every soft spot in Part 7 as an entry with severity,
    likelihood, a concrete failure scenario, and a costed patch.
 4. **`BENCHMARK_AND_EVAL.md`** — v0.1 in full.
-5. **`ADRs/`** — resolver scope and build-not-consume; edge confidence model;
+5. **`adr/`** — resolver scope and build-not-consume; edge confidence model;
    degradation policy; the grounding contract; loop shape and why not
    multi-agent verification; adapter tiers and the inference path; trail format;
    budgets; the clean-worktree requirement.

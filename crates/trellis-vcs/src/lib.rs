@@ -8,7 +8,7 @@
 //! Requiring a clean worktree is a real constraint on the user and the
 //! right trade. The alternative — snapshotting a dirty tree and restoring
 //! it — is a source of data-loss bugs, and this is the one path that has to
-//! be reliable. See `docs/ADRs/0009-clean-worktree-requirement.md`.
+//! be reliable. See `docs/adr/0009-clean-worktree-requirement.md`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -363,7 +363,7 @@ not configure a provider. The key now transits infrastructure we control, and
 the safe harbor that made local execution defensible is gone — discovered during
 a security review, after the feature ships.
 
-**Patch.** Hard architectural rule in `docs/ADRs/0010-byok-and-key-handling.md`,
+**Patch.** Hard architectural rule in `docs/adr/0010-byok-and-key-handling.md`,
 written now, carried into any future cloud tier, where breaking it becomes
 tempting precisely because it is convenient. v1 has no networked component at
 all, which makes the rule free to hold today and is exactly why it must be
@@ -402,7 +402,7 @@ differentiation.
 **Severity: critical · Likelihood: certain — RESOLVED, AND FIRED 2026-09-19**
 
 **Patch.** `BENCHMARK_AND_EVAL.md` §3 and
-`docs/ADRs/0002-edge-confidence-model.md`. **Recall below 60% fires the pivot.**
+`docs/adr/0002-edge-confidence-model.md`. **Recall below 60% fires the pivot.**
 Written before v0.1 produces any number, which was the entire point.
 
 **Fired.** Measured recall **47.8%**, 95% CI **[40.0%, 55.6%]** — the whole
@@ -431,7 +431,7 @@ Three parts, two now closed.
 **Logit access (open).** Tier 3 needs in-process inference —
 `llama-cpp-2`-style bindings, `mistral.rs`, or `candle` — with real
 consequences for build complexity and hardware coverage.
-`docs/ADRs/0006-adapter-tiers-and-inference-path.md` is deliberately left
+`docs/adr/0006-adapter-tiers-and-inference-path.md` is deliberately left
 **Proposed** until v0.2 measures the options. Cost: 3 days to evaluate, 10–20
 days to implement depending on choice.
 
@@ -505,7 +505,7 @@ reports.
    forced conservative because the graph cannot vouch for it.
 2. **Implemented as a design rule, enforced in v1.1.** Partition-local checks
    never substitute for the integrated full check. Documented on
-   `partition::plan` and in `docs/ADRs/0005-loop-shape.md`.
+   `partition::plan` and in `docs/adr/0005-loop-shape.md`.
 3. **Pending v1.1.** When an integrated check fails after clean partition
    checks, record it in the trail as a **suspected recall gap** with the symbols
    involved, and feed those cases back into the S1 measurement. Over time that

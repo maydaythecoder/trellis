@@ -41,7 +41,7 @@ dense_id!(
 );
 dense_id!(
     /// A group of work units whose blast radii and files are disjoint from
-    /// every other partition's. See `docs/ADRs/0005-loop-shape.md`.
+    /// every other partition's. See `docs/adr/0005-loop-shape.md`.
     PartitionId
 );
 

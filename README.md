@@ -69,7 +69,7 @@ pass variant.
 | [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Cost and wall-clock per change, per configuration |
 | [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) | Every default chosen where the brief was silent |
 | [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) | Grouped by who answers |
-| [`docs/ADRs/`](docs/ADRs/) | Ten decision records |
+| [`docs/adr/`](docs/adr/) | Ten decision records |
 | [`CLAUDE.md`](CLAUDE.md) | Repository conventions and what needs an ADR to change |
 
 ## On numbers in this repository
@@ -79,7 +79,7 @@ beside it, or is marked pending with the milestone that will produce it. There
 are no estimates presented as measurements and no placeholder figures presented
 as findings. The recall figure the whole v1.0 gate depends on has not been
 measured; the thresholds that will judge it were chosen first, deliberately, and
-are recorded in `docs/ADRs/0002-edge-confidence-model.md`.
+are recorded in `docs/adr/0002-edge-confidence-model.md`.
 
 ## Licence
 

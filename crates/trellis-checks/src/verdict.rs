@@ -10,7 +10,7 @@
 //! actually ran. The rule is enforced here, in the type system, and not in
 //! a prompt or a review checklist, because under delivery pressure a
 //! guideline is the first thing to soften. See
-//! `docs/ADRs/0004-grounding-contract.md`.
+//! `docs/adr/0004-grounding-contract.md`.
 //!
 //! To let a model emit a pass verdict, a contributor would have to make the
 //! `Seal` field public or add a constructor to this file. Both are visible

@@ -70,7 +70,7 @@ blast-radius guarantee dies and TRELLIS pivots.**
 
 This is a gate, not a contingency. It is evaluated at v0.1 exit, before any
 v0.2 work begins, and it is written here because the figure was chosen before
-the measurement existed (`docs/ADRs/0002-edge-confidence-model.md`).
+the measurement existed (`docs/adr/0002-edge-confidence-model.md`).
 
 On a pivot, what survives: context continuity, governance enforcement,
 test-anchored checks, and the committed trail — a smaller product that still

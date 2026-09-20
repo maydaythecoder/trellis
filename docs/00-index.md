@@ -1,0 +1,115 @@
+# TRELLIS — Build Documents
+
+A Rust agent harness for Python repositories. It builds a call graph of your first-party code, drives an agent loop against it, verifies every change with your type checker and test suite, and commits a decision trail so the next session starts informed.
+
+## Reading order
+
+| Doc | Milestone | What it produces |
+|---|---|---|
+| `00-index.md` | — | This file. Constraints, dependency chain, conventions. |
+| `01-v0.1-measure.md` | v0.1 | Numbers. The index, a benchmark, a measured recall figure, a model floor. No product. |
+| `02-v0.2-loop.md` | v0.2 | The agent loop, grounded checks, rollback. First end-to-end change. |
+| `03-v0.3-memory.md` | v0.3 | Trail, context import, resume. The wedge demonstrated. |
+| `04-v1.0-harness.md` | v1.0 | Hardening to the five gate conditions. The version you use daily. |
+| `05-v1.1-multi-agent.md` | v1.1 | Parallel agents on radius-disjoint partitions. |
+
+Read `00` and `01` before writing any code. Each version doc assumes the previous one shipped.
+
+## The two constraints
+
+These are why the design looks the way it does. If you find yourself designing around either, stop.
+
+### Constraint 1 — Complete call-graph recall is impossible in Python
+
+PyCG, the academic state of the art, reports roughly 99.2% precision against about 69.9% recall. Roughly three call edges in ten are statically invisible. This is a property of the language — dynamic dispatch, decorator indirection, `getattr`, conditional imports — not a tooling gap that better engineering closes.
+
+Encouragingly, the prevalence research (Yang et al., MSR '22, 3M+ Python files) found genuinely unanalyzable constructs like `eval` rare, while decorators and context managers are widespread. Your misses will be boring and common, not exotic.
+
+**Consequence:** the graph is high-precision and explicitly incomplete. Every edge carries a confidence label. Every run reports coverage. Never emit a bare "complete."
+
+### Constraint 2 — An LLM cannot verify work without an external signal
+
+Huang et al. (ICLR 2024, DeepMind): without external feedback LLMs struggle to self-correct and often degrade — GPT-4 on GSM8K fell from 95.5% to 91.5% to 89.0% over two rounds of intrinsic self-correction. A companion result found models are specifically bad at *detecting* errors while being able to fix ones they're pointed at. MAST (Cemri et al., 2025) annotated 1,642 multi-agent traces and found 41–86.7% failure rates across seven frameworks. A scaling study measured independent multi-agent topologies amplifying errors 17.2-fold versus a single agent, with centralized coordination containing it to 4.4-fold.
+
+The counterpart matters as much: Chen et al. (ICLR 2024) showed self-debugging works consistently **when anchored to unit-test execution**, with ablations confirming the execution does the work.
+
+**Consequence:** correctness verdicts come only from processes that execute. The model reads their output and decides what to do next; it never issues a pass verdict. Enforced in the type system, not in a prompt.
+
+This is also what makes weak local models viable. A design resting correctness on model judgment would be hardest to run on small models; one resting it on a type checker barely cares.
+
+## Dependency chain
+
+```
+v0.1  trellis-core ─┬─ trellis-index ──── measurement harness
+                    └─ (throwaway probe rig for the model floor)
+                              │
+v0.2                          ├─ trellis-checks  (Verdict seal)
+                              ├─ trellis-model   (adapter + llguidance)
+                              ├─ trellis-vcs     (git snapshot/rollback)
+                              └─ trellis-loop    (tools, budgets, orchestrator)
+                                        │
+v0.3                                    └─ trellis-trail
+                                                  │
+v1.0                                              └─ hardening to the gate
+                                                            │
+v1.1                                                        └─ partitioning N>1
+```
+
+## Workspace
+
+```
+trellis/
+├── Cargo.toml                 # workspace
+└── crates/
+    ├── trellis-core/          # shared types, IDs, errors
+    ├── trellis-index/         # tree-sitter → call graph
+    ├── trellis-checks/        # typecheck, tests, imports — owns Verdict
+    ├── trellis-model/         # adapter tiers, llguidance, inference
+    ├── trellis-loop/          # agent loop, tools, budgets, orchestrator
+    ├── trellis-trail/         # decision trail
+    ├── trellis-vcs/           # git snapshot and rollback
+    └── trellis-cli/           # binary
+```
+
+Crate boundaries are load-bearing. `trellis-index` must not depend on `trellis-model` — the graph has to be testable with no model anywhere near it. `trellis-checks` owning `Verdict` is what makes Constraint 2 structural.
+
+## Conventions
+
+- `thiserror` in libraries, `anyhow` at the binary edge.
+- `tracing` spans are the single instrumentation path. Budget accounting reads from them. Do not build a second telemetry mechanism.
+- `insta` snapshot tests for anything that produces structured output — graph dumps, partition plans, trail entries.
+- Every non-obvious choice gets an ADR in `docs/adr/`. Format: Context / Decision / Consequences / Alternatives rejected / Status / Reversibility.
+- Verify every crate version and license before committing. Several dependencies here move quickly.
+
+## Non-goals through v1.1
+
+Any language but Python. Repos without a test suite. Cross-repo analysis. Any surface beyond the CLI. Any networked component. Multi-user anything. Running while the machine is asleep.
+
+## Soft spot register
+
+Soft spots are numbered S1–S19 and referenced across all version docs. The full register with severities and patches lives in `docs/RISK_REGISTER.md`, written during v0.1. Each version doc lists the ones it touches.
+
+---
+
+## Where this build actually is (2026-09-19)
+
+This section is not part of the specification above. It exists so a reader
+does not have to reconstruct the state from git history.
+
+| Milestone | State |
+|---|---|
+| v0.1 | **Substantially complete.** Index built, benchmark pinned, recall measured twice. Model floor **not** measured — it needs inference, which is v0.2 work. |
+| v0.2 | Not started. Crate skeletons, structural contracts and the partitioning rules exist; the loop does not. |
+| v0.3 | Trail format and the untrusted read-back type exist. Context import and resume do not. |
+| v1.0 | Two of five gate conditions have evidence. See `04-v1.0-harness.md`. |
+| v1.1 | Partition planner and its invariant property test exist, N=1 only. |
+
+Everything is on branch `v0.1-resolver`, not `master`.
+
+The one thing a reader should carry into every other document: **recall was
+measured at 47.8%, which fired the pre-registered S16 pivot trigger, and a
+bounded backstop then raised it to 71.1% on the same sample.** ADR 0011 holds
+the first result, ADR 0012 the decision to attempt the second, and
+`01-v0.1-measure.md` holds both with their caveats. No claim about the
+backstop is final until a fresh-sample audit confirms it, which is the open
+item.

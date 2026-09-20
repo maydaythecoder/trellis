@@ -8,7 +8,7 @@ license.workspace = true
 # NOTE: trellis-index must never depend on trellis-model. The call graph has
 # to be testable with no model anywhere near it, and a graph whose output
 # depends on a sampler is not a graph. Enforced by review and by this
-# comment; see docs/ADRs/0001-resolver-scope.md.
+# comment; see docs/adr/0001-resolver-scope.md.
 [dependencies]
 trellis-core.workspace = true
 tree-sitter.workspace = true

@@ -2,7 +2,7 @@
 //!
 //! One flat tool list, one model, iterating. Blast radius and checks are
 //! tools the model calls, not stages in a pipeline written around it. See
-//! `docs/ADRs/0005-loop-shape.md`.
+//! `docs/adr/0005-loop-shape.md`.
 
 use serde::Serialize;
 use trellis_checks::Verdict;

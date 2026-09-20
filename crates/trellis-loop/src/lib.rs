@@ -2,7 +2,7 @@
 //!
 //! Not a committee. Blast radius and checks are tools the model calls, not
 //! stages in a pipeline written around it. See
-//! `docs/ADRs/0005-loop-shape.md`.
+//! `docs/adr/0005-loop-shape.md`.
 
 pub mod budget;
 pub mod partition;
