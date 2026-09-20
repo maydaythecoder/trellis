@@ -1,0 +1,22 @@
+model:    LlamaCpp via RuntimeConstrained â€” none for correctness; grammar compilation happens in the serving runtime
+snapshot at e940ed08aee1abbcf45a1ae407c3ab59aa3d0989
+[2m2026-09-20T08:42:47.709539Z[0m [32m INFO[0m [1mrun_with_prior[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/dict_config_source.py; fix it [3mseeded[0m[2m=[0mfalse[1m}[0m[2m:[0m budget exhausted; escalating once [3mexhaustion[0m[2m=[0mIterations
+[2m2026-09-20T08:43:14.513496Z[0m [33m WARN[0m [1mrun_with_prior[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/dict_config_source.py; fix it [3mseeded[0m[2m=[0mfalse[1m}[0m[2m:[0m budget exhausted after escalation [3mexhaustion[0m[2m=[0mIterations
+
+   1. ReadFile { path: "src/poetry/config/dict_config_source.py" } 
+   2. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   3. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   4. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   5. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   6. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   7. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   8. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+   9. Edit { path: "src/poetry/config/dict_config_source.py", old: "...", new: "..." } 
+
+files written: 
+
+NOT CONVERGED after 9 iterations.
+  budget exhausted: iteration ceiling reached without converging; rolled back
+
+Rolled back to e940ed08aee1abbcf45a1ae407c3ab59aa3d0989. Worktree restored: true.
+trail:    C:\Users\mayda\Documents\dev\trellis\.bench\floor\.trellis/runs/20260920-084314-621-a-type-check-is-failing-in-src-poetry-config-dic.json (survives the rollback)

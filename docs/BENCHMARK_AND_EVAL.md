@@ -495,9 +495,14 @@ question.
 | Configuration | Harness | Repaired | budget-exhausted | format-failure | no-recovery | Median s/task |
 |---|---|---|---|---|---|---|
 | Qwen2.5-0.5B-Instruct Q4_K_M, candle CPU, tier 2 | as committed at `24bba3d` | **0 / 20** | 16 | 3 | 1 | 209 |
-| the same | with the two §5.3 fixes | *pending* | | | | |
+| the same | with the two §5.3 fixes | **0 / 9** | 9 | 0 | 0 | — |
 
 `errors_after == errors_before` on all 20 tasks of the first row.
+
+The second row is **9 tasks, not 20**: the run was stopped by the host at task
+9 for system memory pressure, which is unrelated to the run and says nothing
+about it. It is reported at the size it reached rather than extrapolated, and
+its purpose — the per-task A/B in §5.3 — does not need the full set.
 
 **Nothing was repaired, and nothing was made worse.** The second half matters:
 the model never increased a file's error count, so this is not a configuration
@@ -592,6 +597,34 @@ mattered. If it reads it and emits the same edit, the model is the constraint.
 The truncation-message change shipped in the same commit does not contaminate
 this comparison: adapter retries are internal, and that text never enters the
 model's prompt.
+
+**Result of the A/B, over the 9 tasks it reached: the harness was not the
+constraint.**
+
+| | |
+|---|---|
+| Tasks with a byte-identical trajectory to run 1 | **8 of 9** |
+| Tasks repaired, either run | 0 |
+| `run_checks` calls that passed a path, after the `SCOPE:` line | **0 of 10** |
+| `read_file` calls, across 81 turns | 1 |
+
+The last two lines carry it. The `SCOPE:` line states in plain words that no
+paths were given, that the whole repository was checked, that failures already
+present are not the model's, and that `paths` should name the files the task
+names. The task names its file in its first sentence. Across every call in
+every task, the model passed no path — and in 81 turns it read a file once.
+
+The single divergent task is t04, and it diverged into more of the same. Its
+first move in both runs was an edit whose `old` equalled its `new`, so the new
+refusal fired and the observation changed. Run 1 ended at three iterations on
+a format failure; run 2 spent all nine, produced two more `old == new` edits
+with control characters for path separators, ran the checks twice more with no
+paths, and repaired nothing. The fix made the failure longer, not better —
+which is what a legible failure looks like when the thing failing is judgment.
+
+This is the evidence for reading the §5.2 row as a model result rather than a
+harness artefact. It is 9 tasks of one configuration, so it supports that
+reading for *this* configuration and does not generalise to a stronger one.
 
 ### 5.4 Deviations from the design above, each with its reason
 

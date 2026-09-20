@@ -1,0 +1,22 @@
+model:    LlamaCpp via RuntimeConstrained â€” none for correctness; grammar compilation happens in the serving runtime
+snapshot at fca3df7769e373f39d6f061fdb01e256794cf22a
+[2m2026-09-20T08:39:16.034390Z[0m [32m INFO[0m [1mrun_with_prior[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/config_source.py; fix it [3mseeded[0m[2m=[0mfalse[1m}[0m[2m:[0m budget exhausted; escalating once [3mexhaustion[0m[2m=[0mIterations
+[2m2026-09-20T08:40:33.454198Z[0m [33m WARN[0m [1mrun_with_prior[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/config_source.py; fix it [3mseeded[0m[2m=[0mfalse[1m}[0m[2m:[0m budget exhausted after escalation [3mexhaustion[0m[2m=[0mIterations
+
+   1. Edit { path: "src/poetry/config/config_source.py", old: "src/poetry/config/config_source.py", new: "src/poetry/config/config_source.py" } 
+   2. RunChecks { paths: [], kinds: [Typecheck] } check FAILED
+   3. Edit { path: "tests\u{3}e\u{3}env\u{3}test_env_manager.py", old: "tests\u{3}e\u{3}env\u{3}test_env_manager.py", new: "tests\u{3}e\u{3}env\u{3}test_env_manager.py" } 
+   4. Edit { path: "tests\u{7f}env\u{7f}test_env_manager.py", old: "tests\u{7f}env\u{7f}test_env_manager.py", new: "tests\u{7f}env\u{7f}test_env_manager.py" } 
+   5. RunChecks { paths: [], kinds: [Typecheck] } check FAILED
+   6. RunChecks { paths: [], kinds: [Typecheck] } check FAILED
+   7. Edit { path: "/poetry/console/commands/publish.py", old: "tests\u{7f}env\u{7f}test_env_manager.py", new: "tests\u{7f}env\u{7f}test_env_manager.py" } 
+   8. Edit { path: "/poetry/console/commands/publish.py", old: "tests\u{7f}env\u{7f}test_env_manager.py", new: "tests\u{7f}env\u{7f}test_env_manager.py" } 
+   9. Edit { path: "/poetry/console/commands/publish.py", old: "tests\u{7f}env\u{7f}test_env_manager.py", new: "tests\u{7f}env\u{7f}test_env_manager.py" } 
+
+files written: 
+
+NOT CONVERGED after 9 iterations.
+  budget exhausted: iteration ceiling reached without converging; rolled back
+
+Rolled back to fca3df7769e373f39d6f061fdb01e256794cf22a. Worktree restored: true.
+trail:    C:\Users\mayda\Documents\dev\trellis\.bench\floor\.trellis/runs/20260920-084033-560-a-type-check-is-failing-in-src-poetry-config-con.json (survives the rollback)
