@@ -137,6 +137,51 @@ impl RepoConfig {
         trellis_loop::Governance::new(&rules)
     }
 
+    /// A named task template from `.trellis/prompts/<name>.md`.
+    ///
+    /// Repeating the same paragraph to start the same kind of task is a tax
+    /// the repository can pay once. Extra words on the command line are
+    /// appended rather than replacing it, so a template can be a standing
+    /// instruction with a specific ask after it.
+    ///
+    /// A prompt file is repository content and instruction-shaped, so it is a
+    /// **task**, never configuration: it cannot set the model, lift a denied
+    /// path, or change a budget. Everything that binds a run stays in
+    /// `config.toml` and `governance/`, where a reviewer looks for it.
+    pub fn prompt(root: &Path, name: &str) -> Result<String> {
+        // No path separators: `--prompt ../../etc/passwd` must not read
+        // outside the prompts directory, and a name is a name.
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            anyhow::bail!("`{name}` is not a prompt name; use the file stem only");
+        }
+        let path = root
+            .join(".trellis")
+            .join("prompts")
+            .join(format!("{name}.md"));
+        std::fs::read_to_string(&path)
+            .map(|s| s.trim().to_string())
+            .with_context(|| {
+                let dir = root.join(".trellis").join("prompts");
+                let known: Vec<String> = std::fs::read_dir(&dir)
+                    .map(|rd| {
+                        rd.filter_map(Result::ok)
+                            .filter_map(|e| {
+                                e.path()
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .map(str::to_string)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if known.is_empty() {
+                    format!("no prompt `{name}`; {} holds none", dir.display())
+                } else {
+                    format!("no prompt `{name}`. Known: {}", known.join(", "))
+                }
+            })
+    }
+
     /// `.trellis/context.md`, if the repository wrote one.
     ///
     /// Absent is normal and not an error. Unreadable is reported by the
@@ -263,6 +308,54 @@ mod tests {
         assert_eq!(c.checks().tests, ["pytest", "-x"]);
         // Unset keys keep their defaults rather than becoming empty.
         assert_eq!(c.checks().python, "python");
+    }
+
+    #[test]
+    fn a_prompt_template_loads_by_name() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join(".trellis").join("prompts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("typefix.md"),
+            "  Read before editing.
+
+",
+        )
+        .unwrap();
+        assert_eq!(
+            RepoConfig::prompt(d.path(), "typefix").unwrap(),
+            "Read before editing.",
+            "trimmed, so a trailing newline does not become part of the task"
+        );
+    }
+
+    #[test]
+    fn a_prompt_name_cannot_escape_the_prompts_directory() {
+        // `--prompt` takes a name, not a path. Without this, a name is a
+        // relative path and the flag reads arbitrary files into the task.
+        let d = tempfile::tempdir().unwrap();
+        for bad in ["../secrets", "..", "a/b", r"a\b"] {
+            let e = RepoConfig::prompt(d.path(), bad).unwrap_err();
+            assert!(
+                format!("{e}").contains("not a prompt name"),
+                "{bad} must be refused: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_prompt_says_which_ones_exist() {
+        // "File not found" sends a user looking for a typo in a path they
+        // never typed. The names are right there.
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join(".trellis").join("prompts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("typefix.md"), "x").unwrap();
+        std::fs::write(dir.join("refactor.md"), "y").unwrap();
+
+        let e = RepoConfig::prompt(d.path(), "nosuch").unwrap_err();
+        let msg = format!("{e}");
+        assert!(msg.contains("refactor") && msg.contains("typefix"), "{msg}");
     }
 
     #[test]

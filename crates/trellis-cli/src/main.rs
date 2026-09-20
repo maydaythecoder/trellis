@@ -49,6 +49,8 @@ enum Command {
 
     /// Run the agent loop against a task.
     Run {
+        /// Optional when `--prompt` names a template.
+        #[arg(default_value = "")]
         task: String,
         /// Which model drives the loop:
         ///
@@ -83,6 +85,12 @@ enum Command {
         /// this session does that.
         #[arg(long)]
         resume: bool,
+        /// Start from a named template in `.trellis/prompts/<name>.md`.
+        ///
+        /// Any task text given as well is appended, so a template can be a
+        /// standing instruction with a specific ask after it.
+        #[arg(long)]
+        prompt: Option<String>,
     },
 
     /// Continue from the last trail entry.
@@ -188,7 +196,25 @@ fn main() -> Result<()> {
             unconstrained,
             agents,
             resume,
-        } => cmd_run(&root, &task, &model, unconstrained, &agents, resume),
+            prompt,
+        } => {
+            let task = match &prompt {
+                Some(name) => {
+                    let template = config::RepoConfig::prompt(&root, name)?;
+                    if task.trim().is_empty() {
+                        template
+                    } else {
+                        format!(
+                            "{template}
+
+{task}"
+                        )
+                    }
+                }
+                None => task,
+            };
+            cmd_run(&root, &task, &model, unconstrained, &agents, resume)
+        }
         Command::Resume => cmd_resume(&root),
         // Deliberately before the root is used for anything: models are user
         // state, not repository state, and `trellis model` must work outside
