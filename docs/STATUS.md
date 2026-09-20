@@ -110,9 +110,9 @@ OPEN_QUESTIONS Q-13.
    before any work on collapsing the 2,382-item list.
 2. **The model floor (S7), remainder.** The first configuration is measuring.
    The second (Qwen2.5-Coder-3B) is still downloading.
-3. **v0.3, remainder.** Trail writing, committing and `resume` are built. Left:
-   the context file, governance-rule import, and feeding prior context into
-   the loop as a starting state rather than only printing it.
+3. **v0.3, remainder.** The wedge is demonstrated: `trellis run --resume`
+   seeds a run from the last trail, fenced as data and structurally unable to
+   make the run converge. Left: the context file and governance-rule import.
 4. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
    fixture return types and return-type propagation. Not to be started against
    samples already scored twice.
@@ -148,6 +148,24 @@ its own commit message. Anything in `RISK_REGISTER.md` marked "applied" should
 name the test that would fail if it were reverted.
 
 ## Recently closed
+
+- **S6, which turned out not to be a legibility problem.** `trellis radius`
+  printed "92 of 2474 first-party call sites resolved (3.7%)" — sites reaching
+  the symbol over every unbindable site in the touched files. Two populations,
+  one ratio, and the same string went to the model and into the trail.
+  `RadiusCoverage` (ADR 0014) has no `total()` and no fraction. The per-file
+  breakdown that replaced it showed at once that 1,575 of `Factory`'s 2,382
+  unbound sites are in five test files.
+- **v0.3 context seeding.** `PriorContext` is not `turns`, so a recorded pass
+  from an earlier run cannot satisfy `last_check_passed` — the obvious
+  implementation would have let a model converge on its first move against a
+  tree that no longer exists.
+- **A pathless `run_checks` now says what it checked.** Found by the floor
+  run: the model called it with no paths, mypy chose the whole repository,
+  poetry's pre-existing errors came back looking like the model's own, and it
+  edited a file it saw in that output.
+- **A resumed session was told everything except what the last run verified.**
+  `context_lines` read only the always-empty `factual.checks`.
 
 - Incremental update: single-file save **39.7 ms p50**, 3.1× a cold build,
   with a property test asserting an updated session equals a cold one.
