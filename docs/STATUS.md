@@ -108,9 +108,12 @@ than edited, because editing is the operation that kept failing.*
    floor that is *located* rather than bounded needs a configuration that
    passes, and Qwen2.5-Coder-3B is at 27% after several hours at ~47 KB/s.
    Blocked on bandwidth, not on work.
-2. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
-   fixture return types and return-type propagation. Not to be started against
-   samples already scored twice.
+2. **The denominator fix, not a new resolution rule.** Measured this
+   iteration: the fixture idea is already closed and return-type propagation
+   is worth 67 sites. The real defect is that `typed_receiver` records a
+   receiver annotated with a demonstrably non-first-party type as a
+   first-party miss — roughly 2,300 sites. See the section below. Exclude only
+   what is demonstrably external, or recall becomes unfalsifiable.
 3. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
 4. Deferred: Q-14's latent unsound edge on the self-dispatch path.
@@ -118,6 +121,69 @@ than edited, because editing is the operation that kept failing.*
 **v0.1, v0.2 and v0.3 are complete** apart from S7's second configuration,
 which is blocked on network rather than on work. What remains before v1.0 is
 the 85% recall gate — a backstop, then a hand audit large enough to claim it.
+
+## The 85% backstop: both candidates measured, both too small, and a third found
+
+The roadmap said the evidence pointed at `conftest.py` fixture return types and
+return-type propagation. Both are now measured (`docs/bench/`), and neither is
+worth building.
+
+**Fixtures: already closed.** Parameter annotations have been collected as type
+facts since ADR 0012 — `parse.rs` says so in a comment naming pytest fixtures
+explicitly. poetry annotates its fixture parameters, so only **10** call sites
+in the whole corpus have an unannotated test-function parameter as receiver,
+and none of those names a fixture. `fixture_opportunity.py`.
+
+**Return-type propagation: 67 sites.** One hop, both shapes — `f().m()` and
+`x = f(); x.m()` — with the callee first-party, return-annotated, the return
+type a first-party class, and the method present on it. Sixty-seven of 15,707,
+which is 0.4 percentage points, against a rule that can only add unsound edges.
+Not worth the risk.
+
+**The third: the denominator is wrong, and by more than either rule would fix.**
+
+`receiver_shapes.py` classifies every attribute-shaped call site by the shape
+of its receiver. Two buckets stand out:
+
+```
+parameter, annotated non-first-party         1622   11.8%    val: str -> val.lower()
+local, type not derivable in-file            1883   13.7%
+local from call, return type not first-party  413
+local from constructor call, non-first-party  230
+local from annotation, non-first-party         92
+```
+
+`typed_receiver` ends with `let class = self.find_class(file, scope, &ty)?;`.
+When the stated type is not a first-party class the `?` returns `None`, the
+caller falls through, and the site is recorded `MethodDispatchUntyped` — an
+**unresolved first-party miss**.
+
+But `val: str` calling `val.lower()` is not a first-party call that was missed.
+It is a call into the standard library, and `BENCHMARK_AND_EVAL.md` §2 defines
+recall over call sites whose true callee is first-party. Such a site belongs in
+`external`, excluded from the denominator, exactly like the 6,087 already
+excluded there.
+
+This is the same error that `poetry.core` produced: 379 imports counted as
+first-party misses, and correcting it moved `Name` recall from 71.7% to 86.2%.
+The shape is identical — the resolver knows enough to exclude a site and does
+not.
+
+Roughly 2,300 sites are in scope, which would move the denominator from 15,707
+toward ~13,400. The reported figure would move accordingly. **That is not a
+recall improvement and must never be presented as one** — no additional call
+site becomes resolvable. It is a correction to a figure that has been wrong in
+the pessimistic direction, and the only honest way to describe it is as a
+denominator fix with the before and after both stated.
+
+The discipline it needs, which is where it could go wrong: exclude only when
+the type is *demonstrably* not first-party — a builtin, or a name that resolves
+to an import from outside the root. An annotation the resolver merely fails to
+resolve must stay a miss, or the rule becomes a way to launder every failure
+into an exclusion and recall becomes unfalsifiable.
+
+Next: implement that, re-run the audit on a fresh sample, and report both
+denominators.
 
 ## What the last iteration found
 
