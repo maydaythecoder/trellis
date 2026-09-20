@@ -4,7 +4,8 @@
 //! Every public entry point here spawns a real process and reports what it
 //! did. Nothing in this crate consults a model.
 
-pub mod verdict;
+pub mod governance;
+mod verdict;
 
 pub use verdict::{AuditMode, CheckDetail, CheckKind, Verdict};
 
@@ -99,6 +100,68 @@ pub async fn import_check(root: &Path, cfg: &CheckConfig, module: &str) -> Verdi
     Verdict::from_import(run(root, &argv).await)
 }
 
+/// Audits the repository's own governance rules.
+///
+/// **Produces a `Verdict`, which is the whole point.** `last_check_passed`
+/// reads verdicts, so a violation reported only into the model's context is
+/// one a model can converge past — the rule would be a suggestion again.
+///
+/// The evaluation is a substring search and nothing more. A governance check
+/// that exercised judgment would be the thing under audit auditing itself,
+/// which is Constraint 2 by another route.
+///
+/// Rank decides the outcome and only the outcome: a `non-negotiable`
+/// violation fails, a `nice-to-have` is reported and does not. `failure_count`
+/// counts only the failing ones, so a run's own summary does not inflate.
+#[tracing::instrument(skip(rules, files))]
+pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String]) -> Verdict {
+    let started = Instant::now();
+    let found = governance::violations(root, rules, files);
+    let (failing, advisory): (Vec<_>, Vec<_>) =
+        found.iter().partition(|v| v.rank.fails_the_audit());
+
+    let mut out = String::new();
+    for v in &failing {
+        out.push_str(&format!(
+            "VIOLATION [{}] {}:{}  {}
+",
+            v.rule, v.file, v.line, v.text
+        ));
+    }
+    for v in &advisory {
+        out.push_str(&format!(
+            "advisory  [{}] {}:{}  {}
+",
+            v.rule, v.file, v.line, v.text
+        ));
+    }
+    if found.is_empty() {
+        out.push_str(&format!(
+            "{} rule(s) checked over {} file(s); none broken
+",
+            rules.len(),
+            files.len()
+        ));
+    }
+
+    // A real ProcessOutput, because the seal takes nothing else. No
+    // subprocess ran — the match is in-process — so the command records what
+    // was actually evaluated rather than inventing a shell line that would
+    // not reproduce.
+    Verdict::from_governance(ProcessOutput {
+        command: format!(
+            "governance audit: {} rule(s), {} file(s)",
+            rules.len(),
+            files.len()
+        ),
+        exit_code: Some(i32::from(!failing.is_empty())),
+        failure_count: Some(failing.len() as u32),
+        stdout: out,
+        stderr: String::new(),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
 async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
     let started = Instant::now();
     let command = argv.join(" ");
@@ -185,5 +248,90 @@ mod default_config_tests {
             ..CheckConfig::default()
         };
         assert_eq!(cfg.typecheck, ["pyright"]);
+    }
+}
+
+#[cfg(test)]
+mod governance_audit_tests {
+    use super::*;
+
+    fn repo(rule: &str) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path().join(".trellis/governance");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(g.join("r.toml"), rule).unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        d
+    }
+
+    /// The gate item: "a governance rule can fail an audit, mechanically."
+    ///
+    /// Failing means producing a `Verdict` that does not pass, because that
+    /// is the only thing convergence reads. A violation printed into the
+    /// model's context and nowhere else is one the model converges past.
+    #[test]
+    fn a_non_negotiable_violation_fails_the_verdict() {
+        let d = repo(
+            "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+             forbid = { pattern = \"psycopg2.connect\" }\n",
+        );
+        std::fs::write(d.path().join("app/h.py"), "x = psycopg2.connect('s')\n").unwrap();
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(d.path(), &rules, &["app/h.py".to_string()]);
+        assert!(!v.passed(), "a broken non-negotiable rule must fail");
+        assert_eq!(v.detail().kind, CheckKind::Governance);
+        assert_eq!(v.detail().failure_count, Some(1));
+        assert!(v.detail().stdout.contains("VIOLATION [No direct DB]"));
+        assert!(v.detail().stdout.contains("app/h.py:1"));
+    }
+
+    #[test]
+    fn a_nice_to_have_violation_is_reported_and_passes() {
+        // If a nice-to-have failed the audit the ranking would mean nothing:
+        // every rule would be non-negotiable in practice.
+        let d = repo(
+            "name = \"Prefer pathlib\"\nrank = \"nice-to-have\"\n\
+             forbid = { pattern = \"os.path.join\" }\n",
+        );
+        std::fs::write(d.path().join("app/h.py"), "p = os.path.join(a, b)\n").unwrap();
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(d.path(), &rules, &["app/h.py".to_string()]);
+        assert!(v.passed(), "a nice-to-have must not fail the audit");
+        assert_eq!(v.detail().failure_count, Some(0));
+        assert!(
+            v.detail().stdout.contains("advisory  [Prefer pathlib]"),
+            "and must still be reported, or ranking it was pointless: {}",
+            v.detail().stdout
+        );
+    }
+
+    #[test]
+    fn a_clean_repository_passes_and_says_what_was_checked() {
+        let d = repo(
+            "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+             forbid = { pattern = \"psycopg2.connect\" }\n",
+        );
+        std::fs::write(d.path().join("app/h.py"), "from app.repo import get\n").unwrap();
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(d.path(), &rules, &["app/h.py".to_string()]);
+        assert!(v.passed());
+        // "Passed" with no indication of what was examined is the kind of
+        // clean bill S2 warns about.
+        assert!(
+            v.detail()
+                .stdout
+                .contains("1 rule(s) checked over 1 file(s)")
+        );
+    }
+
+    #[test]
+    fn no_rules_passes_without_implying_anything_was_verified() {
+        let d = tempfile::tempdir().unwrap();
+        let v = governance_audit(d.path(), &[], &[]);
+        assert!(v.passed());
+        assert!(v.detail().stdout.contains("0 rule(s)"));
     }
 }

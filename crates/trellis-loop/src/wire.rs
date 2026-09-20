@@ -70,8 +70,9 @@ impl ToolCallWire {
                         "typecheck" => Ok(CheckKind::Typecheck),
                         "tests" => Ok(CheckKind::Tests),
                         "import" => Ok(CheckKind::Import),
+                        "governance" => Ok(CheckKind::Governance),
                         other => Err(format!(
-                            "unknown check kind `{other}`; expected typecheck, tests or import"
+                            "unknown check kind `{other}`; expected typecheck, tests, import or governance"
                         )),
                     })
                     .collect::<Result<Vec<_>, _>>()?;

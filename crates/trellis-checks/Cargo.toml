@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 trellis-core.workspace = true
 serde.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -16,6 +17,7 @@ tracing.workspace = true
 workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 # So the Deserialize forgery fails on the missing impl, not on an
 # unlinked crate.
 serde_json.workspace = true

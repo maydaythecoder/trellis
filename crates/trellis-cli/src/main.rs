@@ -651,7 +651,20 @@ fn cmd_run(
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
     println!("snapshot at {}", snapshot.head);
 
-    let governance = cfg.governance();
+    // Rule documents from `.trellis/governance/`, plus the older
+    // `[governance] deny_write` in config.toml. Both feed the same write-path
+    // refusal; the documents additionally carry rank and prose, which the
+    // audit and the prompt need and a config list cannot express.
+    let rules = trellis_checks::governance::load(root)
+        .context("a governance rule would not load; runs would silently ignore it")?;
+    let mut deny: Vec<String> = cfg
+        .governance()
+        .rules()
+        .iter()
+        .map(|r| r.as_written())
+        .collect();
+    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
+    let governance = trellis_loop::Governance::new(&deny);
     let notes = config::RepoConfig::notes(root)?;
     if !governance.is_empty() || notes.is_some() {
         println!(
@@ -664,11 +677,30 @@ fn cmd_run(
             }
         );
     }
+    // The model is told the rules it will be held to, ranked, with the prose
+    // that explains them. A refusal a contributor cannot act on is a wall;
+    // the description is what turns it into a direction.
+    let mut prompt_rules: Vec<String> = governance
+        .rules()
+        .iter()
+        .map(|r| format!("{} (no writes)", r.as_written()))
+        .collect();
+    for r in &rules {
+        let rank = match r.rank {
+            trellis_checks::governance::Rank::NonNegotiable => "non-negotiable",
+            trellis_checks::governance::Rank::NiceToHave => "nice-to-have",
+        };
+        prompt_rules.push(if r.description.trim().is_empty() {
+            format!("{} [{rank}]", r.name)
+        } else {
+            format!("{} [{rank}] — {}", r.name, r.description.trim())
+        });
+    }
     let seed = trellis_loop::Seed {
         prior,
         repo: trellis_loop::RepoContext {
             notes,
-            rules: governance.rules().iter().map(|r| r.as_written()).collect(),
+            rules: prompt_rules,
         },
     };
 
@@ -676,6 +708,7 @@ fn cmd_run(
     let (outcome, transcript) = rt.block_on(async {
         let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
+            .with_rules(rules)
             .spawn();
         // The loop is generic over the model, so each driver gets its own
         // call rather than a trait object — the `Model` trait uses `async fn`

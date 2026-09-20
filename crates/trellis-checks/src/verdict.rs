@@ -32,6 +32,11 @@ pub enum CheckKind {
     Typecheck,
     Tests,
     Import,
+    /// A governance audit: the repository's own rules, evaluated
+    /// mechanically. Sealed like any other check because convergence reads
+    /// verdicts — a violation that never became one is a violation a model
+    /// can converge straight past.
+    Governance,
 }
 
 /// The executed check's own account of what happened.
@@ -80,6 +85,10 @@ impl Verdict {
 
     pub(crate) fn from_tests(o: ProcessOutput) -> Self {
         Self::from_output(CheckKind::Tests, o)
+    }
+
+    pub(crate) fn from_governance(o: ProcessOutput) -> Self {
+        Self::from_output(CheckKind::Governance, o)
     }
 
     pub(crate) fn from_import(o: ProcessOutput) -> Self {

@@ -122,6 +122,8 @@ pub struct Orchestrator {
     /// the working tree. A rule enforced anywhere else is a rule a tool call
     /// can route around.
     governance: crate::governance::Governance,
+    /// The repository's rule documents, for the governance audit.
+    rules: Vec<trellis_checks::governance::Rule>,
 }
 
 impl Orchestrator {
@@ -132,7 +134,15 @@ impl Orchestrator {
             checks,
             touched: Vec::new(),
             governance: crate::governance::Governance::default(),
+            rules: Vec::new(),
         }
+    }
+
+    /// Supplies the rule documents a governance audit evaluates.
+    #[must_use]
+    pub fn with_rules(mut self, rules: Vec<trellis_checks::governance::Rule>) -> Self {
+        self.rules = rules;
+        self
     }
 
     /// Applies the repository's rules to this run.
@@ -363,6 +373,18 @@ impl Orchestrator {
                 CheckKind::Import => {
                     let module = paths.first().and_then(|p| p.to_str()).unwrap_or(".");
                     trellis_checks::import_check(&self.root, &self.checks, module).await
+                }
+                CheckKind::Governance => {
+                    // Audited over the files the run touched, not the whole
+                    // tree: a rule broken somewhere this run never went is a
+                    // pre-existing condition, and failing a run for it would
+                    // make every run in a non-compliant repository fail.
+                    let scope: Vec<String> = if paths.is_empty() {
+                        self.touched.clone()
+                    } else {
+                        paths.iter().map(|p| p.display().to_string()).collect()
+                    };
+                    trellis_checks::governance_audit(&self.root, &self.rules, &scope)
                 }
             };
             if !v.passed() {
