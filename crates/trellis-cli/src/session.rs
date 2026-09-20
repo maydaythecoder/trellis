@@ -112,6 +112,24 @@ impl Session {
                 continue;
             }
 
+            // Control characters are never a task.
+            //
+            // Without raw mode an arrow key arrives as an escape sequence —
+            // ESC `[` `A` for up — which does not begin with `/`, so it fell
+            // through to the model. Pressing up by reflex ran a full agent
+            // task: the sequence slugified to "a", a trail was written under
+            // that name, and files were edited.
+            //
+            // Reflex input must never start work. The line is refused and the
+            // session says what it does not support, which beats silently
+            // discarding it — a user whose up-arrow does nothing at all will
+            // press it again.
+            if line.chars().any(char::is_control) {
+                println!("{}", NO_LINE_EDITING);
+                println!();
+                continue;
+            }
+
             // A command that fails must not end the session. The whole point
             // of staying resident is that a typo costs a line, not a restart.
             if let Err(e) = self.dispatch(line) {
@@ -312,6 +330,16 @@ impl Session {
 /// before reporting anything.
 const EXIT: &str = "__trellis_exit__";
 
+/// Shown when input carries an escape sequence, which is what an arrow key is
+/// without raw mode. Names the limit rather than pretending the key did
+/// something.
+const NO_LINE_EDITING: &str = concat!(
+    "that looked like a key this session does not handle (arrow keys, ",
+    "history).
+There is no line editing yet, so nothing was run. Type the ",
+    "line, or /help."
+);
+
 fn help() {
     println!(
         "{}",
@@ -391,6 +419,40 @@ mod tests {
         for word in ["/exit", "/quit", "/q"] {
             let e = s.dispatch(word).expect_err("exit unwinds as an error");
             assert_eq!(e.to_string(), EXIT, "{word} must use the sentinel");
+        }
+    }
+
+    #[test]
+    fn an_escape_sequence_never_becomes_a_task() {
+        // Found by pressing up-arrow. Without raw mode the key arrives as
+        // ESC `[` `A`, which does not begin with `/`, so it fell through to
+        // the model: the sequence slugified to "a", a trail was written under
+        // that name, and files were edited.
+        //
+        // Reflex input must never start work. The guard lives in the read
+        // loop, so `dispatch` is never reached — this asserts the predicate
+        // the guard uses, which is the part that can silently stop matching.
+        let up = "\u{1b}[A";
+        let down = "\u{1b}[B";
+        let del = "\u{7f}";
+        let ctrl_c = "\u{3}";
+        for seq in [up, down, del, ctrl_c] {
+            assert!(
+                seq.chars().any(char::is_control),
+                "{seq:?} must be recognised as control input"
+            );
+        }
+        // And ordinary input must not be caught by it, or the session refuses
+        // everything a user actually types.
+        for ok in [
+            "fix the type error",
+            "/radius describe",
+            "rename Foo to Bar",
+        ] {
+            assert!(
+                !ok.chars().any(char::is_control),
+                "{ok:?} is ordinary input"
+            );
         }
     }
 
