@@ -42,10 +42,13 @@ def main() -> int:
     for path in sorted(glob.glob(os.path.join(audit_dir, "chunks", "*-filled.json"))):
         with io.open(path, encoding="utf-8") as f:
             chunk = json.load(f)
+        name = chunk.get("chunk", os.path.basename(path))
         for r in chunk.get("results", []):
             rid = r["id"]
             if rid in filled:
                 duplicates.append(rid)
+            # Which auditor judged this site, for the agreement diagnostic.
+            r["_chunk"] = name
             filled[rid] = r
 
     problems = []
@@ -94,7 +97,50 @@ def main() -> int:
     print(f"merged {len(base['sample'])} audited sites into {base_path}")
     print(f"  first-party (the recall denominator): {first_party}")
     print(f"  excluded as not first-party:          {len(base['sample']) - first_party}")
+
+    report_auditor_agreement(filled, base)
     return 0
+
+
+def report_auditor_agreement(filled, base):
+    """Reports how differently the auditors drew the first-party line.
+
+    Splitting the sample across auditors buys throughput and costs
+    consistency. `is_first_party` sets the recall denominator directly, so an
+    auditor applying a systematically looser or tighter rule moves the headline
+    figure by more than sampling error does — and unlike sampling error, that
+    movement is invisible in the confidence interval.
+
+    This is a diagnostic, not a gate: some spread is ordinary binomial noise at
+    these chunk sizes. It is printed so the spread is on the record next to the
+    number it affects, rather than discovered later.
+    """
+    chunks = {}
+    for r in filled.values():
+        chunks.setdefault(r.get("_chunk", "?"), []).append(r)
+
+    if len(chunks) <= 1:
+        return
+
+    print()
+    print("  auditor agreement on where the first-party line falls:")
+    for name, rows in sorted(chunks.items(), key=lambda kv: str(kv[0])):
+        fp = sum(1 for r in rows if r["is_first_party"])
+        pct = fp / len(rows) * 100 if rows else 0.0
+        print(f"    chunk {name:>3}: {fp:3}/{len(rows):3} first-party  ({pct:5.1f}%)")
+
+    fixture = [r for r in filled.values() if "fixture" in (r.get("reasoning") or "").lower()]
+    if fixture:
+        fp = sum(1 for r in fixture if r["is_first_party"])
+        print(
+            f"    of {len(fixture)} sites whose reasoning cites a pytest fixture, "
+            f"{fp} were judged first-party and {len(fixture) - fp} were not"
+        )
+        print(
+            "    (dependency injection through a fixture is the single most common\n"
+            "     pattern in this corpus's misses; if auditors split on it, the\n"
+            "     denominator moves and so does recall)"
+        )
 
 
 if __name__ == "__main__":
