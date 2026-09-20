@@ -266,6 +266,24 @@ name the test that would fail if it were reverted.
   run: the model called it with no paths, mypy chose the whole repository,
   poetry's pre-existing errors came back looking like the model's own, and it
   edited a file it saw in that output.
+- **A run that repeated itself spent the whole budget finding out.** Typing
+  "hello" into the session produced six identical `RunChecks { paths: [] }`,
+  five minutes of CPU on a 0.5B, and a rollback. The same shape ran through
+  both live runs and the entire 20-task floor. Three consecutive identical
+  call-and-result pairs now stop the run; two are still allowed, because a
+  check re-run after an edit that did not take is a legitimate second attempt.
+  The **result** is compared, not just the call — re-running a check after a
+  real edit is progress, and a stop keyed only on the call would kill the
+  ordinary fix-then-verify loop.
+- **A real model drove the loop end to end** (Qwen2.5-0.5B-Instruct Q4_K_M,
+  tier 2, served locally). It reproduced the floor finding exactly: a pathless
+  check, then five identical edits using the file path as the anchor and an
+  invented filename as the replacement, every one refused for an absolute
+  path, no convergence, byte-identical rollback. Constraint guarantees form,
+  never judgement — demonstrated rather than tabulated.
+- **A repository can name its own model** (`[model] spec` in config), so a
+  project with a local runtime opens ready. An explicit `--model` still wins.
+  Not a place for keys: ADR 0010 stands.
 - **Pressing up-arrow in the session ran an agent task.** Without raw mode the
   key arrived as `ESC [ A`, which does not begin with `/`, so it fell past the
   command match into the model: slugified to "a", a trail written under that
