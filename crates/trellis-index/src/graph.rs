@@ -179,6 +179,11 @@ pub struct Index {
     /// `Attribute` has a very different fallback decision from one that is
     /// uniformly 75%, and only the split distinguishes them.
     pub by_shape: std::collections::BTreeMap<String, crate::coverage::Coverage>,
+    /// Hash of the file set this index was built from.
+    ///
+    /// `.trellis/index.bin` is keyed by it, so a cached index can never be
+    /// returned for a file set it was not built from. See `cache`.
+    pub fingerprint: u64,
 }
 
 impl Index {

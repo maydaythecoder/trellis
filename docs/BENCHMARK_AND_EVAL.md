@@ -113,7 +113,11 @@ this section:
 | — external, excluded | 6,087 |
 
 Build time, release build, warm page cache, three runs: **116.9 / 118.9 /
-119.2 ms**. Peak working set: **37.9 MB**. That is roughly 690 lines/ms
+119.2 ms**. Peak working set: **37.9 MB**. `.trellis/index.bin` (postcard):
+**589.7 KiB**, against 81,700 lines of Python — roughly 7 bytes per line, and
+the reason A-24 gitignores it rather than committing a blob that changes on
+nearly every edit. A `trellis radius` query against a warm cache returns in
+**48 ms** total process time, against ~120 ms to rebuild. That is roughly 690 lines/ms
 wall-clock for parse *and* resolve, against the ~1,400 lines/ms measured for
 Pass 1 alone — so resolution roughly doubles the cost of parsing, and neither
 is close to being the constraint at this size (S9).

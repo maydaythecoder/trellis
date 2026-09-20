@@ -102,7 +102,7 @@ fn main() -> Result<()> {
 /// never suppressed when it is inconvenient: a radius that omits what it
 /// could not see is the failure mode the whole design exists to prevent.
 fn cmd_radius(root: &Path, query: &str) -> Result<()> {
-    let index = trellis_index::build(root);
+    let index = trellis_index::build_cached(root);
 
     let qualified = |s: &trellis_index::SymbolEntry| {
         format!(
@@ -205,14 +205,24 @@ fn cmd_radius(root: &Path, query: &str) -> Result<()> {
 /// only figure that carries a blast-radius claim; `ambiguous` and
 /// `unresolved` are the cost the user is asked to read.
 fn cmd_index(root: &Path) -> Result<()> {
+    // `index` always rebuilds — it is the command whose job is to refresh
+    // the cache, so reading the cache here would make it a no-op.
     let started = std::time::Instant::now();
-    let index = trellis_index::build(root);
+    let sources = trellis_index::read_sources(root);
+    let index = trellis_index::build_from_sources(&sources);
     let elapsed = started.elapsed();
+
+    let cache_path = root.join(".trellis").join("index.bin");
+    let cache_note = match trellis_index::cache::save(&index, &cache_path) {
+        Ok(bytes) => format!("{:.1} KiB", bytes as f64 / 1024.0),
+        Err(e) => format!("not written ({e})"),
+    };
 
     let c = &index.coverage;
     println!("indexed {} files in {:?}", index.files.len(), elapsed);
     println!("  definitions:     {}", index.symbols.len());
     println!("  call sites:      {}", index.sites.len());
+    println!("  index.bin:       {cache_note}");
     println!("  first-party:     {} (the recall denominator)", c.total());
     println!(
         "  external:        {} (excluded: stdlib, site-packages)",

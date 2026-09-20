@@ -346,15 +346,41 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
 /// Builds the whole index for a repository: discover, Pass 1, Pass 2, bind.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn build(root: &Path) -> Index {
-    let paths = discover(root);
-    let sources: Vec<(String, String)> = paths
+    build_from_sources(&read_sources(root))
+}
+
+/// Reads every indexable file under `root` as a `(relative path, source)` pair.
+pub fn read_sources(root: &Path) -> Vec<(String, String)> {
+    discover(root)
         .iter()
         .filter_map(|p| {
             let src = std::fs::read_to_string(p).ok()?;
             Some((rel_path(root, p), src))
         })
-        .collect();
-    build_from_sources(&sources)
+        .collect()
+}
+
+/// Loads `.trellis/index.bin` when it matches the current file set, otherwise
+/// builds and writes it.
+///
+/// The cache is checked against a fingerprint of the files just read, so a
+/// stale index is discarded rather than returned. A failed write is not an
+/// error the caller should care about: the index is derived state, and losing
+/// the cache costs a rebuild, not correctness.
+pub fn build_cached(root: &Path) -> Index {
+    let sources = read_sources(root);
+    let fp = crate::cache::fingerprint(&sources);
+    let path = root.join(".trellis").join("index.bin");
+
+    if let Some(index) = crate::cache::load(&path, fp) {
+        tracing::debug!("index loaded from cache");
+        return index;
+    }
+    let index = build_from_sources(&sources);
+    if let Err(e) = crate::cache::save(&index, &path) {
+        tracing::debug!("could not write index cache: {e}");
+    }
+    index
 }
 
 /// The resolver proper, over `(relative_path, source)` pairs.
@@ -576,6 +602,7 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
 
     index.coverage = coverage;
     index.by_shape = by_shape;
+    index.fingerprint = crate::cache::fingerprint(sources);
     index
 }
 
