@@ -99,29 +99,26 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-1. **S6 degradation UX, and it is a correctness problem, not a polish one.**
-   `trellis radius Factory` prints *"92 of 2474 first-party call sites resolved
-   (3.7%)"*. The numerator counts sites that reach `Factory`; the denominator
-   counts every unbindable site in the files the radius touches. They are
-   different populations, and dividing one by the other produces a figure that
-   means nothing while reading as the resolver's reach — which the audit puts
-   at 72%. The same line is handed to the model. Splitting the radius's
-   coverage from the index's, so the two facts can never be divided, comes
-   before any work on collapsing the 2,382-item list.
-2. **The model floor (S7), remainder.** One configuration measured, below the
-   floor. The A/B against the fixed harness is running. The second model
-   (Qwen2.5-Coder-3B) is at 27% after several hours at ~47 KB/s, so a floor
-   that is actually *located* rather than bounded needs a faster network than
-   this machine has.
-3. **v0.3, remainder.** The wedge is demonstrated: `trellis run --resume`
-   seeds a run from the last trail, fenced as data and structurally unable to
-   make the run converge. Left: the context file and governance-rule import.
-4. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
+*This list has now gone stale three times in one session — an item stayed at
+the top after it was closed, twice. It is rewritten wholesale each iteration
+rather than edited, because editing is what kept missing.*
+
+1. **v0.3, remainder — the context file and governance-rule import.** The
+   repository's own conventions, commands and rules, imported once and carried
+   into every run; and project rules the loop must respect, read from the
+   repository rather than configured per session. The only fully actionable
+   item left: no network, no inference, no download.
+2. **The model floor (S7), remainder.** One configuration measured and it is
+   below the floor; the A/B says that is the model and not the harness. A
+   floor that is *located* rather than bounded needs a configuration that
+   passes, and Qwen2.5-Coder-3B is at 27% after several hours at ~47 KB/s.
+   Blocked on bandwidth, not on work.
+3. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
    fixture return types and return-type propagation. Not to be started against
    samples already scored twice.
-5. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
+4. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
-6. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+5. Deferred: Q-14's latent unsound edge on the self-dispatch path.
 
 ## What the last iteration found
 
