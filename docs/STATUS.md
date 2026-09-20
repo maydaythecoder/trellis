@@ -4,23 +4,23 @@ Part 8 of the brief is the *project's* definition of done, not any one
 session's. This maps each item to its actual state, so nothing is quietly
 assumed complete.
 
-Last updated 2026-09-19.
+Last updated 2026-09-20.
 
 | # | Part 8 item | State | Where |
 |---|---|---|---|
 | 1 | Every document in Part 6 exists | **Done** | `docs/`, 9 documents + 10 ADRs |
 | 2 | `ASSUMPTIONS` block, every default chosen where the brief was silent | **Done** | `docs/ASSUMPTIONS.md`, 23 entries |
-| 3 | All soft spots in `RISK_REGISTER.md` with a costed patch each | **Done** | `docs/RISK_REGISTER.md`, all 18 |
-| 4 | **S1 resolved**: measured resolver reach, fallback trigger recorded | **Resolver built; repository-wide reach measured; hand-audited recall pending.** See "the measurement" below | `trellis-index/src/resolve.rs`, `BENCHMARK_AND_EVAL.md` §2 |
+| 3 | All soft spots in `RISK_REGISTER.md` with a costed patch each | **Done** | `docs/RISK_REGISTER.md`, all 20 |
+| 4 | **S1 resolved**: measured resolver reach, fallback trigger recorded | **Done for v0.1.** Hand-audited on two independent samples; 72.0% on the fresh one. A third audit is required before any v1.0 gate claim (A-34) | `trellis-index/src/resolve.rs`, `BENCHMARK_AND_EVAL.md` §2 |
 | 5 | **S14 resolved**: named benchmark repo, threshold with reasoning | **Done** | `BENCHMARK_AND_EVAL.md` §1, §3 |
 | 6 | **S16 resolved**: the recall figure that fires the pivot | **Done** — 60% | ADR 0002, `ROADMAP.md` |
-| 7 | **S7 resolved**: model floor across seven metrics | **Not done.** Spike designed, not run. Needs inference | `BENCHMARK_AND_EVAL.md` §5 |
+| 7 | **S7 resolved**: model floor across seven metrics | **Rig built, first configuration measuring.** `docs/bench/run_floor.py` drives the real adapter against a candle-backed llama.cpp-compatible probe | `BENCHMARK_AND_EVAL.md` §5, `docs/bench/run_floor.py` |
 | 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Mostly.** Embedded and tested; licence verified MIT 1.8.0; matrix published. **Inference path deliberately open** | ADR 0006, `TECH_SPIKE.md` §3 |
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
-| 10 | One main loop with tools, not a verification fan-out, ADR says why | **ADR done. Loop not built** — v0.2, gated on the recall call | ADR 0005 |
+| 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves of the v0.2 exit condition demonstrated: a converging run, and a model declaring success while the checks disagree | ADR 0005, `trellis-loop/src/agent.rs` |
 | 11 | Multi-agent parallelizes work only, ADR says why | **Done in design and rules; no concurrent execution yet** | ADR 0005, `trellis-loop/src/partition.rs` |
 | 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and property-tested over 400 seeds, now against a real resolver rather than synthetic graphs. Rule 2 documented; enforced when integration is built** | `partition::plan`, `tests/partition_invariants.rs` |
-| 13 | `trellis doctor` reports batching capability and multi-agent tier | **Types and reporting done; probing not implemented** — reports `Unknown`, and says so | `trellis-model/src/tier.rs` |
+| 13 | `trellis doctor` reports batching capability and multi-agent tier | **Done.** Probes the runtime rather than reporting a default; verified reporting `RuntimeConstrained` against a live server | `trellis-model/src/tier.rs`, `trellis-model/src/runtime.rs` |
 | 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite. No CI configured yet** | `trellis-vcs/src/lib.rs` tests |
 | 15 | Bidirectionality verified by property test | **Done** — 199 random graphs | `trellis-index/tests/bidirectional.rs` |
 | 16 | v1.0 gate verbatim in `ROADMAP.md`, all five conditions | **Done** | `ROADMAP.md` |
@@ -99,28 +99,53 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-1. **`trellis doctor` must probe rather than report defaults.** It currently
-   prints tier `ValidateAndRetry` and batching `Unknown` and says they are
-   defaults, which is the honest placeholder but not the requirement. S17 wants
-   the active tier reported; S18 wants batching capability measured, because a
-   user running four agents against a non-batching runtime sees no speedup and
-   blames TRELLIS.
-2. **The model floor (S7).** Weights still downloading. Task set is built and
-   verified (`docs/bench/floor_tasks.json`, 20 tasks). The probe rig needs
-   writing, and on this machine it will have to use in-process `candle`, since
-   there is no serving runtime here — that is a measurement expedient and does
-   **not** change ADR 0013's product ordering.
-3. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
-   sites beside 2,382 unresolved ones. Honest and unusable; a v0.3 blocker.
-4. **v0.3, remainder.** Trail writing, committing and `resume` are built. Left:
+1. **S6 degradation UX, and it is a correctness problem, not a polish one.**
+   `trellis radius Factory` prints *"92 of 2474 first-party call sites resolved
+   (3.7%)"*. The numerator counts sites that reach `Factory`; the denominator
+   counts every unbindable site in the files the radius touches. They are
+   different populations, and dividing one by the other produces a figure that
+   means nothing while reading as the resolver's reach — which the audit puts
+   at 72%. The same line is handed to the model. Splitting the radius's
+   coverage from the index's, so the two facts can never be divided, comes
+   before any work on collapsing the 2,382-item list.
+2. **The model floor (S7), remainder.** The first configuration is measuring.
+   The second (Qwen2.5-Coder-3B) is still downloading.
+3. **v0.3, remainder.** Trail writing, committing and `resume` are built. Left:
    the context file, governance-rule import, and feeding prior context into
    the loop as a starting state rather than only printing it.
-5. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
+4. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
    fixture return types and return-type propagation. Not to be started against
    samples already scored twice.
-6. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
+5. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
+6. **A test for the converging path.** Every test in `trellis-loop` asserts a
+   refusal to converge. The positive case was demonstrated by hand against a
+   demo repository and is not defended by anything in the suite, so a change
+   that broke convergence outright would pass.
 7. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+
+## What the last iteration found
+
+**S20's patch was described in three documents and absent from the code.**
+Commit `e99b375` says "Patched: `CheckConfig::default` now passes
+`--no-incremental`". `RISK_REGISTER.md` says "Patch, applied." `Q-17` says
+"The default now passes `--no-incremental`, which fixes mypy."
+`crates/trellis-checks/src/lib.rs` was not in that commit, and the default was
+a bare `vec!["mypy"]`.
+
+So for several commits the repository asserted, in the document whose whole job
+is an honest account of residual risk, that a hazard was closed while every
+default run reopened it. S20 is the case where a `Verdict` passes on code the
+checker never read; the register is exactly where someone would look to find
+out whether it still can. Fixed, with the reasoning moved into the source and
+two tests — one asserting the flag, one asserting TRELLIS does **not** append
+it to a command the user configured, because a verdict about an invocation the
+user never wrote is the same dishonesty inverted.
+
+Worth generalising: a claim in a document is not evidence the code does it, and
+this one survived a passing test suite, a clippy-clean build and a review of
+its own commit message. Anything in `RISK_REGISTER.md` marked "applied" should
+name the test that would fail if it were reverted.
 
 ## Recently closed
 
@@ -141,3 +166,9 @@ OPEN_QUESTIONS Q-13.
 - **v0.3 trail and resume**: written after rollback so failures are recorded,
   committed so the next run can start and no later rollback deletes them, and
   read back as `UntrustedTrail` with judgment fenced (S10, S11).
+- **The S7 floor runner** (`docs/bench/run_floor.py`), and four ways it could
+  have measured nothing: LF anchors against a CRLF corpus (all twenty tasks
+  skip, reported as a clean run), resetting to HEAD while HEAD accumulates
+  defects, scoring from the run's own verdict rather than re-checking, and
+  running the checker from the wrong directory. Each produces a plausible
+  report rather than an error.
