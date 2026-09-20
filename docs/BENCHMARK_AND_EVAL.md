@@ -230,6 +230,33 @@ resolve inherited `self` dispatch — the obvious next resolver feature — can
 therefore address at most about 9% of the `Attribute` gap, and is not the
 lever it appears to be.
 
+### Soundness, checked over every edge rather than sampled
+
+`examples/check_soundness.rs` verifies a necessary condition on **every**
+`Resolved` edge: the symbol named must be the final identifier of the call
+expression that produced it. Result, 2026-09-19:
+
+| corpus | Resolved edges | violations |
+|---|---|---|
+| poetry 2.5.0 sdist | 4,443 | **0** |
+| second corpus (371 files, 13,276 call sites) | 2,878 | **0** |
+
+This matters for v1.0 gate item 2, which asks for zero unsound edges across
+the corpus. The 400-site audit cannot establish that — it bounds the *rate*,
+and a rate low enough to go unobserved at 400 sites still leaves dozens across
+15,000 edges. The mechanical check is necessary but **not sufficient**: an
+edge to the wrong `foo` in a different module satisfies it, and only the audit
+catches that. The two are complementary and neither substitutes for the other.
+
+### Incremental update latency — not implemented
+
+The brief (4.3) specifies `Tree::edit` plus reparse of only the changed file,
+then re-resolving the invalidated edges. **That is not built.** The honest
+current figure for "latency on single-file save" is therefore the full rebuild
+cost: **~120 ms** on poetry, since nothing smaller exists. Recorded as a
+measurement of the current state rather than left blank, and it is a real cost
+because the agent loop edits files mid-run — this sits in the inner loop.
+
 ### Also measured in v0.1
 
 | Metric | Why |
