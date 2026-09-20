@@ -71,19 +71,29 @@ build complexity and hardware coverage. ADR 0006 is deliberately left
 **Proposed** on this point. Contained: tiers 1, 2 and 4 need no logit access, so
 a poor choice degrades rather than blocks. → Owner: v0.2.
 
-**Q-13 — Where does a blast radius get its unresolved count from?**
-`blast_radius` walks `reverse` adjacency, but an unresolved edge names no
-target and therefore never enters `reverse`. So the walk structurally cannot
-see one, `RadiusReport::coverage.unresolved` is always zero, and
-`all_edges_certain()`'s unresolved check is vacuous. This is backwards from
-what S2 requires — the radius is exactly where a user reads coverage. The fix
-is to source the count from the files and modules the radius touches
-(unresolved call sites in those files are the ones that might have reached the
-symbol) rather than from the traversal, but the right scope for "touches" is
-not obvious: the whole file, the enclosing module, or the transitive import
-closure. Each trades false reassurance against noise. **Must be settled when
-the resolver lands**, not after. → Owner: v0.1. Marked in
-`trellis-index/src/radius.rs`.
+**Q-13 — Where does a blast radius get its unresolved count from? — CLOSED
+2026-09-19.**
+`blast_radius` walked `reverse` adjacency, but an unresolved edge names no
+target and therefore never enters `reverse`. The walk structurally could not
+see one, so `RadiusReport::coverage.unresolved` was always zero and
+`all_edges_certain()`'s unresolved check was vacuous — backwards from what S2
+requires, since the radius is exactly where a user reads coverage.
+
+**Resolved:** the count now comes from the **whole file** of anything the
+radius touches (`radius::add_touched_file_misses`) — the root symbol's file,
+every transitively reached symbol's file, and the file of every call site in
+the radius. Of the three candidate scopes, the whole file is the widest that
+is still cheap, and the choice is deliberately the noisy one: over-reporting
+doubt costs the user a longer list, under-reporting it produces a blast radius
+that silently omits the thing that breaks. The enclosing module was rejected
+as arbitrary at file granularity, and the transitive import closure as so wide
+it would mark nearly every radius uncertain on a real repository.
+
+**What it costs, measured:** on poetry, `trellis radius Factory` reports 123
+resolved call sites alongside 3,023 unresolved ones in the touched files. That
+ratio is the honest picture today and it is also unusable as a UI — it is the
+S6 degradation-UX problem arriving with real numbers attached, and S6 is now
+the most urgent design question in the product, not a v1.x nicety.
 
 ---
 
@@ -105,6 +115,34 @@ this side of a real user.
 ---
 
 ## Flagged as unverifiable from here
+
+**Q-14 — Is a class-scope assignment allowed to shadow a method?**
+`resolve_attribute` checks `t.defs` for `self.m()` but not `t.bindings`, so
+`class C: run = something` alongside `def run(self)` resolves to the method
+rather than reporting ambiguity. The `Name` path already handles the
+equivalent case (`ShadowedAmbiguous`). This is a latent unsound edge. It did
+not appear in the poetry audit sample and the pattern is rare, so it is
+recorded rather than fixed. → Owner: before the v1.0 gate.
+
+**Q-15 — The v0.1 audit is model-read, not human-read.**
+`BENCHMARK_AND_EVAL.md` §2 says "a human reads call sites and records what each
+one actually calls", and the brief insists ground truth must not be
+tool-derived, because a shared blind spot between the tool and its yardstick
+reads as agreement. The 2026-09-19 audit followed the protocol exactly —
+blind sample, resolver verdicts withheld, written rules — but was performed by
+a model reading source, not a person. A model auditing a call graph does not
+share the resolver's *implementation*, but it is not the independent evidence
+§2 asks for either. Spot-checks of individual entries were verified by hand
+against the poetry source and were correct. Recorded as A-34. **The figure
+must be re-derived with a human auditor before the v1.0 gate is claimed.**
+→ Owner: whoever claims the gate.
+
+**Q-16 — S6 is now the most urgent open design question, not a v1.x one.**
+See Q-13's measured cost: a single realistic radius reports 123 resolved call
+sites and 3,023 unresolved ones. The brief schedules degradation UX for v1.x.
+The numbers say a user meeting that screen once will not meet it twice, so the
+question of what they actually see is now load-bearing for whether the product
+is usable at all. → Owner: product, before v0.3.
 
 The brief cites several external results as the basis for its two constraints.
 They are reproduced in the ADRs as given and are **not independently verified**
