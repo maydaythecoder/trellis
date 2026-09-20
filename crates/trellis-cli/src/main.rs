@@ -345,7 +345,33 @@ fn cmd_log(root: &Path, limit: usize) -> Result<()> {
 /// later, the trail is a log nobody reads.
 fn cmd_why(root: &Path, query: &str) -> Result<()> {
     let entries = trellis_trail::query::all(root);
-    let found = trellis_trail::query::mentions(&entries, query);
+
+    // Resolve the symbol to the file that defines it before matching.
+    //
+    // The factual section records FILES; a user asking "why does this
+    // function look like this" holds a SYMBOL. Matching the symbol against
+    // paths finds nothing unless the two happen to share a name, so the first
+    // wedge run reported "no file matching `boolean_validator` was changed"
+    // about a run that had changed the file defining it. That is the failure
+    // `03-v0.3-memory.md` names: the trail written faithfully and the query
+    // unable to answer the question it exists for.
+    //
+    // The index is the thing that knows symbol-to-file, and consulting it
+    // works retroactively — trails written before this still answer, because
+    // the mapping is recomputed rather than recorded.
+    let index = trellis_index::build_cached(root);
+    let mut targets: Vec<String> = vec![query.to_string()];
+    for (i, sym) in index.symbols.iter().enumerate() {
+        let _ = i;
+        if index.interner.resolve(sym.name) == query {
+            let path = index.files[sym.file.index()].path.clone();
+            if !targets.contains(&path) {
+                targets.push(path);
+            }
+        }
+    }
+
+    let found = trellis_trail::query::mentions_any(&entries, &targets);
 
     if found.is_empty() {
         println!("no run in the trail mentions `{query}`.");

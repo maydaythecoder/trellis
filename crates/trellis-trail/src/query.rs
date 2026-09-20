@@ -112,6 +112,41 @@ pub struct Mention {
     pub task_mentions: bool,
 }
 
+/// As [`mentions`], but any of several needles counts.
+///
+/// `why <symbol>` resolves the symbol to the file that defines it and passes
+/// both, because the factual section records files and the user holds a
+/// symbol. Matching only the literal query reported "no file changed" about
+/// runs that had changed exactly the right file.
+pub fn mentions_any(entries: &[Entry], queries: &[String]) -> Vec<Mention> {
+    let needles: Vec<String> = queries.iter().map(|q| q.to_ascii_lowercase()).collect();
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let touched = e
+                .trail
+                .factual
+                .proposed
+                .iter()
+                .find(|p| {
+                    let lp = p.to_ascii_lowercase();
+                    needles.iter().any(|n| lp.contains(n.as_str()))
+                })
+                .cloned();
+            let in_task = {
+                let lt = e.trail.task.to_ascii_lowercase();
+                needles.iter().any(|n| lt.contains(n.as_str()))
+            };
+            (touched.is_some() || in_task).then_some(Mention {
+                entry_index: i,
+                touched_file: touched,
+                task_mentions: in_task,
+            })
+        })
+        .collect()
+}
+
 pub fn mentions(entries: &[Entry], query: &str) -> Vec<Mention> {
     let needle = query.to_ascii_lowercase();
     entries
@@ -245,6 +280,37 @@ mod tests {
             discussed.task_mentions,
             "a run that named the symbol without editing it is still history"
         );
+    }
+
+    #[test]
+    fn a_symbol_resolves_through_the_file_that_defines_it() {
+        // The failure the first wedge run exposed. The factual section records
+        // files; the user holds a symbol. Matching only the literal query said
+        // "no file matching `boolean_validator` was changed" about a run that
+        // had changed exactly the file defining it — the trail written
+        // faithfully and unable to answer the question it exists for.
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260101-000000-000-fix.json",
+            &trail_json("fix the validator", "src/app/config.py", true),
+        );
+        let all = all(d.path());
+
+        assert!(
+            mentions(&all, "boolean_validator").is_empty(),
+            "the literal name is not in the path, which is the bug"
+        );
+        // The caller resolves the symbol to its file and passes both.
+        let m = mentions_any(
+            &all,
+            &[
+                "boolean_validator".to_string(),
+                "src/app/config.py".to_string(),
+            ],
+        );
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].touched_file.as_deref(), Some("src/app/config.py"));
     }
 
     #[test]
