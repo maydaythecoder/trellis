@@ -1,10 +1,13 @@
 //! The CLI. Thin: parses, dispatches, formats.
 //!
-//! Status: the surface from brief 4.12 is defined and wired to real
-//! implementations where they exist (`index`'s parse pass, `doctor`'s tier
-//! reporting, `check`). `run` and `resume` need the agent loop and the
-//! orchestrator, which are v0.2; they exit non-zero with a clear message
-//! rather than pretending.
+//! Status: `index`, `radius`, `check`, `doctor` and `run` are wired to real
+//! implementations. `run` currently drives the loop with a scripted model —
+//! real files, real checks, real rollback, and only judgement stubbed — which
+//! is what lets v0.2's exit condition be demonstrated before inference exists.
+//! `resume` needs the trail (v0.3) and `partitions` needs multi-agent planning
+//! (v1.1); both exit non-zero with a clear message rather than pretending.
+
+mod config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -40,6 +43,12 @@ enum Command {
     /// Run the agent loop against a task.
     Run {
         task: String,
+        /// Which model drives the loop. Currently only `scripted:<path>`,
+        /// which plays a fixed JSON script. A scripted run exercises the real
+        /// loop, real files, real checks and real rollback — everything
+        /// except judgement. Results from it are never a model floor (S7).
+        #[arg(long)]
+        model: String,
         /// Cap concurrent agents, or `auto` to derive from measured backend
         /// batching capacity. Never derived from CPU count (S18).
         #[arg(long, default_value = "1")]
@@ -86,12 +95,100 @@ fn main() -> Result<()> {
         Command::Doctor => cmd_doctor(&root),
         Command::Check { paths } => cmd_check(&root, paths),
         Command::Radius { symbol } => cmd_radius(&root, &symbol),
-        Command::Run { .. } | Command::Resume | Command::Partitions { .. } => {
+        Command::Run {
+            task,
+            model,
+            agents,
+        } => cmd_run(&root, &task, &model, &agents),
+        Command::Resume | Command::Partitions { .. } => {
             anyhow::bail!(
-                "not implemented yet: this command needs the agent loop (milestone v0.2). \
-                 `trellis index`, `trellis radius`, `trellis check` and `trellis doctor` \
+                "not implemented yet: `resume` needs the trail (milestone v0.3) and \
+                 `partitions` needs multi-agent planning (v1.1). `trellis index`, \
+                 `trellis radius`, `trellis run`, `trellis check` and `trellis doctor` \
                  work today."
             )
+        }
+    }
+}
+
+/// Runs the agent loop, and rolls back anything that did not converge.
+///
+/// The ordering matters and is the whole safety story: snapshot before the
+/// first write, let the orchestrator be the only writer, and on any outcome
+/// that is not convergence restore the tree. A partially-applied change that
+/// nobody accepted is the worst thing this tool could leave behind.
+fn cmd_run(root: &Path, task: &str, model_spec: &str, agents: &str) -> Result<()> {
+    if agents != "1" {
+        anyhow::bail!(
+            "multi-agent mode is v1.1 and is gated on single-agent numbers that do not \n             exist yet. Use --agents 1."
+        );
+    }
+    let Some(script_path) = model_spec.strip_prefix("scripted:") else {
+        anyhow::bail!(
+            "unsupported --model `{model_spec}`. Only `scripted:<path>` exists today; \n             the inference adapter is the next piece of v0.2 (ADR 0013)."
+        );
+    };
+
+    let cfg = config::RepoConfig::load(root)?;
+    let script = std::fs::read_to_string(script_path)
+        .with_context(|| format!("cannot read script {script_path}"))?;
+    let mut model = trellis_loop::ScriptedModel::from_json(&script)
+        .map_err(|e| anyhow::anyhow!("{script_path}: {e}"))?;
+
+    // A clean worktree is required so rollback is `git reset --hard` rather
+    // than a restore of a dirty tree, which is where data-loss bugs live
+    // (ADR 0009).
+    let snapshot =
+        trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
+    println!("snapshot at {}", snapshot.head);
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let (outcome, transcript) = rt.block_on(async {
+        let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks()).spawn();
+        let out = trellis_loop::run(task, &mut model, &handle, &cfg.budget()).await;
+        let touched = handle.touched().await;
+        (out, touched)
+    });
+
+    let (outcome, turns) = outcome;
+    println!();
+    for (i, t) in turns.turns.iter().enumerate() {
+        let mark = match t.verdict_passed {
+            Some(true) => "check passed",
+            Some(false) => "check FAILED",
+            None => "",
+        };
+        println!("  {:>2}. {:?} {}", i + 1, t.call, mark);
+    }
+    println!();
+    println!("files written: {}", transcript.join(", "));
+
+    match outcome {
+        trellis_loop::Outcome::Converged {
+            iterations,
+            checks_passed,
+        } => {
+            println!();
+            println!("CONVERGED after {iterations} iterations, {checks_passed} checks passed.");
+            println!(
+                "Changes are left in the working tree for you to review. Nothing is \n                 committed: acceptance is yours, and the trail that records it is v0.3."
+            );
+            Ok(())
+        }
+        trellis_loop::Outcome::NotConverged { reason, iterations } => {
+            println!();
+            println!("NOT CONVERGED after {iterations} iterations.");
+            println!("  {}", reason.explain());
+            snapshot
+                .rollback()
+                .context("rollback failed — inspect the worktree by hand before continuing")?;
+            let restored = snapshot.is_restored().unwrap_or(false);
+            println!();
+            println!(
+                "Rolled back to {}. Worktree restored: {restored}.",
+                snapshot.head
+            );
+            std::process::exit(1);
         }
     }
 }
@@ -288,7 +385,7 @@ fn cmd_index(root: &Path) -> Result<()> {
 fn cmd_doctor(root: &Path) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
-    let cfg = trellis_checks::CheckConfig::default();
+    let cfg = config::RepoConfig::load(root)?.checks();
     let probe = Probe {
         // ASSUMPTION A-9: model and runtime detection is v0.2. Reported as
         // "not configured" rather than guessed.
@@ -322,7 +419,7 @@ fn which(program: &str) -> bool {
 }
 
 fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
-    let cfg = trellis_checks::CheckConfig::default();
+    let cfg = config::RepoConfig::load(root)?.checks();
     // An empty path list would invoke the checker with no arguments, which
     // most tools treat as an error rather than as "everything". Make the
     // documented default real.

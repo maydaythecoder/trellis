@@ -1211,6 +1211,8 @@ dependencies = [
  "anyhow",
  "clap",
  "rayon",
+ "serde",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
