@@ -166,6 +166,40 @@ name the test that would fail if it were reverted.
   edited a file it saw in that output.
 - **A resumed session was told everything except what the last run verified.**
   `context_lines` read only the always-empty `factual.checks`.
+- **An edit that changes nothing reported `applied: true`** — writing identical
+  bytes back, telling the model it acted, and entering the rollback set and the
+  trail's proposed list. Refused now.
+- **The fourth recurrence of the `cargo fmt` string-continuation defect.** A
+  backslash-continued literal gets its indentation folded into the string,
+  leaving runs of twenty spaces mid-sentence in text the user and the model
+  both read. Four live instances, all moved to `concat!`, and three tests now
+  assert the rendered strings carry no double space.
+
+## The S7 floor, in progress
+
+First configuration: **Qwen2.5-0.5B-Instruct Q4_K_M, candle on CPU, tier 2**
+against the 20 verified tasks on poetry 2.5.0. Nine tasks in as of this
+update; the tally goes in `BENCHMARK_AND_EVAL.md` when it completes, not
+before.
+
+What is already settled, and does not depend on the remaining tasks:
+
+- **Constraint removes the format failure completely.** Unconstrained, the
+  0.5B emitted a fenced ```json block containing `repo.edit` — an invented
+  tool. Constrained, every generation across every task has been a schema-valid
+  tool call, and the adapter's format retries have never been exhausted.
+- **And guarantees nothing about content.** The same model fills those valid
+  calls with `old: "<old value>"`, `old: "..."`, the file path echoed into all
+  three fields, and control characters inside paths. That is the distinction
+  S7 exists to measure, and it is now demonstrated rather than asserted.
+- **Two harness defects the run surfaced**, both fixed and listed above: the
+  pathless check and the no-op edit. Both flattered a weak model's behaviour
+  into something that read like progress.
+
+Cost, on this rig: roughly 3 to 4 minutes per task, 9 turns each. Per-turn
+time grows with the transcript because the probe server re-prefills the whole
+prompt every call — a property of the probe, not of TRELLIS, and it is stated
+that way wherever the figure appears.
 
 - Incremental update: single-file save **39.7 ms p50**, 3.1× a cold build,
   with a property test asserting an updated session equals a cold one.
