@@ -193,6 +193,7 @@ mod tests {
                 check_outcomes: Vec::new(),
                 approved_by: Approval::None,
                 mode_counts: ModeCounts::default(),
+                context: None,
             },
             judgment: Judgment::default(),
         }

@@ -31,6 +31,9 @@ pub struct RuntimeModel {
     tier: AdapterTier,
     max_tokens: u32,
     tokens: u64,
+    /// Prompt size on the most recent call, for the context-fill measurement
+    /// the v0.2 gate asks for. Bytes, because TRELLIS does not tokenize.
+    last_prompt_bytes: Option<usize>,
 }
 
 impl RuntimeModel {
@@ -50,6 +53,7 @@ impl RuntimeModel {
             },
             max_tokens: 512,
             tokens: 0,
+            last_prompt_bytes: None,
         }
     }
 
@@ -243,6 +247,8 @@ fn extract_json(text: &str) -> Option<&str> {
 impl Model for RuntimeModel {
     async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
         let prompt = self.prompt(t);
+        self.last_prompt_bytes = Some(prompt.len());
+        tracing::debug!(prompt_bytes = prompt.len(), turns = t.turns.len());
         let schema = (self.tier == AdapterTier::RuntimeConstrained).then(ToolCallWire::schema);
         let mut last = String::new();
 
@@ -321,6 +327,10 @@ impl Model for RuntimeModel {
 
     fn tokens_used(&self) -> u64 {
         self.tokens
+    }
+
+    fn prompt_bytes(&self) -> Option<usize> {
+        self.last_prompt_bytes
     }
 }
 
@@ -422,6 +432,7 @@ mod tests {
                 verdict_passed: None,
                 check_kind: None,
                 radius_counts: None,
+                prompt_bytes: None,
             }],
             final_notice: true,
             prior: None,
@@ -458,6 +469,7 @@ mod tests {
                 verdict_passed: None,
                 check_kind: None,
                 radius_counts: None,
+                prompt_bytes: None,
             }],
             final_notice: false,
             prior: None,

@@ -73,6 +73,13 @@ pub struct Turn {
     pub verdict_passed: Option<bool>,
     /// Which check ran, when one did.
     pub check_kind: Option<String>,
+    /// Prompt size for the call that produced this turn, in bytes.
+    ///
+    /// The v0.2 gate asks for context fill per run and nothing was recording
+    /// it. What a wide change costs in window is the constraint on the
+    /// context selector (S5), and it cannot be reconstructed after the fact —
+    /// the prompt does not survive the run.
+    pub prompt_bytes: Option<usize>,
     /// `(resolved, ambiguous, unresolved)` from a radius query.
     ///
     /// Carried as numbers rather than recovered from `observation`, because
@@ -244,6 +251,21 @@ pub trait Model {
     fn tokens_used(&self) -> u64 {
         0
     }
+
+    /// Bytes of prompt sent on the most recent call, when the driver knows.
+    ///
+    /// **Bytes, not tokens, and the distinction is deliberate.** TRELLIS does
+    /// not tokenize — the runtime does — so a token count here would be
+    /// `bytes / 4` wearing a more precise name, which is the sort of invented
+    /// figure `CLAUDE.md` forbids. Bytes are what can be measured without a
+    /// tokenizer, and the growth curve is what S5 needs.
+    ///
+    /// `None` for a driver with no prompt at all, which is the scripted one:
+    /// reporting 0 would put a real-looking zero in the trail beside real
+    /// measurements.
+    fn prompt_bytes(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Drives the loop until it converges, the model stops, or a budget runs out.
@@ -360,6 +382,9 @@ pub async fn run_seeded<M: Model>(
             }
             Step::Call(call) => {
                 iterations += 1;
+                // Read before dispatch: it describes the prompt that produced
+                // this call, not the next one.
+                let prompt_bytes = model.prompt_bytes();
                 let result = dispatch(orch, &call).await;
                 let verdict_passed = match &result {
                     ToolResult::Checks(v) => Some(v.passed()),
@@ -411,6 +436,7 @@ pub async fn run_seeded<M: Model>(
                     verdict_passed,
                     check_kind,
                     radius_counts,
+                    prompt_bytes,
                 });
 
                 if repeats >= NO_PROGRESS_REPEATS {
@@ -751,6 +777,73 @@ mod tests {
         );
         let verdicts: Vec<Option<bool>> = t.turns.iter().map(|x| x.verdict_passed).collect();
         assert_eq!(verdicts, vec![Some(false), None, Some(true)]);
+    }
+
+    #[tokio::test]
+    async fn each_turn_records_the_prompt_that_produced_it() {
+        // v0.2 gate: "instrumentation records iterations, tokens, wall-clock,
+        // and context fill per run." The first three were recorded and the
+        // fourth was not measured at all.
+        //
+        // It cannot be reconstructed afterwards — the prompt does not survive
+        // the run — which is why the brief lists it among the measurements to
+        // start collecting now.
+        struct Growing {
+            calls: u32,
+        }
+        impl Model for Growing {
+            async fn next_step(&mut self, _: &Transcript) -> Result<Step, String> {
+                self.calls += 1;
+                if self.calls > 3 {
+                    return Ok(Step::Done {
+                        summary: "enough".into(),
+                    });
+                }
+                Ok(Step::Call(ToolCall::BlastRadius {
+                    symbol: format!("helper{}", self.calls),
+                }))
+            }
+            // A real adapter re-sends the transcript each turn, so the prompt
+            // grows. That growth is the thing S5 needs, not the absolute size.
+            fn prompt_bytes(&self) -> Option<usize> {
+                Some(1000 * self.calls as usize)
+            }
+        }
+
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let mut m = Growing { calls: 0 };
+        let (_, t) = run("measure me", &mut m, &h, &budget()).await;
+
+        let sizes: Vec<usize> = t.turns.iter().filter_map(|x| x.prompt_bytes).collect();
+        assert_eq!(
+            sizes,
+            vec![1000, 2000, 3000],
+            "every turn carries the prompt that produced it, in order"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_driver_with_no_prompt_records_nothing_rather_than_zero() {
+        // The scripted driver has no prompt at all. Reporting 0 would put a
+        // real-looking zero in the trail beside real measurements, and a
+        // reader cannot tell a measured zero from an absent one.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::BlastRadius {
+                symbol: "helper".into(),
+            }),
+            Step::Done {
+                summary: "done".into(),
+            },
+        ]);
+
+        let (_, t) = run("scripted", &mut m, &h, &budget()).await;
+        assert!(
+            t.turns.iter().all(|x| x.prompt_bytes.is_none()),
+            "a driver with no prompt must record None, not Some(0)"
+        );
     }
 
     #[tokio::test]
@@ -1373,6 +1466,7 @@ mod tests {
                     verdict_passed: Some(true),
                     check_kind: Some("Typecheck".into()),
                     radius_counts: None,
+                    prompt_bytes: None,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -1380,6 +1474,7 @@ mod tests {
                     verdict_passed: Some(false),
                     check_kind: Some("Tests".into()),
                     radius_counts: None,
+                    prompt_bytes: None,
                 },
             ],
             final_notice: false,

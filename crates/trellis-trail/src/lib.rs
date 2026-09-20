@@ -39,6 +39,25 @@ pub struct Factual {
     pub check_outcomes: Vec<CheckOutcome>,
     pub approved_by: Approval,
     pub mode_counts: ModeCounts,
+    /// Prompt size across the run, in **bytes** (v0.2 gate: context fill).
+    ///
+    /// Bytes rather than tokens because TRELLIS does not tokenize — the
+    /// runtime does — and `bytes / 4` under a token-shaped name would be an
+    /// invented figure. Absent for a scripted run, which has no prompt.
+    #[serde(default)]
+    pub context: Option<ContextFill>,
+}
+
+/// How much prompt a run consumed, and how fast it grew.
+///
+/// The growth is the interesting half. A loop that re-sends its whole
+/// transcript every turn grows superlinearly in a wide change, and S5 asks
+/// what that costs before a user finds the wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextFill {
+    pub first_prompt_bytes: usize,
+    pub peak_prompt_bytes: usize,
+    pub turns_measured: u32,
 }
 
 /// What the run's blast-radius queries found, and what they could not see.
@@ -202,6 +221,11 @@ mod tests {
                     verified: 45,
                     reviewed: 7,
                 },
+                context: Some(ContextFill {
+                    first_prompt_bytes: 1_200,
+                    peak_prompt_bytes: 9_400,
+                    turns_measured: 6,
+                }),
             },
             judgment: Judgment {
                 tech_debt_projection: Some("the adapter shim will need removing".into()),

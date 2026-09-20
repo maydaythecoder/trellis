@@ -395,6 +395,17 @@ fn cmd_run(
     }
     println!();
     println!("files written: {}", transcript.join(", "));
+    // Context fill (v0.2 gate). Bytes, because TRELLIS does not tokenize.
+    let measured: Vec<usize> = turns.turns.iter().filter_map(|t| t.prompt_bytes).collect();
+    if let (Some(first), Some(peak)) = (measured.first(), measured.iter().max()) {
+        println!(
+            "context:  {} B first prompt, {} B peak over {} turns ({:.1}x)",
+            first,
+            peak,
+            measured.len(),
+            *peak as f64 / *first as f64
+        );
+    }
 
     match outcome {
         trellis_loop::Outcome::Converged {
@@ -528,6 +539,15 @@ fn record_trail(
         }
     }
 
+    // Context fill, from the turns that carried a prompt. A scripted run
+    // carries none and records nothing rather than a plausible-looking zero.
+    let measured: Vec<usize> = turns.turns.iter().filter_map(|t| t.prompt_bytes).collect();
+    let context = (!measured.is_empty()).then(|| trellis_trail::ContextFill {
+        first_prompt_bytes: measured[0],
+        peak_prompt_bytes: measured.iter().copied().max().unwrap_or(0),
+        turns_measured: measured.len() as u32,
+    });
+
     let check_outcomes: Vec<CheckOutcome> = turns
         .turns
         .iter()
@@ -554,6 +574,7 @@ fn record_trail(
             check_outcomes,
             approved_by: approved,
             mode_counts: ModeCounts::default(),
+            context,
         },
         // Left empty deliberately. The judgment section is the *model's*
         // opinion, and `resume` fences it as unverified — so putting a check
