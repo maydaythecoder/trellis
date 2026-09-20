@@ -113,6 +113,7 @@ mod tests {
             task: "t".into(),
             turns: vec![],
             final_notice: false,
+            prior: None,
         };
         assert!(matches!(m.next_step(&t).await, Ok(Step::Call(_))));
         assert!(matches!(m.next_step(&t).await, Ok(Step::Done { .. })));

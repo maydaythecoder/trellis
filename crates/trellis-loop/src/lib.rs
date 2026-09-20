@@ -14,7 +14,10 @@ pub mod tools;
 pub mod wire;
 
 pub use adapter::RuntimeModel;
-pub use agent::{Model, NotConverged, Outcome, Step, ToolCall, Transcript, Turn, run};
+pub use agent::{
+    Model, NotConverged, Outcome, PriorContext, Step, ToolCall, Transcript, Turn, run,
+    run_with_prior,
+};
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
 pub use orchestrator::{Handle, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};

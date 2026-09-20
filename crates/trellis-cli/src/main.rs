@@ -67,6 +67,16 @@ enum Command {
         /// batching capacity. Never derived from CPU count (S18).
         #[arg(long, default_value = "1")]
         agents: String,
+        /// Start from the last trail in `.trellis/runs/`, so the model is not
+        /// re-told what the previous run established.
+        ///
+        /// Opt-in rather than automatic. A trail is about a task that already
+        /// finished, and quietly carrying it into an unrelated one is how a
+        /// stale fact acquires authority (S11). The seeded text is fenced as
+        /// data and cannot make this run converge — only a check executed in
+        /// this session does that.
+        #[arg(long)]
+        resume: bool,
     },
 
     /// Continue from the last trail entry.
@@ -122,7 +132,8 @@ fn main() -> Result<()> {
             model,
             unconstrained,
             agents,
-        } => cmd_run(&root, &task, &model, unconstrained, &agents),
+            resume,
+        } => cmd_run(&root, &task, &model, unconstrained, &agents, resume),
         Command::Resume => cmd_resume(&root),
         Command::Partitions { .. } => {
             anyhow::bail!(
@@ -204,6 +215,7 @@ fn cmd_run(
     model_spec: &str,
     unconstrained: bool,
     agents: &str,
+    resume: bool,
 ) -> Result<()> {
     if agents != "1" {
         anyhow::bail!(
@@ -213,6 +225,33 @@ fn cmd_run(
     let cfg = config::RepoConfig::load(root)?;
     let mut driver = Driver::parse(model_spec, unconstrained)?;
     println!("model:    {}", driver.describe());
+
+    // Read before the snapshot, so a missing or corrupt trail fails the run
+    // before anything has been written.
+    let prior = if resume {
+        match trellis_trail::latest(root)? {
+            Some((path, trail)) => {
+                println!("resumed:  {}", path.display());
+                println!(
+                    "          {} lines of prior context, fenced as data",
+                    trail.context_lines().len()
+                );
+                Some(trellis_loop::PriorContext {
+                    source: path.display().to_string(),
+                    lines: trail.context_lines(),
+                })
+            }
+            None => {
+                // Not an error. A first run in a repository has nothing to
+                // resume from, and refusing to start would make `--resume`
+                // unusable as a habit.
+                println!("resumed:  nothing — no trail under .trellis/runs/");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
@@ -228,8 +267,12 @@ fn cmd_run(
         // call rather than a trait object — the `Model` trait uses `async fn`
         // and is not dyn-compatible.
         let out = match &mut driver {
-            Driver::Scripted(m) => trellis_loop::run(task, m, &handle, &cfg.budget()).await,
-            Driver::Runtime(m) => trellis_loop::run(task, m, &handle, &cfg.budget()).await,
+            Driver::Scripted(m) => {
+                trellis_loop::run_with_prior(task, m, &handle, &cfg.budget(), prior).await
+            }
+            Driver::Runtime(m) => {
+                trellis_loop::run_with_prior(task, m, &handle, &cfg.budget(), prior).await
+            }
         };
         let touched = handle.touched().await;
         (out, touched)
@@ -333,9 +376,14 @@ fn cmd_resume(root: &Path) -> Result<()> {
     ));
     println!();
     println!(concat!(
-        "Continuing the work itself needs the loop to accept prior context as ",
-        "a starting
-state, which is the rest of v0.3."
+        "To carry this into a run rather than only read it, pass --resume:
+",
+        "  trellis run --resume --model <spec> \"<task>\"
+",
+        "The lines above are then fenced into the model's prompt as data. They ",
+        "cannot
+make the run converge — only a check executed in that session ",
+        "can do that."
     ));
     Ok(())
 }
@@ -354,10 +402,12 @@ fn record_trail(
 ) -> Result<std::path::PathBuf> {
     use trellis_trail::{CheckOutcome, Factual, Judgment, ModeCounts, RadiusCounts, Trail};
 
-    // Summed over every radius the run queried, which is what "how much did
-    // this run examine" means when a task touches several symbols. A run that
-    // never asked records zeros, and that is then a fact rather than a
-    // placeholder.
+    // Reach counts sum across queries; the unbound count does not.
+    //
+    // "How many call sites did this run examine" genuinely is the sum, since
+    // each query asks about a different symbol. A run that never asked records
+    // zeros, and `radius_queries` is what tells a reader that apart from a run
+    // that asked and found nothing.
     let mut radius = RadiusCounts::default();
     for t in &turns.turns {
         if let Some((r, c, u)) = t.radius_counts {
