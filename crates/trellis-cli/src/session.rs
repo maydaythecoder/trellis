@@ -22,7 +22,6 @@
 //! automatic (S11).
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use trellis_index::Index;
 
@@ -82,30 +81,43 @@ impl Session {
     }
 
     /// Reads until end of input or `/exit`.
+    ///
+    /// `rustyline` rather than `read_line`, because a prompt with no line
+    /// editing is not merely inconvenient — an arrow key arrived as an escape
+    /// sequence, fell past the command match, and ran an agent task. The
+    /// control-character guard below stays as well: it costs nothing, and it
+    /// is the thing that actually caught that defect.
     pub fn run(mut self) -> Result<()> {
-        let stdin = std::io::stdin();
+        let mut rl = rustyline::DefaultEditor::new().context("starting the line editor")?;
+
+        let history = history_path(&self.root);
+        if let Some(h) = &history {
+            if let Some(parent) = h.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            rl.load_history(h).ok();
+        }
+
         loop {
             let pending = trellis_vcs::pending(&self.root)
                 .map(|p| p.len())
                 .unwrap_or(0);
-            if pending > 0 {
-                print!("[{pending} pending] › ");
+            let prompt = if pending > 0 {
+                format!("[{pending} pending] > ")
             } else {
-                print!("› ");
-            }
-            std::io::stdout().flush().ok();
+                "> ".to_string()
+            };
 
-            let mut line = String::new();
-            // Zero bytes is end of input — a piped script that ran out, or
-            // Ctrl-D. Leaving is the only sensible reading of it.
-            match stdin.read_line(&mut line) {
-                Ok(0) => {
-                    println!();
-                    return Ok(());
-                }
-                Ok(_) => {}
+            let line = match rl.readline(&prompt) {
+                Ok(l) => l,
+                // Ctrl-C cancels the line; it does not leave. Quitting on it
+                // would turn a half-typed task into an exit, which is the
+                // opposite of what every other prompt does.
+                Err(rustyline::error::ReadlineError::Interrupted) => continue,
+                // Ctrl-D, or the end of a piped script.
+                Err(rustyline::error::ReadlineError::Eof) => break,
                 Err(e) => return Err(e).context("reading input"),
-            }
+            };
 
             let line = line.trim();
             if line.is_empty() {
@@ -114,32 +126,37 @@ impl Session {
 
             // Control characters are never a task.
             //
-            // Without raw mode an arrow key arrives as an escape sequence —
-            // ESC `[` `A` for up — which does not begin with `/`, so it fell
-            // through to the model. Pressing up by reflex ran a full agent
-            // task: the sequence slugified to "a", a trail was written under
-            // that name, and files were edited.
-            //
-            // Reflex input must never start work. The line is refused and the
-            // session says what it does not support, which beats silently
-            // discarding it — a user whose up-arrow does nothing at all will
-            // press it again.
+            // Kept after moving to a line editor: defence in depth now rather
+            // than the only defence, but it is what caught the defect. Without
+            // raw mode an arrow key arrived as ESC `[` `A`, which does not
+            // begin with `/`, so it fell through to the model — the sequence
+            // slugified to "a", a trail was written under that name, and files
+            // were edited. Reflex input must never start work.
             if line.chars().any(char::is_control) {
-                println!("{}", NO_LINE_EDITING);
+                println!("{NO_LINE_EDITING}");
                 println!();
                 continue;
             }
+
+            rl.add_history_entry(line).ok();
 
             // A command that fails must not end the session. The whole point
             // of staying resident is that a typo costs a line, not a restart.
             if let Err(e) = self.dispatch(line) {
                 if e.to_string() == EXIT {
-                    return Ok(());
+                    break;
                 }
                 println!("error: {e:#}");
             }
             println!();
         }
+
+        // Best effort: losing history is a nuisance, not a failure, and a
+        // read-only or absent `.trellis` must not turn leaving into an error.
+        if let Some(h) = &history {
+            rl.save_history(h).ok();
+        }
+        Ok(())
     }
 
     fn dispatch(&mut self, line: &str) -> Result<()> {
@@ -328,6 +345,52 @@ impl Session {
 /// Sentinel for "the user asked to leave", carried as an error so one `?` in
 /// `dispatch` unwinds to the loop. Not a failure, and `run` checks for it
 /// before reporting anything.
+/// Where this repository's prompt history lives — in user state, never in the
+/// repository.
+///
+/// It went to `.trellis/history` first, and that was wrong in a way the
+/// product is unusually sensitive to: the file is untracked, so it dirtied the
+/// worktree, and a dirty worktree **blocks the next run**. A convenience
+/// feature would have made the tool refuse to work. `.trellis/` cannot simply
+/// be ignored either, because the trail inside it is deliberately committed.
+///
+/// So it goes where a shell keeps its history: user state, keyed by repository
+/// so recalling a task in a different checkout is not noise. No dependency —
+/// one env var per platform and a hash of the root path.
+fn history_path(root: &Path) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
+    }?;
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root.hash(&mut hasher);
+    let key = hasher.finish();
+
+    // The directory name is included for a human reading the folder; the hash
+    // is what makes it unique, since two checkouts can share a basename.
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(32)
+        .collect::<String>();
+
+    Some(
+        base.join("trellis")
+            .join(format!("{name}-{key:016x}.history")),
+    )
+}
+
 const EXIT: &str = "__trellis_exit__";
 
 /// Shown when input carries an escape sequence, which is what an arrow key is
@@ -420,6 +483,58 @@ mod tests {
             let e = s.dispatch(word).expect_err("exit unwinds as an error");
             assert_eq!(e.to_string(), EXIT, "{word} must use the sentinel");
         }
+    }
+
+    #[test]
+    fn history_never_lands_inside_the_repository() {
+        // This is the property, not an implementation detail. History went to
+        // `.trellis/history` first: untracked, so it dirtied the worktree, and
+        // a dirty worktree blocks the next run. A convenience feature made the
+        // tool refuse to work.
+        //
+        // `.trellis/` cannot just be ignored either — the trail inside it is
+        // deliberately committed — so the file has to live somewhere else
+        // entirely.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let Some(h) = history_path(&root) else {
+            // No HOME and no LOCALAPPDATA. Returning None is correct: no
+            // history beats history in the repository.
+            return;
+        };
+        assert!(
+            !h.starts_with(&root),
+            "history must not be written inside the repository: {}",
+            h.display()
+        );
+    }
+
+    #[test]
+    fn history_is_stable_per_repository_and_distinct_between_them() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("alpha");
+        let b = d.path().join("beta");
+        // Same basename, different paths — two checkouts of one project is
+        // the ordinary case, and they must not share a history file.
+        let a2 = d.path().join("nested").join("alpha");
+        for p in [&a, &b, &a2] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+
+        let (Some(ha), Some(hb), Some(ha2)) =
+            (history_path(&a), history_path(&b), history_path(&a2))
+        else {
+            return;
+        };
+
+        assert_eq!(ha, history_path(&a).unwrap(), "stable across calls");
+        assert_ne!(ha, hb, "different repositories, different history");
+        assert_ne!(
+            ha, ha2,
+            "same basename at a different path must not share history"
+        );
     }
 
     #[test]

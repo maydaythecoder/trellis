@@ -17,6 +17,10 @@ license = "Apache-2.0"
 tree-sitter        = "0.27.0"
 tree-sitter-python = "0.25.0"
 llguidance         = "1.8.0"
+# Line editing and history for the interactive session. Default
+# features off: the extras are a fuzzy finder, a sqlite history
+# backend and clipboard integration, none of which a task prompt needs.
+rustyline          = { version = "18.0.1", default-features = false, features = ["with-file-history"] }
 serde              = { version = "1.0.229", features = ["derive"] }
 serde_json         = "1.0.151"
 schemars           = "1.2.2"
