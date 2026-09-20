@@ -333,11 +333,12 @@ fn render(call: &ToolCall, r: &ToolResult) -> String {
         ToolResult::Checks(v) => {
             let d = v.detail();
             format!(
-                "{:?}: {}\ncommand: {}{}\n{}",
+                "{:?}: {}\ncommand: {}{}{}\n{}",
                 d.kind,
                 if v.passed() { "passed" } else { "FAILED" },
                 d.command,
-                format!("{}{}", scope_note(call), unrun_note(call, d.kind)),
+                scope_note(call),
+                unrun_note(call, d.kind),
                 tail(&d.stdout, 40)
             )
         }
