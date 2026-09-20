@@ -114,8 +114,18 @@ operation that let it go stale three times in one session.*
 
 1. **The model floor (S7), remainder.** One configuration measured and below
    the floor; the A/B says that is the model, not the harness. Locating the
-   floor needs a configuration that *passes*, and Qwen2.5-Coder-3B is still
-   downloading at ~47 KB/s. Blocked on bandwidth, not on work.
+   floor needs a configuration that *passes*, and Qwen2.5-Coder-3B is at
+   931 MB of 2,105 MB, gaining roughly 56 KB/s — about six hours out. Blocked
+   on bandwidth, not on work.
+
+   `.bench/models/fetch.sh` resumes by HTTP range request and is safe to
+   restart: it appends to the partial file rather than starting over, which is
+   the only reason the download has survived thirty-seven attempts. If a
+   session ends with it incomplete, restart it rather than re-fetching. When
+   it lands, the floor run is one command —
+   `python docs/bench/run_floor.py .bench/floor docs/bench/floor_tasks.json
+   llamacpp:http://127.0.0.1:<port> <out>.json` against a probe server started
+   on the new weights, and roughly 70 minutes.
 2. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator. This
    is now the only thing standing between the project and a gate call, and it
