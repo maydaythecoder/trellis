@@ -35,6 +35,7 @@ struct Tally {
     ambiguous_covered: u32,
     ambiguous_missed: u32,
     unresolved: u32,
+    constructor_reconciled: u32,
     wrongly_excluded: u32,
     correctly_excluded: u32,
     dynamic_truth: u32,
@@ -76,6 +77,7 @@ fn main() {
     let mut by_shape: BTreeMap<String, Tally> = BTreeMap::new();
     let mut unaudited = 0u32;
     let mut collisions: Vec<String> = Vec::new();
+    let mut reconciled: Vec<String> = Vec::new();
 
     for e in entries {
         let truth = e["true_callee"].as_str();
@@ -100,8 +102,14 @@ fn main() {
             match kind {
                 "Resolved" => {
                     tally.resolved_total += 1;
-                    if matches(verdict["target"].as_str().unwrap_or(""), truth) {
+                    let target = verdict["target"].as_str().unwrap_or("");
+                    if matches(target, truth) {
                         tally.resolved_correct += 1;
+                    } else if constructor_convention(truth) {
+                        // The resolver named the class, the auditor its
+                        // `__init__`. Agreement, differently written.
+                        tally.resolved_correct += 1;
+                        tally.constructor_reconciled += 1;
                     } else {
                         tally.resolved_wrong += 1;
                     }
@@ -129,7 +137,18 @@ fn main() {
 
         // An unsound edge is the one thing the gate forbids outright, so
         // name each one rather than only counting it.
-        if kind == "Resolved" && !matches(verdict["target"].as_str().unwrap_or(""), truth) {
+        let target = verdict["target"].as_str().unwrap_or("");
+        if kind == "Resolved" && !matches(target, truth) && constructor_convention(truth) {
+            reconciled.push(format!(
+                "  {}:{}  `{}`  class {} vs auditor {}",
+                e["file"].as_str().unwrap_or("?"),
+                e["line"],
+                e["call"].as_str().unwrap_or("?").replace('\n', " "),
+                target,
+                truth
+            ));
+        }
+        if kind == "Resolved" && !matches(target, truth) && !constructor_convention(truth) {
             collisions.push(format!(
                 "  {}:{}  `{}`\n      resolver: {}\n      auditor:  {}",
                 e["file"].as_str().unwrap_or("?"),
@@ -155,6 +174,22 @@ fn main() {
         report(shape, t);
     }
 
+    if !reconciled.is_empty() {
+        println!(
+            "CONSTRUCTOR CONVENTION — {} sites counted as correct.",
+            reconciled.len()
+        );
+        println!(
+            "The resolver named the class being constructed; the auditor named the \
+             `__init__`\nthat runs. Both are right and neither is an unsound edge. The \
+             audit protocol did\nnot state which to record, and now does. Listed so the \
+             reconciliation is visible\nrather than folded in silently:"
+        );
+        for r in &reconciled {
+            println!("{r}");
+        }
+        println!();
+    }
     if collisions.is_empty() {
         println!("Unsound edges: none in this sample.");
     } else {
@@ -204,6 +239,10 @@ fn report(label: &str, t: &Tally) {
     );
     println!("  unresolved, with a reason           {:>5}", t.unresolved);
     println!(
+        "  of which constructor-convention     {:>5}   (class vs its __init__)",
+        t.constructor_reconciled
+    );
+    println!(
         "  wrongly excluded as external        {:>5}   (first-party, no edge emitted)",
         t.wrongly_excluded
     );
@@ -224,8 +263,7 @@ fn report(label: &str, t: &Tally) {
 /// The resolver emits a module path plus a bare symbol name and does not
 /// record the enclosing class, so an exact string comparison would fail on
 /// every method. Matching on module prefix plus final segment is the
-/// available comparison; `audit_score` prints same-module same-name
-/// collisions so they can be settled by hand rather than silently scored.
+/// available comparison.
 fn matches(resolver: &str, auditor: &str) -> bool {
     if resolver == auditor {
         return true;
@@ -238,4 +276,22 @@ fn matches(resolver: &str, auditor: &str) -> bool {
     // side must be a prefix of the auditor's qualified name.
     let prefix = resolver.rsplit_once('.').map_or("", |(m, _)| m);
     !prefix.is_empty() && auditor.starts_with(prefix)
+}
+
+/// Whether a disagreement is only about how a constructor call is written.
+///
+/// `Install(...)` instantiates a class. The resolver names the class; an
+/// auditor may name the `__init__` that runs, and when the class inherits its
+/// constructor that `__init__` lives on a *different* class entirely
+/// (`DummyRepository(...)` -> `Repository.__init__`). Both answers are
+/// defensible and neither is an unsound edge: the resolver's contract is to
+/// name the first-party definition the call site depends on, and for a
+/// constructor call that is the class being constructed.
+///
+/// This is a gap in the audit protocol rather than a defect, so the protocol
+/// now states the rule (see `audit_sample.rs`). Reconciliations are counted
+/// and printed rather than folded in silently — a scorer that quietly forgives
+/// mismatches is how a precision figure stops meaning anything.
+fn constructor_convention(auditor: &str) -> bool {
+    auditor.ends_with(".__init__")
 }

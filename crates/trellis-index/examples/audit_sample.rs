@@ -53,7 +53,12 @@ when the decorator returns it (`@staticmethod`, `@lru_cache`), and to \
 whether it shares a root package name. `poetry.core` is a separate \
 distribution and is external here.
 
-4. Do not consult the resolver, the index, or any static-analysis tool. Read \
+4. A constructor call `C(...)` records the CLASS `C`, not `C.__init__` and \
+not an inherited `Base.__init__`. The question is which first-party \
+definition this call site depends on, and for a construction that is the \
+class being constructed.
+
+5. Do not consult the resolver, the index, or any static-analysis tool. Read \
 the source.";
 
 /// SplitMix64. Hand-rolled so the sample is reproducible from the recorded
