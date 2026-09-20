@@ -354,10 +354,16 @@ impl Orchestrator {
     }
 
     async fn run_checks(&self, paths: &[String], kinds: &[CheckKind]) -> ToolResult {
-        let paths: Vec<PathBuf> = if paths.is_empty() {
+        // `requested` is kept distinct from the defaulted list below. Shadowing
+        // the two together made the governance arm's "no paths given" branch
+        // unreachable — `paths` was already `["."]` by the time it ran — so the
+        // audit scoped to a directory it could not read and passed having
+        // checked nothing. Every measured model calls this with no paths.
+        let requested = paths;
+        let paths: Vec<PathBuf> = if requested.is_empty() {
             vec![PathBuf::from(".")]
         } else {
-            paths.iter().map(PathBuf::from).collect()
+            requested.iter().map(PathBuf::from).collect()
         };
         // One verdict per call. Asking for several kinds runs the first that
         // fails, because a type error makes the test result uninformative
@@ -379,10 +385,10 @@ impl Orchestrator {
                     // tree: a rule broken somewhere this run never went is a
                     // pre-existing condition, and failing a run for it would
                     // make every run in a non-compliant repository fail.
-                    let scope: Vec<String> = if paths.is_empty() {
+                    let scope: Vec<String> = if requested.is_empty() {
                         self.touched.clone()
                     } else {
-                        paths.iter().map(|p| p.display().to_string()).collect()
+                        requested.to_vec()
                     };
                     trellis_checks::governance_audit(&self.root, &self.rules, &scope)
                 }
@@ -587,6 +593,102 @@ mod tests {
             h.edit("app/util.py", "return 1", "return 2").await,
             ToolResult::Edit(_)
         ));
+    }
+
+    fn forbid_rule(root: &std::path::Path, pattern: &str, scope: &str) {
+        let g = root.join(".trellis").join("governance");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(
+            g.join("r.toml"),
+            format!(
+                "name = \"No direct DB access\"
+rank = \"non-negotiable\"
+                 forbid = {{ pattern = \"{pattern}\" }}
+scope = [\"{scope}\"]
+"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_broken_non_negotiable_fails_the_verdict_through_the_check_dispatch() {
+        // The audit function has its own unit test. This one covers the wiring,
+        // which is where S20 actually happened: a patch described in three
+        // documents, tested at the layer below, and never reached by a run.
+        // `last_check_passed` is what convergence reads, so a governance
+        // violation that does not arrive as a failing Verdict is a violation a
+        // model converges straight past.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect", "app/");
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():
+    return psycopg2.connect('x')
+",
+        )
+        .unwrap();
+
+        let rules = trellis_checks::governance::load(d.path()).expect("rules load");
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_rules(rules)
+            .spawn();
+
+        match h
+            .run_checks(vec!["app/util.py".into()], vec![CheckKind::Governance])
+            .await
+        {
+            ToolResult::Checks(v) => {
+                assert!(
+                    !v.passed(),
+                    "a non-negotiable violation must fail the audit"
+                );
+                assert_eq!(v.detail().kind, CheckKind::Governance);
+                assert!(
+                    v.detail().stdout.contains("psycopg2.connect"),
+                    "the failure names what was broken: {:?}",
+                    v.detail().stdout
+                );
+            }
+            other => panic!("expected a verdict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_audit_scopes_to_what_the_run_touched_not_the_whole_tree() {
+        // A rule broken somewhere this run never went is a pre-existing
+        // condition. Failing the run for it would make every run in a
+        // non-compliant repository fail, which trains a user to ignore
+        // governance entirely — the opposite of the point.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect", "app/");
+        std::fs::write(
+            d.path().join("app/main.py"),
+            "def go():
+    return psycopg2.connect('x')
+",
+        )
+        .unwrap();
+
+        let rules = trellis_checks::governance::load(d.path()).expect("rules load");
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_rules(rules)
+            .spawn();
+
+        // The run touches util.py, which is clean. main.py is dirty and
+        // untouched.
+        assert!(matches!(
+            h.edit("app/util.py", "return 1", "return 2").await,
+            ToolResult::Edit(_)
+        ));
+        match h.run_checks(vec![], vec![CheckKind::Governance]).await {
+            ToolResult::Checks(v) => assert!(
+                v.passed(),
+                "a violation in a file the run never touched is not this run's: {:?}",
+                v.detail().stdout
+            ),
+            other => panic!("expected a verdict, got {other:?}"),
+        }
     }
 
     #[tokio::test]

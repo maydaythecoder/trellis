@@ -4,7 +4,8 @@ Part 8 of the brief is the *project's* definition of done, not any one
 session's. This maps each item to its actual state, so nothing is quietly
 assumed complete.
 
-Last updated 2026-09-20.
+Last updated 2026-09-20. Gate tables for v0.2, v0.3 and v1.0 are
+below, each audited against the code rather than against the milestone prose.
 
 | # | Part 8 item | State | Where |
 |---|---|---|---|
@@ -14,7 +15,7 @@ Last updated 2026-09-20.
 | 4 | **S1 resolved**: measured resolver reach, fallback trigger recorded | **Done for v0.1.** Hand-audited on two independent samples; 72.0% on the fresh one. A third audit is required before any v1.0 gate claim (A-34) | `trellis-index/src/resolve.rs`, `BENCHMARK_AND_EVAL.md` §2 |
 | 5 | **S14 resolved**: named benchmark repo, threshold with reasoning | **Done** | `BENCHMARK_AND_EVAL.md` §1, §3 |
 | 6 | **S16 resolved**: the recall figure that fires the pivot | **Done** — 60% | ADR 0002, `ROADMAP.md` |
-| 7 | **S7 resolved**: model floor across seven metrics | **Partial.** One configuration measured, and it is below the floor — a lower bound, not a location. Four of the seven metrics measured; §5.4 lists the other three with what each would take | `BENCHMARK_AND_EVAL.md` §5 |
+| 7 | **S7 resolved**: model floor across seven metrics | **Partial.** Two configurations measured, both below the floor — two endpoints, no interval. Four of the seven metrics measured; §5.4 lists the other three with what each would take | `BENCHMARK_AND_EVAL.md` §5 |
 | 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Mostly.** Embedded and tested; licence verified MIT 1.8.0; matrix published. **Inference path deliberately open** | ADR 0006, `TECH_SPIKE.md` §3 |
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
 | 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves demonstrated: a converging run, and a model declaring success while the checks disagree. The loop's *shape* is what this row is about; v0.2's full gate is not met — see the audit below | ADR 0005, `trellis-loop/src/agent.rs` |
@@ -107,32 +108,50 @@ never enters `reverse`. The radius now takes its unresolved count from the
 files it touches — an over-approximation, which is the safe direction. Closes
 OPEN_QUESTIONS Q-13.
 
+## The v1.0 gate, read against today
+
+`ROADMAP.md` fixes five conditions plus one, verbatim and without substitutions.
+This is where each stands. Two are met, one is met with a scripted model and not
+a real one, and three need measurement rather than code.
+
+| # | v1.0 condition | State |
+|---|---|---|
+| 1 | Recall on the benchmark repo meets the v0.1 threshold | **No. 72.0%** against 85%, CI [63.2%, 80.8%]. In the S1 fallback band, which requires a further backstop. Both candidate backstops are measured and neither is worth building — see below |
+| 2 | Zero unsound edges; every `Resolved` edge verified real | **Mechanically yes, 5,908/5,908**, and precision 100% on two hand audits. A third independent audit is required before the claim (A-34) |
+| 3 | A real change to human approval, complete trail, grounded checks | **Partial.** Done end to end on poetry with a scripted model (`wedge-20260920.md`): defect, blast radius, failing check, edit, passing check, human `git commit`, trail, cold resume. Never with a model making the judgments |
+| 4 | Induced mid-run failure returns the repo to its exact pre-run state | **Yes**, with a named `rollback-gate` CI job |
+| 5 | Resumption works | **Yes**, demonstrated cold on the benchmark repo |
+| + | Acceptable operation on a local open-weight model at or above the floor | **No, and the floor is not located.** Two configurations measured, both below it: 0.5B 0/20, Coder-3B 0/17 |
+
+Conditions 3 and the plus-row are the same fact twice: no model has been found
+that can drive this. That is a measurement result about available small models,
+not a harness defect — the A/B in §5 is what separates those two, and it came
+back saying the harness gave the model what it needed.
+
 ## Next, in order
 
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-Two items remain and **neither is blocked on code**. One needs bandwidth, the
-other needs a person.
+1. **Tier 3** (`AdapterTier::HarnessConstrained`). The one v0.2 gate item that
+   is pure code, needs no network and no person, and the brief calls it "the
+   one that makes any model work regardless of training". It is named in the
+   enum and constructed nowhere; TRELLIS only ever speaks tier 2 over HTTP.
+   The pieces exist — the probe rig already applies an llguidance mask in
+   process — but that is the measurement rig, not the product.
 
-1. **The model floor (S7), second configuration.** One configuration is
-   measured and it is below the floor; the A/B established that this is the
-   model and not the harness. Locating the floor needs a configuration that
-   *passes*.
+   It is also the only route to the plus-row above that does not depend on
+   finding a better model: tier 3 is what a runtime with no grammar support
+   gets, and every local runtime a user actually has is on that path.
 
-   Qwen2.5-Coder-3B Q4_K_M is at **1,521 MB of 2,105 MB** (72%) after 72
-   resumed attempts, gaining roughly 190 MB/hour — about three hours out.
-   `.bench/models/fetch.sh` resumes by HTTP range and appends to the partial
-   file; if a session ends with it incomplete, restart it rather than
-   re-fetching.
+2. **Bonsai-2-27B served.** The default model is downloaded with TRELLIS and
+   `trellis models` lists it, but nothing here can execute it: the candle probe
+   uses `quantized_qwen2` and the weights are Qwen35 with ternary quantization.
+   Serving it needs llama.cpp. Until then the default model is a catalog entry,
+   which the catalog says plainly rather than implying otherwise.
 
-   When it lands: start the probe server on the new weights, then
-   `python docs/bench/run_floor.py .bench/floor docs/bench/floor_tasks.json
-   llamacpp:http://127.0.0.1:<port> docs/bench/floor-qwen2.5-coder-3b.json`.
-   About 70 minutes.
-
-2. **A human re-audit before any v1.0 gate claim** (A-34, Q-15). The only
-   thing standing between the project and a gate call.
+3. **The human re-audit** (A-34, Q-15) — the only thing standing between the
+   project and a call on gate condition 2.
 
    **The packet is ready to produce and the pipeline is validated.** Two
    commands, no network: `audit_sample ... 1000 <fresh-seed>` then
@@ -141,14 +160,17 @@ other needs a person.
 
    It must report **wrongly excluded** as well as recall: ADR 0015 lets a site
    leave the denominator on the strength of an annotation, and no automated
-   check can see a wrong exclusion (S21). If `resolve.rs` moves before
-   scoring, regenerate `answers.json` — the seed reproduces the sites, not the
-   verdicts.
+   check can see a wrong exclusion (S21). If `resolve.rs` moves before scoring,
+   regenerate `answers.json` — the seed reproduces the sites, not the verdicts.
 
-**v0.1 and v0.3 are complete; v0.2 is not** — see the gate audit below. Every
-known latent unsound edge is closed and the tool has an interactive session.
-Two things stand between here and v1.0: the 85% recall gate, which needs
-measurement rather than code, and two unmet v0.2 items that need code.
+4. **Conflict escalation** for non-negotiable rules, v0.3's one open gate item.
+   Deliberately last: the honest version needs a model that can name the rule it
+   could not satisfy, and building it against a fixture would test the fixture.
+
+**v0.1 is complete. v0.3 is eight of nine. v0.2 is five of ten** — both gates
+audited line by line below, against the code rather than against the milestone
+prose that had them marked done. Every known latent unsound edge is closed and
+the tool has an interactive session.
 
 ### Not on the critical path, but real
 
@@ -225,6 +247,106 @@ into an exclusion and recall becomes unfalsifiable.
 
 Next: implement that, re-run the audit on a fresh sample, and report both
 denominators.
+
+## v0.3's exit gate, audited against the code
+
+Eight of nine. Each row cites what would have to fail for the row to be wrong,
+because "v0.3 complete" was in this document twice on the strength of the
+milestone prose rather than this checklist.
+
+| Gate item | State |
+|---|---|
+| Every run writes a committed trail, factual and judgment split | **Yes.** Written after rollback, committed before the next run can start |
+| The factual section carries provenance and is tamper-evident | **Yes.** `schema`, `run_id`, `base_commit`, `provenance` (TRELLIS version and model spec), and SHA-256 over the canonical JSON of `factual`. Editing a committed trail and leaving the digest makes `log` print `ALTERED` |
+| Trail contents are untrusted on read-back | **Yes.** `UntrustedTrail`; `Verdict` has no `Deserialize`, so a recorded check reads back inert as `RecordedCheck` |
+| Context, prompts and governance rules load from `.trellis/` | **Yes.** `context.md`, `prompts/<name>.md`, `governance/*.toml`. A malformed rule is an error, never a skip |
+| A governance rule fails an audit **mechanically** | **Yes**, as of this iteration, and it was not before — see below. `CheckKind::Governance` produces a sealed `Verdict`; a broken non-negotiable fails the run and rolls it back, tested through the dispatch and not only at the audit function. Substring matching only — a governance check that exercised judgment would be Constraint 2 with extra steps |
+| Rule ranking works; **conflicting non-negotiables escalate** | **Partial.** Ranking works and is tested. Conflict escalation is not built — below |
+| `trellis resume` continues from durable state, not a replayed transcript | **Yes.** `--resume` seeds `PriorContext`, which is deliberately not `turns`, so a recorded pass cannot satisfy `last_check_passed` |
+| `trellis why <symbol>` answers from the trail | **Yes**, after the wedge run found it could not |
+| **The wedge, demonstrated** on the benchmark repo | **Yes.** `docs/bench/wedge-20260920.md` |
+
+### The rule had no teeth on the path every model takes
+
+Claiming the row above meant testing the wiring rather than the function under
+it, and the wiring was broken.
+
+`Orchestrator::run_checks` shadowed its `paths` argument:
+
+```rust
+let paths: Vec<PathBuf> = if paths.is_empty() {
+    vec![PathBuf::from(".")]      // for mypy: "the whole repository"
+} else { ... };
+```
+
+By the time the `Governance` arm ran, `paths.is_empty()` could never be true,
+so the `self.touched` branch was dead code and the audit was handed `"."`.
+`violations()` did `read_to_string(root.join("."))`, which fails on a
+directory, and the failure went into a `let ... else { continue }`. The verdict
+came back **passing**, saying `1 rule(s) checked over 1 file(s); none broken`,
+having read nothing.
+
+The severity is in which path that is. The floor runs found **0 of 10
+`run_checks` calls passed a path** — a pathless call is what a real model
+actually emits, every time, and it is the call `SCOPE:` was added to discourage
+without success. So a non-negotiable rule could not fail in the only
+circumstance it would ever be tested in, while `trellis check` listing the rule
+and the unit test asserting it fails both read as working.
+
+Two fixes, because there were two defects:
+
+- The caller's paths are kept distinct from the defaulted ones, so the
+  governance arm sees what was actually requested.
+- **An audit reports coverage from what it read, never from what it was
+  asked to read.** `Scan` now carries `read` and `unreadable`; a file a rule
+  applies to and could not be opened is named as `NOT AUDITED`; and an audit
+  given paths where *none* could be read **does not pass**, because passing
+  there reports compliance that was never established, and `passed()` is what
+  convergence reads. An empty request still passes — a run that touched
+  nothing has broken nothing.
+
+Both directions were checked by mutation rather than by the tests going green:
+restoring the shadowed `paths` makes the scope test fail, and stubbing the
+rules out of the dispatch makes the violation test fail. This is the third
+instance this session of a guarantee documented and tested one layer below
+where it was needed, after S20 and the always-empty `factual.checks`. The
+pattern is stable enough to name: **test the call the model makes, not the
+function it eventually reaches.**
+
+### The one that is open
+
+Two non-negotiable rules in conflict should escalate, and the harness should
+not arbitrate between rules the user declared equally inviolable. The half that
+needs no judgment exists: a broken non-negotiable fails the audit, the run does
+not converge, the rollback is byte-exact.
+
+What is missing is distinguishing a *conflict* from a *mistake* — establishing
+that no fix satisfying rule A leaves rule B intact. Deciding that mechanically
+needs the set of possible fixes, which the harness does not have. Deciding it
+by asking the model is Constraint 2 returning through the back door, since the
+model would be adjudicating the rules it is being held to.
+
+The shape that would be honest: a non-negotiable failure where the model's own
+summary names a second rule it could not satisfy, escalated verbatim and
+attributed, with the harness declining to rule on it. That needs a model
+capable of saying so, and both measured configurations are below the floor. Left
+open rather than built against nothing and tested with a fixture that agrees.
+
+### What running the wedge found
+
+`trellis why` could not answer its own question. It reported "no file matching
+`boolean_validator` was changed" about a run that had changed exactly the file
+defining it. The factual section records **files**; a user asking why something
+looks the way it does holds a **symbol**, and the two match only by coincidence
+of naming.
+
+That is the failure `03-v0.3-memory.md` names in its own "most likely to go
+wrong" section — the trail written faithfully and useless because the grain is
+wrong. No test caught it, because every test asserted the behaviour the code
+had. It took running the thing the document says to run. Fixed by resolving the
+symbol through the index to its defining file before matching, which works
+retroactively: the mapping is recomputed, not recorded, so trails written before
+the fix answer correctly.
 
 ## v0.2's exit gate, audited against the code
 
@@ -361,11 +483,13 @@ name the test that would fail if it were reverted.
   unbuilt; the CLI module doc said `run` predated inference. All three fixed,
   and the ten rules CLAUDE.md says need an ADR were verified in code rather
   than by reading the document.
-- **v0.3 is complete.** The context file and governance rules landed, and
-  the split between them is the point: .trellis/context.md informs the
-  model, [governance] deny_write binds it, enforced in the orchestrator,
-  which owns the only write path to the tree. A rule that lives only in a
-  prompt is a suggestion.
+- **v0.3's governance split.** `.trellis/context.md` informs the model;
+  `deny_write` binds it, enforced in the orchestrator, which owns the only
+  write path to the tree. A rule that lives only in a prompt is a suggestion.
+  Rules gained teeth in the other direction too: a `forbid` pattern now fails
+  an audit through `CheckKind::Governance`, producing a sealed `Verdict`,
+  because a violation printed into the model's context and never entering a
+  verdict is one a model converges straight past.
 - **A resumed session was told everything except what the last run verified.**
   `context_lines` read only the always-empty `factual.checks`.
 - **The converging path had no test**, and the suite proved it: replacing the
@@ -382,7 +506,7 @@ name the test that would fail if it were reverted.
   both read. Four live instances, all moved to `concat!`, and three tests now
   assert the rendered strings carry no double space.
 
-## The S7 floor: one configuration, measured
+## The S7 floor: two configurations, both below it
 
 **Qwen2.5-0.5B-Instruct Q4_K_M, candle on CPU, tier 2**, 20 verified tasks on
 poetry 2.5.0. Full write-up and every deviation from the designed protocol in
@@ -394,14 +518,37 @@ budget-exhausted 16   format-failure 3   no-recovery 1
 median 209 s per task
 ```
 
-**This bounds the floor from below; it does not locate it.** A floor is an
-interval, and one configuration measured below it is one endpoint. The second
-(Qwen2.5-Coder-3B Q4_K_M) is still downloading. Nothing here licenses "the
-floor is 3B" or any other figure.
-
 Nothing was repaired and nothing was made worse — the model never raised a
 file's error count. Not a configuration that damages a repository; one that
 does not move it.
+
+### The second: Qwen2.5-Coder-3B-Instruct Q4_K_M, same protocol
+
+Stopped by the host at task 17 of 20 for system memory pressure, unrelated to
+the run, and reported at the size it reached.
+
+```
+0 repaired of 17      errors_after == errors_before on all 17
+```
+
+**The 3B reasons about the task and cannot address the repository.** It picks
+the right file from the task text and writes a plausible edit — and emits the
+path as `src/poeetry/...` in **all seventeen**, a transposition in the project
+name, every time. Every such call is refused at the write path for a path
+outside the tree, so the model spends its budget being told no in a way it
+never recovers from.
+
+I ruled out the harness before recording that: the tokenizer round-trips
+`src/poetry/config/config.py` exactly, so the string the model produced is the
+string it meant to produce.
+
+**Two endpoints, no interval.** A floor is located by a configuration that
+*passes*, and neither of these does. Nothing here licenses "the floor is above
+3B" — a 3B tuned for tool use, or the same 3B under tier 3 where a grammar
+could constrain the path against the real tree, are both untested. What the two
+runs jointly establish is narrower and still worth having: at this scale the
+failure is judgment, not format, and constraint of the kind TRELLIS currently
+applies does not reach it.
 
 ### A claim I put here and then falsified
 

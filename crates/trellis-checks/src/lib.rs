@@ -116,9 +116,15 @@ pub async fn import_check(root: &Path, cfg: &CheckConfig, module: &str) -> Verdi
 #[tracing::instrument(skip(rules, files))]
 pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String]) -> Verdict {
     let started = Instant::now();
-    let found = governance::violations(root, rules, files);
+    let scan = governance::violations(root, rules, files);
+    let found = &scan.violations;
     let (failing, advisory): (Vec<_>, Vec<_>) =
         found.iter().partition(|v| v.rank.fails_the_audit());
+    // Asked to audit something and unable to read any of it. Passing here
+    // would report compliance that was never established, and `passed()` is
+    // what convergence reads. Empty `files` is different and stays a pass: a
+    // run that touched nothing has broken nothing.
+    let blind = !files.is_empty() && scan.read.is_empty();
 
     let mut out = String::new();
     for v in &failing {
@@ -135,12 +141,30 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
             v.rule, v.file, v.line, v.text
         ));
     }
-    if found.is_empty() {
+    if !scan.unreadable.is_empty() {
+        out.push_str(&format!(
+            "NOT AUDITED: {} file(s) a rule applies to could not be read: {}
+",
+            scan.unreadable.len(),
+            scan.unreadable.join(", ")
+        ));
+    }
+    if blind {
+        out.push_str(&format!(
+            concat!(
+                "this audit establishes nothing: {} path(s) were in scope and ",
+                "none could be read
+"
+            ),
+            files.len()
+        ));
+    } else if found.is_empty() {
+        // Counted from what was read, not from what was requested.
         out.push_str(&format!(
             "{} rule(s) checked over {} file(s); none broken
 ",
             rules.len(),
-            files.len()
+            scan.read.len()
         ));
     }
 
@@ -150,11 +174,12 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
     // not reproduce.
     Verdict::from_governance(ProcessOutput {
         command: format!(
-            "governance audit: {} rule(s), {} file(s)",
+            "governance audit: {} rule(s), {} file(s) read of {} in scope",
             rules.len(),
+            scan.read.len(),
             files.len()
         ),
-        exit_code: Some(i32::from(!failing.is_empty())),
+        exit_code: Some(i32::from(!failing.is_empty() || blind)),
         failure_count: Some(failing.len() as u32),
         stdout: out,
         stderr: String::new(),
@@ -284,6 +309,103 @@ mod governance_audit_tests {
         assert_eq!(v.detail().failure_count, Some(1));
         assert!(v.detail().stdout.contains("VIOLATION [No direct DB]"));
         assert!(v.detail().stdout.contains("app/h.py:1"));
+    }
+
+    #[test]
+    fn an_audit_that_could_read_nothing_it_was_given_does_not_pass() {
+        // The defect this test exists for: the orchestrator shadowed its
+        // `paths` with `["."]` before the governance arm ran, so the audit was
+        // handed a directory, `read_to_string` failed, the failure was
+        // swallowed by a `continue`, and the verdict passed reporting
+        // "1 rule(s) checked over 1 file(s); none broken". Every measured model
+        // calls run_checks with no paths, so that was the live path, and a
+        // non-negotiable rule could not fail in it.
+        let d = repo(
+            "name = \"No direct DB\"
+rank = \"non-negotiable\"
+             forbid = { pattern = \"psycopg2.connect\" }
+",
+        );
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(d.path(), &rules, &[".".to_string()]);
+        assert!(
+            !v.passed(),
+            "claiming compliance over a path that could not be read is the              bare `complete` the brief forbids, wearing a rule's clothes"
+        );
+        assert!(
+            v.detail().stdout.contains("establishes nothing"),
+            "{:?}",
+            v.detail().stdout
+        );
+        assert!(
+            !v.detail().stdout.contains("establishes nothing:  "),
+            "the fifth recurrence of the cargo fmt string-continuation defect              would land here: {:?}",
+            v.detail().stdout
+        );
+        assert!(
+            !v.detail().stdout.contains("none broken"),
+            "it must not also claim a clean audit: {:?}",
+            v.detail().stdout
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_alongside_readable_ones_is_named_not_skipped() {
+        let d = repo(
+            "name = \"No direct DB\"
+rank = \"non-negotiable\"
+             forbid = { pattern = \"psycopg2.connect\" }
+",
+        );
+        std::fs::write(
+            d.path().join("app/ok.py"),
+            "x = 1
+",
+        )
+        .unwrap();
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(
+            d.path(),
+            &rules,
+            &["app/ok.py".to_string(), "app/gone.py".to_string()],
+        );
+        // One file was read and is clean, so the audit did establish
+        // something and passes — but it must say what it could not see.
+        assert!(v.passed());
+        assert!(
+            v.detail().stdout.contains("NOT AUDITED") && v.detail().stdout.contains("app/gone.py"),
+            "{:?}",
+            v.detail().stdout
+        );
+    }
+
+    #[test]
+    fn the_file_count_reports_what_was_read_not_what_was_requested() {
+        let d = repo(
+            "name = \"No direct DB\"
+rank = \"non-negotiable\"
+             forbid = { pattern = \"psycopg2.connect\" }
+",
+        );
+        std::fs::write(
+            d.path().join("app/ok.py"),
+            "x = 1
+",
+        )
+        .unwrap();
+        let rules = governance::load(d.path()).unwrap();
+        let v = governance_audit(
+            d.path(),
+            &rules,
+            &["app/ok.py".to_string(), "app/gone.py".to_string()],
+        );
+        assert!(
+            v.detail().stdout.contains("over 1 file(s)"),
+            "two requested, one readable: the coverage claim comes from the              read, or it is a count of intentions: {:?}",
+            v.detail().stdout
+        );
     }
 
     #[test]

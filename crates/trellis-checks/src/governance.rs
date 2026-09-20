@@ -127,26 +127,49 @@ pub enum GovernanceError {
     Malformed(String, String),
 }
 
+/// What a scan actually examined, alongside what it found.
+///
+/// The coverage claim is made from `read`, never from the request. An audit
+/// that was handed a path it could not open must not report as a clean audit
+/// of it — that is the "complete" the brief forbids, wearing a rule's clothes.
+#[derive(Debug, Default)]
+pub struct Scan {
+    pub violations: Vec<Violation>,
+    /// Files opened successfully, in request order.
+    pub read: Vec<String>,
+    /// Files at least one rule scoped to and none could open.
+    pub unreadable: Vec<String>,
+}
+
 /// Every violation of every `forbid` rule, over the files as they stand.
 ///
 /// Mechanical: a substring search. No judgment is exercised and none is
 /// available to exercise.
-pub fn violations(root: &Path, rules: &[Rule], files: &[String]) -> Vec<Violation> {
-    let mut out = Vec::new();
-    for rule in rules {
-        let Mechanism::Forbid { pattern } = &rule.check else {
+pub fn violations(root: &Path, rules: &[Rule], files: &[String]) -> Scan {
+    let mut scan = Scan::default();
+    for file in files {
+        let scoped: Vec<&Rule> = rules
+            .iter()
+            .filter(|r| matches!(r.check, Mechanism::Forbid { .. }) && in_scope(r, file))
+            .collect();
+        if scoped.is_empty() {
+            continue;
+        }
+        // Read once per file rather than once per rule: the old shape reread
+        // the file for every rule, and a file that failed to open vanished
+        // silently into a `continue`.
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            scan.unreadable.push(file.clone());
             continue;
         };
-        for file in files {
-            if !in_scope(rule, file) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+        scan.read.push(file.clone());
+        for rule in scoped {
+            let Mechanism::Forbid { pattern } = &rule.check else {
                 continue;
             };
             for (i, line) in text.lines().enumerate() {
                 if line.contains(pattern.as_str()) {
-                    out.push(Violation {
+                    scan.violations.push(Violation {
                         rule: rule.name.clone(),
                         rank: rule.rank,
                         file: file.clone(),
@@ -157,7 +180,7 @@ pub fn violations(root: &Path, rules: &[Rule], files: &[String]) -> Vec<Violatio
             }
         }
     }
-    out
+    scan
 }
 
 fn in_scope(rule: &Rule, file: &str) -> bool {
@@ -213,7 +236,7 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].rank, Rank::NonNegotiable);
 
-        let v = violations(d.path(), &rules, &["app/handlers/users.py".into()]);
+        let v = violations(d.path(), &rules, &["app/handlers/users.py".into()]).violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].line, 4);
         assert!(v[0].text.contains("psycopg2.connect"));
@@ -239,7 +262,11 @@ mod tests {
         .unwrap();
 
         let rules = load(d.path()).unwrap();
-        assert!(violations(d.path(), &rules, &["app/repo/db.py".into()]).is_empty());
+        assert!(
+            violations(d.path(), &rules, &["app/repo/db.py".into()])
+                .violations
+                .is_empty()
+        );
     }
 
     #[test]
@@ -282,6 +309,10 @@ mod tests {
         );
         let rules = load(d.path()).unwrap();
         assert_eq!(deny_write_paths(&rules), vec!["vendor/", "*.lock"]);
-        assert!(violations(d.path(), &rules, &["vendor/x.py".into()]).is_empty());
+        assert!(
+            violations(d.path(), &rules, &["vendor/x.py".into()])
+                .violations
+                .is_empty()
+        );
     }
 }
