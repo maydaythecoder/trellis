@@ -104,6 +104,12 @@ pub enum NotConverged {
         repeated: String,
         times: u32,
     },
+    /// The checks passed and a project rule was broken. Separate from
+    /// `StoppedWithoutPassingChecks` because the user's next move is
+    /// different: the code is correct and not allowed.
+    GovernanceViolation {
+        detail: String,
+    },
 }
 
 impl NotConverged {
@@ -117,6 +123,14 @@ impl NotConverged {
             ),
             NotConverged::BudgetExhausted(e) => format!("budget exhausted: {}", e.explain()),
             NotConverged::ModelFailed(e) => format!("the model could not continue: {e}"),
+            NotConverged::GovernanceViolation { detail } => format!(
+                concat!(
+                    "the checks passed and a project rule was broken, so the ",
+                    "run did not converge and nothing was accepted:
+{}"
+                ),
+                detail
+            ),
             NotConverged::NoProgress { repeated, times } => format!(
                 concat!(
                     "no progress: the same call was made {} times with the same ",
@@ -363,6 +377,46 @@ pub async fn run_seeded<M: Model>(
                 // The whole architecture is this branch. The model says it is
                 // finished; the loop asks the checks.
                 return if t.last_check_passed() {
+                    // And then asks the rules, whether or not the model
+                    // thought to. `default_kinds` is `["typecheck"]`, so a
+                    // governance audit ran only when a model volunteered for
+                    // one — which makes a non-negotiable rule enforceable at
+                    // the discretion of the thing it constrains. The audit is
+                    // scoped to what the run touched, so a run that edited
+                    // nothing a rule governs is unaffected.
+                    let gate = match orch.has_governance_rules().await {
+                        true => Some(
+                            orch.run_checks(Vec::new(), vec![CheckKind::Governance])
+                                .await,
+                        ),
+                        false => None,
+                    };
+                    if let Some(ToolResult::Checks(v)) = &gate {
+                        let detail = v.detail();
+                        t.turns.push(Turn {
+                            observation: detail.stdout.clone(),
+                            call: ToolCall::RunChecks {
+                                paths: Vec::new(),
+                                kinds: vec![CheckKind::Governance],
+                            },
+                            verdict_passed: Some(v.passed()),
+                            check_kind: Some(format!("{:?}", detail.kind)),
+                            radius_counts: None,
+                            prompt_bytes: None,
+                        });
+                        if !v.passed() {
+                            return (
+                                Outcome::NotConverged {
+                                    reason: NotConverged::GovernanceViolation {
+                                        detail: detail.stdout.clone(),
+                                    },
+                                    iterations,
+                                },
+                                t,
+                            );
+                        }
+                        checks_passed += 1;
+                    }
                     (
                         Outcome::Converged {
                             iterations,
@@ -844,6 +898,94 @@ mod tests {
             t.turns.iter().all(|x| x.prompt_bytes.is_none()),
             "a driver with no prompt must record None, not Some(0)"
         );
+    }
+
+    fn forbid_rule(root: &std::path::Path, pattern: &str) {
+        let g = root.join(".trellis").join("governance");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(
+            g.join("r.toml"),
+            format!(
+                "name = \"No direct DB\"
+rank = \"non-negotiable\"
+                 forbid = {{ pattern = \"{pattern}\" }}
+"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_passing_check_does_not_converge_over_a_broken_non_negotiable() {
+        // The rule has to bind without the model's cooperation. `default_kinds`
+        // is `["typecheck"]`, so a governance audit ran only when a model asked
+        // for one — which makes a non-negotiable rule enforceable at the
+        // discretion of the thing it constrains, and no measured model ever
+        // asked. The gate now audits at convergence regardless.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect");
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .spawn();
+
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return psycopg2.connect('s')".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "fixed it".into(),
+            },
+        ]);
+
+        let (outcome, t) = run("fix it", &mut m, &h, &budget()).await;
+        match outcome {
+            Outcome::NotConverged {
+                reason: NotConverged::GovernanceViolation { detail },
+                ..
+            } => {
+                assert!(detail.contains("psycopg2.connect"), "{detail}");
+                assert!(detail.contains("VIOLATION"), "{detail}");
+            }
+            other => panic!("a broken non-negotiable must block convergence, got {other:?}"),
+        }
+        assert_eq!(
+            t.turns.last().map(|x| x.verdict_passed),
+            Some(Some(false)),
+            "the audit is recorded as a turn, so the trail shows the rule was              consulted rather than leaving a run that merely stopped"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_gate_does_not_run_when_the_repository_has_no_rules() {
+        // An audit of nothing is not evidence of anything. It must not add a
+        // turn or inflate the passing-check count a user reads at the end.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "nothing to do".into(),
+            },
+        ]);
+        let (outcome, t) = run("look", &mut m, &h, &budget()).await;
+        assert!(matches!(
+            outcome,
+            Outcome::Converged {
+                checks_passed: 1,
+                ..
+            }
+        ));
+        assert_eq!(t.turns.len(), 1, "no governance turn was added");
     }
 
     #[tokio::test]

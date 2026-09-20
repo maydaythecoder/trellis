@@ -43,6 +43,13 @@ pub enum Request {
     },
     /// Files written during this run, for the rollback path and the trail.
     Touched { reply: oneshot::Sender<Vec<String>> },
+    /// Whether the repository configured any governance rule at all.
+    ///
+    /// The convergence gate asks before auditing, so a repository with no
+    /// rules gets no extra turn and no extra passing check. An audit of
+    /// nothing is not evidence of anything and must not inflate the count a
+    /// user reads at the end of a run.
+    HasRules { reply: oneshot::Sender<bool> },
 }
 
 /// Handle to a running orchestrator. Cloneable; every clone talks to the one
@@ -109,6 +116,11 @@ impl Handle {
 
     pub async fn touched(&self) -> Vec<String> {
         self.ask(|reply| Request::Touched { reply }, Vec::new).await
+    }
+
+    pub async fn has_governance_rules(&self) -> bool {
+        self.ask(|reply| Request::HasRules { reply }, || false)
+            .await
     }
 }
 
@@ -190,6 +202,9 @@ impl Orchestrator {
                 }
                 Request::Touched { reply } => {
                     let _ = reply.send(self.touched.clone());
+                }
+                Request::HasRules { reply } => {
+                    let _ = reply.send(!self.rules.is_empty());
                 }
             }
         }
@@ -682,11 +697,23 @@ scope = [\"{scope}\"]
             ToolResult::Edit(_)
         ));
         match h.run_checks(vec![], vec![CheckKind::Governance]).await {
-            ToolResult::Checks(v) => assert!(
-                v.passed(),
-                "a violation in a file the run never touched is not this run's: {:?}",
-                v.detail().stdout
-            ),
+            ToolResult::Checks(v) => {
+                assert!(
+                    v.passed(),
+                    "a violation in a file the run never touched is not this run's: {:?}",
+                    v.detail().stdout
+                );
+                // Asserted directly rather than through pass/fail. The
+                // regression this guards — the caller's paths shadowed by the
+                // `["."]` default — produces a scope that is merely *out of*
+                // every rule's scope, which also passes. Only the count says
+                // which file was actually examined.
+                assert!(
+                    v.detail().command.contains("1 file(s) read of 1 in scope"),
+                    "the audit must have read the one file the run touched: {:?}",
+                    v.detail().command
+                );
+            }
             other => panic!("expected a verdict, got {other:?}"),
         }
     }

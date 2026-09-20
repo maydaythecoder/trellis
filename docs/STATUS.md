@@ -260,7 +260,7 @@ milestone prose rather than this checklist.
 | The factual section carries provenance and is tamper-evident | **Yes.** `schema`, `run_id`, `base_commit`, `provenance` (TRELLIS version and model spec), and SHA-256 over the canonical JSON of `factual`. Editing a committed trail and leaving the digest makes `log` print `ALTERED` |
 | Trail contents are untrusted on read-back | **Yes.** `UntrustedTrail`; `Verdict` has no `Deserialize`, so a recorded check reads back inert as `RecordedCheck` |
 | Context, prompts and governance rules load from `.trellis/` | **Yes.** `context.md`, `prompts/<name>.md`, `governance/*.toml`. A malformed rule is an error, never a skip |
-| A governance rule fails an audit **mechanically** | **Yes**, as of this iteration, and it was not before — see below. `CheckKind::Governance` produces a sealed `Verdict`; a broken non-negotiable fails the run and rolls it back, tested through the dispatch and not only at the audit function. Substring matching only — a governance check that exercised judgment would be Constraint 2 with extra steps |
+| A governance rule fails an audit **mechanically** | **Yes**, as of this iteration, and it was not before — see below. `CheckKind::Governance` produces a sealed `Verdict`; a broken non-negotiable fails the run and rolls it back, and `Step::Done` now audits before converging rather than waiting to be asked. Tested through the dispatch and through the loop, not only at the audit function. Substring matching only — a governance check that exercised judgment would be Constraint 2 with extra steps |
 | Rule ranking works; **conflicting non-negotiables escalate** | **Partial.** Ranking works and is tested. Conflict escalation is not built — below |
 | `trellis resume` continues from durable state, not a replayed transcript | **Yes.** `--resume` seeds `PriorContext`, which is deliberately not `turns`, so a recorded pass cannot satisfy `last_check_passed` |
 | `trellis why <symbol>` answers from the trail | **Yes**, after the wedge run found it could not |
@@ -300,18 +300,51 @@ Two fixes, because there were two defects:
 - **An audit reports coverage from what it read, never from what it was
   asked to read.** `Scan` now carries `read` and `unreadable`; a file a rule
   applies to and could not be opened is named as `NOT AUDITED`; and an audit
-  given paths where *none* could be read **does not pass**, because passing
+  where every such file was unreadable **does not pass**, because passing
   there reports compliance that was never established, and `passed()` is what
-  convergence reads. An empty request still passes — a run that touched
-  nothing has broken nothing.
+  convergence reads.
+
+  That rule is keyed on `unreadable`, deliberately not on "read nothing". The
+  first version keyed it on an empty `read` and would have failed every run
+  that edited a file outside every rule's scope — including every run in a
+  repository whose rules are all `deny-write`, which is the wedge fixture's
+  own shape. It is the same "a rule broken somewhere this run never went"
+  failure the scoping exists to prevent, arriving through the other door, and
+  it is now two tests.
+
+### And nothing ever asked for the audit
+
+Fixing the dispatch raised the next question: does a run audit governance at
+all unless the model requests it? `wire.rs`:
+
+```rust
+fn default_kinds() -> Vec<String> { vec!["typecheck".into()] }
+```
+
+It does not. A governance audit ran only when a model volunteered for one,
+which makes a non-negotiable rule enforceable at the discretion of the thing it
+constrains. No measured model ever asked, and the wedge trail records
+`Typecheck- Typecheck+` and no governance check at all.
+
+`Step::Done` now audits before it converges, when the repository has rules —
+scoped to what the run touched, recorded as a turn so the trail shows the rules
+were consulted, and producing `NotConverged::GovernanceViolation`, which is
+separate from `StoppedWithoutPassingChecks` because the user's next move
+differs: the code is correct and not allowed. A repository with no rules gets
+no audit, no extra turn and no extra passing check — an audit of nothing is not
+evidence of anything and must not inflate a count the user reads.
 
 Both directions were checked by mutation rather than by the tests going green:
 restoring the shadowed `paths` makes the scope test fail, and stubbing the
-rules out of the dispatch makes the violation test fail. This is the third
-instance this session of a guarantee documented and tested one layer below
-where it was needed, after S20 and the always-empty `factual.checks`. The
-pattern is stable enough to name: **test the call the model makes, not the
-function it eventually reaches.**
+rules out of the dispatch makes the violation test fail. The scope test asserts
+the read count directly (`1 file(s) read of 1 in scope`) rather than inferring
+it from pass/fail, because once the blind rule was narrowed correctly the
+mutation passed *and* was still wrong.
+
+This is the third instance this session of a guarantee documented and tested one
+layer below where it was needed, after S20 and the always-empty
+`factual.checks`. The pattern is stable enough to name: **test the call the
+model makes, not the function it eventually reaches.**
 
 ### The one that is open
 

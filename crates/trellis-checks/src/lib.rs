@@ -120,11 +120,16 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
     let found = &scan.violations;
     let (failing, advisory): (Vec<_>, Vec<_>) =
         found.iter().partition(|v| v.rank.fails_the_audit());
-    // Asked to audit something and unable to read any of it. Passing here
-    // would report compliance that was never established, and `passed()` is
-    // what convergence reads. Empty `files` is different and stays a pass: a
-    // run that touched nothing has broken nothing.
-    let blind = !files.is_empty() && scan.read.is_empty();
+    // Asked to audit files a rule actually applies to, and unable to read any
+    // of them. Passing there would report compliance that was never
+    // established, and `passed()` is what convergence reads.
+    //
+    // Keyed on `unreadable`, deliberately not on `files`: a run that edited
+    // files no `forbid` rule scopes to has an empty `read` too, and failing it
+    // would fail every run in a repository whose rules are all `deny-write` —
+    // exactly the "a rule broken somewhere this run never went" failure the
+    // orchestrator's scoping exists to prevent, arriving by the other door.
+    let blind = scan.read.is_empty() && !scan.unreadable.is_empty();
 
     let mut out = String::new();
     for v in &failing {
@@ -152,11 +157,11 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
     if blind {
         out.push_str(&format!(
             concat!(
-                "this audit establishes nothing: {} path(s) were in scope and ",
-                "none could be read
+                "this audit establishes nothing: {} file(s) a rule applies to ",
+                "and none could be read
 "
             ),
-            files.len()
+            scan.unreadable.len()
         ));
     } else if found.is_empty() {
         // Counted from what was read, not from what was requested.
@@ -348,6 +353,61 @@ rank = \"non-negotiable\"
             "it must not also claim a clean audit: {:?}",
             v.detail().stdout
         );
+    }
+
+    #[test]
+    fn a_run_outside_every_rules_scope_passes_rather_than_failing_blind() {
+        // The regression the blind rule nearly introduced. A file no `forbid`
+        // rule applies to is neither read nor unreadable, so keying "this
+        // audit established nothing" on an empty `read` would fail every run
+        // that edited a file outside every scope.
+        let d = repo(
+            "name = \"No direct DB\"
+rank = \"non-negotiable\"
+             forbid = { pattern = \"psycopg2.connect\" }
+scope = [\"app/handlers/\"]
+",
+        );
+        std::fs::create_dir_all(d.path().join("app/repo")).unwrap();
+        std::fs::write(
+            d.path().join("app/repo/db.py"),
+            "x = psycopg2.connect('s')
+",
+        )
+        .unwrap();
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(d.path(), &rules, &["app/repo/db.py".to_string()]);
+        assert!(
+            v.passed(),
+            "the repository layer is supposed to reach the database; failing              here forbids the architecture the rule exists to protect: {:?}",
+            v.detail().stdout
+        );
+    }
+
+    #[test]
+    fn a_repository_whose_rules_are_all_deny_write_passes_the_audit() {
+        // `deny-write` is enforced at the orchestrator's write path, not here.
+        // Such a repository has no `forbid` rule to evaluate, so every audit
+        // reads zero files — and must still pass, or governance breaks every
+        // run in the repositories most likely to configure it. The wedge
+        // fixture is exactly this shape.
+        let d = repo(
+            "name = \"Vendored code is not ours\"
+rank = \"non-negotiable\"
+             deny-write = { paths = [\"vendor/\"] }
+",
+        );
+        std::fs::write(
+            d.path().join("app/h.py"),
+            "x = 1
+",
+        )
+        .unwrap();
+        let rules = governance::load(d.path()).unwrap();
+
+        let v = governance_audit(d.path(), &rules, &["app/h.py".to_string()]);
+        assert!(v.passed(), "{:?}", v.detail().stdout);
     }
 
     #[test]
