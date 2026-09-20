@@ -13,6 +13,7 @@
 //! non-zero with a message naming what is missing, rather than pretending.
 
 mod config;
+mod session;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -30,8 +31,9 @@ struct Cli {
     #[arg(long, global = true)]
     root: Option<PathBuf>,
 
+    /// Omit to enter an interactive session.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -137,7 +139,15 @@ fn main() -> Result<()> {
         println!("root:     {} (repository root)", root.display());
     }
 
-    match cli.command {
+    let Some(command) = cli.command else {
+        // Bare `trellis` is a session, not a usage error. One-shot commands
+        // re-derived the index for every question and made the user re-type
+        // --root and --model; holding them is the shape the orchestrator's
+        // single-owner index was built for.
+        return session::Session::open(&root, None)?.run();
+    };
+
+    match command {
         Command::Index => cmd_index(&root),
         Command::Doctor { model } => cmd_doctor(&root, model.as_deref()),
         Command::Check { paths } => cmd_check(&root, paths),
@@ -578,7 +588,16 @@ fn record_trail(
 /// could not see is the failure mode the whole design exists to prevent.
 fn cmd_radius(root: &Path, query: &str) -> Result<()> {
     let index = trellis_index::build_cached(root);
+    radius_of(&index, query)
+}
 
+/// The radius report, over an index the caller already holds.
+///
+/// Split out so the interactive session can answer from an index built once
+/// per session rather than once per question. The two paths must not drift:
+/// a session that renders a radius differently from `trellis radius` would be
+/// two products wearing one name.
+pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
     let qualified = |s: &trellis_index::SymbolEntry| {
         format!(
             "{}.{}",
@@ -622,7 +641,7 @@ fn cmd_radius(root: &Path, query: &str) -> Result<()> {
     }
 
     let target = matches[0];
-    let report = trellis_index::radius::blast_radius(&index, target);
+    let report = trellis_index::radius::blast_radius(index, target);
     let s = &index.symbols[target.index()];
 
     println!("{}  ({})", qualified(s), index.files[s.file.index()].path);

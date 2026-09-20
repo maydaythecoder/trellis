@@ -88,6 +88,35 @@ pub fn commit_paths(root: &Path, paths: &[&str], message: &str) -> Result<(), Vc
 }
 
 /// Records `HEAD`, refusing if the worktree is dirty.
+/// Uncommitted changes, as `git status --porcelain` lines.
+///
+/// Empty means clean. Exposed because the interactive session has to show a
+/// user what a converged run left them, and answer the question that follows
+/// — keep it or drop it — without making them leave for a second terminal.
+pub fn pending(root: &Path) -> Result<Vec<String>, VcsError> {
+    if !root.join(".git").exists() {
+        return Err(VcsError::NotARepo(root.to_path_buf()));
+    }
+    Ok(git(root, &["status", "--porcelain"])?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Discards every uncommitted change, tracked and untracked alike.
+///
+/// The same two steps as `Snapshot::rollback` and for the same reason: either
+/// alone leaves residue. Unlike rollback this has no recorded commit to
+/// return to — it drops whatever is pending against current `HEAD`, which is
+/// what "I do not want what that run proposed" means.
+pub fn discard_pending(root: &Path) -> Result<(), VcsError> {
+    git(root, &["reset", "--hard"])?;
+    git(root, &["clean", "-fd"])?;
+    Ok(())
+}
+
 pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
     if !root.join(".git").exists() {
         return Err(VcsError::NotARepo(root.to_path_buf()));
