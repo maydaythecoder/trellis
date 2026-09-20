@@ -243,11 +243,40 @@ impl Orchestrator {
                 // exact tree/graph divergence the reindex-on-edit test exists
                 // to prevent.
                 return ToolResult::Error(format!(
-                    "{path} does not exist. This tool edits existing files only;                      creating files would leave the index unaware of them."
+                    concat!(
+                        "{} does not exist. This tool edits existing files ",
+                        "only; creating files would leave the index unaware of ",
+                        "them."
+                    ),
+                    path
                 ));
             }
             Err(e) => return ToolResult::Error(format!("cannot read {path}: {e}")),
         };
+
+        // An edit that replaces text with itself is refused, not applied.
+        //
+        // It would otherwise "succeed": the anchor occurs once, the identical
+        // bytes are written back, and the model is told `applied: true` about
+        // a change that did not happen. Three consequences, none of them
+        // visible at the time. The model believes it acted and reasons from
+        // that. The file joins `touched`, so it is recorded in the trail as
+        // proposed and is restored by a rollback that has nothing to restore.
+        // And an iteration of the budget is spent on a no-op.
+        //
+        // Found in the S7 floor run, where a weak model emitted
+        // `edit{old: "156", new: "156"}` repeatedly — the failure this refusal
+        // makes legible rather than letting it read as progress.
+        if old == new {
+            return ToolResult::Error(format!(
+                concat!(
+                    "edit refused: `old` and `new` are identical in {}, so this ",
+                    "would change nothing. If the file is already correct, run ",
+                    "the checks instead of editing."
+                ),
+                path
+            ));
+        }
 
         let hits = src.matches(old).count();
         if hits != 1 {
@@ -270,7 +299,12 @@ impl Orchestrator {
         // here is reported rather than dropped — the write already happened.
         if !self.session.update(path, &updated) {
             return ToolResult::Error(format!(
-                "{path} was written but is not part of the index session, so the                  graph is now stale. Re-open the repository before trusting any                  blast radius."
+                concat!(
+                    "{} was written but is not part of the index session, so ",
+                    "the graph is now stale. Re-open the repository before ",
+                    "trusting any blast radius."
+                ),
+                path
             ));
         }
 
@@ -463,6 +497,53 @@ mod tests {
             other => panic!("creating a file must be refused, got {other:?}"),
         }
         assert!(!d.path().join("app/brand_new.py").exists());
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_is_refused_not_applied() {
+        // S7 floor run: a weak model emitted edit{old: "156", new: "156"} over
+        // and over. Without this the anchor occurs once, the identical bytes
+        // are written back, and the model is told the edit applied — so it
+        // reasons from a change that never happened, the file is recorded in
+        // the trail as proposed, and a rollback restores something untouched.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+
+        let before = std::fs::read_to_string(d.path().join("app/util.py")).unwrap();
+        match h.edit("app/util.py", "return 1", "return 1").await {
+            ToolResult::Error(e) => {
+                assert!(e.contains("change nothing"), "{e}");
+                assert!(
+                    !e.contains("  "),
+                    "a message the model reads must not carry formatter debris: {e:?}"
+                );
+            }
+            other => panic!("a no-op edit must be refused, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("app/util.py")).unwrap(),
+            before
+        );
+        assert!(
+            h.touched().await.is_empty(),
+            "a refused edit must not enter the rollback set or the trail's              proposed list"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_file_is_refused_in_one_readable_sentence() {
+        // The message is assembled from several source lines, which is how it
+        // acquired a run of twenty spaces the last time it was written. It
+        // goes to the model and to the user, so it is asserted, not assumed.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        match h.edit("app/nope.py", "a", "b").await {
+            ToolResult::Error(e) => {
+                assert!(e.contains("does not exist"), "{e}");
+                assert!(!e.contains("  "), "{e:?}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[tokio::test]

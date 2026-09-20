@@ -93,7 +93,12 @@ impl RadiusCoverage {
             return "no call sites examined".to_string();
         }
         format!(
-            "{} call sites reach this symbol ({} resolved, {} ambiguous).              Separately, {} call sites across the {} files this radius touches              could not be bound to any definition; any of them may also reach it.",
+            concat!(
+                "{} call sites reach this symbol ({} resolved, {} ambiguous). ",
+                "Separately, {} call sites across the {} files this radius ",
+                "touches could not be bound to any definition; any of them may ",
+                "also reach it."
+            ),
             self.reached(),
             self.reached_resolved,
             self.reached_ambiguous,
@@ -424,6 +429,15 @@ mod tests {
 
         let s = c.summary();
         assert!(!s.contains('%'), "no percentage is computable here: {s}");
+        // This string is assembled from several source lines, and a
+        // backslash-continued literal gets its indentation folded in by
+        // `cargo fmt` — which has silently put runs of twenty spaces into
+        // user-facing output in this repository four times. `concat!` avoids
+        // it; this assertion is what notices if someone switches back.
+        assert!(
+            !s.contains("  "),
+            "formatter debris in a user-facing line: {s:?}"
+        );
         assert!(s.contains("1 call sites reach this symbol"), "{s}");
         assert!(s.contains("40 call sites across the 1 files"), "{s}");
         assert!(

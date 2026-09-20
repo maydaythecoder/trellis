@@ -218,9 +218,10 @@ fn cmd_run(
     resume: bool,
 ) -> Result<()> {
     if agents != "1" {
-        anyhow::bail!(
-            "multi-agent mode is v1.1 and is gated on single-agent numbers that do not \n             exist yet. Use --agents 1."
-        );
+        anyhow::bail!(concat!(
+            "multi-agent mode is v1.1 and is gated on single-agent numbers that ",
+            "do not exist yet. Use --agents 1."
+        ));
     }
     let cfg = config::RepoConfig::load(root)?;
     let mut driver = Driver::parse(model_spec, unconstrained)?;
