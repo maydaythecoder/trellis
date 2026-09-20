@@ -27,6 +27,23 @@ pub struct RepoConfig {
     pub agents: Option<AgentsSection>,
     #[serde(default)]
     pub governance: Option<GovernanceSection>,
+    #[serde(default)]
+    pub model: Option<ModelSection>,
+}
+
+/// A default model for this repository.
+///
+/// Saves retyping a runtime URL every session. Deliberately not a secret and
+/// not a key: it is a host and port, or a path to a script. The user's API
+/// key never goes in a file TRELLIS reads (ADR 0010) — a runtime that needs
+/// one is configured with it directly, out of this tool's sight.
+#[derive(Debug, Deserialize)]
+pub struct ModelSection {
+    /// e.g. `llamacpp:http://127.0.0.1:8080` or `scripted:fix.json`.
+    pub spec: Option<String>,
+    /// Send no schema and validate the reply instead (tier 4). Opt-in, since
+    /// a run can then fail on format alone.
+    pub unconstrained: Option<bool>,
 }
 
 /// Rules the loop obeys, read from the repository rather than configured per
@@ -95,6 +112,19 @@ impl RepoConfig {
             }
         }
         c
+    }
+
+    /// The repository's default model spec, if it set one.
+    pub fn model(&self) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.spec.clone())
+    }
+
+    /// Whether this repository asks for tier 4.
+    pub fn unconstrained(&self) -> bool {
+        self.model
+            .as_ref()
+            .and_then(|m| m.unconstrained)
+            .unwrap_or(false)
     }
 
     /// The repository's write rules, or none.
@@ -233,6 +263,43 @@ mod tests {
         assert_eq!(c.checks().tests, ["pytest", "-x"]);
         // Unset keys keep their defaults rather than becoming empty.
         assert_eq!(c.checks().python, "python");
+    }
+
+    #[test]
+    fn a_repository_may_name_its_own_model() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(RepoConfig::load(d.path()).unwrap().model(), None);
+        assert!(!RepoConfig::load(d.path()).unwrap().unconstrained());
+
+        write(
+            d.path(),
+            "[model]
+spec = \"llamacpp:http://127.0.0.1:8792\"
+unconstrained = true
+",
+        );
+        let c = RepoConfig::load(d.path()).unwrap();
+        assert_eq!(c.model().as_deref(), Some("llamacpp:http://127.0.0.1:8792"));
+        assert!(c.unconstrained());
+    }
+
+    #[test]
+    fn a_model_section_does_not_disturb_the_rest_of_the_config() {
+        // Sections are independent: a repository that names a model must
+        // still get its own checks, not the defaults.
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "[checks]
+typecheck = [\"pyright\"]
+
+[model]
+spec = \"scripted:x.json\"
+",
+        );
+        let c = RepoConfig::load(d.path()).unwrap();
+        assert_eq!(c.checks().typecheck, ["pyright"]);
+        assert_eq!(c.model().as_deref(), Some("scripted:x.json"));
     }
 
     #[test]

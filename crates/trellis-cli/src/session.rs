@@ -40,11 +40,18 @@ impl Session {
         let index = trellis_index::build_cached(root);
         let elapsed = started.elapsed();
 
+        // A repository may name its own model, so a session in a project with
+        // a local runtime starts ready rather than making the user retype a
+        // host and port they already wrote down. An explicit argument still
+        // wins: it is the more specific statement of intent.
+        let cfg = crate::config::RepoConfig::load(root)?;
+        let model = model.or_else(|| cfg.model());
+
         let s = Self {
             root: root.to_path_buf(),
             index,
             model,
-            unconstrained: false,
+            unconstrained: cfg.unconstrained(),
             tasks_run: 0,
         };
         s.banner(elapsed);
