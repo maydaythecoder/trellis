@@ -492,12 +492,12 @@ question.
 
 ### 5.2 Result
 
-```
-outcomes          budget-exhausted 16    format-failure 3    no-recovery 1
-check-recovery    0 repaired of 20 attempted
-error counts      errors_after == errors_before on all 20 tasks
-wall clock        median 209 s per task, 4014 s total
-```
+| Configuration | Harness | Repaired | budget-exhausted | format-failure | no-recovery | Median s/task |
+|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B-Instruct Q4_K_M, candle CPU, tier 2 | as committed at `24bba3d` | **0 / 20** | 16 | 3 | 1 | 209 |
+| the same | with the two §5.3 fixes | *pending* | | | | |
+
+`errors_after == errors_before` on all 20 tasks of the first row.
 
 **Nothing was repaired, and nothing was made worse.** The second half matters:
 the model never increased a file's error count, so this is not a configuration
@@ -519,9 +519,14 @@ is an interval, and finding it needs a configuration that passes. The second
 Three findings do not depend on the remaining configurations.
 
 **1. Constraint eliminates the format-*shape* failure, and not termination.**
-Unconstrained, the same model emitted a fenced ` ```json ` block containing
-`repo.edit` — an invented tool, wrapped in prose. Under tier 2 every generation
-was schema-valid.
+In one unconstrained probe on the demo repository — N=1, on a different corpus
+from the floor tasks — the same model emitted a fenced ` ```json ` block
+containing `repo.edit`, an invented tool wrapped in prose. Under tier 2, across
+the 20 floor tasks, every *token* was schema-valid and no generation was
+off-schema.
+
+Note the unit. Every token being valid is not every generation being a complete
+object, and the difference is the next paragraph.
 
 Three tasks still failed on format, and the mechanism is worth stating because
 it is not a broken constraint. The model emitted
@@ -574,9 +579,19 @@ Neither was visible from reading the code.
   Refused now.
 
 Both are fixed, and the same configuration is re-run against the fixed harness
-as a second line in the table below. That A/B is the only thing separating
-"this model is below the floor" from "this harness withheld what it needed",
-and the conclusion is not entitled to the first reading without it.
+as the second row of §5.2. That A/B is the only thing separating "this model is
+below the floor" from "this harness withheld what it needed", and the
+conclusion is not entitled to the first reading without it.
+
+Under greedy decoding the readout is **per-task divergence, not the tally**.
+Each task's first move must be identical to the first run, because the prompt
+is identical; trajectories can only diverge after the first observation the
+fixes changed. If the model reads `SCOPE:` and then passes paths, the harness
+mattered. If it reads it and emits the same edit, the model is the constraint.
+
+The truncation-message change shipped in the same commit does not contaminate
+this comparison: adapter retries are internal, and that text never enters the
+model's prompt.
 
 ### 5.4 Deviations from the design above, each with its reason
 

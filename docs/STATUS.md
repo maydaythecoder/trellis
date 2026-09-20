@@ -14,7 +14,7 @@ Last updated 2026-09-20.
 | 4 | **S1 resolved**: measured resolver reach, fallback trigger recorded | **Done for v0.1.** Hand-audited on two independent samples; 72.0% on the fresh one. A third audit is required before any v1.0 gate claim (A-34) | `trellis-index/src/resolve.rs`, `BENCHMARK_AND_EVAL.md` §2 |
 | 5 | **S14 resolved**: named benchmark repo, threshold with reasoning | **Done** | `BENCHMARK_AND_EVAL.md` §1, §3 |
 | 6 | **S16 resolved**: the recall figure that fires the pivot | **Done** — 60% | ADR 0002, `ROADMAP.md` |
-| 7 | **S7 resolved**: model floor across seven metrics | **Rig built, first configuration measuring.** `docs/bench/run_floor.py` drives the real adapter against a candle-backed llama.cpp-compatible probe | `BENCHMARK_AND_EVAL.md` §5, `docs/bench/run_floor.py` |
+| 7 | **S7 resolved**: model floor across seven metrics | **Partial.** One configuration measured, and it is below the floor — a lower bound, not a location. Four of the seven metrics measured; §5.4 lists the other three with what each would take | `BENCHMARK_AND_EVAL.md` §5 |
 | 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Mostly.** Embedded and tested; licence verified MIT 1.8.0; matrix published. **Inference path deliberately open** | ADR 0006, `TECH_SPIKE.md` §3 |
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
 | 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves of the v0.2 exit condition demonstrated: a converging run, and a model declaring success while the checks disagree | ADR 0005, `trellis-loop/src/agent.rs` |
@@ -108,8 +108,11 @@ OPEN_QUESTIONS Q-13.
    at 72%. The same line is handed to the model. Splitting the radius's
    coverage from the index's, so the two facts can never be divided, comes
    before any work on collapsing the 2,382-item list.
-2. **The model floor (S7), remainder.** The first configuration is measuring.
-   The second (Qwen2.5-Coder-3B) is still downloading.
+2. **The model floor (S7), remainder.** One configuration measured, below the
+   floor. The A/B against the fixed harness is running. The second model
+   (Qwen2.5-Coder-3B) is at 27% after several hours at ~47 KB/s, so a floor
+   that is actually *located* rather than bounded needs a faster network than
+   this machine has.
 3. **v0.3, remainder.** The wedge is demonstrated: `trellis run --resume`
    seeds a run from the last trail, fenced as data and structurally unable to
    make the run converge. Left: the context file and governance-rule import.
@@ -175,31 +178,74 @@ name the test that would fail if it were reverted.
   both read. Four live instances, all moved to `concat!`, and three tests now
   assert the rendered strings carry no double space.
 
-## The S7 floor, in progress
+## The S7 floor: one configuration, measured
 
-First configuration: **Qwen2.5-0.5B-Instruct Q4_K_M, candle on CPU, tier 2**
-against the 20 verified tasks on poetry 2.5.0. Nine tasks in as of this
-update; the tally goes in `BENCHMARK_AND_EVAL.md` when it completes, not
-before.
+**Qwen2.5-0.5B-Instruct Q4_K_M, candle on CPU, tier 2**, 20 verified tasks on
+poetry 2.5.0. Full write-up and every deviation from the designed protocol in
+`BENCHMARK_AND_EVAL.md` §5.
 
-What is already settled, and does not depend on the remaining tasks:
+```
+budget-exhausted 16   format-failure 3   no-recovery 1
+0 repaired of 20      errors_after == errors_before on all 20
+median 209 s per task
+```
 
-- **Constraint removes the format failure completely.** Unconstrained, the
-  0.5B emitted a fenced ```json block containing `repo.edit` — an invented
-  tool. Constrained, every generation across every task has been a schema-valid
-  tool call, and the adapter's format retries have never been exhausted.
-- **And guarantees nothing about content.** The same model fills those valid
-  calls with `old: "<old value>"`, `old: "..."`, the file path echoed into all
-  three fields, and control characters inside paths. That is the distinction
-  S7 exists to measure, and it is now demonstrated rather than asserted.
+**This bounds the floor from below; it does not locate it.** A floor is an
+interval, and one configuration measured below it is one endpoint. The second
+(Qwen2.5-Coder-3B Q4_K_M) is still downloading. Nothing here licenses "the
+floor is 3B" or any other figure.
+
+Nothing was repaired and nothing was made worse — the model never raised a
+file's error count. Not a configuration that damages a repository; one that
+does not move it.
+
+### A claim I put here and then falsified
+
+This section previously said "Constraint removes the format failure
+completely" and "the adapter's format retries have never been exhausted".
+Three of the twenty tasks then failed on format under tier 2. I wrote a commit
+message acknowledging it and did not edit this document for six commits — the
+same defect as S20's, in the same file that carries the finding about it.
+
+The corrected statement: **constraint guarantees prefix validity, not
+termination.** Every *token* was schema-valid. Three *generations* were not
+complete objects, because the model emitted an arbitrarily long JSON string
+until `max_tokens` ran out, and no grammar can bound a string's length.
+`whitespace_flexible: false` does not reach inside a string value.
+
+### What holds regardless of the remaining configurations
+
+- **Constraint eliminates the format-*shape* failure.** In one unconstrained
+  probe on the demo repository, the same model emitted a fenced block
+  containing `repo.edit` — an invented tool, wrapped in prose. Under tier 2,
+  no generation across the 20 tasks was off-schema.
+- **And guarantees nothing whatever about content.** The same model fills
+  valid calls with `old: "<old value>"`, `old: "..."`, the file path echoed
+  into all three fields, line numbers as edit anchors, and control characters
+  as path separators. That is the distinction S7 exists to measure, now
+  demonstrated rather than asserted.
 - **Two harness defects the run surfaced**, both fixed and listed above: the
-  pathless check and the no-op edit. Both flattered a weak model's behaviour
-  into something that read like progress.
+  pathless check and the no-op edit. Both flattered a weak model into looking
+  like it was progressing.
 
-Cost, on this rig: roughly 3 to 4 minutes per task, 9 turns each. Per-turn
-time grows with the transcript because the probe server re-prefills the whole
-prompt every call — a property of the probe, not of TRELLIS, and it is stated
-that way wherever the figure appears.
+### The A/B, running
+
+The same configuration against the fixed harness. It is the only thing that
+separates "this model is below the floor" from "this harness withheld what it
+needed", and the conclusion is not entitled to the first reading without it.
+
+Under greedy decoding the readout is **per-task divergence, not the tally**:
+each task's first move is identical to run 1, so trajectories can only diverge
+after the first observation the fixes changed — the `SCOPE:` line, or the
+refusal of a no-op edit. If the model reads `SCOPE:` and then passes paths,
+the harness mattered. If it reads it and emits the same edit, the model is the
+constraint. The truncation-message change does not contaminate this: adapter
+retries are internal and that text never reaches the model's prompt.
+
+Cost on this rig: median 209 s per task, 9 turns each. Per-turn time grows
+through a run because the probe re-prefills the whole transcript every call —
+a property of the probe, not of TRELLIS, stated that way wherever the figure
+appears.
 
 - Incremental update: single-file save **39.7 ms p50**, 3.1× a cold build,
   with a property test asserting an updated session equals a cold one.
