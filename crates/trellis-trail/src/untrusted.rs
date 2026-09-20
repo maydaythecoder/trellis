@@ -51,8 +51,21 @@ pub struct UntrustedTrail {
 pub struct UntrustedFactual {
     #[serde(default)]
     pub proposed: Vec<String>,
+    /// Serialized `Verdict`s, when a writer could produce any.
+    ///
+    /// In practice usually empty, and that is not a bug: a `Verdict` is
+    /// constructible only inside `trellis-checks`, so the CLI that writes the
+    /// trail has none to serialize. `check_outcomes` below is where the record
+    /// actually lives, and both are read.
     #[serde(default)]
     pub checks: Vec<RecordedCheck>,
+    /// Which checks ran and whether each passed, as inert data.
+    ///
+    /// Read back for the same reason it is written: it is what the run
+    /// actually verified, and a resumed session that omits it carries forward
+    /// the shape of the previous run without its single most useful fact.
+    #[serde(default)]
+    pub check_outcomes: Vec<super::CheckOutcome>,
     #[serde(default)]
     pub radius: super::RadiusCounts,
     #[serde(default)]
@@ -100,11 +113,25 @@ impl UntrustedTrail {
             self.factual.mode_counts.verified, self.factual.mode_counts.reviewed
         ));
 
+        // Both sources, because which one a trail uses depends on who wrote
+        // it, and a resumed session that silently omitted the checks would be
+        // carrying forward everything except what the run established.
+        //
+        // "the trail says" is doing real work in this wording. It is a claim
+        // about a file on disk, about a working tree that may since have
+        // changed — never a claim about the code as it stands now.
         for c in &self.factual.checks {
             out.push(format!(
                 "recorded check [{}]: {} (trail says {})",
                 c.kind,
                 c.command,
+                if c.passed { "passed" } else { "failed" }
+            ));
+        }
+        for c in &self.factual.check_outcomes {
+            out.push(format!(
+                "recorded check [{}]: trail says {}",
+                c.kind,
                 if c.passed { "passed" } else { "failed" }
             ));
         }
@@ -183,5 +210,52 @@ mod tests {
             t.factual.mode_counts.verified, 0,
             "absent counts default to zero, never to an optimistic value"
         );
+    }
+
+    #[test]
+    fn a_resumed_session_is_told_what_the_previous_run_verified() {
+        // Found by running it. `context_lines` read only `factual.checks`,
+        // which holds serialized `Verdict`s — and the CLI that writes trails
+        // cannot construct a `Verdict`, so that array is always empty and the
+        // real record sits in `check_outcomes`.
+        //
+        // The resumed context therefore carried the task, the radius and the
+        // audit split, and silently dropped the one fact worth carrying: what
+        // the previous run actually established. Nothing failed; the context
+        // was just quietly poorer than it looked.
+        let json = r#"{
+          "task": "fix the return type",
+          "factual": {
+            "proposed": ["app/calc.py"],
+            "checks": [],
+            "check_outcomes": [
+              {"kind": "Typecheck", "passed": false},
+              {"kind": "Typecheck", "passed": true}
+            ]
+          }
+        }"#;
+        let t = UntrustedTrail::from_json(json).unwrap();
+        let lines = t.context_lines();
+        let checks: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("recorded check"))
+            .collect();
+        assert_eq!(checks.len(), 2, "{lines:?}");
+        assert!(checks[1].contains("passed"), "{checks:?}");
+        assert!(
+            checks.iter().all(|l| l.contains("trail says")),
+            "a recorded outcome is a claim about a file on disk, never about              the code as it stands now: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn a_trail_with_neither_check_field_still_reads() {
+        // An older trail, or one hand-written. Absent checks are absent, not
+        // an error — a resume that refuses to work because a trail predates a
+        // field is worse than one that reports less.
+        let t = UntrustedTrail::from_json(r#"{"task": "t", "factual": {}}"#).unwrap();
+        let lines = t.context_lines();
+        assert!(lines.iter().any(|l| l.contains("previous task: t")));
+        assert!(!lines.iter().any(|l| l.contains("recorded check")));
     }
 }
