@@ -112,8 +112,9 @@ OPEN_QUESTIONS Q-13.
    **not** change ADR 0013's product ordering.
 3. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
    sites beside 2,382 unresolved ones. Honest and unusable; a v0.3 blocker.
-4. **v0.3: the trail, context import, resume.** The format and the untrusted
-   read-back type exist; nothing writes or reads a trail yet.
+4. **v0.3, remainder.** Trail writing, committing and `resume` are built. Left:
+   the context file, governance-rule import, and feeding prior context into
+   the loop as a starting state rather than only printing it.
 5. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
    fixture return types and return-type propagation. Not to be started against
    samples already scored twice.
@@ -136,3 +137,7 @@ OPEN_QUESTIONS Q-13.
   its checks and be silently ignored.
 - The model adapter, tiers 2 and 4, against llama.cpp, vLLM and SGLang.
 - 20 verified model-floor tasks on the benchmark corpus.
+- `trellis doctor` probes rather than reporting defaults (S17, S18).
+- **v0.3 trail and resume**: written after rollback so failures are recorded,
+  committed so the next run can start and no later rollback deletes them, and
+  read back as `UntrustedTrail` with judgment fenced (S10, S11).
