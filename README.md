@@ -1,86 +1,169 @@
 # TRELLIS
 
-A Rust agent harness for Python repositories. It builds a call graph of
-first-party code, drives an agent loop against that graph, verifies changes with
-the repository's own type checker and test suite, and commits a decision trail.
+An agent harness for Python repositories. It maps what a change can reach,
+runs your repository's own type checker and test suite against it, rolls back
+anything that does not converge, and commits a record of what happened.
 
-**Status: pre-v0.1.** The foundation exists and is tested. The resolver, the
-agent loop, and model inference do not. No recall figure has been measured, and
-nothing in this repository reports one.
-
-## What works today
+The one-line version: **work comes back verified rather than merely written.**
 
 ```
-cargo run -p trellis-cli -- index     # Pass 1 across the repo, with counts
-cargo run -p trellis-cli -- check     # run the configured type checker and tests
-cargo run -p trellis-cli -- doctor    # report adapter tier, batching, tooling
+trellis init                     # scaffold .trellis/, report what is missing
+trellis doctor                   # model, tier, checks, index, worktree, budget
+trellis run --model <spec> "fix the boolean_validator return annotation"
+trellis                          # a session, holding the index between tasks
+trellis tui                      # the same, full-screen
+trellis why <symbol>             # what past runs did to it, from the trail
 ```
 
-`radius`, `run`, `resume` and `partitions` are defined in the CLI surface and
-exit with "not implemented yet". They need the resolver and the agent loop
-(v0.2).
+**Status: v0.1 complete, v0.2 at five of ten, v0.3 at eight of nine.** The
+resolver, the agent loop, rollback, governance, the trail and resume all work
+and are tested. What is not done is listed in `docs/STATUS.md`, item by item,
+against the code rather than against the plan.
 
-## Built and tested
+---
 
-| Component | State |
-|---|---|
-| Workspace, 8 crates | Builds clean |
-| Pass 1 parser — defs, imports, call sites, decorators, relative imports | Tested; runs on real repos |
-| Graph types — three-valued `Target`, bidirectional adjacency | Tested by property test over random graphs |
-| Coverage reporting | Tested |
-| **The grounding contract** — sealed `Verdict`, `ToolResult` with no pass variant | Tested |
-| Partitioning, including the S19 conservative partition | Tested |
-| Budgets, including divide-not-multiply across partitions | Tested |
-| Trail — factual/judgment split, untrusted read-back | Tested |
-| Rollback — clean-worktree requirement, reset + clean, induced panic | Tested |
-| Adapter tiers, schemars → JSON Schema → llguidance | Tested against the real llguidance API |
+## Coverage is partial, and here is why
 
-## Not built
+**This is the thing to understand before anything else.** If you understand
+it, TRELLIS's unresolved edges are honest reporting. If you do not, they look
+like a broken tool.
 
-Resolver Pass 2 and the bind step. The agent loop. The orchestrator actor.
-Model probing and in-process inference. Incremental index update. Index
-persistence. Multi-agent execution (the partitioning rules exist; nothing runs
-them concurrently yet).
+Python cannot be statically resolved completely. `obj.method()` where `obj`'s
+type is unknown, `getattr(x, name)()`, a decorator that returns something
+other than what it wrapped, `from x import *` — none of these can be followed
+without running the program. This is not a gap in TRELLIS; it is a property of
+the language. The best published figure for a Python call-graph builder is
+**PyCG at roughly 99.2% precision and 69.9% recall**, and the recall number is
+the one that matters here.
 
-## Two constraints that shape everything
+So TRELLIS makes a specific trade, and states it everywhere:
 
-**Complete call-graph recall is impossible in Python.** Roughly three call edges
-in ten are statically invisible. So the graph is high-precision and *explicitly
-incomplete*: every edge carries a confidence label, every run reports coverage,
-and nothing ever emits a bare "complete".
+- **High precision.** If it says a call site reaches your symbol, it does. On
+  the benchmark corpus, precision measured **100%** on two hand-audited
+  samples, and all 5,908 `Resolved` edges pass two mechanical soundness checks
+  over the *full* corpus.
+- **Explicitly incomplete recall.** Hand-audited at **72.0%** (95% CI
+  63.2–80.8%). It does not reach the 85% the v1.0 gate requires, and the gate
+  has not been called.
+- **It never says "complete."** There is no API that returns reach without
+  also returning what was missed, no `total()` on the coverage type, and no
+  percentage combining the two — because the reach and the doubt are counted
+  over different populations, and dividing them once printed *"3.7% resolved"*
+  for a resolver audited at 72%.
 
-**An LLM cannot verify its own work without an external signal.** So correctness
-verdicts come only from processes that execute — type checker, test runner,
-import check. The model reads their output and decides what to do next; it never
-issues a pass verdict. This is enforced in the type system, not in a prompt:
-`Verdict` is constructible only inside `trellis-checks`, and `ToolResult` has no
-pass variant.
+What you will actually see, at the moment you accept a change:
+
+```
+coverage: 22 call sites in the 1 file bound to nothing
+          (MethodDispatchUntyped 20, DynamicAttribute 1, and 1 more)
+          Any of them may call what you changed. The checks ran on what the
+          graph could see.
+```
+
+Twenty-two calls in that file could not be followed. They are not defects, and
+they are not evidence of a problem in your code. They are the part of Python
+that static analysis does not reach, counted rather than hidden.
+
+One number you will see and should not misread: `trellis index` reports what
+the resolver **bound**, currently 43.7% on the benchmark repo. That is a
+*lower bound on recall, not recall* — it counts a call as missed even when its
+true callee is in the standard library. Only the hand-audited sample produces
+a figure comparable to the gate. Every surface that prints it says so.
+
+---
+
+## `Verified` and `Reviewed` are not the same claim
+
+**"The callers still work" means two different things**, and collapsing them
+is how a tool earns distrust the first time something breaks after a clean
+run.
+
+- **Verified** — an executed test covered this call site and passed. A process
+  ran, exited zero, and touched this code.
+- **Reviewed** — a model read it and did not object. No test covers it. This
+  is a *weak* signal, and it is not evidence of correctness.
+
+They are never added together. The type carrying them has no `total()` and no
+combined percentage, deliberately, so that no future change can quietly merge
+them into one reassuring number.
+
+### What TRELLIS reports today, exactly
+
+**`Verified` is currently always 0, and that means "not measured" — not
+"nothing is verified."**
+
+Mapping which tests cover which call sites is not built. Your test suite does
+run, and a failing suite still blocks convergence — the grounding contract is
+intact and a run cannot converge without an executed check that passed. What
+is missing is the attribution: TRELLIS cannot yet tell you *which* of the call
+sites in the blast radius your tests actually exercised.
+
+So a run that converges means: the checks you configured ran and passed. It
+does not yet mean anything more specific than that, and the trail records
+`0 verified, 0 reviewed` rather than inventing a figure. When the mapping is
+built the numbers will be populated from coverage data; until then the zeros
+are an honest absence and are labelled as one.
+
+---
+
+## How a run works
+
+1. **A clean worktree is required.** Rollback is `git reset --hard` to a commit
+   recorded before the run, which cannot tell this run's edits from work that
+   was already there. The requirement is what makes "nothing was accepted" mean
+   exactly that — your own changes are never at risk from a run.
+2. The model gets a flat tool list: blast radius, read file, edit, run checks.
+   One loop, one model. Not a committee.
+3. **The model never issues a verdict.** It can say it is finished; the loop
+   asks the checks. `Verdict` is constructible only inside `trellis-checks`,
+   only from a process that actually ran, so "the model claims success" and
+   "the run converged" are connected by an executed check or not at all.
+4. Anything that does not converge is rolled back to the exact pre-run state,
+   proven at seven injection points including SIGINT and a dead orchestrator.
+5. A trail is committed either way — including for failed runs, which are the
+   ones worth a record.
+6. **Nothing is committed on your behalf.** A converged run leaves its edits
+   in the working tree. Acceptance is yours.
+
+## Governance
+
+Rules in `.trellis/governance/*.toml` are enforced, not suggested:
+
+- `deny-write` refuses an edit at the orchestrator's write path, before
+  anything reaches disk.
+- `forbid` fails an audit, producing a real verdict — so a broken
+  non-negotiable rule stops a run from converging and rolls it back.
+
+Matching is substring only, deliberately. A governance check that exercised
+judgment would be a model deciding whether it had followed the rules.
 
 ## Documents
 
 | | |
 |---|---|
-| [`docs/BRIEF.md`](docs/BRIEF.md) | The specification. Everything else refers to it |
-| [`docs/MISSION.md`](docs/MISSION.md) | Mission, goal state, positioning |
-| [`docs/TECH_SPIKE.md`](docs/TECH_SPIKE.md) | Resolver algorithm, edge schema, tool contracts, adapter tiers, orchestrator |
-| [`docs/RISK_REGISTER.md`](docs/RISK_REGISTER.md) | Every soft spot, with severity, failure scenario, and costed patch |
-| [`docs/BENCHMARK_AND_EVAL.md`](docs/BENCHMARK_AND_EVAL.md) | v0.1 in full: benchmark repos, recall method, thresholds, model-floor spike |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones, the v1.0 gate verbatim, the pivot trigger as a named gate |
-| [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Cost and wall-clock per change, per configuration |
-| [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) | Every default chosen where the brief was silent |
-| [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) | Grouped by who answers |
-| [`docs/adr/`](docs/adr/) | Ten decision records |
-| [`CLAUDE.md`](CLAUDE.md) | Repository conventions and what needs an ADR to change |
+| `docs/BRIEF.md` | the specification |
+| `docs/STATUS.md` | every claim, audited against the code |
+| `docs/ROADMAP.md` | the v1.0 gate, verbatim, and the non-goals |
+| `docs/BENCHMARK_AND_EVAL.md` | how every figure here was measured |
+| `docs/RISK_REGISTER.md` | soft spots, with a costed patch each |
+| `docs/adr/` | decisions, each with a rejected alternative |
+| `docs/bench/` | measurement artefacts and manual walkthroughs |
 
 ## On numbers in this repository
 
-Every figure in the documents is either a measurement with its method stated
-beside it, or is marked pending with the milestone that will produce it. There
-are no estimates presented as measurements and no placeholder figures presented
-as findings. The recall figure the whole v1.0 gate depends on has not been
-measured; the thresholds that will judge it were chosen first, deliberately, and
-are recorded in `docs/adr/0002-edge-confidence-model.md`.
+No measurement appears in any document without its method beside it. Where
+something cannot be measured yet, the documents say "pending" and name the
+milestone rather than estimating. Two figures that look like measurements and
+are not: the v1.0 model-floor interval is **not located** — two configurations
+have been measured and both failed every task — and `trellis index`'s bound is
+not recall.
+
+## Supported platforms
+
+Windows and Linux on x86-64, both tested with the full suite. macOS is built
+in CI and has never been run by a human on this project; nothing is claimed
+about it. See `dist/QUICKSTART.md`.
 
 ## Licence
 
-Apache-2.0.
+Apache-2.0. See `LICENSE`.

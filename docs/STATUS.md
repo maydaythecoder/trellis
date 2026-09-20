@@ -164,7 +164,10 @@ of the gate needs it.
    a three-platform matrix that tests on the profile it ships, and the
    supported list stated as what was tested. It found the `Verdict`
    compile-fail proof pinned to one toolchain.
-9. Documentation: partial coverage, and `Verified` versus `Reviewed`.
+9. ~~Documentation: partial coverage, and `Verified` versus `Reviewed`.~~
+   **Done.** The README was rewritten — it had said "pre-v0.1, the resolver
+   and the agent loop do not [exist]" — and the audit-mode limit is now stated
+   at the approval prompt, not only in a document.
 10. **`MISSION.md` with honest positioning (S15)** — concede the index is
     commodity and argue the wedge where it actually is.
 11. **Tier 3** (`AdapterTier::HarnessConstrained`), carried from v0.2. The
@@ -309,6 +312,44 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## Documentation, and a README that described a different project
+
+v1.0 task item 9. `04-v1.0-harness.md` names two things that must be
+unmistakable, and asks for the second "in the docs **and at the approval
+prompt**."
+
+**The README was describing a project from several milestones ago.** Its first
+paragraph said *"Status: pre-v0.1. The resolver, the agent loop, and model
+inference do not [exist]. No recall figure has been measured, and nothing in
+this repository reports one."* All four claims are false. That is the same
+defect as the stale STATUS entries and the stale `answers.json`, in the one
+document a newcomer reads first. Rewritten.
+
+**Coverage is partial, and here is why** now leads the README, before anything
+about features: PyCG's ~69.9% recall as the published state of the art, the
+trade TRELLIS makes (precision 100% measured, recall 72.0% hand-audited and
+explicitly short of the 85% gate), and the fact that it never says "complete."
+It shows the actual approval-time line rather than describing it, and repeats
+the one warning that matters — `trellis index`'s 43.7% is a lower bound on
+recall, not recall.
+
+**`Verified` versus `Reviewed`** gets its own section, and the honest part is
+the one that was missing everywhere: **`Verified` is always 0, and that means
+"not measured", not "nothing is verified."** Your checks do run and a failing
+suite still blocks convergence; what does not exist is the attribution from
+tests to call sites. Saying "0 verified" without that label invites exactly
+one wrong reading, and it is the reading S3 exists to prevent.
+
+That sentence is now printed **at the approval prompt**, unconditionally —
+including when the coverage line is clean, which is precisely when someone is
+most likely to read "converged" as "tested".
+
+Held in one `const` that both the printer and its test read. The first version
+of that test carried its own copy of the string and would have kept passing
+after someone edited the real one — the same failure this sentence exists to
+prevent, one level up. Mutation-checked: changing the shipped text fails the
+test.
 
 ## Packaging, and a proof that only held on one toolchain
 

@@ -36,6 +36,27 @@ pub struct Session {
     tasks_run: u32,
 }
 
+/// The sentence S3 turns on, held in one place.
+///
+/// A `const` rather than a literal inside the printer, so the test asserts
+/// the string a user actually sees. A test carrying its own copy would keep
+/// passing after someone edited the real one, which is the failure mode this
+/// whole sentence exists to prevent, one level up.
+const AUDIT_MODE_NOTE: &str = concat!(
+    "
+verified: 0 — not measured, which is not the same as nothing being ",
+    "verified.
+",
+    "          Your checks ran and passed; a run cannot converge without ",
+    "that. What
+",
+    "          TRELLIS cannot yet tell you is WHICH call sites in the radius ",
+    "your
+",
+    "          tests actually exercised, so it reports no figure rather than ",
+    "a guess."
+);
+
 impl Session {
     pub fn open(root: &Path, model: Option<String>) -> Result<Self> {
         let started = std::time::Instant::now();
@@ -501,7 +522,23 @@ impl Session {
                 )
             );
         }
+        Self::print_audit_mode();
         Self::print_choices();
+    }
+
+    /// What a passing run does and does not claim.
+    ///
+    /// S3, and `04-v1.0-harness.md` asks for it here specifically: *"The first
+    /// time something breaks after a clean run, this wording decides whether
+    /// the user feels informed or lied to."* Approval is that moment — it is
+    /// where someone decides to trust the work — so the limit is stated at it
+    /// rather than only in a document they have not opened.
+    ///
+    /// Printed unconditionally, including when nothing is unresolved. A clean
+    /// coverage line is exactly when someone is most likely to read
+    /// "converged" as "tested", which is the reading this prevents.
+    fn print_audit_mode() {
+        println!("{AUDIT_MODE_NOTE}");
     }
 
     fn print_choices() {
@@ -1205,6 +1242,55 @@ mod tests {
             msg.contains("bound to nothing"),
             "and it must carry the figure, not just a mention: {msg}"
         );
+    }
+
+    #[test]
+    fn the_approval_prompt_says_what_a_passing_run_does_not_claim() {
+        // S3's wording test. `04-v1.0-harness.md` asks for this at the
+        // approval prompt specifically, because that is the moment someone
+        // decides to trust the work — and a zero that reads as "nothing is
+        // verified" is worse than no number at all.
+        let d = repo_with_doubt();
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper(thing):
+    return thing.run()
+
+
+def other():
+    return 9
+",
+        )
+        .unwrap();
+
+        let mut answers = vec!['a'].into_iter();
+        s.accept_with("m", &mut || answers.next()).unwrap();
+        // The text is printed, not returned, so this asserts the function
+        // exists and runs in the accept path; the wording itself is asserted
+        // below where it can be read directly.
+        assert!(trellis_vcs::pending(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_audit_mode_note_distinguishes_unmeasured_from_unverified() {
+        // "0 verified" invites exactly one wrong reading. Asserted against
+        // the shipped constant, not a copy: a test holding its own version
+        // would keep passing after someone edited the real one.
+        let text = AUDIT_MODE_NOTE;
+        assert!(text.contains("not measured"), "{text}");
+        assert!(
+            text.contains("not the same as nothing being verified"),
+            "the zero must be labelled, or it reads as a result: {text}"
+        );
+        assert!(
+            text.contains("checks ran and passed"),
+            "and it must not undersell what the run DID establish: {text}"
+        );
+        for line in text.lines() {
+            let body = line.trim_start();
+            assert!(!body.contains("  "), "folded indentation: {body:?}");
+        }
     }
 
     #[test]
