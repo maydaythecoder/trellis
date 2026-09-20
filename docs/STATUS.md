@@ -99,34 +99,24 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-1. **Model adapter, tiers 2 and 4** (`trellis-model`). ADR 0013 decided the
-   path: hand the compiled grammar to the runtime's guided-decoding parameter,
-   and defer tier 3 entirely. This is what makes the loop runnable.
-2. **Wire `trellis run`**: orchestrator + agent loop + rollback on
-   non-convergence, behind the CLI. The pieces exist and are tested
-   individually; nothing joins them yet.
-3. **The model floor (S7).** Three things gate it and all three are moving:
-   - *Weights.* Downloading (0.5B Q4, then Coder-3B Q4) from HuggingFace at
-     ~51 KB/s, resumable, via `docs/bench/fetch_models.sh`.
-   - *Task set.* `docs/bench/make_floor_tasks.py` injects realistic defects
-     into poetry's `src/` and **verifies each one**: the checker must be clean
-     before the mutation and fail after it, or it is not a task. An unverified
-     set would measure the checker's blind spots and call it a model floor.
-   - *A runtime.* `candle` is verified to build here (ADR 0013); the probe rig
-     itself is unwritten.
-
-**Environment blocker found 2026-09-19: no `pytest`, no `mypy`, no `ruff`.**
-The grounded checks are the thing Constraint 2 rests on, and they cannot
-execute on this machine until those install — which also blocks v0.2's exit
-condition ("one real change runs end to end"), not just the floor. Install is
-running in the background over the same slow link. Recorded because it is a
-real gate on the milestone, not a local annoyance.
-4. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
-   sites beside 2,382 unresolved ones. Honest and unusable, and it is the first
-   screen a user meets. A v0.3 blocker.
+1. **`trellis doctor` must probe rather than report defaults.** It currently
+   prints tier `ValidateAndRetry` and batching `Unknown` and says they are
+   defaults, which is the honest placeholder but not the requirement. S17 wants
+   the active tier reported; S18 wants batching capability measured, because a
+   user running four agents against a non-batching runtime sees no speedup and
+   blames TRELLIS.
+2. **The model floor (S7).** Weights still downloading. Task set is built and
+   verified (`docs/bench/floor_tasks.json`, 20 tasks). The probe rig needs
+   writing, and on this machine it will have to use in-process `candle`, since
+   there is no serving runtime here — that is a measurement expedient and does
+   **not** change ADR 0013's product ordering.
+3. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
+   sites beside 2,382 unresolved ones. Honest and unusable; a v0.3 blocker.
+4. **v0.3: the trail, context import, resume.** The format and the untrusted
+   read-back type exist; nothing writes or reads a trail yet.
 5. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
-   fixture return types and return-type propagation, both out of ADR 0012's
-   scope. Not to be started against samples already scored twice.
+   fixture return types and return-type propagation. Not to be started against
+   samples already scored twice.
 6. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
 7. Deferred: Q-14's latent unsound edge on the self-dispatch path.
@@ -138,3 +128,11 @@ real gate on the milestone, not a local annoyance.
 - CI, including a named job for v1.0 gate condition 4.
 - ADR 0013, settling the inference path S17 left open.
 - Orchestrator actor and the agent loop, both tested without a model.
+- `trellis run`, with **both halves of the v0.2 exit condition demonstrated**:
+  a converging run, and a model that declares success while the checks
+  disagree — rolled back to a byte-identical tree.
+- `.trellis/config.toml` is now actually read. It was documented as the source
+  of check commands while nothing loaded it, so a repository could configure
+  its checks and be silently ignored.
+- The model adapter, tiers 2 and 4, against llama.cpp, vLLM and SGLang.
+- 20 verified model-floor tasks on the benchmark corpus.
