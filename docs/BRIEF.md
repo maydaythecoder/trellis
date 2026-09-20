@@ -1,3 +1,10 @@
+> **Superseded as the entry point.** `00-index.md` is now the top of the
+> document set and the per-milestone documents `01`–`05` carry what each
+> milestone produced. This file is kept because it is the original
+> specification and several documents cite it by part number; it is not
+> updated as the build progresses, so where it disagrees with `01`–`05`,
+> they are right.
+
 # TRELLIS — Build Brief
 
 > Transcribed into the repository on 2026-09-18 as the project specification.

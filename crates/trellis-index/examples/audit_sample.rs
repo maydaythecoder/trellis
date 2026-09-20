@@ -58,7 +58,15 @@ not an inherited `Base.__init__`. The question is which first-party \
 definition this call site depends on, and for a construction that is the \
 class being constructed.
 
-5. Do not consult the resolver, the index, or any static-analysis tool. Read \
+5. A callable injected by a framework — a pytest fixture that RETURNS a \
+function or closure, then called as `factory(...)` — resolves to that \
+returned definition, when the fixture is defined exactly once in the tree and \
+its return is a definition you can point at. Treat the injection as dependency \
+injection, the same as a typed parameter. Use `dynamic` only when the fixture \
+is parametrised, overridden in more than one conftest, or returns something \
+you cannot name.
+
+6. Do not consult the resolver, the index, or any static-analysis tool. Read \
 the source.";
 
 /// SplitMix64. Hand-rolled so the sample is reproducible from the recorded

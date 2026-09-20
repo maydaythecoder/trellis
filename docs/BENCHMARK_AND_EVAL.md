@@ -237,6 +237,11 @@ resolve inherited `self` dispatch — the obvious next resolver feature — can
 therefore address at most about 9% of the `Attribute` gap, and is not the
 lever it appears to be.
 
+> **These are the FIRST-measurement figures.** They fired the S16 pivot
+> trigger, which was then averted by the ADR 0012 backstop. For the
+> final-state numbers — recall 72.0% on a fresh sample, precision 100% — see
+> `01-v0.1-measure.md` §7. Do not quote 47.8% as the current recall.
+
 ### RESULT — the hand audit, 2026-09-19
 
 400 call sites, seed 20260919, audited blind against the protocol above. 159

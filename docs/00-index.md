@@ -107,9 +107,14 @@ does not have to reconstruct the state from git history.
 Everything is on branch `v0.1-resolver`, not `master`.
 
 The one thing a reader should carry into every other document: **recall was
-measured at 47.8%, which fired the pre-registered S16 pivot trigger, and a
-bounded backstop then raised it to 71.1% on the same sample.** ADR 0011 holds
-the first result, ADR 0012 the decision to attempt the second, and
-`01-v0.1-measure.md` holds both with their caveats. No claim about the
-backstop is final until a fresh-sample audit confirms it, which is the open
-item.
+measured at 47.8%, which fired the pre-registered S16 pivot trigger; a bounded
+backstop then raised it to 72.0% on a fresh sample (CI [63.2%, 80.8%],
+precision 100%), so the pivot does not execute.** ADR 0011 holds the first
+result, ADR 0012 the decision to attempt the second and its outcome, and
+`01-v0.1-measure.md` holds both with their caveats.
+
+That leaves the project in the **S1 fallback band** — above the 60% pivot
+trigger, below the 85% v1.0 gate. The blast-radius guarantee survives and a
+further backstop is required before v1.0 can claim it. The next item is not
+that backstop: it is the S6 degradation UX, which the measurements promoted
+from v1.x to a v0.3 blocker.
