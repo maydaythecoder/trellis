@@ -7,8 +7,7 @@
       "reason": "MethodDispatchUntyped"
     },
     "10109": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "10119": {
       "kind": "Unresolved",
@@ -33,8 +32,7 @@
       "kind": "ExternalExcluded"
     },
     "10648": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "10866": {
       "kind": "Unresolved",
@@ -83,8 +81,7 @@
       "target": "poetry.config.config.merge"
     },
     "11621": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "117": {
       "kind": "Unresolved",
@@ -147,8 +144,7 @@
       "kind": "ExternalExcluded"
     },
     "12628": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "1264": {
       "kind": "ExternalExcluded"
@@ -158,8 +154,7 @@
       "reason": "MethodDispatchUntyped"
     },
     "12659": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "12800": {
       "kind": "ExternalExcluded"
@@ -257,8 +252,7 @@
       "kind": "ExternalExcluded"
     },
     "14594": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "14607": {
       "kind": "ExternalExcluded"
@@ -299,8 +293,7 @@
       "target": "poetry.puzzle.solver.Solver"
     },
     "15297": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "15352": {
       "kind": "Candidates",
@@ -421,16 +414,14 @@
       "target": "poetry.utils.env.mock_env.MockEnv"
     },
     "17007": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "17025": {
       "kind": "Resolved",
       "target": "tests.puzzle.test_solver.check_solver_result"
     },
     "17254": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "17294": {
       "kind": "Resolved",
@@ -483,8 +474,7 @@
       "target": "poetry.config.source.to_dict"
     },
     "18109": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "1813": {
       "kind": "Unresolved",
@@ -502,15 +492,13 @@
       "kind": "ExternalExcluded"
     },
     "18469": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "18494": {
       "kind": "ExternalExcluded"
     },
     "18566": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "18577": {
       "kind": "Unresolved",
@@ -661,8 +649,7 @@
       "target": "poetry.inspection.lazy_wheel.InvalidWheelError"
     },
     "2355": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "2420": {
       "kind": "ExternalExcluded"
@@ -711,8 +698,7 @@
       "reason": "MethodDispatchUntyped"
     },
     "3151": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "3165": {
       "kind": "ExternalExcluded"
@@ -733,20 +719,17 @@
       "target": "poetry.mixology.failure.SolveFailureError"
     },
     "3476": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "3586": {
       "kind": "Unresolved",
       "reason": "MethodDispatchUntyped"
     },
     "3652": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "3670": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "3751": {
       "kind": "ExternalExcluded"
@@ -759,8 +742,7 @@
       "target": "poetry.publishing.uploader._register"
     },
     "3950": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "3960": {
       "kind": "ExternalExcluded"
@@ -777,8 +759,7 @@
       "reason": "MethodDispatchUntyped"
     },
     "4111": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "4112": {
       "kind": "Unresolved",
@@ -855,8 +836,7 @@
       "kind": "ExternalExcluded"
     },
     "5414": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "5448": {
       "kind": "ExternalExcluded"
@@ -891,8 +871,7 @@
       "kind": "ExternalExcluded"
     },
     "6005": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "6017": {
       "kind": "ExternalExcluded"
@@ -906,8 +885,7 @@
       "reason": "MethodDispatchUntyped"
     },
     "6170": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "6191": {
       "kind": "Unresolved",
@@ -965,12 +943,10 @@
       "reason": "MethodDispatchUntyped"
     },
     "6859": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "7068": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "7334": {
       "kind": "Candidates",
@@ -980,8 +956,7 @@
       ]
     },
     "7443": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "7469": {
       "kind": "Unresolved",
@@ -1014,8 +989,7 @@
       "kind": "ExternalExcluded"
     },
     "7941": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "7965": {
       "kind": "Candidates",
@@ -1052,8 +1026,7 @@
       "reason": "MethodDispatchUntyped"
     },
     "8590": {
-      "kind": "Unresolved",
-      "reason": "MethodDispatchUntyped"
+      "kind": "ExternalExcluded"
     },
     "8630": {
       "kind": "Resolved",

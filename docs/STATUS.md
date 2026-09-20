@@ -116,8 +116,8 @@ a real one, and three need measurement rather than code.
 
 | # | v1.0 condition | State |
 |---|---|---|
-| 1 | Recall on the benchmark repo meets the v0.1 threshold | **No. 72.0%** against 85%, CI [63.2%, 80.8%]. In the S1 fallback band, which requires a further backstop. Both candidate backstops are measured and neither is worth building — see below |
-| 2 | Zero unsound edges; every `Resolved` edge verified real | **Mechanically yes, 5,908/5,908**, and precision 100% on two hand audits. A third independent audit is required before the claim (A-34) |
+| 1 | Recall on the benchmark repo meets the v0.1 threshold | **No. 72.0%** against 85%, CI [63.2%, 80.8%]. In the S1 fallback band, which requires a further backstop. Both candidate backstops are measured and neither is worth building — see below. **Now tracked rather than remembered**: the `precision-gate` CI job regenerates the resolver's verdicts and re-scores both seeds against the committed human judgements, failing below the recorded figures |
+| 2 | Zero unsound edges; every `Resolved` edge verified real | **All three mechanical checks now pass over the full corpus**, not a sample: name match 5,908/5,908, and **import reachability 0 disconnected, 0 ambiguous** — the check that reaches "the wrong `foo` in another module", which the name check explicitly cannot (`docs/bench/precision-20260920.md`). Precision 100% on two hand audits. A third independent audit is still required before the claim (A-34) |
 | 3 | A real change to human approval, complete trail, grounded checks | **Partial.** Done end to end on poetry with a scripted model (`wedge-20260920.md`): defect, blast radius, failing check, edit, passing check, human `git commit`, trail, cold resume. Never with a model making the judgments |
 | 4 | Induced mid-run failure returns the repo to its exact pre-run state | **Yes**, with a named `rollback-gate` CI job |
 | 5 | Resumption works | **Yes**, demonstrated cold on the benchmark repo |
@@ -133,39 +133,43 @@ back saying the harness gave the model what it needed.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-1. **Tier 3** (`AdapterTier::HarnessConstrained`). The one v0.2 gate item that
-   is pure code, needs no network and no person, and the brief calls it "the
-   one that makes any model work regardless of training". It is named in the
-   enum and constructed nowhere; TRELLIS only ever speaks tier 2 over HTTP.
-   The pieces exist — the probe rig already applies an llguidance mask in
-   process — but that is the measurement rig, not the product.
+**Now the v1.0 task order from `04-v1.0-harness.md`**, which supersedes the
+list this section carried through v0.3. Item 1 is done; tier 3 is carried
+forward from v0.2 because the v1.0 list does not mention it and the plus-row
+of the gate needs it.
 
-   It is also the only route to the plus-row above that does not depend on
-   finding a better model: tier 3 is what a runtime with no grammar support
-   gets, and every local runtime a user actually has is on that path.
+1. ~~Full precision audit; fix every unsound edge found.~~ **Done** —
+   `docs/bench/precision-20260920.md`. No unsound edge found, so nothing to
+   fix. The new check is `examples/check_reachability.rs` and it runs in CI.
+2. **Rollback hardening** across all injection points, including **SIGINT and
+   orchestrator panic** — the doc calls these two the ones usually missed, and
+   only one injection point is currently tested. Six or more required.
+3. **Recovery-path failure handling.** What happens when `git reset --hard`
+   itself fails: disk full, permissions, a lock held elsewhere. Report loudly,
+   leave the worktree path, never fail silently on the path that exists to
+   recover from failure.
+4. **Degradation UX (S6)** — the summary line, actionable reasons, severity
+   differentiation, three one-key approval paths. Designed for the tenth
+   partial-coverage run in an hour, not the first.
+5. **`trellis doctor` completion**, every line that can be wrong saying what to
+   do about it.
+6. **Re-run the v0.1 measurement for condition 1.** Largely absorbed into the
+   `precision-gate` CI job, which now does it on every push.
+7. **`trellis init`**, first-run prerequisite detection, and a good error for
+   the clean-worktree requirement — the first wall users hit.
+8. Packaging and cross-compilation.
+9. Documentation: partial coverage, and `Verified` versus `Reviewed`.
+10. **`MISSION.md` with honest positioning (S15)** — concede the index is
+    commodity and argue the wedge where it actually is.
+11. **Tier 3** (`AdapterTier::HarnessConstrained`), carried from v0.2. The
+    gate's plus-row needs it and the doc's own `doctor` mockup prints
+    `Tier 3 ✓`. Named in the enum, constructed nowhere.
+12. **Gate proof**: all five conditions, artifacts recorded.
 
-2. **Bonsai-2-27B served.** The default model is downloaded with TRELLIS and
-   `trellis models` lists it, but nothing here can execute it: the candle probe
-   uses `quantized_qwen2` and the weights are Qwen35 with ternary quantization.
-   Serving it needs llama.cpp. Until then the default model is a catalog entry,
-   which the catalog says plainly rather than implying otherwise.
-
-3. **The human re-audit** (A-34, Q-15) — the only thing standing between the
-   project and a call on gate condition 2.
-
-   **The packet is ready to produce and the pipeline is validated.** Two
-   commands, no network: `audit_sample ... 1000 <fresh-seed>` then
-   `split_audit.py <dir> 40`, giving 25 blind chunks of 40. Round-tripped
-   through split, merge and score with 1,000 synthetic judgements.
-
-   It must report **wrongly excluded** as well as recall: ADR 0015 lets a site
-   leave the denominator on the strength of an annotation, and no automated
-   check can see a wrong exclusion (S21). If `resolve.rs` moves before scoring,
-   regenerate `answers.json` — the seed reproduces the sites, not the verdicts.
-
-4. **Conflict escalation** for non-negotiable rules, v0.3's one open gate item.
-   Deliberately last: the honest version needs a model that can name the rule it
-   could not satisfy, and building it against a fixture would test the fixture.
+Two items remain that no amount of code closes: **the human re-audit** (A-34,
+Q-15), whose packet is ready and pipeline validated, and **a model at or above
+the floor**, which needs a configuration that passes rather than a third
+endpoint below it.
 
 **v0.1 is complete. v0.3 is eight of nine. v0.2 is five of ten** — both gates
 audited line by line below, against the code rather than against the milestone
@@ -247,6 +251,56 @@ into an exclusion and recall becomes unfalsifiable.
 
 Next: implement that, re-run the audit on a fresh sample, and report both
 denominators.
+
+## The precision audit, and a stale artifact it found
+
+v1.0's first task item, done. `04-v1.0-harness.md` names three mechanical
+checks for gate condition 2; the third did not exist, and it is the one that
+reaches the case the other two cannot. `check_soundness` says so itself: *"an
+edge to the WRONG `foo` in another module satisfies it."*
+
+`examples/check_reachability.rs` now verifies, over every cross-file `Resolved`
+edge, that an import path actually connects the two files — **0 disconnected,
+0 ambiguous** on the full corpus, with `1717 + 4157 + 34 = 5908` reconciling
+exactly against the recorded `Resolved` count. Full write-up in
+`docs/bench/precision-20260920.md`.
+
+Three things worth carrying:
+
+- **The result is reported split by callee shape and refuses to print a pooled
+  total alone.** For `Name` the check is close to circular — a scope walk that
+  produced a cross-file edge did so *through* an import. For `Attribute` it is
+  independent, because receiver typing never consults the calling file's
+  imports for the method, and that is exactly where ADR 0012's risk lives.
+- **34 edges verify through the class hierarchy rather than an import**, all
+  `self.option(...)`. The first run called them disconnected; they are sound,
+  and the check now walks base classes requiring each link to be
+  import-connected, instead of excusing them.
+- **Both allowances were removed in turn to prove the check can fail**: without
+  the inheritance walk, 34 disconnected; without the one re-export hop, 740.
+
+### The artifact was stale, not the resolver
+
+Scoring `docs/bench/poetry-2.5.0-seed20260919` as stored returned **47.8%**,
+the pre-ADR-0012 figure, against 67.9% in every document. The committed
+`answers.json` held resolver verdicts from before receiver typing landed, so
+scoring that directory replayed history rather than measuring the code.
+
+The resolver had not moved: regenerating the verdicts and scoring them against
+the same human judgements gives 67.9%, and 72.0% on seed 20260920. Both stored
+files are regenerated. *(I spent a detour convinced this was a CRLF regression
+in the resolver — it was my own contaminated scratch directory. The resolver
+emits byte-identical verdicts on CRLF and LF trees, which is now checked and
+worth knowing given the floor runner's CRLF bug.)*
+
+**This is why the new CI job regenerates rather than replays.** Scoring the
+stored pair passes forever, which is precisely the failure
+`04-v1.0-harness.md` calls the thing most likely to go wrong: a number from a
+spike nobody re-ran. `precision-gate` fetches the corpus by its recorded
+SHA-256, runs both mechanical checks, then regenerates each seed's verdicts and
+re-scores against the committed human judgements with `--min-recall` and
+`--min-precision` floors. `audit_score` previously printed a figure and exited
+zero, which is a report and not a gate.
 
 ## v0.3's exit gate, audited against the code
 

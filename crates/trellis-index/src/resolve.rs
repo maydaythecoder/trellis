@@ -791,7 +791,12 @@ fn package_of(module: &str, path: &str) -> String {
 /// Turns a possibly-relative import into an absolute module path.
 ///
 /// Level 1 is the current package, level 2 its parent, and so on.
-fn absolute_module(module: &str, level: u32, pkg: &str) -> String {
+///
+/// Public so the precision audit (`examples/check_reachability.rs`) resolves
+/// imports the way the resolver does. An audit that reimplemented this would
+/// measure the gap between two implementations rather than the resolver's
+/// soundness, and would report its own bugs as unsound edges.
+pub fn absolute_module(module: &str, level: u32, pkg: &str) -> String {
     if level == 0 {
         return module.to_string();
     }

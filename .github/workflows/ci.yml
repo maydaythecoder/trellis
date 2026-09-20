@@ -88,3 +88,58 @@ jobs:
       # compile time, when mismatched. This turns that into a test failure.
       - name: Grammar/library ABI pairing
         run: cargo test -p trellis-index --test grammar_abi
+
+  # v1.0 gate conditions 1 and 2, against the benchmark corpus itself.
+  #
+  # `04-v1.0-harness.md` names the failure this exists to prevent: recall
+  # drifts down because months of resolver changes optimise for the cases
+  # being looked at, and the benchmark was only ever run once, at the start.
+  #
+  # The corpus is fetched by the SHA-256 recorded in `01-v0.1-measure.md`, so
+  # a different sdist fails here rather than quietly moving every figure in
+  # the documents.
+  precision-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fetch the benchmark corpus at its recorded hash
+        run: |
+          mkdir -p .bench
+          curl -sSL -o .bench/poetry-2.5.0.tar.gz             https://files.pythonhosted.org/packages/source/p/poetry/poetry-2.5.0.tar.gz
+          echo "e73b873890526c03e4d8e20d934292175f55a5823b3bdee2f154f63dae81336f  .bench/poetry-2.5.0.tar.gz"             | sha256sum -c -
+          tar -xzf .bench/poetry-2.5.0.tar.gz -C .bench
+
+      # Condition 2, first half: no Resolved edge names a symbol the source
+      # did not call. Exits non-zero on any violation.
+      - name: v1.0 condition 2 — every Resolved edge names what was called
+        run: |
+          cargo run --release -p trellis-index --example check_soundness             -- .bench/poetry-2.5.0
+
+      # Condition 2, second half: every cross-file Resolved edge has an import
+      # path, or a verified inheritance chain, actually connecting it. This is
+      # the check that reaches "the wrong `foo` in another module", which the
+      # name check explicitly cannot.
+      - name: v1.0 condition 2 — every cross-file edge is reachable
+        run: |
+          cargo run --release -p trellis-index --example check_reachability             -- .bench/poetry-2.5.0
+
+      # Condition 1. The resolver's verdicts are REGENERATED here and scored
+      # against the committed human judgements. Scoring the stored pair would
+      # replay history and pass forever — which is exactly how the committed
+      # seed-20260919 verdicts went stale at 47.8% while every document said
+      # 67.9%. The seed reproduces the sites; only the verdicts are recomputed.
+      - name: v1.0 condition 1 — recall has not regressed
+        run: |
+          set -e
+          for seed in "20260919 400 67.9" "20260920 300 72.0"; do
+            set -- $seed
+            dir="docs/bench/poetry-2.5.0-seed$1"
+            out=".bench/regen-$1"
+            cargo run --release -p trellis-index --example audit_sample               -- .bench/poetry-2.5.0 "$2" "$1" "$out"
+            # The human judgements are the truth and are never regenerated.
+            cp "$dir/sample.json" "$out/sample.json"
+            cargo run --release -p trellis-index --example audit_score               -- "$out" --min-recall "$3" --min-precision 100.0
+          done

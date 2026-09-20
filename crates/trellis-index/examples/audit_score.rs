@@ -56,10 +56,23 @@ impl Tally {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: audit_score <dir containing sample.json and answers.json>");
+        eprintln!(
+            "usage: audit_score <dir with sample.json and answers.json>              [--min-recall <pct>] [--min-precision <pct>]"
+        );
         std::process::exit(2);
     }
     let dir = std::path::Path::new(&args[1]);
+    // Floors, for CI. Without them this prints a figure and exits zero, which
+    // is a report and not a gate — and `04-v1.0-harness.md` names recall
+    // drifting down unnoticed as the thing most likely to go wrong.
+    let flag = |name: &str| -> Option<f64> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .map(|v| v.parse().expect("threshold must be a number"))
+    };
+    let min_recall = flag("--min-recall");
+    let min_precision = flag("--min-precision");
 
     let sample: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("sample.json")).expect("sample"))
@@ -224,6 +237,46 @@ fn main() {
          is NOT comparable: it counts\nunknown-receiver calls as misses even when \
          their true callee is third-party (A-30)."
     );
+    let mut failed = false;
+    if let Some(floor) = min_recall {
+        let got = overall.recall().map_or(0.0, |r| r * 100.0);
+        // Compared at one decimal place, because that is the precision the
+        // recorded figures are stated to. A stricter comparison would fail on
+        // a float that prints as exactly the recorded number.
+        if (got * 10.0).round() < (floor * 10.0).round() {
+            println!(
+                "
+RECALL REGRESSED: {got:.1}% is below the recorded {floor:.1}%."
+            );
+            println!(concat!(
+                "This is a resolver regression or a re-scored sample, not a ",
+                "threshold to adjust.
+If the resolver moved deliberately, ",
+                "regenerate answers.json — the seed reproduces
+the sites, ",
+                "never the verdicts."
+            ));
+            failed = true;
+        }
+    }
+    if let Some(floor) = min_precision {
+        let got = overall.precision().map_or(0.0, |p| p * 100.0);
+        if (got * 10.0).round() < (floor * 10.0).round() {
+            println!(
+                "
+PRECISION REGRESSED: {got:.1}% is below the required {floor:.1}%."
+            );
+            println!(concat!(
+                "v1.0 gate condition 2 allows no unsound edge. Every one is a ",
+                "bug fix plus a
+regression test, never a threshold adjustment."
+            ));
+            failed = true;
+        }
+    }
+    if failed {
+        std::process::exit(1);
+    }
 }
 
 fn report(label: &str, t: &Tally) {

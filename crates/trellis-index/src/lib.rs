@@ -16,9 +16,12 @@ pub use graph::{
     CallSiteEntry, CalleeKind, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target,
 };
 pub use incremental::Session;
-pub use parse::{BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact, TypeFact};
+pub use parse::{
+    BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact, TypeFact,
+    collect as parse_facts,
+};
 pub use radius::RadiusReport;
 pub use resolve::{
-    build, build_cached, build_from_facts, build_from_sources, discover, module_path_of,
-    read_sources,
+    absolute_module, build, build_cached, build_from_facts, build_from_sources, discover,
+    module_path_of, read_sources,
 };
