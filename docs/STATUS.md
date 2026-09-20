@@ -126,11 +126,22 @@ operation that let it go stale three times in one session.*
    `python docs/bench/run_floor.py .bench/floor docs/bench/floor_tasks.json
    llamacpp:http://127.0.0.1:<port> <out>.json` against a probe server started
    on the new weights, and roughly 70 minutes.
-2. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
-   expected first-party count: ~1,000 draws for 400 in the denominator. This
-   is now the only thing standing between the project and a gate call, and it
-   must report **wrongly excluded** as well as recall — ADR 0015 made that
-   figure load-bearing (S21).
+2. **A human re-audit before any v1.0 gate claim** (A-34, Q-15). The only
+   thing standing between the project and a gate call, and the only item that
+   needs a person rather than a network.
+
+   **The packet is ready to produce and the pipeline is validated.** Two
+   commands, no network, documented in `docs/bench/README.md`:
+   `audit_sample ... 1000 <fresh-seed>` then `split_audit.py <dir> 40`, giving
+   25 blind chunks of 40. Round-tripped through split, merge and score with
+   1,000 synthetic judgements, which caught the filled-chunk format before an
+   auditor would have hit it rather than after.
+
+   It must report **wrongly excluded** as well as recall: ADR 0015 lets a site
+   leave the denominator on an annotation, and no automated check can see a
+   wrong exclusion (S21). And if `resolve.rs` moves before scoring,
+   `answers.json` must be regenerated — the seed reproduces the sites, not the
+   verdicts.
 3. **Cross-file type propagation, if the audit says the gate needs it.** The
    remaining `Attribute` bulk is attribute chains (1,969 sites) and locals
    whose type is not derivable within one file (1,883). Larger than anything
