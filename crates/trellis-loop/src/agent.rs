@@ -517,6 +517,164 @@ mod tests {
         }
     }
 
+    /// A checker that really runs and really exits 0.
+    ///
+    /// The point of the loop is that a `Verdict` can only come from an
+    /// executed process, so a convergence test that faked one would be
+    /// testing the opposite of the property. The platform shell is the one
+    /// executable guaranteed present wherever these tests run; trailing paths
+    /// are appended by `typecheck` and ignored by `exit`.
+    fn checker(code: u8) -> CheckConfig {
+        let argv = if cfg!(windows) {
+            vec!["cmd".into(), "/C".into(), format!("exit {code}")]
+        } else {
+            vec!["sh".into(), "-c".into(), format!("exit {code}")]
+        };
+        CheckConfig {
+            typecheck: argv,
+            ..CheckConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_last_check_passed_converges() {
+        // Every other test in this module asserts a refusal to converge, which
+        // left the positive path defended by nothing: a change that broke
+        // convergence outright would have passed the whole suite. It was
+        // demonstrated by hand against a demo repository and never encoded.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return 2".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "fixed it".into(),
+            },
+        ]);
+
+        let (outcome, t) = run("fix it", &mut m, &h, &budget()).await;
+        match outcome {
+            Outcome::Converged {
+                iterations,
+                checks_passed,
+            } => {
+                assert_eq!(iterations, 2, "the edit and the check; done is not one");
+                assert_eq!(checks_passed, 1);
+            }
+            other => panic!("expected convergence, got {other:?}"),
+        }
+        assert!(t.last_check_passed());
+        // And the work was actually done, not merely declared.
+        assert!(
+            std::fs::read_to_string(d.path().join("app/util.py"))
+                .unwrap()
+                .contains("return 2")
+        );
+    }
+
+    /// A checker whose verdict depends on the file, so one run can see a pass
+    /// and then a failure.
+    ///
+    /// Needed because `run` builds a fresh `Transcript`: two sequential runs
+    /// cannot test "most recent" at all, since the earlier run's turns are not
+    /// in the later one's transcript. The distinction only exists inside a
+    /// single transcript, so the check has to change its mind within one.
+    /// The command names its own file and the call passes no `paths`, because
+    /// `typecheck` appends them — and `findstr` reads a leading `/` as a
+    /// switch, so an appended `app/util.py` makes it fail for a reason that
+    /// has nothing to do with the marker. Caught by this test's own setup
+    /// assertion, which is why that assertion is there.
+    fn checker_wanting(marker: &str) -> CheckConfig {
+        let argv = if cfg!(windows) {
+            vec![
+                "cmd".into(),
+                "/C".into(),
+                "findstr".into(),
+                format!("/C:{marker}"),
+                "app\\util.py".into(),
+            ]
+        } else {
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("grep -q {marker} app/util.py"),
+            ]
+        };
+        CheckConfig {
+            typecheck: argv,
+            ..CheckConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pass_before_the_last_edit_does_not_count() {
+        // `last_check_passed` is documented as "most recent, not any", because
+        // a check that passed before the final edit says nothing about the
+        // tree as it stands now. Nothing tested it, and `any` is the easier
+        // implementation to reach for.
+        //
+        // Pass, then edit the passing property away, then check again and
+        // fail, then claim success. A model that could converge on the earlier
+        // pass would be converging on a tree that no longer exists — the same
+        // hazard `PriorContext` is shaped around, reached from inside one run.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker_wanting("MARKER")).spawn();
+        // No paths: the command names its own file. See `checker_wanting`.
+        let check = || {
+            Step::Call(ToolCall::RunChecks {
+                paths: vec![],
+                kinds: vec![CheckKind::Typecheck],
+            })
+        };
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return 1  # MARKER".into(),
+            }),
+            check(),
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1  # MARKER".into(),
+                new: "return 1".into(),
+            }),
+            check(),
+            Step::Done {
+                summary: "all good now".into(),
+            },
+        ]);
+
+        let (outcome, t) = run("do it", &mut m, &h, &budget()).await;
+
+        let verdicts: Vec<Option<bool>> = t.turns.iter().map(|x| x.verdict_passed).collect();
+        assert_eq!(
+            verdicts,
+            vec![None, Some(true), None, Some(false)],
+            "the setup itself must be a real pass followed by a real failure"
+        );
+        assert!(
+            !t.last_check_passed(),
+            "an earlier pass must not satisfy the convergence test"
+        );
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::StoppedWithoutPassingChecks { .. },
+                    ..
+                }
+            ),
+            "got {outcome:?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_model_that_declares_success_without_checks_does_not_converge() {
         // The single most important test in this crate. An agent that says
