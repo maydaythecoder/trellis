@@ -20,7 +20,7 @@ pub use parse::{
     BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact, TypeFact,
     collect as parse_facts,
 };
-pub use radius::RadiusReport;
+pub use radius::{DoubtSite, FileDoubt, RadiusReport, doubt_in_files};
 pub use resolve::{
     absolute_module, build, build_cached, build_from_facts, build_from_sources, discover,
     module_path_of, read_sources,

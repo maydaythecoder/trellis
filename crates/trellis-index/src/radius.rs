@@ -446,3 +446,161 @@ mod tests {
         );
     }
 }
+
+/// What the graph could not see, restricted to a given set of files.
+///
+/// **The approval-time view, and the point is the restriction.**
+/// `04-v1.0-harness.md` asks for severity differentiation: *"An unresolved
+/// edge on a symbol nobody is changing is noise. One on the symbol being
+/// edited is the headline."* Repository-wide doubt is the noise — on poetry it
+/// is 11,233 sites, a number that teaches a user to skip the line. At approval
+/// the files being accepted are known exactly, so the headline is computable
+/// rather than guessed at.
+///
+/// Same population caveat as [`RadiusCoverage`]: these are call sites *in*
+/// those files that bound to nothing, not call sites that reach what changed.
+/// It over-approximates, which is the safe direction, and it is never divided
+/// by anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileDoubt {
+    /// Call sites in the named files that bound to no definition.
+    pub unbound: u32,
+    /// How many of the named files exist in the index, so the count has a
+    /// scale and a file the user changed but TRELLIS never parsed is visible
+    /// as a difference rather than silently contributing zero.
+    pub files_examined: u32,
+    /// How many were asked about, examined or not.
+    pub files_named: u32,
+    pub by_reason: BTreeMap<String, u32>,
+    /// Each unbound site, so the caller can show them.
+    pub sites: Vec<DoubtSite>,
+}
+
+/// One call site the graph could not bind, in a file being accepted.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DoubtSite {
+    pub path: String,
+    /// Byte offset rather than a line number: turning one into the other means
+    /// reading the file, and the index does no I/O.
+    pub offset: usize,
+    pub reason: String,
+    /// The function or method whose body contains the call.
+    ///
+    /// This is what makes "add a test" a suggestion someone can act on. An
+    /// unresolved edge is a call the graph cannot follow; a test that executes
+    /// the enclosing function turns it into behaviour a check can observe,
+    /// which is the only kind of evidence this tool accepts. Without the name
+    /// the advice is "write more tests", which is not advice.
+    pub enclosing: Option<String>,
+}
+
+impl FileDoubt {
+    /// One line, for the approval prompt.
+    ///
+    /// A user meets this on every partial-coverage run, which the brief's
+    /// Constraint 1 guarantees is most of them. It is written for the tenth
+    /// time someone reads it in an hour, not the first: a count, a scale, and
+    /// the reasons that actually occur — never a wall.
+    pub fn one_line(&self) -> String {
+        let files = |n: u32| if n == 1 { "file" } else { "files" };
+        if self.unbound == 0 {
+            return format!(
+                "every call site in the {} {} was bound",
+                self.files_examined,
+                files(self.files_examined)
+            );
+        }
+        let mut reasons: Vec<(&str, u32)> = self
+            .by_reason
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
+        reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let named: Vec<String> = reasons
+            .iter()
+            .take(2)
+            .map(|(r, n)| format!("{r} {n}"))
+            .collect();
+        let rest = reasons.len().saturating_sub(2);
+        let tail = if rest > 0 {
+            format!(", and {rest} more")
+        } else {
+            String::new()
+        };
+        format!(
+            "{} call sites in the {} {} bound to nothing ({}{})",
+            self.unbound,
+            self.files_examined,
+            files(self.files_examined),
+            named.join(", "),
+            tail
+        )
+    }
+
+    /// Files named that the index has never parsed.
+    ///
+    /// Not a rounding error: a changed file TRELLIS did not index contributes
+    /// zero doubt, which would read as confidence about a file nothing was
+    /// known about.
+    pub fn unexamined(&self) -> u32 {
+        self.files_named.saturating_sub(self.files_examined)
+    }
+}
+
+/// Counts the call sites in `paths` that bound to no definition.
+///
+/// Paths are matched as the index stores them, with separators normalised, so
+/// a caller can pass what `git status` gave it.
+pub fn doubt_in_files(index: &Index, paths: &[String]) -> FileDoubt {
+    use crate::graph::Target;
+
+    // Python sources only. A changed `README.md` is not a file the graph
+    // failed to examine, it is a file the graph was never about — and
+    // `.trellis/` is this tool's own directory. Counting either as unexamined
+    // fires the approval prompt on runs with nothing to report, which is how
+    // a coverage line teaches a user to dismiss it.
+    let want: HashSet<String> = paths
+        .iter()
+        .map(|p| p.replace('\\', "/").trim_start_matches("./").to_string())
+        .filter(|p| p.ends_with(".py"))
+        .collect();
+
+    let mut ids: HashSet<FileId> = HashSet::new();
+    for (i, f) in index.files.iter().enumerate() {
+        if want.contains(&f.path.replace('\\', "/")) {
+            ids.insert(FileId::from_index(i));
+        }
+    }
+
+    let mut d = FileDoubt {
+        files_named: want.len() as u32,
+        files_examined: ids.len() as u32,
+        ..Default::default()
+    };
+    for edge in &index.edges {
+        let Target::Unresolved(r) = &edge.target else {
+            continue;
+        };
+        let site = &index.sites[edge.from.index()];
+        if !ids.contains(&site.file) {
+            continue;
+        }
+        d.unbound += 1;
+        let reason = format!("{r:?}");
+        *d.by_reason.entry(reason.clone()).or_insert(0) += 1;
+        d.sites.push(DoubtSite {
+            path: index.files[site.file.index()].path.clone(),
+            offset: site.span.0,
+            reason,
+            enclosing: site.enclosing.map(|s| {
+                index
+                    .interner
+                    .resolve(index.symbols[s.index()].name)
+                    .to_string()
+            }),
+        });
+    }
+    // Deterministic, so two runs over the same tree print the same list.
+    d.sites.sort();
+    d
+}

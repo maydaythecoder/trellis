@@ -368,7 +368,16 @@ impl Session {
         Ok(())
     }
 
-    fn accept(&self, message: &str) -> Result<()> {
+    fn accept(&mut self, message: &str) -> Result<()> {
+        self.accept_with(message, &mut Self::ask_stdin)
+    }
+
+    /// `/accept`, with the approval question supplied.
+    ///
+    /// Split from [`Self::accept`] so the flow can be tested without a
+    /// terminal. The three paths S6 asks for are control flow, not prose, and
+    /// a prompt that only exists behind a TTY is one no test ever sees.
+    fn accept_with(&mut self, message: &str, ask: &mut dyn FnMut() -> Option<char>) -> Result<()> {
         let pending = trellis_vcs::pending(&self.root)?;
         if pending.is_empty() {
             anyhow::bail!("nothing pending to accept");
@@ -380,18 +389,197 @@ impl Session {
             .iter()
             .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
             .collect();
+
+        let doubt = trellis_index::doubt_in_files(&self.index, &paths);
+        if doubt.unbound > 0 || doubt.unexamined() > 0 {
+            self.print_coverage(&doubt);
+            loop {
+                match ask() {
+                    Some('a') => break,
+                    Some('i') => {
+                        self.inspect_doubt(&doubt);
+                        Self::print_choices();
+                    }
+                    Some('t') => {
+                        self.what_to_test(&doubt);
+                        Self::print_choices();
+                    }
+                    // Cancelling is the safe default for an unrecognised key,
+                    // because the destructive direction here is committing
+                    // something the user had not decided on.
+                    _ => {
+                        println!("cancelled; nothing committed, nothing discarded");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-        let msg = if message.is_empty() {
+        let base = if message.is_empty() {
             "trellis: accepted proposed changes"
         } else {
             message
         };
-        trellis_vcs::commit_paths(&self.root, &refs, msg)?;
+        // The gap goes into the commit, which is what "proceed with gaps
+        // recorded" has to mean for it to survive: the trail records the run,
+        // and this records what was unknown at the moment a human said yes.
+        // `git log` is where someone asks that question later.
+        let msg = if doubt.unbound == 0 && doubt.unexamined() == 0 {
+            base.to_string()
+        } else {
+            format!(
+                "{base}\n\nCoverage at approval: {}.\nUnresolved calls are edges the graph could \
+                 not follow, not defects; see docs on Constraint 1.",
+                doubt.one_line()
+            )
+        };
+        trellis_vcs::commit_paths(&self.root, &refs, &msg)?;
         println!("committed {} path(s)", refs.len());
         for p in &refs {
             println!("  {p}");
         }
+        if doubt.unbound > 0 {
+            println!("gap recorded in the commit message.");
+        }
         Ok(())
+    }
+
+    /// The coverage note. One line by default; detail only when asked.
+    ///
+    /// S6, and `04-v1.0-harness.md`'s rule for it: *"Design for the tenth
+    /// partial-coverage run in an hour, not the first."* Partial coverage is
+    /// routine — Constraint 1 guarantees it — so this never blocks: the gap
+    /// attaches to the approval, not to the run. A tool that stops ten times
+    /// an hour gets switched off, and then its honesty mechanism is off too.
+    ///
+    /// Scoped to the files being accepted, deliberately. Repository-wide doubt
+    /// on the benchmark corpus is 11,233 sites, a figure whose only effect is
+    /// to teach a reader to skip the line.
+    fn print_coverage(&self, d: &trellis_index::FileDoubt) {
+        println!();
+        println!("coverage: {}", d.one_line());
+        if d.unexamined() > 0 {
+            // Not a rounding error. A changed file the index never parsed
+            // contributes zero doubt, which would read as confidence about a
+            // file nothing is known about.
+            println!(
+                "          {} of them {} not in the index, so nothing is known about {}.",
+                d.unexamined(),
+                if d.unexamined() == 1 { "is" } else { "are" },
+                if d.unexamined() == 1 { "it" } else { "them" }
+            );
+        }
+        if d.unbound > 0 {
+            println!(
+                "          {}",
+                concat!(
+                    "Any of them may call what you changed. The checks ran on ",
+                    "what the graph could see."
+                )
+            );
+        }
+        Self::print_choices();
+    }
+
+    fn print_choices() {
+        println!();
+        println!("  a  accept, with the gap recorded in the commit");
+        println!("  i  inspect the unresolved sites");
+        println!("  t  what to test to close them");
+        println!("  anything else cancels");
+    }
+
+    fn ask_stdin() -> Option<char> {
+        use std::io::Write;
+        print!("accept> ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).ok()? == 0 {
+            // EOF: a piped or closed stdin must not be read as approval.
+            return None;
+        }
+        Some(
+            line.trim()
+                .chars()
+                .next()
+                .unwrap_or('x')
+                .to_ascii_lowercase(),
+        )
+    }
+
+    /// The unresolved sites, with line numbers.
+    ///
+    /// Line numbers are computed here rather than stored, because the index
+    /// does no I/O — and a byte offset is not something a user can act on.
+    fn inspect_doubt(&self, d: &trellis_index::FileDoubt) {
+        const SHOWN: usize = 20;
+        println!();
+        for s in d.sites.iter().take(SHOWN) {
+            let line = std::fs::read_to_string(self.root.join(&s.path))
+                .map(|src| src[..s.offset.min(src.len())].matches('\n').count() + 1)
+                .unwrap_or(0);
+            let where_ = match &s.enclosing {
+                Some(e) => format!("in {e}"),
+                None => "at module level".to_string(),
+            };
+            println!("  {}:{}  {}  {}", s.path, line, s.reason, where_);
+        }
+        if d.sites.len() > SHOWN {
+            println!("  ... and {} more", d.sites.len() - SHOWN);
+        }
+        println!();
+        println!(
+            "{}",
+            concat!(
+                "These are calls the graph could not follow, not calls that are ",
+                "wrong. Complete\nrecall is not available in Python, so this list ",
+                "is what honesty costs rather\nthan a defect list."
+            )
+        );
+    }
+
+    /// What to test, named concretely.
+    ///
+    /// "Add a test" is not advice. The functions containing unresolved calls
+    /// are, because a test that executes one turns an edge the graph cannot
+    /// follow into behaviour a check can observe — the only kind of evidence
+    /// this tool accepts.
+    fn what_to_test(&self, d: &trellis_index::FileDoubt) {
+        let mut by_fn: std::collections::BTreeMap<(&str, &str), u32> =
+            std::collections::BTreeMap::new();
+        for s in &d.sites {
+            if let Some(e) = &s.enclosing {
+                *by_fn.entry((s.path.as_str(), e.as_str())).or_insert(0) += 1;
+            }
+        }
+        println!();
+        if by_fn.is_empty() {
+            println!(
+                "{}",
+                concat!(
+                    "Every unresolved call here is at module level, so there is ",
+                    "no function to\nexercise. Importing the module is the test."
+                )
+            );
+            return;
+        }
+        let mut ranked: Vec<_> = by_fn.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        println!("A test that executes these turns an unfollowable edge into an observed one:");
+        for ((path, func), n) in ranked.iter().take(8) {
+            println!("  {func:<32} {n:>3} unresolved call(s)   {path}");
+        }
+        println!();
+        println!(
+            "{}",
+            concat!(
+                "TRELLIS does not write it: a check it generated and then ran ",
+                "would be the\nmodel grading its own work, which is the thing ",
+                "this tool refuses."
+            )
+        );
     }
 
     fn revert(&self) -> Result<()> {
@@ -913,6 +1101,236 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&log.stdout).trim(),
             "a message with several words"
+        );
+    }
+
+    // ---- S6: degradation UX at the approval prompt ---------------------
+
+    /// A repository with a call the resolver cannot bind, so the approval
+    /// prompt has something real to report.
+    fn repo_with_doubt() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            // `thing` has no derivable type, so `thing.run()` is
+            // MethodDispatchUntyped — the dominant unresolved reason on the
+            // benchmark corpus, and the one a user will actually meet.
+            "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 1\n",
+        )
+        .unwrap();
+        init_git(d.path());
+        d
+    }
+
+    fn init_git(root: &std::path::Path) {
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@example.invalid"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "core.autocrlf", "false"],
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "init"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn the_approval_prompt_reports_doubt_in_the_files_being_accepted() {
+        let d = repo_with_doubt();
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 2\n",
+        )
+        .unwrap();
+
+        // 'a' — proceed with the gap recorded.
+        let mut answers = vec!['a'].into_iter();
+        s.accept_with("test commit", &mut || answers.next())
+            .unwrap();
+
+        let log = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%B"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        let msg = String::from_utf8_lossy(&log.stdout);
+        assert!(msg.contains("test commit"), "{msg}");
+        assert!(
+            msg.contains("Coverage at approval"),
+            "proceeding with a gap has to record the gap, or 'recorded' is a \
+             word rather than a behaviour: {msg}"
+        );
+        assert!(
+            msg.contains("bound to nothing"),
+            "and it must carry the figure, not just a mention: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_key_cancels_rather_than_accepting() {
+        // The destructive direction at this prompt is committing something
+        // the user had not decided on, so anything but `a` is a cancel.
+        let d = repo_with_doubt();
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 3\n",
+        )
+        .unwrap();
+
+        let mut answers = vec!['q'].into_iter();
+        s.accept_with("", &mut || answers.next()).unwrap();
+
+        assert!(
+            !trellis_vcs::pending(d.path()).unwrap().is_empty(),
+            "a cancel must leave the change pending — not committed, and not \
+             discarded either"
+        );
+    }
+
+    #[test]
+    fn eof_on_the_prompt_is_not_approval() {
+        // A piped or closed stdin returns None. Reading that as 'yes' would
+        // make `trellis < /dev/null` commit unreviewed work.
+        let d = repo_with_doubt();
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 4\n",
+        )
+        .unwrap();
+
+        s.accept_with("", &mut || None).unwrap();
+        assert!(!trellis_vcs::pending(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn inspect_and_test_return_to_the_prompt_rather_than_deciding() {
+        // `i` and `t` are detail-on-request, not answers. A user who asks to
+        // see the sites has not yet said whether to accept them.
+        let d = repo_with_doubt();
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 5\n",
+        )
+        .unwrap();
+
+        let mut answers = vec!['i', 't', 'a'].into_iter();
+        let mut asked = 0;
+        s.accept_with("", &mut || {
+            asked += 1;
+            answers.next()
+        })
+        .unwrap();
+
+        assert_eq!(asked, 3, "i and t must come back and ask again");
+        assert!(
+            trellis_vcs::pending(d.path()).unwrap().is_empty(),
+            "and the final 'a' still accepts"
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_doubt_costs_the_user_no_keystroke() {
+        // The tenth run of the hour. If a clean file still prompted, the
+        // prompt would be noise and would be dismissed without reading —
+        // taking the honest cases down with it.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 1\n",
+        )
+        .unwrap();
+        init_git(d.path());
+
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 2\n",
+        )
+        .unwrap();
+
+        let mut asked = false;
+        s.accept_with("", &mut || {
+            asked = true;
+            Some('a')
+        })
+        .unwrap();
+
+        assert!(!asked, "nothing to report means nothing to ask");
+        assert!(trellis_vcs::pending(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_coverage_line_is_scoped_to_the_changed_files_not_the_repository() {
+        // S6's severity rule: doubt on a symbol nobody is changing is noise.
+        // Repository-wide it is 11,233 sites on the benchmark corpus, a number
+        // whose only effect is to teach a reader to skip the line.
+        let d = repo_with_doubt();
+        std::fs::write(
+            d.path().join("app/elsewhere.py"),
+            "def far(x):\n    return x.also_unresolved()\n",
+        )
+        .unwrap();
+        init_git(d.path());
+        let s = Session::open(d.path(), None).unwrap();
+
+        let whole = trellis_index::doubt_in_files(
+            &s.index,
+            &["app/util.py".to_string(), "app/elsewhere.py".to_string()],
+        );
+        let one = trellis_index::doubt_in_files(&s.index, &["app/util.py".to_string()]);
+        assert!(whole.unbound > one.unbound, "the fixture must have both");
+        assert_eq!(one.files_examined, 1);
+        assert!(
+            one.sites.iter().all(|x| x.path.ends_with("util.py")),
+            "a site in a file the user is not accepting must not be reported \
+             as if it were"
+        );
+    }
+
+    #[test]
+    fn a_changed_file_the_index_never_parsed_is_named_rather_than_counted_as_clean() {
+        // Zero doubt in an unexamined file reads as confidence about a file
+        // nothing is known about, which is the S2 failure inverted.
+        let d = repo_with_doubt();
+        let s = Session::open(d.path(), None).unwrap();
+        let doubt = trellis_index::doubt_in_files(
+            &s.index,
+            &[
+                "app/util.py".to_string(),
+                "app/never_indexed.py".to_string(),
+            ],
+        );
+        assert_eq!(doubt.files_named, 2);
+        assert_eq!(doubt.files_examined, 1);
+        assert_eq!(doubt.unexamined(), 1);
+    }
+
+    #[test]
+    fn the_one_line_summary_names_reasons_and_never_becomes_a_wall() {
+        let d = repo_with_doubt();
+        let s = Session::open(d.path(), None).unwrap();
+        let doubt = trellis_index::doubt_in_files(&s.index, &["app/util.py".to_string()]);
+        let line = doubt.one_line();
+
+        assert!(line.contains("MethodDispatchUntyped"), "{line}");
+        assert!(line.contains("bound to nothing"), "{line}");
+        assert!(!line.contains('\n'), "one line means one line: {line:?}");
+        assert!(!line.contains("  "), "{line:?}");
+        assert!(
+            !line.contains('%'),
+            "no ratio: the two populations differ and dividing them printed \
+             3.7% for a resolver audited at 72%: {line}"
         );
     }
 }

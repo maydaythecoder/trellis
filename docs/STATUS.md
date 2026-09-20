@@ -148,9 +148,9 @@ of the gate needs it.
    rollback that cannot finish is loud, names the worktree, gives the exact
    commands, attempts both steps rather than stopping at the first, and no
    longer swallows the trail.
-4. **Degradation UX (S6)** — the summary line, actionable reasons, severity
-   differentiation, three one-key approval paths. Designed for the tenth
-   partial-coverage run in an hour, not the first.
+4. ~~Degradation UX (S6).~~ **Done** — `docs/bench/degradation-ux-20260920.md`.
+   The approval moment had nothing; it now carries a scoped one-line coverage
+   note and three paths, and never blocks.
 5. **`trellis doctor` completion**, every line that can be wrong saying what to
    do about it.
 6. **Re-run the v0.1 measurement for condition 1.** Largely absorbed into the
@@ -251,6 +251,43 @@ into an exclusion and recall becomes unfalsifiable.
 
 Next: implement that, re-run the audit on a fresh sample, and report both
 denominators.
+
+## Degradation UX: the approval moment had nothing
+
+v1.0 task item 4, S6. `trellis radius` already had ADR 0014's two-block
+layout — that is the detail view and it was fine. **`/accept` committed with no
+coverage information at all**, and a converged one-shot run ended with "changes
+are left in the working tree for you to review" and no account of what the
+graph could not see in them. The one moment a human decides whether to trust
+the work was the one moment TRELLIS said nothing about its own limits.
+
+**Severity, as the doc defines it**: doubt on a symbol nobody is changing is
+noise. Repository-wide it is 11,233 sites on poetry — a number whose only
+effect is to teach a reader to skip the line. `doubt_in_files` scopes it to the
+files being accepted, which on the wedge is *22 in the 1 file*, a figure someone
+can hold. Same population caveat as `RadiusCoverage`, over-approximating in the
+safe direction, and never divided by anything.
+
+Three paths, and the prompt never blocks: **`a`** accepts and writes the
+coverage line into the commit message — which is what "gaps recorded" has to
+mean for it to survive, since `git log` is where that question gets asked later;
+**`i`** lists the sites with line numbers and enclosing function; **`t`** ranks
+those functions by unresolved calls, because "add a test" is not advice and a
+named function is. A file with no doubt costs no keystroke, `i` and `t` return
+to the prompt rather than deciding, and EOF is not approval.
+
+Two walls found while building it, both the same shape as ones fixed before:
+
+- **`.trellis/` counted as an unexamined source file**, firing the prompt on
+  runs with nothing to report. Doubt is now accounted over Python sources only.
+- **Nothing ever wrote the gitignore.** A-24 records that `index.bin` *is*
+  gitignored — an intention with no code making it true. Untracked, the cache
+  dirtied the worktree, and a dirty worktree blocks the next run: a tool that
+  writes a cache and then refuses to start because of it has built its own wall.
+  `cache::save` writes `.trellis/.gitignore` now, and **the file ignores
+  itself**, because TRELLIS writes it unasked and it must not be the reason
+  `git status` is dirty either. Verified end to end: indexing a clean
+  repository leaves it clean.
 
 ## Rollback hardening: seven injection points, two that needed code
 

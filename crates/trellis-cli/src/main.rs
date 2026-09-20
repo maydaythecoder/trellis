@@ -837,6 +837,34 @@ fn cmd_run(
                 Some(model_spec),
             )?;
             println!("trail:    {}", trail.display());
+
+            // S6: the coverage warning attaches to the approval, and for a
+            // one-shot run this line *is* the approval moment — the session's
+            // `/accept` prompt is never reached. Scoped to the files the run
+            // proposes, because repository-wide doubt is 11,233 sites on the
+            // benchmark corpus and teaches a reader to skip the line.
+            //
+            // The index is rebuilt rather than reused: the run edited these
+            // files, so the orchestrator's copy predates what is being
+            // reported on. That costs about 200 ms at the end of a run, which
+            // is the right trade for a figure that describes the tree the
+            // user is about to look at.
+            if !transcript.is_empty() {
+                let doubt = trellis_index::doubt_in_files(
+                    &trellis_index::build_cached(root),
+                    &transcript,
+                );
+                if doubt.unbound > 0 {
+                    println!("coverage: {}", doubt.one_line());
+                    println!(
+                        "{}",
+                        concat!(
+                            "          Any of them may call what changed. The ",
+                            "checks ran on what the graph could see."
+                        )
+                    );
+                }
+            }
             println!(
                 "{}",
                 concat!(

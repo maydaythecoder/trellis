@@ -57,6 +57,7 @@ pub fn fingerprint(sources: &[(String, String)]) -> u64 {
 pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        ignore_the_blob(parent)?;
     }
     let blob = BlobRef {
         version: FORMAT_VERSION,
@@ -68,6 +69,50 @@ pub fn save(index: &Index, path: &Path) -> std::io::Result<usize> {
     std::fs::write(path, &bytes)?;
     Ok(bytes.len())
 }
+
+/// Writes `.trellis/.gitignore` so the blob does not dirty the worktree.
+///
+/// A-24 says the blob *is* gitignored, and nothing was making that true — the
+/// note recorded an intention and left the user to act on it. Untracked, it
+/// makes `git status` dirty, and **a dirty worktree blocks the next run**
+/// (ADR 0009), so a tool that writes a cache and then refuses to start
+/// because of it has built its own wall. The same shape as the `/accept`
+/// history defect, which was fixed once already.
+///
+/// Only the derived blob is ignored. `runs/`, `config.toml`, `context.md` and
+/// `governance/` are all meant to be committed — the trail is the product.
+///
+/// Best-effort in spirit but not in error handling: a failure here is
+/// returned, because silently not writing it reproduces exactly the situation
+/// this exists to prevent.
+fn ignore_the_blob(dir: &Path) -> std::io::Result<()> {
+    let p = dir.join(".gitignore");
+    // Never overwrite: a user may have added their own rules here, and this
+    // file is in their repository, not ours.
+    if p.exists() {
+        return Ok(());
+    }
+    // A raw string, so the text is exactly what lands in the user's
+    // repository. Continuation-escaped literals fold their source indentation
+    // into the content, which this project has now shipped six times.
+    std::fs::write(&p, IGNORE)
+}
+
+const IGNORE: &str = r#"# Written by TRELLIS. The index is derived state: keyed by a fingerprint of
+# the file set and discarded on any mismatch, so committing it would cost
+# every merge to save a rebuild of about 120 ms.
+#
+# This file ignores itself. TRELLIS writes it unasked, and a file the tool
+# creates on its own must not be the reason `git status` is dirty — a dirty
+# worktree blocks the next run (ADR 0009), so that would be a wall built by
+# the thing that then refuses to walk through it. Delete the line below if
+# you would rather commit it; TRELLIS will not rewrite this file.
+#
+# Nothing else here is ignored. runs/, config.toml, context.md and
+# governance/ are meant to be committed — the trail is the point.
+index.bin
+.gitignore
+"#;
 
 /// Reads the index, but only when it matches the current file set.
 ///
@@ -132,6 +177,56 @@ mod tests {
             1,
             "reverse adjacency must survive the round trip"
         );
+    }
+
+    #[test]
+    fn saving_the_blob_leaves_the_worktree_ignorable() {
+        // A-24 said the blob is gitignored and nothing made that true. An
+        // untracked cache makes `git status` dirty, and a dirty worktree
+        // blocks the next run (ADR 0009) — a tool that writes a cache and
+        // then refuses to start because of it has built its own wall.
+        let dir = std::env::temp_dir().join("trellis-cache-gitignore");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("index.bin");
+
+        let index = crate::build_from_sources(&sources());
+        save(&index, &path).expect("save");
+
+        let ignore = std::fs::read_to_string(dir.join(".gitignore")).expect("written beside it");
+        // The rules, not the prose around them. The comment names `runs/`
+        // precisely to say it is *not* ignored.
+        let rules: Vec<&str> = ignore
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert_eq!(
+            rules,
+            ["index.bin", ".gitignore"],
+            "the blob, and this file itself: TRELLIS writes it unasked, so it \
+             must not be the reason the worktree is dirty. The trail stays \
+             committable."
+        );
+        assert!(
+            !ignore.contains("  "),
+            "no folded indentation in a file written into someone's repo: {ignore:?}"
+        );
+
+        // Never overwritten: this file lives in the user's repository, and
+        // they may have added rules of their own.
+        std::fs::write(
+            dir.join(".gitignore"),
+            "mine
+",
+        )
+        .unwrap();
+        save(&index, &path).expect("save again");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+            "mine
+"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
