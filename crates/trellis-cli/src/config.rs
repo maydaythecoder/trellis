@@ -125,9 +125,12 @@ mod tests {
 
     #[test]
     fn an_absent_file_yields_defaults() {
+        // Including S20's `--no-incremental`: a repository with no config is
+        // exactly the one that gets no say in the matter, so the default it
+        // inherits has to be the safe one.
         let d = tempfile::tempdir().unwrap();
         let c = RepoConfig::load(d.path()).unwrap();
-        assert_eq!(c.checks().typecheck, vec!["mypy".to_string()]);
+        assert_eq!(c.checks().typecheck, ["mypy", "--no-incremental"]);
     }
 
     #[test]
