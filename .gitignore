@@ -2,9 +2,13 @@
 **/*.rs.bk
 
 # Derived state: regenerated from the file set, never merged.
-# See docs/ADRs/0007-trail-format.md.
+# See docs/adr/0007-trail-format.md.
 .trellis/index.bin
 .trellis/work/
 
 # Benchmark corpora: cloned, pinned by SHA in docs/BENCHMARK_AND_EVAL.md.
 .bench/
+
+# Packaged binary: rebuilt with `cargo build --release`, not versioned.
+# dist/QUICKSTART.md is.
+dist/*.exe
