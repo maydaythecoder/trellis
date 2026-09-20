@@ -458,3 +458,141 @@ fn a_first_party_package_we_failed_to_bind_stays_in_the_denominator() {
     assert_eq!(index.coverage.total(), 1);
     assert_eq!(index.coverage.unresolved, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Receiver typing (ADR 0012). The backstop that answers "what is `obj`?"
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_annotated_parameter_types_its_receiver() {
+    // The pattern behind 51% of first-party misses in the poetry audit:
+    // a receiver injected as a parameter, its type stated in the annotation.
+    let b = bindings(&[
+        (
+            "app/model.py",
+            "class Env:\n    def run(self):\n        return 1\n",
+        ),
+        (
+            "app/main.py",
+            "from app.model import Env\n\ndef go(env: Env):\n    return env.run()\n",
+        ),
+    ]);
+    assert_eq!(target_of(&b, "env.run()"), "-> app.model.run");
+}
+
+#[test]
+fn a_constructor_assignment_types_its_receiver() {
+    let b = bindings(&[(
+        "app/m.py",
+        "class Env:\n    def run(self):\n        return 1\n\ndef go():\n    env = Env()\n    return env.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "env.run()"), "-> app.m.run");
+}
+
+#[test]
+fn a_self_attribute_assigned_a_constructor_types_its_receiver() {
+    // `self._x = Thing()` in __init__, used from another method entirely.
+    let b = bindings(&[(
+        "app/m.py",
+        "class Thing:\n    def go(self):\n        return 1\n\nclass Holder:\n    def __init__(self):\n        self._thing = Thing()\n\n    def use(self):\n        return self._thing.go()\n",
+    )]);
+    assert_eq!(target_of(&b, "self._thing.go()"), "-> app.m.go");
+}
+
+#[test]
+fn an_inherited_method_resolves_through_the_base_class() {
+    let b = bindings(&[
+        (
+            "app/base.py",
+            "class Base:\n    def helper(self):\n        return 1\n",
+        ),
+        (
+            "app/derived.py",
+            "from app.base import Base\n\nclass Derived(Base):\n    def go(self):\n        return self.helper()\n",
+        ),
+    ]);
+    assert_eq!(target_of(&b, "self.helper()"), "-> app.base.helper");
+}
+
+#[test]
+fn a_factory_function_types_nothing() {
+    // `x = make_env()` is syntactically identical to `x = Env()`. Pass 1
+    // records the callee name either way and the resolver only honours it
+    // when it names a first-party CLASS — so a factory types nothing rather
+    // than typing `x` as the function.
+    let b = bindings(&[(
+        "app/m.py",
+        "class Env:\n    def run(self):\n        return 1\n\ndef make_env():\n    return Env()\n\ndef go():\n    env = make_env()\n    return env.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "env.run()"), "!! MethodDispatchUntyped");
+}
+
+#[test]
+fn conflicting_type_statements_type_nothing() {
+    // Annotated one way and reassigned another. The source disagrees with
+    // itself; picking one would be a guess wearing a fact's clothes.
+    let b = bindings(&[(
+        "app/m.py",
+        "class A:\n    def run(self):\n        return 1\n\nclass B:\n    def run(self):\n        return 2\n\ndef go(x: A):\n    x = B()\n    return x.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "x.run()"), "!! MethodDispatchUntyped");
+}
+
+#[test]
+fn a_declared_type_whose_subclass_overrides_yields_candidates() {
+    // A declared type is an upper bound, not an identity. `repo: Repository`
+    // may hold an `Installed` at runtime, and Python dispatches on the runtime
+    // type. Resolving to the base definition here is an unsound edge — the
+    // poetry audit caught exactly this, twice.
+    let b = bindings(&[(
+        "app/m.py",
+        "class Repo:\n    def add(self):\n        return 1\n\nclass Installed(Repo):\n    def add(self):\n        return 2\n\ndef go(repo: Repo):\n    return repo.add()\n",
+    )]);
+    assert_eq!(target_of(&b, "repo.add()"), "?? [app.m.add, app.m.add]");
+}
+
+#[test]
+fn a_subclass_that_does_not_override_leaves_the_base_resolved() {
+    // The mirror of the test above: no override, no ambiguity, so the
+    // subclass's existence must not cost a real edge.
+    let b = bindings(&[(
+        "app/m.py",
+        "class Repo:\n    def add(self):\n        return 1\n\nclass Installed(Repo):\n    def other(self):\n        return 2\n\ndef go(repo: Repo):\n    return repo.add()\n",
+    )]);
+    assert_eq!(target_of(&b, "repo.add()"), "-> app.m.add");
+}
+
+#[test]
+fn contextmanager_is_not_transparent() {
+    // `@contextmanager` returns a factory; calling it constructs a context
+    // manager without running a line of the body. Same class of error as
+    // `property`, and the audit caught it.
+    let b = bindings(&[(
+        "app/m.py",
+        "class C:\n    @contextmanager\n    def scope(self):\n        yield 1\n\n    def go(self):\n        return self.scope()\n",
+    )]);
+    assert_eq!(target_of(&b, "self.scope()"), "!! DecoratorIndirection");
+}
+
+#[test]
+fn a_generic_annotation_does_not_type_its_element() {
+    // `xs: list[Env]` types `xs` as `list`, not as `Env`. Typing it as `Env`
+    // would resolve `xs.run()` to a method of `Env`, which is an unsound edge.
+    let b = bindings(&[(
+        "app/m.py",
+        "class Env:\n    def run(self):\n        return 1\n\ndef go(xs: list[Env]):\n    return xs.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "xs.run()"), "!! MethodDispatchUntyped");
+}
+
+#[test]
+fn a_method_on_a_class_with_a_third_party_base_is_not_claimed_absent() {
+    // `Derived(SomeThirdPartyBase)` — `helper` may well live in the base we
+    // cannot see, so the miss stays a miss rather than becoming a confident
+    // answer or an exclusion.
+    let b = bindings(&[(
+        "app/m.py",
+        "from external.pkg import Base\n\nclass Derived(Base):\n    def go(self):\n        return self.helper()\n",
+    )]);
+    assert_eq!(target_of(&b, "self.helper()"), "!! MethodDispatchUntyped");
+}

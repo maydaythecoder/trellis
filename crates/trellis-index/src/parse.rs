@@ -19,6 +19,31 @@ pub struct DefFact {
     /// Decorator expressions as written, e.g. `app.route`. Their presence
     /// is what turns a later call into `Reason::DecoratorIndirection`.
     pub decorators: Vec<String>,
+    /// Base class expressions, for a `class_definition`. Empty otherwise.
+    ///
+    /// `self.method()` where the method is inherited is invisible without
+    /// these, and inheritance is how the benchmark corpus is written
+    /// (ADR 0012).
+    pub bases: Vec<String>,
+}
+
+/// A name whose type is stated in the source.
+///
+/// The resolver's largest single gap is `obj.method()` where `obj`'s type is
+/// unknown — 10,646 of 11,233 unresolved sites on the benchmark corpus. These
+/// facts are what close it: annotations and constructor assignments state the
+/// type locally, and mypy-strict repositories state it almost everywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeFact {
+    /// A local name, or `self.<attr>` for an instance attribute.
+    pub name: String,
+    /// For a local, the function scope it is bound in. For a `self.<attr>`,
+    /// the enclosing **class** scope, because that is where the attribute
+    /// lives regardless of which method assigned it.
+    pub scope: Vec<String>,
+    /// The type expression's head, already normalized: `Foo` from
+    /// `Foo | None`, `list` from `list[Foo]`, `Bar` from `"Bar"`.
+    pub ty: String,
 }
 
 /// An import found in a file.
@@ -85,6 +110,46 @@ pub struct FileFacts {
     pub imports: Vec<ImportFact>,
     pub call_sites: Vec<CallFact>,
     pub bindings: Vec<BindingFact>,
+    pub types: Vec<TypeFact>,
+}
+
+/// Reduces a type expression to the head name the resolver can look up.
+///
+/// `Foo | None` -> `Foo`, `"Bar"` -> `Bar`, `list[Foo]` -> `list`,
+/// `Optional[Foo]` -> `Optional`. The last two deliberately yield a name that
+/// will not resolve to a first-party class, because this pass does not model
+/// containers or generics and must not pretend to: typing `xs` as `Foo`
+/// because it was annotated `list[Foo]` would resolve `xs.append()` to a
+/// method of `Foo`, which is an unsound edge.
+///
+/// Returns `None` when the expression names no single type — a union of two
+/// real types, or anything unrecognised. Declining is always safe here; a
+/// wrong answer is not.
+pub fn type_head(expr: &str) -> Option<String> {
+    let e = expr.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    if e.is_empty() {
+        return None;
+    }
+    // `Foo | None` is Foo. `Foo | Bar` names no single type.
+    let parts: Vec<&str> = e
+        .split('|')
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != "None")
+        .collect();
+    let e = match parts.len() {
+        1 => parts[0],
+        _ => return None,
+    };
+    let head = e.split('[').next()?.trim();
+    // Keep dotted paths whole: `models.Foo` resolves through the import table.
+    if head.is_empty()
+        || !head
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    {
+        return None;
+    }
+    Some(head.to_string())
 }
 
 /// Builds a Python parser.
@@ -144,6 +209,7 @@ fn walk(node: tree_sitter::Node<'_>, src: &str, scope: &mut Vec<String>, out: &m
                     span: (child.start_byte(), child.end_byte()),
                     kind,
                     decorators: decorators_of(child, src),
+                    bases: base_classes(child, src),
                 });
 
                 scope.push(name);
@@ -170,6 +236,7 @@ fn walk(node: tree_sitter::Node<'_>, src: &str, scope: &mut Vec<String>, out: &m
             "assignment" | "augmented_assignment" => {
                 if let Some(l) = child.child_by_field_name("left") {
                     collect_bound_names(l, src, scope, out);
+                    collect_assigned_type(child, l, src, scope, out);
                 }
                 walk(child, src, scope, out);
             }
@@ -209,6 +276,86 @@ fn walk(node: tree_sitter::Node<'_>, src: &str, scope: &mut Vec<String>, out: &m
             _ => walk(child, src, scope, out),
         }
     }
+}
+
+/// Base class expressions of a `class_definition`, as written.
+fn base_classes(def: tree_sitter::Node<'_>, src: &str) -> Vec<String> {
+    if def.kind() != "class_definition" {
+        return Vec::new();
+    }
+    let Some(supers) = def.child_by_field_name("superclasses") else {
+        return Vec::new();
+    };
+    let mut cursor = supers.walk();
+    supers
+        .named_children(&mut cursor)
+        // `class C(Base, metaclass=M)` — the keyword argument is not a base.
+        .filter(|n| n.kind() != "keyword_argument")
+        .filter_map(|n| type_head(text(n, src)))
+        .collect()
+}
+
+/// Records the type of an assignment target, when the source states it.
+///
+/// Two forms, both of which mypy-strict code uses constantly:
+///   `x: Foo = ...`   the annotation
+///   `x = Foo()`      the constructor
+///
+/// The second cannot be distinguished from `x = make_foo()` syntactically, so
+/// it records the callee name and lets the resolver reject it: a type fact is
+/// only honoured when the name resolves to a first-party **class**. A factory
+/// function therefore types nothing, which is the safe outcome.
+fn collect_assigned_type(
+    assignment: tree_sitter::Node<'_>,
+    left: tree_sitter::Node<'_>,
+    src: &str,
+    scope: &[String],
+    out: &mut FileFacts,
+) {
+    // `self.x = ...` belongs to the enclosing class, not to the method that
+    // happens to assign it — every other method sees the same attribute.
+    let (name, owner) = match left.kind() {
+        "identifier" => (text(left, src).to_string(), scope.to_vec()),
+        "attribute" => {
+            let base = left.child_by_field_name("object").map(|n| text(n, src));
+            let attr = left.child_by_field_name("attribute").map(|n| text(n, src));
+            match (base, attr, enclosing_class_scope(scope)) {
+                (Some("self"), Some(a), Some(class_scope)) => (format!("self.{a}"), class_scope),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+
+    let ty = assignment
+        .child_by_field_name("type")
+        .and_then(|t| type_head(text(t, src)))
+        .or_else(|| {
+            let right = assignment.child_by_field_name("right")?;
+            if right.kind() != "call" {
+                return None;
+            }
+            type_head(text(right.child_by_field_name("function")?, src))
+        });
+
+    if let Some(ty) = ty {
+        out.types.push(TypeFact {
+            name,
+            scope: owner,
+            ty,
+        });
+    }
+}
+
+/// The scope chain up to and including the innermost enclosing class name.
+///
+/// Returns `None` outside a class. This is a *syntactic* guess — it assumes a
+/// scope element is a class when a later lookup confirms it — and the resolver
+/// discards the fact if the name turns out not to be a class.
+fn enclosing_class_scope(scope: &[String]) -> Option<Vec<String>> {
+    // `["C", "method"]` -> `["C"]`. A method is always directly inside its
+    // class, so the class is the second-to-last element.
+    (scope.len() >= 2).then(|| scope[..scope.len() - 1].to_vec())
 }
 
 /// Records identifiers bound by an assignment or loop target.
@@ -252,8 +399,22 @@ fn collect_params(params: tree_sitter::Node<'_>, src: &str, scope: &[String], ou
             // `x: int`, `x = 1`, `x: int = 1` — the name is the `name` field
             // or the first child; the rest is annotation or default.
             "typed_parameter" | "default_parameter" | "typed_default_parameter" => {
-                if let Some(n) = p.child_by_field_name("name").or_else(|| p.named_child(0)) {
+                let name_node = p.child_by_field_name("name").or_else(|| p.named_child(0));
+                if let Some(n) = name_node {
                     collect_bound_names(n, src, scope, out);
+                    // A parameter annotation is the single richest type signal
+                    // in a mypy-strict repository, and it is what makes an
+                    // injected pytest fixture resolvable (ADR 0012).
+                    if let Some(t) = p.child_by_field_name("type")
+                        && n.kind() == "identifier"
+                        && let Some(ty) = type_head(text(t, src))
+                    {
+                        out.types.push(TypeFact {
+                            name: text(n, src).to_string(),
+                            scope: scope.to_vec(),
+                            ty,
+                        });
+                    }
                 }
             }
             // `*args`, `**kwargs`.

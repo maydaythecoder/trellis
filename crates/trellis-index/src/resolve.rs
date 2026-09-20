@@ -46,6 +46,15 @@ const MAX_REEXPORT_DEPTH: u32 = 4;
 /// property, not the property body. Resolving those would be an unsound edge
 /// of exactly the kind the gate forbids.
 ///
+/// `contextmanager` and `asynccontextmanager` were listed here and were
+/// **removed on 2026-09-19 after the audit caught the resulting unsound
+/// edge**. The argument for keeping them was that calling a decorated
+/// generator still reaches its body, so a change to the body still affects the
+/// call site. That is true of the dependency and false of the call: the
+/// decorator returns a factory, and calling it constructs a context manager
+/// without running a line of the body. Same class of error as `property`,
+/// which is why it belongs in the same exclusion.
+///
 /// Matched on the final dotted segment, before any call arguments, so
 /// `functools.lru_cache(maxsize=None)` matches `lru_cache`.
 const TRANSPARENT_DECORATORS: &[&str] = &[
@@ -60,8 +69,6 @@ const TRANSPARENT_DECORATORS: &[&str] = &[
     "wraps",
     "lru_cache",
     "cache",
-    "contextmanager",
-    "asynccontextmanager",
     "dataclass",
     "runtime_checkable",
     "no_type_check",
@@ -281,6 +288,36 @@ struct FileTables {
     /// the same alias twice, and that is `Candidates`, not a coin flip.
     imports: HashMap<String, Vec<ImportBinding>>,
     has_star: bool,
+    /// `key(scope, name)` -> the distinct types stated for that name.
+    ///
+    /// A `SmallVec` rather than a single type because a name can be annotated
+    /// once and reassigned differently. More than one entry means the source
+    /// disagrees with itself, and the resolver then declines to type it at
+    /// all — picking one would be a guess wearing a fact's clothes.
+    types: HashMap<String, SmallVec<[String; 2]>>,
+}
+
+/// What the resolver knows about a first-party class.
+#[derive(Clone, Debug)]
+struct ClassInfo {
+    file: FileId,
+    /// Scope path the class's own methods are keyed under: its scope plus its
+    /// own name.
+    path: Vec<String>,
+    /// Base class expressions, as written.
+    bases: Vec<String>,
+}
+
+/// The result of looking for a method on a class and its bases.
+enum MethodLookup {
+    One(SymbolId),
+    Many(SmallVec<[SymbolId; 4]>),
+    /// Not found. `exhaustive` is true only when every base class in the
+    /// hierarchy was itself first-party and searched — otherwise the method
+    /// may live in a third-party base and the absence proves nothing.
+    NotFound {
+        exhaustive: bool,
+    },
 }
 
 /// Scope-qualified lookup key. `\u{1}` cannot appear in a Python identifier,
@@ -454,6 +491,41 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
         for b in &f.bindings {
             tables[i].bindings.insert(key(&b.scope, &b.name));
         }
+        for t in &f.types {
+            let slot = tables[i].types.entry(key(&t.scope, &t.name)).or_default();
+            if !slot.contains(&t.ty) {
+                slot.push(t.ty.clone());
+            }
+        }
+    }
+
+    // Class hierarchy, keyed by symbol so a method lookup can walk it.
+    let mut class_info: HashMap<SymbolId, ClassInfo> = HashMap::new();
+    {
+        let mut sym = 0usize;
+        for (i, f) in facts.iter().enumerate() {
+            for d in &f.defs {
+                let id = SymbolId::from_index(sym);
+                sym += 1;
+                if d.kind == SymbolKind::Class {
+                    let mut path = d.scope.clone();
+                    path.push(d.name.clone());
+                    class_info.insert(
+                        id,
+                        ClassInfo {
+                            file: FileId::from_index(i),
+                            path,
+                            bases: d.bases.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        debug_assert_eq!(
+            sym,
+            index.symbols.len(),
+            "symbol arena walked twice consistently"
+        );
     }
 
     // ---- Pass 2b: import tables. ----
@@ -540,6 +612,32 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
     // the adjacency lists. Collecting outcomes first keeps the read phase and
     // the write phase from overlapping, rather than reaching for interior
     // mutability to paper over the conflict.
+    // The subclass map needs base-class names resolved, which needs a
+    // `Resolver` — so one is built with an empty map purely to compute it.
+    // Cheap: a `Resolver` is a handful of references.
+    let empty: HashMap<SymbolId, SmallVec<[SymbolId; 4]>> = HashMap::new();
+    let mut subclasses: HashMap<SymbolId, SmallVec<[SymbolId; 4]>> = HashMap::new();
+    {
+        let bootstrap = Resolver {
+            tables: &tables,
+            module_map: &module_map,
+            symbols: &index.symbols,
+            files: &index.files,
+            interner: &index.interner,
+            opaque_decorated: &opaque_decorated,
+            class_info: &class_info,
+            subclasses: &empty,
+        };
+        for (&derived, info) in &class_info {
+            let outer = &info.path[..info.path.len() - 1];
+            for base in &info.bases {
+                if let Some(b) = bootstrap.find_class(info.file, outer, base) {
+                    subclasses.entry(b).or_default().push(derived);
+                }
+            }
+        }
+    }
+
     let outcomes: Vec<Outcome> = {
         let resolver = Resolver {
             tables: &tables,
@@ -548,6 +646,8 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
             files: &index.files,
             interner: &index.interner,
             opaque_decorated: &opaque_decorated,
+            class_info: &class_info,
+            subclasses: &subclasses,
         };
         let mut site_id = 0usize;
         let mut outcomes = Vec::with_capacity(index.sites.len());
@@ -724,6 +824,15 @@ struct Resolver<'a> {
     files: &'a [FileEntry],
     interner: &'a trellis_core::Interner,
     opaque_decorated: &'a HashSet<SymbolId>,
+    class_info: &'a HashMap<SymbolId, ClassInfo>,
+    /// base class -> its direct first-party subclasses.
+    ///
+    /// A declared type is an upper bound, not an identity: `repo: Repository`
+    /// may hold an `InstalledRepository` at runtime, and if that subclass
+    /// overrides the method then resolving to the base's definition is an
+    /// unsound edge. The audit caught exactly this, twice. See
+    /// `overriding_subclasses`.
+    subclasses: &'a HashMap<SymbolId, SmallVec<[SymbolId; 4]>>,
 }
 
 impl Resolver<'_> {
@@ -797,6 +906,205 @@ impl Resolver<'_> {
         Outcome::Edge(Target::Unresolved(Reason::UnboundName))
     }
 
+    /// The single first-party class a type expression names, if exactly one.
+    ///
+    /// Returns `None` on anything ambiguous. A type fact that resolves to a
+    /// *function* also returns `None`, which is what makes
+    /// `x = make_thing()` safe to record in Pass 1: the fact exists but
+    /// resolves to nothing, so it types nothing.
+    fn find_class(&self, file: FileId, scope: &[String], ty: &str) -> Option<SymbolId> {
+        let t = &self.tables[file.index()];
+        let is_class = |s: &SymbolId| self.symbols[s.index()].kind == SymbolKind::Class;
+
+        // `models.Foo` — qualified by a module alias.
+        if let Some((prefix, last)) = ty.rsplit_once('.') {
+            let binds = t.imports.get(prefix)?;
+            let mut found = None;
+            for b in binds {
+                if let Bound::Module(f) = self.follow(b, MAX_REEXPORT_DEPTH)
+                    && let Bound::Symbol(s) =
+                        self.lookup_in_module(f, last, MAX_REEXPORT_DEPTH, &mut HashSet::new())
+                    && is_class(&s)
+                {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(s);
+                }
+            }
+            return found;
+        }
+
+        for i in (0..=scope.len()).rev() {
+            if let Some(d) = t.defs.get(&key(&scope[..i], ty)) {
+                let classes: SmallVec<[SymbolId; 2]> = d.iter().copied().filter(is_class).collect();
+                return (classes.len() == 1).then(|| classes[0]);
+            }
+        }
+
+        let binds = t.imports.get(ty)?;
+        let mut found = None;
+        for b in binds {
+            if let Bound::Symbol(s) = self.follow(b, MAX_REEXPORT_DEPTH)
+                && is_class(&s)
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(s);
+            }
+        }
+        found
+    }
+
+    /// The type stated for a name in a scope, if the source states exactly one.
+    fn stated_type(&self, file: FileId, scope: &[String], name: &str) -> Option<String> {
+        let t = &self.tables[file.index()];
+        for i in (0..=scope.len()).rev() {
+            if let Some(tys) = t.types.get(&key(&scope[..i], name)) {
+                // Conflicting annotations mean the source disagrees with
+                // itself; declining is the only sound reading.
+                return (tys.len() == 1).then(|| tys[0].clone());
+            }
+        }
+        None
+    }
+
+    /// Finds `attr` on a class, then on its bases.
+    ///
+    /// Python's MRO is a linearization we do not model, so finding the name on
+    /// two unrelated bases yields `Many` rather than a choice.
+    fn lookup_method(
+        &self,
+        class: SymbolId,
+        attr: &str,
+        depth: u32,
+        visited: &mut HashSet<SymbolId>,
+    ) -> MethodLookup {
+        if !visited.insert(class) || depth == 0 {
+            return MethodLookup::NotFound { exhaustive: false };
+        }
+        let Some(info) = self.class_info.get(&class) else {
+            return MethodLookup::NotFound { exhaustive: false };
+        };
+        let t = &self.tables[info.file.index()];
+
+        if let Some(d) = t.defs.get(&key(&info.path, attr)) {
+            return match d.len() {
+                1 => MethodLookup::One(d[0]),
+                _ => MethodLookup::Many(d.iter().copied().collect()),
+            };
+        }
+
+        // Not on this class. Walk the bases, tracking whether we actually
+        // managed to search all of them.
+        let mut found: SmallVec<[SymbolId; 4]> = SmallVec::new();
+        let mut exhaustive = true;
+        // A base is named in the scope enclosing the class, not inside it.
+        let outer = &info.path[..info.path.len() - 1];
+        for base in &info.bases {
+            match self.find_class(info.file, outer, base) {
+                Some(b) => match self.lookup_method(b, attr, depth - 1, visited) {
+                    MethodLookup::One(s) => found.push(s),
+                    MethodLookup::Many(v) => found.extend(v),
+                    MethodLookup::NotFound { exhaustive: e } => exhaustive &= e,
+                },
+                // A third-party or unresolvable base. The method may well be
+                // there, so absence here proves nothing.
+                None => exhaustive = false,
+            }
+        }
+        match found.len() {
+            0 => MethodLookup::NotFound { exhaustive },
+            1 => MethodLookup::One(found[0]),
+            _ => MethodLookup::Many(found),
+        }
+    }
+
+    /// Turns a method lookup into a call outcome.
+    fn method_outcome(&self, lookup: MethodLookup) -> Outcome {
+        match lookup {
+            MethodLookup::One(s) => self.emit(s),
+            MethodLookup::Many(v) => Outcome::Edge(Target::Candidates(v)),
+            // Even an exhaustive miss stays `MethodDispatchUntyped` rather
+            // than becoming `External`: the attribute may be set dynamically,
+            // and claiming it is third-party would shrink the resolver's own
+            // denominator on a guess (A-31).
+            MethodLookup::NotFound { .. } => {
+                Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped))
+            }
+        }
+    }
+
+    /// Subclasses of `class` that define their own `attr`.
+    ///
+    /// Walks the whole subtree, not just direct children: an override two
+    /// levels down is just as capable of receiving the call.
+    fn overriding_subclasses(&self, class: SymbolId, attr: &str) -> SmallVec<[SymbolId; 4]> {
+        let mut out: SmallVec<[SymbolId; 4]> = SmallVec::new();
+        let mut seen: HashSet<SymbolId> = HashSet::from([class]);
+        let mut queue = std::collections::VecDeque::from([class]);
+        while let Some(c) = queue.pop_front() {
+            for &sub in self.subclasses.get(&c).map_or(&[][..], |v| v.as_slice()) {
+                if !seen.insert(sub) {
+                    continue;
+                }
+                queue.push_back(sub);
+                if let Some(info) = self.class_info.get(&sub)
+                    && let Some(d) = self.tables[info.file.index()]
+                        .defs
+                        .get(&key(&info.path, attr))
+                {
+                    out.extend(d.iter().copied());
+                }
+            }
+        }
+        out
+    }
+
+    /// `obj.attr()` where `obj`'s type is stated somewhere in scope.
+    ///
+    /// The stated type is an **upper bound**. Python dispatches on the runtime
+    /// type, so if any first-party subclass overrides `attr`, the call may
+    /// reach that override instead and the base's definition is not a fact.
+    /// All of them are recorded and none is chosen — which is what
+    /// `Candidates` is for (ADR 0002).
+    ///
+    /// This is deliberately *not* applied to `self.m()`: the audit protocol
+    /// (`BENCHMARK_AND_EVAL.md` §2, rule 1) resolves those to the enclosing
+    /// class's definition, treating subclass override as the dynamic dispatch
+    /// Constraint 1 accepts as unknowable. The asymmetry is real — a declared
+    /// parameter type is a weaker claim than a lexically enclosing class.
+    fn typed_receiver(
+        &self,
+        file: FileId,
+        scope: &[String],
+        receiver: &str,
+        attr: &str,
+    ) -> Option<Outcome> {
+        let ty = self.stated_type(file, scope, receiver)?;
+        let class = self.find_class(file, scope, &ty)?;
+        let found = self.lookup_method(class, attr, MAX_REEXPORT_DEPTH, &mut HashSet::new());
+
+        let overrides = self.overriding_subclasses(class, attr);
+        if overrides.is_empty() {
+            return Some(self.method_outcome(found));
+        }
+        let mut all: SmallVec<[SymbolId; 4]> = match found {
+            MethodLookup::One(s) => SmallVec::from_slice(&[s]),
+            MethodLookup::Many(v) => v,
+            MethodLookup::NotFound { .. } => SmallVec::new(),
+        };
+        all.extend(overrides);
+        all.sort_unstable();
+        all.dedup();
+        Some(match all.len() {
+            0 => Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped)),
+            1 => self.emit(all[0]),
+            _ => Outcome::Edge(Target::Candidates(all)),
+        })
+    }
+
     /// First-party symbols an import alias binds, if any.
     ///
     /// Used to detect a name bound by both a definition and an import, which
@@ -820,23 +1128,30 @@ impl Resolver<'_> {
     fn resolve_attribute(&self, file: FileId, scope: &[String], base: &str, attr: &str) -> Outcome {
         let t = &self.tables[file.index()];
 
-        // `self.m()` / `cls.m()` inside a method: look in the enclosing class.
+        // `self.m()` / `cls.m()` inside a method: the enclosing class, then
+        // its bases. Inheritance is how the benchmark corpus is written, so
+        // stopping at the class itself loses most of these (ADR 0012).
         if base == "self" || base == "cls" {
-            return match self.enclosing_class(file, scope) {
-                Some(class) => {
-                    let k = key(&class_scope(scope, &class), attr);
-                    match t.defs.get(&k) {
-                        Some(d) if d.len() == 1 => self.emit(d[0]),
-                        Some(d) => Outcome::Edge(Target::Candidates(d.iter().copied().collect())),
-                        // Inherited, mixed in, or set dynamically. Following
-                        // base classes across files is the obvious recall win
-                        // and is not attempted here; the Reason distribution
-                        // is what decides whether it is worth building (S1).
-                        None => Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped)),
-                    }
-                }
+            return match self.enclosing_class_symbol(file, scope) {
+                Some(class) => self.method_outcome(self.lookup_method(
+                    class,
+                    attr,
+                    MAX_REEXPORT_DEPTH,
+                    &mut HashSet::new(),
+                )),
                 None => Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped)),
             };
+        }
+
+        // `self._x.m()` — an instance attribute whose type the source states.
+        if let Some(rest) = base.strip_prefix("self.")
+            && !rest.contains('.')
+            && let Some(class) = self.enclosing_class_symbol(file, scope)
+            && let Some(info) = self.class_info.get(&class)
+            && let Some(out) =
+                self.typed_receiver(info.file, &info.path, &format!("self.{rest}"), attr)
+        {
+            return out;
         }
 
         // The whole dotted base as an import alias: `from a import b; b.c()`.
@@ -861,12 +1176,21 @@ impl Resolver<'_> {
             }
         }
 
+        // A local or parameter whose type the source states: `env.run()`
+        // where `env` is annotated, or was assigned from a constructor.
+        if !base.contains('.')
+            && let Some(out) = self.typed_receiver(file, scope, base, attr)
+        {
+            return out;
+        }
+
         // A first-party class named in this file: `C.make()`.
         if !base.contains('.') {
             for i in (0..=scope.len()).rev() {
                 let k = key(&scope[..i], base);
                 if t.bindings.contains(&k) {
-                    // An instance, not the class itself. Its type is unknown.
+                    // An instance whose type is not stated anywhere we can
+                    // see — the typed-receiver path above already declined.
                     return Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped));
                 }
                 if let Some(d) = t.defs.get(&k) {
@@ -900,16 +1224,28 @@ impl Resolver<'_> {
         Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped))
     }
 
-    /// The innermost `class` in a scope chain, if any.
-    fn enclosing_class(&self, file: FileId, scope: &[String]) -> Option<String> {
+    /// The innermost enclosing `class` in a scope chain, as a symbol.
+    ///
+    /// Returns the symbol rather than the name because every consumer needs
+    /// the class's bases and defining file, which the name alone cannot give.
+    fn enclosing_class_symbol(&self, file: FileId, scope: &[String]) -> Option<SymbolId> {
         let t = &self.tables[file.index()];
         for i in (0..scope.len()).rev() {
             let k = key(&scope[..i], &scope[i]);
-            if let Some(d) = t.defs.get(&k)
-                && d.iter()
-                    .any(|&s| self.symbols[s.index()].kind == SymbolKind::Class)
-            {
-                return Some(scope[i].clone());
+            if let Some(d) = t.defs.get(&k) {
+                let classes: SmallVec<[SymbolId; 2]> = d
+                    .iter()
+                    .copied()
+                    .filter(|&s| self.symbols[s.index()].kind == SymbolKind::Class)
+                    .collect();
+                if classes.len() == 1 {
+                    return Some(classes[0]);
+                }
+                if !classes.is_empty() {
+                    // Two classes of one name at one scope: which one encloses
+                    // this call is not decidable from the scope chain.
+                    return None;
+                }
             }
         }
         None
@@ -1113,16 +1449,4 @@ fn merge_outcomes(outs: Vec<Outcome>) -> Outcome {
         (1, None, false) => Outcome::Edge(Target::Resolved(syms[0])),
         _ => Outcome::Edge(Target::Candidates(syms)),
     }
-}
-
-/// The scope path of a class within an enclosing chain.
-fn class_scope(scope: &[String], class: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for s in scope {
-        out.push(s.clone());
-        if s == class {
-            break;
-        }
-    }
-    out
 }
