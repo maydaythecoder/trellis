@@ -168,8 +168,9 @@ of the gate needs it.
    **Done.** The README was rewritten — it had said "pre-v0.1, the resolver
    and the agent loop do not [exist]" — and the audit-mode limit is now stated
    at the approval prompt, not only in a document.
-10. **`MISSION.md` with honest positioning (S15)** — concede the index is
-    commodity and argue the wedge where it actually is.
+10. ~~`MISSION.md` with honest positioning (S15).~~ **Done.** The positioning
+    argument was already sound; the document around it claimed seven goal
+    states as aims with nothing saying which were met, and two are not.
 11. **Tier 3** (`AdapterTier::HarnessConstrained`), carried from v0.2. The
     gate's plus-row needs it and the doc's own `doctor` mockup prints
     `Tier 3 ✓`. Named in the enum, constructed nowhere.
@@ -312,6 +313,43 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## MISSION.md: the positioning was fine, the claims around it were not
+
+v1.0 task item 10, S15. The concession the milestone asks for — the index is
+commodity, building it in-house is justified by fit and not by
+differentiation — was already written and the risk register already marked
+S15 "positioned". What had not been audited was the rest of the document.
+
+**Seven goal states were listed as aims, with nothing saying which were met.
+Two are not, and they are the two a reader would most reasonably assume:**
+
+- **Goal 3, "covering tests passed".** Both the type checker and the suite run,
+  and a failing suite blocks convergence. *Covering* is the missing word:
+  nothing maps tests to call sites, so `Verified` is always 0.
+- **Goal 6, "runs on quantized open weights".** Every mechanism exists and is
+  tested, and the A/B established the harness is not what holds those models
+  back — but two configurations are measured and both are below the floor
+  (0.5B repaired 0 of 20, Coder-3B 0 of 17). Supported and demonstrated are
+  different words.
+
+Each goal now carries its state, and goal 6 carries the distinction
+explicitly, because "it runs on your hardware" is the claim most likely to be
+read as a result.
+
+Also corrected: the section headed *"what would make this positioning wrong"*
+still described the pivot trigger as hypothetical. It **fired** — 47.8%, whole
+CI below the threshold — and was averted by one bounded backstop to 72.0%. The
+document now says so, and says what that leaves: the S1 fallback band, not a
+clean pass.
+
+And one clarification to the concession itself. Commodity means the capability
+is widely available, not that any implementation is maintained and
+droppable-in: the one candidate this project actually evaluated,
+`github/stack-graphs`, is archived, which is why it was ruled out rather than
+adopted. Only the first claim is being made.
+
+Every figure in the document was checked against its source before committing.
 
 ## Documentation, and a README that described a different project
 

@@ -24,19 +24,28 @@ It runs on models you host, including models with no native tool-calling
 support. Your code stays on your machine. Your API key, if you use one, stays
 on your machine.
 
-## Goal state
+## Goal state, and which of it is delivered
 
-1. **Resumption is free.** Reopen a repo, say what's next, re-explain nothing.
-2. **Scope is known before the change.** The harness names the first-party call
-   sites reaching a function, and names honestly the ones it could not resolve.
-3. **Verification executes.** "The callers still work" means the type checker
-   ran clean and covering tests passed.
-4. **Failure is boring.** Non-convergence rolls back completely and hands back
-   a legible reason.
-5. **The trail is durable.** Committed, agent-readable, in the repo.
-6. **It runs on your hardware**, on quantized open weights, without native tool
-   calling.
-7. **Cost and wall-clock are bounded and visible.**
+Seven goals. **Five are delivered, two are not**, and the two that are not are
+the ones a reader would most reasonably assume from the paragraphs above. A
+mission that lists only its aims reads as a list of claims.
+
+| | Goal | State |
+|---|---|---|
+| 1 | **Resumption is free.** Reopen a repo, say what's next, re-explain nothing | **Delivered.** Demonstrated cold on the benchmark repo — `docs/bench/wedge-20260920.md` |
+| 2 | **Scope is known before the change.** The harness names the first-party call sites reaching a function, and names honestly the ones it could not resolve | **Delivered, and bounded.** Precision 100% on two hand audits and over the full corpus mechanically; recall 72.0%, short of the 85% gate |
+| 3 | **Verification executes.** "The callers still work" means the type checker ran clean and covering tests passed | **Half.** Both run, and a failing suite blocks convergence. *Covering* is the missing word: nothing maps tests to call sites, so `Verified` is always 0 and the trail says so rather than guessing |
+| 4 | **Failure is boring.** Non-convergence rolls back completely and hands back a legible reason | **Delivered.** Seven injection points including a real SIGINT and a dead orchestrator — `docs/bench/rollback-20260920.md` |
+| 5 | **The trail is durable.** Committed, agent-readable, in the repo | **Delivered**, with provenance and a SHA-256 over the factual half |
+| 6 | **It runs on your hardware**, on quantized open weights, without native tool calling | **Not demonstrated.** Two configurations measured, both below the floor: 0.5B repaired 0 of 20, Coder-3B 0 of 17. The harness drives them correctly; neither can do the work |
+| 7 | **Cost and wall-clock are bounded and visible** | **Delivered.** Budgets enforce and divide across partitions; iterations, wall clock and context fill are recorded per run |
+
+Goal 6 is the one to read twice. Every mechanism it needs exists and is
+tested — constrained decoding, the adapter tiers, the loop, the rollback — and
+an A/B established that the harness is not what holds those models back. What
+has not been found is a local model that can actually do the task. That is a
+measurement about available small models, not a claim about this design, and
+it is the difference between "supported" and "demonstrated".
 
 ## Non-goals for v1
 
@@ -51,6 +60,13 @@ while the machine is asleep.
 Aider's tree-sitter repo map, a wave of MCP code-graph tools, Sourcegraph, and
 GitHub's own code navigation all occupy the code-graph space. Nothing about
 TRELLIS's call graph is novel, and a competitor could reproduce it.
+
+It is worth being precise about what "commodity" does and does not mean here,
+because the one candidate this project actually evaluated was not usable:
+`github/stack-graphs` is **archived**, which is why it was ruled out as an S1
+option rather than adopted. Commodity means the capability is widely available,
+not that any particular implementation is maintained and droppable-in. Those
+are different claims and only the first one is being made.
 
 Building it in-house is justified by fit and simplicity, not by
 differentiation:
@@ -88,19 +104,42 @@ Property 1 is also what makes small local models viable. A design resting
 correctness on model judgment is hardest to run on weak models; a design
 resting it on a type checker barely cares which model you use.
 
-### What would make this positioning wrong
+### What would make this positioning wrong — the trigger fired
 
-If measured recall on the benchmark repository comes in below the pivot
-threshold in `docs/adr/0002-edge-confidence-model.md`, goal state 2 is not
-deliverable and the blast-radius claim dies. What survives is context
-continuity, governance enforcement, test-anchored checks, and the committed
-trail — a smaller product that still addresses the problem above, with the
-index demoted from guarantee to hint. That trigger is written down before the
-measurement exists, deliberately (S16).
+This was written before any measurement existed, deliberately (S16): if
+recall on the benchmark repository came in below 60%, goal 2 was not
+deliverable and the blast-radius claim died.
+
+**It fired.** First measurement: 47.8%, 95% CI [40.0%, 55.6%]. The owner took
+one bounded backstop rather than the pivot (ADR 0011 option C, recorded as a
+deliberate deviation in ADR 0012), and receiver typing raised recall to 72.0%
+on a *fresh* sample, CI [63.2%, 80.8%]. The interval now sits entirely above
+the trigger, so the pivot does not execute.
+
+What that leaves is not a clean pass. **The S1 fallback band — at or above 60%,
+below 85% — applies**, which means the blast-radius guarantee survives and a
+further backstop is required before v1.0 can claim it. Both candidate
+backstops have since been measured and neither is worth building; the third
+thing found instead was a denominator error, corrected, which moved no recall
+figure at all.
+
+The positioning above therefore stands, with goal 2 explicitly bounded rather
+than claimed outright. Had the pivot executed, what survived would have been
+context continuity, governance enforcement, test-anchored checks and the
+committed trail — a smaller product addressing the same problem, with the index
+demoted from guarantee to hint.
 
 ## Status
 
-Pre-v0.1. The workspace, the grounding contract, the parse pass, the
-partitioning rules, and rollback exist and are tested. Resolution, the agent
-loop, and model probing do not. No recall figure has been measured, and this
-document contains none.
+**v0.1 complete. v0.3 at eight of nine. v0.2 at five of ten.** The resolver,
+the agent loop, the orchestrator, rollback, governance, the trail, resume, a
+session and a full-screen interface all exist and are tested — 320 tests, and
+`docs/STATUS.md` audits every claim in this repository against the code rather
+than against the plan.
+
+Recall on the benchmark repository is **72.0%**, hand-audited, 95% CI
+[63.2%, 80.8%]; precision is 100% on both audits and mechanically over the full
+corpus. Neither figure appears anywhere without its method beside it.
+
+The two things standing between here and v1.0 need no more code: a third
+independent human audit, and a local model that can pass the floor.

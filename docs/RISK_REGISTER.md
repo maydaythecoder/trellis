@@ -454,6 +454,21 @@ differentiation.
 
 **Cost.** Positioning only.
 
+**Audited 2026-09-20.** The positioning argument held up; the document around
+it did not. `MISSION.md` listed seven goal states as aims with nothing saying
+which were met, and two are not — goal 3's *covering* tests (nothing maps
+tests to call sites, so `Verified` is always 0) and goal 6's quantized open
+weights (two configurations measured, both below the floor). A mission that
+lists only its aims reads as a list of claims, and the two a reader would most
+reasonably assume were exactly the two that were unmet. Each goal now carries
+its state.
+
+One clarification added to the concession itself: commodity means the
+capability is widely available, not that any particular implementation is
+maintained and droppable-in. The one candidate this project actually evaluated,
+`github/stack-graphs`, is archived — which is why it was ruled out rather than
+adopted. Those are different claims and only the first is being made.
+
 ---
 
 ## S16 — The pivot trigger, written while it's cheap
