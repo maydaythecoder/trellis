@@ -1,0 +1,15 @@
+# Line endings, pinned.
+#
+# CRLF has cost this project two silent failures already: the floor runner's
+# LF anchors skipped all twenty tasks against a CRLF corpus and reported a
+# clean run of nothing, and a shell script stored with CRLF fails on Linux
+# with a bad-interpreter error that names the shell rather than the cause.
+* text=auto eol=lf
+
+# Executable scripts must be LF on every platform or the shebang breaks.
+*.sh text eol=lf
+
+# Fixtures and recorded artefacts are compared byte-for-byte; a checkout that
+# rewrote them would move a measurement.
+*.json text eol=lf
+docs/bench/** text eol=lf
