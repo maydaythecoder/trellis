@@ -105,6 +105,26 @@ pub fn pending(root: &Path) -> Result<Vec<String>, VcsError> {
         .collect())
 }
 
+/// The uncommitted diff, as git renders it.
+///
+/// `pending` answers *which files*; this answers *what changed*. A converged
+/// run leaves its edits for the user to accept or reject, and a decision made
+/// on a list of filenames is not a review — it is a guess with extra steps.
+///
+/// Includes staged changes (`HEAD` rather than the index) because a run's
+/// edits may have been staged by a previous `/accept` that only took some of
+/// them, and a diff that silently omitted those would understate what
+/// accepting now would commit.
+///
+/// Untracked files do not appear: git cannot diff what it has never seen.
+/// `pending` lists them, which is why the caller shows both.
+pub fn diff(root: &Path) -> Result<String, VcsError> {
+    if !root.join(".git").exists() {
+        return Err(VcsError::NotARepo(root.to_path_buf()));
+    }
+    git(root, &["--no-pager", "diff", "HEAD"])
+}
+
 /// Discards every uncommitted change, tracked and untracked alike.
 ///
 /// The same two steps as `Snapshot::rollback` and for the same reason: either

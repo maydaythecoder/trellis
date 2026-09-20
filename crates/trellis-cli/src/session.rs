@@ -337,6 +337,32 @@ impl Session {
         for line in &pending {
             println!("  {line}");
         }
+
+        // The actual change, not just its filename. "Acceptance is yours" is
+        // not a real offer if taking it up means leaving for another terminal.
+        match trellis_vcs::diff(&self.root) {
+            Ok(d) if !d.trim().is_empty() => {
+                println!();
+                let lines: Vec<&str> = d.lines().collect();
+                for line in lines.iter().take(DIFF_LINES) {
+                    println!("{line}");
+                }
+                if lines.len() > DIFF_LINES {
+                    println!(
+                        "... {} more lines — `git diff` for the rest",
+                        lines.len() - DIFF_LINES
+                    );
+                }
+            }
+            // An untracked file has no diff: git cannot show what it has
+            // never seen. The listing above already named it.
+            Ok(_) => {}
+            Err(e) => println!(
+                "
+(could not read the diff: {e})"
+            ),
+        }
+
         println!();
         println!("/accept [message]  commit these    /revert  discard them");
         Ok(())
@@ -451,6 +477,13 @@ fn history_path(root: &Path) -> Option<PathBuf> {
             .join(format!("{name}-{key:016x}.history")),
     )
 }
+
+/// How much of a diff `/diff` prints before deferring to `git diff`.
+///
+/// A wide change can run to thousands of lines, and a terminal that scrolls
+/// the decision off the top has not helped anyone review it. The count of
+/// what was withheld is printed, so the limit is visible rather than silent.
+const DIFF_LINES: usize = 60;
 
 const EXIT: &str = "__trellis_exit__";
 
@@ -736,6 +769,67 @@ mod tests {
         s.dispatch("/radius helper").expect("helper is defined");
         s.dispatch("/radius nosuchthing")
             .expect_err("an unknown symbol is an error, not an empty radius");
+    }
+
+    #[test]
+    fn diff_shows_the_change_not_just_the_filename() {
+        // "Acceptance is yours" is not a real offer if taking it up means
+        // leaving for another terminal. A decision made on a list of
+        // filenames is a guess with extra steps.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        git_repo(d.path());
+        std::fs::write(d.path().join("app/m.py"), "def helper():\n    return 42\n").unwrap();
+
+        let raw = trellis_vcs::diff(d.path()).expect("a diff");
+        assert!(raw.contains("-    return 1"), "the old line: {raw}");
+        assert!(raw.contains("+    return 42"), "the new line: {raw}");
+        // And the command itself runs rather than erroring on a real change.
+        s.dispatch("/diff").expect("diff reports");
+    }
+
+    #[test]
+    fn an_untracked_file_is_listed_even_though_it_has_no_diff() {
+        // git cannot diff what it has never seen, so the listing is the only
+        // thing that names a new file. Dropping it would make `/accept` commit
+        // something the user was never shown.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        git_repo(d.path());
+        std::fs::write(d.path().join("app/brand_new.py"), "x = 1\n").unwrap();
+
+        let pending = trellis_vcs::pending(d.path()).unwrap();
+        assert!(
+            pending.iter().any(|l| l.contains("brand_new.py")),
+            "an untracked file must still be listed: {pending:?}"
+        );
+        assert!(
+            trellis_vcs::diff(d.path()).unwrap().trim().is_empty(),
+            "and it genuinely has no diff, which is why the listing matters"
+        );
+        s.dispatch("/diff").expect("reports without erroring");
+    }
+
+    #[test]
+    fn a_staged_change_is_still_in_the_diff() {
+        // The diff is against HEAD, not the index. A run's edits may already
+        // be staged, and a diff that omitted them would understate what
+        // accepting now would commit.
+        let d = tempfile::tempdir().unwrap();
+        let _s = session(d.path());
+        git_repo(d.path());
+        std::fs::write(d.path().join("app/m.py"), "def helper():\n    return 7\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(d.path())
+            .output()
+            .expect("git add");
+
+        let raw = trellis_vcs::diff(d.path()).unwrap();
+        assert!(
+            raw.contains("+    return 7"),
+            "a staged change must still show: {raw}"
+        );
     }
 
     #[test]
