@@ -60,3 +60,60 @@ OPEN_QUESTIONS Q-15):
 `sample.json` embeds short excerpts of poetry's source for context. poetry is
 MIT licensed, copyright Sébastien Eustace and contributors. The excerpts are
 here as measurement evidence.
+
+## The pre-gate audit (A-34, Q-15)
+
+No v1.0 gate claim may rest on the two audits already scored. Both were drawn
+at 300–400 sites, and `BENCHMARK_AND_EVAL.md` §2 records why that is too few:
+the recall denominator is not the sample size but the subset whose true callee
+is first-party, which has run at roughly a third. 400 draws put ~150 sites in
+the denominator and a 95% interval of about ±8 points. The gate thresholds are
+25 points apart, so ±8 places a measurement only when it does not land near a
+boundary — and 85% is exactly where the next one will land.
+
+**Size the sample on the expected first-party count.** Roughly 1,000 draws for
+400 in the denominator, which brings the interval to about ±5.
+
+The packet is prepared with two commands and needs no network:
+
+```
+cargo run --release -p trellis-index --example audit_sample -- \
+    .bench/poetry-2.5.0 1000 <fresh-seed> .bench/pregate
+python docs/bench/split_audit.py .bench/pregate 40
+```
+
+That writes 25 blind chunks of 40. `answers.json` sits beside them and is
+opened only by the scorer — the auditor never sees a resolver verdict, which
+is the entire reason this measurement is worth more than the coverage report
+the resolver computes about itself.
+
+Filled chunks go back as `chunk-N-filled.json` carrying `results` (not
+`sample`), then:
+
+```
+python docs/bench/merge_audit.py .bench/pregate 1000
+cargo run --release -p trellis-index --example audit_score -- .bench/pregate
+```
+
+Neither the draw nor the chunking is committed: both are reproducible from the
+seed, so only the filled judgements are worth storing. `merge_audit.py` refuses
+a partial or malformed audit rather than scoring one, and `split_audit.py`
+refuses to re-split over filled chunks.
+
+**Two things this audit must report that earlier ones did not need to.**
+
+- **Wrongly excluded.** ADR 0015 lets a site leave the denominator on the
+  strength of an annotation. A wrong exclusion is invisible to
+  `check_soundness` and to the repository-wide report — both are structurally
+  unable to see a site that emits no edge — so this figure is the only
+  detector. It has been 0 on both re-scored audits; that is evidence, not
+  proof, and S21 says it must be measured again rather than inherited.
+- **Whether the resolver changed since the draw.** The seed reproduces the
+  sites, not the verdicts. If `resolve.rs` has moved, regenerate
+  `answers.json` with the same seed and size before scoring.
+
+A draw at seed 20260921 was taken as a dry run of this procedure and discarded.
+Its composition, as a sizing preview: of 1,000 sites the resolver judged 284
+`Resolved`, 34 `Candidates`, 296 `Unresolved` and 386 external. The auditor
+decides the denominator, so that is a hint about the shape of the work and not
+a prediction of the result.
