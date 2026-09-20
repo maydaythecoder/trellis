@@ -121,10 +121,32 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let explicit = cli.root.is_some();
     let root = match cli.root {
         Some(r) => r,
-        None => std::env::current_dir().context("cannot determine current directory")?,
+        None => discover_root().context("cannot determine the repository root")?,
     };
+    // Say which tree is about to be read whenever it was inferred.
+    //
+    // Both directions are surprises worth naming. Acting on a directory
+    // several levels up ends with someone running a task against the wrong
+    // tree. Falling back to the working directory is worse if it happens to
+    // be a home folder — `trellis index` there walked 1,295 files before
+    // anyone could tell it had not found a repository.
+    if !explicit {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        if root != cwd {
+            println!("root:     {} (repository root)", root.display());
+        } else if !root.join(".git").exists() {
+            println!(
+                concat!(
+                    "root:     {} (no git repository above here; reading this ",
+                    "directory only)"
+                ),
+                root.display()
+            );
+        }
+    }
 
     match cli.command {
         Command::Index => cmd_index(&root),
@@ -149,6 +171,43 @@ fn main() -> Result<()> {
                 "(`trellis_loop::partition::plan`); what is missing is running the ",
                 "partitions concurrently and reconciling their checks."
             ))
+        }
+    }
+}
+
+/// The repository root, walking up from the working directory.
+///
+/// Typing `trellis index` three directories deep used to index whatever
+/// happened to be under the cwd — which for most subdirectories is nothing at
+/// all, reported as "indexed 0 files" with no hint that the user was standing
+/// in the wrong place. Every other tool in this space walks up to find its
+/// project marker, and `.git` is the right marker here: a run already requires
+/// a git repository with a clean worktree (ADR 0009), so a TRELLIS root that
+/// is not a git root is a root half the commands cannot work with.
+///
+/// `--root` still wins outright. An explicit path is a decision, and a tool
+/// that overrides one because it thinks it knows better is worse than one that
+/// makes the user type more.
+fn discover_root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    Ok(root_from(&cwd))
+}
+
+/// The walk itself, separated from the process-global working directory so it
+/// can be tested without one.
+fn root_from(start: &Path) -> PathBuf {
+    let mut dir = start;
+    loop {
+        if dir.join(".git").exists() {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            // No repository anywhere above. Fall back to where the user is
+            // standing rather than failing: `index` and `radius` are useful on
+            // a plain source tree, and the commands that genuinely need git
+            // say so themselves when they need it.
+            None => return start.to_path_buf(),
         }
     }
 }

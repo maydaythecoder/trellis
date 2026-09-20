@@ -160,6 +160,49 @@ mod tests {
     }
 
     #[test]
+    fn the_root_is_the_repository_root_not_the_working_directory() {
+        // `trellis index` three directories deep used to index whatever was
+        // under the cwd, which for most subdirectories is nothing — reported
+        // as "indexed 0 files" with no hint the user was standing in the
+        // wrong place.
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        let deep = repo.join("app/deep/nested");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        assert_eq!(crate::root_from(&deep), repo);
+        assert_eq!(crate::root_from(&repo), repo);
+    }
+
+    #[test]
+    fn a_tree_with_no_repository_falls_back_to_where_the_user_is() {
+        // Failing here would make `index` and `radius` unusable on a plain
+        // source tree, and those two need no git at all. The commands that do
+        // need it say so themselves.
+        let d = tempfile::tempdir().unwrap();
+        let sub = d.path().join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(crate::root_from(&sub), sub);
+    }
+
+    #[test]
+    fn the_nearest_repository_wins_over_an_outer_one() {
+        // A nested checkout — a vendored dependency, a submodule — must
+        // resolve to the inner repository, because that is the one whose
+        // worktree a run would snapshot and roll back.
+        let d = tempfile::tempdir().unwrap();
+        let outer = d.path().join("outer");
+        let inner = outer.join("vendor/inner");
+        let deep = inner.join("src");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir_all(outer.join(".git")).unwrap();
+        std::fs::create_dir_all(inner.join(".git")).unwrap();
+
+        assert_eq!(crate::root_from(&deep), inner);
+    }
+
+    #[test]
     fn an_absent_file_yields_defaults() {
         // Including S20's `--no-incremental`: a repository with no config is
         // exactly the one that gets no say in the matter, so the default it
