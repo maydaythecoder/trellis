@@ -338,7 +338,9 @@ impl Session {
         // about the code as it now stands, which is the only version anyone
         // cares about.
         self.index = trellis_index::build(&self.root);
-        outcome
+        // The session stays open whichever way the run went: a run that did
+        // not converge is a normal outcome here, not the end of the program.
+        outcome.map(|_| ())
     }
 
     /// What a converged run left behind.

@@ -255,6 +255,27 @@ impl Transcript {
     }
 }
 
+/// A short label for a call, for instrumentation.
+///
+/// `{call:?}` would put a file's whole old and new text on one log line,
+/// which is unreadable in a terminal and enormous in a log. The shape and its
+/// subject are what a reader watching a run actually wants.
+fn call_label(call: &ToolCall) -> String {
+    match call {
+        ToolCall::BlastRadius { symbol } => format!("blast_radius {symbol}"),
+        ToolCall::ReadFile { path } => format!("read_file {path}"),
+        ToolCall::Edit { path, .. } => format!("edit {path}"),
+        ToolCall::RunChecks { paths, kinds } => {
+            let what = if paths.is_empty() {
+                "(no paths)".to_string()
+            } else {
+                paths.join(", ")
+            };
+            format!("run_checks {kinds:?} {what}")
+        }
+    }
+}
+
 /// The model behind the loop. Implemented by the real adapter and, in tests,
 /// by a script — which is what lets the loop's control flow be tested with no
 /// inference anywhere near it.
@@ -510,6 +531,19 @@ pub async fn run_seeded<M: Model>(
                     .filter(|p| p.call == call && p.observation == observation)
                     .count() as u32
                     + 1;
+
+                // One event per completed turn, on the path everything else
+                // already reports through. A run is otherwise silent until it
+                // ends, which is fine for a command that prints a transcript
+                // at the finish and useless for anything watching it happen.
+                // `RUST_LOG=trellis=info` gets this too; it is not a hook the
+                // interface owns.
+                tracing::info!(
+                    turn = iterations,
+                    call = %call_label(&call),
+                    verdict = ?verdict_passed,
+                    "turn"
+                );
 
                 t.turns.push(Turn {
                     observation,

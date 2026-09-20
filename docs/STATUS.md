@@ -179,10 +179,21 @@ the tool has an interactive session.
 
 ### Not on the critical path, but real
 
-- **The session is a REPL, not a TUI.** It has line editing and per-repository
-  history now (`rustyline`, default features off, seven transitive packages).
-  Still no completion and no live status pane; a full-screen interface is a
-  much larger piece and has not been costed.
+- **There is now a TUI (`trellis tui`), and it contradicts a stated v1.0
+  non-goal.** `04-v1.0-harness.md` lists "any surface beyond the CLI — no TUI"
+  as out of scope, and this was built at the owner's explicit instruction
+  after that document was written. Recorded as a deviation rather than
+  quietly resolved: the roadmap says one thing and the repository now does
+  another, and a reader should not have to discover that by running it.
+
+  The line-based session remains the default; `trellis tui` is opt-in.
+  Model-view-controller split across `tui/{model,view,events,terminal}.rs`,
+  with the model holding no terminal and no I/O so the interface's behaviour
+  is tested without one. The UI thread blocks on a single channel and never
+  on work: runs go to a worker thread and report progress through `tracing`,
+  which CLAUDE.md already designates the one telemetry path.
+
+  Still no completion, and the transcript is the only pane that scrolls.
 - **`discover()` does not read `.gitignore`.** It skips a fixed list — `.venv`,
   `node_modules`, `site-packages`, `__pycache__`, `build`, `dist` — which
   covers the cases that matter in practice. A repository with a large ignored

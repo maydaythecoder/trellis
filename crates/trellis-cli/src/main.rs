@@ -14,6 +14,7 @@
 
 mod config;
 mod session;
+mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -92,6 +93,12 @@ enum Command {
         #[arg(long)]
         prompt: Option<String>,
     },
+
+    /// Full-screen interface: transcript, run state and task entry at once.
+    ///
+    /// The line-based session stays the default. This is the surface for
+    /// watching a run rather than issuing one command at a time.
+    Tui,
 
     /// Continue from the last trail entry.
     Resume,
@@ -213,8 +220,15 @@ fn main() -> Result<()> {
                 }
                 None => task,
             };
-            cmd_run(&root, &task, &model, unconstrained, &agents, resume)
+            let exit = cmd_run(&root, &task, &model, unconstrained, &agents, resume)?;
+            // The one place that decides the process ends, because this is
+            // the one caller that *is* the process.
+            if exit.code() != 0 {
+                std::process::exit(exit.code());
+            }
+            Ok(())
         }
+        Command::Tui => tui::run(&root, config::RepoConfig::load(&root)?.model()),
         Command::Resume => cmd_resume(&root),
         // Deliberately before the root is used for anything: models are user
         // state, not repository state, and `trellis model` must work outside
@@ -588,6 +602,47 @@ fn pull_model(name: Option<&str>) -> Result<()> {
     )
 }
 
+/// How a run ended, and what the process should exit with.
+///
+/// **Returned rather than acted on.** `cmd_run` used to call
+/// `std::process::exit` on the non-converged path, which is fine for a
+/// one-shot command and fatal everywhere else: the TUI calls it from a worker
+/// thread, so a run that did not converge took the whole interface down
+/// mid-frame, without unwinding the terminal guard and without the panic hook
+/// firing — `exit` runs no destructors. The exit code is the caller's
+/// decision because only the caller knows whether it *is* the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunExit {
+    Converged,
+    /// The tree was restored, or it was not — which is not the same failure
+    /// and must not share an exit code.
+    NotConverged {
+        restored: bool,
+    },
+    Interrupted {
+        restored: bool,
+    },
+}
+
+impl RunExit {
+    /// 0 converged. 1 did not converge and the tree is back as it was.
+    /// 2 the tree is NOT back, which a wrapping script must not treat as an
+    /// ordinary failed run. 130 a deliberate abort.
+    fn code(self) -> i32 {
+        match self {
+            RunExit::Converged => 0,
+            RunExit::NotConverged { restored: true } => 1,
+            RunExit::NotConverged { restored: false } => 2,
+            RunExit::Interrupted { restored: true } => 130,
+            RunExit::Interrupted { restored: false } => 2,
+        }
+    }
+
+    fn converged(self) -> bool {
+        matches!(self, RunExit::Converged)
+    }
+}
+
 /// What drives the loop this run.
 ///
 /// Not a trait object: `Model::next_step` is an `async fn` in a trait, which
@@ -654,7 +709,7 @@ fn cmd_run(
     unconstrained: bool,
     agents: &str,
     resume: bool,
-) -> Result<()> {
+) -> Result<RunExit> {
     if agents != "1" {
         anyhow::bail!(concat!(
             "multi-agent mode is v1.1 and is gated on single-agent numbers that ",
@@ -869,7 +924,7 @@ fn cmd_run(
                     "until you give it."
                 )
             );
-            Ok(())
+            Ok(RunExit::Converged)
         }
         trellis_loop::Outcome::NotConverged { reason, iterations } => {
             println!();
@@ -897,11 +952,7 @@ fn cmd_run(
                 Ok(p) => println!("trail:    {} (survives the rollback)", p.display()),
                 Err(e) => println!("could not write the trail: {e}"),
             }
-            // 1 means the run did not converge and the tree is back as it
-            // was. 2 means the tree is NOT back, which a script wrapping
-            // TRELLIS must not treat as an ordinary failed run — the next one
-            // will refuse to start, and it should.
-            std::process::exit(if restored { 1 } else { 2 });
+            Ok(RunExit::NotConverged { restored })
         }
     }
 }
@@ -962,8 +1013,9 @@ fn interrupted_run(
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
     model_spec: &str,
-) -> Result<()> {
-    std::process::exit(handle_interrupt(root, task, touched, snapshot, model_spec));
+) -> Result<RunExit> {
+    let restored = handle_interrupt(root, task, touched, snapshot, model_spec);
+    Ok(RunExit::Interrupted { restored })
 }
 
 /// Everything an interrupt does, minus the exit.
@@ -979,7 +1031,7 @@ fn handle_interrupt(
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
     model_spec: &str,
-) -> i32 {
+) -> bool {
     println!();
     println!("INTERRUPTED. Rolling back — nothing is accepted on an abort.");
     if !touched.is_empty() {
@@ -1020,7 +1072,7 @@ fn handle_interrupt(
     // script wrapping TRELLIS can tell a deliberate abort from a failed run.
     // An abort that could not restore the tree is not an ordinary abort, and
     // gets the same code a failed rollback gets anywhere else.
-    if restored { 130 } else { 2 }
+    restored
 }
 
 /// Rolls back, and if that fails says so at the top of its voice.
@@ -1821,7 +1873,7 @@ mod interrupt_tests {
         std::fs::write(dir.join("a.py"), "def f():\n    return 999\n").unwrap();
         std::fs::write(dir.join("scratch.py"), "x = 1\n").unwrap();
 
-        let code = handle_interrupt(
+        let restored = handle_interrupt(
             &dir,
             "a task that was interrupted",
             &["a.py".to_string()],
@@ -1829,7 +1881,12 @@ mod interrupt_tests {
             "scripted:none",
         );
 
-        assert_eq!(code, 130, "the shell convention for a SIGINT abort");
+        assert!(restored, "an abort must restore the tree");
+        assert_eq!(
+            RunExit::Interrupted { restored }.code(),
+            130,
+            "the shell convention for a SIGINT abort"
+        );
 
         // Deliberately not `is_restored()`, which also requires HEAD to be
         // unchanged. Committing the trail moves HEAD forward by exactly one,
@@ -1872,8 +1929,13 @@ mod interrupt_tests {
         std::fs::write(dir.join("a.py"), "def f():\n    return 999\n").unwrap();
         snap.head = "0".repeat(40);
 
-        let code = handle_interrupt(&dir, "t", &["a.py".to_string()], &snap, "scripted:none");
-        assert_eq!(code, 2);
+        let restored = handle_interrupt(&dir, "t", &["a.py".to_string()], &snap, "scripted:none");
+        assert!(!restored);
+        assert_eq!(
+            RunExit::Interrupted { restored }.code(),
+            2,
+            "a worktree still holding a half-finished run is not an ordinary abort"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
