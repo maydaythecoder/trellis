@@ -29,42 +29,36 @@ Last updated 2026-09-19.
 | 19 | Factual claims cited; unverifiable ones flagged | **Done** | `OPEN_QUESTIONS.md`, final section |
 | 20 | No marketing language anywhere | **Done** | — |
 
-## The measurement (resolves S1's reach; fires S16)
+## The measurement (resolves S1's reach; S16 fired, then averted)
 
-The resolver exists and runs on the benchmark corpus (poetry 2.5.0 sdist,
-SHA-256 in `BENCHMARK_AND_EVAL.md` §1). 400 call sites were sampled with seed
-20260919 and audited blind; 159 had a first-party true callee.
+Benchmark: poetry 2.5.0 sdist, SHA-256 in `01-v0.1-measure.md` §2.
 
-| | |
-|---|---|
-| **Recall** | **47.8%** (76/159), 95% CI [40.0%, 55.6%] |
-| **Precision** | **100.0%** (76/76) |
-| `Name` / `Attribute` recall | 84.7% / 17.2% |
-| Wrongly excluded as external | 0 of 114 |
-| Mechanical soundness check | 4,443 / 4,443 edges clean |
+| | first measurement | after the ADR 0012 backstop |
+|---|---|---|
+| Recall, seed 20260919 (n=159) | **47.8%** | **67.9%** |
+| Recall, seed 20260920 (n=100, fresh) | — | **72.0%**, CI [63.2%, 80.8%] |
+| Precision | 100% | **100%** |
+| Mechanical soundness check | 4,443/4,443 | **5,908/5,908** |
 
-**The S16 pivot trigger (recall < 60%) has fired.** The whole confidence
-interval is below it. ADR 0011 records the evidence, the diagnosis and the
-options; **the decision is the project owner's and is pending, and no v0.2 work
-starts until it is made.**
+47.8% fired the pre-registered S16 pivot trigger. The owner chose one bounded
+backstop over the pivot (ADR 0011 option C, recorded as a deliberate deviation
+in ADR 0012). Receiver typing cleared 60% on a **fresh** sample, confirmed
+against the original, so **the pivot does not execute**.
 
-This is a recall finding only. Nothing the graph says is wrong — precision is
-100% and every `Resolved` edge passes the mechanical check. It says too little,
-not anything false.
+**The S1 fallback band (60–85%) now applies.** The blast-radius guarantee
+survives; a further backstop is required before v1.0 can claim it.
 
-Three findings that stand regardless of which option is chosen:
+Three unsound edges appeared during the attempt and all three were fixed, each
+at a cost in recall. The third was found only by the fresh sample: an
+annotation that was simply wrong, with a *sibling* class overriding the method.
+Annotations are evidence about the runtime type, never proof.
 
-- The deficit is almost entirely in `Attribute` call sites, which carry 55% of
-  the denominator at 17.2% recall. `Name` resolution is at 84.7%, near the gate
-  on its own.
-- The brief expected `DecoratorIndirection` to dominate the misses and S1's
-  recorded patch was built on it. It is 3 sites out of 11,233, against 10,646
-  for `MethodDispatchUntyped`. That patch branch is falsified.
-- 51% of first-party misses cite pytest fixtures, and the recurring pattern is
-  a receiver whose type is locally evident — `self._x = SomeClass()`, or an
-  annotated parameter. poetry is mypy-strict. If a backstop is ever built, the
-  evidence points at local receiver typing, not the Pyright dependency S1
-  reaches for.
+Findings that stand regardless:
+
+- The deficit is in `Attribute` call sites. `Name` resolves at 84.7%.
+- The brief expected `DecoratorIndirection` to dominate the misses. It is 3
+  sites out of 11,233, against 10,646 for `MethodDispatchUntyped`.
+- 51% of first-party misses cite pytest fixtures.
 
 ## The three that are genuinely open
 
@@ -105,19 +99,20 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-1. **Blocked on a decision.** ADR 0011 is Proposed. Option A follows the
-   pre-registered rule and pivots; B re-audits with a human first; C builds one
-   bounded backstop and re-measures, which deviates from the rule and needs its
-   own ADR. Nothing below starts until this is settled.
-2. If the pivot is taken: rewrite `MISSION.md` positioning, demote the index to
-   a labelled hint throughout, and remove multi-agent partitioning from the
-   roadmap — it is built on radius disjointness (S19) and cannot survive.
-3. **S6 is now a v0.3 blocker regardless of the decision.** `trellis radius
-   Factory` reports 123 resolved call sites beside 3,023 unresolved ones. That
-   is honest and unusable, and it is the first screen a user meets.
-4. A human re-audit before any v1.0 gate claim (A-34, Q-15). This audit is
-   model-read; the protocol asks for human-read and the two are not the same
-   evidence.
-5. Deferred, not forgotten: incremental `Tree::edit` update (brief 4.3, not
-   built — single-file-save latency is currently a full ~120 ms rebuild), and
-   Q-14's latent unsound edge on the self-dispatch path.
+1. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
+   sites beside 2,382 unresolved ones. Honest and unusable, and it is the first
+   screen a user meets. A v0.3 blocker, not the v1.x item originally scheduled.
+   See `03-v0.3-memory.md` §5.
+2. **v0.2: the loop.** Grounding contract is built; the loop, the orchestrator
+   actor and the model adapter are not. The inference path (S17) is still an
+   open ADR and gates tier 3.
+3. **The model floor (S7)**, carried over from v0.1 because it needs inference.
+   Seven metrics, check-recovery rate primary, reported as a configuration.
+4. **A further backstop for the 85% gate.** The evidence points at
+   `conftest.py` fixture return types and return-type propagation — all
+   deliberately out of ADR 0012's scope.
+5. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
+   expected first-party count: ~1,000 draws for 400 in the denominator.
+6. Deferred, not forgotten: incremental `Tree::edit` update (single-file-save
+   latency is currently a full ~120 ms rebuild), Q-14's latent unsound edge on
+   the self-dispatch path, and CI for the rollback test.

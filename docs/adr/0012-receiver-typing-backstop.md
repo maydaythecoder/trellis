@@ -1,6 +1,6 @@
 # ADR 0012 — Deviating from the S16 rule to build a receiver-typing backstop
 
-**Status:** Accepted
+**Status:** Accepted. **Outcome recorded 2026-09-19 — the attempt succeeded.**
 **Date:** 2026-09-19
 **Supersedes the decision deferred in:** ADR 0011
 
@@ -96,8 +96,49 @@ all of which are weaker than a fresh sample and are stated as such:
 - The corpus-wide figure and the mechanical soundness check are reported
   alongside, since neither depends on the audit sample at all.
 
+## Outcome
+
+| sample | n (first-party) | recall | precision |
+|---|---|---|---|
+| seed 20260919 (the sample the work was aimed at) | 159 | **67.9%** | **100%** |
+| **seed 20260920 (fresh, 5/300 overlap)** | 100 | **72.0%**, CI [63.2%, 80.8%] | **100%** |
+
+The two agree with overlapping intervals, so the gain is not overfitting to
+the sample the backstop was designed against — which was the whole reason for
+drawing a fresh one.
+
+**The fresh interval sits entirely above the 60% pivot trigger and entirely
+below the 85% gate.** The S16 pivot is therefore averted and the **S1 fallback
+band applies**: the resolver is not sufficient alone for the v1.0 claim, and a
+further backstop is required before v1.0 — but the blast-radius guarantee
+survives.
+
+### Three unsound edges appeared during the attempt, and all three were fixed
+
+Precision is the constraint, not the score. Each fix cost recall and each was
+taken:
+
+1. **A declared type is an upper bound, not an identity.** `repo: Repository`
+   holding an `InstalledRepository` dispatches to the subclass override.
+2. **`@contextmanager` was wrongly transparent.** Calling a decorated
+   generator reaches the body as a *dependency* but not as a *call* — the
+   decorator returns a factory. Same error class as `property`.
+3. **An annotation can simply be wrong.** The fresh audit found
+   `installed: DummyRepository` bound at runtime to an `InstalledRepository`,
+   a *sibling* class. Searching subclasses of the declared type misses it
+   entirely; the override set that matters hangs off the class the definition
+   was **found** on. This is the most instructive of the three: it says the
+   backstop's inputs are evidence about the runtime type, never proof, because
+   Python does not enforce annotations.
+
+The first two were caught by the original sample, the third only by the fresh
+one — which is a second, unplanned argument for having drawn it.
+
 ## What changes our mind
 
-If the re-measurement does not clear 60% on a fresh sample, ADR 0011 option A
-executes. The pre-registered rule was suspended once, for one bounded attempt,
-and is not suspended again.
+The rule in the original decision stands for any *future* attempt: it was
+suspended once, for one bounded attempt, and is not suspended again. Since the
+attempt cleared 60%, the live question is no longer the pivot but the **85%
+gate**, which this does not reach. The next backstop needs its own
+justification and its own measurement, and `01-v0.1-measure.md` §9 records
+what the evidence currently points at.

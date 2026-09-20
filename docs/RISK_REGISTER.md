@@ -405,8 +405,12 @@ differentiation.
 `docs/adr/0002-edge-confidence-model.md`. **Recall below 60% fires the pivot.**
 Written before v0.1 produces any number, which was the entire point.
 
-**Fired.** Measured recall **47.8%**, 95% CI **[40.0%, 55.6%]** — the whole
-interval below the trigger. The pre-registration worked exactly as intended:
+**Fired, then averted.** Measured recall **47.8%**, 95% CI
+**[40.0%, 55.6%]** — the whole interval below the trigger. The owner chose one
+bounded backstop (ADR 0012) rather than the pivot; receiver typing then
+measured **72.0%** CI [63.2%, 80.8%] on a fresh sample, confirmed at 67.9% on
+the original, precision 100% on both. The pivot does not execute and the
+**S1 fallback band applies** — a further backstop is required before v1.0. The pre-registration worked exactly as intended:
 the number arrived, the rule was already written, and there was no room to
 argue about where the line should have been. ADR 0011 holds the evidence and
 the options; the decision is the project owner's and is pending.

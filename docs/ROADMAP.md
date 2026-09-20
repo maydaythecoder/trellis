@@ -58,11 +58,16 @@ floor, via constrained tool calling.
 **If measured recall on the benchmark repository is below 60%, the
 blast-radius guarantee dies and TRELLIS pivots.**
 
-> **Measured: 47.8%, 95% CI [40.0%, 55.6%].** The whole interval is below the
-> trigger. The gate has fired. ADR 0011 carries the evidence, the diagnosis and
-> the options; **the decision is the project owner's and is pending.** No v0.2
-> work begins until it is made — that is what "evaluated at v0.1 exit, before
-> any v0.2 work" means.
+> **Fired at 47.8%, 95% CI [40.0%, 55.6%] — then averted.** The project owner
+> chose ADR 0011 option C: one bounded backstop, recorded as a deliberate
+> deviation in ADR 0012. Receiver typing raised recall to **72.0%**, CI
+> [63.2%, 80.8%], on a **fresh** sample (seed 20260920), confirmed against
+> 67.9% on the original. Precision 100% on both.
+>
+> The interval now sits entirely above the 60% trigger, so the pivot does not
+> execute. **The S1 fallback band (60–85%) applies instead**: the blast-radius
+> guarantee survives, and a further backstop is required before v1.0 can claim
+> it. The pre-registered thresholds are unchanged.
 >
 > Precision measured 100% and all 4,443 `Resolved` edges pass the mechanical
 > soundness check, so this is a recall finding alone. Under a pivot the index
