@@ -99,20 +99,29 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-1. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
+1. **Model adapter, tiers 2 and 4** (`trellis-model`). ADR 0013 decided the
+   path: hand the compiled grammar to the runtime's guided-decoding parameter,
+   and defer tier 3 entirely. This is what makes the loop runnable.
+2. **Wire `trellis run`**: orchestrator + agent loop + rollback on
+   non-convergence, behind the CLI. The pieces exist and are tested
+   individually; nothing joins them yet.
+3. **The model floor (S7).** Weights are downloading (0.5B Q4 and Coder-3B Q4
+   from HuggingFace at ~51 KB/s, resumable, in `.bench/models/`). The probe rig
+   is unwritten; `candle` is verified to build here, which ADR 0013 records.
+4. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
    sites beside 2,382 unresolved ones. Honest and unusable, and it is the first
-   screen a user meets. A v0.3 blocker, not the v1.x item originally scheduled.
-   See `03-v0.3-memory.md` §5.
-2. **v0.2: the loop.** Grounding contract is built; the loop, the orchestrator
-   actor and the model adapter are not. The inference path (S17) is still an
-   open ADR and gates tier 3.
-3. **The model floor (S7)**, carried over from v0.1 because it needs inference.
-   Seven metrics, check-recovery rate primary, reported as a configuration.
-4. **A further backstop for the 85% gate.** The evidence points at
-   `conftest.py` fixture return types and return-type propagation — all
-   deliberately out of ADR 0012's scope.
-5. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
+   screen a user meets. A v0.3 blocker.
+5. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
+   fixture return types and return-type propagation, both out of ADR 0012's
+   scope. Not to be started against samples already scored twice.
+6. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
-6. Deferred, not forgotten: incremental `Tree::edit` update (single-file-save
-   latency is currently a full ~120 ms rebuild), Q-14's latent unsound edge on
-   the self-dispatch path, and CI for the rollback test.
+7. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+
+## Recently closed
+
+- Incremental update: single-file save **39.7 ms p50**, 3.1× a cold build,
+  with a property test asserting an updated session equals a cold one.
+- CI, including a named job for v1.0 gate condition 4.
+- ADR 0013, settling the inference path S17 left open.
+- Orchestrator actor and the agent loop, both tested without a model.
