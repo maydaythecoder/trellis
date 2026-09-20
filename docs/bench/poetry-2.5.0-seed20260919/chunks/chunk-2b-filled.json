@@ -1,0 +1,155 @@
+{
+ "chunk": "2b",
+ "results": [
+  {
+   "id": 6853,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "tester is a cleo CommandTester from command_tester_factory; CommandTester.execute is third-party (cleo.testers.command_tester)."
+  },
+  {
+   "id": 6876,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Constructor call on pathlib.Path, stdlib."
+  },
+  {
+   "id": 6941,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize decorator call, third-party pytest."
+  },
+  {
+   "id": 6958,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "mocker is pytest_mock MockerFixture; .patch is third-party."
+  },
+  {
+   "id": 7066,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Recorded call is the builtin list(...) constructor, stdlib."
+  },
+  {
+   "id": 7095,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo CommandTester.execute, third-party."
+  },
+  {
+   "id": 7109,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "mocker.patch from pytest_mock, third-party; the patched target string is not a call."
+  },
+  {
+   "id": 7191,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Recorded call is the builtin set(...) constructor, stdlib."
+  },
+  {
+   "id": 7226,
+   "true_callee": "tests.conftest.mocked_poetry_managed_python_register.register",
+   "is_first_party": true,
+   "reasoning": "pytest injects the fixture's return value; the fixture at tests/conftest.py:1025 returns the nested closure `register`, so the call invokes that nested def (first-party, in tests/)."
+  },
+  {
+   "id": 7281,
+   "true_callee": "tests.console.commands.self.utils.get_self_command_dependencies",
+   "is_first_party": true,
+   "reasoning": "Imported directly at top of test_add_plugins.py from tests.console.commands.self.utils, defined there at line 10."
+  },
+  {
+   "id": 7337,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (tests/conftest.py:444) returns DummyRepository; tests/helpers.py:222 DummyRepository does not define add_package, so it inherits Repository.add_package (src/poetry/repositories/repository.py:73)."
+  },
+  {
+   "id": 7376,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "tester.io is a cleo BufferedIO; fetch_output is third-party."
+  },
+  {
+   "id": 7388,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "content is the tomlkit TOMLDocument returned by Factory.create_legacy_pyproject_from_package (src/poetry/factory.py:251); as_string is tomlkit, third-party."
+  },
+  {
+   "id": 7399,
+   "true_callee": "poetry.console.commands.self.self_command.SelfCommand.generate_system_pyproject",
+   "is_first_party": true,
+   "reasoning": "cmd = SelfCommand(); generate_system_pyproject defined on SelfCommand at src/poetry/console/commands/self/self_command.py:67."
+  },
+  {
+   "id": 7476,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "Same repo fixture -> DummyRepository, which inherits add_package from Repository (src/poetry/repositories/repository.py:73)."
+  },
+  {
+   "id": 7511,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo BufferedIO.fetch_error, third-party."
+  },
+  {
+   "id": 7527,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo CommandTester.execute, third-party."
+  },
+  {
+   "id": 7539,
+   "true_callee": "dynamic",
+   "is_first_party": false,
+   "reasoning": "getattr(str, modifier)() with modifier parametrized over 'lower'/'upper'; the attribute is resolved at runtime, so no single callee (both candidates would be stdlib str methods anyway)."
+  },
+  {
+   "id": 7576,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize decorator call, third-party pytest."
+  },
+  {
+   "id": 7592,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "str.splitlines on a literal triple-quoted string, stdlib."
+  },
+  {
+   "id": 7621,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "fetch_output() returns str, so the recorded .strip() is stdlib str.strip."
+  },
+  {
+   "id": 7736,
+   "true_callee": "poetry.console.commands.env_command.EnvCommand.set_env",
+   "is_first_party": true,
+   "reasoning": "tester.command is an AddCommand (InstallerCommand); the only set_env definition in the tree is EnvCommand.set_env at src/poetry/console/commands/env_command.py:24, inherited via InstallerCommand -> EnvCommand."
+  },
+  {
+   "id": 7750,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "expected is a str literal; str.strip is stdlib."
+  },
+  {
+   "id": 7823,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Chain ends on a pathlib.Path (joinpath/resolve); as_posix is stdlib."
+  },
+  {
+   "id": 7901,
+   "true_callee": "poetry.toml.file.TOMLFile.read",
+   "is_first_party": true,
+   "reasoning": "Poetry.__init__ passes pyproject_type=PyProjectTOML (first-party, src/poetry/poetry.py:45); PyProjectTOML.file returns poetry.toml.file.TOMLFile, which overrides read() (src/poetry/toml/file.py)."
+  }
+ ]
+}

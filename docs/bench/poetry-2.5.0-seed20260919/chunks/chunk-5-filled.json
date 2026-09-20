@@ -1,0 +1,305 @@
+{
+ "chunk": 5,
+ "results": [
+  {
+   "id": 14163,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`import uuid` at top of test_locker.py; uuid.uuid4 is stdlib."
+  },
+  {
+   "id": 14168,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from hashlib import sha256`; stdlib constructor."
+  },
+  {
+   "id": 14178,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`import uuid` at top of test_locker.py; uuid.uuid4 is stdlib."
+  },
+  {
+   "id": 14185,
+   "true_callee": "tests.packages.test_locker.test_content_hash_with_project_section._get_legacy_content_hash",
+   "is_first_party": true,
+   "reasoning": "Line 1644 sits in test_content_hash_with_project_section (def at 1619); the nested def _get_legacy_content_hash is at line 1628 of the same test."
+  },
+  {
+   "id": 14226,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from pathlib import Path`; stdlib class constructor."
+  },
+  {
+   "id": 14246,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (poetry.core is not in this tree)."
+  },
+  {
+   "id": 14280,
+   "true_callee": "poetry.poetry.Poetry",
+   "is_first_party": true,
+   "reasoning": "`from poetry.poetry import Poetry`; src/poetry/poetry.py defines class Poetry with its own __init__ (line 31)."
+  },
+  {
+   "id": 14281,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from poetry.core.packages.project_package import ProjectPackage`; poetry.core is a separate distribution, absent from src/."
+  },
+  {
+   "id": 14284,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "project_path = tmp_path / 'project' is a pathlib.Path; Path.mkdir is stdlib."
+  },
+  {
+   "id": 14369,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cache._path / dist_info is a pathlib.Path; Path.exists is stdlib."
+  },
+  {
+   "id": 14406,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "repr is a Python builtin; the __repr__ dispatch behind it is the dynamic dispatch rule 1 accepts, not the callee."
+  },
+  {
+   "id": 14434,
+   "true_callee": "poetry.plugins.plugin_manager.ProjectPluginCache",
+   "is_first_party": true,
+   "reasoning": "`from poetry.plugins.plugin_manager import ProjectPluginCache`; class with its own __init__ at src/poetry/plugins/plugin_manager.py:112."
+  },
+  {
+   "id": 14481,
+   "true_callee": "poetry.publishing.hash_manager.HashManager.hash",
+   "is_first_party": true,
+   "reasoning": "manager = HashManager() imported from poetry.publishing.hash_manager; def hash at src/poetry/publishing/hash_manager.py:53."
+  },
+  {
+   "id": 14571,
+   "true_callee": "poetry.publishing.uploader.Uploader",
+   "is_first_party": true,
+   "reasoning": "`from poetry.publishing.uploader import Uploader`; __init__ at src/poetry/publishing/uploader.py:41."
+  },
+  {
+   "id": 14601,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "http fixture (tests/conftest.py:381) yields responses.RequestsMock; .post is from the third-party `responses` package."
+  },
+  {
+   "id": 14688,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from poetry.core.packages.package import Package`; poetry.core is not in this tree."
+  },
+  {
+   "id": 14695,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from poetry.core.packages.url_dependency import URLDependency`; poetry.core is external."
+  },
+  {
+   "id": 14726,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "r iterates package.requires, i.e. poetry.core Dependency objects; Dependency.is_optional lives in poetry.core."
+  },
+  {
+   "id": 14744,
+   "true_callee": "tests.puzzle.test_provider.MockEnv",
+   "is_first_party": true,
+   "reasoning": "MockEnv is the subclass declared at tests/puzzle/test_provider.py:50; it defines no __init__, so construction runs poetry.utils.env.mock_env.MockEnv.__init__ - first-party either way."
+  },
+  {
+   "id": 14824,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from poetry.core.packages.directory_dependency import DirectoryDependency`; poetry.core is external."
+  },
+  {
+   "id": 14848,
+   "true_callee": "tests.helpers.get_dependency",
+   "is_first_party": true,
+   "reasoning": "`from tests.helpers import get_dependency`; def at tests/helpers.py:63."
+  },
+  {
+   "id": 14858,
+   "true_callee": "poetry.puzzle.provider.Provider.search_for_direct_origin_dependency",
+   "is_first_party": true,
+   "reasoning": "provider fixture (test_provider.py:86) returns Provider(...); method defined at src/poetry/puzzle/provider.py:282."
+  },
+  {
+   "id": 14903,
+   "true_callee": "tests.helpers.get_dependency",
+   "is_first_party": true,
+   "reasoning": "`from tests.helpers import get_dependency`; def at tests/helpers.py:63."
+  },
+  {
+   "id": 14978,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from packaging.utils import canonicalize_name`; third-party packaging."
+  },
+  {
+   "id": 14999,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from cleo.io.null_io import NullIO`; third-party cleo."
+  },
+  {
+   "id": 15045,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from cleo.io.null_io import NullIO`; third-party cleo."
+  },
+  {
+   "id": 15072,
+   "true_callee": "poetry.inspection.info.PackageInfo.asdict",
+   "is_first_party": true,
+   "reasoning": "release_info fixture (test_provider.py:91) returns PackageInfo from poetry.inspection.info; def asdict at src/poetry/inspection/info.py:91."
+  },
+  {
+   "id": 15112,
+   "true_callee": "poetry.puzzle.provider.Indicator.context._set_context",
+   "is_first_party": true,
+   "reasoning": "Indicator.context (src/poetry/puzzle/provider.py:107) yields the nested def _set_context at line 108; that is the object bound to set_context."
+  },
+  {
+   "id": 15221,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 15233,
+   "true_callee": "tests.helpers.get_package",
+   "is_first_party": true,
+   "reasoning": "`from tests.helpers import get_package`; def at tests/helpers.py:57."
+  },
+  {
+   "id": 15235,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (tests/puzzle/conftest.py:39) is poetry.repositories.Repository; add_package defined at src/poetry/repositories/repository.py:73."
+  },
+  {
+   "id": 15248,
+   "true_callee": "tests.helpers.get_package",
+   "is_first_party": true,
+   "reasoning": "`from tests.helpers import get_package`; def at tests/helpers.py:57."
+  },
+  {
+   "id": 15342,
+   "true_callee": "tests.puzzle.test_solver.set_package_python_versions",
+   "is_first_party": true,
+   "reasoning": "Module-level helper defined in the same file at tests/puzzle/test_solver.py:67."
+  },
+  {
+   "id": 15478,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`from packaging.utils import canonicalize_name`; third-party packaging."
+  },
+  {
+   "id": 15625,
+   "true_callee": "tests.puzzle.test_solver.check_solver_result",
+   "is_first_party": true,
+   "reasoning": "Module-level helper defined in the same file at tests/puzzle/test_solver.py:72."
+  },
+  {
+   "id": 15634,
+   "true_callee": "tests.helpers.get_package",
+   "is_first_party": true,
+   "reasoning": "`from tests.helpers import get_package`; def at tests/helpers.py:57."
+  },
+  {
+   "id": 15757,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 15859,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (tests/puzzle/conftest.py:39) is poetry.repositories.Repository; add_package defined at src/poetry/repositories/repository.py:73."
+  },
+  {
+   "id": 15893,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 15947,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 15970,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 15990,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 16021,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "The recorded call is package.add_dependency(...); the package fixture (tests/puzzle/conftest.py:36) is poetry.core ProjectPackage, so add_dependency is external."
+  },
+  {
+   "id": 16134,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 16176,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 16215,
+   "true_callee": "poetry.puzzle.solver.Solver.solve",
+   "is_first_party": true,
+   "reasoning": "solver fixture (tests/puzzle/conftest.py:49) returns poetry.puzzle.Solver, re-exported from poetry.puzzle.solver; def solve at src/poetry/puzzle/solver.py:84."
+  },
+  {
+   "id": 16231,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (tests/puzzle/conftest.py:39) is poetry.repositories.Repository; add_package defined at src/poetry/repositories/repository.py:73."
+  },
+  {
+   "id": 16250,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (tests/puzzle/conftest.py:39) is poetry.repositories.Repository; add_package defined at src/poetry/repositories/repository.py:73."
+  },
+  {
+   "id": 16306,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which defines no create_dependency; inherited from poetry.core.factory.Factory (external)."
+  },
+  {
+   "id": 16308,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (tests/puzzle/conftest.py:39) is poetry.repositories.Repository; add_package defined at src/poetry/repositories/repository.py:73."
+  }
+ ]
+}

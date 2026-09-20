@@ -29,26 +29,42 @@ Last updated 2026-09-19.
 | 19 | Factual claims cited; unverifiable ones flagged | **Done** | `OPEN_QUESTIONS.md`, final section |
 | 20 | No marketing language anywhere | **Done** | — |
 
-## The measurement, and what it does not yet say
+## The measurement (resolves S1's reach; fires S16)
 
 The resolver exists and runs on the benchmark corpus (poetry 2.5.0 sdist,
-SHA-256 recorded in `BENCHMARK_AND_EVAL.md` §1). Repository-wide it binds
-**28.3%** of first-party call sites — 86.2% of `Name`-shaped ones and 8.0% of
-`Attribute`-shaped ones.
+SHA-256 in `BENCHMARK_AND_EVAL.md` §1). 400 call sites were sampled with seed
+20260919 and audited blind; 159 had a first-party true callee.
 
-**That figure is a lower bound on recall and is not comparable to the §3
-thresholds** (A-30). It counts every unknown-receiver call as a miss, including
-those whose true callee is third-party and which §2 excludes from the
-denominator. The 400-site hand audit (seed 20260919) is what produces a
-comparable number. Until it is scored, **S16 has not fired and has not been
-cleared** — the pivot question is open, not answered.
+| | |
+|---|---|
+| **Recall** | **47.8%** (76/159), 95% CI [40.0%, 55.6%] |
+| **Precision** | **100.0%** (76/76) |
+| `Name` / `Attribute` recall | 84.7% / 17.2% |
+| Wrongly excluded as external | 0 of 114 |
+| Mechanical soundness check | 4,443 / 4,443 edges clean |
 
-Two findings that stand regardless of the audit:
+**The S16 pivot trigger (recall < 60%) has fired.** The whole confidence
+interval is below it. ADR 0011 records the evidence, the diagnosis and the
+options; **the decision is the project owner's and is pending, and no v0.2 work
+starts until it is made.**
 
-- The loss is almost entirely in `Attribute` call sites.
-- The brief expected `DecoratorIndirection` to dominate the misses. It is 3
-  sites out of 11,233. `MethodDispatchUntyped` is 10,646. If S1's backstop is
-  adopted it must do receiver type inference, not decorator unwrapping.
+This is a recall finding only. Nothing the graph says is wrong — precision is
+100% and every `Resolved` edge passes the mechanical check. It says too little,
+not anything false.
+
+Three findings that stand regardless of which option is chosen:
+
+- The deficit is almost entirely in `Attribute` call sites, which carry 55% of
+  the denominator at 17.2% recall. `Name` resolution is at 84.7%, near the gate
+  on its own.
+- The brief expected `DecoratorIndirection` to dominate the misses and S1's
+  recorded patch was built on it. It is 3 sites out of 11,233, against 10,646
+  for `MethodDispatchUntyped`. That patch branch is falsified.
+- 51% of first-party misses cite pytest fixtures, and the recurring pattern is
+  a receiver whose type is locally evident — `self._x = SomeClass()`, or an
+  annotated parameter. poetry is mypy-strict. If a backstop is ever built, the
+  evidence points at local receiver typing, not the Pyright dependency S1
+  reaches for.
 
 ## The three that are genuinely open
 
@@ -89,10 +105,19 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-1. Score the 400-site audit; compare against ADR 0002's thresholds.
-2. If recall >= 85%, v0.2 begins. If 60-85%, choose the S1 backstop first —
-   the evidence points at receiver type inference. If < 60%, S16 fires and v0.2
-   is a different project.
-3. `.trellis/index.bin` persistence (postcard) and incremental `Tree::edit`.
-4. Re-run the audit with a human auditor before the v1.0 gate is claimed
-   (A-34). This build's audit is model-read, which is not the same evidence.
+1. **Blocked on a decision.** ADR 0011 is Proposed. Option A follows the
+   pre-registered rule and pivots; B re-audits with a human first; C builds one
+   bounded backstop and re-measures, which deviates from the rule and needs its
+   own ADR. Nothing below starts until this is settled.
+2. If the pivot is taken: rewrite `MISSION.md` positioning, demote the index to
+   a labelled hint throughout, and remove multi-agent partitioning from the
+   roadmap — it is built on radius disjointness (S19) and cannot survive.
+3. **S6 is now a v0.3 blocker regardless of the decision.** `trellis radius
+   Factory` reports 123 resolved call sites beside 3,023 unresolved ones. That
+   is honest and unusable, and it is the first screen a user meets.
+4. A human re-audit before any v1.0 gate claim (A-34, Q-15). This audit is
+   model-read; the protocol asks for human-read and the two are not the same
+   evidence.
+5. Deferred, not forgotten: incremental `Tree::edit` update (brief 4.3, not
+   built — single-file-save latency is currently a full ~120 ms rebuild), and
+   Q-14's latent unsound edge on the self-dispatch path.

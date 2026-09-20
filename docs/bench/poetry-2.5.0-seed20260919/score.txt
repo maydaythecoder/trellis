@@ -1,0 +1,92 @@
+AUDIT SCORE  (seed 20260919)
+  drawn 400  population 21794
+
+OVERALL
+  first-party sites (denominator)       159
+  RECALL                               47.8%   (76/159)
+  PRECISION                           100.0%   (76/76)
+  ambiguous, true callee covered          2
+  ambiguous, true callee absent           0
+  unresolved, with a reason             208
+  of which constructor-convention         4   (class vs its __init__)
+  wrongly excluded as external            0   (first-party, no edge emitted)
+  correctly excluded as external        114
+  auditor could not determine             3
+
+-- by callee shape --
+Attribute
+  first-party sites (denominator)        87
+  RECALL                               17.2%   (15/87)
+  PRECISION                           100.0%   (15/15)
+  ambiguous, true callee covered          2
+  ambiguous, true callee absent           0
+  unresolved, with a reason             195
+  of which constructor-convention         0   (class vs its __init__)
+  wrongly excluded as external            0   (first-party, no edge emitted)
+  correctly excluded as external         43
+  auditor could not determine             1
+
+Dynamic
+  first-party sites (denominator)         0
+  RECALL                                n/a   (no first-party sites)
+  PRECISION                             n/a   (nothing resolved)
+  ambiguous, true callee covered          0
+  ambiguous, true callee absent           0
+  unresolved, with a reason               2
+  of which constructor-convention         0   (class vs its __init__)
+  wrongly excluded as external            0   (first-party, no edge emitted)
+  correctly excluded as external          0
+  auditor could not determine             2
+
+Name
+  first-party sites (denominator)        72
+  RECALL                               84.7%   (61/72)
+  PRECISION                           100.0%   (61/61)
+  ambiguous, true callee covered          0
+  ambiguous, true callee absent           0
+  unresolved, with a reason              11
+  of which constructor-convention         4   (class vs its __init__)
+  wrongly excluded as external            0   (first-party, no edge emitted)
+  correctly excluded as external         71
+  auditor could not determine             0
+
+-- by top-level directory --
+src
+  first-party sites (denominator)        36
+  RECALL                               58.3%   (21/36)
+  PRECISION                           100.0%   (21/21)
+  ambiguous, true callee covered          2
+  ambiguous, true callee absent           0
+  unresolved, with a reason              56
+  of which constructor-convention         0   (class vs its __init__)
+  wrongly excluded as external            0   (first-party, no edge emitted)
+  correctly excluded as external         38
+  auditor could not determine             1
+
+tests
+  first-party sites (denominator)       123
+  RECALL                               44.7%   (55/123)
+  PRECISION                           100.0%   (55/55)
+  ambiguous, true callee covered          0
+  ambiguous, true callee absent           0
+  unresolved, with a reason             152
+  of which constructor-convention         4   (class vs its __init__)
+  wrongly excluded as external            0   (first-party, no edge emitted)
+  correctly excluded as external         76
+  auditor could not determine             2
+
+CONSTRUCTOR CONVENTION — 4 sites counted as correct.
+The resolver named the class being constructed; the auditor named the `__init__`
+that runs. Both are right and neither is an unsound edge. The audit protocol did
+not state which to record, and now does. Listed so the reconciliation is visible
+rather than folded in silently:
+  tests/installation/test_executor.py:462  `Install(Package("black", "21.11b0"))`  class poetry.installation.operations.install.Install vs auditor poetry.installation.operations.install.Install.__init__
+  tests/test_helpers.py:256  `DummyRepository("test")`  class tests.helpers.DummyRepository vs auditor poetry.repositories.repository.Repository.__init__
+  tests/utils/env/python/test_python_installer.py:64  `PythonInstaller(request="3.9.1")`  class poetry.utils.env.python.installer.PythonInstaller vs auditor poetry.utils.env.python.installer.PythonInstaller.__init__
+  tests/utils/test_authenticator.py:152  `Authenticator()`  class poetry.utils.authenticator.Authenticator vs auditor poetry.utils.authenticator.Authenticator.__init__
+
+Unsound edges: none in this sample.
+
+Compare recall against the thresholds in BENCHMARK_AND_EVAL.md §3 (gate 85%, pivot 60%).
+The repository-wide figure from `trellis index` is NOT comparable: it counts
+unknown-receiver calls as misses even when their true callee is third-party (A-30).

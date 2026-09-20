@@ -1,0 +1,305 @@
+{
+ "chunk": 0,
+ "results": [
+  {
+   "id": 31,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "policy is a str parameter; the outer call is str.split on the result of str.strip - a stdlib builtin method."
+  },
+  {
+   "id": 36,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "logging.getLogger from the stdlib logging module imported at the top of config.py."
+  },
+  {
+   "id": 88,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "os.getenv from the stdlib os module imported at the top of config.py."
+  },
+  {
+   "id": 108,
+   "true_callee": "poetry.toml.file.TOMLFile.exists",
+   "is_first_party": true,
+   "reasoning": "config_file = TOMLFile(...) where TOMLFile comes from 'from poetry.toml import TOMLFile'; src/poetry/toml/file.py defines exists(), overriding tomlkit's base."
+  },
+  {
+   "id": 114,
+   "true_callee": "poetry.toml.file.TOMLFile",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; the edge targets the class. TOMLFile is re-exported by poetry/toml/__init__.py from poetry/toml/file.py, which is in this tree."
+  },
+  {
+   "id": 194,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Path is pathlib.Path imported at the top of application.py; Path.cwd is stdlib."
+  },
+  {
+   "id": 234,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Style is imported as 'from cleo.formatters.style import Style' - third-party cleo."
+  },
+  {
+   "id": 282,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "option iterates self.definition.options, cleo Definition's Option objects; is_flag is defined in cleo.io.inputs.option.Option."
+  },
+  {
+   "id": 351,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "The outer call is .run() on poetry's Application; Application (application.py:124) defines no run(), so it inherits cleo.application.Application.run."
+  },
+  {
+   "id": 355,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "AboutCommand -> poetry Command -> cleo Command; neither AboutCommand nor poetry/console/commands/command.py defines line(), so it is cleo's Command.line."
+  },
+  {
+   "id": 372,
+   "true_callee": "poetry.console.commands.command.Command.option",
+   "is_first_party": true,
+   "reasoning": "AddCommand(InstallerCommand, InitCommand); no class in the MRO below poetry's Command defines option, and poetry/console/commands/command.py:44 does define option()."
+  },
+  {
+   "id": 447,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "canonicalize_name is imported at add.py:12 from packaging.utils - third-party."
+  },
+  {
+   "id": 516,
+   "true_callee": "poetry.console.commands.build.BuildHandler",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; the edge targets the class. BuildHandler is defined in the same file at build.py:46."
+  },
+  {
+   "id": 562,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "sorted() is a Python builtin."
+  },
+  {
+   "id": 585,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "sorted() is a Python builtin."
+  },
+  {
+   "id": 604,
+   "true_callee": "poetry.console.commands.check.CheckCommand._validate_dependencies_source",
+   "is_first_party": true,
+   "reasoning": "self inside CheckCommand.handle; _validate_dependencies_source is defined in the same class at check.py:101."
+  },
+  {
+   "id": 633,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "int() is a Python builtin."
+  },
+  {
+   "id": 675,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "m is the result of re.match, so group() is stdlib re.Match.group."
+  },
+  {
+   "id": 732,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "len() is a Python builtin."
+  },
+  {
+   "id": 742,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "argument() is defined by neither ConfigCommand nor poetry's Command (which only overrides option); it is cleo.commands.command.Command.argument."
+  },
+  {
+   "id": 810,
+   "true_callee": "poetry.console.commands.command.Command.get_application",
+   "is_first_party": true,
+   "reasoning": "DebugInfoCommand extends poetry's Command, which defines get_application() at command.py:35; this entry is the inner call of the chain."
+  },
+  {
+   "id": 994,
+   "true_callee": "poetry.console.commands.init.InitCommand._sanitize_package_name",
+   "is_first_party": true,
+   "reasoning": "Defined as a @staticmethod at init.py:499 in InitCommand, the enclosing class; @staticmethod returns the function (rule 2)."
+  },
+  {
+   "id": 996,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "ask() is defined by neither InitCommand nor poetry's Command; it comes from cleo.commands.command.Command."
+  },
+  {
+   "id": 1106,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "ValueError is a Python builtin exception."
+  },
+  {
+   "id": 1201,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "log_install is a str built at install.py:182; .format is str.format."
+  },
+  {
+   "id": 1371,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "argument is imported at remove.py:7 from cleo.helpers - third-party."
+  },
+  {
+   "id": 1414,
+   "true_callee": "poetry.installation.installer.Installer.set_locker",
+   "is_first_party": true,
+   "reasoning": "self.installer is the InstallerCommand.installer property typed Installer; Installer.set_locker is defined at installation/installer.py:96."
+  },
+  {
+   "id": 1477,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "sorted() is a Python builtin."
+  },
+  {
+   "id": 1561,
+   "true_callee": "poetry.console.application.Application.configure_installer_for_command",
+   "is_first_party": true,
+   "reasoning": "application = self.get_application() returns poetry's Application (asserted in Command.get_application); the @staticmethod is defined at application.py:615."
+  },
+  {
+   "id": 1743,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "The outer call is str.join on the ', ' literal - a stdlib builtin method."
+  },
+  {
+   "id": 1780,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "The outer call is .append on sources = AoT([]), AoT imported from tomlkit.items - third-party."
+  },
+  {
+   "id": 1823,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "dict.fromkeys is a builtin classmethod of dict."
+  },
+  {
+   "id": 1940,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "IOFormatter subclasses logging.Formatter, so super().format targets logging.Formatter.format in the stdlib."
+  },
+  {
+   "id": 1966,
+   "true_callee": "poetry.exceptions.PoetryError",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; the edge targets the class. factory.py:20 imports PoetryError from poetry.exceptions, defined in this tree at src/poetry/exceptions.py:4 (no function-scope rebinding)."
+  },
+  {
+   "id": 1989,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "source is an element of base_poetry.local_config['source'], a plain dict / tomlkit table; .get is the mapping builtin."
+  },
+  {
+   "id": 2092,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Version is imported at info.py:16 from poetry.core.constraints.version; poetry.core is a separate distribution, absent from src/."
+  },
+  {
+   "id": 2119,
+   "true_callee": "poetry.inspection.info.PackageInfo.from_directory",
+   "is_first_party": true,
+   "reasoning": "The call sits in PackageInfo._from_sdist_file (a classmethod), so cls is PackageInfo; from_directory is a @classmethod at info.py:435 in the same class."
+  },
+  {
+   "id": 2224,
+   "true_callee": "poetry.inspection.lazy_wheel.LazyFileOverHTTP._ensure_downloaded",
+   "is_first_party": true,
+   "reasoning": "Line 343 is inside LazyFileOverHTTP.read (class at line 285); _ensure_downloaded is defined in that same class at line 468."
+  },
+  {
+   "id": 2225,
+   "true_callee": "poetry.inspection.lazy_wheel.ReadOnlyIOWrapper.read",
+   "is_first_party": true,
+   "reasoning": "The enclosing class is LazyFileOverHTTP(ReadOnlyIOWrapper); the base ReadOnlyIOWrapper is defined in the same file at line 170 and defines read() at line 234."
+  },
+  {
+   "id": 2334,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Link is imported locally at chef.py:99 from poetry.core.packages.utils.link - a separate distribution."
+  },
+  {
+   "id": 2376,
+   "true_callee": "poetry.console.exceptions.ConsoleMessage.wrap",
+   "is_first_party": true,
+   "reasoning": "The outer call of the chain is .wrap('info'); ConsoleMessage is imported at chooser.py:10 from poetry.console.exceptions, which defines wrap() at line 47."
+  },
+  {
+   "id": 2472,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "isinstance() is a Python builtin."
+  },
+  {
+   "id": 2509,
+   "true_callee": "poetry.installation.executor.Executor._increment_operations_count",
+   "is_first_party": true,
+   "reasoning": "self inside Executor._do_execute_operation; the method is defined in the same class at executor.py:454."
+  },
+  {
+   "id": 2518,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "self._io is the cleo IO object passed into Executor.__init__; write() is cleo.io.io.IO.write."
+  },
+  {
+   "id": 2605,
+   "true_callee": "poetry.utils.download.Downloader.download_with_progress",
+   "is_first_party": true,
+   "reasoning": "downloader = Downloader(...) at executor.py:843; Downloader is imported from poetry.utils.download, which defines download_with_progress."
+  },
+  {
+   "id": 2619,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "url = dist_path / 'direct_url.json' is a pathlib.Path; relative_to is stdlib."
+  },
+  {
+   "id": 2778,
+   "true_callee": "poetry.installation.uninstaller.UninstallPathSet._prune_empty_dirs",
+   "is_first_party": true,
+   "reasoning": "Line 204 is inside UninstallPathSet.remove (class at uninstaller.py:71); _prune_empty_dirs is defined in that class at line 256."
+  },
+  {
+   "id": 2799,
+   "true_callee": "poetry.utils.env.site_packages.SitePackages.distributions",
+   "is_first_party": true,
+   "reasoning": "env.site_packages is the Env.site_packages property (base_env.py:192) returning SitePackages, which defines distributions at site_packages.py:127."
+  },
+  {
+   "id": 2857,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "frozenset() is a Python builtin."
+  },
+  {
+   "id": 2933,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "EditableBuilder subclasses Builder imported from poetry.core.masonry.builders.builder, a separate distribution; super().__init__ is that class's."
+  }
+ ]
+}

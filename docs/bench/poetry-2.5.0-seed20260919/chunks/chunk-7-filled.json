@@ -1,0 +1,305 @@
+{
+ "chunk": 7,
+ "results": [
+  {
+   "id": 19723,
+   "true_callee": "tests.helpers.DummyLocker.locked",
+   "is_first_party": true,
+   "reasoning": "locker = DummyLocker(lock_path, {}); DummyLocker (tests/helpers.py:185) defines locked() at line 200."
+  },
+  {
+   "id": 19736,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "document is imported inline from tomlkit (line 234) - third-party."
+  },
+  {
+   "id": 19746,
+   "true_callee": "poetry.repositories.repository.Repository.__init__",
+   "is_first_party": true,
+   "reasoning": "Constructor: DummyRepository (tests/helpers.py:222) defines no __init__; inherits Repository.__init__ (src/poetry/repositories/repository.py:25), first-party."
+  },
+  {
+   "id": 19781,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "builtins.len."
+  },
+  {
+   "id": 19790,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`import requests` at top of tests/test_helpers.py - third-party."
+  },
+  {
+   "id": 19850,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "path is a pathlib.Path from tmp_path; Path.write_text is stdlib."
+  },
+  {
+   "id": 19870,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "BufferedIO imported from cleo.io.buffered_io (tests/utils/env/conftest.py:6) - third-party."
+  },
+  {
+   "id": 19903,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "builtins.len."
+  },
+  {
+   "id": 19927,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Version imported from poetry.core.constraints.version; src/poetry/core does not exist in this tree."
+  },
+  {
+   "id": 19936,
+   "true_callee": "poetry.utils.env.python.installer.PythonInstaller.__init__",
+   "is_first_party": true,
+   "reasoning": "Constructor: PythonInstaller imported from poetry.utils.env.python.installer; frozen dataclass at line 44-46, __init__ generated from this repo's class."
+  },
+  {
+   "id": 20028,
+   "true_callee": "poetry.utils.env.virtual_env.VirtualEnv.get_supported_tags",
+   "is_first_party": true,
+   "reasoning": "venv = VirtualEnv(venv_path) at line 156; VirtualEnv defines get_supported_tags at src/poetry/utils/env/virtual_env.py:62 (overrides Env abstract)."
+  },
+  {
+   "id": 20045,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "subprocess.CalledProcessError - stdlib exception constructor."
+  },
+  {
+   "id": 20100,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is .lower() on the result of str(...) - builtins str.lower."
+  },
+  {
+   "id": 20132,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is .unlink() on a pathlib.Path from joinpath - stdlib Path.unlink."
+  },
+  {
+   "id": 20226,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "m is the MagicMock returned by mocker.patch; assert_called_with is unittest.mock."
+  },
+  {
+   "id": 20233,
+   "true_callee": "poetry.config.config.Config.merge",
+   "is_first_party": true,
+   "reasoning": "config fixture (tests/conftest.py:314) returns tests.conftest.Config(BaseConfig); merge is defined only on poetry.config.config.Config:220."
+  },
+  {
+   "id": 20235,
+   "true_callee": "tests.conftest.mocked_python_register.register",
+   "is_first_party": true,
+   "reasoning": "mocked_python_register fixture (tests/conftest.py:880) returns its inner closure `register` (line 897)."
+  },
+  {
+   "id": 20282,
+   "true_callee": "poetry.config.config.Config.merge",
+   "is_first_party": true,
+   "reasoning": "Same as id 20233: tests.conftest.Config inherits merge from poetry.config.config.Config:220."
+  },
+  {
+   "id": 20357,
+   "true_callee": "poetry.toml.file.TOMLFile.read",
+   "is_first_party": true,
+   "reasoning": "envs_file = TOMLFile(tmp_path / 'envs.toml') with TOMLFile from poetry.toml.file; read() is overridden there (src/poetry/toml/file.py)."
+  },
+  {
+   "id": 20406,
+   "true_callee": "tests.utils.env.test_env_manager.check_output_wrapper",
+   "is_first_party": true,
+   "reasoning": "Module-level function defined at tests/utils/env/test_env_manager.py:52; the sampled node is the outer call."
+  },
+  {
+   "id": 20416,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Sampled node is the inner Version.parse call; Version comes from poetry.core.constraints.version, not in this tree."
+  },
+  {
+   "id": 20449,
+   "true_callee": "tests.utils.env.test_env_manager.check_output_wrapper",
+   "is_first_party": true,
+   "reasoning": "Same module-level helper at tests/utils/env/test_env_manager.py:52."
+  },
+  {
+   "id": 20533,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "builtins.str applied to e.value."
+  },
+  {
+   "id": 20619,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Sampled node is the Path('hello.txt') argument; pathlib.Path is stdlib."
+  },
+  {
+   "id": 20653,
+   "true_callee": "tests.utils.env.test_env_site_packages.TestDistributionFiles._resolved_files",
+   "is_first_party": true,
+   "reasoning": "Enclosing class TestDistributionFiles defines _resolved_files as @staticmethod (line 93-94); staticmethod resolves to the decorated function."
+  },
+  {
+   "id": 20708,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "base64.b64encode - stdlib."
+  },
+  {
+   "id": 20709,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "caplog is pytest's LogCaptureFixture; set_level is third-party (pytest)."
+  },
+  {
+   "id": 20717,
+   "true_callee": "poetry.utils.authenticator.Authenticator.__init__",
+   "is_first_party": true,
+   "reasoning": "Constructor: Authenticator imported from poetry.utils.authenticator; __init__ defined at src/poetry/utils/authenticator.py:122."
+  },
+  {
+   "id": 20810,
+   "true_callee": "poetry.utils.authenticator.Authenticator.request",
+   "is_first_party": true,
+   "reasoning": "authenticator = Authenticator(mock_config, NullIO()); request defined at src/poetry/utils/authenticator.py:214."
+  },
+  {
+   "id": 20830,
+   "true_callee": "poetry.utils.authenticator.Authenticator.request",
+   "is_first_party": true,
+   "reasoning": "authenticator = Authenticator(config, NullIO()) at line 498; request at src/poetry/utils/authenticator.py:214."
+  },
+  {
+   "id": 20833,
+   "true_callee": "poetry.config.config.Config.merge",
+   "is_first_party": true,
+   "reasoning": "config fixture yields tests.conftest.Config; merge defined on base poetry.config.config.Config:220."
+  },
+  {
+   "id": 20837,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is .decode() on the bytes returned by base64.b64encode - builtins bytes.decode."
+  },
+  {
+   "id": 20849,
+   "true_callee": "poetry.utils.authenticator.Authenticator.request",
+   "is_first_party": true,
+   "reasoning": "authenticator = Authenticator(config, NullIO()) at line 562; request at src/poetry/utils/authenticator.py:214."
+  },
+  {
+   "id": 20863,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is bytes.decode on base64.b64encode output - stdlib."
+  },
+  {
+   "id": 20915,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pathlib.Path constructor used as a parametrize argument - stdlib."
+  },
+  {
+   "id": 20928,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.raises - third-party."
+  },
+  {
+   "id": 20968,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "mocker is pytest_mock's MockerFixture; patch is third-party."
+  },
+  {
+   "id": 21108,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "http fixture (tests/conftest.py:379) yields responses.RequestsMock; add_callback is third-party."
+  },
+  {
+   "id": 21343,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is .get() on the MarkerEnv TypedDict returned by get_marker_env - builtins dict.get."
+  },
+  {
+   "id": 21390,
+   "true_callee": "poetry.utils.password_manager.PoetryKeyring.set_password",
+   "is_first_party": true,
+   "reasoning": "poetry_keyring fixture (tests/conftest.py:218) returns PoetryKeyring; set_password at src/poetry/utils/password_manager.py:111."
+  },
+  {
+   "id": 21503,
+   "true_callee": "poetry.utils.password_manager.PasswordManager.get_http_auth",
+   "is_first_party": true,
+   "reasoning": "manager = PasswordManager(config) at line 379; get_http_auth at src/poetry/utils/password_manager.py:248."
+  },
+  {
+   "id": 21513,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "patterns.sdist_file_re is an re.compile() object; .match is stdlib re.Pattern.match."
+  },
+  {
+   "id": 21524,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "sys.version is a str; .split is builtins str.split."
+  },
+  {
+   "id": 21589,
+   "true_callee": "tests.utils.test_threading.Example._compute_value",
+   "is_first_party": true,
+   "reasoning": "Line 60 is inside Example.value_atomic_cached_property; enclosing class Example defines _compute_value (tests/utils/test_threading.py:44)."
+  },
+  {
+   "id": 21590,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.fixture decorator call - third-party."
+  },
+  {
+   "id": 21651,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "mocker is pytest_mock MockerFixture; MagicMock is unittest.mock re-exported - third-party/stdlib."
+  },
+  {
+   "id": 21682,
+   "true_callee": "poetry.vcs.git.backend.peeled_tag",
+   "is_first_party": true,
+   "reasoning": "Imported at tests/vcs/git/test_backend.py:19 from poetry.vcs.git.backend; defined at src/poetry/vcs/git/backend.py:84."
+  },
+  {
+   "id": 21711,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "porcelain imported from dulwich inside the test function (line 300) - third-party."
+  },
+  {
+   "id": 21758,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "porcelain.add from dulwich (imported at line 361 of the enclosing test) - third-party."
+  },
+  {
+   "id": 21785,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "(target_dir / '.git') is a pathlib.Path; is_dir is stdlib."
+  }
+ ]
+}

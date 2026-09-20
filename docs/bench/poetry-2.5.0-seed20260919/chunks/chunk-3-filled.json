@@ -1,0 +1,305 @@
+{
+ "chunk": 3,
+ "results": [
+  {
+   "id": 7911,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`tester` fixture returns cleo CommandTester (command_tester_factory -> CommandTester); .execute is cleo.testers.command_tester.CommandTester.execute."
+  },
+  {
+   "id": 7918,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`content` is pyproject['dependency-groups'], a tomlkit item from TOMLFile.read(); as_string() is tomlkit."
+  },
+  {
+   "id": 7938,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "app.poetry.file is poetry.toml.file.TOMLFile, which defines only path/exists/read/__str__; write is inherited from tomlkit.toml_file.TOMLFile."
+  },
+  {
+   "id": 7990,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Same cleo CommandTester.execute as the other tester.execute calls in this module."
+  },
+  {
+   "id": 8114,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin all()."
+  },
+  {
+   "id": 8389,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.raises, third-party pytest."
+  },
+  {
+   "id": 8432,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo CommandTester.execute via the local `tester` fixture (command_tester_factory('config'))."
+  },
+  {
+   "id": 8442,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.raises, third-party pytest."
+  },
+  {
+   "id": 8491,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outer call is str.strip() on the string returned by cleo's fetch_output; stdlib."
+  },
+  {
+   "id": 8529,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo CommandTester.execute."
+  },
+  {
+   "id": 8552,
+   "true_callee": "poetry.config.dict_config_source.DictConfigSource.get_property",
+   "is_first_party": true,
+   "reasoning": "tests/conftest.py `config` fixture calls set_config_source(config_source) with a DictConfigSource; Config.config_source returns it, and get_property is defined in src/poetry/config/dict_config_source.py."
+  },
+  {
+   "id": 8590,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest_mock MockerFixture.patch."
+  },
+  {
+   "id": 8621,
+   "true_callee": "tests.helpers.get_package",
+   "is_first_party": true,
+   "reasoning": "test_init.py line 20: `from tests.helpers import get_package`; defined at tests/helpers.py:57."
+  },
+  {
+   "id": 8639,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin str.join."
+  },
+  {
+   "id": 8671,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "`repo` fixture returns tests.helpers.DummyRepository, which overrides only find_packages/find_links_for_package; add_package comes from Repository (src/poetry/repositories/repository.py:73)."
+  },
+  {
+   "id": 8685,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "Same DummyRepository receiver; add_package inherited from poetry.repositories.repository.Repository."
+  },
+  {
+   "id": 8775,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pathlib.Path.write_text, stdlib."
+  },
+  {
+   "id": 9013,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize, third-party pytest."
+  },
+  {
+   "id": 9048,
+   "true_callee": "tests.console.conftest.command_tester_factory._tester",
+   "is_first_party": true,
+   "reasoning": "The command_tester_factory fixture returns the nested closure `_tester` (tests/console/conftest.py:119); calling the fixture value invokes that closure."
+  },
+  {
+   "id": 9136,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin str()."
+  },
+  {
+   "id": 9163,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest_mock MockerFixture.patch."
+  },
+  {
+   "id": 9266,
+   "true_callee": "poetry.repositories.installed_repository.InstalledRepository.add_package",
+   "is_first_party": true,
+   "reasoning": "`installed` fixture (tests/conftest.py:424) returns InstalledRepository(), which defines its own add_package at src/poetry/repositories/installed_repository.py:35."
+  },
+  {
+   "id": 9288,
+   "true_callee": "poetry.repositories.installed_repository.InstalledRepository.add_package",
+   "is_first_party": true,
+   "reasoning": "Same `installed` fixture -> InstalledRepository, which overrides add_package."
+  },
+  {
+   "id": 9320,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "`repo` is tests.helpers.DummyRepository; add_package inherited from poetry.repositories.repository.Repository."
+  },
+  {
+   "id": 9420,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pyproject is a tomlkit TOMLDocument from TOMLFile.read(); .get is tomlkit/dict."
+  },
+  {
+   "id": 9427,
+   "true_callee": "tests.console.conftest.command_tester_factory._tester",
+   "is_first_party": true,
+   "reasoning": "Fixture value is the nested `_tester` closure defined in tests/console/conftest.py."
+  },
+  {
+   "id": 9511,
+   "true_callee": "tests.console.conftest.command_tester_factory._tester",
+   "is_first_party": true,
+   "reasoning": "Fixture value is the nested `_tester` closure defined in tests/console/conftest.py."
+  },
+  {
+   "id": 9529,
+   "true_callee": "tests.helpers.DummyLocker.mock_lock_data",
+   "is_first_party": true,
+   "reasoning": "poetry fixture -> project_factory with use_test_locker=True sets a tests.helpers.DummyLocker; mock_lock_data defined at tests/helpers.py:205 (asserted by the isinstance check above)."
+  },
+  {
+   "id": 9792,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo BufferedIO.fetch_output."
+  },
+  {
+   "id": 9847,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "poetry.package is a poetry.core ProjectPackage; no add_dependency is defined anywhere under src/poetry, so it resolves into poetry-core (separate distribution)."
+  },
+  {
+   "id": 9921,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Same: Package.add_dependency lives in poetry.core, which is not in this tree."
+  },
+  {
+   "id": 10063,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "json.loads, stdlib."
+  },
+  {
+   "id": 10076,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin isinstance()."
+  },
+  {
+   "id": 10150,
+   "true_callee": "tests.console.conftest.command_tester_factory._tester",
+   "is_first_party": true,
+   "reasoning": "Fixture value is the nested `_tester` closure defined in tests/console/conftest.py."
+  },
+  {
+   "id": 10158,
+   "true_callee": "tests.conftest.project_factory._factory",
+   "is_first_party": true,
+   "reasoning": "project_factory fixture returns the nested `_factory` closure (tests/conftest.py:460)."
+  },
+  {
+   "id": 10182,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cleo BufferedIO.fetch_error."
+  },
+  {
+   "id": 10235,
+   "true_callee": "tests.conftest.fixture_dir._fixture_dir",
+   "is_first_party": true,
+   "reasoning": "fixture_dir fixture returns the nested `_fixture_dir` closure (tests/conftest.py:405)."
+  },
+  {
+   "id": 10246,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "tester.io is a cleo BufferedIO; .output is a cleo Output and set_formatter is cleo's."
+  },
+  {
+   "id": 10336,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize, third-party pytest."
+  },
+  {
+   "id": 10514,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin dict()."
+  },
+  {
+   "id": 10540,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "shutil.copyfile, stdlib."
+  },
+  {
+   "id": 10561,
+   "true_callee": "poetry.factory.Factory.create_poetry",
+   "is_first_party": true,
+   "reasoning": "Factory imported from poetry.factory (tests/helpers.py:20); create_poetry is overridden in src/poetry/factory.py:66."
+  },
+  {
+   "id": 10734,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin len()."
+  },
+  {
+   "id": 10738,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "`http` fixture (tests/conftest.py:381) yields a responses.RequestsMock; .reset is third-party."
+  },
+  {
+   "id": 10755,
+   "true_callee": "tests.inspection.test_lazy_wheel.assert_metadata_from_wheel_url._assertion",
+   "is_first_party": true,
+   "reasoning": "The assert_metadata_from_wheel_url fixture returns the nested `_assertion` closure defined at tests/inspection/test_lazy_wheel.py:193."
+  },
+  {
+   "id": 10820,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "requests.Session constructor, third-party."
+  },
+  {
+   "id": 10891,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "orig_build_system_requires is build.ProjectBuilder.build_system_requires (a property of the third-party `build` package); .fget calls its getter."
+  },
+  {
+   "id": 11082,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "str.splitlines, stdlib."
+  },
+  {
+   "id": 11119,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outer call is str.splitlines on cleo's fetch_output result; stdlib."
+  },
+  {
+   "id": 11158,
+   "true_callee": "poetry.installation.operations.install.Install.__init__",
+   "is_first_party": true,
+   "reasoning": "Install imported from poetry.installation.operations (re-export); class defined in src/poetry/installation/operations/install.py with its own __init__."
+  }
+ ]
+}

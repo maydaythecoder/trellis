@@ -1,0 +1,305 @@
+{
+ "chunk": 1,
+ "results": [
+  {
+   "id": 2935,
+   "true_callee": "poetry.masonry.builders.editable.EditableBuilder._debug",
+   "is_first_party": true,
+   "reasoning": "EditableBuilder subclasses poetry.core Builder but defines _debug itself at editable.py:315, so self._debug binds to that definition (Rule 1)."
+  },
+  {
+   "id": 2955,
+   "true_callee": "poetry.utils._compat.decode",
+   "is_first_party": true,
+   "reasoning": "editable.py:18 imports decode from poetry.utils._compat, where it is a module-level function in this repo."
+  },
+  {
+   "id": 2984,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin str() applied to the caught ValueError; builtins are stdlib."
+  },
+  {
+   "id": 2998,
+   "true_callee": "poetry.masonry.builders.editable.EditableBuilder._debug",
+   "is_first_party": true,
+   "reasoning": "Same enclosing class as id 2935; _debug is defined in EditableBuilder at editable.py:315."
+  },
+  {
+   "id": 3097,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin isinstance(); ConflictCauseError is only the second argument, not the callee."
+  },
+  {
+   "id": 3149,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "by_name is annotated dict[str, dict[str, Term]] at incompatibility.py:44, so setdefault is dict.setdefault (builtin)."
+  },
+  {
+   "id": 3153,
+   "true_callee": "poetry.mixology.term.Term.is_positive",
+   "is_first_party": true,
+   "reasoning": "terms are Term objects (Incompatibility.__init__ takes list[Term]); is_positive is a plain method at term.py:50."
+  },
+  {
+   "id": 3179,
+   "true_callee": "poetry.mixology.incompatibility.Incompatibility.is_failure",
+   "is_first_party": true,
+   "reasoning": "self is Incompatibility and is_failure is defined in that class at incompatibility.py:103 (Rule 1)."
+  },
+  {
+   "id": 3194,
+   "true_callee": "poetry.mixology.incompatibility.Incompatibility._terse",
+   "is_first_party": true,
+   "reasoning": "_terse is defined in the enclosing Incompatibility class at incompatibility.py:422."
+  },
+  {
+   "id": 3233,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "buffer is a list literal built at incompatibility.py:263, so append is list.append (builtin)."
+  },
+  {
+   "id": 3269,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin len() on self._terms."
+  },
+  {
+   "id": 3321,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "assignment is an Assignment (subclass of Term); .dependency returns poetry.core.packages.dependency.Dependency, which is not in this tree (Rule 3)."
+  },
+  {
+   "id": 3346,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Term.constraint returns VersionConstraint imported from poetry.core.constraints.version (term.py:13), a separate distribution."
+  },
+  {
+   "id": 3393,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "DependencyCache._cache is dict[DependencyCacheKey, list[list[DependencyPackage]]] (version_solver.py:89), so self._cache[key].append is list.append."
+  },
+  {
+   "id": 3411,
+   "true_callee": "poetry.mixology.version_solver.VersionSolver._propagate",
+   "is_first_party": true,
+   "reasoning": "Call is inside VersionSolver.solve; _propagate is defined in the same class at version_solver.py:213."
+  },
+  {
+   "id": 3444,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "_contradicted_incompatibilities is a set (version_solver.py:176), so difference_update is set.difference_update (builtin)."
+  },
+  {
+   "id": 3501,
+   "true_callee": "poetry.mixology.partial_solution.PartialSolution.satisfies",
+   "is_first_party": true,
+   "reasoning": "self._solution = PartialSolution() at version_solver.py:180; satisfies is a method at partial_solution.py:204."
+  },
+  {
+   "id": 3517,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin isinstance(); DependencyPackage is only the type argument."
+  },
+  {
+   "id": 3574,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "canonicalize_name is imported from packaging.utils at locker.py:16, a third-party package."
+  },
+  {
+   "id": 3682,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin str() on a poetry.core Dependency attribute."
+  },
+  {
+   "id": 3727,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin isinstance(); DependencyPackage is the type argument, not the callee."
+  },
+  {
+   "id": 3803,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "ProjectPluginCache.__init__ sets self._io = io typed as cleo.io.io.IO (plugin_manager.py:112-114); write_line belongs to cleo."
+  },
+  {
+   "id": 3834,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "_gitignore_file is self._path.parent / .gitignore, a pathlib.Path, so write_text is Path.write_text (stdlib)."
+  },
+  {
+   "id": 3844,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "hashlib is the stdlib module imported at hash_manager.py:3."
+  },
+  {
+   "id": 3955,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "data_to_send is a list literal at uploader.py:319, so append is list.append (builtin)."
+  },
+  {
+   "id": 4000,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin frozenset()."
+  },
+  {
+   "id": 4035,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cast is imported from typing at provider.py:14 (stdlib); DirectoryDependency is a string type argument."
+  },
+  {
+   "id": 4090,
+   "true_callee": "poetry.mixology.term.Term",
+   "is_first_party": true,
+   "reasoning": "Term is imported from poetry.mixology.term at provider.py:31; constructor call, i.e. Term.__init__ defined in this repo at term.py:25."
+  },
+  {
+   "id": 4161,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "itertools is the stdlib module imported at provider.py:4."
+  },
+  {
+   "id": 4167,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "dependencies is rebound to a list literal at provider.py:693, so extend is list.extend (builtin)."
+  },
+  {
+   "id": 4185,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "current_overrides = self._overrides.copy(); _overrides is dict[Package, dict[str, Dependency]] (provider.py:148), so get is dict.get."
+  },
+  {
+   "id": 4193,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Dependency.transitive_marker is a poetry.core BaseMarker; without_extras is defined in poetry.core.version.markers, outside this tree."
+  },
+  {
+   "id": 4235,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "m is the result of re.match, so group is re.Match.group (stdlib)."
+  },
+  {
+   "id": 4323,
+   "true_callee": "poetry.puzzle.solver.Solver._aggregate_solved_packages",
+   "is_first_party": true,
+   "reasoning": "Call is in Solver._solve; _aggregate_solved_packages is defined in the same class at solver.py:190."
+  },
+  {
+   "id": 4377,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "EmptyMarker is imported from poetry.core.version.markers at solver.py:11, a separate distribution."
+  },
+  {
+   "id": 4404,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "first_override_marker comes from the override tuples and is a poetry.core BaseMarker; intersect is defined there."
+  },
+  {
+   "id": 4458,
+   "true_callee": "poetry.toml.file.TOMLFile.read",
+   "is_first_party": true,
+   "reasoning": "PyProjectTOML.file returns poetry.toml.TOMLFile, which overrides read at toml/file.py:26 (it wraps tomlkit via super())."
+  },
+  {
+   "id": 4468,
+   "true_callee": "poetry.inspection.info.PackageInfo.load",
+   "is_first_party": true,
+   "reasoning": "PackageInfo is imported locally from poetry.inspection.info at cached_repository.py:47; load is a classmethod at info.py:107 (Rule 2: decorator returns the function)."
+  },
+  {
+   "id": 4508,
+   "true_callee": "poetry.utils.authenticator.Authenticator.authenticated_url",
+   "is_first_party": true,
+   "reasoning": "self._authenticator = Authenticator(...) at http_repository.py:72; authenticated_url is a method at authenticator.py:200."
+  },
+  {
+   "id": 4554,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "m is wheel_file_re.match(...), so group is re.Match.group (stdlib)."
+  },
+  {
+   "id": 4566,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "parse_marker_version_constraint is imported from poetry.core.constraints.version at http_repository.py:24."
+  },
+  {
+   "id": 4570,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is to_pep_508 on a poetry.core Dependency instance; Dependency comes from poetry.core.packages.dependency."
+  },
+  {
+   "id": 4721,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "url is a str parameter of LegacyRepository.__init__, so rstrip is str.rstrip (builtin)."
+  },
+  {
+   "id": 4883,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "info is json_data[info], a plain dict decoded from the PyPI JSON response, so get is dict.get."
+  },
+  {
+   "id": 5000,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "path_str is str(path) via the walrus at _compat.py:70, so removeprefix is str.removeprefix (builtin)."
+  },
+  {
+   "id": 5003,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "path1 is a pathlib.Path (reassigned from remove_long_path_prefix), so this is Path.is_relative_to from stdlib, not the enclosing poetry helper of the same name."
+  },
+  {
+   "id": 5046,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "_sessions_for_netloc holds requests.Session objects created by create_session (authenticator.py:159-160); close is requests.Session.close."
+  },
+  {
+   "id": 5158,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Builtin callable(); the name is not rebound anywhere in poetry/utils/cache.py."
+  },
+  {
+   "id": 5271,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outermost call is split on the str returned by re.Match.group(1), so str.split (builtin)."
+  },
+  {
+   "id": 5326,
+   "true_callee": "poetry.utils.env.base_env.Env._bin",
+   "is_first_party": true,
+   "reasoning": "Call is in Env.python; _bin is defined in the same Env class at base_env.py:484 (Rule 1 - subclass overrides are accepted dynamic dispatch)."
+  }
+ ]
+}

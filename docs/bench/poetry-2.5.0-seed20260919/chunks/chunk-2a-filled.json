@@ -1,0 +1,155 @@
+{
+  "chunk": "2a",
+  "results": [
+    {
+      "id": 5476,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Python.minor_version (manager.py:215) is typed/returns poetry.core.constraints.version.Version; .to_string() is defined in poetry.core, a separate distribution."
+    },
+    {
+      "id": 5569,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "os.path.normcase is stdlib (posixpath/ntpath)."
+    },
+    {
+      "id": 5695,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "installer.py:11 imports Version from poetry.core.constraints.version; from_parts is a poetry.core classmethod."
+    },
+    {
+      "id": 5720,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "os.environ is a stdlib os._Environ mapping; .get is stdlib."
+    },
+    {
+      "id": 5742,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "constraint comes from poetry.core.constraints.version.parse_constraint (manager.py:25), so allows() is a poetry.core VersionConstraint method."
+    },
+    {
+      "id": 5815,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "path is annotated pathlib.Path in make_candidates; relative_to is stdlib pathlib."
+    },
+    {
+      "id": 5818,
+      "true_callee": "poetry.utils.helpers.paths_csv",
+      "is_first_party": true,
+      "reasoning": "site_packages.py imports paths_csv from poetry.utils.helpers; defined at helpers.py:130 in this tree."
+    },
+    {
+      "id": 5836,
+      "true_callee": "dynamic",
+      "is_first_party": false,
+      "reasoning": "getattr(candidate, method) with method a runtime str parameter; no single callee determinable at this site (all observed callers pass pathlib.Path method names, external either way)."
+    },
+    {
+      "id": 5841,
+      "true_callee": "poetry.utils.env.site_packages.SitePackages._path_method_wrapper",
+      "is_first_party": true,
+      "reasoning": "self._path_method_wrapper inside class SitePackages (site_packages.py:52); real implementation at line 209 (188/199 are @overload stubs)."
+    },
+    {
+      "id": 5857,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "platform.release is stdlib."
+    },
+    {
+      "id": 5936,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "path is annotated pathlib.Path in remove_directory; is_symlink is stdlib pathlib."
+    },
+    {
+      "id": 5941,
+      "true_callee": "poetry.utils.helpers.merge_dicts",
+      "is_first_party": true,
+      "reasoning": "Direct recursive self-call of merge_dicts defined at helpers.py:110 in the same module."
+    },
+    {
+      "id": 5954,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "str is the Python builtin type constructor."
+    },
+    {
+      "id": 6012,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "os.path.dirname is stdlib."
+    },
+    {
+      "id": 6022,
+      "true_callee": "poetry.utils.helpers.extractall._get_filtered_attrs",
+      "is_first_party": true,
+      "reasoning": "_get_filtered_attrs is a nested closure defined inside extractall in src/poetry/utils/helpers.py, so it is defined in this tree."
+    },
+    {
+      "id": 6269,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "client is returned by dulwich.client.get_transport_and_path (backend.py:18); fetch is a dulwich GitClient method."
+    },
+    {
+      "id": 6276,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "revision is a str; removeprefix is the builtin str method."
+    },
+    {
+      "id": 6445,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "pytest.mark.parametrize is third-party pytest (MarkDecorator)."
+    },
+    {
+      "id": 6464,
+      "true_callee": "poetry.config.dict_config_source.DictConfigSource.remove_property",
+      "is_first_party": true,
+      "reasoning": "config_source is DictConfigSource() (line 33); DictConfigSource defines remove_property itself, overriding the abstract ConfigSource method."
+    },
+    {
+      "id": 6473,
+      "true_callee": "poetry.config.dict_config_source.DictConfigSource",
+      "is_first_party": true,
+      "reasoning": "Constructor call; imported at tests/config/test_dict_config_source.py from poetry.config.dict_config_source, defined in this tree."
+    },
+    {
+      "id": 6656,
+      "true_callee": "poetry.layouts.layout",
+      "is_first_party": true,
+      "reasoning": "tests/conftest.py:39 imports layout from poetry.layouts; the factory function is defined at src/poetry/layouts/__init__.py:10 (the recorded call is layout('src'), not the returned class)."
+    },
+    {
+      "id": 6657,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "lock_file is project_dir / 'poetry.lock', a pathlib.Path; write_text is stdlib."
+    },
+    {
+      "id": 6677,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "extra_dependency is a poetry.core Dependency (created via Dependency.create_from_pep_508); .constraint.allows is a poetry.core VersionConstraint method."
+    },
+    {
+      "id": 6795,
+      "true_callee": "poetry.console.application.Application",
+      "is_first_party": true,
+      "reasoning": "Constructor call; test_clear.py imports Application from poetry.console.application, defined in src/ of this tree."
+    },
+    {
+      "id": 6808,
+      "true_callee": "poetry.utils.cache.FileCache.has",
+      "is_first_party": true,
+      "reasoning": "caches is annotated list[FileCache[dict[str, str]]]; FileCache defines has at src/poetry/utils/cache.py:95."
+    }
+  ]
+}

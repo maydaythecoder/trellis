@@ -53,10 +53,20 @@ Hard gate. All five, no substitutions:
 Plus: acceptable operation on a local open-weight model at or above the measured
 floor, via constrained tool calling.
 
-### Named gate: the S16 pivot trigger
+### Named gate: the S16 pivot trigger — **FIRED 2026-09-19**
 
 **If measured recall on the benchmark repository is below 60%, the
 blast-radius guarantee dies and TRELLIS pivots.**
+
+> **Measured: 47.8%, 95% CI [40.0%, 55.6%].** The whole interval is below the
+> trigger. The gate has fired. ADR 0011 carries the evidence, the diagnosis and
+> the options; **the decision is the project owner's and is pending.** No v0.2
+> work begins until it is made — that is what "evaluated at v0.1 exit, before
+> any v0.2 work" means.
+>
+> Precision measured 100% and all 4,443 `Resolved` edges pass the mechanical
+> soundness check, so this is a recall finding alone. Under a pivot the index
+> is demoted to a hint, but it is a hint that is right when it speaks.
 
 This is a gate, not a contingency. It is evaluated at v0.1 exit, before any
 v0.2 work begins, and it is written here because the figure was chosen before
@@ -71,6 +81,11 @@ and multi-agent partitioning, which is built on radius disjointness.
 The intermediate band — recall at or above 60% but below 85% — fires the S1
 fallback instead: a semantic backstop before v1.0, decorator unwrapping first,
 Pyright over LSP if that is insufficient.
+
+**The measurement did not land in that band, and the decorator-first ordering
+above is falsified in any case:** `DecoratorIndirection` accounts for 3 of
+11,233 unresolved sites, against 10,646 for `MethodDispatchUntyped`. See S1 and
+ADR 0011.
 
 ### v1.0 non-goals, explicit
 

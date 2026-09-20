@@ -237,6 +237,56 @@ resolve inherited `self` dispatch — the obvious next resolver feature — can
 therefore address at most about 9% of the `Attribute` gap, and is not the
 lever it appears to be.
 
+### RESULT — the hand audit, 2026-09-19
+
+400 call sites, seed 20260919, audited blind against the protocol above. 159
+had a first-party true callee and form the denominator. Artefacts, including
+every judgement and its one-line reasoning, are committed under
+`docs/bench/poetry-2.5.0-seed20260919/`.
+
+| | |
+|---|---|
+| **Recall** | **47.8%** (76/159) |
+| 95% CI | **[40.0%, 55.6%]** |
+| **Precision** | **100.0%** (76/76) |
+| Ambiguous, true callee covered | 2 |
+| Wrongly excluded as external | **0** of 114 exclusions |
+| Auditor could not determine | 3 |
+
+Stratified:
+
+| stratum | denominator | recall |
+|---|---|---|
+| `Name` callees | 72 | **84.7%** |
+| `Attribute` callees | 87 | **17.2%** |
+| `Dynamic` callees | 0 | n/a |
+| `src/` | 36 | 58.3% |
+| `tests/` | 123 | 44.7% |
+
+**Against §3: 47.8% is below the 60% pivot trigger, and the whole confidence
+interval is below it.** See ADR 0011. The decision that follows is the project
+owner's, not the measurement's.
+
+What passed and should not be lost in that: precision is 100%, every one of
+the 4,443 `Resolved` edges passes the mechanical check below, and all 114
+third-party exclusions were confirmed by the auditor. The graph does not lie.
+It is quiet.
+
+#### Limitations of this measurement
+
+- **Model-read, not human-read** — §2 above asks for a human. A-34, Q-15.
+  Spot-checks were verified by hand and were correct.
+- **Auditors disagreed about the denominator.** First-party rates ranged 28%
+  to 58% across auditors; of 60 sites whose reasoning cites a pytest fixture,
+  39 were judged first-party and 21 were not. Some of that is binomial noise
+  at 50 sites per auditor; not all of it is. `is_first_party` sets the
+  denominator, so this moves recall in a way the CI does not capture.
+- **`dynamic` verdicts are excluded from the denominator** (3 sites), which is
+  generous to the resolver.
+- Four sites were counted correct under the constructor convention (the
+  resolver named the class, the auditor its `__init__`). Each is listed in
+  `score.txt` rather than folded in silently.
+
 ### Soundness, checked over every edge rather than sampled
 
 `examples/check_soundness.rs` verifies a necessary condition on **every**
@@ -300,6 +350,13 @@ counted as unresolved.
 | **v1.0 gate** | **recall ≥ 85%** | Ship the blast-radius claim as specified. |
 | **S1 fallback trigger** | **recall < 85%** | The import-scoped resolver is insufficient alone. Adopt a semantic backstop before v1.0 (see §4). |
 | **S16 pivot trigger** | **recall < 60%** | The blast-radius guarantee dies. Pivot per `MISSION.md`: index demoted to hint, ship context continuity, checks, and the trail. |
+
+### OUTCOME, 2026-09-19
+
+Measured recall **47.8%**, 95% CI **[40.0%, 55.6%]**. **The S16 pivot trigger
+fired.** The thresholds below were set on 2026-09-18, before the resolver
+existed, and are reproduced here unchanged. ADR 0011 records the evidence, the
+diagnosis, and the options; the decision is the project owner's.
 
 ### Reasoning for 85%
 

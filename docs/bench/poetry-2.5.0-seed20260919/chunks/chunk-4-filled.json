@@ -1,0 +1,305 @@
+{
+ "chunk": 4,
+ "results": [
+  {
+   "id": 11180,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.skip - pytest is a third-party test framework, not in this tree."
+  },
+  {
+   "id": 11326,
+   "true_callee": "poetry.installation.executor.Executor._create_file_url_reference",
+   "is_first_party": true,
+   "reasoning": "executor fixture (test_executor.py:169) returns a real Executor; method defined at src/poetry/installation/executor.py:941."
+  },
+  {
+   "id": 11412,
+   "true_callee": "poetry.installation.executor.Executor",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; Executor imported from poetry.installation.executor, class at executor.py:63."
+  },
+  {
+   "id": 11423,
+   "true_callee": "poetry.installation.operations.install.Install",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; Install re-exported by poetry/installation/operations/__init__.py, defined in operations/install.py:12."
+  },
+  {
+   "id": 11504,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "io fixture (test_executor.py:132) returns cleo BufferedIO; set_verbosity is cleo's, third-party."
+  },
+  {
+   "id": 11535,
+   "true_callee": "poetry.installation.operations.install.Install",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; defining module is poetry.installation.operations.install."
+  },
+  {
+   "id": 11593,
+   "true_callee": "poetry.installation.executor.Executor",
+   "is_first_party": true,
+   "reasoning": "Class instantiation of first-party Executor at src/poetry/installation/executor.py:63."
+  },
+  {
+   "id": 11622,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "OSError is a Python builtin exception."
+  },
+  {
+   "id": 11734,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "package fixture is ProjectPackage from poetry.core.packages.project_package; poetry.core is a separate distribution absent from this tree."
+  },
+  {
+   "id": 11747,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture (test_installer.py:131) returns Repository('repo'); add_package at src/poetry/repositories/repository.py:73."
+  },
+  {
+   "id": 11843,
+   "true_callee": "tests.installation.test_installer.Locker.mock_lock_data",
+   "is_first_party": true,
+   "reasoning": "locker fixture builds the test-local Locker(BaseLocker), which defines mock_lock_data itself."
+  },
+  {
+   "id": 11873,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "Same repo fixture; Repository.add_package defined in src/poetry/repositories/repository.py."
+  },
+  {
+   "id": 12060,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "isinstance is a Python builtin."
+  },
+  {
+   "id": 12081,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "poetry.factory.Factory does not define create_dependency; inherited from poetry.core.factory.Factory, and src/poetry/core does not exist."
+  },
+  {
+   "id": 12139,
+   "true_callee": "tests.installation.test_installer.fixture",
+   "is_first_party": true,
+   "reasoning": "Module-level def fixture(name, data=None) at tests/installation/test_installer.py:179, not a pytest fixture."
+  },
+  {
+   "id": 12207,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pathlib.Path from the standard library."
+  },
+  {
+   "id": 12228,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "Outer call is add_package on the plain Repository from the repo fixture."
+  },
+  {
+   "id": 12367,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize - third-party pytest."
+  },
+  {
+   "id": 12369,
+   "true_callee": "tests.installation.test_installer.Locker.locked",
+   "is_first_party": true,
+   "reasoning": "The test-local Locker subclass defines locked(self, is_locked=True) at test_installer.py:83."
+  },
+  {
+   "id": 12391,
+   "true_callee": "tests.helpers.get_package",
+   "is_first_party": true,
+   "reasoning": "Imported via 'from tests.helpers import get_package'; tests/helpers.py is in this repository."
+  },
+  {
+   "id": 12406,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "repo fixture returns Repository; add_package defined in poetry/repositories/repository.py."
+  },
+  {
+   "id": 12497,
+   "true_callee": "tests.installation.test_installer.Locker.locked",
+   "is_first_party": true,
+   "reasoning": "Test-local Locker defines locked itself, so rule 1 keeps it on the subclass."
+  },
+  {
+   "id": 12511,
+   "true_callee": "poetry.repositories.repository.Repository.add_package",
+   "is_first_party": true,
+   "reasoning": "Same plain Repository receiver from the repo fixture."
+  },
+  {
+   "id": 12536,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "NullIO imported from cleo.io.null_io, a third-party package."
+  },
+  {
+   "id": 12685,
+   "true_callee": "poetry.installation.installer.Installer",
+   "is_first_party": true,
+   "reasoning": "Class instantiation; imported from poetry.installation which re-exports poetry.installation.installer.Installer (installer.py:36)."
+  },
+  {
+   "id": 12702,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "str() is a Python builtin."
+  },
+  {
+   "id": 12752,
+   "true_callee": "poetry.utils.env.site_packages.SitePackages.distributions",
+   "is_first_party": true,
+   "reasoning": "env is MockEnv; Env.site_packages (base_env.py:192) returns SitePackages, whose distributions is at site_packages.py:127."
+  },
+  {
+   "id": 12754,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Env.paths is dict[str, str] (base_env.py:335); .values() is the builtin dict method."
+  },
+  {
+   "id": 12770,
+   "true_callee": "tests.installation.test_uninstaller._install_fake_distribution",
+   "is_first_party": true,
+   "reasoning": "Module-level helper defined at tests/installation/test_uninstaller.py:40."
+  },
+  {
+   "id": 12781,
+   "true_callee": "tests.installation.test_uninstaller._make_env",
+   "is_first_party": true,
+   "reasoning": "Module-level helper defined at tests/installation/test_uninstaller.py:25."
+  },
+  {
+   "id": 12826,
+   "true_callee": "tests.installation.test_uninstaller._make_env",
+   "is_first_party": true,
+   "reasoning": "Same module-level helper in the test file."
+  },
+  {
+   "id": 12837,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outer call is the builtin next(); the inner distributions() call is a separate site."
+  },
+  {
+   "id": 12870,
+   "true_callee": "tests.installation.test_uninstaller._make_env",
+   "is_first_party": true,
+   "reasoning": "Same module-level helper at test_uninstaller.py:25."
+  },
+  {
+   "id": 12924,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "str.endswith on a builtin str object."
+  },
+  {
+   "id": 12965,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "cache_dir is a pathlib.Path; Path.exists is standard library."
+  },
+  {
+   "id": 13076,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outer call is the builtin len()."
+  },
+  {
+   "id": 13137,
+   "true_callee": "poetry.vcs.git.backend.GitRefSpec",
+   "is_first_party": true,
+   "reasoning": "Imported explicitly from poetry.vcs.git.backend; @dataclasses.dataclass at backend.py:90 returns the same class, so rule 2 keeps it resolvable."
+  },
+  {
+   "id": 13242,
+   "true_callee": "poetry.utils.env.site_packages.SitePackages.find",
+   "is_first_party": true,
+   "reasoning": "tmp_venv is a VirtualEnv; .site_packages yields SitePackages, whose find is at site_packages.py:254."
+  },
+  {
+   "id": 13245,
+   "true_callee": "poetry.utils.env.site_packages.SitePackages.find",
+   "is_first_party": true,
+   "reasoning": "Same SitePackages.find defined at src/poetry/utils/env/site_packages.py:254."
+  },
+  {
+   "id": 13285,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Env._bin_dir is a pathlib.Path (base_env.py:72); joinpath is standard library."
+  },
+  {
+   "id": 13328,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "_bin_dir is a pathlib.Path, so joinpath is stdlib pathlib."
+  },
+  {
+   "id": 13335,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Outer call is Path.open on the Path returned by joinpath - standard library."
+  },
+  {
+   "id": 13450,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "script_path is a pathlib.Path from _bin_dir.joinpath; Path.exists is stdlib."
+  },
+  {
+   "id": 13501,
+   "true_callee": "tests.mixology.helpers.add_to_repo",
+   "is_first_party": true,
+   "reasoning": "Imported via 'from tests.mixology.helpers import add_to_repo'; defined at tests/mixology/helpers.py:24."
+  },
+  {
+   "id": 13512,
+   "true_callee": "tests.mixology.helpers.add_to_repo",
+   "is_first_party": true,
+   "reasoning": "Same first-party helper at tests/mixology/helpers.py:24."
+  },
+  {
+   "id": 13517,
+   "true_callee": "tests.mixology.helpers.add_to_repo",
+   "is_first_party": true,
+   "reasoning": "Same first-party helper imported at the top of test_backtracking.py."
+  },
+  {
+   "id": 13561,
+   "true_callee": "tests.mixology.helpers.add_to_repo",
+   "is_first_party": true,
+   "reasoning": "Same first-party helper at tests/mixology/helpers.py:24."
+  },
+  {
+   "id": 13677,
+   "true_callee": "poetry.mixology.version_solver.DependencyCache.clear_level",
+   "is_first_party": true,
+   "reasoning": "cache is a DependencyCache imported from poetry.mixology.version_solver; clear_level at version_solver.py:155."
+  },
+  {
+   "id": 13844,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "root fixture (tests/mixology/version_solver/conftest.py:39) returns ProjectPackage from poetry.core, which is not in this tree."
+  },
+  {
+   "id": 14060,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Factory is poetry.factory.Factory, which does not define create_dependency; it is inherited from poetry.core.factory.Factory (external)."
+  }
+ ]
+}

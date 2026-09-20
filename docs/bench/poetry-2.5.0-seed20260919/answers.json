@@ -1,0 +1,1499 @@
+{
+  "note": "The resolver's verdicts. Opened only when scoring, never by the auditor.",
+  "seed": 20260919,
+  "verdicts": {
+    "10063": {
+      "kind": "ExternalExcluded"
+    },
+    "10076": {
+      "kind": "ExternalExcluded"
+    },
+    "10150": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "10158": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "10182": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "10235": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "10246": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "10336": {
+      "kind": "ExternalExcluded"
+    },
+    "10514": {
+      "kind": "ExternalExcluded"
+    },
+    "10540": {
+      "kind": "ExternalExcluded"
+    },
+    "10561": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "10734": {
+      "kind": "ExternalExcluded"
+    },
+    "10738": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "10755": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "108": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "10820": {
+      "kind": "ExternalExcluded"
+    },
+    "10891": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "1106": {
+      "kind": "ExternalExcluded"
+    },
+    "11082": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "11119": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "11158": {
+      "kind": "Resolved",
+      "target": "poetry.installation.operations.install.Install"
+    },
+    "11180": {
+      "kind": "ExternalExcluded"
+    },
+    "11326": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "114": {
+      "kind": "Resolved",
+      "target": "poetry.toml.file.TOMLFile"
+    },
+    "11412": {
+      "kind": "Resolved",
+      "target": "poetry.installation.executor.Executor"
+    },
+    "11423": {
+      "kind": "Resolved",
+      "target": "poetry.installation.operations.install.Install"
+    },
+    "11504": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "11535": {
+      "kind": "Resolved",
+      "target": "poetry.installation.operations.install.Install"
+    },
+    "11593": {
+      "kind": "Resolved",
+      "target": "poetry.installation.executor.Executor"
+    },
+    "11622": {
+      "kind": "ExternalExcluded"
+    },
+    "11734": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "11747": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "11843": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "11873": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "1201": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12060": {
+      "kind": "ExternalExcluded"
+    },
+    "12081": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12139": {
+      "kind": "Resolved",
+      "target": "tests.installation.test_installer.fixture"
+    },
+    "12207": {
+      "kind": "ExternalExcluded"
+    },
+    "12228": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12367": {
+      "kind": "ExternalExcluded"
+    },
+    "12369": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12391": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "12406": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12497": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12511": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12536": {
+      "kind": "ExternalExcluded"
+    },
+    "12685": {
+      "kind": "Resolved",
+      "target": "poetry.installation.installer.Installer"
+    },
+    "12702": {
+      "kind": "ExternalExcluded"
+    },
+    "12752": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12754": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12770": {
+      "kind": "Resolved",
+      "target": "tests.installation.test_uninstaller._install_fake_distribution"
+    },
+    "12781": {
+      "kind": "Resolved",
+      "target": "tests.installation.test_uninstaller._make_env"
+    },
+    "12826": {
+      "kind": "Resolved",
+      "target": "tests.installation.test_uninstaller._make_env"
+    },
+    "12837": {
+      "kind": "ExternalExcluded"
+    },
+    "12870": {
+      "kind": "Resolved",
+      "target": "tests.installation.test_uninstaller._make_env"
+    },
+    "12924": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "12965": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13076": {
+      "kind": "ExternalExcluded"
+    },
+    "13137": {
+      "kind": "Resolved",
+      "target": "poetry.vcs.git.backend.GitRefSpec"
+    },
+    "13242": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13245": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13285": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13328": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13335": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13450": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "13501": {
+      "kind": "Resolved",
+      "target": "tests.mixology.helpers.add_to_repo"
+    },
+    "13512": {
+      "kind": "Resolved",
+      "target": "tests.mixology.helpers.add_to_repo"
+    },
+    "13517": {
+      "kind": "Resolved",
+      "target": "tests.mixology.helpers.add_to_repo"
+    },
+    "13561": {
+      "kind": "Resolved",
+      "target": "tests.mixology.helpers.add_to_repo"
+    },
+    "13677": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "1371": {
+      "kind": "ExternalExcluded"
+    },
+    "13844": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14060": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "1414": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14163": {
+      "kind": "ExternalExcluded"
+    },
+    "14168": {
+      "kind": "ExternalExcluded"
+    },
+    "14178": {
+      "kind": "ExternalExcluded"
+    },
+    "14185": {
+      "kind": "Resolved",
+      "target": "tests.packages.test_locker._get_legacy_content_hash"
+    },
+    "14226": {
+      "kind": "ExternalExcluded"
+    },
+    "14246": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14280": {
+      "kind": "Resolved",
+      "target": "poetry.poetry.Poetry"
+    },
+    "14281": {
+      "kind": "ExternalExcluded"
+    },
+    "14284": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14369": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14406": {
+      "kind": "ExternalExcluded"
+    },
+    "14434": {
+      "kind": "Resolved",
+      "target": "poetry.plugins.plugin_manager.ProjectPluginCache"
+    },
+    "14481": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14571": {
+      "kind": "Resolved",
+      "target": "poetry.publishing.uploader.Uploader"
+    },
+    "14601": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14688": {
+      "kind": "ExternalExcluded"
+    },
+    "14695": {
+      "kind": "ExternalExcluded"
+    },
+    "14726": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14744": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_provider.MockEnv"
+    },
+    "1477": {
+      "kind": "ExternalExcluded"
+    },
+    "14824": {
+      "kind": "ExternalExcluded"
+    },
+    "14848": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_dependency"
+    },
+    "14858": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "14903": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_dependency"
+    },
+    "14978": {
+      "kind": "ExternalExcluded"
+    },
+    "14999": {
+      "kind": "ExternalExcluded"
+    },
+    "15045": {
+      "kind": "ExternalExcluded"
+    },
+    "15072": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15112": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "15221": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15233": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "15235": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15248": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "15342": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_solver.set_package_python_versions"
+    },
+    "15478": {
+      "kind": "ExternalExcluded"
+    },
+    "1561": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15625": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_solver.check_solver_result"
+    },
+    "15634": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "15757": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15859": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15893": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15947": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15970": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "15990": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16021": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16134": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16176": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16215": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16231": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16250": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16306": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16308": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16349": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16436": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16442": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_solver.check_solver_result"
+    },
+    "16481": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16670": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "16690": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16694": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16732": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "16777": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "16919": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "16997": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "17025": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_solver.check_solver_result"
+    },
+    "17036": {
+      "kind": "ExternalExcluded"
+    },
+    "17063": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "17179": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "17304": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "17408": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "17429": {
+      "kind": "ExternalExcluded"
+    },
+    "1743": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "17473": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_solver_internals.dep"
+    },
+    "17609": {
+      "kind": "ExternalExcluded"
+    },
+    "1780": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "17852": {
+      "kind": "Resolved",
+      "target": "tests.puzzle.test_transaction.check_operations"
+    },
+    "17857": {
+      "kind": "Resolved",
+      "target": "poetry.puzzle.transaction.Transaction"
+    },
+    "17874": {
+      "kind": "ExternalExcluded"
+    },
+    "17883": {
+      "kind": "ExternalExcluded"
+    },
+    "18027": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "18038": {
+      "kind": "Resolved",
+      "target": "tests.repositories.fixtures.distribution_hashes.DistributionHash"
+    },
+    "18142": {
+      "kind": "ExternalExcluded"
+    },
+    "18183": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "1823": {
+      "kind": "ExternalExcluded"
+    },
+    "18235": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "18352": {
+      "kind": "Resolved",
+      "target": "tests.repositories.fixtures.pypi.org.generate.Project"
+    },
+    "18360": {
+      "kind": "Resolved",
+      "target": "tests.repositories.fixtures.pypi.org.generate.Project"
+    },
+    "18378": {
+      "kind": "Resolved",
+      "target": "tests.repositories.fixtures.pypi.org.generate.Release"
+    },
+    "18379": {
+      "kind": "Resolved",
+      "target": "tests.repositories.fixtures.pypi.org.generate.Project"
+    },
+    "18429": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "18523": {
+      "kind": "ExternalExcluded"
+    },
+    "18617": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "18860": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "18877": {
+      "kind": "ExternalExcluded"
+    },
+    "18908": {
+      "kind": "ExternalExcluded"
+    },
+    "18930": {
+      "kind": "ExternalExcluded"
+    },
+    "18950": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "18954": {
+      "kind": "ExternalExcluded"
+    },
+    "19071": {
+      "kind": "ExternalExcluded"
+    },
+    "19118": {
+      "kind": "ExternalExcluded"
+    },
+    "19143": {
+      "kind": "ExternalExcluded"
+    },
+    "19318": {
+      "kind": "ExternalExcluded"
+    },
+    "19362": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "194": {
+      "kind": "ExternalExcluded"
+    },
+    "1940": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "19419": {
+      "kind": "ExternalExcluded"
+    },
+    "19423": {
+      "kind": "ExternalExcluded"
+    },
+    "1966": {
+      "kind": "Resolved",
+      "target": "poetry.exceptions.PoetryError"
+    },
+    "19722": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "19723": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "19736": {
+      "kind": "ExternalExcluded"
+    },
+    "19746": {
+      "kind": "Resolved",
+      "target": "tests.helpers.DummyRepository"
+    },
+    "19781": {
+      "kind": "ExternalExcluded"
+    },
+    "19790": {
+      "kind": "ExternalExcluded"
+    },
+    "19850": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "19870": {
+      "kind": "ExternalExcluded"
+    },
+    "1989": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "19903": {
+      "kind": "ExternalExcluded"
+    },
+    "19927": {
+      "kind": "ExternalExcluded"
+    },
+    "19936": {
+      "kind": "Resolved",
+      "target": "poetry.utils.env.python.installer.PythonInstaller"
+    },
+    "20028": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20045": {
+      "kind": "ExternalExcluded"
+    },
+    "20100": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20132": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20226": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20233": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20235": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "20282": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20357": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20406": {
+      "kind": "Resolved",
+      "target": "tests.utils.env.test_env_manager.check_output_wrapper"
+    },
+    "20416": {
+      "kind": "ExternalExcluded"
+    },
+    "20449": {
+      "kind": "Resolved",
+      "target": "tests.utils.env.test_env_manager.check_output_wrapper"
+    },
+    "20533": {
+      "kind": "ExternalExcluded"
+    },
+    "20619": {
+      "kind": "ExternalExcluded"
+    },
+    "20653": {
+      "kind": "Resolved",
+      "target": "tests.utils.env.test_env_site_packages._resolved_files"
+    },
+    "20708": {
+      "kind": "ExternalExcluded"
+    },
+    "20709": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20717": {
+      "kind": "Resolved",
+      "target": "poetry.utils.authenticator.Authenticator"
+    },
+    "20810": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20830": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20833": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20837": {
+      "kind": "ExternalExcluded"
+    },
+    "20849": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "20863": {
+      "kind": "ExternalExcluded"
+    },
+    "20915": {
+      "kind": "ExternalExcluded"
+    },
+    "2092": {
+      "kind": "ExternalExcluded"
+    },
+    "20928": {
+      "kind": "ExternalExcluded"
+    },
+    "20968": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "21108": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2119": {
+      "kind": "Resolved",
+      "target": "poetry.inspection.info.from_directory"
+    },
+    "21343": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "21390": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "21503": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "21513": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "21524": {
+      "kind": "ExternalExcluded"
+    },
+    "21589": {
+      "kind": "Resolved",
+      "target": "tests.utils.test_threading._compute_value"
+    },
+    "21590": {
+      "kind": "ExternalExcluded"
+    },
+    "21651": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "21682": {
+      "kind": "Resolved",
+      "target": "poetry.vcs.git.backend.peeled_tag"
+    },
+    "21711": {
+      "kind": "ExternalExcluded"
+    },
+    "21758": {
+      "kind": "ExternalExcluded"
+    },
+    "21785": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2224": {
+      "kind": "Resolved",
+      "target": "poetry.inspection.lazy_wheel._ensure_downloaded"
+    },
+    "2225": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2334": {
+      "kind": "ExternalExcluded"
+    },
+    "234": {
+      "kind": "ExternalExcluded"
+    },
+    "2376": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2472": {
+      "kind": "ExternalExcluded"
+    },
+    "2509": {
+      "kind": "Resolved",
+      "target": "poetry.installation.executor._increment_operations_count"
+    },
+    "2518": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2605": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2619": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2778": {
+      "kind": "Resolved",
+      "target": "poetry.installation.uninstaller._prune_empty_dirs"
+    },
+    "2799": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "282": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2857": {
+      "kind": "ExternalExcluded"
+    },
+    "2933": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "2935": {
+      "kind": "Resolved",
+      "target": "poetry.masonry.builders.editable._debug"
+    },
+    "2955": {
+      "kind": "Resolved",
+      "target": "poetry.utils._compat.decode"
+    },
+    "2984": {
+      "kind": "ExternalExcluded"
+    },
+    "2998": {
+      "kind": "Resolved",
+      "target": "poetry.masonry.builders.editable._debug"
+    },
+    "3097": {
+      "kind": "ExternalExcluded"
+    },
+    "31": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3149": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3153": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3179": {
+      "kind": "Resolved",
+      "target": "poetry.mixology.incompatibility.is_failure"
+    },
+    "3194": {
+      "kind": "Resolved",
+      "target": "poetry.mixology.incompatibility._terse"
+    },
+    "3233": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3269": {
+      "kind": "ExternalExcluded"
+    },
+    "3321": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3346": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3393": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3411": {
+      "kind": "Resolved",
+      "target": "poetry.mixology.version_solver._propagate"
+    },
+    "3444": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3501": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "351": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3517": {
+      "kind": "ExternalExcluded"
+    },
+    "355": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3574": {
+      "kind": "ExternalExcluded"
+    },
+    "36": {
+      "kind": "ExternalExcluded"
+    },
+    "3682": {
+      "kind": "ExternalExcluded"
+    },
+    "372": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3727": {
+      "kind": "ExternalExcluded"
+    },
+    "3803": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3834": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "3844": {
+      "kind": "ExternalExcluded"
+    },
+    "3955": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4000": {
+      "kind": "ExternalExcluded"
+    },
+    "4035": {
+      "kind": "ExternalExcluded"
+    },
+    "4090": {
+      "kind": "Resolved",
+      "target": "poetry.mixology.term.Term"
+    },
+    "4161": {
+      "kind": "ExternalExcluded"
+    },
+    "4167": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4185": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4193": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4235": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4323": {
+      "kind": "Resolved",
+      "target": "poetry.puzzle.solver._aggregate_solved_packages"
+    },
+    "4377": {
+      "kind": "ExternalExcluded"
+    },
+    "4404": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4458": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4468": {
+      "kind": "Candidates",
+      "targets": [
+        "poetry.inspection.info.load",
+        "poetry.inspection.info.load"
+      ]
+    },
+    "447": {
+      "kind": "ExternalExcluded"
+    },
+    "4508": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4554": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4566": {
+      "kind": "ExternalExcluded"
+    },
+    "4570": {
+      "kind": "ExternalExcluded"
+    },
+    "4721": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "4883": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5000": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5003": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5046": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5158": {
+      "kind": "ExternalExcluded"
+    },
+    "516": {
+      "kind": "Resolved",
+      "target": "poetry.console.commands.build.BuildHandler"
+    },
+    "5271": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5326": {
+      "kind": "Resolved",
+      "target": "poetry.utils.env.base_env._bin"
+    },
+    "5476": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5569": {
+      "kind": "ExternalExcluded"
+    },
+    "562": {
+      "kind": "ExternalExcluded"
+    },
+    "5695": {
+      "kind": "ExternalExcluded"
+    },
+    "5720": {
+      "kind": "ExternalExcluded"
+    },
+    "5742": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5815": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5818": {
+      "kind": "Resolved",
+      "target": "poetry.utils.helpers.paths_csv"
+    },
+    "5836": {
+      "kind": "Unresolved",
+      "reason": "DynamicAttribute"
+    },
+    "5841": {
+      "kind": "Candidates",
+      "targets": [
+        "poetry.utils.env.site_packages._path_method_wrapper",
+        "poetry.utils.env.site_packages._path_method_wrapper",
+        "poetry.utils.env.site_packages._path_method_wrapper"
+      ]
+    },
+    "585": {
+      "kind": "ExternalExcluded"
+    },
+    "5857": {
+      "kind": "ExternalExcluded"
+    },
+    "5936": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "5941": {
+      "kind": "Resolved",
+      "target": "poetry.utils.helpers.merge_dicts"
+    },
+    "5954": {
+      "kind": "ExternalExcluded"
+    },
+    "6012": {
+      "kind": "ExternalExcluded"
+    },
+    "6022": {
+      "kind": "Resolved",
+      "target": "poetry.utils.helpers._get_filtered_attrs"
+    },
+    "604": {
+      "kind": "Resolved",
+      "target": "poetry.console.commands.check._validate_dependencies_source"
+    },
+    "6269": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "6276": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "633": {
+      "kind": "ExternalExcluded"
+    },
+    "6445": {
+      "kind": "ExternalExcluded"
+    },
+    "6464": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "6473": {
+      "kind": "Resolved",
+      "target": "poetry.config.dict_config_source.DictConfigSource"
+    },
+    "6656": {
+      "kind": "Unresolved",
+      "reason": "UnboundName"
+    },
+    "6657": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "6677": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "675": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "6795": {
+      "kind": "Resolved",
+      "target": "poetry.console.application.Application"
+    },
+    "6808": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "6853": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "6876": {
+      "kind": "ExternalExcluded"
+    },
+    "6941": {
+      "kind": "ExternalExcluded"
+    },
+    "6958": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7066": {
+      "kind": "ExternalExcluded"
+    },
+    "7095": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7109": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7191": {
+      "kind": "ExternalExcluded"
+    },
+    "7226": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "7281": {
+      "kind": "Resolved",
+      "target": "tests.console.commands.self.utils.get_self_command_dependencies"
+    },
+    "732": {
+      "kind": "ExternalExcluded"
+    },
+    "7337": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7376": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7388": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7399": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "742": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7476": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7511": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7527": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7539": {
+      "kind": "Unresolved",
+      "reason": "DynamicAttribute"
+    },
+    "7576": {
+      "kind": "ExternalExcluded"
+    },
+    "7592": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7621": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7736": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7750": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7823": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7901": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7911": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7918": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7938": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "7990": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "810": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8114": {
+      "kind": "ExternalExcluded"
+    },
+    "8389": {
+      "kind": "ExternalExcluded"
+    },
+    "8432": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8442": {
+      "kind": "ExternalExcluded"
+    },
+    "8491": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8529": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8552": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8590": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8621": {
+      "kind": "Resolved",
+      "target": "tests.helpers.get_package"
+    },
+    "8639": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8671": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8685": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "8775": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "88": {
+      "kind": "ExternalExcluded"
+    },
+    "9013": {
+      "kind": "ExternalExcluded"
+    },
+    "9048": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "9136": {
+      "kind": "ExternalExcluded"
+    },
+    "9163": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9266": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9288": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9320": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9420": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9427": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "9511": {
+      "kind": "Unresolved",
+      "reason": "LocalBinding"
+    },
+    "9529": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9792": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9847": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "9921": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    },
+    "994": {
+      "kind": "Resolved",
+      "target": "poetry.console.commands.init._sanitize_package_name"
+    },
+    "996": {
+      "kind": "Unresolved",
+      "reason": "MethodDispatchUntyped"
+    }
+  }
+}

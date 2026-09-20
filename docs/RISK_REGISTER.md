@@ -399,11 +399,22 @@ differentiation.
 
 ## S16 — The pivot trigger, written while it's cheap
 
-**Severity: critical · Likelihood: certain — RESOLVED**
+**Severity: critical · Likelihood: certain — RESOLVED, AND FIRED 2026-09-19**
 
 **Patch.** `BENCHMARK_AND_EVAL.md` §3 and
 `docs/ADRs/0002-edge-confidence-model.md`. **Recall below 60% fires the pivot.**
 Written before v0.1 produces any number, which was the entire point.
+
+**Fired.** Measured recall **47.8%**, 95% CI **[40.0%, 55.6%]** — the whole
+interval below the trigger. The pre-registration worked exactly as intended:
+the number arrived, the rule was already written, and there was no room to
+argue about where the line should have been. ADR 0011 holds the evidence and
+the options; the decision is the project owner's and is pending.
+
+Worth stating plainly, because it is the part a pivot narrative tends to lose:
+precision measured **100%**, all 4,443 `Resolved` edges pass the mechanical
+soundness check, and all 114 third-party exclusions were confirmed. The index
+is being demoted for saying too little, not for saying anything false.
 
 What survives a pivot: context continuity, governance enforcement,
 test-anchored checks, the committed trail. The index is demoted from guarantee
