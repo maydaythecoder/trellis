@@ -42,6 +42,12 @@ counted as a miss even when its true callee is third-party, which §2 excludes
 from the denominator outright. Only the hand-audited sample produces a
 comparable figure. See A-30.
 
+That figure moved from 37.6% to 43.7% on poetry when ADR 0015 corrected which
+sites belong in the denominator. **`resolved` did not change**, hand-audited
+recall did not change, and no additional call site became resolvable. Any
+before/after of this number must state both halves or it reads as an
+improvement that did not happen.
+
 ## Receiver typing, and why it is allowed to be wrong in only one direction
 
 `trellis-index` types receivers from annotations and constructor assignments

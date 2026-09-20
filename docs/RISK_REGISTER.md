@@ -576,3 +576,57 @@ reports.
    that no static audit can produce.
 
 **Cost.** Parts 1 and 2 done. Part 3: 4–6 days, with v1.1.
+
+---
+
+## S21 — A wrong exclusion is invisible to every check except the audit
+
+**Severity: medium. Status: mitigated, not closed.**
+
+ADR 0015 lets a call site leave the recall denominator when its receiver's
+stated type can be shown not to be first-party — a builtin, or a name whose
+every binding resolves outside the repository root. That fixed a real error:
+`val: str` calling `val.lower()` was being counted as a first-party miss.
+
+The rule trusts an annotation in order to **exclude**. A wrong annotation
+therefore removes a genuine first-party call from the denominator and inflates
+recall.
+
+**Why this one is different from the trust ADR 0012 already accepts.** ADR 0012
+trusts annotations to *add* edges, and the consequence there is worse in kind —
+an unsound edge, a blast radius that lies. But it is loud: `check_soundness`
+walks `Resolved` edges and the audit reports precision, so an unsound edge has
+two independent detectors.
+
+A wrong exclusion has none of that. An excluded site emits **no edge**, so
+`check_soundness` is structurally blind to it. The repository-wide coverage
+report cannot see it either, because it cannot count what it has already
+excluded from itself. A wrong exclusion makes every number the resolver
+computes about itself look *better*.
+
+**What detects it.** Only the hand audit, which determines the true callee by a
+person reading the source. `audit_score` already reports **wrongly excluded** —
+sites dropped as external that the auditor found first-party — and that figure
+exists precisely because the repository-wide report structurally cannot show
+it.
+
+**Patch, applied.** Exclusion requires positive evidence, never a failure to
+resolve. The test that holds it is
+`a_type_we_merely_failed_to_resolve_stays_a_miss`: a type bound by nothing the
+resolver can see stays a miss. Without that asymmetry every resolver gap would
+remove itself from its own denominator and recall could only rise.
+
+**Evidence, and what it is not.** Both completed audits re-scored against the
+new resolver report **wrongly excluded: 0**, with 27 sites moving from miss to
+exclusion on seed 20260920 and a human having independently judged every one of
+them third-party. Two samples at zero is evidence. It is not proof, and the
+pre-gate audit required by A-34 must report the figure again rather than
+inheriting this one.
+
+**Residual risk.** A repository whose annotations are systematically wrong in
+one direction — stale types after a refactor, say — would inflate recall here
+in a way no automated check can find. The honest statement is that the
+resolver's exclusions are as good as the repository's annotations, and that the
+audit is the only instrument that measures it.
+
+**Cost.** Patch done. The detection is the audit, which is required anyway.
