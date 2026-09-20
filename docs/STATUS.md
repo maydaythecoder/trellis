@@ -281,6 +281,11 @@ name the test that would fail if it were reverted.
   invented filename as the replacement, every one refused for an absolute
   path, no convergence, byte-identical rollback. Constraint guarantees form,
   never judgement — demonstrated rather than tabulated.
+- **`/model` probes the runtime** rather than only parsing the spec. A
+  warning, never a refusal, and the spec is kept: you name a server then start
+  it, and a tool that would not let you do that is wrong about the order
+  people work in. Tier is reported at the same moment, because tier 4 is a
+  materially worse run and a user should learn that before spending a budget.
 - **A repository can name its own model** (`[model] spec` in config), so a
   project with a local runtime opens ready. An explicit `--model` still wins.
   Not a place for keys: ADR 0010 stands.
