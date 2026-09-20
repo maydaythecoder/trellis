@@ -442,6 +442,21 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
         .map(|(i, (_, src))| crate::parse::collect(src, FileId::from_index(i)))
         .collect();
 
+    build_from_facts(sources, &facts)
+}
+
+/// Pass 2 and the bind step, over facts that have already been collected.
+///
+/// Split out so an incremental session can reparse one file and reuse the
+/// other 450 files' facts unchanged. Taking facts rather than sources is what
+/// makes that possible without duplicating the resolver.
+#[tracing::instrument(skip_all, fields(files = sources.len()))]
+pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> Index {
+    assert_eq!(
+        sources.len(),
+        facts.len(),
+        "facts must line up with sources: file ids are positional"
+    );
     let mut index = Index::new();
     let mut module_map: HashMap<String, FileId> = HashMap::new();
     let mut first_party_roots: HashSet<String> = HashSet::new();

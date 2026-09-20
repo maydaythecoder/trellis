@@ -171,14 +171,27 @@ pub fn parser() -> tree_sitter::Parser {
 /// this across the whole repository without coordination.
 #[tracing::instrument(skip_all, fields(bytes = src.len()))]
 pub fn collect(src: &str, _file: FileId) -> FileFacts {
+    collect_with_tree(src, None).0
+}
+
+/// Extracts facts, optionally reusing a previous `Tree` for incremental
+/// reparse, and returns the tree so the caller can reuse it next time.
+///
+/// `old` must already have been `Tree::edit`ed to describe the change —
+/// tree-sitter then reparses only the affected byte ranges. Passing an
+/// un-edited tree is not a correctness problem but gains nothing.
+pub fn collect_with_tree(
+    src: &str,
+    old: Option<&tree_sitter::Tree>,
+) -> (FileFacts, Option<tree_sitter::Tree>) {
     let mut p = parser();
-    let Some(tree) = p.parse(src, None) else {
-        return FileFacts::default();
+    let Some(tree) = p.parse(src, old) else {
+        return (FileFacts::default(), None);
     };
     let mut facts = FileFacts::default();
     let mut scope: Vec<String> = Vec::new();
     walk(tree.root_node(), src, &mut scope, &mut facts);
-    facts
+    (facts, Some(tree))
 }
 
 fn text<'a>(n: tree_sitter::Node<'_>, src: &'a str) -> &'a str {
