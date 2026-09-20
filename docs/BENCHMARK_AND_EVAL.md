@@ -152,9 +152,16 @@ So: a human reads call sites and records what each one actually calls.
   first-party ones: whether a callee is first-party is exactly what the
   auditor decides, so pre-filtering by the resolver's own opinion would let it
   choose its own denominator.
-- At 400 with a true recall near 0.85, the 95% Wald interval is roughly ±3.5
-  percentage points. That is tight enough to place a measurement against the
-  thresholds in §3, which are separated by 25 points.
+- **Correction (2026-09-19).** The ±3.5pp figure previously stated here was
+  wrong. It assumed the recall denominator equals the sample size. It does
+  not: recall is measured over sites whose *true callee is first-party*, and
+  the audit found those to be roughly 38% of all call sites. 400 draws put
+  about 150 sites in the denominator, and the 95% Wald interval near p = 0.47
+  is therefore roughly **±8 percentage points**, not ±3.5.
+- The thresholds in §3 are 25 points apart, so ±8pp still places a measurement
+  against them — but only when it does not land near a boundary. A future
+  audit must size its sample on the **expected first-party count**: roughly
+  1,000 draws to put 400 sites in the denominator.
 - **Stratification**: the sample is additionally reported broken down by callee
   shape (`Name` / `Attribute` / `Dynamic`), because a single pooled figure hides
   the case that matters. A resolver that is 95% on `Name` and 20% on
