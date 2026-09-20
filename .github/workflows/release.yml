@@ -1,0 +1,90 @@
+name: Release
+
+# Builds the shipped binary for every supported platform.
+#
+# Separate from `ci.yml` on purpose. CI answers "does this change work"; this
+# answers "does this produce something a stranger can run", and the two fail
+# for different reasons — a release that breaks because of a linker on a
+# platform nobody develops on should not be indistinguishable from a test
+# regression.
+#
+# A tag builds artefacts. `workflow_dispatch` builds them without one, so the
+# packaging can be exercised before it is needed rather than discovered
+# broken at the moment someone wants a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every platform is built even when one fails. A matrix that stops at
+      # the first failure reports one broken target and hides the others,
+      # which turns a release into several rounds of finding out.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: trellis
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: trellis.exe
+          # Built and tested here, never run by a human on this project. The
+          # supported-platform list in the documentation says so rather than
+          # implying parity with the two that are used daily.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: trellis
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Pin line endings
+        run: git config --global core.autocrlf false
+
+      # The suite runs on the release profile too. `lto = "fat"` and
+      # `codegen-units = 1` change what the optimiser may do, and a test suite
+      # that only ever sees the dev profile cannot notice.
+      - name: Test, on the profile that ships
+        run: cargo test --workspace --release --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release -p trellis-cli --target ${{ matrix.target }}
+
+      # A binary that cannot answer `--version` is not a release candidate,
+      # and on a cross-built target this is the first moment anything has
+      # actually executed it.
+      - name: It runs
+        run: ./target/${{ matrix.target }}/release/${{ matrix.bin }} --version
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="trellis-${{ matrix.target }}"
+          mkdir -p "dist/$out"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/$out/"
+          cp dist/QUICKSTART.md "dist/$out/"
+          cp LICENSE "dist/$out/" 2>/dev/null || true
+          # A checksum beside the binary, because "download this and run it"
+          # deserves a way to check what arrived is what was built.
+          (cd "dist/$out" && sha256sum "${{ matrix.bin }}" > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trellis-${{ matrix.target }}
+          path: dist/trellis-${{ matrix.target }}/
+          if-no-files-found: error

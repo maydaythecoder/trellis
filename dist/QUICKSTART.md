@@ -196,3 +196,32 @@ Recall on the benchmark corpus is **72.0%** on a hand-audited sample
 (n=100 first-party sites), precision 100%. The v1.0 gate wants 85% and a larger
 audit; neither has happened. `docs/STATUS.md` is the honest state of every
 claim.
+
+## Supported platforms
+
+Stated as what was **tested**, not what compiles — the same rule the scale
+claim follows (S9). Compiling is not evidence that anything works.
+
+| Platform | Status |
+|---|---|
+| `x86_64-pc-windows-msvc` | **Tested.** Developed here; the full suite and every manual walkthrough in `docs/bench/` ran on it |
+| `x86_64-unknown-linux-gnu` | **Tested.** Full suite green, and the SIGINT rollback test runs here specifically because Windows cannot deliver a real console Ctrl-C to a native binary from a shell |
+| `aarch64-apple-darwin` | **Built and tested in CI only.** No human has run it. Nothing about it is claimed beyond a green matrix job |
+
+Two toolchains are exercised in practice — rustc 1.93 on Windows, 1.95 on
+Linux — which is how the `Verdict` compile-fail proof was found to be pinned
+to one of them.
+
+Everything else is unbuilt and unclaimed. A binary that happens to compile for
+a target nobody has run is not a supported platform.
+
+## The binary
+
+One file, no runtime dependencies beyond `git` and whatever your repository
+configures as its type checker and test runner.
+
+`panic = "abort"` is deliberately **not** set in the release profile, and it
+is the obvious size win to reach for. Unwinding is load-bearing here:
+`Snapshot::rollback` is proven against an induced panic using `catch_unwind`,
+and the TUI restores the terminal from `Drop`. Neither survives an abort, and
+a smaller binary is worth less than a failure path that still works.

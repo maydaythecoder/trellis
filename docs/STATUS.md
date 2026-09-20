@@ -160,7 +160,10 @@ of the gate needs it.
    the clean-worktree requirement.~~ **Done.** The scaffold changes nothing by
    default and never overwrites; the wall now says why it exists and gives
    three ways through it.
-8. Packaging and cross-compilation.
+8. ~~Packaging and cross-compilation.~~ **Done.** Release profile tuned,
+   a three-platform matrix that tests on the profile it ships, and the
+   supported list stated as what was tested. It found the `Verdict`
+   compile-fail proof pinned to one toolchain.
 9. Documentation: partial coverage, and `Verified` versus `Reviewed`.
 10. **`MISSION.md` with honest positioning (S15)** — concede the index is
     commodity and argue the wedge where it actually is.
@@ -306,6 +309,59 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## Packaging, and a proof that only held on one toolchain
+
+v1.0 task item 8.
+
+**The release profile did not exist** — the shipped binary was a cargo
+default. `lto = "fat"`, `codegen-units = 1` and `strip = "symbols"` take it
+from 6,216,704 to 5,373,440 bytes, 13.6% smaller, for 81 s of build time.
+
+`panic = "abort"` is deliberately not set, and it is the obvious next win.
+Unwinding is load-bearing here: `Snapshot::rollback` is proven against an
+induced panic with `catch_unwind`, and the TUI restores the terminal from
+`Drop`. Neither survives an abort, and a smaller binary is worth less than a
+failure path that still works.
+
+**`release.yml` builds three targets**, tests each *on the release profile*
+— `lto` and `codegen-units` change what the optimiser may do, and a suite that
+only ever sees the dev profile cannot notice — runs `--version` on the result,
+and packages it with a SHA-256. Measured at 57 s locally for the release-profile
+suite, so the cost is known rather than assumed. `fail-fast: false`, because a
+matrix that stops at the first failure hides the other two.
+
+### The compile-fail proof was pinned to a toolchain
+
+Running the suite under WSL to justify the Linux claim found
+`tests/forge/struct_literal.rs` failing. The committed `.stderr` expected
+
+```
+= note: this error originates in the macro `unimplemented` ...
+```
+
+which rustc 1.93 (Windows, here) emits and 1.95 (Linux) does not. So the
+compile-fail proof of the `Verdict` seal — a v0.2 gate item, and the thing
+that makes the grounding contract structural rather than asserted — **passed
+on one machine and failed on another**, and the difference was a note about a
+macro that had nothing to do with what was being proven.
+
+Fixed by removing the macro: the private fields are filled with `loop {}`,
+which diverges and coerces the same way without contributing a backtrace note.
+Verified green on both toolchains. The guarantee under test is field privacy;
+the filler should contribute nothing to the message.
+
+### Also found: the manifest claimed a licence with no text
+
+`license = "Apache-2.0"` in `Cargo.toml`, and no `LICENSE` file — so the
+release workflow's `cp LICENSE` was silently guarded with `|| true` and would
+have shipped binaries claiming a licence whose text was nowhere. Fetched from
+apache.org rather than reproduced from memory, with the appendix's copyright
+placeholder filled in.
+
+Supported platforms are stated in `dist/QUICKSTART.md` as what was **tested**:
+Windows and Linux tested, macOS built in CI only and nothing claimed beyond a
+green job. Compiling is not evidence that anything works.
 
 ## First run: `trellis init`, and the wall that said no and stopped
 

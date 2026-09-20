@@ -1,30 +1,27 @@
 warning: unreachable expression
- --> tests/forge/struct_literal.rs:6:16
-  |
-5 |         detail: unimplemented!(),
-  |                 ---------------- any code following this expression is unreachable
-6 |         _seal: unimplemented!(),
-  |                ^^^^^^^^^^^^^^^^ unreachable expression
-  |
-  = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-  = note: this warning originates in the macro `unimplemented` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> tests/forge/struct_literal.rs:13:16
+   |
+12 |         detail: loop {},
+   |                 ------- any code following this expression is unreachable
+13 |         _seal: loop {},
+   |                ^^^^^^^ unreachable expression
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
 
 error[E0451]: fields `passed`, `detail` and `_seal` of struct `Verdict` are private
- --> tests/forge/struct_literal.rs:4:9
-  |
-3 |     let _ = trellis_checks::Verdict {
-  |             ----------------------- in this type
-4 |         passed: true,
-  |         ^^^^^^ private field
-5 |         detail: unimplemented!(),
-  |         ^^^^^^ private field
-6 |         _seal: unimplemented!(),
-  |         ^^^^^ private field
+  --> tests/forge/struct_literal.rs:11:9
+   |
+10 |     let _ = trellis_checks::Verdict {
+   |             ----------------------- in this type
+11 |         passed: true,
+   |         ^^^^^^ private field
+12 |         detail: loop {},
+   |         ^^^^^^ private field
+13 |         _seal: loop {},
+   |         ^^^^^ private field
 
 error: type `trellis_checks::verdict::Seal` is private
- --> tests/forge/struct_literal.rs:6:16
-  |
-6 |         _seal: unimplemented!(),
-  |                ^^^^^^^^^^^^^^^^ private type
-  |
-  = note: this error originates in the macro `unimplemented` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> tests/forge/struct_literal.rs:13:16
+   |
+13 |         _seal: loop {},
+   |                ^^^^^^^ private type

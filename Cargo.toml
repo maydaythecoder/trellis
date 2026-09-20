@@ -55,3 +55,15 @@ trellis-vcs    = { path = "crates/trellis-vcs" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# The shipped binary.
+#
+# `panic = "abort"` is deliberately NOT set, and it is the obvious thing to
+# reach for. Unwinding is load-bearing here: `Snapshot::rollback` is proven
+# against an induced panic with `catch_unwind`, and the TUI restores the
+# terminal from `Drop` — neither survives an abort. A smaller binary is worth
+# less than a failure path that still works.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
