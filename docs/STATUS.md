@@ -147,7 +147,7 @@ operation that let it go stale three times in one session.*
    whose type is not derivable within one file (1,883). Larger than anything
    attempted so far and not costed. Not to be started before the audit says
    how far short 85% actually is.
-4. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+4. *(Nothing else. Q-14 is closed; see below.)*
 
 **v0.1, v0.2 and v0.3 are complete** apart from S7's second configuration,
 which is blocked on the network. What remains before v1.0 is the 85% recall
@@ -256,6 +256,17 @@ name the test that would fail if it were reverted.
   run: the model called it with no paths, mypy chose the whole repository,
   poetry's pre-existing errors came back looking like the model's own, and it
   edited a file it saw in that output.
+- **Q-14 closed** — the last known latent unsound edge. A class-scope
+  assignment shadowing a method (`run = staticmethod(run)`) still produced a
+  confident edge to the `def`. Fixed; `ShadowedAmbiguous` occurs zero times in
+  poetry's 21,794 call sites, so resolved, denominator, both audited recall
+  figures and precision are all unchanged.
+- **An audit of the CLI surface** found three user-facing statements that were
+  stale or wrong: `doctor` printed a concrete adapter tier with no `--model`
+  while its own footer said tier was unknown; `partitions` said `resume` was
+  unbuilt; the CLI module doc said `run` predated inference. All three fixed,
+  and the ten rules CLAUDE.md says need an ADR were verified in code rather
+  than by reading the document.
 - **v0.3 is complete.** The context file and governance rules landed, and
   the split between them is the point: .trellis/context.md informs the
   model, [governance] deny_write binds it, enforced in the orchestrator,

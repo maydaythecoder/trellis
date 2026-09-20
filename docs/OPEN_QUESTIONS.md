@@ -116,13 +116,21 @@ this side of a real user.
 
 ## Flagged as unverifiable from here
 
-**Q-14 — Is a class-scope assignment allowed to shadow a method?**
-`resolve_attribute` checks `t.defs` for `self.m()` but not `t.bindings`, so
-`class C: run = something` alongside `def run(self)` resolves to the method
-rather than reporting ambiguity. The `Name` path already handles the
-equivalent case (`ShadowedAmbiguous`). This is a latent unsound edge. It did
-not appear in the poetry audit sample and the pattern is rare, so it is
-recorded rather than fixed. → Owner: before the v1.0 gate.
+**Q-14 — Is a class-scope assignment allowed to shadow a method? CLOSED
+2026-09-20: no.**
+`lookup_method` checked `t.defs` for `self.m()` but not `t.bindings`, so
+`class C: run = something` alongside `def run(self)` resolved to the method
+rather than reporting ambiguity, while the `Name` path reported the equivalent
+case as `ShadowedAmbiguous` — the resolver disagreeing with itself depending
+on how the call was written.
+
+Fixed. A `MethodLookup::Shadowed` variant, propagated through the base-class
+walk and refused in the override merge. `ShadowedAmbiguous` does not appear in
+poetry's reason breakdown at all, so the pattern occurs zero times in 21,794
+call sites and the fix costs nothing on this corpus: resolved, denominator,
+both audited recall figures and precision are all unchanged. The argument for
+it is that the edge was wrong, not that it was common — the v1.0 gate forbids
+unsound edges outright rather than in proportion to their frequency.
 
 **Q-15 — The v0.1 audit is model-read, not human-read.**
 `BENCHMARK_AND_EVAL.md` §2 says "a human reads call sites and records what each
