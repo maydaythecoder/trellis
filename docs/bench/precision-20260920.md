@@ -53,16 +53,29 @@ credibility to the independent half, so the tool refuses to print one without
 the rows.
 
 **`inherited` — 34 edges, all `self.option(...)`.** The first run reported these
-as disconnected. They are not unsound: `InstallCommand(InstallerCommand)` →
-`GroupCommand`/`EnvCommand` → `Command`, which defines `option`. `install.py`
-imports its immediate base and nothing further, so no import *of that file*
-names the target — the connection is the class hierarchy.
+as disconnected. `InstallCommand(InstallerCommand)` → `GroupCommand`/
+`EnvCommand` → `Command`, which defines `option`. `install.py` imports its
+immediate base and nothing further, so no import *of that file* names the
+target — the connection is the class hierarchy.
 
 Rather than excuse them, the check verifies the hierarchy: from the class
 enclosing the call, follow base classes, requiring every link to be
-import-connected from the file declaring the subclass. That is the soundness
-condition for an inherited `self.m()` written out, and it is as mechanical as
-the import check.
+import-connected from the file declaring the subclass, **and requiring that no
+class between the two defines the method itself**.
+
+That last clause is rule 1 of the audit protocol in `sample.json`:
+
+> `self.m()` where `m` is defined in the enclosing class resolves to THAT
+> definition. Only record an inherited base-class method when the enclosing
+> class does not define `m` itself.
+
+Without it the check would bless exactly the edge the protocol calls wrong — a
+resolver that walked past a nearer definition — which is what an audit of
+`Resolved` edges exists to catch.
+
+**These 34 are sound by that rule, verified rather than assumed:** `def option`
+occurs exactly once in the corpus, at `command.py:46`. No class in any chain
+shadows it.
 
 ## Proving the check can fail
 
@@ -74,9 +87,19 @@ turn and the corpus re-run:
 | none (as shipped) | **0** |
 | inheritance walk removed | 34 |
 | one re-export hop removed | 740 |
+| shadowing guard forced to fire | 34 |
 
-Each allowance is therefore load-bearing and the machinery reports rather than
-silently passing.
+Each allowance is load-bearing and the machinery reports rather than silently
+passing.
+
+The shadowing guard needs a note. Injecting a real `option` into
+`InstallerCommand` does *not* exercise it: the resolver correctly picks the
+nearer definition, so 29 edges move to `connected` and the guard never sees a
+far target. That mutation tests the resolver, not the check. Forcing the guard
+to see a shadow instead turns all 34 into disconnected and exits non-zero, so
+it is wired and reports — but on a correct resolver it is **inert by design**,
+a necessary condition that currently never binds. It is defence against a
+future resolver change, not evidence about this one.
 
 ## A stale artifact this found
 

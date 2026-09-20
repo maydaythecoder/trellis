@@ -273,11 +273,17 @@ Three things worth carrying:
   independent, because receiver typing never consults the calling file's
   imports for the method, and that is exactly where ADR 0012's risk lives.
 - **34 edges verify through the class hierarchy rather than an import**, all
-  `self.option(...)`. The first run called them disconnected; they are sound,
-  and the check now walks base classes requiring each link to be
-  import-connected, instead of excusing them.
-- **Both allowances were removed in turn to prove the check can fail**: without
-  the inheritance walk, 34 disconnected; without the one re-export hop, 740.
+  `self.option(...)`. The first run called them disconnected. The check now
+  walks base classes requiring each link to be import-connected **and no class
+  between the two to define the method itself** — rule 1 of the audit protocol,
+  without which the check would bless exactly the edge the protocol calls
+  wrong. The 34 are sound by that rule, verified rather than assumed:
+  `def option` occurs once in the corpus, at `command.py:46`.
+- **Every allowance was removed in turn to prove the check can fail**: without
+  the inheritance walk, 34 disconnected; without the one re-export hop, 740;
+  with the shadowing guard forced to fire, 34. The guard is wired and reports,
+  and on a correct resolver it is inert by design — defence against a future
+  change, not evidence about this one.
 
 ### The artifact was stale, not the resolver
 

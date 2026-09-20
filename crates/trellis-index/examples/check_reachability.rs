@@ -140,7 +140,14 @@ fn main() {
         let bucket = if direct_or_reexport {
             "connected"
         } else if is_self_receiver(&sources[from].1, site.span)
-            && inherits_to(from, to, site.span, &facts, &imports_of)
+            && inherits_to(
+                from,
+                to,
+                site.span,
+                index.interner.resolve(index.symbols[sym.index()].name),
+                &facts,
+                &imports_of,
+            )
         {
             // `self.m()` reaching a method defined on a base class two or more
             // links up. The calling file imports its immediate base and
@@ -259,23 +266,40 @@ fn is_self_receiver(src: &str, span: (usize, usize)) -> bool {
 }
 
 /// Whether `to` is reachable from the class enclosing `span` by following base
-/// classes, with every link import-connected.
+/// classes, with every link import-connected and **nothing shadowing the
+/// method on the way**.
 ///
 /// This is the soundness condition for an inherited `self.m()` written out:
 /// the enclosing class really does descend from the class defining the method,
-/// and each step of that descent is one the calling file could see. Bounded at
-/// eight links, which is deeper than any hierarchy in the benchmark corpus —
+/// each step of that descent is one the calling file could see, and no class
+/// between the two defines `m` itself.
+///
+/// The shadowing guard is rule 1 of the audit protocol in `sample.json`:
+/// *"`self.m()` where `m` is defined in the enclosing class resolves to THAT
+/// definition. Only record an inherited base-class method when the enclosing
+/// class does not define `m` itself."* Without it this blesses exactly the
+/// edge the protocol calls wrong — a resolver that walked past a nearer
+/// definition — which is the failure an audit of Resolved edges exists to
+/// catch.
+///
+/// Bounded at eight links, deeper than any hierarchy in the benchmark corpus;
 /// an unbounded walk over a corpus with a cycle would not terminate.
 fn inherits_to(
     from: usize,
     to: usize,
     span: (usize, usize),
+    method: &str,
     facts: &[trellis_index::FileFacts],
     imports_of: &[HashSet<usize>],
 ) -> bool {
     let Some(start) = enclosing_class(&facts[from], span) else {
         return false;
     };
+    // The enclosing class defining `m` itself means the edge should have
+    // pointed here, wherever else it points.
+    if defines(&facts[from], start, method) {
+        return false;
+    }
     let mut frontier = vec![(from, start.to_string())];
     let mut seen: HashSet<(usize, String)> = HashSet::new();
     for _ in 0..8 {
@@ -293,19 +317,27 @@ fn inherits_to(
             };
             for base in &def.bases {
                 // `a.b.C` and `C` both name the class `C`; which module it
-                // came from is decided by the import, which is checked next.
+                // came from is decided by the import, checked next.
                 let name = base.rsplit('.').next().unwrap_or(base);
                 for &cand in imports_of[file].iter().chain(std::iter::once(&file)) {
-                    if facts[cand]
+                    if !facts[cand]
                         .defs
                         .iter()
                         .any(|d| d.kind == SymbolKind::Class && d.name == name)
                     {
+                        continue;
+                    }
+                    if defines(&facts[cand], name, method) {
+                        // A definition here. It verifies the edge only if it
+                        // is the one the edge names; otherwise the resolver
+                        // walked past a nearer definition and this path does
+                        // not vouch for it.
                         if cand == to {
                             return true;
                         }
-                        next.push((cand, name.to_string()));
+                        continue;
                     }
+                    next.push((cand, name.to_string()));
                 }
             }
         }
@@ -315,6 +347,14 @@ fn inherits_to(
         frontier = next;
     }
     false
+}
+
+/// Whether class `class` in `facts` defines a method named `method`.
+fn defines(facts: &trellis_index::FileFacts, class: &str, method: &str) -> bool {
+    facts
+        .defs
+        .iter()
+        .any(|d| d.name == method && d.scope.len() == 1 && d.scope[0] == class)
 }
 
 /// The innermost class whose body contains `span`.
