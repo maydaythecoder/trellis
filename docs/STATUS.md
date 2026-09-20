@@ -156,8 +156,10 @@ of the gate needs it.
    mockup would have had TRELLIS claim something it cannot know.
 6. **Re-run the v0.1 measurement for condition 1.** Largely absorbed into the
    `precision-gate` CI job, which now does it on every push.
-7. **`trellis init`**, first-run prerequisite detection, and a good error for
-   the clean-worktree requirement — the first wall users hit.
+7. ~~`trellis init`, first-run prerequisite detection, and a good error for
+   the clean-worktree requirement.~~ **Done.** The scaffold changes nothing by
+   default and never overwrites; the wall now says why it exists and gives
+   three ways through it.
 8. Packaging and cross-compilation.
 9. Documentation: partial coverage, and `Verified` versus `Reviewed`.
 10. **`MISSION.md` with honest positioning (S15)** — concede the index is
@@ -304,6 +306,42 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## First run: `trellis init`, and the wall that said no and stopped
+
+v1.0 task item 7.
+
+**`trellis init`** scaffolds `.trellis/config.toml`, `context.md` and
+`governance/README.md`, then reports prerequisites with a remedy on each. Two
+properties, both tested:
+
+- **Every config value is commented out**, showing the default it would
+  override. A scaffold that writes active settings makes the tool's behaviour
+  depend on a file the user has not read; this one starts by changing nothing,
+  which a test asserts by loading it and comparing against the defaults.
+- **The governance example is Markdown, not TOML.** `governance/` loads every
+  `*.toml` and a malformed one is a hard error, so an example rule shipped as
+  TOML would either take effect or break the repository on first run.
+
+It also needed a change in `main`: root discovery refuses when there is no git
+repository, which is right for every other command — `trellis index` in a home
+folder once walked 25,147 files — and wrong for the one command whose purpose
+is a directory that is not set up yet. `init` falls back to the working
+directory and then refuses with the missing step rather than the missing root:
+*"this is not a git repository, and TRELLIS rolls back with git. `git init`…"*
+
+**The clean-worktree wall.** It used to state the rule and stop, which leaves
+someone holding uncommitted work and a tool that will not start — and the
+obvious reading of "requires a clean worktree" is that TRELLIS wants to throw
+their changes away. It now says what the requirement buys (rollback is
+`reset --hard` to a recorded commit, which cannot tell this run's edits from
+work already there, so *your* changes are never at risk from a run) and gives
+three ways through: commit, stash, or discard — plus the session's `/diff` when
+the changes are a previous run's.
+
+Written as a raw string rather than a continuation-escaped literal, because
+the string-folding defect has shipped eight times and a message about a wall
+someone has just hit is a poor place for the ninth.
 
 ## Degradation UX: the approval moment had nothing
 

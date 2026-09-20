@@ -18,10 +18,14 @@ pub enum VcsError {
     #[error("not a git repository: {0}")]
     NotARepo(PathBuf),
 
-    #[error(
-        "worktree is not clean. TRELLIS requires a clean worktree so rollback is exact.\n\
-         Uncommitted changes:\n{0}"
-    )]
+    /// The first wall a user hits, so it says how to get past it.
+    ///
+    /// `04-v1.0-harness.md` calls this out by name. The message used to state
+    /// the rule and stop, which leaves someone holding work they have not
+    /// committed and a tool that will not start — and the obvious reading of
+    /// "requires a clean worktree" is that TRELLIS wants to throw their
+    /// changes away.
+    #[error("{}", dirty_worktree_message(.0))]
     DirtyWorktree(String),
 
     #[error("git command failed: {command}\n{stderr}")]
@@ -52,6 +56,44 @@ pub enum VcsError {
         detail: String,
     },
 }
+
+/// Why a clean worktree is required, and the three ways past it.
+///
+/// Written out because the requirement reads as arbitrary until you know what
+/// it buys: rollback is `reset --hard` to a recorded commit, which cannot
+/// distinguish this run's edits from work that was already there. Requiring a
+/// clean tree is what makes "nothing was accepted" mean exactly that.
+fn dirty_worktree_message(status: &str) -> String {
+    format!(
+        "{DIRTY_HEAD}
+{}
+{DIRTY_TAIL}",
+        status.trim_end()
+    )
+}
+
+const DIRTY_HEAD: &str = "the worktree has uncommitted changes, and a run needs a clean one.
+";
+
+/// A raw string, so what a user reads is what is written here.
+///
+/// Continuation-escaped literals fold their source indentation into the
+/// content, which this project has shipped eight times — and a message about
+/// a wall the user has just hit is a poor place for the ninth.
+const DIRTY_TAIL: &str = r#"
+Rollback is `git reset --hard` to a commit recorded before the run, and that
+cannot tell this run's edits from work that was already there. The requirement
+is what makes "nothing was accepted" mean exactly that: your own changes are
+never at risk from a run, because a run never starts on top of them.
+
+Any of these clears it:
+
+  git add -A && git commit -m '...'    keep the work
+  git stash                            set it aside for now
+  git checkout -- .                    discard it
+
+If the changes are a previous run's, `trellis` opens a session where /diff
+shows them and /accept or /revert decides."#;
 
 /// What to print when the recovery path itself fails.
 ///
@@ -384,9 +426,21 @@ mod tests {
 
         let err = snapshot(&dir).unwrap_err();
         assert!(matches!(err, VcsError::DirtyWorktree(_)));
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("so rollback is exact"),
-            "the refusal must say why, or it reads as an arbitrary obstacle"
+            msg.contains("reset --hard") && msg.contains("never at risk"),
+            "the refusal must say why, or it reads as an arbitrary obstacle: {msg}"
+        );
+        assert!(
+            msg.contains("git stash") && msg.contains("git commit"),
+            "and it must give the ways out — this is the first wall users hit: {msg}"
+        );
+        assert!(
+            !msg.contains(
+                "  
+"
+            ),
+            "no folded indentation in the message a stuck user reads: {msg:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
