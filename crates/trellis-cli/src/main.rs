@@ -133,19 +133,8 @@ fn main() -> Result<()> {
     // tree. Falling back to the working directory is worse if it happens to
     // be a home folder — `trellis index` there walked 1,295 files before
     // anyone could tell it had not found a repository.
-    if !explicit {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        if root != cwd {
-            println!("root:     {} (repository root)", root.display());
-        } else if !root.join(".git").exists() {
-            println!(
-                concat!(
-                    "root:     {} (no git repository above here; reading this ",
-                    "directory only)"
-                ),
-                root.display()
-            );
-        }
+    if !explicit && root != std::env::current_dir().unwrap_or_default() {
+        println!("root:     {} (repository root)", root.display());
     }
 
     match cli.command {
@@ -190,25 +179,41 @@ fn main() -> Result<()> {
 /// makes the user type more.
 fn discover_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
-    Ok(root_from(&cwd))
+    root_from(&cwd).ok_or_else(|| {
+        anyhow::anyhow!(
+            concat!(
+                "no git repository found at {} or above it.
+
+",
+                "TRELLIS works on a repository, and without one there is no way to ",
+                "tell how much of the filesystem you meant. Run it from inside a ",
+                "repository, or name the tree explicitly:
+",
+                "    trellis <command> --root <path>"
+            ),
+            cwd.display()
+        )
+    })
 }
 
 /// The walk itself, separated from the process-global working directory so it
 /// can be tested without one.
-fn root_from(start: &Path) -> PathBuf {
+///
+/// `None` when there is no repository above `start`. An earlier version fell
+/// back to `start` on the reasoning that `index` and `radius` are useful on a
+/// plain source tree — which is true, and was still the wrong default.
+/// `trellis index` typed in a home folder walked the entire home folder, and
+/// the line printed to say so appeared after the walk had already begun.
+///
+/// Git refuses here, and so does this. The plain-tree case is served by
+/// `--root .`, which is one flag and states the intent.
+fn root_from(start: &Path) -> Option<PathBuf> {
     let mut dir = start;
     loop {
         if dir.join(".git").exists() {
-            return dir.to_path_buf();
+            return Some(dir.to_path_buf());
         }
-        match dir.parent() {
-            Some(p) => dir = p,
-            // No repository anywhere above. Fall back to where the user is
-            // standing rather than failing: `index` and `radius` are useful on
-            // a plain source tree, and the commands that genuinely need git
-            // say so themselves when they need it.
-            None => return start.to_path_buf(),
-        }
+        dir = dir.parent()?;
     }
 }
 

@@ -24,11 +24,21 @@ root:     C:\repo (repository root)
 indexed 4 files in 1.4ms
 ```
 
-With no git repository anywhere above, it reads the current directory only —
-and says so, because typing `trellis index` in a home folder would otherwise
-walk everything underneath it without explaining why.
+With no git repository anywhere above, it **refuses** and tells you how to say
+what you meant. An earlier version fell back to the current directory, on the
+reasoning that `index` and `radius` are useful on a plain source tree. True,
+and still the wrong default — `trellis index` typed in a home folder walked
+25,147 files over two minutes before anything could stop it. Git refuses here
+too.
 
-`--root <path>` always wins over both.
+For a tree that is not a repository, name it:
+
+```
+trellis index --root .
+```
+
+`--root <path>` always wins, and is the escape hatch for every case the walk
+gets wrong.
 
 ---
 

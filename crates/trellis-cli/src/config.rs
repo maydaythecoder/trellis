@@ -171,19 +171,25 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir_all(repo.join(".git")).unwrap();
 
-        assert_eq!(crate::root_from(&deep), repo);
-        assert_eq!(crate::root_from(&repo), repo);
+        assert_eq!(crate::root_from(&deep), Some(repo.clone()));
+        assert_eq!(crate::root_from(&repo), Some(repo));
     }
 
     #[test]
-    fn a_tree_with_no_repository_falls_back_to_where_the_user_is() {
-        // Failing here would make `index` and `radius` unusable on a plain
-        // source tree, and those two need no git at all. The commands that do
-        // need it say so themselves.
+    fn a_tree_with_no_repository_is_refused_rather_than_walked() {
+        // This fell back to the working directory, on the reasoning that
+        // `index` and `radius` are useful on a plain source tree. True, and
+        // still the wrong default: `trellis index` typed in a home folder
+        // walked the entire home folder, and the line printed to say so
+        // appeared after the walk had already started. It hung for two
+        // minutes before anyone could read it.
+        //
+        // Git refuses here and so does this. `--root .` serves the plain-tree
+        // case in one flag and states the intent.
         let d = tempfile::tempdir().unwrap();
         let sub = d.path().join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(crate::root_from(&sub), sub);
+        assert_eq!(crate::root_from(&sub), None);
     }
 
     #[test]
@@ -199,7 +205,7 @@ mod tests {
         std::fs::create_dir_all(outer.join(".git")).unwrap();
         std::fs::create_dir_all(inner.join(".git")).unwrap();
 
-        assert_eq!(crate::root_from(&deep), inner);
+        assert_eq!(crate::root_from(&deep), Some(inner));
     }
 
     #[test]
