@@ -376,6 +376,9 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
     let mut index = Index::new();
     let mut module_map: HashMap<String, FileId> = HashMap::new();
     let mut first_party_roots: HashSet<String> = HashSet::new();
+    // Every dotted prefix of every first-party module, so that "is this a
+    // package this repository actually contains" is an O(1) question.
+    let mut packages: HashSet<String> = HashSet::new();
 
     // ---- Pass 2a: the module map. ----
     for (i, (rel, src)) in sources.iter().enumerate() {
@@ -384,6 +387,10 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
             && !root.is_empty()
         {
             first_party_roots.insert(root.to_string());
+        }
+        let segs: Vec<&str> = module.split('.').filter(|s| !s.is_empty()).collect();
+        for n in 1..segs.len() {
+            packages.insert(segs[..n].join("."));
         }
         // A duplicate module path (the same package vendored twice) keeps the
         // first: `discover` sorts, so "first" is deterministic.
@@ -441,7 +448,7 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
                 let binding = if is_plain {
                     match lookup_module(&module_map, name) {
                         Some(f) => ImportBinding::ModuleRef(f),
-                        None => external_or_unresolvable(name, &first_party_roots),
+                        None => external_or_unresolvable(name, &first_party_roots, &packages),
                     }
                 } else {
                     let target = absolute_module(&imp.module, imp.level, &pkg);
@@ -464,7 +471,9 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
                             // namespace package.
                             match lookup_module(&module_map, &join_module(&target, name)) {
                                 Some(sf) => ImportBinding::ModuleRef(sf),
-                                None => external_or_unresolvable(&target, &first_party_roots),
+                                None => {
+                                    external_or_unresolvable(&target, &first_party_roots, &packages)
+                                }
                             }
                         }
                     }
@@ -487,6 +496,11 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
         for c in &f.call_sites {
             let enclosing = enclosing_symbol(&tables[i], &c.scope);
             index.sites.push(CallSiteEntry {
+                kind: match c.shape {
+                    CalleeShape::Name(_) => crate::graph::CalleeKind::Name,
+                    CalleeShape::Attribute { .. } => crate::graph::CalleeKind::Attribute,
+                    CalleeShape::Dynamic => crate::graph::CalleeKind::Dynamic,
+                },
                 file,
                 span: c.span,
                 enclosing,
@@ -522,21 +536,13 @@ pub fn build_from_sources(sources: &[(String, String)]) -> Index {
         outcomes
     };
 
-    let shapes: Vec<&'static str> = facts
-        .iter()
-        .flat_map(|f| f.call_sites.iter())
-        .map(|c| match c.shape {
-            CalleeShape::Name(_) => "Name",
-            CalleeShape::Attribute { .. } => "Attribute",
-            CalleeShape::Dynamic => "Dynamic",
-        })
-        .collect();
-
     let mut coverage = Coverage::default();
     let mut by_shape: std::collections::BTreeMap<String, Coverage> =
         std::collections::BTreeMap::new();
     for (site_id, outcome) in outcomes.into_iter().enumerate() {
-        let shape = by_shape.entry(shapes[site_id].to_string()).or_default();
+        let shape = by_shape
+            .entry(index.sites[site_id].kind.as_str().to_string())
+            .or_default();
         match outcome {
             // An external call site produces no edge at all. That is what
             // keeps `edges` equal to the recall denominator: every edge is a
@@ -635,11 +641,32 @@ fn lookup_module(map: &HashMap<String, FileId>, module: &str) -> Option<FileId> 
     map.get(module).copied()
 }
 
-/// A module that did not resolve to a file is external when its root package
-/// is not first-party, and a miss when it is.
-fn external_or_unresolvable(module: &str, roots: &HashSet<String>) -> ImportBinding {
+/// Classifies a module path that did not resolve to a file in this repository.
+///
+/// Sharing a root package with first-party code does not make a module
+/// first-party. `poetry` imports `poetry.core.packages.package` 379 times, and
+/// `poetry-core` is a separate distribution that is not in this repository at
+/// all — `src/poetry/core/` does not exist. Judging by the root alone puts
+/// those 379 imports in the recall denominator as misses, which is precisely
+/// the denominator error `BENCHMARK_AND_EVAL.md` §2 warns about: it understates
+/// recall by the third-party share.
+///
+/// So a module counts as first-party only when this repository actually
+/// contains something beneath it (`packages` holds every dotted prefix of
+/// every first-party module). Anything else shares a namespace and nothing
+/// more.
+fn external_or_unresolvable(
+    module: &str,
+    roots: &HashSet<String>,
+    packages: &HashSet<String>,
+) -> ImportBinding {
     let root = module.split('.').next().unwrap_or(module);
-    if roots.contains(root) {
+    if !roots.contains(root) {
+        return ImportBinding::External;
+    }
+    if packages.contains(module) {
+        // A real first-party package whose module we failed to bind. That is
+        // our gap, so it stays in the denominator.
         ImportBinding::Unresolvable
     } else {
         ImportBinding::External
@@ -701,8 +728,25 @@ impl Resolver<'_> {
                 (Some(_), true) => {
                     return Outcome::Edge(Target::Unresolved(Reason::ShadowedAmbiguous));
                 }
-                (Some(d), false) if d.len() == 1 => return self.emit(d[0]),
                 (Some(d), false) => {
+                    // At module scope a name can be bound by a definition
+                    // *and* by an import — the
+                    // `try: from _speedups import f / except ImportError: def f()`
+                    // pattern. Taking the definition and ignoring the import
+                    // would name one of two real bindings and call it certain.
+                    let from_import = if i == 0 {
+                        self.import_symbols(t, name)
+                    } else {
+                        SmallVec::new()
+                    };
+                    if !from_import.is_empty() {
+                        let mut all: SmallVec<[SymbolId; 4]> = d.iter().copied().collect();
+                        all.extend(from_import);
+                        return Outcome::Edge(Target::Candidates(all));
+                    }
+                    if d.len() == 1 {
+                        return self.emit(d[0]);
+                    }
                     return Outcome::Edge(Target::Candidates(d.iter().copied().collect()));
                 }
                 // A parameter or local. The true callee is whatever was
@@ -724,6 +768,25 @@ impl Resolver<'_> {
             return Outcome::Edge(Target::Unresolved(Reason::StarImport));
         }
         Outcome::Edge(Target::Unresolved(Reason::UnboundName))
+    }
+
+    /// First-party symbols an import alias binds, if any.
+    ///
+    /// Used to detect a name bound by both a definition and an import, which
+    /// is `Candidates` rather than a choice between them.
+    fn import_symbols(&self, t: &FileTables, name: &str) -> SmallVec<[SymbolId; 4]> {
+        let mut out = SmallVec::new();
+        let Some(binds) = t.imports.get(name) else {
+            return out;
+        };
+        for b in binds {
+            match self.follow(b, MAX_REEXPORT_DEPTH) {
+                Bound::Symbol(s) => out.push(s),
+                Bound::Symbols(v) => out.extend(v),
+                Bound::Module(_) | Bound::External | Bound::Unfollowed(_) => {}
+            }
+        }
+        out
     }
 
     /// `a.b()` — resolvable only when the receiver's origin is known.

@@ -67,6 +67,7 @@ fn arbitrary_index(seed: u64, n_symbols: u32, n_edges: u32) -> Index {
         // covered separately below.
         let enclosing = SymbolId(rng.below(n_symbols));
         index.sites.push(CallSiteEntry {
+            kind: trellis_index::CalleeKind::Name,
             file: FileId(0),
             span: (0, 1),
             enclosing: Some(enclosing),
@@ -188,6 +189,7 @@ fn a_symbol_reached_by_an_uncertain_edge_is_not_partitionable() {
     let (a_id, b_id) = (SymbolId(0), SymbolId(1));
 
     index.sites.push(CallSiteEntry {
+        kind: trellis_index::CalleeKind::Name,
         file: FileId(0),
         span: (0, 1),
         enclosing: Some(a_id),
@@ -199,6 +201,7 @@ fn a_symbol_reached_by_an_uncertain_edge_is_not_partitionable() {
     assert!(index.is_partitionable(b_id));
 
     index.sites.push(CallSiteEntry {
+        kind: trellis_index::CalleeKind::Name,
         file: FileId(0),
         span: (2, 3),
         enclosing: Some(a_id),

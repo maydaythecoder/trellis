@@ -12,7 +12,7 @@
 //!
 //! The sampling frame is *every* call site, not the first-party ones: only an
 //! auditor can say whether `logger.info()` ends up in the standard library,
-//! and that judgement is precisely what sets the denominator.
+//! and that judgement is precisely what sets the denominator (A-30).
 //!
 //! Usage:
 //!   cargo run --release -p trellis-index --example audit_sample -- \
@@ -21,8 +21,43 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// What the auditor is told. Kept here rather than in a README because an
+/// audit scored against a rule nobody wrote down is noise.
+const INSTRUCTIONS: &str = "\
+For each entry record three fields.
+
+`true_callee`: the fully qualified function this call actually invokes at \
+runtime, written as `module.path.Name` for a function or \
+`module.path.Class.method` for a method. Use the string `dynamic` when it \
+genuinely cannot be determined from the source, and the string `external` \
+when the callee is in the standard library or a third-party package.
+
+`is_first_party`: true when that callee is defined inside this repository, \
+false otherwise. This field, not the resolver, sets the recall denominator.
+
+`reasoning`: one line saying how you determined it.
+
+RULES, so that two auditors agree:
+
+1. `self.m()` where `m` is defined in the enclosing class resolves to THAT \
+definition. A subclass may override `m` at runtime, but that is the dynamic \
+dispatch Constraint 1 accepts as unknowable, not a precision failure. Only \
+record an inherited base-class method when the enclosing class does not \
+define `m` itself.
+
+2. A call through a decorated definition resolves to the decorated function \
+when the decorator returns it (`@staticmethod`, `@lru_cache`), and to \
+`dynamic` when the decorator returns something else.
+
+3. Judge a module first-party by whether THIS repository contains it, not by \
+whether it shares a root package name. `poetry.core` is a separate \
+distribution and is external here.
+
+4. Do not consult the resolver, the index, or any static-analysis tool. Read \
+the source.";
+
 /// SplitMix64. Hand-rolled so the sample is reproducible from the recorded
-/// seed with no dependency whose version could change the draw.
+/// seed with no dependency whose version could change the draw (A-33).
 struct Rng(u64);
 
 impl Rng {
@@ -86,16 +121,19 @@ fn main() {
     }
     chosen.sort_unstable();
 
-    // The resolver's verdict per sampled site, for scoring *after* the audit.
-    let mut answers: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    for edge in &index.edges {
-        let id = edge.from.index();
-        if !seen.contains(&id) {
-            continue;
-        }
-        answers.insert(id.to_string(), describe(&index, &edge.target));
-    }
+    // Index the edges by site so an absent one can be told from a resolved
+    // one. A sampled site with no edge is a site the resolver judged
+    // external — a claim it must be scored on, because if the auditor finds
+    // the callee is first-party after all, the resolver wrongly shrank its
+    // own denominator. That is the one failure the repository-wide figure
+    // structurally cannot show.
+    let by_site: BTreeMap<usize, &trellis_index::Target> = index
+        .edges
+        .iter()
+        .map(|e| (e.from.index(), &e.target))
+        .collect();
 
+    let mut answers: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     let mut sample = Vec::new();
     for &id in &chosen {
         let site = &index.sites[id];
@@ -113,13 +151,20 @@ fn main() {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Sites with no edge are the ones the resolver called external.
-        // The auditor is not told which those are.
+        answers.insert(
+            id.to_string(),
+            match by_site.get(&id) {
+                Some(t) => describe(&index, t),
+                None => serde_json::json!({ "kind": "ExternalExcluded" }),
+            },
+        );
+
         sample.push(serde_json::json!({
             "id": id,
             "file": rel,
             "line": line,
             "call": call,
+            "shape": site.kind.as_str(),
             "enclosing_module": index.files[site.file.index()].module,
             "snippet": snippet,
             // To be filled by the auditor.
@@ -130,24 +175,19 @@ fn main() {
     }
 
     std::fs::create_dir_all(out_dir).expect("cannot create output directory");
-    let meta = serde_json::json!({
-        "root": root.display().to_string(),
-        "seed": seed,
-        "requested": n,
-        "drawn": sample.len(),
-        "population": total,
-        "files": sources.len(),
-        "instructions": "For each entry record `true_callee` (the fully qualified \
-                         function this call actually invokes at runtime), \
-                         `is_first_party` (true when that callee is defined inside \
-                         this repository), and one line of `reasoning`. Use \
-                         `dynamic` for true_callee when it genuinely cannot be \
-                         determined from the source. Do not consult the resolver.",
-        "sample": sample,
-    });
     std::fs::write(
         out_dir.join("sample.json"),
-        serde_json::to_string_pretty(&meta).expect("serializable"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "root": root.display().to_string(),
+            "seed": seed,
+            "requested": n,
+            "drawn": sample.len(),
+            "population": total,
+            "files": sources.len(),
+            "instructions": INSTRUCTIONS,
+            "sample": sample,
+        }))
+        .expect("serializable"),
     )
     .expect("cannot write sample");
 

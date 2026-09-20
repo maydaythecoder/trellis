@@ -286,6 +286,7 @@ mod tests {
         let mut index = index_with(8);
         // Make symbol 4 reachable through a Candidates edge.
         index.sites.push(CallSiteEntry {
+            kind: trellis_index::CalleeKind::Name,
             file: FileId(0),
             span: (0, 1),
             enclosing: Some(SymbolId(0)),
@@ -330,6 +331,7 @@ mod tests {
     fn the_conservative_partition_never_intersects_a_regular_one() {
         let mut index = index_with(8);
         index.sites.push(CallSiteEntry {
+            kind: trellis_index::CalleeKind::Name,
             file: FileId(0),
             span: (0, 1),
             enclosing: Some(SymbolId(0)),

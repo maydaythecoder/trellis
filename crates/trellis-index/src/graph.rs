@@ -116,8 +116,33 @@ pub enum SymbolKind {
     Class,
 }
 
+/// The syntactic shape of a call site's callee, kept on the site itself.
+///
+/// `BENCHMARK_AND_EVAL.md` §2 requires the recall sample to be reported
+/// stratified by shape. Deriving the shape from the call's source text at
+/// scoring time would be a second, weaker parser that can disagree with the
+/// real one, so the real one records it once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum CalleeKind {
+    #[default]
+    Name,
+    Attribute,
+    Dynamic,
+}
+
+impl CalleeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CalleeKind::Name => "Name",
+            CalleeKind::Attribute => "Attribute",
+            CalleeKind::Dynamic => "Dynamic",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallSiteEntry {
+    pub kind: CalleeKind,
     pub file: FileId,
     pub span: (usize, usize),
     /// The symbol whose body contains this call, when there is one.

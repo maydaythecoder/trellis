@@ -66,6 +66,7 @@ fn index_with_uncertainty(rng: &mut Rng, n_symbols: u32) -> Index {
             continue;
         }
         index.sites.push(CallSiteEntry {
+            kind: trellis_index::CalleeKind::Name,
             file: FileId(0),
             span: (0, 1),
             enclosing: Some(SymbolId(0)),

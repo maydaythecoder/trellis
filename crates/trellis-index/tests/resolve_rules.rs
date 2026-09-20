@@ -396,3 +396,65 @@ fn module_paths_follow_the_src_layout_convention() {
     assert_eq!(module_path_of("tests/test_add.py"), "tests.test_add");
     assert_eq!(module_path_of("flask/app.py"), "flask.app");
 }
+
+#[test]
+fn a_definition_and_an_import_binding_one_name_yield_candidates() {
+    // The `try: from _speedups import f / except ImportError: def f(): ...`
+    // pattern. Both bindings are real; which is live depends on whether the
+    // import succeeded at runtime. Returning the local definition alone would
+    // name one of two real bindings and call it certain.
+    let b = bindings(&[
+        ("app/fast.py", "def load():\n    return 1\n"),
+        (
+            "app/main.py",
+            "try:\n    from app.fast import load\nexcept ImportError:\n    def load():\n        return 2\n\ndef go():\n    return load()\n",
+        ),
+    ]);
+    assert_eq!(target_of(&b, "load()"), "?? [app.fast.load, app.main.load]");
+}
+
+#[test]
+fn sharing_a_root_package_does_not_make_a_module_first_party() {
+    // `poetry` imports `poetry.core.*` 379 times, and poetry-core is a
+    // separate distribution: `src/poetry/core/` does not exist. Judging
+    // first-partyness by the root package alone puts those in the recall
+    // denominator as misses, understating recall by the third-party share.
+    let owned: Vec<(String, String)> = vec![
+        (
+            "src/app/util.py".to_string(),
+            "def helper():\n    return 1\n".to_string(),
+        ),
+        (
+            "src/app/main.py".to_string(),
+            "from app.vendored.thing import absent\n\ndef go():\n    return absent()\n".to_string(),
+        ),
+    ];
+    let index = build_from_sources(&owned);
+
+    // `app` is first-party, but this repository contains nothing under
+    // `app.vendored`, so the call is excluded rather than counted as a miss.
+    assert_eq!(index.coverage.external, 1, "{:?}", index.coverage);
+    assert_eq!(index.coverage.total(), 0);
+}
+
+#[test]
+fn a_first_party_package_we_failed_to_bind_stays_in_the_denominator() {
+    // The mirror of the test above. `app.sub` really is a package in this
+    // repository, so failing to bind a name from it is our gap, not an
+    // exclusion — it must stay in the denominator.
+    let owned: Vec<(String, String)> = vec![
+        (
+            "src/app/sub/real.py".to_string(),
+            "def present():\n    return 1\n".to_string(),
+        ),
+        (
+            "src/app/main.py".to_string(),
+            "from app.sub import absent\n\ndef go():\n    return absent()\n".to_string(),
+        ),
+    ];
+    let index = build_from_sources(&owned);
+
+    assert_eq!(index.coverage.external, 0, "{:?}", index.coverage);
+    assert_eq!(index.coverage.total(), 1);
+    assert_eq!(index.coverage.unresolved, 1);
+}
