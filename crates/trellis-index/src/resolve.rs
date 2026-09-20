@@ -308,7 +308,7 @@ fn rel_path(root: &Path, p: &Path) -> String {
 /// `src/poetry/x.py`, and the benchmark repository uses it. `__init__.py`
 /// names its package rather than a module inside it.
 ///
-/// ASSUMPTION A-24: `src/` is the only synthetic package root recognised.
+/// ASSUMPTION A-26: `src/` is the only synthetic package root recognised.
 /// A repository using a different one resolves fewer imports, visibly, in
 /// the coverage report — it does not silently mis-resolve them.
 pub fn module_path_of(rel: &str) -> String {
