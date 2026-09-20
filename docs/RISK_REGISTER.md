@@ -165,6 +165,65 @@ the codebase, and they are enforced by `cargo build`, not by review.
 
 ---
 
+## S20 — A cached checker returns a verdict about code it did not read
+
+**Severity: critical · Likelihood: certain without the patch — FOUND AND
+PATCHED 2026-09-20**
+
+Numbered beyond the brief's S1–S19 because it is not a variant of any of them.
+Every soft spot in this register concerns the model, the graph, or the
+schedule. This one is in the grounding contract's own plumbing: the mechanism
+that is supposed to make correctness non-negotiable can be handed a stale
+answer by the tool it trusts.
+
+**Found by accident**, which is the part worth keeping. A demo run reported a
+check passing on a file that was definitely broken, and the explanation was
+not in TRELLIS.
+
+**Reproduction, three commands:**
+
+```
+check a broken file          -> fails   (correct)
+fix it, check again          -> passes  (correct)
+git checkout it back, check  -> PASSES  (wrong: the code is broken again)
+```
+
+mypy's incremental cache keys on size and mtime. A restore to a previous
+version of the **same byte length** looks unchanged to it, and `git checkout`
+is exactly that — which is what `Snapshot::rollback` does on every
+non-converging run. The edit that triggered it was `-> int:` to `-> str:`:
+identical length, and the sort of change an agent makes constantly.
+
+**Why this is worse than an ordinary bug.** The resulting `Verdict` is
+truthful about everything it asserts structurally — a process ran, it exited
+zero — and wrong about the only thing anyone cares about. The seal in
+`trellis-checks` guarantees a verdict came from an executed process. It cannot
+guarantee that process read the file. Constraint 2 says correctness comes only
+from things that execute; this is the case where something executed and still
+lied.
+
+**Patch, applied.** `CheckConfig::default()` now passes `--no-incremental`,
+with the reasoning in the source where someone tempted to remove it for speed
+will read it. Correctness before speed: a slower check that reads the code
+beats a fast one that reads a stale answer.
+
+**Residual risk.** The patch is mypy-specific and the general problem is not.
+Any checker with a content-insensitive cache has the same hazard — pytest's
+`--lf`/cache, a type checker's daemon mode, a build system's timestamp
+comparison. A repository is free to configure a cached command and TRELLIS
+cannot detect it, because from outside, a stale pass and a real pass are the
+same exit code.
+
+**What would close it properly:** run each check twice on a known-failing
+fixture at startup and compare, or require checkers to be invoked in a mode
+the harness can verify is cache-free. Both are real work. → `OPEN_QUESTIONS.md`
+Q-17.
+
+**Cost.** Patch: done. Proper closure: 3–5 days, and it needs a way to assert
+"this command does not cache" that does not rely on trusting the command.
+
+---
+
 ## S5 — The single-owner orchestrator serializes, and small windows squeeze context
 
 **Severity: high · Likelihood: likely**

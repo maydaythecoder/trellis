@@ -144,6 +144,29 @@ The numbers say a user meeting that screen once will not meet it twice, so the
 question of what they actually see is now load-bearing for whether the product
 is usable at all. → Owner: product, before v0.3.
 
+**Q-17 — How does the harness know a check command is not cached?**
+S20 records a reproduced case where mypy returned a passing verdict on broken
+code, because its incremental cache treated a same-size `git checkout` restore
+as unchanged. The default now passes `--no-incremental`, which fixes mypy and
+nothing else.
+
+The general problem is unsolved and may be unsolvable from outside: a stale
+pass and a real pass are the same exit code, so the harness cannot tell them
+apart by observation. Candidate approaches, none cheap:
+
+- Run each configured check against a known-failing fixture at startup and
+  refuse to proceed if it passes. Catches caching and misconfiguration, costs
+  a check per startup, and needs a fixture in a language the checker accepts.
+- Require checks to be declared cache-free and take the user's word, which
+  moves the problem rather than solving it.
+- Invalidate known cache directories after rollback, which is a list that
+  will always be incomplete.
+
+Until one is chosen, the honest position is that TRELLIS's verdicts are only
+as trustworthy as the commands a repository configures — and that the first
+thing to suspect after a surprising pass is the checker's cache.
+→ Owner: before the v1.0 gate, since gate condition 3 rests on it.
+
 The brief cites several external results as the basis for its two constraints.
 They are reproduced in the ADRs as given and are **not independently verified**
 in this repository. Anyone relying on them for a decision should read the

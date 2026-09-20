@@ -275,6 +275,8 @@ mod tests {
                 },
                 observation: "file contents".into(),
                 verdict_passed: None,
+                check_kind: None,
+                radius_counts: None,
             }],
             final_notice: true,
         };
@@ -307,6 +309,8 @@ mod tests {
                 },
                 observation: obs,
                 verdict_passed: None,
+                check_kind: None,
+                radius_counts: None,
             }],
             final_notice: false,
         };

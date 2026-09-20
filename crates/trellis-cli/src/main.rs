@@ -4,8 +4,9 @@
 //! implementations. `run` currently drives the loop with a scripted model —
 //! real files, real checks, real rollback, and only judgement stubbed — which
 //! is what lets v0.2's exit condition be demonstrated before inference exists.
-//! `resume` needs the trail (v0.3) and `partitions` needs multi-agent planning
-//! (v1.1); both exit non-zero with a clear message rather than pretending.
+//! `resume` reads the last committed trail. `partitions` needs multi-agent
+//! planning (v1.1) and exits non-zero with a clear message rather than
+//! pretending.
 
 mod config;
 
@@ -158,7 +159,11 @@ impl Driver {
 
         let (kind, base) = spec.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(
-                "--model `{spec}` is not recognised. Expected `scripted:<path>` or                  `<runtime>:http://host:port` where <runtime> is llamacpp, vllm or sglang."
+                concat!(
+                    "--model `{}` is not recognised. Expected `scripted:<path>` or ",
+                    "`<runtime>:http://host:port` where <runtime> is llamacpp, vllm or sglang."
+                ),
+                spec
             )
         })?;
         let dialect = trellis_model::Dialect::parse(kind).ok_or_else(|| {
@@ -250,8 +255,22 @@ fn cmd_run(
         } => {
             println!();
             println!("CONVERGED after {iterations} iterations, {checks_passed} checks passed.");
+            let trail = record_trail(
+                root,
+                task,
+                &turns,
+                &transcript,
+                trellis_trail::Approval::None,
+            )?;
+            println!("trail:    {}", trail.display());
             println!(
-                "Changes are left in the working tree for you to review. Nothing is \n                 committed: acceptance is yours, and the trail that records it is v0.3."
+                "{}",
+                concat!(
+                    "Changes are left in the working tree for you to review. ",
+                    "Nothing is committed:\n",
+                    "acceptance is yours, and the trail records the run as unapproved ",
+                    "until you give it."
+                )
             );
             Ok(())
         }
@@ -322,6 +341,10 @@ state, which is the rest of v0.3."
 }
 
 /// Records what happened, factual and judgment kept apart.
+///
+/// Everything in `factual` comes from a tool result the run actually received.
+/// Nothing is defaulted into it: a figure nobody measured has no business in
+/// the section whose promise is that it is machine-checkable.
 fn record_trail(
     root: &Path,
     task: &str,
@@ -329,39 +352,58 @@ fn record_trail(
     touched: &[String],
     approved: trellis_trail::Approval,
 ) -> Result<std::path::PathBuf> {
-    use trellis_trail::{Factual, Judgment, ModeCounts, RadiusCounts, Trail};
+    use trellis_trail::{CheckOutcome, Factual, Judgment, ModeCounts, RadiusCounts, Trail};
 
-    // Counts come from the radius observations the run actually made, so a
-    // run that never asked for a radius records zeros rather than an
-    // invented summary.
-    let radius = RadiusCounts::default();
+    // Summed over every radius the run queried, which is what "how much did
+    // this run examine" means when a task touches several symbols. A run that
+    // never asked records zeros, and that is then a fact rather than a
+    // placeholder.
+    let mut radius = RadiusCounts::default();
+    for t in &turns.turns {
+        if let Some((r, c, u)) = t.radius_counts {
+            radius.resolved += r;
+            radius.candidates += c;
+            radius.unresolved += u;
+        }
+    }
+
+    let check_outcomes: Vec<CheckOutcome> = turns
+        .turns
+        .iter()
+        .filter_map(|t| {
+            Some(CheckOutcome {
+                kind: t.check_kind.clone()?,
+                passed: t.verdict_passed?,
+            })
+        })
+        .collect();
+
+    let (timestamp, started_at) = trellis_trail::now();
 
     let trail = Trail {
         task: task.to_string(),
-        started_at: trellis_trail::iso_now(),
+        started_at,
         trellis_version: env!("CARGO_PKG_VERSION").to_string(),
         factual: Factual {
             proposed: touched.to_vec(),
             radius,
-            // `checks` holds `Verdict`s, which cannot be constructed outside
-            // `trellis-checks`; the loop keeps only whether each passed, so
-            // the trail records the sequence rather than re-asserting them.
+            // `Verdict` cannot be constructed outside `trellis-checks`, so the
+            // sequence travels as `check_outcomes` instead. See its docs.
             checks: Vec::new(),
+            check_outcomes,
             approved_by: approved,
             mode_counts: ModeCounts::default(),
         },
-        judgment: Judgment {
-            rationale: turns
-                .turns
-                .last()
-                .map(|t| format!("last observation: {}", first_line(&t.observation))),
-            tech_debt_projection: None,
-        },
+        // Left empty deliberately. The judgment section is the *model's*
+        // opinion, and `resume` fences it as unverified — so putting a check
+        // result here would label an executed fact as speculation, which is
+        // the S11 confusion the split exists to prevent, inverted. It is
+        // filled when a model supplies a `Done { summary }`, and not before.
+        judgment: Judgment::default(),
     };
 
-    let ts = trellis_trail::timestamp_now();
     let slug = trellis_trail::slugify(task);
-    let path = trellis_trail::write(root, &trail, &ts, &slug)?;
+    let path = trellis_trail::write(root, &trail, &timestamp, &slug)?;
 
     // Committed, not merely written. The brief calls the trail durable and in
     // the repository, and leaving it untracked fails that twice: the worktree
@@ -370,16 +412,12 @@ fn record_trail(
     //
     // Only the trail is staged. The code the run proposed stays uncommitted,
     // because accepting it is the user's decision to make.
-    let rel = trellis_trail::Trail::path(&ts, &slug);
+    let rel = trellis_trail::Trail::path(&timestamp, &slug);
     if let Err(e) = trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {task}"))
     {
         println!("trail written but not committed: {e}");
     }
     Ok(path)
-}
-
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or("").chars().take(200).collect()
 }
 
 /// Blast radius for a symbol, with its confidence breakdown.

@@ -63,6 +63,14 @@ pub struct Turn {
     /// outcome — a successful edit, a successful file read — is `None`.
     /// Writing a file is not evidence the write was correct.
     pub verdict_passed: Option<bool>,
+    /// Which check ran, when one did.
+    pub check_kind: Option<String>,
+    /// `(resolved, ambiguous, unresolved)` from a radius query.
+    ///
+    /// Carried as numbers rather than recovered from `observation`, because
+    /// the trail's factual section has to hold figures a reader can check —
+    /// and re-parsing a string rendered for a model is not that.
+    pub radius_counts: Option<(u32, u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +251,18 @@ pub async fn run<M: Model>(
                     ToolResult::Checks(v) => Some(v.passed()),
                     _ => None,
                 };
+                let check_kind = match &result {
+                    ToolResult::Checks(v) => Some(format!("{:?}", v.detail().kind)),
+                    _ => None,
+                };
+                let radius_counts = match &result {
+                    ToolResult::Radius(r) => Some((
+                        r.coverage.resolved,
+                        r.coverage.candidates,
+                        r.coverage.unresolved,
+                    )),
+                    _ => None,
+                };
                 if verdict_passed == Some(true) {
                     checks_passed += 1;
                 }
@@ -250,6 +270,8 @@ pub async fn run<M: Model>(
                     observation: render(&call, &result),
                     call,
                     verdict_passed,
+                    check_kind,
+                    radius_counts,
                 });
             }
         }
@@ -587,11 +609,15 @@ mod tests {
                     call: ToolCall::ReadFile { path: "a".into() },
                     observation: String::new(),
                     verdict_passed: Some(true),
+                    check_kind: Some("Typecheck".into()),
+                    radius_counts: None,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
                     observation: String::new(),
                     verdict_passed: Some(false),
+                    check_kind: Some("Tests".into()),
+                    radius_counts: None,
                 },
             ],
             final_notice: false,

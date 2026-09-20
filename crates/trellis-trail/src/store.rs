@@ -94,21 +94,30 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// ISO-8601 UTC, for the trail's own `started_at`.
 pub fn iso_now() -> String {
-    let t = timestamp_from_epoch(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-    );
-    format!(
+    now().1
+}
+
+/// The filename timestamp and the ISO timestamp, from **one** clock read.
+///
+/// Reading the clock twice let a trail carry a `started_at` in one second and
+/// a filename in the next, which is a small lie in a document whose whole
+/// value is being an accurate record.
+pub fn now() -> (String, String) {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let base = timestamp_from_epoch(d.as_secs());
+    let stamp = format!("{base}-{:03}", d.subsec_millis());
+    let iso = format!(
         "{}-{}-{}T{}:{}:{}Z",
-        &t[0..4],
-        &t[4..6],
-        &t[6..8],
-        &t[9..11],
-        &t[11..13],
-        &t[13..15]
-    )
+        &base[0..4],
+        &base[4..6],
+        &base[6..8],
+        &base[9..11],
+        &base[11..13],
+        &base[13..15]
+    );
+    (stamp, iso)
 }
 
 /// Writes a trail under `<root>/.trellis/runs/`.
@@ -180,6 +189,7 @@ mod tests {
                     unresolved: 2,
                 },
                 checks: Vec::new(),
+                check_outcomes: Vec::new(),
                 approved_by: Approval::None,
                 mode_counts: ModeCounts::default(),
             },

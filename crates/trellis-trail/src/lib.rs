@@ -11,7 +11,7 @@
 pub mod store;
 pub mod untrusted;
 
-pub use store::{iso_now, latest, slugify, timestamp_now, write};
+pub use store::{iso_now, latest, now, slugify, timestamp_now, write};
 pub use untrusted::{RecordedCheck, UntrustedTrail};
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,15 @@ pub struct Factual {
     /// not deserialize, so reading a trail back yields inert
     /// `RecordedCheck` data rather than a live verdict.
     pub checks: Vec<Verdict>,
+    /// Which checks ran, in order, and whether each passed.
+    ///
+    /// `checks` above holds `Verdict`s, which cannot be constructed outside
+    /// `trellis-checks` — that seal is what makes Constraint 2 structural, and
+    /// it also means a trail written by the CLI cannot carry them. This field
+    /// records the same sequence as inert data so the factual section says
+    /// what actually ran, rather than being silently empty.
+    #[serde(default)]
+    pub check_outcomes: Vec<CheckOutcome>,
     pub approved_by: Approval,
     pub mode_counts: ModeCounts,
 }
@@ -68,6 +77,13 @@ impl ModeCounts {
             self.verified, self.reviewed
         )
     }
+}
+
+/// One executed check, as the trail records it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckOutcome {
+    pub kind: String,
+    pub passed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +159,10 @@ mod tests {
                     unresolved: 2,
                 },
                 checks: vec![],
+                check_outcomes: vec![CheckOutcome {
+                    kind: "Tests".into(),
+                    passed: true,
+                }],
                 approved_by: Approval::Human,
                 mode_counts: ModeCounts {
                     verified: 45,
