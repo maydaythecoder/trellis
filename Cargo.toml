@@ -24,6 +24,9 @@ rustyline          = { version = "18.0.1", default-features = false, features = 
 # Compile-fail tests. The v0.2 gate asks for a *compile-fail* proof that
 # `Verdict` cannot be forged; asserting it by inspection is not that.
 trybuild           = "1.0.113"
+# The v0.3 gate asks for a tamper-evident factual section. A 64-bit
+# non-cryptographic hash would not be evidence of anything.
+sha2               = "0.10.9"
 serde              = { version = "1.0.229", features = ["derive"] }
 serde_json         = "1.0.151"
 schemars           = "1.2.2"

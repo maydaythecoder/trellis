@@ -8,11 +8,12 @@
 //! that may take contributions, so anything read back from it is untrusted
 //! input (S10).
 
+pub mod query;
 pub mod store;
 pub mod untrusted;
 
 pub use store::{iso_now, latest, now, slugify, timestamp_now, write};
-pub use untrusted::{RecordedCheck, UntrustedTrail};
+pub use untrusted::{Integrity, RecordedCheck, UntrustedTrail};
 
 use serde::{Deserialize, Serialize};
 use trellis_checks::{AuditMode, Verdict};
@@ -156,12 +157,76 @@ pub struct Judgment {
 /// One run.
 #[derive(Debug, Clone, Serialize)]
 pub struct Trail {
+    /// Format version. Present from the first trail ever written.
+    ///
+    /// This format will change — v1.x will want fields nobody has thought of
+    /// yet — and a reader that cannot tell which version it is holding has to
+    /// guess from shape. Every trail written carries it so no trail is ever
+    /// orphaned by a change.
+    pub schema: u32,
+    /// Stable identity: `<timestamp>-<slug>`, matching the filename.
+    ///
+    /// `trellis resume <run_id>` needs something to name, and a filename is
+    /// not it — a path is where a thing lives, not what it is.
+    pub run_id: String,
     pub task: String,
+    /// The commit the run started from.
+    ///
+    /// Without it the factual section says what changed and not what it
+    /// changed *from*, which makes it uncheckable against the repository a
+    /// year later.
+    pub base_commit: String,
     /// ISO-8601, so a trail file sorts by name and by content.
     pub started_at: String,
-    pub trellis_version: String,
+    pub provenance: Provenance,
     pub factual: Factual,
+    /// SHA-256 over the canonical JSON of `factual`.
+    ///
+    /// The v0.3 gate asks for the factual section to be tamper-evident. It
+    /// lives in a repository that takes contributions, and an edited figure
+    /// there propagates into every future session that reads it (S10). This
+    /// does not make editing impossible — anyone who changes the section can
+    /// recompute the digest — it makes *silent* editing impossible, which is
+    /// the difference between a record and a rumour.
+    pub factual_sha256: String,
     pub judgment: Judgment,
+}
+
+/// Who produced this trail.
+///
+/// The gate asks for provenance per entry: which run, which model, which
+/// version of TRELLIS. A trail read back a year later is only as useful as
+/// what a reader can tell about where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    pub trellis_version: String,
+    /// The `--model` spec, or `None` where nothing drove the loop.
+    pub model: Option<String>,
+    /// Adapter tier in force, when one was known. Tier 4 output is materially
+    /// less reliable and a reader judging an old run should know which it was.
+    pub tier: Option<String>,
+}
+
+/// The current trail format.
+pub const SCHEMA: u32 = 1;
+
+impl Trail {
+    /// SHA-256 over `factual`, serialized canonically.
+    ///
+    /// `serde_json` orders struct fields by declaration and `BTreeMap` keys by
+    /// sort order, so the same `Factual` always serializes identically. That
+    /// determinism is what makes the digest checkable rather than decorative.
+    pub fn compute_factual_sha256(factual: &Factual) -> String {
+        use sha2::{Digest, Sha256};
+        let json = serde_json::to_vec(factual).unwrap_or_default();
+        let digest = Sha256::digest(&json);
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Whether the recorded digest still matches the section it covers.
+    pub fn factual_is_intact(&self) -> bool {
+        Self::compute_factual_sha256(&self.factual) == self.factual_sha256
+    }
 }
 
 impl Trail {
@@ -202,7 +267,14 @@ mod tests {
         let t = Trail {
             task: "rename Installer.run".into(),
             started_at: "2026-09-18T05:12:00Z".into(),
-            trellis_version: "0.0.1".into(),
+            schema: SCHEMA,
+            run_id: "20260920-000000-000-test".into(),
+            base_commit: "0000000".into(),
+            provenance: Provenance {
+                trellis_version: "0.0.1".into(),
+                model: None,
+                tier: None,
+            },
             factual: Factual {
                 proposed: vec!["src/poetry/installation/installer.py".into()],
                 radius: RadiusCounts {
@@ -227,6 +299,7 @@ mod tests {
                     turns_measured: 6,
                 }),
             },
+            factual_sha256: String::new(),
             judgment: Judgment {
                 tech_debt_projection: Some("the adapter shim will need removing".into()),
                 rationale: Some("kept the old name as an alias".into()),

@@ -161,7 +161,19 @@ pub fn latest(root: &Path) -> std::io::Result<Option<(PathBuf, UntrustedTrail)>>
     };
     let text = std::fs::read_to_string(&path)?;
     match UntrustedTrail::from_json(&text) {
-        Ok(t) => Ok(Some((path, t))),
+        Ok(t) => {
+            // The integrity check needs the bytes as they were on disk, not a
+            // re-serialization of what we parsed, so the raw JSON travels with
+            // the trail rather than being re-read by every caller.
+            let integrity = t.integrity(&text);
+            if integrity == crate::Integrity::Altered {
+                tracing::warn!(
+                    path = %path.display(),
+                    "the factual section does not match its recorded digest"
+                );
+            }
+            Ok(Some((path, t)))
+        }
         // A corrupt or hand-edited trail must not abort a resume. Reporting
         // it and continuing without context is better than refusing to work.
         Err(e) => Err(std::io::Error::new(
@@ -174,13 +186,20 @@ pub fn latest(root: &Path) -> std::io::Result<Option<(PathBuf, UntrustedTrail)>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Approval, Factual, Judgment, ModeCounts, RadiusCounts};
+    use crate::{Approval, Factual, Judgment, ModeCounts, Provenance, RadiusCounts, SCHEMA};
 
     fn trail(task: &str) -> Trail {
         Trail {
             task: task.into(),
             started_at: iso_now(),
-            trellis_version: "test".into(),
+            schema: SCHEMA,
+            run_id: "20260920-000000-000-test".into(),
+            base_commit: "0000000".into(),
+            provenance: Provenance {
+                trellis_version: "test".into(),
+                model: None,
+                tier: None,
+            },
             factual: Factual {
                 proposed: vec!["app/a.py".into()],
                 radius: RadiusCounts {
@@ -195,6 +214,7 @@ mod tests {
                 mode_counts: ModeCounts::default(),
                 context: None,
             },
+            factual_sha256: String::new(),
             judgment: Judgment::default(),
         }
     }

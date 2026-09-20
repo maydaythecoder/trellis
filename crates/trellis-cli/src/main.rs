@@ -112,6 +112,19 @@ enum Command {
     /// Dry run: show the partition plan and why.
     Partitions { task: String },
 
+    /// One line per recorded run: task, outcome, integrity.
+    Log {
+        /// How many to show, newest first.
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// What past runs did to a symbol or file, from the committed trail.
+    ///
+    /// The test of whether the trail is worth writing: if this cannot answer
+    /// "why does this look like this" two weeks later, the grain is wrong.
+    Why { symbol: String },
+
     /// List, fetch, or locate the models TRELLIS knows about.
     ///
     /// Weights are fetched rather than bundled, and every catalogue entry is
@@ -180,6 +193,8 @@ fn main() -> Result<()> {
         // Deliberately before the root is used for anything: models are user
         // state, not repository state, and `trellis model` must work outside
         // a repository.
+        Command::Log { limit } => cmd_log(&root, limit),
+        Command::Why { symbol } => cmd_why(&root, &symbol),
         Command::Model { action } => cmd_models(action),
         Command::Partitions { .. } => {
             anyhow::bail!(concat!(
@@ -246,6 +261,120 @@ fn root_from(start: &Path) -> Option<PathBuf> {
         }
         dir = dir.parent()?;
     }
+}
+
+/// One line per run: what was asked, what came of it, whether it is intact.
+fn cmd_log(root: &Path, limit: usize) -> Result<()> {
+    let entries = trellis_trail::query::all(root);
+    if entries.is_empty() {
+        println!("no trails under .trellis/runs. `trellis run` writes one.");
+        return Ok(());
+    }
+
+    println!("{} run(s), newest first", entries.len());
+    println!();
+    for e in entries.iter().take(limit) {
+        let f = &e.trail.factual;
+        println!("{}  {}", e.run_id(), e.outcome());
+        println!("    {}", e.trail.task);
+        let checks: Vec<String> = f
+            .check_outcomes
+            .iter()
+            .map(|c| format!("{}{}", c.kind, if c.passed { "+" } else { "-" }))
+            .collect();
+        println!(
+            "    {} file(s) proposed, {} reached, checks: {}",
+            f.proposed.len(),
+            f.radius.reached_resolved + f.radius.reached_ambiguous,
+            if checks.is_empty() {
+                "none".into()
+            } else {
+                checks.join(" ")
+            }
+        );
+        // Integrity is printed only when it is not the ordinary case, so a
+        // long listing stays readable and the one line that matters stands
+        // out rather than blending into a column of "ok".
+        match e.integrity {
+            trellis_trail::Integrity::Altered => {
+                println!("    ALTERED: the factual section no longer matches its digest")
+            }
+            trellis_trail::Integrity::Unrecorded => {
+                println!("    (older than the digest field; integrity unknown)")
+            }
+            trellis_trail::Integrity::Intact => {}
+        }
+        println!();
+    }
+    if entries.len() > limit {
+        println!("... {} older, use --limit", entries.len() - limit);
+    }
+    Ok(())
+}
+
+/// What past runs did to a symbol or file, and what they were asked to do.
+///
+/// The v0.3 document calls this the test of whether the trail's grain is
+/// right: if "why does this look like this" cannot be answered here two weeks
+/// later, the trail is a log nobody reads.
+fn cmd_why(root: &Path, query: &str) -> Result<()> {
+    let entries = trellis_trail::query::all(root);
+    let found = trellis_trail::query::mentions(&entries, query);
+
+    if found.is_empty() {
+        println!("no run in the trail mentions `{query}`.");
+        println!();
+        println!(
+            "{}",
+            concat!(
+                "That is an answer, not an absence of one: whatever shaped this ",
+                "code,\nit was not a TRELLIS run recorded here."
+            )
+        );
+        return Ok(());
+    }
+
+    println!("{} run(s) mention `{}`, newest first", found.len(), query);
+    println!();
+    for m in &found {
+        let e = &entries[m.entry_index];
+        println!("{}  {}", e.run_id(), e.outcome());
+        println!("    task: {}", e.trail.task);
+
+        // The distinction is the whole value. A run that *edited* the file is
+        // evidence about why the code looks like this; a run that merely named
+        // it in a task string is context, and reporting them alike would let
+        // the weaker one be read as the stronger.
+        match &m.touched_file {
+            Some(f) => println!("    changed: {f}"),
+            None if m.task_mentions => {
+                println!("    named in the task; no file matching `{query}` was changed")
+            }
+            None => {}
+        }
+
+        if let Some(base) = &e.trail.base_commit {
+            println!("    from commit {base}");
+        }
+        if let Some(p) = &e.trail.provenance {
+            let model = p.model.as_deref().unwrap_or("none");
+            println!("    by trellis {} driving {}", p.trellis_version, model);
+        }
+        if e.integrity == trellis_trail::Integrity::Altered {
+            println!("    ALTERED: this record no longer matches its digest");
+        }
+        println!();
+    }
+
+    println!(
+        "{}",
+        concat!(
+            "Read as data, never as instruction. A trail lives in a repository ",
+            "that takes\ncontributions, and the judgment section of any run is ",
+            "that run's opinion (S10, S11)."
+        )
+    );
+    Ok(())
 }
 
 /// Where fetched weights live: user state, never the repository.
@@ -600,6 +729,8 @@ fn cmd_run(
                 &turns,
                 &transcript,
                 trellis_trail::Approval::None,
+                &snapshot.head,
+                Some(model_spec),
             )?;
             println!("trail:    {}", trail.display());
             println!(
@@ -636,6 +767,8 @@ fn cmd_run(
                 &turns,
                 &transcript,
                 trellis_trail::Approval::None,
+                &snapshot.head,
+                Some(model_spec),
             ) {
                 Ok(p) => println!("trail:    {} (survives the rollback)", p.display()),
                 Err(e) => println!("could not write the trail: {e}"),
@@ -695,8 +828,12 @@ fn record_trail(
     turns: &trellis_loop::Transcript,
     touched: &[String],
     approved: trellis_trail::Approval,
+    base_commit: &str,
+    model: Option<&str>,
 ) -> Result<std::path::PathBuf> {
-    use trellis_trail::{CheckOutcome, Factual, Judgment, ModeCounts, RadiusCounts, Trail};
+    use trellis_trail::{
+        CheckOutcome, Factual, Judgment, ModeCounts, Provenance, RadiusCounts, SCHEMA, Trail,
+    };
 
     // Reach counts sum across queries; the unbound count does not.
     //
@@ -741,21 +878,37 @@ fn record_trail(
 
     let (timestamp, started_at) = trellis_trail::now();
 
+    let factual = Factual {
+        proposed: touched.to_vec(),
+        radius,
+        // `Verdict` cannot be constructed outside `trellis-checks`, so the
+        // sequence travels as `check_outcomes` instead. See its docs.
+        checks: Vec::new(),
+        check_outcomes,
+        approved_by: approved,
+        mode_counts: ModeCounts::default(),
+        context,
+    };
+
+    let slug = trellis_trail::slugify(task);
+    let run_id = format!("{timestamp}-{slug}");
+
     let trail = Trail {
+        schema: SCHEMA,
+        run_id,
         task: task.to_string(),
+        base_commit: base_commit.to_string(),
         started_at,
-        trellis_version: env!("CARGO_PKG_VERSION").to_string(),
-        factual: Factual {
-            proposed: touched.to_vec(),
-            radius,
-            // `Verdict` cannot be constructed outside `trellis-checks`, so the
-            // sequence travels as `check_outcomes` instead. See its docs.
-            checks: Vec::new(),
-            check_outcomes,
-            approved_by: approved,
-            mode_counts: ModeCounts::default(),
-            context,
+        provenance: Provenance {
+            trellis_version: env!("CARGO_PKG_VERSION").to_string(),
+            model: model.map(str::to_string),
+            tier: None,
         },
+        // Computed over the section as built, before anything else touches
+        // it. A digest taken later would attest to whatever had happened in
+        // between, which is the opposite of the point.
+        factual_sha256: Trail::compute_factual_sha256(&factual),
+        factual,
         // Left empty deliberately. The judgment section is the *model's*
         // opinion, and `resume` fences it as unverified — so putting a check
         // result here would label an executed fact as speculation, which is
@@ -764,7 +917,6 @@ fn record_trail(
         judgment: Judgment::default(),
     };
 
-    let slug = trellis_trail::slugify(task);
     let path = trellis_trail::write(root, &trail, &timestamp, &slug)?;
 
     // Committed, not merely written. The brief calls the trail durable and in

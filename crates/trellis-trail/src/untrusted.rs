@@ -39,12 +39,45 @@ pub struct RecordedCheck {
 /// rather than inferred.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UntrustedTrail {
+    /// Absent in trails written before the field existed. `None` means "older
+    /// than schema 1", not "invalid" — refusing to read those would orphan
+    /// exactly the history the trail exists to keep.
+    #[serde(default)]
+    pub schema: Option<u32>,
+    #[serde(default)]
+    pub run_id: Option<String>,
     pub task: String,
+    #[serde(default)]
+    pub base_commit: Option<String>,
     pub started_at: Option<String>,
+    /// Kept for trails written before `provenance` existed.
+    #[serde(default)]
     pub trellis_version: Option<String>,
+    #[serde(default)]
+    pub provenance: Option<super::Provenance>,
     pub factual: UntrustedFactual,
     #[serde(default)]
+    pub factual_sha256: Option<String>,
+    #[serde(default)]
     pub judgment: UntrustedJudgment,
+}
+
+/// Whether a trail's factual section still matches its recorded digest.
+///
+/// Three states, and collapsing them would be the whole point missed. A trail
+/// with no digest is *older than the field*, which is not the same as one
+/// whose digest does not match — the first is a gap in history, the second is
+/// an edit. Reporting both as "unverified" would hide the only case that
+/// should alarm anyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Integrity {
+    /// Digest present and matching.
+    Intact,
+    /// Digest present and **not** matching: the section was edited after the
+    /// run wrote it.
+    Altered,
+    /// No digest recorded. Written before the field existed.
+    Unrecorded,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +114,37 @@ pub struct UntrustedJudgment {
 impl UntrustedTrail {
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
         serde_json::from_str(s)
+    }
+
+    /// Whether the factual section still matches its digest.
+    ///
+    /// Recomputed from the JSON as read rather than from the parsed struct:
+    /// `UntrustedFactual` drops fields it does not model, so hashing it would
+    /// produce a digest of what we chose to keep rather than of what the file
+    /// says.
+    pub fn integrity(&self, raw_json: &str) -> Integrity {
+        let Some(recorded) = &self.factual_sha256 else {
+            return Integrity::Unrecorded;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw_json) else {
+            return Integrity::Altered;
+        };
+        let Some(factual) = v.get("factual") else {
+            return Integrity::Altered;
+        };
+        use sha2::{Digest, Sha256};
+        let Ok(bytes) = serde_json::to_vec(factual) else {
+            return Integrity::Altered;
+        };
+        let got: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if &got == recorded {
+            Integrity::Intact
+        } else {
+            Integrity::Altered
+        }
     }
 
     /// Context lines for a resumed session.
