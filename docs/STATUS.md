@@ -141,62 +141,51 @@ back saying the harness gave the model what it needed.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-**Now the v1.0 task order from `04-v1.0-harness.md`**, which supersedes the
-list this section carried through v0.3. Item 1 is done; tier 3 is carried
-forward from v0.2 because the v1.0 list does not mention it and the plus-row
-of the gate needs it.
+**The v1.0 task order from `04-v1.0-harness.md` is complete, all twelve items.
+The gate was run and is not met** (`docs/bench/gate-20260920.md`). What
+follows is what actually stands in the way, sorted by whether code can move
+it.
 
-1. ~~Full precision audit; fix every unsound edge found.~~ **Done** —
-   `docs/bench/precision-20260920.md`. No unsound edge found, so nothing to
-   fix. The new check is `examples/check_reachability.rs` and it runs in CI.
-2. ~~Rollback hardening across all injection points.~~ **Done** —
-   `docs/bench/rollback-20260920.md`. Seven, up from one. SIGINT needed code
-   and a real signal to test; the orchestrator case needed code to *notice*.
-3. ~~Recovery-path failure handling.~~ **Done**, with the same artifact. A
-   rollback that cannot finish is loud, names the worktree, gives the exact
-   commands, attempts both steps rather than stopping at the first, and no
-   longer swallows the trail.
-4. ~~Degradation UX (S6).~~ **Done** — `docs/bench/degradation-ux-20260920.md`.
-   The approval moment had nothing; it now carries a scoped one-line coverage
-   note and three paths, and never blocks.
-5. ~~`trellis doctor` completion.~~ **Done.** All eight lines the milestone
-   mockup asks for, each with a remedy — and two of them corrected where the
-   mockup would have had TRELLIS claim something it cannot know.
-6. **Re-run the v0.1 measurement for condition 1.** Largely absorbed into the
-   `precision-gate` CI job, which now does it on every push.
-7. ~~`trellis init`, first-run prerequisite detection, and a good error for
-   the clean-worktree requirement.~~ **Done.** The scaffold changes nothing by
-   default and never overwrites; the wall now says why it exists and gives
-   three ways through it.
-8. ~~Packaging and cross-compilation.~~ **Done.** Release profile tuned,
-   a three-platform matrix that tests on the profile it ships, and the
-   supported list stated as what was tested. It found the `Verdict`
-   compile-fail proof pinned to one toolchain.
-9. ~~Documentation: partial coverage, and `Verified` versus `Reviewed`.~~
-   **Done.** The README was rewritten — it had said "pre-v0.1, the resolver
-   and the agent loop do not [exist]" — and the audit-mode limit is now stated
-   at the approval prompt, not only in a document.
-10. ~~`MISSION.md` with honest positioning (S15).~~ **Done.** The positioning
-    argument was already sound; the document around it claimed seven goal
-    states as aims with nothing saying which were met, and two are not.
-11. ~~Tier 3 (`AdapterTier::HarnessConstrained`).~~ **Not built, deliberately
-    — see the reconciliation below.** ADR 0013 descoped it from v0.2 and its
-    two reopen triggers have not fired; the v1.0 plus-row asks for constrained
-    tool calling, which tier 2 is. Carrying it as an open item was STATUS
-    reporting against superseded milestone text.
-12. ~~Gate proof: all five conditions, artifacts recorded.~~ **Done** —
-    `docs/bench/gate-20260920.md`. **The gate is not met**, and the two things
-    that would meet it are not code.
+### Blocked on something that is not code
 
-Two items remain that no amount of code closes: **the human re-audit** (A-34,
-Q-15), whose packet is ready and pipeline validated, and **a model at or above
-the floor**, which needs a configuration that passes rather than a third
-endpoint below it.
+1. **The human re-audit** (A-34, Q-15) — the only thing between the project
+   and a call on gate condition 2. The packet is ready to produce and the
+   pipeline is validated end to end: two commands, no network,
+   `audit_sample ... 1000 <fresh-seed>` then `split_audit.py <dir> 40`, giving
+   25 blind chunks of 40. It must report **wrongly excluded** as well as
+   recall — ADR 0015 lets a site leave the denominator on the strength of an
+   annotation, and no automated check can see a wrong exclusion (S21).
 
-**v0.1 is complete. v0.3 is eight of nine. v0.2 is five met, one descoped by ADR 0013, four partial or unmet** — both gates
-audited line by line below, against the code rather than against the milestone
-prose that had them marked done. Every known latent unsound edge is closed and
-the tool has an interactive session.
+2. **A model that can do the work.** Closes gate condition 3 and the plus-row
+   together. Two configurations measured, both repaired nothing; the A/B
+   established the harness is not the limit. This needs a better model, not
+   better code.
+
+3. **The 85% backstop** (gate condition 1). Both candidates are measured and
+   rejected — fixtures already closed at 10 sites, return-type propagation 67
+   sites for 0.4pp against a rule that can only add unsound edges. This one
+   needs a new idea rather than more effort.
+
+### Buildable now
+
+4. **Coverage mapping, so `Verified` stops being 0.** The largest remaining
+   code item and the one with the most product value. S3's distinction is
+   structurally right and empirically empty: the type forbids collapsing
+   `Verified` and `Reviewed`, and nothing populates either, so every trail
+   records `0/0` and the approval prompt has to explain that the zero means
+   "not measured". Deriving which tests cover which call sites from
+   `pytest --cov` data would populate it honestly and close the v0.2 gate row
+   that reads *"Partial — no coverage mapping exists"*.
+
+5. **Governance conflict escalation** — v0.3's one open gate item. Ranking
+   works; detecting that a failure is a *conflict* rather than a mistake needs
+   a model that can name the second rule it could not satisfy, so this sits
+   behind item 2.
+
+**v0.1 is complete. v0.3 is eight of nine. v0.2 is five met, one descoped by
+ADR 0013, four partial or unmet** — both gates audited line by line below,
+against the code rather than against the milestone prose that had them marked
+done.
 
 ### Not on the critical path, but real
 
