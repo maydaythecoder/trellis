@@ -33,12 +33,22 @@ Last updated 2026-09-20.
 
 Benchmark: poetry 2.5.0 sdist, SHA-256 in `01-v0.1-measure.md` §2.
 
-| | first measurement | after the ADR 0012 backstop |
-|---|---|---|
-| Recall, seed 20260919 (n=159) | **47.8%** | **67.9%** |
-| Recall, seed 20260920 (n=100, fresh) | — | **72.0%**, CI [63.2%, 80.8%] |
-| Precision | 100% | **100%** |
-| Mechanical soundness check | 4,443/4,443 | **5,908/5,908** |
+| | first measurement | after ADR 0012 | after ADR 0015 |
+|---|---|---|---|
+| Recall, seed 20260919 (n=159) | **47.8%** | **67.9%** | **67.9%** |
+| Recall, seed 20260920 (n=100, fresh) | — | **72.0%**, CI [63.2%, 80.8%] | **72.0%** |
+| Precision | 100% | **100%** | **100%** |
+| Wrongly excluded as external | 0 | 0 | **0** |
+| Mechanical soundness check | 4,443/4,443 | 5,908/5,908 | **5,908/5,908** |
+
+**ADR 0015 changed no recall figure, and that is the point.** It corrected the
+resolver's own denominator — a receiver annotated `str` was being counted as a
+first-party miss — which moved the repository-wide *bound* from 37.6% to 43.7%
+while `resolved` stayed at 5,908. Hand-audited recall never depended on that
+denominator, which is exactly why the gate is called on the audit. Both
+completed audits were re-scored against the new resolver: 27 sites moved from
+miss to exclusion on seed 20260920, and a human had independently judged every
+one of them third-party.
 
 47.8% fired the pre-registered S16 pivot trigger. The owner chose one bounded
 backstop over the pivot (ADR 0011 option C, recorded as a deliberate deviation
@@ -99,28 +109,28 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-*This list went stale three times in one session — an item stayed at the top
-after it was closed, twice. It is rewritten wholesale each iteration rather
-than edited, because editing is the operation that kept failing.*
+*Rewritten wholesale each iteration rather than edited — editing is the
+operation that let it go stale three times in one session.*
 
-1. **The model floor (S7), remainder.** One configuration measured and it is
-   below the floor; the A/B says that is the model and not the harness. A
-   floor that is *located* rather than bounded needs a configuration that
-   passes, and Qwen2.5-Coder-3B is at 27% after several hours at ~47 KB/s.
-   Blocked on bandwidth, not on work.
-2. **The denominator fix, not a new resolution rule.** Measured this
-   iteration: the fixture idea is already closed and return-type propagation
-   is worth 67 sites. The real defect is that `typed_receiver` records a
-   receiver annotated with a demonstrably non-first-party type as a
-   first-party miss — roughly 2,300 sites. See the section below. Exclude only
-   what is demonstrably external, or recall becomes unfalsifiable.
-3. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
-   expected first-party count: ~1,000 draws for 400 in the denominator.
+1. **The model floor (S7), remainder.** One configuration measured and below
+   the floor; the A/B says that is the model, not the harness. Locating the
+   floor needs a configuration that *passes*, and Qwen2.5-Coder-3B is still
+   downloading at ~47 KB/s. Blocked on bandwidth, not on work.
+2. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
+   expected first-party count: ~1,000 draws for 400 in the denominator. This
+   is now the only thing standing between the project and a gate call, and it
+   must report **wrongly excluded** as well as recall — ADR 0015 made that
+   figure load-bearing (S21).
+3. **Cross-file type propagation, if the audit says the gate needs it.** The
+   remaining `Attribute` bulk is attribute chains (1,969 sites) and locals
+   whose type is not derivable within one file (1,883). Larger than anything
+   attempted so far and not costed. Not to be started before the audit says
+   how far short 85% actually is.
 4. Deferred: Q-14's latent unsound edge on the self-dispatch path.
 
 **v0.1, v0.2 and v0.3 are complete** apart from S7's second configuration,
-which is blocked on network rather than on work. What remains before v1.0 is
-the 85% recall gate — a backstop, then a hand audit large enough to claim it.
+which is blocked on the network. What remains before v1.0 is the 85% recall
+gate, and the next honest step there is measurement rather than code.
 
 ## The 85% backstop: both candidates measured, both too small, and a third found
 
