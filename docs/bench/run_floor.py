@@ -15,10 +15,23 @@ they fail for different reasons and need different fixes:
 
   repaired             converged, and the injected defect is genuinely gone
   converged-unrepaired converged, but the defect is still there — see below
-  no-recovery          the run ended without a passing check
-  budget-exhausted     ran out of iterations or wall-clock mid-work
+  no-progress          the same call and result three times over; the loop
+                       stopped rather than spend the rest of the budget
+  budget-exhausted     ran out of iterations or wall-clock while still varying
+  no-recovery          ended without a passing check for some other reason
   format-failure       no valid tool call survived the adapter's retries
   error                the harness itself failed
+
+`no-progress` and `budget-exhausted` are kept apart deliberately. A model that
+repeated itself three times and one that worked steadily until the ceiling are
+both failures and they are not the same failure, and folding them together
+would hide which one a configuration produces.
+
+**Harness version matters for the cost columns.** The no-progress stop landed
+after the first configuration was measured, so wall-clock and iteration counts
+are comparable only within a single harness version. `repaired` is unaffected:
+the stop changes how quickly a failing run gives up, never whether a task is
+fixed.
 
 A run that never produces a valid tool call yields 0/0 on check-recovery, not
 0%. Reporting that as a rate would invent a denominator.
@@ -148,6 +161,14 @@ def classify(out: str, code: int, repaired: bool | None) -> str:
     if "no valid tool call after" in out:
         return "format-failure"
     # `NotConverged::explain()`'s wording, not the enum's name.
+    #
+    # `no-progress` is checked before `budget-exhausted` because it is the
+    # more specific finding: the loop stopped because the model repeated
+    # itself, rather than because it ran out of room to keep trying. Folding
+    # the two together would report a model that gave up immediately and one
+    # that worked steadily until the ceiling as the same outcome.
+    if "no progress: the same call" in out:
+        return "no-progress"
     if "ceiling reached" in out:
         return "budget-exhausted"
     if "NOT CONVERGED" in out:
