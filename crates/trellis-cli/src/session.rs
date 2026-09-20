@@ -210,6 +210,7 @@ impl Session {
                     .with_context(|| format!("`{rest}` is not a usable model spec"))?;
                 println!("model    {rest}");
                 self.model = Some(rest.to_string());
+                self.probe_model(rest);
                 Ok(())
             }
             "/unconstrained" => {
@@ -229,6 +230,59 @@ impl Session {
             }
             _ => self.task(line),
         }
+    }
+
+    /// Says whether a runtime is actually there, and at which tier.
+    ///
+    /// Parsing a spec proves it is well formed, not that anything is
+    /// listening. Without this the first task is where a user finds out, and
+    /// by then they have typed a task and waited for it to fail — which is
+    /// exactly what happens when a serving process is stopped underneath a
+    /// session that is still holding its address.
+    ///
+    /// A warning, never a refusal. The runtime may not be started yet, and a
+    /// tool that would not let you name a server before launching it is
+    /// wrong about the order people work in.
+    fn probe_model(&self, spec: &str) {
+        let Some((kind, base)) = spec.split_once(':') else {
+            return;
+        };
+        if kind == "scripted" {
+            return;
+        }
+        let Some(dialect) = trellis_model::Dialect::parse(kind) else {
+            return;
+        };
+        let Ok(client) = trellis_model::RuntimeClient::new(base, dialect, None)
+            .map(|c| c.with_timeout(std::time::Duration::from_secs(5)))
+        else {
+            return;
+        };
+
+        let Ok(rt) = tokio::runtime::Runtime::new() else {
+            return;
+        };
+        rt.block_on(async {
+            match client.probe_constraint().await {
+                Ok(true) => println!("tier     2 — the runtime honours guided decoding"),
+                Ok(false) => println!(concat!(
+                    "tier     4 — the runtime ignored the schema, so output is ",
+                    "NOT constrained
+",
+                    "         runs can fail on format alone; /unconstrained ",
+                    "makes that explicit"
+                )),
+                Err(e) => println!(
+                    concat!(
+                        "         not reachable yet: {}
+",
+                        "         the spec is kept — start the runtime and it will ",
+                        "be used"
+                    ),
+                    e
+                ),
+            }
+        });
     }
 
     fn reindex(&mut self) -> Result<()> {
@@ -607,6 +661,38 @@ mod tests {
         // And what still works without one, so the answer is not "come back
         // later".
         assert!(msg.contains("/radius"), "{msg}");
+    }
+
+    #[test]
+    fn an_unreachable_runtime_is_a_warning_and_the_spec_is_kept() {
+        // A refusal here would be wrong about the order people work in: you
+        // name the server, then start it. The session says it could not reach
+        // it and holds the address anyway.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        // Port 1 is reserved and refuses immediately, so this does not sit on
+        // the probe timeout.
+        s.dispatch("/model llamacpp:http://127.0.0.1:1")
+            .expect("an unreachable runtime is not an error");
+        assert_eq!(
+            s.model.as_deref(),
+            Some("llamacpp:http://127.0.0.1:1"),
+            "the spec is kept so the runtime can be started afterwards"
+        );
+    }
+
+    #[test]
+    fn a_scripted_model_is_not_probed_for_a_tier() {
+        // There is no runtime to ask, and printing a tier for a script would
+        // be inventing one. A scripted run has no adapter tier at all.
+        let d = tempfile::tempdir().unwrap();
+        let script = d.path().join("s.json");
+        std::fs::write(&script, r#"{"steps":[{"tool":"done","summary":"x"}]}"#).unwrap();
+
+        let mut s = session(d.path());
+        s.dispatch(&format!("/model scripted:{}", script.display()))
+            .expect("a readable script is a valid spec");
+        assert!(s.model.is_some());
     }
 
     #[test]
