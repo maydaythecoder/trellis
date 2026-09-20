@@ -29,7 +29,7 @@ pub struct Coverage {
     /// Distribution over `Reason`, instrumented from day one because it is
     /// the input to the v0.1 gate and to the S1 fallback decision.
     /// `BTreeMap` for deterministic ordering in snapshots and trail output.
-    pub by_reason: BTreeMap<String, u32>,
+    pub by_reason: BTreeMap<Reason, u32>,
 }
 
 impl Coverage {
@@ -58,7 +58,7 @@ impl Coverage {
 
     pub fn record_unresolved(&mut self, r: Reason) {
         self.unresolved += 1;
-        *self.by_reason.entry(format!("{r:?}")).or_insert(0) += 1;
+        *self.by_reason.entry(r).or_insert(0) += 1;
     }
 
     /// Records a call site excluded from the denominator because its callee
@@ -75,7 +75,7 @@ impl Coverage {
         self.unresolved += other.unresolved;
         self.external += other.external;
         for (k, v) in &other.by_reason {
-            *self.by_reason.entry(k.clone()).or_insert(0) += v;
+            *self.by_reason.entry(*k).or_insert(0) += v;
         }
     }
 
@@ -123,8 +123,8 @@ mod tests {
 
         assert_eq!(c.total(), 6);
         assert_eq!(c.resolved_fraction(), Some(2.0 / 6.0));
-        assert_eq!(c.by_reason["DecoratorIndirection"], 2);
-        assert_eq!(c.by_reason["StarImport"], 1);
+        assert_eq!(c.by_reason[&Reason::DecoratorIndirection], 2);
+        assert_eq!(c.by_reason[&Reason::StarImport], 1);
         assert!(c.summary().contains("2 of 6"));
     }
 
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(a.resolved, 2);
         assert_eq!(a.unresolved, 3);
         assert_eq!(a.external, 1);
-        assert_eq!(a.by_reason["LocalBinding"], 2);
-        assert_eq!(a.by_reason["UnboundName"], 1);
+        assert_eq!(a.by_reason[&Reason::LocalBinding], 2);
+        assert_eq!(a.by_reason[&Reason::UnboundName], 1);
     }
 }

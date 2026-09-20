@@ -14,7 +14,7 @@ use trellis_core::{CallSiteId, FileId, Interner, SymbolId};
 ///
 /// The distribution over these variants is instrumented from day one: it is
 /// the input to the v0.1 gate and to the S1 fallback decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Reason {
     /// `obj.foo()` where `obj`'s type is unknown.
     MethodDispatchUntyped,
@@ -69,26 +69,27 @@ impl Reason {
             Reason::UnboundName => "the name is bound nowhere we can see, and is not a builtin",
         }
     }
+}
 
-    /// Looks up an explanation from the `Debug` name a `Coverage` records.
+impl std::fmt::Display for Reason {
+    /// The variant name, as every surface has always rendered it.
     ///
-    /// Coverage maps are keyed by string so they can be serialized into a
-    /// trail; this walks back. An unknown key yields `None` rather than a
-    /// guess — a wrong explanation is worse than none.
-    pub fn explain_named(name: &str) -> Option<&'static str> {
-        const ALL: &[Reason] = &[
-            Reason::MethodDispatchUntyped,
-            Reason::DecoratorIndirection,
-            Reason::StarImport,
-            Reason::DynamicAttribute,
-            Reason::ReexportUnfollowed,
-            Reason::ShadowedAmbiguous,
-            Reason::LocalBinding,
-            Reason::UnboundName,
-        ];
-        ALL.iter()
-            .find(|r| format!("{r:?}") == name)
-            .map(|r| r.explain())
+    /// Written out rather than delegated to `Debug`. These strings reach the
+    /// user, the model's context and the recorded figures in `docs/bench/`,
+    /// so a rename of a variant should be a deliberate change to output here
+    /// rather than a silent consequence of a refactor.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Reason::MethodDispatchUntyped => "MethodDispatchUntyped",
+            Reason::DecoratorIndirection => "DecoratorIndirection",
+            Reason::StarImport => "StarImport",
+            Reason::DynamicAttribute => "DynamicAttribute",
+            Reason::ReexportUnfollowed => "ReexportUnfollowed",
+            Reason::ShadowedAmbiguous => "ShadowedAmbiguous",
+            Reason::LocalBinding => "LocalBinding",
+            Reason::UnboundName => "UnboundName",
+        };
+        f.write_str(s)
     }
 }
 

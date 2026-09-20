@@ -9,7 +9,7 @@
 //! edge is a number in a coverage report; a wrong edge is a blast radius that
 //! lies.
 
-use trellis_index::{Index, Target, build_from_sources};
+use trellis_index::{Index, Reason, Target, build_from_sources};
 
 /// Describes what each call site in the fixture bound to, keyed by the call's
 /// own source text, so assertions read like the Python they check.
@@ -366,8 +366,8 @@ fn every_non_external_call_site_produces_exactly_one_edge() {
     assert_eq!(index.edges.len() as u32, index.coverage.total());
     assert_eq!(index.coverage.resolved, 1);
     assert_eq!(index.coverage.unresolved, 2);
-    assert_eq!(index.coverage.by_reason["LocalBinding"], 1);
-    assert_eq!(index.coverage.by_reason["UnboundName"], 1);
+    assert_eq!(index.coverage.by_reason[&Reason::LocalBinding], 1);
+    assert_eq!(index.coverage.by_reason[&Reason::UnboundName], 1);
 }
 
 #[test]
@@ -664,7 +664,10 @@ fn a_type_we_merely_failed_to_resolve_stays_a_miss() {
     let c = index_of(src).coverage;
     assert_eq!(c.external, 0);
     assert_eq!(c.unresolved, 1);
-    assert_eq!(c.by_reason.get("MethodDispatchUntyped").copied(), Some(1));
+    assert_eq!(
+        c.by_reason.get(&Reason::MethodDispatchUntyped).copied(),
+        Some(1)
+    );
 }
 
 #[test]

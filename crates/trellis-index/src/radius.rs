@@ -54,7 +54,7 @@ pub struct RadiusCoverage {
     /// statically invisible.
     pub touched_files: u32,
     /// The unbound count, split by reason. Deterministically ordered.
-    pub by_reason: BTreeMap<String, u32>,
+    pub by_reason: BTreeMap<Reason, u32>,
     /// The unbound count, split by file path, so the doubt has somewhere to be
     /// looked at rather than only a size.
     pub by_file: BTreeMap<String, u32>,
@@ -66,14 +66,10 @@ impl RadiusCoverage {
         self.reached_resolved + self.reached_ambiguous
     }
 
-    /// Reasons, most frequent first, then alphabetical for stability.
-    pub fn reasons_by_frequency(&self) -> Vec<(&str, u32)> {
-        let mut v: Vec<(&str, u32)> = self
-            .by_reason
-            .iter()
-            .map(|(k, n)| (k.as_str(), *n))
-            .collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    /// Reasons, most frequent first, then by declaration order for stability.
+    pub fn reasons_by_frequency(&self) -> Vec<(Reason, u32)> {
+        let mut v: Vec<(Reason, u32)> = self.by_reason.iter().map(|(k, n)| (*k, *n)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         v
     }
 
@@ -117,7 +113,7 @@ impl RadiusCoverage {
 
     fn record_unbound(&mut self, r: Reason, path: &str) {
         self.unbound_in_touched_files += 1;
-        *self.by_reason.entry(format!("{r:?}")).or_insert(0) += 1;
+        *self.by_reason.entry(r).or_insert(0) += 1;
         *self.by_file.entry(path.to_string()).or_insert(0) += 1;
     }
 }
@@ -397,11 +393,11 @@ mod tests {
         assert_eq!(
             c.reasons_by_frequency(),
             vec![
-                ("MethodDispatchUntyped", 2),
-                ("LocalBinding", 1),
-                ("UnboundName", 1)
+                (Reason::MethodDispatchUntyped, 2),
+                (Reason::LocalBinding, 1),
+                (Reason::UnboundName, 1)
             ],
-            "most frequent first, then alphabetical so ties do not shuffle"
+            "most frequent first, then declaration order so ties do not shuffle"
         );
         assert_eq!(
             c.files_by_doubt(),
@@ -471,7 +467,7 @@ pub struct FileDoubt {
     pub files_examined: u32,
     /// How many were asked about, examined or not.
     pub files_named: u32,
-    pub by_reason: BTreeMap<String, u32>,
+    pub by_reason: BTreeMap<Reason, u32>,
     /// Each unbound site, so the caller can show them.
     pub sites: Vec<DoubtSite>,
 }
@@ -483,7 +479,7 @@ pub struct DoubtSite {
     /// Byte offset rather than a line number: turning one into the other means
     /// reading the file, and the index does no I/O.
     pub offset: usize,
-    pub reason: String,
+    pub reason: Reason,
     /// The function or method whose body contains the call.
     ///
     /// This is what makes "add a test" a suggestion someone can act on. An
@@ -510,12 +506,9 @@ impl FileDoubt {
                 files(self.files_examined)
             );
         }
-        let mut reasons: Vec<(&str, u32)> = self
-            .by_reason
-            .iter()
-            .map(|(k, v)| (k.as_str(), *v))
-            .collect();
-        reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let mut reasons: Vec<(Reason, u32)> =
+            self.by_reason.iter().map(|(k, v)| (*k, *v)).collect();
+        reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let named: Vec<String> = reasons
             .iter()
             .take(2)
@@ -586,12 +579,11 @@ pub fn doubt_in_files(index: &Index, paths: &[String]) -> FileDoubt {
             continue;
         }
         d.unbound += 1;
-        let reason = format!("{r:?}");
-        *d.by_reason.entry(reason.clone()).or_insert(0) += 1;
+        *d.by_reason.entry(*r).or_insert(0) += 1;
         d.sites.push(DoubtSite {
             path: index.files[site.file.index()].path.clone(),
             offset: site.span.0,
-            reason,
+            reason: *r,
             enclosing: site.enclosing.map(|s| {
                 index
                     .interner

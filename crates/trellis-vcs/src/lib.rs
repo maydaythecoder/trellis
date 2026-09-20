@@ -173,14 +173,46 @@ pub fn diff(root: &Path) -> Result<String, VcsError> {
 
 /// Discards every uncommitted change, tracked and untracked alike.
 ///
-/// The same two steps as `Snapshot::rollback` and for the same reason: either
-/// alone leaves residue. Unlike rollback this has no recorded commit to
-/// return to — it drops whatever is pending against current `HEAD`, which is
-/// what "I do not want what that run proposed" means.
+/// The same two steps as [`Snapshot::rollback`], and now literally the same
+/// code: they had drifted, with rollback attempting both steps and reporting
+/// a loud aggregated failure while this one stopped at the first error and
+/// returned a bare git message. Unlike rollback this has no recorded commit
+/// to return to — it drops whatever is pending against current `HEAD`, which
+/// is what "I do not want what that run proposed" means.
 pub fn discard_pending(root: &Path) -> Result<(), VcsError> {
-    git(root, &["reset", "--hard"])?;
-    git(root, &["clean", "-fd"])?;
-    Ok(())
+    reset_and_clean(root, "HEAD")
+}
+
+/// `reset --hard <to>` followed by `clean -fd`, attempting both.
+///
+/// Both steps run even when the first fails. A `clean` that succeeds after a
+/// failed `reset` removes the run's new files, which is strictly better than
+/// leaving both kinds of residue; stopping at the first error gives up
+/// earlier than necessary on the one path that exists to recover from
+/// failure.
+fn reset_and_clean(root: &Path, to: &str) -> Result<(), VcsError> {
+    let reset = git(root, &["reset", "--hard", to]);
+    let clean = git(root, &["clean", "-fd"]);
+    match (reset, clean) {
+        (Ok(_), Ok(_)) => Ok(()),
+        (r, c) => {
+            let mut detail = String::new();
+            if let Err(e) = r {
+                detail.push_str(&format!("reset --hard: {e}"));
+            }
+            if let Err(e) = c {
+                if !detail.is_empty() {
+                    detail.push_str("\n  ");
+                }
+                detail.push_str(&format!("clean -fd: {e}"));
+            }
+            Err(VcsError::RollbackFailed {
+                root: root.display().to_string(),
+                head: to.to_string(),
+                detail,
+            })
+        }
+    }
 }
 
 pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
@@ -218,28 +250,7 @@ impl Snapshot {
     /// needs to.
     #[tracing::instrument(skip(self), fields(head = %self.head))]
     pub fn rollback(&self) -> Result<(), VcsError> {
-        let reset = git(&self.root, &["reset", "--hard", &self.head]);
-        let clean = git(&self.root, &["clean", "-fd"]);
-        match (reset, clean) {
-            (Ok(_), Ok(_)) => Ok(()),
-            (r, c) => {
-                let mut detail = String::new();
-                if let Err(e) = r {
-                    detail.push_str(&format!("reset --hard: {e}"));
-                }
-                if let Err(e) = c {
-                    if !detail.is_empty() {
-                        detail.push_str("\n  ");
-                    }
-                    detail.push_str(&format!("clean -fd: {e}"));
-                }
-                Err(VcsError::RollbackFailed {
-                    root: self.root.display().to_string(),
-                    head: self.head.clone(),
-                    detail,
-                })
-            }
-        }
+        reset_and_clean(&self.root, &self.head)
     }
 
     /// Whether the worktree currently matches the snapshot exactly.

@@ -66,6 +66,16 @@ impl Dialect {
         }
     }
 
+    /// The canonical name, so `Display` for a [`crate::ModelSpec`]
+    /// round-trips. Crate-private: only that impl needs it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Dialect::LlamaCpp => "llamacpp",
+            Dialect::VllmOpenAi => "vllm",
+            Dialect::Sglang => "sglang",
+        }
+    }
+
     fn path(self) -> &'static str {
         match self {
             Dialect::LlamaCpp => "/completion",

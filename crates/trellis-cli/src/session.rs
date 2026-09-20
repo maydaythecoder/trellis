@@ -28,7 +28,9 @@ use trellis_index::Index;
 pub struct Session {
     root: PathBuf,
     index: Index,
-    model: Option<String>,
+    /// Parsed once, on the way in. Holding the string meant every consumer
+    /// re-parsed it and disagreed about what was valid.
+    model: Option<trellis_model::ModelSpec>,
     unconstrained: bool,
     /// Tasks run this session, for `/status`.
     tasks_run: u32,
@@ -45,7 +47,12 @@ impl Session {
         // host and port they already wrote down. An explicit argument still
         // wins: it is the more specific statement of intent.
         let cfg = crate::config::RepoConfig::load(root)?;
-        let model = model.or_else(|| cfg.model());
+        let model = match model.or_else(|| cfg.model()) {
+            Some(spec) => Some(spec.parse().with_context(|| {
+                format!("`{spec}` was given as the model but is not a usable spec")
+            })?),
+            None => None,
+        };
 
         let s = Self {
             root: root.to_path_buf(),
@@ -191,7 +198,10 @@ impl Session {
                 let paths = rest.split_whitespace().map(PathBuf::from).collect();
                 crate::cmd_check(&self.root, paths)
             }
-            "/doctor" => crate::cmd_doctor(&self.root, self.model.as_deref()),
+            "/doctor" => {
+                let spec = self.model.as_ref().map(ToString::to_string);
+                crate::cmd_doctor(&self.root, spec.as_deref())
+            }
             "/resume" => crate::cmd_resume(&self.root),
             "/diff" => self.show_pending(),
             "/accept" => self.accept(rest),
@@ -205,12 +215,24 @@ impl Session {
             }
             "/model" => {
                 // Parsed now rather than at first use, so a typo is reported
-                // while the user is still thinking about it.
-                crate::Driver::parse(rest, self.unconstrained)
-                    .with_context(|| format!("`{rest}` is not a usable model spec"))?;
-                println!("model    {rest}");
-                self.model = Some(rest.to_string());
-                self.probe_model(rest);
+                // while the user is still thinking about it. Parsing is all
+                // this does: it used to build an entire `Driver` — reading the
+                // script file, constructing an HTTP client — purely to find
+                // out whether a string was well formed.
+                let spec: trellis_model::ModelSpec = rest.parse()?;
+                // Parsing settles the syntax; this settles the environment.
+                // Kept here rather than deferred to the first task, because a
+                // typo found on the next task is found after the user has
+                // moved on — and kept to one `stat` rather than building a
+                // whole driver to discover it.
+                if let trellis_model::ModelSpec::Scripted(path) = &spec
+                    && !path.is_file()
+                {
+                    anyhow::bail!("{} is not a readable file", path.display());
+                }
+                println!("model    {spec}");
+                self.probe_model(&spec);
+                self.model = Some(spec);
                 Ok(())
             }
             "/unconstrained" => {
@@ -243,17 +265,15 @@ impl Session {
     /// A warning, never a refusal. The runtime may not be started yet, and a
     /// tool that would not let you name a server before launching it is
     /// wrong about the order people work in.
-    fn probe_model(&self, spec: &str) {
-        let Some((kind, base)) = spec.split_once(':') else {
+    fn probe_model(&self, spec: &trellis_model::ModelSpec) {
+        // A scripted model has no runtime to probe, and the type says so —
+        // this used to re-split the string and return silently on three
+        // different kinds of unparseable input, which meant a typo produced
+        // no message at all.
+        let trellis_model::ModelSpec::Runtime { dialect, base } = spec else {
             return;
         };
-        if kind == "scripted" {
-            return;
-        }
-        let Some(dialect) = trellis_model::Dialect::parse(kind) else {
-            return;
-        };
-        let Ok(client) = trellis_model::RuntimeClient::new(base, dialect, None)
+        let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, None)
             .map(|c| c.with_timeout(std::time::Duration::from_secs(5)))
         else {
             return;
@@ -301,7 +321,7 @@ impl Session {
     }
 
     fn task(&mut self, task: &str) -> Result<()> {
-        let Some(model) = self.model.clone() else {
+        let Some(model) = self.model.as_ref().map(ToString::to_string) else {
             anyhow::bail!(concat!(
                 "no model set, so there is nothing to drive the loop.\n",
                 "  /model llamacpp:http://127.0.0.1:8080   a serving runtime\n",
@@ -896,7 +916,7 @@ mod tests {
         s.dispatch("/model llamacpp:http://127.0.0.1:1")
             .expect("an unreachable runtime is not an error");
         assert_eq!(
-            s.model.as_deref(),
+            s.model.as_ref().map(ToString::to_string).as_deref(),
             Some("llamacpp:http://127.0.0.1:1"),
             "the spec is kept so the runtime can be started afterwards"
         );
@@ -923,8 +943,20 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut s = session(d.path());
         let e = s.dispatch("/model gpt-4").expect_err("not a spec");
-        assert!(e.to_string().contains("not a usable model spec"), "{e}");
+        assert!(
+            e.to_string().contains("llamacpp"),
+            "the refusal names the shapes that would work: {e}"
+        );
         assert!(s.model.is_none(), "a refused spec must not be stored");
+
+        // A script that does not exist is refused here too, not on the next
+        // task: the same rationale, and the reason `/model` does one `stat`
+        // rather than constructing a driver to find out.
+        let e = s
+            .dispatch("/model scripted:no-such-file.json")
+            .expect_err("a missing script is not usable");
+        assert!(e.to_string().contains("readable file"), "{e}");
+        assert!(s.model.is_none());
     }
 
     #[test]

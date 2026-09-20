@@ -598,35 +598,31 @@ enum Driver {
 }
 
 impl Driver {
-    fn parse(spec: &str, unconstrained: bool) -> Result<Self> {
-        if let Some(path) = spec.strip_prefix("scripted:") {
-            if unconstrained {
-                anyhow::bail!("--unconstrained is meaningless for a scripted model");
+    /// Builds the driver a parsed spec names.
+    ///
+    /// Takes a [`ModelSpec`] rather than a string: the string form was parsed
+    /// here, in `cmd_doctor` and in the session, each deciding for itself what
+    /// was valid. Construction is now the only thing this does.
+    fn build(spec: &trellis_model::ModelSpec, unconstrained: bool) -> Result<Self> {
+        match spec {
+            trellis_model::ModelSpec::Scripted(path) => {
+                if unconstrained {
+                    anyhow::bail!("--unconstrained is meaningless for a scripted model");
+                }
+                let text = std::fs::read_to_string(path)
+                    .with_context(|| format!("cannot read script {}", path.display()))?;
+                let m = trellis_loop::ScriptedModel::from_json(&text)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+                Ok(Driver::Scripted(m))
             }
-            let text = std::fs::read_to_string(path)
-                .with_context(|| format!("cannot read script {path}"))?;
-            let m = trellis_loop::ScriptedModel::from_json(&text)
-                .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
-            return Ok(Driver::Scripted(m));
+            trellis_model::ModelSpec::Runtime { dialect, base } => {
+                let client = trellis_model::RuntimeClient::new(base, *dialect, None)?;
+                Ok(Driver::Runtime(trellis_loop::RuntimeModel::new(
+                    client,
+                    !unconstrained,
+                )))
+            }
         }
-
-        let (kind, base) = spec.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!(
-                concat!(
-                    "--model `{}` is not recognised. Expected `scripted:<path>` or ",
-                    "`<runtime>:http://host:port` where <runtime> is llamacpp, vllm or sglang."
-                ),
-                spec
-            )
-        })?;
-        let dialect = trellis_model::Dialect::parse(kind).ok_or_else(|| {
-            anyhow::anyhow!("unknown runtime `{kind}`; expected llamacpp, vllm or sglang")
-        })?;
-        let client = trellis_model::RuntimeClient::new(base, dialect, None)?;
-        Ok(Driver::Runtime(trellis_loop::RuntimeModel::new(
-            client,
-            !unconstrained,
-        )))
     }
 
     fn describe(&self) -> String {
@@ -666,7 +662,8 @@ fn cmd_run(
         ));
     }
     let cfg = config::RepoConfig::load(root)?;
-    let mut driver = Driver::parse(model_spec, unconstrained)?;
+    let spec: trellis_model::ModelSpec = model_spec.parse()?;
+    let mut driver = Driver::build(&spec, unconstrained)?;
     println!("model:    {}", driver.describe());
 
     // Read before the snapshot, so a missing or corrupt trail fails the run
@@ -1292,10 +1289,10 @@ pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
         const SHOWN: usize = 3;
         let reasons = c.reasons_by_frequency();
         for (reason, n) in reasons.iter().take(SHOWN) {
-            println!(
-                "          {reason:<22} {n:>6}   {}",
-                trellis_index::graph::Reason::explain_named(reason).unwrap_or("")
-            );
+            // `explain()` directly: the reason arrives typed now, so there is
+            // no name to look back up and no second list of variants to keep
+            // in step with the enum.
+            println!("          {reason:<22} {n:>6}   {}", reason.explain());
         }
         if reasons.len() > SHOWN {
             let rest: u32 = reasons.iter().skip(SHOWN).map(|(_, n)| n).sum();
@@ -1407,10 +1404,14 @@ fn cmd_index(root: &Path) -> Result<()> {
             c.unresolved,
             pct(c.unresolved)
         );
-        let mut reasons: Vec<_> = c.by_reason.iter().collect();
-        reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let mut reasons: Vec<_> = c
+            .by_reason
+            .iter()
+            .map(|(r, n)| (*r, *n))
+            .collect::<Vec<_>>();
+        reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         for (reason, n) in reasons {
-            println!("      {reason:<24} {n:>6} ({:>5.1}%)", pct(*n));
+            println!("      {reason:<24} {n:>6} ({:>5.1}%)", pct(n));
         }
 
         // BENCHMARK_AND_EVAL.md §2: a pooled figure hides the case that
@@ -1463,12 +1464,17 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
     let mut notes: Vec<String> = Vec::new();
 
     if let Some(spec) = model_spec {
-        let (kind, base) = spec.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!("--model `{spec}` should look like `llamacpp:http://host:port`")
-        })?;
-        let dialect = trellis_model::Dialect::parse(kind)
-            .ok_or_else(|| anyhow::anyhow!("unknown runtime `{kind}`"))?;
-        let client = trellis_model::RuntimeClient::new(base, dialect, None)?
+        let spec: trellis_model::ModelSpec = spec.parse()?;
+        let trellis_model::ModelSpec::Runtime { dialect, base } = &spec else {
+            anyhow::bail!(
+                concat!(
+                    "`{}` is a scripted model, which has no runtime to probe. ",
+                    "Pass a serving runtime, e.g. llamacpp:http://127.0.0.1:8080."
+                ),
+                spec
+            );
+        };
+        let client = trellis_model::RuntimeClient::new(base, *dialect, None)?
             .with_timeout(std::time::Duration::from_secs(30));
         runtime = format!("{dialect:?} at {base}");
         model_id = "whatever the runtime has loaded".into();

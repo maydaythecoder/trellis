@@ -11,9 +11,11 @@
 pub mod catalog;
 pub mod grammar;
 pub mod runtime;
+pub mod spec;
 pub mod tier;
 
 pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
 pub use grammar::{GrammarError, ToolGrammar};
 pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
+pub use spec::{ModelSpec, SpecError};
 pub use tier::{AdapterTier, BatchingCapability, Probe};
