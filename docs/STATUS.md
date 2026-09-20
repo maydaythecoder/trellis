@@ -108,6 +108,14 @@ never enters `reverse`. The radius now takes its unresolved count from the
 files it touches — an over-approximation, which is the safe direction. Closes
 OPEN_QUESTIONS Q-13.
 
+## The v1.0 gate, run — not met
+
+**Run on 2026-09-20, every condition executed rather than reasoned about:
+`docs/bench/gate-20260920.md`.** Two met outright (rollback, resumption), one
+met with a scripted model, one mechanically met and awaiting a human, and two
+not met. The two that are not met are the two no amount of code closes: a
+model that can do the work, and a third independent audit.
+
 ## The v1.0 gate, read against today
 
 `ROADMAP.md` fixes five conditions plus one, verbatim and without substitutions.
@@ -176,7 +184,9 @@ of the gate needs it.
     two reopen triggers have not fired; the v1.0 plus-row asks for constrained
     tool calling, which tier 2 is. Carrying it as an open item was STATUS
     reporting against superseded milestone text.
-12. **Gate proof**: all five conditions, artifacts recorded.
+12. ~~Gate proof: all five conditions, artifacts recorded.~~ **Done** —
+    `docs/bench/gate-20260920.md`. **The gate is not met**, and the two things
+    that would meet it are not code.
 
 Two items remain that no amount of code closes: **the human re-audit** (A-34,
 Q-15), whose packet is ready and pipeline validated, and **a model at or above
@@ -315,6 +325,36 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## The gate, run
+
+v1.0 task item 12, and the last item on the list. Full artifact:
+`docs/bench/gate-20260920.md`.
+
+**The gate is not met.** Conditions 4 and 5 are met outright — eight rollback
+injection points including a real SIGINT, and a cold-process resumption with
+the index and checker caches deleted. Condition 2 passes all three mechanical
+checks over the full corpus (5,908/5,908 names, 0 disconnected, 0 ambiguous)
+and is still not *called*, because mechanical verification is necessary and
+not sufficient and A-34 wants a human. Condition 3 ran end to end on poetry
+today — defect, blast radius, failing check, edit, passing check, human
+approval, gap recorded in the commit — with a scripted model, so it is
+partial. Condition 1 fails: 72.0% against 85%. The plus-row fails for want of
+a model, which is the same fact as condition 3's partial.
+
+Two things worth carrying out of it:
+
+- **Recall was re-scored with the resolver's verdicts regenerated**, not by
+  reading the stored pair. That distinction is why the gate is a gate: scoring
+  the committed files replays history, which is exactly how seed 20260919 sat
+  at 47.8% in the repository while every document said 67.9%.
+- **A fixture error, diagnosed rather than filed as a bug.** The first attempt
+  committed `.trellis/index.bin`, which looks like the gitignore failing. It
+  was not: the fixture had been copied from a directory that already had an
+  index, so the blob was tracked before TRELLIS ever ran there, and a tracked
+  file cannot be un-ignored. Confirmed by untracking it and re-asking git.
+  Recorded because "the tool committed a binary cache" is the kind of thing
+  that gets written down wrongly once and then repeated.
 
 ## Tier 3: not built, and the reason is a document disagreeing with itself
 
