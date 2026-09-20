@@ -17,7 +17,7 @@ Last updated 2026-09-20.
 | 7 | **S7 resolved**: model floor across seven metrics | **Partial.** One configuration measured, and it is below the floor — a lower bound, not a location. Four of the seven metrics measured; §5.4 lists the other three with what each would take | `BENCHMARK_AND_EVAL.md` §5 |
 | 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Mostly.** Embedded and tested; licence verified MIT 1.8.0; matrix published. **Inference path deliberately open** | ADR 0006, `TECH_SPIKE.md` §3 |
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
-| 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves of the v0.2 exit condition demonstrated: a converging run, and a model declaring success while the checks disagree | ADR 0005, `trellis-loop/src/agent.rs` |
+| 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves demonstrated: a converging run, and a model declaring success while the checks disagree. The loop's *shape* is what this row is about; v0.2's full gate is not met — see the audit below | ADR 0005, `trellis-loop/src/agent.rs` |
 | 11 | Multi-agent parallelizes work only, ADR says why | **Done in design and rules; no concurrent execution yet** | ADR 0005, `trellis-loop/src/partition.rs` |
 | 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and property-tested over 400 seeds, now against a real resolver rather than synthetic graphs. Rule 2 documented; enforced when integration is built** | `partition::plan`, `tests/partition_invariants.rs` |
 | 13 | `trellis doctor` reports batching capability and multi-agent tier | **Done.** Probes the runtime rather than reporting a default; verified reporting `RuntimeConstrained` against a live server | `trellis-model/src/tier.rs`, `trellis-model/src/runtime.rs` |
@@ -145,10 +145,10 @@ other needs a person.
    scoring, regenerate `answers.json` — the seed reproduces the sites, not the
    verdicts.
 
-**v0.1, v0.2 and v0.3 are complete**, every known latent unsound edge is
-closed, and the tool has an interactive session. What remains before v1.0 is
-the 85% recall gate, and the next honest step there is measurement rather than
-code.
+**v0.1 and v0.3 are complete; v0.2 is not** — see the gate audit below. Every
+known latent unsound edge is closed and the tool has an interactive session.
+Two things stand between here and v1.0: the 85% recall gate, which needs
+measurement rather than code, and two unmet v0.2 items that need code.
 
 ### Not on the critical path, but real
 
@@ -225,6 +225,47 @@ into an exclusion and recall becomes unfalsifiable.
 
 Next: implement that, re-run the audit on a fresh sample, and report both
 denominators.
+
+## v0.2's exit gate, audited against the code
+
+I had been calling v0.2 complete on the strength of the milestone documents in
+`docs/`. Re-reading `02-v0.2-loop.md`'s own gate and checking each line against
+the source says otherwise. Four met, four partial, two not — recorded here
+because "complete" was the same defect as S20: a claim the code does not
+support, in the document a reader consults to find out.
+
+| Gate item | State |
+|---|---|
+| One real change on the **benchmark repo**, task to verified diff to approval | **No.** Demonstrated with a scripted model on a demo repository. Never on poetry, never with a real model — both measured configurations are below the floor |
+| Induced mid-run failure rolls back, verified in CI | **Yes.** `rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state`, plus a named `rollback-gate` job |
+| `Verdict` unforgeable — **a compile-fail test proves it** | **Yes**, as of 2026-09-20. Was an assertion checked by reading the source; now three forgery attempts with committed compiler output |
+| `ToolResult` has no pass variant | **Yes** |
+| Two local models **plus one frontier API** through the adapter | **Partial.** Two local (0.5B, Coder-3B). No frontier API has driven the loop |
+| **Tier 3 works**: a model with no native tool calling completes a task under harness-side constraint | **No.** `AdapterTier::HarnessConstrained` is named in the enum and constructed nowhere. TRELLIS only ever speaks tier 2 over HTTP |
+| Budgets enforce; exceeding one escalates then rolls back | **Yes** |
+| `trellis doctor` reports the active tier and what degrades | **Yes** |
+| `Verified` and `Reviewed` tracked separately and shown at approval | **Partial.** The type forbids collapsing them (no `total()`), and every trail records `0/0`. No coverage mapping exists, so nothing ever populates them |
+| Instrumentation: iterations, tokens, wall-clock, **context fill** | **Partial.** First three recorded; context fill is not measured at all |
+
+### The two that matter
+
+**Tier 3 is the substantive gap.** The brief calls it "the one that makes any
+model work regardless of training" and the default for local open weights. The
+probe rig applies an llguidance mask in-process, which is exactly tier 3 — but
+that is the *measurement rig*, not the product. TRELLIS speaks tier 2 to it
+over HTTP. The floor results are correctly labelled tier 2; the gate item is
+unmet.
+
+**`Verified` / `Reviewed` is structurally right and empirically empty.** S3's
+whole point is that "the callers still work" means two different things, and
+the type makes them impossible to add together. It also makes them impossible
+to be wrong about, because nothing measures them: deriving which tests cover
+which call sites is unbuilt, so every run records `0 verified, 0 reviewed`. A
+user reading that learns nothing, which is better than learning something
+false, and worse than the gate asks for.
+
+Neither blocks the v1.0 recall gate, which is what the remaining Next items
+are about. Both block calling v0.2 done.
 
 ## What the last iteration found
 
