@@ -5,9 +5,11 @@
 //! `docs/adr/0005-loop-shape.md`.
 
 pub mod budget;
+pub mod orchestrator;
 pub mod partition;
 pub mod tools;
 
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
+pub use orchestrator::{Handle, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use tools::{EditOutcome, ToolResult};

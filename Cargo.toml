@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 smallvec           = { version = "1.16.1", features = ["serde", "union"] }
 walkdir            = "2.5.0"
 insta              = "1.48.0"
+tempfile           = "3.17.1"
 
 trellis-core   = { path = "crates/trellis-core" }
 trellis-index  = { path = "crates/trellis-index" }

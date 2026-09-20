@@ -38,7 +38,7 @@ labelled as such.
 | RAM | 15.2 GB |
 | C++ toolchain | **none** — no cmake, no cl, no gcc, no clang |
 | CUDA toolkit | **none** — no nvcc |
-| Local weights | none; the one model directory holds git-lfs pointers |
+| Local weights | none at the time of the decision; the one model directory held git-lfs pointers, not a `.gguf` |
 
 This was probed, not assumed, and it matters more than it looks.
 `llama-cpp-2` builds llama.cpp from source, so **on this machine it cannot be
@@ -50,6 +50,14 @@ reach.
 
 It cuts against the GGUF argument below rather than settling it, so the two
 are weighed explicitly in the decision.
+
+**Probed, not argued:** a throwaway crate depending on `candle-core 0.11`,
+`candle-transformers 0.11`, `tokenizers` and `llguidance 1.8` **built clean in
+5m30s on this machine**, 164 crates, no C++ toolchain and no CUDA toolkit
+present. So a pure-Rust inference path compiles where `llama-cpp-2` cannot
+even start. That is one data point about building, not about running a model
+well, and it is recorded as such — but it is the difference between a tier a
+user can reach and one they cannot.
 
 ## Decision
 
@@ -70,14 +78,30 @@ code in TRELLIS at all.
 Tier 3's marginal value is confined to runtimes that expose logits but *not*
 guided decoding. That set is small and shrinking.
 
-### 2. When tier 3 is built, use `llama-cpp-2`
+### 2. When tier 3 is built, prefer the pure-Rust path (`candle`), with
+`llama-cpp-2` as the coverage fallback
 
-Not because it is the most elegant of the three — it is the least — but
-because of what users have on disk. GGUF is the dominant distribution format
-for local open weights, and llama.cpp carries the hardware coverage
-(CUDA / Metal / ROCm / CPU) that "runs on your machine" has to mean in
-practice. A pure-Rust engine that cannot load the file the user already
-downloaded is not simpler for them, only for us.
+This inverts the ordering an earlier draft of this ADR had, and the probe is
+why.
+
+The argument for `llama-cpp-2` is real and unchanged: GGUF is the dominant
+distribution format for local open weights, and llama.cpp carries the hardware
+coverage (CUDA / Metal / ROCm / CPU) that "runs on your machine" has to mean.
+A Rust engine that cannot load the file the user already downloaded is simpler
+only for us.
+
+What outweighs it is that `llama-cpp-2` requires a C++ toolchain to build, and
+`cargo build` on a clean machine is the distribution story. A tier that first
+demands cmake, a compiler and a CUDA toolkit is one most users will never
+reach — and the measurement above shows that is not hypothetical, because it
+is the state of the machine this project is being built on. `candle` reads
+GGUF too, which removes most of the format argument; what it gives up is
+hardware coverage and kernel maturity, which is the right thing to give up
+first because it degrades performance rather than preventing a build.
+
+So: `candle` for the tier-3 default, `llama-cpp-2` behind an off-by-default
+feature for users who have the toolchain and want the kernels. Neither is
+built until tier 2 is shipped and measured.
 
 ## Consequences
 
@@ -107,9 +131,13 @@ rather than on quality: the decision is driven by what the user already has on
 disk. Worth revisiting if its GGUF support and hardware matrix close the gap —
 it is the most likely thing to change this ADR.
 
-**`candle` for tier 3.** The most control and by far the most work: model
-loading, quantization handling and sampling all become ours, in a component
-whose correctness is not what the product is about. Rejected on scope.
+**`candle` as a rejected option.** An earlier draft rejected it on scope —
+model loading, quantization and sampling all becoming ours in a component
+whose correctness is not what the product is about. That concern is real and
+survives, but `candle-transformers` already ships quantized model loaders, so
+the scope is smaller than the draft assumed, and the build probe moved it from
+third choice to first. Recorded here because the reversal is the substance of
+this ADR, not a tidy-up.
 
 **Skip tier 3 permanently.** Tempting given the above, and rejected because
 the tier exists for a real case — a runtime exposing logits without guided
@@ -129,9 +157,15 @@ guided decoding.
 
 ## Note on the model floor (S7)
 
-This ADR unblocks the *decision*; it does not unblock the *measurement*. The
-build machine has no inference runtime and no model weights — the only local
-model directory holds git-lfs pointers, not a `.gguf` file. **The model floor
-therefore cannot be measured in this environment**, and v0.1 exits with that
-item open rather than estimated. `01-v0.1-measure.md` §9 records it, and no
-figure for it appears anywhere.
+This ADR unblocks the *decision*; it does not by itself produce the
+*measurement*.
+
+Weights are now being fetched — HuggingFace serves this machine at roughly
+51 KB/s and supports range requests, so the download is resumable and running
+in the background. At that rate a 0.5B Q4 model (491 MB) lands in about three
+hours and a 3B Q4 (2.10 GB) in about eleven. Two points is a thin floor but it
+is a real one, and it is the difference between an open item and an
+unanswerable one.
+
+Until those land, **no figure for the model floor appears anywhere**, and v0.1
+exits with S7 open rather than estimated. `01-v0.1-measure.md` §9 records it.
