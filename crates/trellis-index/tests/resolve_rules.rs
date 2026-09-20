@@ -50,6 +50,19 @@ fn describe(index: &Index, t: &Target) -> String {
 }
 
 /// Looks up the binding for the call site whose source text is `call`.
+/// The whole index, for assertions about coverage rather than edges.
+///
+/// An excluded call site produces **no edge**, so `bindings` cannot see one:
+/// exclusion is visible only in `coverage.external`, which is why the
+/// denominator tests reach for the index directly.
+fn index_of(sources: &[(&str, &str)]) -> Index {
+    let owned: Vec<(String, String)> = sources
+        .iter()
+        .map(|(p, s)| ((*p).to_string(), (*s).to_string()))
+        .collect();
+    build_from_sources(&owned)
+}
+
 fn target_of(b: &[(String, String)], call: &str) -> String {
     b.iter().find(|(text, _)| text == call).map_or_else(
         || format!("<no edge for `{call}`; edges: {b:?}>"),
@@ -577,12 +590,94 @@ fn contextmanager_is_not_transparent() {
 #[test]
 fn a_generic_annotation_does_not_type_its_element() {
     // `xs: list[Env]` types `xs` as `list`, not as `Env`. Typing it as `Env`
-    // would resolve `xs.run()` to a method of `Env`, which is an unsound edge.
-    let b = bindings(&[(
+    // would resolve `xs.run()` to a method of `Env` — an unsound edge, and the
+    // property this test exists for.
+    //
+    // It is now *excluded* rather than recorded as a miss, because `list` is a
+    // builtin: under the stated type the callee is a list method, which is not
+    // first-party. No edge either way, so the soundness property is untouched;
+    // what changed is which denominator the site lands in.
+    let src: &[(&str, &str)] = &[(
         "app/m.py",
         "class Env:\n    def run(self):\n        return 1\n\ndef go(xs: list[Env]):\n    return xs.run()\n",
-    )]);
-    assert_eq!(target_of(&b, "xs.run()"), "!! MethodDispatchUntyped");
+    )];
+    let b = bindings(src);
+    assert!(
+        target_of(&b, "xs.run()").starts_with("<no edge"),
+        "no edge to Env.run may be emitted: {}",
+        target_of(&b, "xs.run()")
+    );
+    assert_eq!(index_of(src).coverage.external, 1);
+}
+
+// ---------------------------------------------------------------------------
+// The recall denominator. A site leaves it only on positive evidence that its
+// callee is not first-party; see `type_is_demonstrably_external`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_receiver_annotated_with_a_builtin_is_excluded_not_missed() {
+    // `val: str` calling `val.lower()` is a call into the standard library.
+    // BENCHMARK_AND_EVAL.md §2 defines recall over call sites whose true callee
+    // is first-party, so counting this against recall understated the resolver
+    // by the same mechanism `poetry.core` did.
+    let src: &[(&str, &str)] = &[("app/m.py", "def go(val: str):\n    return val.lower()\n")];
+    let c = index_of(src).coverage;
+    assert_eq!(c.external, 1);
+    assert_eq!(c.unresolved, 0, "not a first-party miss");
+    assert_eq!(c.total(), 0, "and not in the denominator at all");
+}
+
+#[test]
+fn a_receiver_annotated_from_a_third_party_import_is_excluded() {
+    let src: &[(&str, &str)] = &[(
+        "app/m.py",
+        "from pathlib import Path\n\ndef go(p: Path):\n    return p.touch()\n",
+    )];
+    let c = index_of(src).coverage;
+    assert_eq!(c.external, 1);
+    assert_eq!(c.unresolved, 0);
+}
+
+#[test]
+fn a_builtin_name_the_repository_shadows_is_not_excluded() {
+    // A repository that defines its own `set`, `list` or `type` must not have
+    // its own calls silently dropped from the denominator. The definition is
+    // checked before the builtin list for exactly this reason.
+    let src: &[(&str, &str)] = &[(
+        "app/m.py",
+        "class set:\n    def add(self):\n        return 1\n\ndef go(s: set):\n    return s.add()\n",
+    )];
+    let c = index_of(src).coverage;
+    assert_eq!(c.external, 0, "the repository's own class is first-party");
+    assert_eq!(c.resolved, 1);
+}
+
+#[test]
+fn a_type_we_merely_failed_to_resolve_stays_a_miss() {
+    // The asymmetry that keeps recall falsifiable. `Mystery` is bound by
+    // nothing the resolver can see — no definition, no import, not a builtin.
+    // That is ignorance, not evidence of being third-party, and ignorance stays
+    // in the denominator. Excluding it would turn every failure into an
+    // exclusion, and a number that can only go up is not a measurement.
+    let src: &[(&str, &str)] = &[("app/m.py", "def go(x: Mystery):\n    return x.run()\n")];
+    let c = index_of(src).coverage;
+    assert_eq!(c.external, 0);
+    assert_eq!(c.unresolved, 1);
+    assert_eq!(c.by_reason.get("MethodDispatchUntyped").copied(), Some(1));
+}
+
+#[test]
+fn a_first_party_annotation_still_resolves() {
+    // The exclusion must not eat the case receiver typing exists for. If this
+    // fails, the rule above has become too eager.
+    let src: &[(&str, &str)] = &[(
+        "app/m.py",
+        "class Env:\n    def run(self):\n        return 1\n\ndef go(e: Env):\n    return e.run()\n",
+    )];
+    let b = bindings(src);
+    assert_eq!(target_of(&b, "e.run()"), "-> app.m.run");
+    assert_eq!(index_of(src).coverage.external, 0);
 }
 
 #[test]

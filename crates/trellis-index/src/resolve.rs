@@ -33,6 +33,37 @@ use trellis_core::{CallSiteId, FileId, SymbolId};
 /// deeper than this report `ReexportUnfollowed` rather than guessing.
 const MAX_REEXPORT_DEPTH: u32 = 4;
 
+/// Builtin type names, for deciding that an annotated receiver is not
+/// first-party.
+///
+/// Only names that are *types* — a receiver annotated `str` has a callee in
+/// the standard library, which is the judgement being made. Functions like
+/// `len` never appear as an annotation, so including them would add nothing
+/// and widen an exclusion list that should stay as narrow as it can be.
+///
+/// Exhaustiveness is not required and not claimed: a builtin missing from
+/// this list leaves its call sites in the denominator as misses, which is the
+/// safe direction. A *wrong* entry would exclude first-party calls, so the
+/// list contains only names Python itself defines.
+const BUILTIN_TYPES: &[&str] = &[
+    "bool",
+    "bytearray",
+    "bytes",
+    "complex",
+    "dict",
+    "float",
+    "frozenset",
+    "int",
+    "list",
+    "memoryview",
+    "object",
+    "range",
+    "set",
+    "str",
+    "tuple",
+    "type",
+];
+
 /// Decorators that leave the decorated definition reachable by a plain call.
 ///
 /// The conservative default is that a decorator is **opaque**: `@foo` may
@@ -978,6 +1009,50 @@ impl Resolver<'_> {
         found
     }
 
+    /// Whether a stated type can be *shown* not to be first-party.
+    ///
+    /// Only two ways count, and both are positive evidence rather than a
+    /// failure to find something:
+    ///
+    /// - the name is a Python builtin and nothing first-party shadows it;
+    /// - every binding for the name resolves outside the repository root.
+    ///
+    /// Everything else is `false`, which keeps the site in the denominator as
+    /// a miss. That asymmetry is deliberate: this function decides what leaves
+    /// the recall denominator, so a permissive answer here inflates recall
+    /// invisibly, and the inflation would be indistinguishable from real
+    /// improvement.
+    fn type_is_demonstrably_external(&self, file: FileId, scope: &[String], ty: &str) -> bool {
+        let t = &self.tables[file.index()];
+
+        // `pathlib.Path` — judge the module alias, which is what determines
+        // where the name comes from.
+        let (lookup, is_qualified) = match ty.rsplit_once('.') {
+            Some((prefix, _)) => (prefix, true),
+            None => (ty, false),
+        };
+
+        // A first-party definition of the name anywhere in scope settles it:
+        // whatever else is true, this is not demonstrably external. Checked
+        // before the builtin list so a repository that defines `class Path`
+        // or shadows a builtin is not mis-excluded.
+        for i in (0..=scope.len()).rev() {
+            if t.defs.contains_key(&key(&scope[..i], lookup)) {
+                return false;
+            }
+        }
+
+        match t.imports.get(lookup) {
+            Some(binds) if !binds.is_empty() => binds
+                .iter()
+                .all(|b| matches!(self.follow(b, MAX_REEXPORT_DEPTH), Bound::External)),
+            // No import and no definition. A builtin is the only way a bare
+            // name is legitimately in scope, and a qualified name whose
+            // prefix is bound to nothing tells us nothing at all.
+            _ => !is_qualified && BUILTIN_TYPES.contains(&ty),
+        }
+    }
+
     /// The type stated for a name in a scope, if the source states exactly one.
     fn stated_type(&self, file: FileId, scope: &[String], name: &str) -> Option<String> {
         let t = &self.tables[file.index()];
@@ -1114,7 +1189,30 @@ impl Resolver<'_> {
         attr: &str,
     ) -> Option<Outcome> {
         let ty = self.stated_type(file, scope, receiver)?;
-        let class = self.find_class(file, scope, &ty)?;
+        let Some(class) = self.find_class(file, scope, &ty) else {
+            // The source states a type and it is not a first-party class.
+            //
+            // If we can *show* it is not — a builtin, or a name every binding
+            // of which resolves outside the repository root — the call is not
+            // a first-party call we missed. It is a call into the standard
+            // library or a dependency, and BENCHMARK_AND_EVAL.md §2 defines
+            // recall over call sites whose true callee is first-party. So it
+            // is excluded, exactly like the imports already excluded there.
+            //
+            // `val: str` calling `val.lower()` was previously recorded as
+            // MethodDispatchUntyped and counted against recall, which is the
+            // same defect `poetry.core` produced: 379 imports in the
+            // denominator as first-party misses.
+            //
+            // "Demonstrably" is the whole discipline. A type the resolver
+            // merely fails to resolve stays a miss. Excluding those instead
+            // would turn every failure into an exclusion and make recall
+            // unfalsifiable — a number that can only go up is not a
+            // measurement.
+            return self
+                .type_is_demonstrably_external(file, scope, &ty)
+                .then_some(Outcome::External);
+        };
         let found = self.lookup_method(class, attr, MAX_REEXPORT_DEPTH, &mut HashSet::new());
 
         // Search for overrides from the class the definition was FOUND on,
