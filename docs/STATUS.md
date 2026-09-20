@@ -260,7 +260,7 @@ milestone prose rather than this checklist.
 | The factual section carries provenance and is tamper-evident | **Yes.** `schema`, `run_id`, `base_commit`, `provenance` (TRELLIS version and model spec), and SHA-256 over the canonical JSON of `factual`. Editing a committed trail and leaving the digest makes `log` print `ALTERED` |
 | Trail contents are untrusted on read-back | **Yes.** `UntrustedTrail`; `Verdict` has no `Deserialize`, so a recorded check reads back inert as `RecordedCheck` |
 | Context, prompts and governance rules load from `.trellis/` | **Yes.** `context.md`, `prompts/<name>.md`, `governance/*.toml`. A malformed rule is an error, never a skip |
-| A governance rule fails an audit **mechanically** | **Yes**, as of this iteration, and it was not before — see below. `CheckKind::Governance` produces a sealed `Verdict`; a broken non-negotiable fails the run and rolls it back, and `Step::Done` now audits before converging rather than waiting to be asked. Tested through the dispatch and through the loop, not only at the audit function. Substring matching only — a governance check that exercised judgment would be Constraint 2 with extra steps |
+| A governance rule fails an audit **mechanically** | **Yes**, as of this iteration, and it was not before — see below. `CheckKind::Governance` produces a sealed `Verdict`; a broken non-negotiable fails the run and rolls it back, and `Step::Done` now audits before converging rather than waiting to be asked. Tested through the dispatch, through the loop, and demonstrated on poetry (`docs/bench/governance-gate-20260920.md`) — not only at the audit function. Substring matching only — a governance check that exercised judgment would be Constraint 2 with extra steps |
 | Rule ranking works; **conflicting non-negotiables escalate** | **Partial.** Ranking works and is tested. Conflict escalation is not built — below |
 | `trellis resume` continues from durable state, not a replayed transcript | **Yes.** `--resume` seeds `PriorContext`, which is deliberately not `turns`, so a recorded pass cannot satisfy `last_check_passed` |
 | `trellis why <symbol>` answers from the trail | **Yes**, after the wedge run found it could not |
@@ -340,6 +340,13 @@ rules out of the dispatch makes the violation test fail. The scope test asserts
 the read count directly (`1 file(s) read of 1 in scope`) rather than inferring
 it from pass/fail, because once the blind rule was narrowed correctly the
 mutation passed *and* was still wrong.
+
+Then demonstrated on the benchmark repo rather than left at the unit tests
+(`docs/bench/governance-gate-20260920.md`): an edit the type checker accepts and
+a non-negotiable rule forbids, the audit appearing as a third step against a
+three-step script, the run refusing to converge, the tree rolled back — and the
+compliant case still converging, because a gate that cannot pass is not a gate
+and this one had two ways to fail closed.
 
 This is the third instance this session of a guarantee documented and tested one
 layer below where it was needed, after S20 and the always-empty
