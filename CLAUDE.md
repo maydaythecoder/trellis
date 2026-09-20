@@ -18,14 +18,29 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
 
-cargo run -p trellis-cli -- index          # Pass 1 over the repo, with counts
+cargo run -p trellis-cli -- index          # full index: parse, resolve, coverage
+cargo run -p trellis-cli -- radius <sym>   # blast radius with confidence breakdown
 cargo run -p trellis-cli -- check          # run the grounded checks
 cargo run -p trellis-cli -- doctor         # probe tier, batching, tooling
+
+# v0.1 measurement tooling (examples, not CLI surface — the surface is fixed
+# by brief 4.12 and does not grow to suit us)
+cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed> <dir>
+cargo run --release -p trellis-index --example audit_score  -- <dir>
 ```
 
-`trellis radius`, `run`, `resume` and `partitions` exist in the CLI surface and
-exit with a clear "not implemented yet" — they need the resolver and the agent
-loop (v0.2). Do not stub them into something that appears to work.
+`trellis run`, `resume` and `partitions` exit with a clear "not implemented
+yet" — they need the agent loop (v0.2). Do not stub them into something that
+appears to work.
+
+## The number that is easy to misread
+
+`trellis index` prints what the resolver *bound*. That is a **lower bound on
+recall, not recall**, and it must never be compared to the thresholds in
+`BENCHMARK_AND_EVAL.md` §3. An `obj.method()` whose receiver type is unknown is
+counted as a miss even when its true callee is third-party, which §2 excludes
+from the denominator outright. Only the hand-audited sample produces a
+comparable figure. See A-30.
 
 ## Crate boundaries are load-bearing
 

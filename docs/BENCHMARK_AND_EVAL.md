@@ -78,6 +78,46 @@ count (102 `getattr`). Used for build time, memory, and incremental latency —
 not for the recall gate, because hand-auditing a sample of 24,461 call sites to
 the required confidence is not affordable.
 
+### The pinned corpus actually measured (2026-09-19)
+
+The 2026-09-18 figures above were taken against shallow clones of each
+project's default branch. Those clones no longer exist, and on 2026-09-19 this
+machine could not reach GitHub: `raw.githubusercontent.com` failed TLS
+revocation checking (`CRYPT_E_REVOCATION_OFFLINE`) and `git clone` stalled at
+roughly 140 bytes/second.
+
+The corpus was therefore obtained from PyPI instead, which is **more**
+reproducible than a branch tip, not less — a released sdist is immutable and
+hash-addressable, where `main` moves:
+
+| | |
+|---|---|
+| Artefact | `poetry-2.5.0.tar.gz` (PyPI sdist) |
+| SHA-256 | `e73b873890526c03e4d8e20d934292175f55a5823b3bdee2f154f63dae81336f` |
+| Obtained | 2026-09-19, `pip download poetry --no-deps --no-binary :all:` |
+
+It contains both `src/` and `tests/`, so the test-suite criterion is met.
+
+**It is not the same corpus as the row above and the numbers differ, because
+the sdist includes the test suite.** Measured by `trellis index` at commit of
+this section:
+
+| | poetry 2.5.0 sdist |
+|---|---|
+| `.py` files | 451 (193 under `src/`, 258 under `tests/`) |
+| total `.py` lines | 81,700 |
+| test files (`test_*.py`) | 129 |
+| definitions | 3,735 |
+| call sites | 21,794 |
+| — first-party (recall denominator) | 15,707 |
+| — external, excluded | 6,087 |
+
+Build time, release build, warm page cache, three runs: **116.9 / 118.9 /
+119.2 ms**. Peak working set: **37.9 MB**. That is roughly 690 lines/ms
+wall-clock for parse *and* resolve, against the ~1,400 lines/ms measured for
+Pass 1 alone — so resolution roughly doubles the cost of parsing, and neither
+is close to being the constraint at this size (S9).
+
 ### What would change this choice
 
 If poetry's first recall figure lands high enough to look suspicious — above
@@ -135,6 +175,50 @@ rather than assumed.
   anything was `Resolved`). An unsound edge — `Resolved` naming the *wrong*
   symbol — is a precision failure, and by the v1.0 gate there must be zero of
   them.
+
+### What the resolver bound, which is **not** recall
+
+Measured 2026-09-19 on the pinned corpus. Read the caveat before the numbers.
+
+| | sites | bound | share |
+|---|---|---|---|
+| **all first-party** | 15,707 | 4,443 | **28.3%** |
+| `Name` shape | 4,072 | 3,510 | **86.2%** |
+| `Attribute` shape | 11,613 | 933 | **8.0%** |
+| `Dynamic` shape | 22 | 0 | 0% |
+
+Unresolved reasons, over the 11,233 unresolved sites: `MethodDispatchUntyped`
+10,646 (67.8% of first-party sites), `LocalBinding` 558 (3.6%),
+`DynamicAttribute` 22, `DecoratorIndirection` 3, `StarImport` 2,
+`UnboundName` 2. Ambiguous: 31.
+
+**This figure is a lower bound on recall and must not be compared to the §3
+thresholds.** Recall is defined over call sites whose *true callee* is
+first-party. The resolver cannot tell whether `logger.info()` or
+`session.query()` ends up in the standard library, so it counts every
+unknown-receiver call as a miss — including the many whose true callee §2
+excludes from the denominator outright. The 28.3% therefore understates recall
+by however large that share turns out to be, and only the audit can say. This
+is recorded as A-30.
+
+Two observations that do not depend on the audit:
+
+1. **The loss is almost entirely in `Attribute`.** `Name` binds at 86.2%;
+   `Attribute` at 8.0% while carrying 74% of all first-party sites. A pooled
+   figure would have hidden this completely, which is why §2 requires the
+   split.
+2. **The brief's prediction about decorators did not hold.** It expected
+   `DecoratorIndirection` to dominate the misses. It is 3 sites out of 11,233.
+   The dominant reason is `MethodDispatchUntyped` — unknown receiver types —
+   by three orders of magnitude. If a semantic backstop is adopted under S1,
+   this says it must be a *type inference* for receivers, not the decorator
+   unwrapping the brief anticipated.
+
+Counted directly in the corpus for scale: only 1,052 of the 11,613 first-party
+`Attribute` sites are direct `self.x(...)` calls. Following base classes to
+resolve inherited `self` dispatch — the obvious next resolver feature — can
+therefore address at most about 9% of the `Attribute` gap, and is not the
+lever it appears to be.
 
 ### Also measured in v0.1
 
