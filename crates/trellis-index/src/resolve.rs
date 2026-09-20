@@ -349,6 +349,10 @@ enum MethodLookup {
         owner: SymbolId,
     },
     Many(SmallVec<[SymbolId; 4]>),
+    /// A `def` and a class-scope assignment share the name, so which one is
+    /// live at the call depends on statement order and on what the assignment
+    /// evaluates to. See `Reason::ShadowedAmbiguous` and Q-14.
+    Shadowed,
     /// Not found. `exhaustive` is true only when every base class in the
     /// hierarchy was itself first-party and searched — otherwise the method
     /// may live in a third-party base and the absence proves nothing.
@@ -1086,6 +1090,20 @@ impl Resolver<'_> {
         let t = &self.tables[info.file.index()];
 
         if let Some(d) = t.defs.get(&key(&info.path, attr)) {
+            // Q-14. A class body may both `def run(self)` and assign `run`,
+            // and whichever comes last wins — `run = staticmethod(run)`,
+            // `run = property(run)`, or a plain rebinding. This path checked
+            // `defs` and not `bindings`, so it emitted a confident edge to the
+            // `def` whatever the assignment did to it.
+            //
+            // That is an unsound edge, which the v1.0 gate forbids outright,
+            // and the `Name` path already reports the equivalent case as
+            // `ShadowedAmbiguous`. Making the two agree is the fix; the cost
+            // is recall on a pattern that did not appear anywhere in the
+            // audited sample.
+            if t.bindings.contains(&key(&info.path, attr)) {
+                return MethodLookup::Shadowed;
+            }
             return match d.len() {
                 1 => MethodLookup::One {
                     method: d[0],
@@ -1110,6 +1128,12 @@ impl Resolver<'_> {
                         owners.push(owner);
                     }
                     MethodLookup::Many(v) => found.extend(v),
+                    // A base whose method is shadowed by a class-scope
+                    // assignment makes the whole lookup ambiguous: inheriting
+                    // from it inherits whatever the assignment produced, which
+                    // we cannot name. Propagating rather than treating it as a
+                    // miss keeps the reason honest.
+                    MethodLookup::Shadowed => return MethodLookup::Shadowed,
                     MethodLookup::NotFound { exhaustive: e } => exhaustive &= e,
                 },
                 // A third-party or unresolvable base. The method may well be
@@ -1132,6 +1156,7 @@ impl Resolver<'_> {
         match lookup {
             MethodLookup::One { method, .. } => self.emit(method),
             MethodLookup::Many(v) => Outcome::Edge(Target::Candidates(v)),
+            MethodLookup::Shadowed => Outcome::Edge(Target::Unresolved(Reason::ShadowedAmbiguous)),
             // Even an exhaustive miss stays `MethodDispatchUntyped` rather
             // than becoming `External`: the attribute may be set dynamically,
             // and claiming it is third-party would shrink the resolver's own
@@ -1225,6 +1250,13 @@ impl Resolver<'_> {
             MethodLookup::One { owner, .. } => *owner,
             _ => class,
         };
+        // A shadowed method has no owner to root an override search at, and
+        // merging it into a candidate set would put a symbol in the radius
+        // that the assignment may have replaced outright.
+        if matches!(found, MethodLookup::Shadowed) {
+            return Some(Outcome::Edge(Target::Unresolved(Reason::ShadowedAmbiguous)));
+        }
+
         let overrides = self.overriding_subclasses(root, attr);
         if overrides.is_empty() {
             return Some(self.method_outcome(found));
@@ -1232,7 +1264,9 @@ impl Resolver<'_> {
         let mut all: SmallVec<[SymbolId; 4]> = match found {
             MethodLookup::One { method, .. } => SmallVec::from_slice(&[method]),
             MethodLookup::Many(v) => v,
-            MethodLookup::NotFound { .. } => SmallVec::new(),
+            // Returned above; the arm stays so a future variant cannot be
+            // absorbed silently.
+            MethodLookup::Shadowed | MethodLookup::NotFound { .. } => SmallVec::new(),
         };
         all.extend(overrides);
         all.sort_unstable();

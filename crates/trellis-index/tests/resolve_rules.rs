@@ -821,3 +821,89 @@ fn every_call_site_lands_in_exactly_one_bucket() {
     assert_eq!(c.resolved, 1, "e.run() only; helper() is not imported here");
     assert!(c.external >= 2, "val.lower() and os.getcwd()");
 }
+
+// ---------------------------------------------------------------------------
+// Q-14: a class-scope assignment may shadow a method of the same name.
+//
+// The Python fixtures below are single-line string literals on purpose. A
+// backslash line-continuation in a Rust string swallows the newline *and* the
+// leading whitespace of the next line, which silently dedents a class body and
+// turns `def go` into a module-level function. The first draft of these tests
+// did exactly that and reported MethodDispatchUntyped for every case.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_class_scope_assignment_shadowing_a_method_is_ambiguous() {
+    // Recorded as a latent unsound edge and deferred because the pattern did
+    // not appear in the audited sample. It is still an unsound edge, and the
+    // v1.0 gate forbids those outright.
+    //
+    // A class body may both `def run` and assign `run`, and the last statement
+    // wins — `run = staticmethod(run)`, `run = property(run)`, or a plain
+    // rebinding. This path consulted `defs` and not `bindings`, so it emitted a
+    // confident edge to the `def` whatever the assignment had done to it.
+    let b = bindings(&[(
+        "app/m.py",
+        "class C:\n    run = None\n\n    def run(self):\n        return 1\n\n    def go(self):\n        return self.run()\n",
+    )]);
+    assert_eq!(
+        target_of(&b, "self.run()"),
+        "!! ShadowedAmbiguous",
+        "a name bound twice in a class body cannot be resolved to one of them"
+    );
+}
+
+#[test]
+fn the_name_path_and_the_attribute_path_agree_about_shadowing() {
+    // Why this was a defect rather than a choice: the `Name` path had reported
+    // the equivalent case as `ShadowedAmbiguous` all along, so the resolver
+    // disagreed with itself depending on how the call happened to be written.
+    let b = bindings(&[(
+        "app/m.py",
+        "def run():\n    return 1\n\nrun = None\n\ndef go():\n    return run()\n",
+    )]);
+    assert_eq!(target_of(&b, "run()"), "!! ShadowedAmbiguous");
+}
+
+#[test]
+fn an_unshadowed_method_still_resolves() {
+    // The guard against over-eagerness. If this fails the fix has started
+    // eating ordinary method dispatch, which is most of what the resolver does
+    // on the `Attribute` shape.
+    let b = bindings(&[(
+        "app/m.py",
+        "class C:\n    def run(self):\n        return 1\n\n    def go(self):\n        return self.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "self.run()"), "-> app.m.run");
+}
+
+#[test]
+fn a_local_inside_a_method_does_not_shadow_the_method() {
+    // Bindings are scope-qualified, so a local named `run` inside `go` lives at
+    // `C::go`, not at `C`. If the check were not scope-exact this would report
+    // ambiguity and the rule would fire almost everywhere.
+    let b = bindings(&[(
+        "app/m.py",
+        "class C:\n    def run(self):\n        return 1\n\n    def go(self):\n        run = 2\n        print(run)\n        return self.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "self.run()"), "-> app.m.run");
+}
+
+#[test]
+fn shadowing_on_a_base_class_propagates_to_the_subclass() {
+    // Inheriting from a class whose method is shadowed inherits whatever the
+    // assignment produced, which we cannot name. Reporting the subclass call as
+    // resolved to the base's `def` would be the same unsound edge one level
+    // down.
+    let b = bindings(&[
+        (
+            "app/base.py",
+            "class Base:\n    helper = None\n\n    def helper(self):\n        return 1\n",
+        ),
+        (
+            "app/derived.py",
+            "from app.base import Base\n\nclass Derived(Base):\n    def go(self):\n        return self.helper()\n",
+        ),
+    ]);
+    assert_eq!(target_of(&b, "self.helper()"), "!! ShadowedAmbiguous");
+}
