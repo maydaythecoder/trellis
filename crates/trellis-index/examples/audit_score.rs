@@ -75,6 +75,11 @@ fn main() {
 
     let mut overall = Tally::default();
     let mut by_shape: BTreeMap<String, Tally> = BTreeMap::new();
+    // Grouped by top-level directory as well as by shape. Same reason §2
+    // gives for the shape split: a pooled figure hides the case that
+    // matters. On a repository whose sample is mostly test code, a headline
+    // recall is largely a statement about the test suite.
+    let mut by_area: BTreeMap<String, Tally> = BTreeMap::new();
     let mut unaudited = 0u32;
     let mut collisions: Vec<String> = Vec::new();
     let mut reconciled: Vec<String> = Vec::new();
@@ -91,8 +96,16 @@ fn main() {
         let verdict = &verdicts[&id];
         let kind = verdict["kind"].as_str().unwrap_or("Missing");
 
+        let area = e["file"]
+            .as_str()
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("?")
+            .to_string();
         let t = by_shape.entry(shape).or_default();
-        for tally in [&mut overall, t] {
+        let ar = by_area.entry(area).or_default();
+        for tally in [&mut overall, t, ar] {
             if truth == "dynamic" {
                 tally.dynamic_truth += 1;
             }
@@ -170,8 +183,13 @@ fn main() {
     }
     println!();
     report("OVERALL", &overall);
+    println!("-- by callee shape --");
     for (shape, t) in &by_shape {
         report(shape, t);
+    }
+    println!("-- by top-level directory --");
+    for (area, t) in &by_area {
+        report(area, t);
     }
 
     if !reconciled.is_empty() {
