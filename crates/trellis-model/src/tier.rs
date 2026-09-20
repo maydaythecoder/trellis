@@ -110,7 +110,15 @@ impl BatchingCapability {
 pub struct Probe {
     pub model_id: String,
     pub runtime: String,
-    pub tier: AdapterTier,
+    /// `None` until a runtime has actually been probed.
+    ///
+    /// Not defaulted to a tier. `doctor` printed `ValidateAndRetry` when no
+    /// `--model` was given while its own footer said tier was "reported as
+    /// unknown rather than guessed" — so the page contradicted itself, and
+    /// the half a user reads as a measurement was the untrue half. Which tier
+    /// is active is the one thing S17 asks this command to report, and
+    /// "unknown" is the honest answer before anything has been asked.
+    pub tier: Option<AdapterTier>,
     pub batching: BatchingCapability,
     /// Present only when the repository's configured checks were found.
     pub typecheck_found: bool,
@@ -123,7 +131,10 @@ impl Probe {
         let mut out = vec![
             format!("model:      {}", self.model_id),
             format!("runtime:    {}", self.runtime),
-            format!("tier:       {:?} — {}", self.tier, self.tier.degradation()),
+            match self.tier {
+                Some(t) => format!("tier:       {t:?} — {}", t.degradation()),
+                None => "tier:       not probed; pass --model to find out".to_string(),
+            },
         ];
 
         out.push(match self.batching {
@@ -164,6 +175,59 @@ impl Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unprobed() -> Probe {
+        Probe {
+            model_id: "not configured".into(),
+            runtime: "not configured".into(),
+            tier: None,
+            batching: BatchingCapability::Unknown,
+            typecheck_found: true,
+            tests_found: true,
+        }
+    }
+
+    #[test]
+    fn an_unprobed_tier_is_reported_as_unprobed_not_as_a_default() {
+        // `doctor` with no --model printed `tier: ValidateAndRetry` while its
+        // own footer said tier was "reported as unknown rather than guessed".
+        // The page contradicted itself, and the half a reader takes as a
+        // measurement was the untrue half.
+        //
+        // Which tier is active is the one thing S17 asks this command to
+        // report. A default printed in its place is worse than no answer,
+        // because tier 4 is a real state a runtime can be in and the reader
+        // has no way to tell the guess from the finding.
+        let lines = unprobed().report();
+        let tier = lines
+            .iter()
+            .find(|l| l.starts_with("tier:"))
+            .expect("a tier line");
+        assert!(tier.contains("not probed"), "{tier}");
+        assert!(
+            !tier.contains("ValidateAndRetry") && !tier.contains("RuntimeConstrained"),
+            "no tier may be named before one has been measured: {tier}"
+        );
+    }
+
+    #[test]
+    fn a_probed_tier_is_reported_with_what_it_costs() {
+        // The other direction: once measured, the tier must be named *and*
+        // carry its degradation, because "tier 4" means nothing to a reader
+        // who does not already know the model.
+        let mut p = unprobed();
+        p.tier = Some(AdapterTier::ValidateAndRetry);
+        let lines = p.report();
+        let tier = lines
+            .iter()
+            .find(|l| l.starts_with("tier:"))
+            .expect("a tier line");
+        assert!(tier.contains("ValidateAndRetry"), "{tier}");
+        assert!(
+            tier.contains("format"),
+            "a tier must arrive with what it costs: {tier}"
+        );
+    }
 
     #[test]
     fn auto_agents_never_guesses_above_one_without_a_measurement() {

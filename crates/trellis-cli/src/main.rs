@@ -1,12 +1,16 @@
 //! The CLI. Thin: parses, dispatches, formats.
 //!
-//! Status: `index`, `radius`, `check`, `doctor` and `run` are wired to real
-//! implementations. `run` currently drives the loop with a scripted model —
-//! real files, real checks, real rollback, and only judgement stubbed — which
-//! is what lets v0.2's exit condition be demonstrated before inference exists.
-//! `resume` reads the last committed trail. `partitions` needs multi-agent
-//! planning (v1.1) and exits non-zero with a clear message rather than
-//! pretending.
+//! Status: `index`, `radius`, `check`, `doctor`, `run` and `resume` are wired
+//! to real implementations.
+//!
+//! `run` drives the loop with either a scripted model or a real serving
+//! runtime (`llamacpp:`, `vllm:`, `sglang:`). The scripted driver is not a
+//! placeholder — it exercises real files, real checks and real rollback with
+//! only judgement stubbed, which is what makes the loop's control flow
+//! testable without inference. Results from it are never a model floor (S7).
+//!
+//! `partitions` needs concurrent multi-agent execution (v1.1) and exits
+//! non-zero with a message naming what is missing, rather than pretending.
 
 mod config;
 
@@ -136,12 +140,15 @@ fn main() -> Result<()> {
         } => cmd_run(&root, &task, &model, unconstrained, &agents, resume),
         Command::Resume => cmd_resume(&root),
         Command::Partitions { .. } => {
-            anyhow::bail!(
-                "not implemented yet: `resume` needs the trail (milestone v0.3) and \
-                 `partitions` needs multi-agent planning (v1.1). `trellis index`, \
-                 `trellis radius`, `trellis run`, `trellis check` and `trellis doctor` \
-                 work today."
-            )
+            anyhow::bail!(concat!(
+                "not implemented yet: `partitions` needs concurrent multi-agent ",
+                "execution, which is v1.1 and is gated on single-agent numbers ",
+                "that do not exist yet.\n\n",
+                "Working today: index, radius, run, resume, check, doctor.\n\n",
+                "The partition planner itself is built and property-tested ",
+                "(`trellis_loop::partition::plan`); what is missing is running the ",
+                "partitions concurrently and reconciling their checks."
+            ))
         }
     }
 }
@@ -765,7 +772,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
     // a batching runtime from one that will serialize their agents.
     let mut model_id = "not configured".to_string();
     let mut runtime = "not configured".to_string();
-    let mut tier = AdapterTier::ValidateAndRetry;
+    let mut tier: Option<AdapterTier> = None;
     let mut batching = BatchingCapability::Unknown;
     let mut notes: Vec<String> = Vec::new();
 
@@ -784,7 +791,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
         rt.block_on(async {
             match client.probe_constraint().await {
                 Ok(true) => {
-                    tier = AdapterTier::RuntimeConstrained;
+                    tier = Some(AdapterTier::RuntimeConstrained);
                     notes.push(
                         concat!(
                             "The runtime returned the key the probe schema demanded, so it ",
@@ -795,7 +802,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                     );
                 }
                 Ok(false) => {
-                    tier = AdapterTier::ValidateAndRetry;
+                    tier = Some(AdapterTier::ValidateAndRetry);
                     notes.push(
                         concat!(
                             "The runtime ignored the schema, so output is NOT constrained. Runs ",
