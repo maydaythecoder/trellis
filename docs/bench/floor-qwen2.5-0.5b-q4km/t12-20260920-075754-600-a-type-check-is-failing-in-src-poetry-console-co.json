@@ -1,0 +1,24 @@
+{
+  "task": "a type check is failing in src/poetry/console/commands/build.py; fix it",
+  "started_at": "2026-09-20T07:57:54Z",
+  "trellis_version": "0.0.1",
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "resolved": 0,
+      "candidates": 0,
+      "unresolved": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    }
+  },
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

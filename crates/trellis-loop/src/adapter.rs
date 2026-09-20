@@ -216,8 +216,44 @@ impl Model for RuntimeModel {
             self.tokens += completion.tokens;
 
             let Some(json) = extract_json(&completion.text) else {
-                last = format!("no JSON object in output: {}", truncate(&completion.text));
-                tracing::warn!(attempt, "malformed tool call; retrying");
+                // Two different failures, and they need different fixes.
+                //
+                // Truncation: an object opened and never closed. Under tier 2
+                // this is what a constrained model looks like when it runs out
+                // of tokens *inside* a legal construct — a JSON string may be
+                // arbitrarily long, so no grammar can stop it. Seen in the S7
+                // floor run, where a model generated
+                // `"old": "<error>Error: <error>...<warning>..."` until the
+                // token budget ran out. The schema was honoured throughout.
+                //
+                // Absence: no `{` at all, which is what an *ignored* schema
+                // looks like — prose, a code fence, an invented tool name.
+                //
+                // Reporting the first as the second sends a user to check
+                // whether their runtime supports guided decoding, when the
+                // answer is that it does and the model is looping inside a
+                // string. So they are named apart.
+                last = if completion.text.contains('{') {
+                    format!(
+                        concat!(
+                            "output was cut off mid-object after {} tokens: the ",
+                            "schema was being honoured, but generation ran past ",
+                            "the limit inside a value. Raise max_tokens, or treat ",
+                            "it as the model failing to terminate. Text was {}"
+                        ),
+                        completion.tokens,
+                        truncate(&completion.text)
+                    )
+                } else {
+                    format!(
+                        concat!(
+                            "no JSON object in output at all, which is what an ",
+                            "ignored schema looks like. Text was {}"
+                        ),
+                        truncate(&completion.text)
+                    )
+                };
+                tracing::warn!(attempt, error = %last, "malformed tool call; retrying");
                 continue;
             };
             match serde_json::from_str::<ToolCallWire>(json) {
@@ -292,6 +328,30 @@ mod tests {
     fn an_unterminated_object_is_not_extracted() {
         assert_eq!(extract_json(r#"{"tool":"done""#), None);
         assert_eq!(extract_json("no braces here"), None);
+    }
+
+    /// Both are `extract_json(..) == None`, and they mean opposite things.
+    ///
+    /// S7 floor run, tier 2: the model emitted
+    /// `{"path":"...","old":"<error>Error: <error>...<warning>...` and kept
+    /// going until the token budget ran out. The schema was honoured on every
+    /// token — a JSON string may be arbitrarily long, so no grammar stops
+    /// this. Reporting it as "no JSON object in output" sends a reader to
+    /// check whether their runtime supports guided decoding, when it does.
+    ///
+    /// The discriminator is purely local and needs nothing from the server:
+    /// an object that opened and did not close was truncated; no brace at all
+    /// is what an ignored schema produces.
+    #[test]
+    fn truncation_and_an_ignored_schema_are_told_apart() {
+        let truncated = r#"{"tool":"edit","path":"a.py","old":"<error>Error: <error>"#;
+        let ignored = "Sure! I'll use the repo.edit tool for that.";
+
+        assert!(extract_json(truncated).is_none());
+        assert!(extract_json(ignored).is_none());
+        // The branch under test keys on exactly this, so the test does too.
+        assert!(truncated.contains('{'), "an object was opened");
+        assert!(!ignored.contains('{'), "no object was ever opened");
     }
 
     #[test]

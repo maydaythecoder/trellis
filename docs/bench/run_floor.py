@@ -223,14 +223,28 @@ def main() -> int:
     results = []
     for i, task in enumerate(tasks, 1):
         reset_to(corpus, base)
+
+        # The file's error count *before* the defect, which is not always
+        # zero: t09 is a verified `1 -> 5`, so a perfect repair on that task
+        # leaves one error standing. Scoring repair as `after == 0` would mark
+        # it unrepaired however well the model did. Measured on this run's own
+        # clean tree rather than parsed out of `detected_by`.
+        baseline, _ = reference_check(corpus, checker, task["file"])
+
         if not apply_defect(corpus, task):
             print(f"[{i}/{len(tasks)}] {task['id']} SKIPPED (anchor absent)")
             results.append({"id": task["id"], "outcome": "skipped"})
             continue
 
-        # Confirms the defect is live *before* the run, so a task that scores
-        # as repaired cannot be one that was never broken.
+        # And the count with the defect in, so a task scoring as repaired
+        # cannot be one that was never broken.
         before, _ = reference_check(corpus, checker, task["file"])
+        if before <= baseline:
+            print(f"[{i}/{len(tasks)}] {task['id']} SKIPPED (defect not detected: "
+                  f"{baseline} -> {before})")
+            results.append({"id": task["id"], "outcome": "skipped"})
+            continue
+
         git(corpus, "add", "-A")
         git(corpus, "commit", "-qm", f"defect {task['id']}")
 
@@ -249,7 +263,8 @@ def main() -> int:
 
         converged = "CONVERGED after" in out and "NOT CONVERGED" not in out
         after, detail = reference_check(corpus, checker, task["file"])
-        repaired = converged and after == 0
+        # Back to where the file started, not to zero.
+        repaired = converged and after <= baseline
         outcome = classify(out, code, repaired)
 
         # The trail is the run's own record and it is committed, so it survives
@@ -271,6 +286,7 @@ def main() -> int:
             "outcome": outcome,
             "seconds": round(elapsed, 1),
             "iterations": int(m.group(1)) if m else 0,
+            "errors_baseline": baseline,
             "errors_before": before,
             "errors_after": after,
             "turns": turn_sequence(out),
@@ -279,7 +295,8 @@ def main() -> int:
         })
         (out_dir / f"{task['id']}.log").write_text(out, encoding="utf-8")
         print(f"[{i}/{len(tasks)}] {task['id']:>4} {outcome:<21} {elapsed:6.1f}s  "
-              f"errors {before}->{after}  {' '.join(results[-1]['turns'][:6])}")
+              f"errors {baseline}|{before}->{after}  "
+              f"{' '.join(results[-1]['turns'][:6])}")
 
     reset_to(corpus, base)
     tally: dict[str, int] = {}
@@ -300,11 +317,13 @@ def main() -> int:
             "repaired": tally.get("repaired", 0),
             "attempted": len(ran),
             "note": (
-                "Each task injects exactly one error into one file, verified "
-                "0->1 when the set was built, so 'the failure count fell' and "
-                "'the check passes' are the same statement here. Scored by "
-                "re-running the reference checker, not by reading the run's "
-                "verdict."
+                "A task is repaired when its file's error count returns to the "
+                "baseline measured on the clean tree immediately before the "
+                "defect was applied — not to zero, since some files carry a "
+                "pre-existing error (t09 is a verified 1->5). Each defect "
+                "raises the count by a verified amount, between 1 and 5. "
+                "Scored by re-running the reference checker here, never by "
+                "reading the run's own verdict."
             ),
         },
         "wall_clock_s": {
