@@ -1,0 +1,185 @@
+{
+  "chunk": 6,
+  "results": [
+    {
+      "id": 12628,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Recorded call is package.add_dependency; test signature types package as ProjectPackage imported from poetry.core.packages.project_package, a separate distribution."
+    },
+    {
+      "id": 12642,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "poetry.factory.Factory subclasses poetry.core.factory.Factory and does not define create_dependency, so the call lands in poetry.core."
+    },
+    {
+      "id": 12659,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "package is annotated ProjectPackage (poetry.core.packages.project_package); add_dependency is defined there, not in this tree."
+    },
+    {
+      "id": 12800,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "str() is the Python builtin."
+    },
+    {
+      "id": 12847,
+      "true_callee": "poetry.installation.uninstaller.UninstallPathSet.remove",
+      "is_first_party": true,
+      "reasoning": "pathset = UninstallPathSet(...) imported from poetry.installation.uninstaller, which defines remove at line 168."
+    },
+    {
+      "id": 12871,
+      "true_callee": "tests.installation.test_uninstaller._install_fake_distribution",
+      "is_first_party": true,
+      "reasoning": "Module-level helper defined at line 40 of the same test file."
+    },
+    {
+      "id": 12951,
+      "true_callee": "poetry.installation.wheel_installer.WheelInstaller.install",
+      "is_first_party": true,
+      "reasoning": "installer = WheelInstaller(env) imported from poetry.installation.wheel_installer, which defines install at line 132."
+    },
+    {
+      "id": 13106,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "os.environ.get is stdlib (os._Environ.get / MutableMapping.get)."
+    },
+    {
+      "id": 13236,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "pathlib.Path constructor, stdlib."
+    },
+    {
+      "id": 13314,
+      "true_callee": "poetry.factory.Factory.create_poetry",
+      "is_first_party": true,
+      "reasoning": "Factory imported from poetry.factory, which overrides create_poetry at line 66; the recorded call is the .create_poetry attribute call."
+    },
+    {
+      "id": 13330,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "tmp_venv.python is a pathlib.Path; with_name is stdlib."
+    },
+    {
+      "id": 13406,
+      "true_callee": "poetry.masonry.builders.editable.EditableBuilder",
+      "is_first_party": true,
+      "reasoning": "Constructor call; class defined at src/poetry/masonry/builders/editable.py:45 and imported by the test."
+    },
+    {
+      "id": 13421,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "_bin_dir is a pathlib.Path; joinpath is stdlib."
+    },
+    {
+      "id": 13486,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "ProjectPackage imported in conftest from poetry.core.packages.project_package, a separate distribution."
+    },
+    {
+      "id": 13569,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "range() is the Python builtin."
+    },
+    {
+      "id": 13727,
+      "true_callee": "tests.mixology.helpers.add_to_repo",
+      "is_first_party": true,
+      "reasoning": "Imported as `from tests.mixology.helpers import add_to_repo`; defined at tests/mixology/helpers.py:24."
+    },
+    {
+      "id": 13780,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "create_dependency is not defined in poetry.factory.Factory; inherited from poetry.core.factory.Factory."
+    },
+    {
+      "id": 13895,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "artifact_cache is a MagicMock in this test; assert_called_once_with comes from unittest.mock."
+    },
+    {
+      "id": 13991,
+      "true_callee": "poetry.packages.locker.Locker.locked_packages",
+      "is_first_party": true,
+      "reasoning": "locker fixture constructs poetry.packages.locker.Locker, which defines locked_packages at line 168."
+    },
+    {
+      "id": 14002,
+      "true_callee": "poetry.packages.locker.Locker.set_lock_data",
+      "is_first_party": true,
+      "reasoning": "Same Locker fixture; set_lock_data defined at src/poetry/packages/locker.py:201."
+    },
+    {
+      "id": 14164,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "uuid.uuid4 is stdlib."
+    },
+    {
+      "id": 14244,
+      "true_callee": "tests.helpers.get_package",
+      "is_first_party": true,
+      "reasoning": "Imported as `from tests.helpers import get_package`; defined at tests/helpers.py:57."
+    },
+    {
+      "id": 14369,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "cache._path / dist_info yields a pathlib.Path; exists() is stdlib."
+    },
+    {
+      "id": 14412,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "pytest.mark.parametrize is third-party (pytest MarkDecorator)."
+    },
+    {
+      "id": 14594,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "http is a responses.RequestsMock; post is third-party."
+    },
+    {
+      "id": 14607,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "pytest.raises is third-party."
+    },
+    {
+      "id": 14820,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "DirectoryDependency imported from poetry.core.packages.directory_dependency, a separate distribution."
+    },
+    {
+      "id": 14838,
+      "true_callee": "tests.helpers.get_dependency",
+      "is_first_party": true,
+      "reasoning": "Imported as `from tests.helpers import get_dependency`; defined at tests/helpers.py:63."
+    },
+    {
+      "id": 14918,
+      "true_callee": "tests.helpers.get_dependency",
+      "is_first_party": true,
+      "reasoning": "Same import in tests/puzzle/test_provider.py; defined at tests/helpers.py:63."
+    },
+    {
+      "id": 14981,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Dependency imported from poetry.core.packages.dependency, a separate distribution."
+    }
+  ]
+}

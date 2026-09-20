@@ -310,7 +310,13 @@ struct ClassInfo {
 
 /// The result of looking for a method on a class and its bases.
 enum MethodLookup {
-    One(SymbolId),
+    /// `owner` is the class the definition was found on, which may be an
+    /// ancestor of the class searched. The override set that matters hangs
+    /// off the owner, not off the class we started from.
+    One {
+        method: SymbolId,
+        owner: SymbolId,
+    },
     Many(SmallVec<[SymbolId; 4]>),
     /// Not found. `exhaustive` is true only when every base class in the
     /// hierarchy was itself first-party and searched — otherwise the method
@@ -991,7 +997,10 @@ impl Resolver<'_> {
 
         if let Some(d) = t.defs.get(&key(&info.path, attr)) {
             return match d.len() {
-                1 => MethodLookup::One(d[0]),
+                1 => MethodLookup::One {
+                    method: d[0],
+                    owner: class,
+                },
                 _ => MethodLookup::Many(d.iter().copied().collect()),
             };
         }
@@ -999,13 +1008,17 @@ impl Resolver<'_> {
         // Not on this class. Walk the bases, tracking whether we actually
         // managed to search all of them.
         let mut found: SmallVec<[SymbolId; 4]> = SmallVec::new();
+        let mut owners: SmallVec<[SymbolId; 4]> = SmallVec::new();
         let mut exhaustive = true;
         // A base is named in the scope enclosing the class, not inside it.
         let outer = &info.path[..info.path.len() - 1];
         for base in &info.bases {
             match self.find_class(info.file, outer, base) {
                 Some(b) => match self.lookup_method(b, attr, depth - 1, visited) {
-                    MethodLookup::One(s) => found.push(s),
+                    MethodLookup::One { method, owner } => {
+                        found.push(method);
+                        owners.push(owner);
+                    }
                     MethodLookup::Many(v) => found.extend(v),
                     MethodLookup::NotFound { exhaustive: e } => exhaustive &= e,
                 },
@@ -1016,7 +1029,10 @@ impl Resolver<'_> {
         }
         match found.len() {
             0 => MethodLookup::NotFound { exhaustive },
-            1 => MethodLookup::One(found[0]),
+            1 => MethodLookup::One {
+                method: found[0],
+                owner: owners[0],
+            },
             _ => MethodLookup::Many(found),
         }
     }
@@ -1024,7 +1040,7 @@ impl Resolver<'_> {
     /// Turns a method lookup into a call outcome.
     fn method_outcome(&self, lookup: MethodLookup) -> Outcome {
         match lookup {
-            MethodLookup::One(s) => self.emit(s),
+            MethodLookup::One { method, .. } => self.emit(method),
             MethodLookup::Many(v) => Outcome::Edge(Target::Candidates(v)),
             // Even an exhaustive miss stays `MethodDispatchUntyped` rather
             // than becoming `External`: the attribute may be set dynamically,
@@ -1086,12 +1102,22 @@ impl Resolver<'_> {
         let class = self.find_class(file, scope, &ty)?;
         let found = self.lookup_method(class, attr, MAX_REEXPORT_DEPTH, &mut HashSet::new());
 
-        let overrides = self.overriding_subclasses(class, attr);
+        // Search for overrides from the class the definition was FOUND on,
+        // not from the declared type. An annotation is evidence, not proof —
+        // the audit found `installed: DummyRepository` bound at runtime to an
+        // `InstalledRepository`, a *sibling* that overrides the method. Both
+        // descend from the class that defines it, so rooting the search there
+        // catches the sibling; rooting it at the declared type does not.
+        let root = match &found {
+            MethodLookup::One { owner, .. } => *owner,
+            _ => class,
+        };
+        let overrides = self.overriding_subclasses(root, attr);
         if overrides.is_empty() {
             return Some(self.method_outcome(found));
         }
         let mut all: SmallVec<[SymbolId; 4]> = match found {
-            MethodLookup::One(s) => SmallVec::from_slice(&[s]),
+            MethodLookup::One { method, .. } => SmallVec::from_slice(&[method]),
             MethodLookup::Many(v) => v,
             MethodLookup::NotFound { .. } => SmallVec::new(),
         };

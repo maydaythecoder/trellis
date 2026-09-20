@@ -1,0 +1,185 @@
+{
+  "chunk": 8,
+  "results": [
+    {
+      "id": 16998,
+      "true_callee": "poetry.utils.env.mock_env.MockEnv",
+      "is_first_party": true,
+      "reasoning": "test_solver.py imports `from poetry.utils.env import MockEnv`; re-export of class MockEnv defined at src/poetry/utils/env/mock_env.py:16. Constructor -> the class."
+    },
+    {
+      "id": 17007,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "`package` is the ProjectPackage fixture; add_dependency is defined in poetry.core (separate distribution, not in src/)."
+    },
+    {
+      "id": 17025,
+      "true_callee": "tests.puzzle.test_solver.check_solver_result",
+      "is_first_party": true,
+      "reasoning": "Module-local helper defined at tests/puzzle/test_solver.py:74."
+    },
+    {
+      "id": 17254,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "ProjectPackage.add_dependency lives in poetry.core, which is external here."
+    },
+    {
+      "id": 17294,
+      "true_callee": "poetry.puzzle.solver.Solver",
+      "is_first_party": true,
+      "reasoning": "`from poetry.puzzle import Solver` re-exports class Solver defined at src/poetry/puzzle/solver.py:50; constructor records the class."
+    },
+    {
+      "id": 17310,
+      "true_callee": "poetry.repositories.repository.Repository.add_package",
+      "is_first_party": true,
+      "reasoning": "`repo` fixture (tests/puzzle/conftest.py:40) returns Repository(\"repo\"); add_package at src/poetry/repositories/repository.py:73."
+    },
+    {
+      "id": 17321,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "canonicalize_name imported from packaging.utils, a third-party package."
+    },
+    {
+      "id": 17403,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "canonicalize_name imported from packaging.utils, third-party."
+    },
+    {
+      "id": 17405,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "canonicalize_name imported from packaging.utils, third-party."
+    },
+    {
+      "id": 17481,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Package imported from poetry.core.packages.package; poetry.core is a separate distribution."
+    },
+    {
+      "id": 17710,
+      "true_callee": "poetry.puzzle.solver.merge_override_packages",
+      "is_first_party": true,
+      "reasoning": "Imported explicitly from poetry.puzzle.solver; function defined at src/poetry/puzzle/solver.py:470."
+    },
+    {
+      "id": 17833,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Package from poetry.core.packages.package; constructor of an external class."
+    },
+    {
+      "id": 17856,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Package from poetry.core.packages.package; external."
+    },
+    {
+      "id": 17861,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Package from poetry.core.packages.package; external."
+    },
+    {
+      "id": 17868,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "pytest.mark.parametrize is third-party (pytest MarkDecorator)."
+    },
+    {
+      "id": 17871,
+      "true_callee": "poetry.puzzle.transaction.Transaction",
+      "is_first_party": true,
+      "reasoning": "Imported from poetry.puzzle.transaction; class defined at src/poetry/puzzle/transaction.py:20."
+    },
+    {
+      "id": 17929,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "parse_marker imported from poetry.core.version.markers; poetry.core is external."
+    },
+    {
+      "id": 18109,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "legacy_repository_directory is annotated Path; pathlib.Path.glob is stdlib."
+    },
+    {
+      "id": 18233,
+      "true_callee": "tests.repositories.fixtures.pypi.org.generate.FileManager.should_preserve_file_content_check",
+      "is_first_party": true,
+      "reasoning": "Call is inside FileManager.process_zipfile; @staticmethod should_preserve_file_content_check is defined in that same class (generate.py:253)."
+    },
+    {
+      "id": 18342,
+      "true_callee": "tests.repositories.fixtures.pypi.org.generate.Project",
+      "is_first_party": true,
+      "reasoning": "class Project defined in the same file at generate.py:403; constructor records the class."
+    },
+    {
+      "id": 18460,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "RuntimeError is a Python builtin exception class."
+    },
+    {
+      "id": 18469,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "`http` fixture is annotated responses.RequestsMock; add_callback is third-party (responses)."
+    },
+    {
+      "id": 18494,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Version imported from poetry.core.constraints.version; classmethod parse is external."
+    },
+    {
+      "id": 18566,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "`url: str` parameter; str.rpartition is a builtin method."
+    },
+    {
+      "id": 18577,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "FIXTURES_DIRECTORY is a pathlib.Path; Path.joinpath is stdlib."
+    },
+    {
+      "id": 18616,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "The recorded call is the builtin len()."
+    },
+    {
+      "id": 18701,
+      "true_callee": "tests.repositories.test_http_repository.MockRepository",
+      "is_first_party": true,
+      "reasoning": "class MockRepository(HTTPRepository) defined in the same test file at line 35; constructor records the class."
+    },
+    {
+      "id": 18990,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "The recorded call is the builtin str()."
+    },
+    {
+      "id": 19108,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "pytest.mark.parametrize is third-party (pytest)."
+    },
+    {
+      "id": 19114,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Version.parse from poetry.core.constraints.version; poetry.core is a separate distribution."
+    }
+  ]
+}

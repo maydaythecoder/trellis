@@ -1,0 +1,185 @@
+{
+ "chunk": 9,
+ "results": [
+  {
+   "id": 19118,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize decorator call; pytest is third-party."
+  },
+  {
+   "id": 19140,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Dependency imported from poetry.core.packages.dependency; poetry.core is a separate distribution."
+  },
+  {
+   "id": 19207,
+   "true_callee": "tests.helpers.get_package",
+   "is_first_party": true,
+   "reasoning": "test_repository.py imports get_package from tests.helpers, plain module-level function."
+  },
+  {
+   "id": 19404,
+   "true_callee": "tests.repositories.test_single_page_repository.MockSinglePageRepository",
+   "is_first_party": true,
+   "reasoning": "Class defined at top of the same test module; rule 4 records the class."
+  },
+  {
+   "id": 19613,
+   "true_callee": "dynamic",
+   "is_first_party": false,
+   "reasoning": "fixture_dir is a bare pytest-injected parameter; target is the _fixture_dir closure in tests/conftest.py:404 but the binding comes through @pytest.fixture (rule 2) -> dynamic."
+  },
+  {
+   "id": 19623,
+   "true_callee": "poetry.factory.Factory",
+   "is_first_party": true,
+   "reasoning": "Factory imported from poetry.factory (src/poetry/factory.py:47); constructor records the class, not BaseFactory."
+  },
+  {
+   "id": 19670,
+   "true_callee": "tests.helpers.get_dependency",
+   "is_first_party": true,
+   "reasoning": "test_helpers.py imports get_dependency from tests.helpers; undecorated function at tests/helpers.py:63."
+  },
+  {
+   "id": 19861,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "path is a pathlib.Path (tmp_path fixture); Path.as_posix is stdlib."
+  },
+  {
+   "id": 19884,
+   "true_callee": "dynamic",
+   "is_first_party": false,
+   "reasoning": "mocked_poetry_managed_python_register is a pytest-injected parameter; target is the register closure in tests/conftest.py:1025 but bound via @pytest.fixture (rule 2) -> dynamic."
+  },
+  {
+   "id": 20012,
+   "true_callee": "poetry.utils.env.virtual_env.VirtualEnv",
+   "is_first_party": true,
+   "reasoning": "VirtualEnv re-exported from poetry.utils.env, defined in src/poetry/utils/env/virtual_env.py:35."
+  },
+  {
+   "id": 20024,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Recorded callee is the builtin list(); builtins are stdlib."
+  },
+  {
+   "id": 20055,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "assert_called_once on a unittest.mock patched subprocess.check_call."
+  },
+  {
+   "id": 20104,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pathlib.Path constructor, stdlib."
+  },
+  {
+   "id": 20105,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.mark.parametrize decorator call; third-party."
+  },
+  {
+   "id": 20178,
+   "true_callee": "poetry.utils.env.mock_env.MockEnv",
+   "is_first_party": true,
+   "reasoning": "MockEnv imported from poetry.utils.env, class defined in src/poetry/utils/env/mock_env.py:16."
+  },
+  {
+   "id": 20201,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "os.environ is a stdlib os._Environ mapping; pop is stdlib."
+  },
+  {
+   "id": 20273,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "m is a mocker.patch MagicMock; assert_called_with is unittest.mock."
+  },
+  {
+   "id": 20397,
+   "true_callee": "tests.utils.env.test_env_manager.check_output_wrapper",
+   "is_first_party": true,
+   "reasoning": "Undecorated module-level helper defined at line 53 of the same test module."
+  },
+  {
+   "id": 20625,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "dist_info is a pathlib.Path built from the site_packages fixture; Path.mkdir is stdlib."
+  },
+  {
+   "id": 20941,
+   "true_callee": "poetry.utils.cache.FileCache.put",
+   "is_first_party": true,
+   "reasoning": "cache is constructed as FileCache(...) on line 62; put defined at src/poetry/utils/cache.py:103."
+  },
+  {
+   "id": 21017,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pathlib.Path constructor, stdlib."
+  },
+  {
+   "id": 21042,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "builtin range()."
+  },
+  {
+   "id": 21235,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "original_getmembers is bound to tarfile.TarFile.getmembers (stdlib) two lines above."
+  },
+  {
+   "id": 21287,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "target is a pathlib.Path under tmp_path; Path.read_text is stdlib."
+  },
+  {
+   "id": 21439,
+   "true_callee": "poetry.utils.password_manager.PasswordManager",
+   "is_first_party": true,
+   "reasoning": "Imported from poetry.utils.password_manager; class at line 191 of that module."
+  },
+  {
+   "id": 21476,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "manager.keyring was reassigned to MagicMock(); assert_not_called is unittest.mock."
+  },
+  {
+   "id": 21520,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pytest.raises is third-party."
+  },
+  {
+   "id": 21558,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "Python.executable returns a pathlib.Path (src/poetry/utils/env/python/manager.py:179); Path.resolve is stdlib."
+  },
+  {
+   "id": 21569,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "pathlib.Path.as_posix on Path(sys.executable); stdlib."
+  },
+  {
+   "id": 21733,
+   "true_callee": "external",
+   "is_first_party": false,
+   "reasoning": "repo is a dulwich.repo.Repo; object_store.add_object is third-party dulwich."
+  }
+ ]
+}

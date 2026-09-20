@@ -596,3 +596,20 @@ fn a_method_on_a_class_with_a_third_party_base_is_not_claimed_absent() {
     )]);
     assert_eq!(target_of(&b, "self.helper()"), "!! MethodDispatchUntyped");
 }
+
+#[test]
+fn a_sibling_class_overriding_an_inherited_method_yields_candidates() {
+    // The fresh-sample audit caught this. `installed: DummyRepository` was
+    // bound at runtime to an `InstalledRepository` — a SIBLING, not a
+    // subclass, both descending from the class that defines `add_package`.
+    //
+    // Searching subclasses of the *declared* type misses it. The override
+    // set that matters hangs off the class the definition was found on,
+    // because an annotation is evidence about the runtime type, not proof:
+    // Python does not enforce it, and in a test fixture it was simply wrong.
+    let b = bindings(&[(
+        "app/m.py",
+        "class Base:\n    def add(self):\n        return 1\n\nclass Dummy(Base):\n    pass\n\nclass Installed(Base):\n    def add(self):\n        return 2\n\ndef go(repo: Dummy):\n    return repo.add()\n",
+    )]);
+    assert_eq!(target_of(&b, "repo.add()"), "?? [app.m.add, app.m.add]");
+}

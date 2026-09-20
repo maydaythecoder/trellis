@@ -1,0 +1,185 @@
+{
+  "chunk": 1,
+  "results": [
+    {
+      "id": 2186,
+      "true_callee": "poetry.inspection.lazy_wheel.InvalidWheelError",
+      "is_first_party": true,
+      "reasoning": "Constructor call; class InvalidWheelError defined at line 60 of the same module (src/poetry/inspection/lazy_wheel.py)."
+    },
+    {
+      "id": 2355,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "logger is a stdlib logging.Logger instance; Logger.debug is stdlib."
+    },
+    {
+      "id": 2420,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "threading.Lock from the standard library."
+    },
+    {
+      "id": 2471,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin id()."
+    },
+    {
+      "id": 2485,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin isinstance()."
+    },
+    {
+      "id": 2496,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "io is annotated IO | SectionOutput, both cleo (third-party); write_line is cleo's."
+    },
+    {
+      "id": 2497,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Same cleo IO/SectionOutput.write_line as id 2496."
+    },
+    {
+      "id": 2679,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin ValueError constructor."
+    },
+    {
+      "id": 2795,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "os.rmdir from the standard library."
+    },
+    {
+      "id": 2856,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin frozenset constructor."
+    },
+    {
+      "id": 2999,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "cmd_script is a pathlib.Path; Path.open is stdlib."
+    },
+    {
+      "id": 3010,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "self._io is a cleo IO instance; write_error_line is defined in cleo (third-party)."
+    },
+    {
+      "id": 3041,
+      "true_callee": "poetry.masonry.builders.editable.EditableBuilder._get_file_hash",
+      "is_first_party": true,
+      "reasoning": "self._get_file_hash is defined in the enclosing class EditableBuilder at line 302 of the same file."
+    },
+    {
+      "id": 3075,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "buffer is a builtin list; list.append."
+    },
+    {
+      "id": 3151,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "by_name is a builtin dict; dict.values."
+    },
+    {
+      "id": 3165,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin isinstance()."
+    },
+    {
+      "id": 3292,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "buffer is a builtin list; list.append."
+    },
+    {
+      "id": 3404,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "functools.cache from the standard library (the call site invokes cache, not the wrapped method)."
+    },
+    {
+      "id": 3412,
+      "true_callee": "poetry.mixology.version_solver.VersionSolver._choose_package_version",
+      "is_first_party": true,
+      "reasoning": "self call inside class VersionSolver (line 162), which defines _choose_package_version at line 643."
+    },
+    {
+      "id": 3458,
+      "true_callee": "poetry.mixology.failure.SolveFailureError",
+      "is_first_party": true,
+      "reasoning": "Constructor; imported at line 13 from poetry.mixology.failure where class is defined at line 15."
+    },
+    {
+      "id": 3476,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "dependency is a poetry.core Dependency; is_direct_origin is not defined anywhere under src/ or tests/, so it is poetry.core (separate distribution)."
+    },
+    {
+      "id": 3586,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "f is a mapping item from lock data (dict / tomlkit table); items() is stdlib or third-party tomlkit."
+    },
+    {
+      "id": 3652,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "m comes from re.match; re.Match.group is stdlib."
+    },
+    {
+      "id": 3670,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "dependencies is a builtin dict; dict.setdefault."
+    },
+    {
+      "id": 3751,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin isinstance()."
+    },
+    {
+      "id": 3854,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin iter() with sentinel."
+    },
+    {
+      "id": 3934,
+      "true_callee": "poetry.publishing.uploader.Uploader._register",
+      "is_first_party": true,
+      "reasoning": "self call inside class Uploader (line 40), which defines _register at line 297 of the same file."
+    },
+    {
+      "id": 3950,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "session is a requests.Session (third-party); Session.post."
+    },
+    {
+      "id": 3960,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "zipfile.ZipFile from the standard library."
+    },
+    {
+      "id": 3979,
+      "true_callee": "external",
+      "is_first_party": false,
+      "reasoning": "Builtin ValueError constructor."
+    }
+  ]
+}
