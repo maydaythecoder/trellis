@@ -41,11 +41,44 @@ pub struct Factual {
     pub mode_counts: ModeCounts,
 }
 
+/// What the run's blast-radius queries found, and what they could not see.
+///
+/// The three-field `resolved / candidates / unresolved` shape this replaces
+/// invited exactly one arithmetic operation — divide the first by the sum —
+/// and that division is meaningless here, because the reached counts and the
+/// unbound count come from different populations. See `RadiusCoverage` and
+/// `docs/adr/0014-radius-coverage.md`.
+///
+/// It matters more in a trail than anywhere else. Later agents read trails as
+/// context, so a figure that reads as "this repository is 3.7% analysable"
+/// gains authority with every run that quotes it — the S11 propagation
+/// problem, applied to a number rather than an opinion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RadiusCounts {
-    pub resolved: u32,
-    pub candidates: u32,
-    pub unresolved: u32,
+    /// Summed over every radius the run queried. Additive: each query asks
+    /// about a different symbol, and "how many call sites did this run
+    /// examine" is the sum of them.
+    #[serde(default, alias = "resolved")]
+    pub reached_resolved: u32,
+    #[serde(default, alias = "candidates")]
+    pub reached_ambiguous: u32,
+    /// The **largest single** radius's unbound count, not a sum.
+    ///
+    /// Two radii whose touched files overlap count the same unbound call sites
+    /// twice, and most radii in a repository touch overlapping files, so a sum
+    /// grows without bound as a run asks more questions. The widest single
+    /// query is a real figure about a real radius; a sum is not a figure about
+    /// anything.
+    ///
+    /// Not aliased from the old `unresolved` field: that value *was* a sum, so
+    /// migrating it would carry the over-count forward under a name promising
+    /// it had been fixed.
+    #[serde(default)]
+    pub widest_unbound_in_touched_files: u32,
+    /// How many radius queries the above summarises, so a reader can tell the
+    /// difference between one query and twenty.
+    #[serde(default)]
+    pub radius_queries: u32,
 }
 
 /// Counts of the two audit modes, never collapsed into one number.
@@ -154,9 +187,10 @@ mod tests {
             factual: Factual {
                 proposed: vec!["src/poetry/installation/installer.py".into()],
                 radius: RadiusCounts {
-                    resolved: 47,
-                    candidates: 3,
-                    unresolved: 2,
+                    reached_resolved: 47,
+                    reached_ambiguous: 3,
+                    widest_unbound_in_touched_files: 2,
+                    radius_queries: 1,
                 },
                 checks: vec![],
                 check_outcomes: vec![CheckOutcome {
@@ -176,7 +210,14 @@ mod tests {
         };
 
         let v: serde_json::Value = serde_json::from_str(&t.to_json().unwrap()).unwrap();
-        assert!(v["factual"]["radius"]["unresolved"] == 2);
+        assert!(v["factual"]["radius"]["widest_unbound_in_touched_files"] == 2);
+        // The field name is load-bearing. `unresolved` beside `resolved` reads
+        // as two parts of one whole and invites a division that is meaningless
+        // here (ADR 0014), and a trail is the document later agents quote.
+        assert!(
+            v["factual"]["radius"]["unresolved"].is_null(),
+            "the old name must not reappear, under any serde alias"
+        );
         assert!(
             v["judgment"]["tech_debt_projection"].is_string(),
             "speculation lives under judgment, never under factual"

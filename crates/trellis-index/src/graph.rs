@@ -48,6 +48,50 @@ pub enum Reason {
     UnboundName,
 }
 
+impl Reason {
+    /// A phrase a reader can act on, not the variant name.
+    ///
+    /// S6: a user handed `MethodDispatchUntyped 2207` learns a count and a
+    /// label. The count tells them how much doubt there is; only the phrase
+    /// tells them whether it is the language's fault or theirs — and that is
+    /// what decides whether they close the screen or add a type annotation.
+    pub fn explain(self) -> &'static str {
+        match self {
+            Reason::MethodDispatchUntyped => "obj.method() where obj's type is unknown",
+            Reason::DecoratorIndirection => "the callee is wrapped by a decorator",
+            Reason::StarImport => "the name arrives through `from x import *`",
+            Reason::DynamicAttribute => "getattr, __getattr__, or dict dispatch",
+            Reason::ReexportUnfollowed => "an __init__.py re-export chain too deep to follow",
+            Reason::ShadowedAmbiguous => "the binding is shadowed in a way we cannot disambiguate",
+            Reason::LocalBinding => {
+                "the callee names a parameter or local, so it is whatever was passed in"
+            }
+            Reason::UnboundName => "the name is bound nowhere we can see, and is not a builtin",
+        }
+    }
+
+    /// Looks up an explanation from the `Debug` name a `Coverage` records.
+    ///
+    /// Coverage maps are keyed by string so they can be serialized into a
+    /// trail; this walks back. An unknown key yields `None` rather than a
+    /// guess — a wrong explanation is worse than none.
+    pub fn explain_named(name: &str) -> Option<&'static str> {
+        const ALL: &[Reason] = &[
+            Reason::MethodDispatchUntyped,
+            Reason::DecoratorIndirection,
+            Reason::StarImport,
+            Reason::DynamicAttribute,
+            Reason::ReexportUnfollowed,
+            Reason::ShadowedAmbiguous,
+            Reason::LocalBinding,
+            Reason::UnboundName,
+        ];
+        ALL.iter()
+            .find(|r| format!("{r:?}") == name)
+            .map(|r| r.explain())
+    }
+}
+
 /// What a call site resolved to.
 ///
 /// Three outcomes, never two. Collapsing `Candidates` into either

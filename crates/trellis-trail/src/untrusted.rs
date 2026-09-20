@@ -79,10 +79,21 @@ impl UntrustedTrail {
         let mut out = vec![format!("previous task: {}", self.task)];
 
         out.push(format!(
-            "recorded radius: {} resolved, {} ambiguous, {} unresolved",
-            self.factual.radius.resolved,
-            self.factual.radius.candidates,
-            self.factual.radius.unresolved
+            concat!(
+                "recorded radius: {} call sites reached over {} quer{} ",
+                "({} resolved, {} ambiguous); the widest single query left {} ",
+                "call sites in its touched files unbound"
+            ),
+            self.factual.radius.reached_resolved + self.factual.radius.reached_ambiguous,
+            self.factual.radius.radius_queries,
+            if self.factual.radius.radius_queries == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            self.factual.radius.reached_resolved,
+            self.factual.radius.reached_ambiguous,
+            self.factual.radius.widest_unbound_in_touched_files
         ));
         out.push(format!(
             "recorded audit: {} verified, {} reviewed only",

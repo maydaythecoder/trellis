@@ -358,7 +358,13 @@ mod tests {
             ToolResult::Radius(r) => {
                 assert_eq!(r.certain.len(), 1, "go calls helper");
                 // S2: there is no API that hands back reach without limits.
-                assert!(r.coverage.total() > 0);
+                // The reach and the doubt are asserted separately because
+                // there is no total to assert — see ADR 0014.
+                assert_eq!(r.coverage.reached(), 1);
+                assert!(
+                    r.coverage.touched_files > 0,
+                    "the doubt figure must arrive with the scale it ranges over"
+                );
             }
             other => panic!("expected a radius, got {other:?}"),
         }

@@ -93,8 +93,12 @@ good the reason sounds.
    from arbitrary JSON. → ADR 0004
 2. **`ToolResult` has no pass variant.** The model never issues a correctness
    verdict. → ADR 0004
-3. **Every blast radius ships with its coverage.** No API returns reach without
-   limits; nothing emits a bare "complete". → ADR 0002
+3. **Every blast radius ships with its coverage, as two facts and never a
+   ratio.** No API returns reach without limits; nothing emits a bare
+   "complete"; and `RadiusCoverage` has no `total()` and no fraction, because
+   its reach counts and its doubt count come from different populations.
+   Dividing them printed "3.7% resolved" for a resolver audited at 72%.
+   → ADR 0002, ADR 0014
 4. **`Verified` and `Reviewed` are never collapsed into one number.**
    `ModeCounts` has no `total()` on purpose. → ADR 0003
 5. **No agent produces a verdict on another agent's output.** Agents

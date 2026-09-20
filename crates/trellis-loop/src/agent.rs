@@ -257,9 +257,9 @@ pub async fn run<M: Model>(
                 };
                 let radius_counts = match &result {
                     ToolResult::Radius(r) => Some((
-                        r.coverage.resolved,
-                        r.coverage.candidates,
-                        r.coverage.unresolved,
+                        r.coverage.reached_resolved,
+                        r.coverage.reached_ambiguous,
+                        r.coverage.unbound_in_touched_files,
                     )),
                     _ => None,
                 };
@@ -294,15 +294,42 @@ async fn dispatch(orch: &Handle, call: &ToolCall) -> ToolResult {
 /// much the graph could not resolve (S2).
 fn render(call: &ToolCall, r: &ToolResult) -> String {
     match r {
-        ToolResult::Radius(report) => format!(
-            "reached by {} call sites ({} resolved, {} ambiguous)\ncoverage: {}\n\
-             This is not a complete list of callers; roughly three call edges in ten \
-             are statically invisible in Python.",
-            report.site_count(),
-            report.certain.len(),
-            report.ambiguous.len(),
-            report.coverage.summary(),
-        ),
+        ToolResult::Radius(report) => {
+            // Two facts, never a ratio between them. The previous version of
+            // this string handed the model "92 of 2474 first-party call sites
+            // resolved (3.7%)" — a division across two different populations
+            // that reads as the resolver being useless. A model given that has
+            // every reason to disregard the radius entirely, which is the
+            // opposite of what S2's honesty mechanism is for.
+            let c = &report.coverage;
+            let top: Vec<String> = c
+                .reasons_by_frequency()
+                .into_iter()
+                .take(3)
+                .map(|(r, n)| format!("{r} {n}"))
+                .collect();
+            format!(
+                concat!(
+                    "{} call sites reach this symbol: {} resolved, {} ambiguous.
+",
+                    "Separately — a different population, not a fraction of the ",
+                    "above — {} call sites across the {} files this radius touches ",
+                    "could not be bound to any definition{}{}.
+",
+                    "Any of them may also reach this symbol. This is not a complete ",
+                    "list of callers; roughly three call edges in ten are statically ",
+                    "invisible in Python, so treat the resolved list as a floor, not ",
+                    "a boundary."
+                ),
+                report.site_count(),
+                report.certain.len(),
+                report.ambiguous.len(),
+                c.unbound_in_touched_files,
+                c.touched_files,
+                if top.is_empty() { "" } else { ", mostly " },
+                top.join(", "),
+            )
+        }
         ToolResult::Checks(v) => {
             let d = v.detail();
             format!(
@@ -484,10 +511,54 @@ mod tests {
 
         let (_, t) = run("task", &mut m, &h, &budget()).await;
         let obs = &t.turns[0].observation;
-        assert!(obs.contains("coverage:"), "{obs}");
         assert!(
             obs.contains("not a complete list"),
             "the model must never be handed a radius that reads as exhaustive: {obs}"
+        );
+        assert!(
+            obs.contains("could not be bound"),
+            "the doubt is part of the observation, not an optional extra: {obs}"
+        );
+        assert!(
+            obs.contains("files this radius touches"),
+            "the doubt count is meaningless without the scale it ranges over: {obs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_model_is_never_handed_a_ratio_of_reach_to_doubt() {
+        // ADR 0014. The observation used to carry `Coverage::summary()`, which
+        // divides sites reaching the symbol by every unbindable site in the
+        // touched files — two populations, one percentage, and for
+        // poetry.factory.Factory it read "92 of 2474 first-party call sites
+        // resolved (3.7%)".
+        //
+        // Handed that, a model has every reason to conclude the graph is
+        // useless and stop consulting it, which is the precise opposite of
+        // what S2's honesty mechanism exists to achieve. So the observation
+        // must state the two counts and never a percentage between them.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::BlastRadius {
+                symbol: "helper".into(),
+            }),
+            Step::Done {
+                summary: "done".into(),
+            },
+        ]);
+
+        let (_, t) = run("task", &mut m, &h, &budget()).await;
+        let obs = &t.turns[0].observation;
+        assert!(
+            !obs.contains('%'),
+            "no percentage may appear in a radius observation; the only ratio \
+             available is between two different populations: {obs}"
+        );
+        assert!(
+            obs.contains("not a fraction of"),
+            "the observation must say outright that the two counts are not a \
+             ratio, because the next reader will otherwise compute one: {obs}"
         );
     }
 

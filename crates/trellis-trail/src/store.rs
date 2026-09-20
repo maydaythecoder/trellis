@@ -184,9 +184,10 @@ mod tests {
             factual: Factual {
                 proposed: vec!["app/a.py".into()],
                 radius: RadiusCounts {
-                    resolved: 3,
-                    candidates: 1,
-                    unresolved: 2,
+                    reached_resolved: 3,
+                    reached_ambiguous: 1,
+                    widest_unbound_in_touched_files: 2,
+                    radius_queries: 1,
                 },
                 checks: Vec::new(),
                 check_outcomes: Vec::new(),
@@ -235,7 +236,7 @@ mod tests {
         let (found, t) = latest(d.path()).unwrap().expect("a trail was written");
         assert_eq!(found, p);
         assert_eq!(t.task, "do a thing");
-        assert_eq!(t.factual.radius.unresolved, 2);
+        assert_eq!(t.factual.radius.widest_unbound_in_touched_files, 2);
     }
 
     #[test]

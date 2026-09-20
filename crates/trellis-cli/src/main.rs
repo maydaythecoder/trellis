@@ -361,9 +361,15 @@ fn record_trail(
     let mut radius = RadiusCounts::default();
     for t in &turns.turns {
         if let Some((r, c, u)) = t.radius_counts {
-            radius.resolved += r;
-            radius.candidates += c;
-            radius.unresolved += u;
+            radius.reached_resolved += r;
+            radius.reached_ambiguous += c;
+            // Not a sum: radii in one repository touch overlapping files, so
+            // adding these counts the same unbindable call sites once per
+            // query — a figure that grows with curiosity rather than with
+            // doubt. The widest single query is a true statement about a real
+            // radius; a sum is not a statement about anything.
+            radius.widest_unbound_in_touched_files = radius.widest_unbound_in_touched_files.max(u);
+            radius.radius_queries += 1;
         }
     }
 
@@ -476,31 +482,79 @@ fn cmd_radius(root: &Path, query: &str) -> Result<()> {
 
     println!("{}  ({})", qualified(s), index.files[s.file.index()].path);
     println!();
-    println!("  reached by {} call sites", report.site_count());
-    println!("    verified-resolved  {:>6}", report.certain.len());
+    // S6. Two blocks, never one ratio.
+    //
+    // This printed "92 of 2474 first-party call sites resolved (3.7%)" until
+    // ADR 0014. The numerator counted sites reaching the symbol; the
+    // denominator counted every unbindable call in the files the radius
+    // touches. Both true, the sentence false, and it read as the resolver
+    // being twenty times worse than the audit says it is.
+    println!("reach — call sites that reach this symbol");
     println!(
-        "    ambiguous          {:>6}  one of several, none chosen",
-        report.ambiguous.len()
+        "  {:>6}  resolved     bound here by a single edge",
+        report.coverage.reached_resolved
     );
-    println!("  transitive symbols   {:>6}", report.symbols.len());
+    println!(
+        "  {:>6}  ambiguous    this symbol is one of several candidates, none chosen",
+        report.coverage.reached_ambiguous
+    );
+    println!(
+        "  {:>6}  symbols reached transitively",
+        report.symbols.len()
+    );
     println!();
 
-    // S2: every consumer reads coverage alongside the radius, and the
-    // unresolved figure here is the over-approximation from the files this
-    // radius touches — see `radius::add_touched_file_misses`.
-    println!("coverage");
-    println!("  {}", report.coverage.summary());
-    if report.coverage.unresolved > 0 {
-        println!();
+    let c = &report.coverage;
+    println!("doubt — a different population, not a fraction of the reach");
+    if c.unbound_in_touched_files == 0 {
         println!(
-            "  {} call sites in the files this radius touches could not be bound.",
-            report.coverage.unresolved
+            "  {:>6}  every call site in the {} files this radius touches was bound",
+            0, c.touched_files
         );
-        println!("  Any of them may also reach this symbol. Breakdown:");
-        let mut reasons: Vec<_> = report.coverage.by_reason.iter().collect();
-        reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        for (reason, n) in reasons {
-            println!("      {reason:<24} {n:>6}");
+    } else {
+        println!(
+            "  {:>6}  call sites across the {} files this radius touches bound to \
+             nothing.",
+            c.unbound_in_touched_files, c.touched_files
+        );
+        println!("          Any of them may also reach this symbol.");
+        println!();
+
+        // Collapsed, with the residue counted rather than dropped. A screen a
+        // user closes is a screen that stopped being honest; a stable "and N
+        // more" keeps the whole figure in view while fitting on one.
+        const SHOWN: usize = 3;
+        let reasons = c.reasons_by_frequency();
+        for (reason, n) in reasons.iter().take(SHOWN) {
+            println!(
+                "          {reason:<22} {n:>6}   {}",
+                trellis_index::graph::Reason::explain_named(reason).unwrap_or("")
+            );
+        }
+        if reasons.len() > SHOWN {
+            let rest: u32 = reasons.iter().skip(SHOWN).map(|(_, n)| n).sum();
+            println!(
+                "          {:<22} {:>6}   across {} further reasons",
+                "(other)",
+                rest,
+                reasons.len() - SHOWN
+            );
+        }
+
+        let files = c.files_by_doubt();
+        if files.len() > 1 {
+            println!();
+            println!("          concentrated in:");
+            for (path, n) in files.iter().take(5) {
+                println!("            {n:>6}  {path}");
+            }
+            if files.len() > 5 {
+                let rest: u32 = files.iter().skip(5).map(|(_, n)| n).sum();
+                println!(
+                    "            {rest:>6}  across {} further files",
+                    files.len() - 5
+                );
+            }
         }
     }
     println!();
@@ -515,10 +569,28 @@ fn cmd_radius(root: &Path, query: &str) -> Result<()> {
     );
     println!();
     println!(
-        "This is not a complete list of callers. Roughly three call edges in ten are \
-         statically\ninvisible in Python (Constraint 1); the unresolved count above is \
-         what we know we missed."
+        "{}",
+        concat!(
+            "The two figures above count different things and must not be divided. The\n",
+            "first is call sites that reach this symbol; the second is every unbindable\n",
+            "call in the files the radius touches, which over-counts on purpose.\n",
+            "\n",
+            "This is not a complete list of callers. Roughly three call edges in ten are\n",
+            "statically invisible in Python (Constraint 1), so treat the resolved list as\n",
+            "a floor, not a boundary."
+        )
     );
+    if c.unbound_in_touched_files > 0 {
+        println!();
+        println!(
+            "{}",
+            concat!(
+                "To shrink the doubt here, add a test that exercises this symbol. A call\n",
+                "site covered by an executed check moves from Reviewed to Verified — the\n",
+                "only option that leaves the repository better than it found it."
+            )
+        );
+    }
     Ok(())
 }
 
