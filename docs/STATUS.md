@@ -112,46 +112,43 @@ OPEN_QUESTIONS Q-13.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-1. **The model floor (S7), remainder.** One configuration measured and below
-   the floor; the A/B says that is the model, not the harness. Locating the
-   floor needs a configuration that *passes*, and Qwen2.5-Coder-3B is at
-   931 MB of 2,105 MB, gaining roughly 56 KB/s — about six hours out. Blocked
-   on bandwidth, not on work.
+Two items remain, and **neither is blocked on code**. One needs bandwidth, the
+other needs a person.
 
-   `.bench/models/fetch.sh` resumes by HTTP range request and is safe to
-   restart: it appends to the partial file rather than starting over, which is
-   the only reason the download has survived thirty-seven attempts. If a
-   session ends with it incomplete, restart it rather than re-fetching. When
-   it lands, the floor run is one command —
+1. **The model floor (S7), second configuration.** One configuration is
+   measured and it is below the floor; the A/B established that this is the
+   model and not the harness. Locating the floor needs a configuration that
+   *passes*.
+
+   Qwen2.5-Coder-3B Q4_K_M is at **1,352 MB of 2,105 MB** (64%) after 62
+   resumed attempts, gaining roughly 190 MB/hour — about four hours out.
+   `.bench/models/fetch.sh` resumes by HTTP range and appends to the partial
+   file, which is the only reason it has survived those 62 attempts; if a
+   session ends with it incomplete, restart it rather than re-fetching.
+
+   When it lands: start the probe server on the new weights, then
    `python docs/bench/run_floor.py .bench/floor docs/bench/floor_tasks.json
-   llamacpp:http://127.0.0.1:<port> <out>.json` against a probe server started
-   on the new weights, and roughly 70 minutes.
+   llamacpp:http://127.0.0.1:<port> docs/bench/floor-qwen2.5-coder-3b.json`.
+   About 70 minutes.
+
 2. **A human re-audit before any v1.0 gate claim** (A-34, Q-15). The only
-   thing standing between the project and a gate call, and the only item that
-   needs a person rather than a network.
+   thing standing between the project and a gate call.
 
    **The packet is ready to produce and the pipeline is validated.** Two
-   commands, no network, documented in `docs/bench/README.md`:
-   `audit_sample ... 1000 <fresh-seed>` then `split_audit.py <dir> 40`, giving
-   25 blind chunks of 40. Round-tripped through split, merge and score with
-   1,000 synthetic judgements, which caught the filled-chunk format before an
-   auditor would have hit it rather than after.
+   commands, no network: `audit_sample ... 1000 <fresh-seed>` then
+   `split_audit.py <dir> 40`, giving 25 blind chunks of 40. Round-tripped
+   through split, merge and score with 1,000 synthetic judgements, which
+   caught the filled-chunk format before an auditor would have hit it.
 
    It must report **wrongly excluded** as well as recall: ADR 0015 lets a site
-   leave the denominator on an annotation, and no automated check can see a
-   wrong exclusion (S21). And if `resolve.rs` moves before scoring,
-   `answers.json` must be regenerated — the seed reproduces the sites, not the
+   leave the denominator on the strength of an annotation, and no automated
+   check can see a wrong exclusion (S21). If `resolve.rs` moves before
+   scoring, regenerate `answers.json` — the seed reproduces the sites, not the
    verdicts.
-3. **Cross-file type propagation, if the audit says the gate needs it.** The
-   remaining `Attribute` bulk is attribute chains (1,969 sites) and locals
-   whose type is not derivable within one file (1,883). Larger than anything
-   attempted so far and not costed. Not to be started before the audit says
-   how far short 85% actually is.
-4. *(Nothing else. Q-14 is closed; see below.)*
 
-**v0.1, v0.2 and v0.3 are complete** apart from S7's second configuration,
-which is blocked on the network. What remains before v1.0 is the 85% recall
-gate, and the next honest step there is measurement rather than code.
+**v0.1, v0.2 and v0.3 are complete**, and every known latent unsound edge is
+closed. What remains before v1.0 is the 85% recall gate, and the next honest
+step there is measurement rather than code.
 
 ## The 85% backstop: both candidates measured, both too small, and a third found
 
