@@ -43,12 +43,25 @@ enum Command {
     /// Run the agent loop against a task.
     Run {
         task: String,
-        /// Which model drives the loop. Currently only `scripted:<path>`,
-        /// which plays a fixed JSON script. A scripted run exercises the real
-        /// loop, real files, real checks and real rollback — everything
-        /// except judgement. Results from it are never a model floor (S7).
+        /// Which model drives the loop:
+        ///
+        ///   `scripted:<path>`            a fixed JSON script
+        ///   `llamacpp:http://host:port`  llama.cpp server
+        ///   `vllm:http://host:port`      vLLM OpenAI-compatible server
+        ///   `sglang:http://host:port`    SGLang server
+        ///
+        /// A scripted run exercises the real loop, real files, real checks and
+        /// real rollback — everything except judgement. Results from it are
+        /// never a model floor (S7).
         #[arg(long)]
         model: String,
+        /// Send no schema and validate the reply instead (tier 4).
+        ///
+        /// Only for a runtime that does not honour guided decoding. It is
+        /// materially worse — a run can fail on format alone — so it is opt-in
+        /// rather than a silent fallback.
+        #[arg(long)]
+        unconstrained: bool,
         /// Cap concurrent agents, or `auto` to derive from measured backend
         /// batching capacity. Never derived from CPU count (S18).
         #[arg(long, default_value = "1")]
@@ -98,8 +111,9 @@ fn main() -> Result<()> {
         Command::Run {
             task,
             model,
+            unconstrained,
             agents,
-        } => cmd_run(&root, &task, &model, &agents),
+        } => cmd_run(&root, &task, &model, unconstrained, &agents),
         Command::Resume | Command::Partitions { .. } => {
             anyhow::bail!(
                 "not implemented yet: `resume` needs the trail (milestone v0.3) and \
@@ -111,29 +125,80 @@ fn main() -> Result<()> {
     }
 }
 
+/// What drives the loop this run.
+///
+/// Not a trait object: `Model::next_step` is an `async fn` in a trait, which
+/// is not dyn-compatible, and the loop is generic over it.
+enum Driver {
+    Scripted(trellis_loop::ScriptedModel),
+    Runtime(trellis_loop::RuntimeModel),
+}
+
+impl Driver {
+    fn parse(spec: &str, unconstrained: bool) -> Result<Self> {
+        if let Some(path) = spec.strip_prefix("scripted:") {
+            if unconstrained {
+                anyhow::bail!("--unconstrained is meaningless for a scripted model");
+            }
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("cannot read script {path}"))?;
+            let m = trellis_loop::ScriptedModel::from_json(&text)
+                .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+            return Ok(Driver::Scripted(m));
+        }
+
+        let (kind, base) = spec.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "--model `{spec}` is not recognised. Expected `scripted:<path>` or                  `<runtime>:http://host:port` where <runtime> is llamacpp, vllm or sglang."
+            )
+        })?;
+        let dialect = trellis_model::Dialect::parse(kind).ok_or_else(|| {
+            anyhow::anyhow!("unknown runtime `{kind}`; expected llamacpp, vllm or sglang")
+        })?;
+        let client = trellis_model::RuntimeClient::new(base, dialect, None)?;
+        Ok(Driver::Runtime(trellis_loop::RuntimeModel::new(
+            client,
+            !unconstrained,
+        )))
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Driver::Scripted(m) => format!(
+                "scripted, {} steps — real loop, real checks, real rollback; judgement stubbed",
+                m.len()
+            ),
+            Driver::Runtime(m) => format!(
+                "{:?} via {:?} — {}",
+                m.dialect(),
+                m.tier(),
+                m.tier().degradation()
+            ),
+        }
+    }
+}
+
 /// Runs the agent loop, and rolls back anything that did not converge.
 ///
 /// The ordering matters and is the whole safety story: snapshot before the
 /// first write, let the orchestrator be the only writer, and on any outcome
 /// that is not convergence restore the tree. A partially-applied change that
 /// nobody accepted is the worst thing this tool could leave behind.
-fn cmd_run(root: &Path, task: &str, model_spec: &str, agents: &str) -> Result<()> {
+fn cmd_run(
+    root: &Path,
+    task: &str,
+    model_spec: &str,
+    unconstrained: bool,
+    agents: &str,
+) -> Result<()> {
     if agents != "1" {
         anyhow::bail!(
             "multi-agent mode is v1.1 and is gated on single-agent numbers that do not \n             exist yet. Use --agents 1."
         );
     }
-    let Some(script_path) = model_spec.strip_prefix("scripted:") else {
-        anyhow::bail!(
-            "unsupported --model `{model_spec}`. Only `scripted:<path>` exists today; \n             the inference adapter is the next piece of v0.2 (ADR 0013)."
-        );
-    };
-
     let cfg = config::RepoConfig::load(root)?;
-    let script = std::fs::read_to_string(script_path)
-        .with_context(|| format!("cannot read script {script_path}"))?;
-    let mut model = trellis_loop::ScriptedModel::from_json(&script)
-        .map_err(|e| anyhow::anyhow!("{script_path}: {e}"))?;
+    let mut driver = Driver::parse(model_spec, unconstrained)?;
+    println!("model:    {}", driver.describe());
 
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
@@ -145,7 +210,13 @@ fn cmd_run(root: &Path, task: &str, model_spec: &str, agents: &str) -> Result<()
     let rt = tokio::runtime::Runtime::new()?;
     let (outcome, transcript) = rt.block_on(async {
         let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks()).spawn();
-        let out = trellis_loop::run(task, &mut model, &handle, &cfg.budget()).await;
+        // The loop is generic over the model, so each driver gets its own
+        // call rather than a trait object — the `Model` trait uses `async fn`
+        // and is not dyn-compatible.
+        let out = match &mut driver {
+            Driver::Scripted(m) => trellis_loop::run(task, m, &handle, &cfg.budget()).await,
+            Driver::Runtime(m) => trellis_loop::run(task, m, &handle, &cfg.budget()).await,
+        };
         let touched = handle.touched().await;
         (out, touched)
     });

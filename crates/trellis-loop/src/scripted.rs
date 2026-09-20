@@ -12,44 +12,13 @@
 //! What that does **not** demonstrate is judgement, and no result obtained
 //! this way may be reported as a model floor (S7).
 
-use crate::agent::{Model, Step, ToolCall, Transcript};
+use crate::agent::{Model, Step, Transcript};
+use crate::wire::ToolCallWire;
 use serde::Deserialize;
-use trellis_checks::CheckKind;
-
-/// One scripted move, in the JSON a script file contains.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "tool", rename_all = "snake_case")]
-enum ScriptStep {
-    BlastRadius {
-        symbol: String,
-    },
-    ReadFile {
-        path: String,
-    },
-    Edit {
-        path: String,
-        old: String,
-        new: String,
-    },
-    RunChecks {
-        #[serde(default)]
-        paths: Vec<String>,
-        #[serde(default = "default_kinds")]
-        kinds: Vec<String>,
-    },
-    Done {
-        #[serde(default)]
-        summary: String,
-    },
-}
-
-fn default_kinds() -> Vec<String> {
-    vec!["typecheck".into()]
-}
 
 #[derive(Debug, Deserialize)]
 struct Script {
-    steps: Vec<ScriptStep>,
+    steps: Vec<ToolCallWire>,
 }
 
 #[derive(Debug)]
@@ -68,7 +37,7 @@ impl ScriptedModel {
         let steps = script
             .steps
             .into_iter()
-            .map(convert)
+            .map(ToolCallWire::into_step)
             .collect::<Result<Vec<_>, _>>()?;
         if steps.is_empty() {
             return Err("script has no steps".into());
@@ -83,29 +52,6 @@ impl ScriptedModel {
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
-}
-
-fn convert(s: ScriptStep) -> Result<Step, String> {
-    Ok(match s {
-        ScriptStep::BlastRadius { symbol } => Step::Call(ToolCall::BlastRadius { symbol }),
-        ScriptStep::ReadFile { path } => Step::Call(ToolCall::ReadFile { path }),
-        ScriptStep::Edit { path, old, new } => Step::Call(ToolCall::Edit { path, old, new }),
-        ScriptStep::RunChecks { paths, kinds } => {
-            let kinds = kinds
-                .iter()
-                .map(|k| match k.to_ascii_lowercase().as_str() {
-                    "typecheck" => Ok(CheckKind::Typecheck),
-                    "tests" => Ok(CheckKind::Tests),
-                    "import" => Ok(CheckKind::Import),
-                    other => Err(format!(
-                        "unknown check kind `{other}`; expected typecheck, tests or import"
-                    )),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Step::Call(ToolCall::RunChecks { paths, kinds })
-        }
-        ScriptStep::Done { summary } => Step::Done { summary },
-    })
 }
 
 impl Model for ScriptedModel {

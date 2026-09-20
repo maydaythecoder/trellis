@@ -9,6 +9,7 @@ license.workspace = true
 trellis-core.workspace = true
 trellis-index.workspace = true
 trellis-checks.workspace = true
+trellis-model.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

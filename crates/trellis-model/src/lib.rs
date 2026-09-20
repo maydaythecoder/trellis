@@ -1,13 +1,17 @@
-//! Model adapter tiers and grammar compilation.
+//! Model adapter tiers, grammar compilation, and the runtime client.
 //!
-//! Status: the tier taxonomy, probe result, and schema-to-grammar path are
-//! real. The sampling loop is not — it needs logit access, which means
-//! in-process inference, which is an open decision (S17). See
-//! `docs/adr/0006-adapter-tiers-and-inference-path.md`, which is
-//! deliberately left `Proposed` until v0.2 measures the options.
+//! Tiers 2 and 4 are real: `runtime` speaks to llama.cpp, vLLM and SGLang,
+//! putting the JSON Schema in whichever key that runtime reads. Tier 3 — the
+//! harness owning the sampling loop — is **deliberately not built**, because
+//! llguidance is already the grammar engine inside those runtimes, so for the
+//! ones local users actually run, tier 2 delivers what tier 3 would with no
+//! inference code here at all. See `docs/adr/0013-inference-path.md`, which
+//! settled the question S17 left open.
 
 pub mod grammar;
+pub mod runtime;
 pub mod tier;
 
 pub use grammar::{GrammarError, ToolGrammar};
+pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use tier::{AdapterTier, BatchingCapability, Probe};
