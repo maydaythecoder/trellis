@@ -136,6 +136,13 @@ impl Transcript {
 /// by a script — which is what lets the loop's control flow be tested with no
 /// inference anywhere near it.
 pub trait Model {
+    /// Produces the next step, or a **terminal** failure.
+    ///
+    /// `Err` ends the run. Retryable conditions — a malformed tool call under
+    /// tier 4, a dropped connection, a rate limit — are the adapter's business
+    /// and must be retried inside this call, because only the adapter knows
+    /// which of them are worth retrying. Surfacing a retryable error here
+    /// would end a run that had not actually failed.
     fn next_step(
         &mut self,
         t: &Transcript,
@@ -240,8 +247,8 @@ pub async fn run<M: Model>(
                     checks_passed += 1;
                 }
                 t.turns.push(Turn {
+                    observation: render(&call, &result),
                     call,
-                    observation: render(&result),
                     verdict_passed,
                 });
             }
@@ -263,7 +270,7 @@ async fn dispatch(orch: &Handle, call: &ToolCall) -> ToolResult {
 /// A radius renders its coverage alongside its reach, always — there is no
 /// path by which the model sees who calls a symbol without also seeing how
 /// much the graph could not resolve (S2).
-fn render(r: &ToolResult) -> String {
+fn render(call: &ToolCall, r: &ToolResult) -> String {
     match r {
         ToolResult::Radius(report) => format!(
             "reached by {} call sites ({} resolved, {} ambiguous)\ncoverage: {}\n\
@@ -277,10 +284,11 @@ fn render(r: &ToolResult) -> String {
         ToolResult::Checks(v) => {
             let d = v.detail();
             format!(
-                "{:?}: {}\ncommand: {}\n{}",
+                "{:?}: {}\ncommand: {}{}\n{}",
                 d.kind,
                 if v.passed() { "passed" } else { "FAILED" },
                 d.command,
+                unrun_note(call, d.kind),
                 tail(&d.stdout, 40)
             )
         }
@@ -290,6 +298,38 @@ fn render(r: &ToolResult) -> String {
             e.path, e.applied, e.span.0, e.span.1
         ),
         ToolResult::Error(e) => format!("error: {e}"),
+    }
+}
+
+/// Names the check kinds that were requested but never ran.
+///
+/// `run_checks` stops at the first failure, so a model that asked for several
+/// kinds must be told which ones were skipped. Otherwise a failing type check
+/// reads as a complete account, and a *passing* one reads as a clean bill of
+/// health for a test suite that was never invoked.
+///
+/// Extracted as a pure function rather than tested through `render` because
+/// constructing a `Verdict` outside `trellis-checks` is impossible by design
+/// (ADR 0004). Adding a test-only constructor there would widen the seal that
+/// makes Constraint 2 structural — so the logic comes out to meet the test
+/// instead of the seal opening to meet the logic.
+fn unrun_note(call: &ToolCall, ran: trellis_checks::CheckKind) -> String {
+    let ToolCall::RunChecks { kinds, .. } = call else {
+        return String::new();
+    };
+    let after = kinds.iter().position(|k| *k == ran).map_or(0, |i| i + 1);
+    let skipped: Vec<String> = kinds[after.min(kinds.len())..]
+        .iter()
+        .map(|k| format!("{k:?}"))
+        .collect();
+    if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "
+NOT RUN: {} — stopped at the first failure.",
+            skipped.join(", ")
+        )
     }
 }
 
@@ -487,6 +527,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn adapter_internal_retries_are_invisible_to_the_loop() {
+        // Tier 4 is validate-and-retry. A model that fails twice and then
+        // succeeds must converge, not end the run — the loop only ever sees
+        // the terminal outcome.
+        struct Flaky {
+            attempts: usize,
+            steps: Vec<Step>,
+            at: usize,
+        }
+        impl Model for Flaky {
+            async fn next_step(&mut self, _: &Transcript) -> Result<Step, String> {
+                // Stands in for the adapter's own retry loop.
+                for _ in 0..3 {
+                    self.attempts += 1;
+                    if !self.attempts.is_multiple_of(3) {
+                        continue; // malformed output; retry internally
+                    }
+                    let s = self.steps.get(self.at).cloned().unwrap_or(Step::Done {
+                        summary: "done".into(),
+                    });
+                    self.at += 1;
+                    return Ok(s);
+                }
+                Err("still malformed after retries".into())
+            }
+        }
+
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+        let mut m = Flaky {
+            attempts: 0,
+            steps: vec![Step::Call(ToolCall::BlastRadius {
+                symbol: "helper".into(),
+            })],
+            at: 0,
+        };
+        let (outcome, t) = run("task", &mut m, &h, &budget()).await;
+        assert_eq!(t.turns.len(), 1, "the retries must not appear as turns");
+        assert!(matches!(
+            outcome,
+            Outcome::NotConverged {
+                reason: NotConverged::StoppedWithoutPassingChecks { .. },
+                ..
+            }
+        ));
+        assert!(m.attempts > 2, "the adapter really did retry internally");
+    }
+
     #[test]
     fn only_the_most_recent_check_counts() {
         // A check that passed before the last edit says nothing about the
@@ -508,6 +597,33 @@ mod tests {
             final_notice: false,
         };
         assert!(!t.last_check_passed());
+    }
+
+    #[test]
+    fn a_stopped_check_run_names_the_kinds_that_never_ran() {
+        // A model that asks for [Typecheck, Tests] and sees only a Typecheck
+        // result must not read that as "tests are fine".
+        let call = ToolCall::RunChecks {
+            paths: vec![],
+            kinds: vec![CheckKind::Typecheck, CheckKind::Tests],
+        };
+        let note = unrun_note(&call, CheckKind::Typecheck);
+        assert!(note.contains("NOT RUN"), "{note}");
+        assert!(note.contains("Tests"), "{note}");
+    }
+
+    #[test]
+    fn a_completed_check_run_reports_nothing_unrun() {
+        let call = ToolCall::RunChecks {
+            paths: vec![],
+            kinds: vec![CheckKind::Typecheck, CheckKind::Tests],
+        };
+        assert_eq!(unrun_note(&call, CheckKind::Tests), "");
+        // And a tool that is not a check run has nothing to say either.
+        assert_eq!(
+            unrun_note(&ToolCall::ReadFile { path: "a".into() }, CheckKind::Tests),
+            ""
+        );
     }
 
     #[test]

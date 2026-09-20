@@ -1,12 +1,20 @@
 //! Tool schema to grammar, with llguidance as the single grammar authority.
 //!
 //! No hand-written BNF anywhere: a tool's argument struct derives
-//! `schemars::JsonSchema`, schemars emits JSON Schema, llguidance compiles
-//! it. The compiled grammar is the *same artifact* whether TRELLIS masks
-//! locally (tier 3) or ships it to the serving runtime's guided-decoding
-//! parameter (tier 2), because llguidance is already the grammar engine
-//! inside llama.cpp, vLLM, SGLang and Guidance. One engine, two delivery
-//! paths, no divergence.
+//! `schemars::JsonSchema` and schemars emits JSON Schema.
+//!
+//! **What travels is the schema, not a compiled grammar.** The serving
+//! runtimes take a JSON Schema and compile it themselves — llama.cpp
+//! (`json_schema`), vLLM (`guided_json`), SGLang (`json_schema`) — under
+//! three different field names, and llama.cpp's `grammar` field wants GBNF
+//! rather than llguidance's Lark. JSON Schema is the one format all of them
+//! accept, so it is the wire format for tier 2.
+//!
+//! llguidance's role here is therefore **validation, not delivery**: a schema
+//! it cannot compile is one no runtime should be asked to compile either, and
+//! finding that out at startup beats finding out mid-run. It becomes a
+//! delivery mechanism only for tier 4 (validating returned text) and for
+//! tier 3, which ADR 0013 defers.
 
 use llguidance::api::ParserLimits;
 use llguidance::{GrammarBuilder, JsonCompileOptions};

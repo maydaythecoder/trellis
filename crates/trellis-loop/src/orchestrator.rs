@@ -235,6 +235,17 @@ impl Orchestrator {
         };
         let src = match std::fs::read_to_string(&full) {
             Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Creating files is not supported, and saying so beats a
+                // confusing read error. `Session::update` only knows paths
+                // that were present when the session opened, so a new file
+                // would be written to disk and never enter the graph — the
+                // exact tree/graph divergence the reindex-on-edit test exists
+                // to prevent.
+                return ToolResult::Error(format!(
+                    "{path} does not exist. This tool edits existing files only;                      creating files would leave the index unaware of them."
+                ));
+            }
             Err(e) => return ToolResult::Error(format!("cannot read {path}: {e}")),
         };
 
@@ -255,8 +266,13 @@ impl Orchestrator {
             self.touched.push(path.to_string());
         }
         // Keep the graph in step with the tree. A stale index would let the
-        // next blast radius describe code that no longer exists.
-        self.session.update(path, &updated);
+        // next blast radius describe code that no longer exists, so a refusal
+        // here is reported rather than dropped — the write already happened.
+        if !self.session.update(path, &updated) {
+            return ToolResult::Error(format!(
+                "{path} was written but is not part of the index session, so the                  graph is now stale. Re-open the repository before trusting any                  blast radius."
+            ));
+        }
 
         ToolResult::Edit(EditOutcome {
             path: path.to_string(),
@@ -411,6 +427,36 @@ mod tests {
                 other => panic!("`{bad}` must be refused for writes too, got {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn creating_a_file_is_refused_in_terms_that_say_why() {
+        // The failure this prevents is silent: a new file would be written to
+        // disk and never enter the index, so every later blast radius would
+        // be computed against a tree it does not describe.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+
+        match h
+            .edit(
+                "app/brand_new.py",
+                "",
+                "def x():
+    pass
+",
+            )
+            .await
+        {
+            ToolResult::Error(e) => {
+                assert!(e.contains("does not exist"), "{e}");
+                assert!(
+                    e.contains("index"),
+                    "the message must say why, not just that it failed: {e}"
+                );
+            }
+            other => panic!("creating a file must be refused, got {other:?}"),
+        }
+        assert!(!d.path().join("app/brand_new.py").exists());
     }
 
     #[tokio::test]
