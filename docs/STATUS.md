@@ -121,7 +121,7 @@ a real one, and three need measurement rather than code.
 | 3 | A real change to human approval, complete trail, grounded checks | **Partial.** Done end to end on poetry with a scripted model (`wedge-20260920.md`): defect, blast radius, failing check, edit, passing check, human `git commit`, trail, cold resume. Never with a model making the judgments |
 | 4 | Induced mid-run failure returns the repo to its exact pre-run state | **Yes, at seven injection points**, up from one — including a real SIGINT delivered mid-run and a dead orchestrator, the two `04-v1.0-harness.md` calls usually missed. Recovery-path failure handled: a rollback that cannot finish is loud, names the worktree, gives the commands, and no longer swallows the trail. `docs/bench/rollback-20260920.md` |
 | 5 | Resumption works | **Yes**, demonstrated cold on the benchmark repo |
-| + | Acceptable operation on a local open-weight model at or above the floor | **No, and the floor is not located.** Two configurations measured, both below it: 0.5B 0/20, Coder-3B 0/17 |
+| + | Acceptable operation on a local open-weight model at or above the floor, **via constrained tool calling** | **No, and the floor is not located.** Two configurations measured, both below it: 0.5B 0/20, Coder-3B 0/17. The constrained-tool-calling half is met — tier 2 is constrained tool calling, and no generation across either floor run was off-schema. What is missing is a model, not a tier |
 
 Conditions 3 and the plus-row are the same fact twice: no model has been found
 that can drive this. That is a measurement result about available small models,
@@ -171,9 +171,11 @@ of the gate needs it.
 10. ~~`MISSION.md` with honest positioning (S15).~~ **Done.** The positioning
     argument was already sound; the document around it claimed seven goal
     states as aims with nothing saying which were met, and two are not.
-11. **Tier 3** (`AdapterTier::HarnessConstrained`), carried from v0.2. The
-    gate's plus-row needs it and the doc's own `doctor` mockup prints
-    `Tier 3 ✓`. Named in the enum, constructed nowhere.
+11. ~~Tier 3 (`AdapterTier::HarnessConstrained`).~~ **Not built, deliberately
+    — see the reconciliation below.** ADR 0013 descoped it from v0.2 and its
+    two reopen triggers have not fired; the v1.0 plus-row asks for constrained
+    tool calling, which tier 2 is. Carrying it as an open item was STATUS
+    reporting against superseded milestone text.
 12. **Gate proof**: all five conditions, artifacts recorded.
 
 Two items remain that no amount of code closes: **the human re-audit** (A-34,
@@ -181,7 +183,7 @@ Q-15), whose packet is ready and pipeline validated, and **a model at or above
 the floor**, which needs a configuration that passes rather than a third
 endpoint below it.
 
-**v0.1 is complete. v0.3 is eight of nine. v0.2 is five of ten** — both gates
+**v0.1 is complete. v0.3 is eight of nine. v0.2 is five met, one descoped by ADR 0013, four partial or unmet** — both gates
 audited line by line below, against the code rather than against the milestone
 prose that had them marked done. Every known latent unsound edge is closed and
 the tool has an interactive session.
@@ -313,6 +315,51 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## Tier 3: not built, and the reason is a document disagreeing with itself
+
+v1.0 task item 11, and the answer is not to build it.
+
+**`AdapterTier::HarnessConstrained` was carried as an open gate item that an
+accepted ADR had already removed.** ADR 0013, accepted 2026-09-19, says in its
+Consequences: *"v0.2 ships tier 2 and tier 4, not tier 3."* STATUS's v0.2 gate
+table marked it **No** and listed it as outstanding, citing the milestone text
+ADR 0013 supersedes. Two project documents contradicting each other, with the
+one a reader consults saying the wrong thing — the same defect class as S20
+and the stale README, this time found by reading the ADR before writing code.
+
+Three reasons it stays unbuilt, in order of weight:
+
+1. **The ADR's reopen triggers have not fired.** It names them: a measured
+   tier-4 population large enough to matter, or a serving stack that becomes
+   popular while exposing logits without guided decoding. Neither has. CLAUDE.md
+   requires an ADR to change a decision made in one, so reversing this by
+   implementation rather than by a superseding ADR would be exactly backwards.
+2. **It could not be demonstrated even if built.** The gate line is *"a model
+   with no native tool calling **completes a task** under harness-side
+   constraint"*. The 0.5B repaired 0 of 20 under tier 2, and the A/B
+   established the harness was not the limit. Under tier 3 it repairs 0 of 20
+   again — constraint guarantees form, never judgment, which this repository
+   has already measured and written down. That is a large sampling loop bought
+   to fail the same line differently.
+3. **The v1.0 gate does not ask for it.** The plus-row asks for constrained
+   tool calling, and tier 2 *is* constrained tool calling: llguidance is the
+   grammar engine inside llama.cpp, vLLM and SGLang, so the artifact TRELLIS
+   compiles is the same artifact the runtime masks with. No generation across
+   either floor run was off-schema. What is missing from that row is a model,
+   not a tier.
+
+**What it would cost, so "descoped" is a decision rather than a shrug.** The
+weights are on disk (`qwen2.5-0.5b-instruct-q4_k_m.gguf`, 491 MB, plus its
+tokenizer) and the floor probe already loaded them with candle's
+`quantized_qwen2` — so the pieces are proven to fit. Building it is adding
+candle-core, candle-transformers and tokenizers to `trellis-model` (164 crates,
+a 5m30s cold build per ADR 0013's own probe) and owning the sampling loop:
+logits, llguidance mask, sample, feed back. Roughly a day, reversible, and
+changing no call site outside `trellis-model` because the tiers sit behind one
+adapter interface.
+
+So it is costed, it is buildable here, and the record says not yet.
 
 ## MISSION.md: the positioning was fine, the claims around it were not
 
@@ -769,20 +816,22 @@ support, in the document a reader consults to find out.
 | `Verdict` unforgeable — **a compile-fail test proves it** | **Yes**, as of 2026-09-20. Was an assertion checked by reading the source; now three forgery attempts with committed compiler output |
 | `ToolResult` has no pass variant | **Yes** |
 | Two local models **plus one frontier API** through the adapter | **Partial.** Two local (0.5B, Coder-3B). No frontier API has driven the loop |
-| **Tier 3 works**: a model with no native tool calling completes a task under harness-side constraint | **No.** `AdapterTier::HarnessConstrained` is named in the enum and constructed nowhere. TRELLIS only ever speaks tier 2 over HTTP |
+| **Tier 3 works**: a model with no native tool calling completes a task under harness-side constraint | **Descoped by ADR 0013** (accepted 2026-09-19), which states plainly that "v0.2 ships tier 2 and tier 4, not tier 3". llguidance is the grammar engine *inside* llama.cpp, vLLM and SGLang, so for every local runtime a user actually has, tier 2 delivers the identical grammar artifact to the identical engine. Tier 3's marginal value is confined to runtimes exposing logits without guided decoding. `AdapterTier::HarnessConstrained` stays in the enum so the set of tiers `doctor` can report is closed |
 | Budgets enforce; exceeding one escalates then rolls back | **Yes** |
 | `trellis doctor` reports the active tier and what degrades | **Yes** |
 | `Verified` and `Reviewed` tracked separately and shown at approval | **Partial.** The type forbids collapsing them (no `total()`), and every trail records `0/0`. No coverage mapping exists, so nothing ever populates them |
 | Instrumentation: iterations, tokens, wall-clock, **context fill** | **Yes**, as of 2026-09-20. Context fill was not measured anywhere; each turn now records the prompt that produced it, in bytes, and the trail records first, peak and turns measured |
 
-### The two that matter
+### The one that matters, and the one that was a bookkeeping error
 
-**Tier 3 is the substantive gap.** The brief calls it "the one that makes any
-model work regardless of training" and the default for local open weights. The
-probe rig applies an llguidance mask in-process, which is exactly tier 3 — but
-that is the *measurement rig*, not the product. TRELLIS speaks tier 2 to it
-over HTTP. The floor results are correctly labelled tier 2; the gate item is
-unmet.
+**Tier 3 was never the substantive gap; this section used to say it was.** The
+brief does call it "the one that makes any model work regardless of training",
+and that framing is what kept it on the list — but ADR 0013 examined the claim
+and found it does not hold for the runtimes people actually run: llguidance is
+the grammar engine *inside* llama.cpp, vLLM and SGLang, so tier 2 hands the
+same artifact to the same engine. The tier's real scope is runtimes exposing
+logits without guided decoding. Descoped there, deliberately, and the reopen
+triggers are named in the ADR. See the reconciliation above.
 
 **`Verified` / `Reviewed` is structurally right and empirically empty.** S3's
 whole point is that "the callers still work" means two different things, and

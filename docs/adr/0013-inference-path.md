@@ -118,6 +118,19 @@ built until tier 2 is shipped and measured.
 - S18 is unaffected and still bites: multi-agent mode needs a continuous-
   batching runtime regardless of which tier is active.
 
+**Revisited 2026-09-20.** Tier 2 has now shipped and been measured, so the
+precondition this ADR set for *starting* tier 3 is met. The *reason* to start
+it is not: neither reopen trigger has fired, and the v1.0 plus-row asks for
+constrained tool calling, which tier 2 is. Recorded because the two are easy
+to confuse — "not yet" became true for a different clause than the one people
+will remember.
+
+The cost is now known rather than estimated. The 0.5B GGUF and its tokenizer
+are on disk and the S7 floor probe loaded them with candle's `quantized_qwen2`,
+so the pieces are proven to fit; what remains is the sampling loop and the
+dependency addition. Roughly a day. That makes this a costed deferral rather
+than an open question.
+
 ## Alternatives rejected
 
 **Build tier 3 first with `llama-cpp-2`.** The path ADR 0006 implied. Rejected
