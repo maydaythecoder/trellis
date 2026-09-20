@@ -113,14 +113,16 @@ this section:
 | — external, excluded | 6,087 |
 
 Build time, release build, warm page cache, three runs: **116.9 / 118.9 /
-119.2 ms**. Peak working set: **37.9 MB**. `.trellis/index.bin` (postcard):
-**589.7 KiB**, against 81,700 lines of Python — roughly 7 bytes per line, and
-the reason A-24 gitignores it rather than committing a blob that changes on
-nearly every edit. A `trellis radius` query against a warm cache returns in
-**48 ms** total process time, against ~120 ms to rebuild. That is roughly 690 lines/ms
-wall-clock for parse *and* resolve, against the ~1,400 lines/ms measured for
-Pass 1 alone — so resolution roughly doubles the cost of parsing, and neither
-is close to being the constraint at this size (S9).
+119.2 ms**. That is roughly 690 lines/ms wall-clock for parse *and* resolve,
+against the ~1,400 lines/ms measured for Pass 1 alone — so resolution roughly
+doubles the cost of parsing, and neither is close to being the constraint at
+this size (S9). Peak working set: **37.9 MB**.
+
+`.trellis/index.bin` (postcard): **589.7 KiB** for 81,700 lines of Python,
+roughly 7 bytes per line. That size is the reason A-24 gitignores it rather
+than committing a blob that changes on nearly every edit. A `trellis radius`
+query against a warm cache returns in **48 ms** total process time, against
+~120 ms to rebuild.
 
 ### What would change this choice
 
@@ -144,8 +146,12 @@ So: a human reads call sites and records what each one actually calls.
 
 ### Sampling
 
-- **Sample size: 400 call sites**, drawn uniformly at random from poetry's
-  10,421, with a fixed seed recorded in the run artefact.
+- **Sample size: 400 call sites**, drawn uniformly at random from the pinned
+  corpus's **21,794** call sites, seed **20260919**, by
+  `examples/audit_sample.rs`. The frame is every call site, not the
+  first-party ones: whether a callee is first-party is exactly what the
+  auditor decides, so pre-filtering by the resolver's own opinion would let it
+  choose its own denominator.
 - At 400 with a true recall near 0.85, the 95% Wald interval is roughly ±3.5
   percentage points. That is tight enough to place a measurement against the
   thresholds in §3, which are separated by 25 points.
