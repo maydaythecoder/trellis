@@ -25,6 +25,16 @@ pub struct RepoConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub agents: Option<AgentsSection>,
+    #[serde(default)]
+    pub governance: Option<GovernanceSection>,
+}
+
+/// Rules the loop obeys, read from the repository rather than configured per
+/// session. Enforced by the orchestrator; see `trellis_loop::governance`.
+#[derive(Debug, Deserialize)]
+pub struct GovernanceSection {
+    /// Paths no run may edit: `vendor/`, `*.lock`, `setup.py`.
+    pub deny_write: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +95,32 @@ impl RepoConfig {
             }
         }
         c
+    }
+
+    /// The repository's write rules, or none.
+    pub fn governance(&self) -> trellis_loop::Governance {
+        let rules = self
+            .governance
+            .as_ref()
+            .and_then(|g| g.deny_write.clone())
+            .unwrap_or_default();
+        trellis_loop::Governance::new(&rules)
+    }
+
+    /// `.trellis/context.md`, if the repository wrote one.
+    ///
+    /// Absent is normal and not an error. Unreadable is reported by the
+    /// caller rather than swallowed: a project that wrote a context file and
+    /// silently did not get it is worse off than one that never wrote one.
+    pub fn notes(root: &Path) -> Result<Option<String>> {
+        let path = root.join(".trellis").join("context.md");
+        match std::fs::read_to_string(&path) {
+            Ok(s) if s.trim().is_empty() => Ok(None),
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(anyhow::Error::from(e))
+                .with_context(|| format!("{} exists but could not be read", path.display())),
+        }
     }
 
     pub fn budget(&self) -> Budget {
@@ -148,6 +184,52 @@ mod tests {
         assert_eq!(c.checks().tests, ["pytest", "-x"]);
         // Unset keys keep their defaults rather than becoming empty.
         assert_eq!(c.checks().python, "python");
+    }
+
+    #[test]
+    fn governance_rules_are_read_and_absent_means_none() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(
+            RepoConfig::load(d.path()).unwrap().governance().is_empty(),
+            "no config means no rules, not a guessed default — a harness that              invents restrictions is as surprising as one that ignores them"
+        );
+
+        write(
+            d.path(),
+            "[governance]
+deny_write = [\"vendor/\", \"*.lock\"]
+",
+        );
+        let g = RepoConfig::load(d.path()).unwrap().governance();
+        assert_eq!(g.rules().len(), 2);
+        assert!(g.denies_write("vendor/pkg/a.py").is_some());
+        assert!(g.denies_write("poetry.lock").is_some());
+        assert!(g.denies_write("app/main.py").is_none());
+    }
+
+    #[test]
+    fn a_context_file_is_optional_and_an_empty_one_is_not_content() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(RepoConfig::notes(d.path()).unwrap().is_none());
+
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(
+            d.path().join(".trellis/context.md"),
+            "   
+
+",
+        )
+        .unwrap();
+        assert!(
+            RepoConfig::notes(d.path()).unwrap().is_none(),
+            "a whitespace-only file must not put an empty fence in the prompt"
+        );
+
+        std::fs::write(d.path().join(".trellis/context.md"), "Use `make check`.").unwrap();
+        assert_eq!(
+            RepoConfig::notes(d.path()).unwrap().as_deref(),
+            Some("Use `make check`.")
+        );
     }
 
     #[test]

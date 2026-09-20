@@ -7,6 +7,7 @@
 pub mod adapter;
 pub mod agent;
 pub mod budget;
+pub mod governance;
 pub mod orchestrator;
 pub mod partition;
 pub mod scripted;
@@ -15,10 +16,11 @@ pub mod wire;
 
 pub use adapter::RuntimeModel;
 pub use agent::{
-    Model, NotConverged, Outcome, PriorContext, Step, ToolCall, Transcript, Turn, run,
-    run_with_prior,
+    Model, NotConverged, Outcome, PriorContext, RepoContext, Seed, Step, ToolCall, Transcript,
+    Turn, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
+pub use governance::{Governance, Rule};
 pub use orchestrator::{Handle, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use scripted::ScriptedModel;

@@ -114,6 +114,7 @@ mod tests {
             turns: vec![],
             final_notice: false,
             prior: None,
+            repo: crate::agent::RepoContext::default(),
         };
         assert!(matches!(m.next_step(&t).await, Ok(Step::Call(_))));
         assert!(matches!(m.next_step(&t).await, Ok(Step::Done { .. })));

@@ -118,6 +118,10 @@ pub struct Orchestrator {
     session: Session,
     checks: CheckConfig,
     touched: Vec<String>,
+    /// Project rules, enforced here because this is the only write path to
+    /// the working tree. A rule enforced anywhere else is a rule a tool call
+    /// can route around.
+    governance: crate::governance::Governance,
 }
 
 impl Orchestrator {
@@ -127,7 +131,15 @@ impl Orchestrator {
             session: Session::open(root),
             checks,
             touched: Vec::new(),
+            governance: crate::governance::Governance::default(),
         }
+    }
+
+    /// Applies the repository's rules to this run.
+    #[must_use]
+    pub fn with_governance(mut self, g: crate::governance::Governance) -> Self {
+        self.governance = g;
+        self
     }
 
     /// Starts the actor on the current runtime and returns a handle.
@@ -229,6 +241,22 @@ impl Orchestrator {
     /// wrong occurrence — and the model cannot check this for itself, because
     /// checking it is reading the file it is about to change.
     fn apply_edit(&mut self, path: &str, old: &str, new: &str) -> ToolResult {
+        // Project rules are checked before the file is read, so a denied path
+        // is refused identically whether or not it exists — otherwise the
+        // refusal message leaks which denied files are present.
+        if let Some(rule) = self.governance.denies_write(path) {
+            return ToolResult::Error(format!(
+                concat!(
+                    "edit refused: `{}` is denied by the rule `{}` in ",
+                    ".trellis/config.toml. This is the repository's own rule, ",
+                    "not a guess — change the rule if the file really should be ",
+                    "editable."
+                ),
+                path,
+                rule.as_written()
+            ));
+        }
+
         let full = match self.resolve_in_repo(path) {
             Ok(f) => f,
             Err(e) => return ToolResult::Error(e),
@@ -497,6 +525,70 @@ mod tests {
             other => panic!("creating a file must be refused, got {other:?}"),
         }
         assert!(!d.path().join("app/brand_new.py").exists());
+    }
+
+    #[tokio::test]
+    async fn a_denied_path_is_refused_by_the_orchestrator_not_asked_about() {
+        // The rule has to bind here, at the only write path to the tree. A
+        // rule that lives in the prompt is a suggestion, and "do not edit
+        // generated files" is worthless as a suggestion.
+        let d = repo();
+        std::fs::create_dir_all(d.path().join("vendor")).unwrap();
+        std::fs::write(
+            d.path().join("vendor/lib.py"),
+            "def x():
+    return 1
+",
+        )
+        .unwrap();
+
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_governance(crate::governance::Governance::new(&["vendor/".into()]))
+            .spawn();
+
+        match h.edit("vendor/lib.py", "return 1", "return 2").await {
+            ToolResult::Error(e) => {
+                assert!(e.contains("vendor/"), "the refusal names the rule: {e}");
+                assert!(!e.contains("  "), "{e:?}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(
+            std::fs::read_to_string(d.path().join("vendor/lib.py"))
+                .unwrap()
+                .contains("return 1"),
+            "the file must be untouched"
+        );
+        assert!(h.touched().await.is_empty());
+        // And an allowed path still works, or the rule has eaten the tool.
+        assert!(matches!(
+            h.edit("app/util.py", "return 1", "return 2").await,
+            ToolResult::Edit(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_denied_path_is_refused_identically_whether_or_not_it_exists() {
+        // The check runs before the file is read, so the message cannot be
+        // used to learn which denied files are present. A small thing, but the
+        // alternative is a refusal that differs by whether the file is there,
+        // which is an oracle nobody intended to build.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_governance(crate::governance::Governance::new(&["secrets/".into()]))
+            .spawn();
+
+        let missing = h.edit("secrets/nope.py", "a", "b").await;
+        match missing {
+            ToolResult::Error(e) => {
+                assert!(e.contains("secrets/"), "{e}");
+                assert!(
+                    !e.contains("does not exist"),
+                    "a denied path must not report whether it exists: {e}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[tokio::test]

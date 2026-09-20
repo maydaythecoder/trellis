@@ -261,18 +261,41 @@ fn cmd_run(
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
     println!("snapshot at {}", snapshot.head);
 
+    let governance = cfg.governance();
+    let notes = config::RepoConfig::notes(root)?;
+    if !governance.is_empty() || notes.is_some() {
+        println!(
+            "repo:     {} write rule(s){}",
+            governance.rules().len(),
+            if notes.is_some() {
+                ", .trellis/context.md loaded"
+            } else {
+                ""
+            }
+        );
+    }
+    let seed = trellis_loop::Seed {
+        prior,
+        repo: trellis_loop::RepoContext {
+            notes,
+            rules: governance.rules().iter().map(|r| r.as_written()).collect(),
+        },
+    };
+
     let rt = tokio::runtime::Runtime::new()?;
     let (outcome, transcript) = rt.block_on(async {
-        let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks()).spawn();
+        let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks())
+            .with_governance(governance)
+            .spawn();
         // The loop is generic over the model, so each driver gets its own
         // call rather than a trait object — the `Model` trait uses `async fn`
         // and is not dyn-compatible.
         let out = match &mut driver {
             Driver::Scripted(m) => {
-                trellis_loop::run_with_prior(task, m, &handle, &cfg.budget(), prior).await
+                trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
             }
             Driver::Runtime(m) => {
-                trellis_loop::run_with_prior(task, m, &handle, &cfg.budget(), prior).await
+                trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
             }
         };
         let touched = handle.touched().await;
