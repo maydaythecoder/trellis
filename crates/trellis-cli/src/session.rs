@@ -339,3 +339,216 @@ fn help() {
         )
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session over a throwaway repository.
+    ///
+    /// `Session::open` builds a real index and prints a banner; both are
+    /// wanted. Testing a session against a stub would test the stub, and the
+    /// defects worth catching here are the ones where a command is routed
+    /// somewhere plausible and wrong.
+    fn session(dir: &Path) -> Session {
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(
+            dir.join("app/m.py"),
+            "def helper():\n    return 1\n\n\ndef go():\n    return helper()\n",
+        )
+        .unwrap();
+        Session::open(dir, None).expect("a session over a real directory")
+    }
+
+    fn git_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.invalid"]);
+        run(&["config", "user.name", "t"]);
+        // Otherwise a checkout rewrites LF to CRLF under a global
+        // `autocrlf=true`, and the byte-for-byte assertion below measures
+        // git's line-ending policy instead of whether revert restored the
+        // file.
+        run(&["config", "core.autocrlf", "false"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "init"]);
+    }
+
+    #[test]
+    fn exit_leaves_without_reporting_an_error() {
+        // `/exit` unwinds through the same `Result` as a failure, so the
+        // sentinel has to be recognised before anything is printed. Getting
+        // this wrong means the session exits *and* accuses the user of a
+        // mistake on the way out.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        for word in ["/exit", "/quit", "/q"] {
+            let e = s.dispatch(word).expect_err("exit unwinds as an error");
+            assert_eq!(e.to_string(), EXIT, "{word} must use the sentinel");
+        }
+    }
+
+    #[test]
+    fn an_unknown_slash_command_is_not_run_as_a_task() {
+        // The dangerous misroute. Everything that is not a command is a task
+        // for the model, so a mistyped `/radiuss` falling through would spend
+        // a budget and edit files because of a typo.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        let e = s.dispatch("/radiuss describe").expect_err("refused");
+        assert!(e.to_string().contains("unknown command"), "{e}");
+        assert!(
+            e.to_string().contains("/help"),
+            "and says where to look: {e}"
+        );
+    }
+
+    #[test]
+    fn a_task_without_a_model_says_what_to_do_about_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        let e = s.dispatch("rename helper to assist").expect_err("no model");
+        let msg = e.to_string();
+        assert!(msg.contains("no model set"), "{msg}");
+        // The two spellings, because "set a model" is not actionable to
+        // someone who has not read the --model docs.
+        assert!(msg.contains("/model llamacpp:"), "{msg}");
+        assert!(msg.contains("/model scripted:"), "{msg}");
+        // And what still works without one, so the answer is not "come back
+        // later".
+        assert!(msg.contains("/radius"), "{msg}");
+    }
+
+    #[test]
+    fn a_bad_model_spec_is_refused_and_does_not_become_the_model() {
+        // Validated when set rather than at first use: a typo discovered on
+        // the next task is discovered after the user has moved on.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        let e = s.dispatch("/model gpt-4").expect_err("not a spec");
+        assert!(e.to_string().contains("not a usable model spec"), "{e}");
+        assert!(s.model.is_none(), "a refused spec must not be stored");
+    }
+
+    #[test]
+    fn a_scripted_model_is_accepted_and_held_across_commands() {
+        let d = tempfile::tempdir().unwrap();
+        let script = d.path().join("s.json");
+        std::fs::write(&script, r#"{"steps":[{"tool":"done","summary":"x"}]}"#).unwrap();
+
+        let mut s = session(d.path());
+        s.dispatch(&format!("/model scripted:{}", script.display()))
+            .expect("a readable script is a valid spec");
+        assert!(s.model.is_some());
+        // Held — the point of a session is not re-typing it.
+        s.dispatch("/status").expect("status");
+        assert!(s.model.is_some(), "the model survives another command");
+    }
+
+    #[test]
+    fn radius_without_a_symbol_asks_for_one_rather_than_guessing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        let e = s.dispatch("/radius").expect_err("needs a symbol");
+        assert!(e.to_string().contains("needs a symbol"), "{e}");
+    }
+
+    #[test]
+    fn radius_answers_from_the_index_the_session_already_holds() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.dispatch("/radius helper").expect("helper is defined");
+        s.dispatch("/radius nosuchthing")
+            .expect_err("an unknown symbol is an error, not an empty radius");
+    }
+
+    #[test]
+    fn accept_and_revert_refuse_when_there_is_nothing_pending() {
+        // Both are destructive in opposite directions, and both are typed
+        // from muscle memory. Refusing a no-op is how a user learns the tree
+        // is already clean rather than assuming something was committed.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        git_repo(d.path());
+
+        assert!(
+            s.dispatch("/accept")
+                .unwrap_err()
+                .to_string()
+                .contains("nothing pending"),
+        );
+        assert!(
+            s.dispatch("/revert")
+                .unwrap_err()
+                .to_string()
+                .contains("nothing pending"),
+        );
+        s.dispatch("/diff")
+            .expect("a clean tree is reportable, not an error");
+    }
+
+    #[test]
+    fn revert_discards_a_pending_change_and_accept_commits_one() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        git_repo(d.path());
+        let f = d.path().join("app/m.py");
+        let original = std::fs::read_to_string(&f).unwrap();
+
+        std::fs::write(&f, "def helper():\n    return 2\n").unwrap();
+        s.dispatch("/revert").expect("discards");
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            original,
+            "revert restores the file exactly"
+        );
+
+        std::fs::write(&f, "def helper():\n    return 3\n").unwrap();
+        s.dispatch("/accept keeping this one").expect("commits");
+        assert!(
+            trellis_vcs::pending(d.path()).unwrap().is_empty(),
+            "after accept the tree is clean, which is what unblocks the next task"
+        );
+        assert!(std::fs::read_to_string(&f).unwrap().contains("return 3"));
+    }
+
+    #[test]
+    fn unconstrained_toggles_rather_than_latching() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        assert!(!s.unconstrained);
+        s.dispatch("/unconstrained").unwrap();
+        assert!(s.unconstrained, "tier 4 is opt-in and must be reachable");
+        s.dispatch("/unconstrained").unwrap();
+        assert!(!s.unconstrained, "and reversible without restarting");
+    }
+
+    #[test]
+    fn a_command_and_its_argument_are_split_on_the_first_space_only() {
+        // `/accept fix the thing` is one command and a four-word message, not
+        // five tokens. Splitting on every space would silently truncate every
+        // commit message to its first word.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        git_repo(d.path());
+        std::fs::write(d.path().join("app/m.py"), "def helper():\n    return 9\n").unwrap();
+
+        s.dispatch("/accept a message with several words")
+            .expect("commits");
+        let log = std::process::Command::new("git")
+            .args(["log", "-1", "--pretty=%s"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            "a message with several words"
+        );
+    }
+}
