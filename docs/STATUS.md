@@ -99,26 +99,25 @@ OPEN_QUESTIONS Q-13.
 
 ## Next, in order
 
-*This list has now gone stale three times in one session — an item stayed at
-the top after it was closed, twice. It is rewritten wholesale each iteration
-rather than edited, because editing is what kept missing.*
+*This list went stale three times in one session — an item stayed at the top
+after it was closed, twice. It is rewritten wholesale each iteration rather
+than edited, because editing is the operation that kept failing.*
 
-1. **v0.3, remainder — the context file and governance-rule import.** The
-   repository's own conventions, commands and rules, imported once and carried
-   into every run; and project rules the loop must respect, read from the
-   repository rather than configured per session. The only fully actionable
-   item left: no network, no inference, no download.
-2. **The model floor (S7), remainder.** One configuration measured and it is
+1. **The model floor (S7), remainder.** One configuration measured and it is
    below the floor; the A/B says that is the model and not the harness. A
    floor that is *located* rather than bounded needs a configuration that
    passes, and Qwen2.5-Coder-3B is at 27% after several hours at ~47 KB/s.
    Blocked on bandwidth, not on work.
-3. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
+2. **A further backstop for the 85% gate.** Evidence points at `conftest.py`
    fixture return types and return-type propagation. Not to be started against
    samples already scored twice.
-4. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
+3. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
-5. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+4. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+
+**v0.1, v0.2 and v0.3 are complete** apart from S7's second configuration,
+which is blocked on network rather than on work. What remains before v1.0 is
+the 85% recall gate — a backstop, then a hand audit large enough to claim it.
 
 ## What the last iteration found
 
@@ -160,6 +159,11 @@ name the test that would fail if it were reverted.
   run: the model called it with no paths, mypy chose the whole repository,
   poetry's pre-existing errors came back looking like the model's own, and it
   edited a file it saw in that output.
+- **v0.3 is complete.** The context file and governance rules landed, and
+  the split between them is the point: .trellis/context.md informs the
+  model, [governance] deny_write binds it, enforced in the orchestrator,
+  which owns the only write path to the tree. A rule that lives only in a
+  prompt is a suggestion.
 - **A resumed session was told everything except what the last run verified.**
   `context_lines` read only the always-empty `factual.checks`.
 - **The converging path had no test**, and the suite proved it: replacing the
