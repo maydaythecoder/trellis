@@ -33,7 +33,7 @@ renumbered, so cross-references stay valid.
 
 ---
 
-## S1 — The resolver's reach is unmeasured, and the fallback was unchosen
+## S1 — The resolver's reach, measured; the fallback candidate has changed
 
 **Severity: critical · Likelihood: certain**
 
@@ -56,8 +56,29 @@ cheaper decorator-unwrapping pass if `DecoratorIndirection` dominates the
 `Reason` distribution, as the 20–41% decorated-definition density across the
 benchmark candidates suggests it will.
 
+**Measured 2026-09-19 — the decorator branch of that patch is falsified.**
+`DecoratorIndirection` does not dominate. It is **3 sites out of 11,233**
+unresolved on the benchmark corpus. `MethodDispatchUntyped` is **10,646**, a
+factor of roughly 3,500. The decorated-definition density was real (36% of
+poetry's definitions) and simply did not predict the miss distribution, because
+decorated definitions are rarely *called by name* from first-party code.
+Writing the decorator-unwrapping pass would have cost 3–5 days to address 0.03%
+of the misses.
+
+What the evidence points at instead, from the auditors' own reasoning on
+first-party misses: **51% cite pytest fixtures** and the recurring pattern is a
+receiver whose type is locally evident — `self._x = SomeClass()` in `__init__`,
+or a parameter with a type annotation. poetry is mypy-strict, so the
+annotations are present and reliable. That suggests **annotation- and
+assignment-guided receiver typing**, confined to the current file plus
+`conftest.py`, well before a full Pyright dependency. It is a narrower and
+cheaper intervention than the one recorded above, aimed at where the misses
+actually are.
+
 **Cost.** Measurement 4–6 days (the hand audit dominates). Decorator unwrapping
-3–5 days. Pyright backstop 10–15 days, plus a permanent dependency on Node.
+3–5 days — **do not spend it**, the misses are not there. Local receiver typing
+6–10 days, estimated, unvalidated. Pyright backstop 10–15 days, plus a
+permanent dependency on Node.
 
 ---
 
