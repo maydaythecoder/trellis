@@ -1,0 +1,15 @@
+model:    LlamaCpp via RuntimeConstrained â€” none for correctness; grammar compilation happens in the serving runtime
+snapshot at b33e13233ec6adf124cd26e57f64b77c084b3238
+[2m2026-09-20T17:14:22.604562Z[0m [33m WARN[0m [1mrun_seeded[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/console/commands/add.py; fix it [3mresumed[0m[2m=[0mfalse [3mrules[0m[2m=[0m0[1m}[0m[2m:[0m no progress; stopping [3mcall[0m[2m=[0mEdit { path: "src/poeetry/console/commands/add.py", old: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies):", new: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies, extras):" } [3mrepeats[0m[2m=[0m3
+
+   1. Edit { path: "src/poeetry/console/commands/add.py", old: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies):", new: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies, extras):" } 
+   2. Edit { path: "src/poeetry/console/commands/add.py", old: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies):", new: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies, extras):" } 
+   3. Edit { path: "src/poeetry/console/commands/add.py", old: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies):", new: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies, extras):" } 
+
+files written: 
+
+NOT CONVERGED after 3 iterations.
+  no progress: the same call was made 3 times with the same result, so the rest of the budget would only have confirmed it. The call was Edit { path: "src/poeetry/console/commands/add.py", old: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies):", new: "def add(self, name, version, description, author, license, url, keywords, dependencies, dev_dependencies, extras):" }. Nothing was accepted.
+
+Rolled back to b33e13233ec6adf124cd26e57f64b77c084b3238. Worktree restored: true.
+trail:    C:\Users\mayda\Documents\dev\trellis\.bench\floor\.trellis/runs/20260920-171422-713-a-type-check-is-failing-in-src-poetry-console-co.json (survives the rollback)

@@ -1,0 +1,25 @@
+{
+  "task": "a type check is failing in src/poetry/config/source.py; fix it",
+  "started_at": "2026-09-20T17:11:28Z",
+  "trellis_version": "0.0.1",
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    }
+  },
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

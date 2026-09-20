@@ -550,10 +550,17 @@ question.
 
 ### 5.2 Result
 
-| Configuration | Harness | Repaired | budget-exhausted | format-failure | no-recovery | Median s/task |
+| Configuration | Harness | Repaired | no-progress | budget-exhausted | format-failure | Median s/task |
 |---|---|---|---|---|---|---|
-| Qwen2.5-0.5B-Instruct Q4_K_M, candle CPU, tier 2 | as committed at `24bba3d` | **0 / 20** | 16 | 3 | 1 | 209 |
-| the same | with the two §5.3 fixes | **0 / 9** | 9 | 0 | 0 | — |
+| Qwen2.5-0.5B-Instruct Q4_K_M, candle CPU, tier 2 | as at `24bba3d` | **0 / 20** | — | 16 | 3 | 209 |
+| the same | with the two §5.3 fixes | **0 / 9** | — | 9 | 0 | — |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M, candle CPU, tier 2 | with the no-progress stop | **0 / 17** | 14 | 3 | 0 | ~150 |
+
+The 3B row is 17 tasks, not 20: the host stopped the job for memory pressure
+with three outstanding. See §5.6. `no-progress` did not exist when the first
+two rows were measured, which is why they show none — the cost columns are
+comparable only within a harness version, the `repaired` column across all of
+them.
 
 `errors_after == errors_before` on all 20 tasks of the first row.
 
@@ -704,10 +711,102 @@ TRELLIS**, and the figure must not be quoted as the harness's overhead. What it
 bounds honestly is this measurement: a 20-task sweep costs about 70 minutes of
 wall clock per configuration on this machine.
 
+### 5.6 Second configuration: Qwen2.5-Coder-3B-Instruct Q4_K_M
+
+Measured 2026-09-20, same corpus, same task set, same checker, same 8-iteration
+budget, tier 2 confirmed by `trellis doctor` before the run.
+
+**17 of 20 tasks.** The host stopped the background job for system memory
+pressure with three tasks outstanding — the 3B probe alone holds 3.5 GB. That
+is a property of this machine, not of the run, and the figures below are
+reported at the size they reached rather than extrapolated. The composition is
+uniform across all 17, so the remaining three would have had to differ from
+every previous one to change the reading.
+
+```
+repaired            0 / 17
+no-progress        14      stopped after 3 identical calls
+budget-exhausted    3      varied enough to reach the ceiling
+iterations         69 total, 4.1 mean
+```
+
+**The 3B is much better at judgement than the 0.5B, and fails anyway.** It
+varies its edit per task, targets the file the task names, and proposes
+plausible Python:
+
+```
+t00  old: "def validate(self, data):"   new: "def validate(self, data, errors):"
+t04  old: "def load(self, path):"       new: "def load(self, path, encoding='utf-8'):"
+t13  old: "def build(self, project: Project, options: BuildOptions) -> None:"
+```
+
+Against the 0.5B's schema placeholders and line numbers, that is a different
+class of output.
+
+**And all 17 fail on the same thing: `src/poeetry/`.** A doubled `e` in a
+repository name the model only ever had to copy from the task string. Not one
+task in 17 spelled it correctly.
+
+That looked far more like a decode defect than like judgement, so the rig was
+ruled out before the result was recorded. `tokenize` then `decode` over the
+probe's own trie returns `src/poetry/config/config.py` byte-identical, and the
+prompt is built from the task string, which spells it correctly. The model sees
+`poetry` and emits `poeetry`. The test is in the probe crate.
+
+The brief predicts that *quantization degrades format reliability faster than
+it degrades reasoning*. This is that claim with a finer edge: under Q4_K_M the
+**reasoning survived and verbatim copy fidelity did not**. Constraint cannot
+help, and this is worth being precise about — the grammar admits any string, so
+a misspelled path is perfectly valid JSON. Tier 2 guarantees the call parses,
+never that its arguments refer to anything real.
+
+**Every one of the 17 opened with `edit`.** Never `read_file`, never
+`run_checks`, never `blast_radius`. The 0.5B opened every task with a pathless
+`run_checks`; the 3B edits before looking. Two distinct failure signatures,
+neither of which is the behaviour the loop is built around — read, change,
+verify.
+
+### 5.7 What two configurations establish
+
+**The floor is still not located.** Two points, both below it:
+
+| Configuration | Repaired | Characteristic failure |
+|---|---|---|
+| Qwen2.5-0.5B-Instruct Q4_K_M | 0 / 20 | Schema-valid nonsense: placeholders as anchors, the path in every field |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M | 0 / 17 | Sound edits aimed at a path it cannot spell |
+
+Two failing points bound the floor from below more tightly than one and still
+do not say where it is. A configuration that *passes* is the only thing that
+turns this into an interval, and neither of these is it.
+
+What the pair does establish is that the two failures are **different in kind**,
+which a single measurement could not have shown. The 0.5B cannot form a useful
+call; the 3B forms one and cannot address it. A harness improvement that fixed
+the first would do nothing for the second.
+
+### 5.8 A limitation the run exposed in the harness
+
+The no-progress stop takes the largest share of the credit for this sweep
+finishing in 45 minutes rather than hours: 69 iterations against the 153 the
+same runs would have spent at the ceiling.
+
+It also missed three of them. `t12`, `t13` and `t16` reached the budget because
+their calls were not byte-identical — they differed **only in indentation**,
+four spaces against five, while the observation was the same "path does not
+exist" error nine times over.
+
+So the stronger signal is the repeated *observation*, not the repeated call: a
+model that varies one field while re-issuing the same doomed action is not
+making progress, and the tool result says so even when the call does not.
+Deliberately not changed while the sweep was running, so this result comes from
+one harness version.
+
 ### Exit criteria for v0.1
 
 A measured recall figure — **done**, §2. A stated threshold with reasoning —
 **done**, §3. An ADR on whether a semantic backstop is needed — **done**,
-ADR 0012. A known model floor as a configuration — **partial**: one
-configuration is measured and it is below the floor, which bounds the floor
-from below without locating it.
+ADR 0012. A known model floor as a configuration — **partial**: two
+configurations are measured and both are below the floor, which bounds it from
+below without locating it. The two fail differently — one cannot form a useful
+call, the other forms one and cannot address it — which a single measurement
+could not have shown.
