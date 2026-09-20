@@ -114,9 +114,12 @@ means and is the default.
 
 **B. Re-audit with a human before deciding.** A-34 and Q-15 record that this
 audit was model-read where §2 asks for human-read. A pivot is as consequential
-as a gate and arguably deserves the same evidence standard. Cost: a human
-reading ~160 first-party sites. Note the interval is wide enough
-(±7.8pp) that only a large error would change the verdict.
+as a gate and deserves the same evidence standard. Cost: one auditor applying
+one rule to ~160 first-party sites.
+
+**The sensitivity analysis below is the honest reason this is worth doing
+rather than a formality**, and it is a stronger argument for B than the
+confidence interval is.
 
 **C. Build one bounded backstop and re-measure.** Annotation- and
 assignment-guided receiver typing, confined to the current file plus
@@ -138,7 +141,25 @@ overriding a threshold that was deliberately fixed in advance is not.
   39 were judged first-party and 21 were not. Some of that spread is ordinary
   binomial noise at 50 sites; not all of it is. Because `is_first_party` sets
   the denominator, this moves recall in a way the confidence interval does not
-  capture.
+  capture — so it is bounded explicitly rather than waved at:
+
+  | scenario | recall |
+  |---|---|
+  | every fixture site judged *not* first-party was actually a first-party miss | **42.2%** (76/180) |
+  | **as measured** | **47.8%** (76/159) |
+  | every fixture site judged first-party was actually external | **60.8%** (73/120) |
+
+  Both bounds are deliberately absurd — they assume one entire category was
+  misjudged in the same direction, with no offsetting error. **The upper bound
+  crosses the 60% trigger, by 0.8 of a percentage point.** That is the most
+  favourable reading the data admits under any consistent rule, and it is
+  reached only by assuming every auditor who called a fixture first-party was
+  wrong and every auditor who did not was right.
+
+  It does not change the verdict: the sampling interval and the disagreement
+  would both have to break the same way, each at its maximum. It does mean the
+  honest statement is "the result is robust to plausible disagreement", not
+  "no disagreement could reach the trigger" — the latter would be false.
 - **`dynamic` verdicts were excluded from the denominator** (3 sites). That is
   generous to the resolver.
 - **The corpus includes the test suite**, which is 123 of the 159 first-party

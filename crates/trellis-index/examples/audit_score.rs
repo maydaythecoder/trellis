@@ -310,6 +310,15 @@ fn matches(resolver: &str, auditor: &str) -> bool {
 /// now states the rule (see `audit_sample.rs`). Reconciliations are counted
 /// and printed rather than folded in silently — a scorer that quietly forgives
 /// mismatches is how a precision figure stops meaning anything.
+///
+/// **Known looseness.** This rescues *any* `X.__init__` answer against *any*
+/// resolved class, so `Foo(...)` resolving wrongly to `Bar` would score
+/// correct if the auditor wrote `Foo.__init__`. All four occurrences in the
+/// 2026-09-19 audit were checked by hand and are genuine agreements, and the
+/// printed list exists so they always can be. Tighten before the next run:
+/// require that the resolved symbol is a `Class` and that its name matches the
+/// auditor's second-to-last segment. Not done now because it would change a
+/// scored figure after the fact.
 fn constructor_convention(auditor: &str) -> bool {
     auditor.ends_with(".__init__")
 }
