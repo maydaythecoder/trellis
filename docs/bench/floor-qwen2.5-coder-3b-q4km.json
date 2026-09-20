@@ -1,0 +1,384 @@
+{
+ "configuration": "llamacpp:http://127.0.0.1:8793",
+ "corpus": "floor",
+ "checker": "mypy --ignore-missing-imports --no-error-summary --no-color-output --hide-error-context --follow-imports=silent --no-incremental",
+ "budget": {
+  "max_iterations": 8,
+  "max_wall_clock_s": 900
+ },
+ "tasks_attempted": 18,
+ "outcomes": {
+  "no-progress": 14,
+  "budget-exhausted": 4,
+  "skipped": 2
+ },
+ "check_recovery": {
+  "repaired": 0,
+  "attempted": 18,
+  "note": "A task is repaired when its file's error count returns to the baseline measured on the clean tree immediately before the defect was applied \u2014 not to zero, since some files carry a pre-existing error (t09 is a verified 1->5). Each defect raises the count by a verified amount, between 1 and 5. Scored by re-running the reference checker here, never by reading the run's own verdict."
+ },
+ "wall_clock_s": {
+  "total": 2771.3,
+  "median": 45.9,
+  "note": "This rig re-prefills the whole transcript each turn, so per-turn cost grows with the transcript. That is a property of the probe server, not of TRELLIS."
+ },
+ "floor_note": "A floor is a configuration \u2014 model, quantization, runtime \u2014 not a parameter count. Outcomes are tallied separately because they fail for different reasons; a run with no valid tool call yields 0/0 on check-recovery, not 0%.",
+ "results": [
+  {
+   "id": "t00",
+   "file": "src/poetry/config/config.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 48.1,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t00-20260920-170448-468-a-type-check-is-failing-in-src-poetry-config-con.json",
+   "residual": "src\\poetry\\config\\config.py:37: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t01",
+   "file": "src/poetry/config/config.py",
+   "kind": "undefined-method",
+   "outcome": "no-progress",
+   "seconds": 45.5,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t01-20260920-170539-375-a-type-check-is-failing-in-src-poetry-config-con.json",
+   "residual": "src\\poetry\\config\\config.py:338: error: \"Config\" has no attribute \"_get_environment_repositories_typo\"; maybe \"_get_environment_repositories\"?  [attr-defined]"
+  },
+  {
+   "id": "t02",
+   "file": "src/poetry/config/config.py",
+   "kind": "wrong-argument-type",
+   "outcome": "no-progress",
+   "seconds": 45.9,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 2,
+   "errors_after": 2,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t02-20260920-170630-605-a-type-check-is-failing-in-src-poetry-config-con.json",
+   "residual": "src\\poetry\\config\\config.py:88: error: Argument 2 of \"__post_init__\" is incompatible with supertype \"dataclass\"; supertype defines the argument type as \"str | list[str] | None\"  [override]\nsrc\\poetry\\config\\config.py:93: error: Argument 1 to \"frozenset\" has incompatible type \"int | list[str]\"; expected \"Iterable[str]\"  [arg-type]"
+  },
+  {
+   "id": "t03",
+   "file": "src/poetry/config/config.py",
+   "kind": "dropped-optional-guard",
+   "outcome": "no-progress",
+   "seconds": 44.6,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t03-20260920-170720-467-a-type-check-is-failing-in-src-poetry-config-con.json",
+   "residual": "src\\poetry\\config\\config.py:348: error: Argument 1 has incompatible type \"str | None\"; expected \"str\"  [arg-type]"
+  },
+  {
+   "id": "t04",
+   "file": "src/poetry/config/config_source.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 48.7,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 2,
+   "errors_after": 2,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t04-20260920-170814-290-a-type-check-is-failing-in-src-poetry-config-con.json",
+   "residual": "src\\poetry\\config\\config_source.py:65: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]\nsrc\\poetry\\config\\config_source.py:82: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t05",
+   "file": "src/poetry/config/dict_config_source.py",
+   "kind": "wrong-argument-type",
+   "outcome": "no-progress",
+   "seconds": 44.1,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t05-20260920-170903-354-a-type-check-is-failing-in-src-poetry-config-dic.json",
+   "residual": "src\\poetry\\config\\dict_config_source.py:37: error: Argument 1 to \"split_key\" has incompatible type \"int | Sequence[str]\"; expected \"str | Sequence[str]\"  [arg-type]"
+  },
+  {
+   "id": "t06",
+   "file": "src/poetry/config/file_config_source.py",
+   "kind": "undefined-method",
+   "outcome": "no-progress",
+   "seconds": 42.4,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t06-20260920-170950-723-a-type-check-is-failing-in-src-poetry-config-fil.json",
+   "residual": "src\\poetry\\config\\file_config_source.py:51: error: \"FileConfigSource\" has no attribute \"secure_typo\"  [attr-defined]"
+  },
+  {
+   "id": "t07",
+   "file": "src/poetry/config/file_config_source.py",
+   "kind": "wrong-argument-type",
+   "outcome": "no-progress",
+   "seconds": 41.4,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t07-20260920-171037-150-a-type-check-is-failing-in-src-poetry-config-fil.json",
+   "residual": "src\\poetry\\config\\file_config_source.py:66: error: Argument 1 to \"split_key\" has incompatible type \"int | Sequence[str]\"; expected \"str | Sequence[str]\"  [arg-type]"
+  },
+  {
+   "id": "t08",
+   "file": "src/poetry/config/source.py",
+   "kind": "undefined-method",
+   "outcome": "no-progress",
+   "seconds": 45.2,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t08-20260920-171128-658-a-type-check-is-failing-in-src-poetry-config-sou.json",
+   "residual": "src\\poetry\\config\\source.py:41: error: \"Source\" has no attribute \"to_dict_typo\"  [attr-defined]"
+  },
+  {
+   "id": "t09",
+   "file": "src/poetry/console/application.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 42.5,
+   "iterations": 3,
+   "errors_baseline": 1,
+   "errors_before": 5,
+   "errors_after": 5,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t09-20260920-171217-678-a-type-check-is-failing-in-src-poetry-console-ap.json",
+   "residual": "src\\poetry\\console\\application.py:124: error: Class cannot subclass \"BaseApplication\" (has type \"Any\")  [misc]\nsrc\\poetry\\console\\application.py:282: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\application.py:298: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t10",
+   "file": "src/poetry/console/commands/about.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 45.5,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t10-20260920-171309-665-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\about.py:27: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t11",
+   "file": "src/poetry/console/commands/add.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 66.5,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 5,
+   "errors_after": 5,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t11-20260920-171422-713-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\add.py:126: error: Return type \"str\" of \"handle\" incompatible with return type \"int\" in supertype \"poetry.console.commands.init.InitCommand\"  [override]\nsrc\\poetry\\console\\commands\\add.py:222: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\commands\\add.py:275: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t12",
+   "file": "src/poetry/console/commands/build.py",
+   "kind": "return-type-annotation",
+   "outcome": "budget-exhausted",
+   "seconds": 594.2,
+   "iterations": 9,
+   "errors_baseline": 0,
+   "errors_before": 4,
+   "errors_after": 4,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t12-20260920-172423-488-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\build.py:101: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\commands\\build.py:107: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\commands\\build.py:111: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t13",
+   "file": "src/poetry/console/commands/build.py",
+   "kind": "undefined-method",
+   "outcome": "budget-exhausted",
+   "seconds": 591.0,
+   "iterations": 9,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t13-20260920-173421-684-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\build.py:94: error: \"BuildHandler\" has no attribute \"_has_build_backend_defined_typo\"; maybe \"_has_build_backend_defined\"?  [attr-defined]"
+  },
+  {
+   "id": "t14",
+   "file": "src/poetry/console/commands/cache/clear.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 45.6,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 5,
+   "errors_after": 5,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t14-20260920-173514-015-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\cache\\clear.py:63: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\commands\\cache\\clear.py:72: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\commands\\cache\\clear.py:86: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t15",
+   "file": "src/poetry/console/commands/cache/list.py",
+   "kind": "return-type-annotation",
+   "outcome": "no-progress",
+   "seconds": 47.4,
+   "iterations": 3,
+   "errors_baseline": 0,
+   "errors_before": 2,
+   "errors_after": 2,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t15-20260920-173608-020-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\cache\\list.py:18: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]\nsrc\\poetry\\console\\commands\\cache\\list.py:21: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t16",
+   "file": "src/poetry/console/commands/check.py",
+   "kind": "return-type-annotation",
+   "outcome": "budget-exhausted",
+   "seconds": 462.3,
+   "iterations": 9,
+   "errors_baseline": 0,
+   "errors_before": 1,
+   "errors_after": 1,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": "t16-20260920-174356-937-a-type-check-is-failing-in-src-poetry-console-co.json",
+   "residual": "src\\poetry\\console\\commands\\check.py:205: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t17",
+   "file": "src/poetry/console/commands/check.py",
+   "kind": "wrong-argument-type",
+   "outcome": "budget-exhausted",
+   "seconds": 470.4,
+   "iterations": 9,
+   "errors_baseline": 0,
+   "errors_before": 3,
+   "errors_after": 0,
+   "turns": [
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit",
+    "Edit"
+   ],
+   "trail": null,
+   "residual": ""
+  },
+  {
+   "id": "t18",
+   "outcome": "skipped"
+  },
+  {
+   "id": "t19",
+   "outcome": "skipped"
+  }
+ ]
+}

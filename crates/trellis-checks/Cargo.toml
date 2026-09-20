@@ -14,3 +14,9 @@ tracing.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# So the Deserialize forgery fails on the missing impl, not on an
+# unlinked crate.
+serde_json.workspace = true
+trybuild.workspace = true
