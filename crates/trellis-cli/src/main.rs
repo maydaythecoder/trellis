@@ -82,7 +82,15 @@ enum Command {
     /// Not a nicety: the difference between adapter tier 3 and tier 4 is
     /// invisible to a user otherwise, and so is whether the backend can
     /// support multi-agent mode at all.
-    Doctor,
+    Doctor {
+        /// Probe this runtime, e.g. `llamacpp:http://127.0.0.1:8080`.
+        ///
+        /// Without it, tier and batching are reported as unknown rather than
+        /// guessed — the pessimistic default, because an optimistic guess is
+        /// exactly the failure S17 and S18 describe.
+        #[arg(long)]
+        model: Option<String>,
+    },
 
     /// Dry run: show the partition plan and why.
     Partitions { task: String },
@@ -105,7 +113,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Index => cmd_index(&root),
-        Command::Doctor => cmd_doctor(&root),
+        Command::Doctor { model } => cmd_doctor(&root, model.as_deref()),
         Command::Check { paths } => cmd_check(&root, paths),
         Command::Radius { symbol } => cmd_radius(&root, &symbol),
         Command::Run {
@@ -453,17 +461,100 @@ fn cmd_index(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_doctor(root: &Path) -> Result<()> {
+fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
     let cfg = config::RepoConfig::load(root)?.checks();
+
+    // Unknown until measured. Reporting an optimistic guess is the failure
+    // S17 and S18 both describe: the user cannot tell tier 2 from tier 4, or
+    // a batching runtime from one that will serialize their agents.
+    let mut model_id = "not configured".to_string();
+    let mut runtime = "not configured".to_string();
+    let mut tier = AdapterTier::ValidateAndRetry;
+    let mut batching = BatchingCapability::Unknown;
+    let mut notes: Vec<String> = Vec::new();
+
+    if let Some(spec) = model_spec {
+        let (kind, base) = spec.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("--model `{spec}` should look like `llamacpp:http://host:port`")
+        })?;
+        let dialect = trellis_model::Dialect::parse(kind)
+            .ok_or_else(|| anyhow::anyhow!("unknown runtime `{kind}`"))?;
+        let client = trellis_model::RuntimeClient::new(base, dialect, None)?
+            .with_timeout(std::time::Duration::from_secs(30));
+        runtime = format!("{dialect:?} at {base}");
+        model_id = "whatever the runtime has loaded".into();
+
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            match client.probe_constraint().await {
+                Ok(true) => {
+                    tier = AdapterTier::RuntimeConstrained;
+                    notes.push(
+                        concat!(
+                            "The runtime returned the key the probe schema demanded, so it ",
+                            "appears to honour guided decoding. This is evidence, not proof: ",
+                            "a capable model can produce conforming JSON unprompted."
+                        )
+                        .into(),
+                    );
+                }
+                Ok(false) => {
+                    tier = AdapterTier::ValidateAndRetry;
+                    notes.push(
+                        concat!(
+                            "The runtime ignored the schema, so output is NOT constrained. Runs ",
+                            "will retry on malformed tool calls and can fail on format alone. ",
+                            "Pass --unconstrained to `trellis run` to make that explicit. "
+                        )
+                        .into(),
+                    );
+                }
+                Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
+            }
+
+            match client.probe_slots().await {
+                Ok(Some(n)) if n > 1 => {
+                    batching = BatchingCapability::Continuous {
+                        measured_concurrency: n,
+                    };
+                }
+                Ok(Some(_)) => {
+                    batching = BatchingCapability::SingleStream;
+                    notes.push(
+                        concat!(
+                            "llama.cpp reports a single slot. Multi-agent mode would serialize; ",
+                            "start it with --parallel N for real concurrency (S18). "
+                        )
+                        .into(),
+                    );
+                }
+                Ok(None) => {
+                    // Continuous batching is inherent here, but the concurrency
+                    // its scheduler will actually grant is not a number to
+                    // invent, so `--agents auto` stays conservative.
+                    batching = BatchingCapability::Unknown;
+                    notes.push(
+                        concat!(
+                            "This runtime batches continuously, so multi-agent mode is supported ",
+                            "in principle. The concurrency it will grant is its scheduler's ",
+                            "decision and is not reported, so `--agents auto` stays at 1 rather ",
+                            "than guessing. "
+                        )
+                        .into(),
+                    );
+                }
+                Err(e) => notes.push(format!("Could not read slot count: {e}")),
+            }
+        });
+    }
+
     let probe = Probe {
-        // ASSUMPTION A-9: model and runtime detection is v0.2. Reported as
-        // "not configured" rather than guessed.
-        model_id: "not configured".into(),
-        runtime: "not configured".into(),
-        tier: AdapterTier::ValidateAndRetry,
-        batching: BatchingCapability::Unknown,
+        model_id,
+        runtime,
+        tier,
+        batching,
         typecheck_found: which(&cfg.typecheck[0]),
         tests_found: which(&cfg.tests[0]),
     };
@@ -472,11 +563,20 @@ fn cmd_doctor(root: &Path) -> Result<()> {
         println!("{line}");
     }
     println!("root:       {}", root.display());
-    println!();
-    println!(
-        "Model and runtime probing is not implemented yet (milestone v0.2). \
-         The tier and batching lines above are defaults, not measurements."
-    );
+
+    if model_spec.is_none() {
+        println!();
+        println!(concat!(
+            "No --model given, so tier and batching are reported as unknown ",
+            "rather than guessed.
+",
+            "Pass e.g. `--model llamacpp:http://127.0.0.1:8080` to probe."
+        ));
+    }
+    for n in &notes {
+        println!();
+        println!("{n}");
+    }
     Ok(())
 }
 

@@ -225,11 +225,86 @@ impl RuntimeClient {
         self.extract(&v)
     }
 
-    /// Minimal HTTP/1.1 POST.
+    /// Whether the runtime appears to honour guided decoding.
     ///
-    /// `Connection: close` so the body is everything up to EOF — which avoids
-    /// implementing chunked transfer decoding for a localhost call.
+    /// Sends a schema demanding a key a model would not volunteer, and checks
+    /// whether the reply carries it. **This cannot be certain**: a capable
+    /// model might produce conforming JSON unprompted, so a positive result is
+    /// "appears to honour" rather than proof.
+    ///
+    /// A *negative* result is solid — the runtime ignored the parameter — and
+    /// that is the direction that matters, because the silent failure is
+    /// believing output is constrained when it is not.
+    pub async fn probe_constraint(&self) -> Result<bool, RuntimeError> {
+        let schema = json!({
+            "type": "object",
+            "properties": { "trellis_probe_ok": { "type": "boolean" } },
+            "required": ["trellis_probe_ok"],
+            "additionalProperties": false
+        });
+        let c = self
+            .complete("Reply with JSON only.", Some(&schema), 32)
+            .await?;
+        let Some(start) = c.text.find('{') else {
+            return Ok(false);
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&c.text[start..]) else {
+            return Ok(false);
+        };
+        Ok(v.get("trellis_probe_ok").is_some())
+    }
+
+    /// How many requests the runtime serves concurrently, when it says.
+    ///
+    /// vLLM and SGLang batch continuously by construction, so `None` means
+    /// "their scheduler decides" rather than "unknown" — inventing a number
+    /// there would be worse than declining to. llama.cpp reports
+    /// `total_slots` from `/props`, which is 1 unless it was started with
+    /// `--parallel`.
+    ///
+    /// S18: a user running four agents against a single-slot runtime gets no
+    /// speedup and blames TRELLIS, so this is measured rather than assumed.
+    pub async fn probe_slots(&self) -> Result<Option<u32>, RuntimeError> {
+        match self.dialect {
+            Dialect::VllmOpenAi | Dialect::Sglang => Ok(None),
+            Dialect::LlamaCpp => {
+                let raw = tokio::time::timeout(self.timeout, self.get("/props"))
+                    .await
+                    .map_err(|_| RuntimeError::Timeout(self.timeout))??;
+                let v: Value = serde_json::from_str(&raw).map_err(|e| {
+                    RuntimeError::Shape(format!("/props is not JSON: {e}; body: {raw}"))
+                })?;
+                Ok(v["total_slots"]
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok()))
+            }
+        }
+    }
+
+    async fn get(&self, path: &str) -> Result<String, RuntimeError> {
+        self.request(&format!(
+            "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            self.host
+        ))
+        .await
+    }
+
+    /// Minimal HTTP/1.1 POST.
     async fn post(&self, path: &str, body: &str) -> Result<String, RuntimeError> {
+        self.request(&format!(
+            "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            self.host,
+            body.len()
+        ))
+        .await
+    }
+
+    /// Sends one request and reads the whole response.
+    ///
+    /// `Connection: close` means the body runs to EOF, which avoids
+    /// implementing chunked transfer decoding for a localhost call.
+    async fn request(&self, req: &str) -> Result<String, RuntimeError> {
         let addr = format!("{}:{}", self.host, self.port);
         let mut stream =
             TcpStream::connect(&addr)
@@ -239,12 +314,6 @@ impl RuntimeClient {
                     source,
                 })?;
 
-        let req = format!(
-            "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
-             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            self.host,
-            body.len()
-        );
         stream
             .write_all(req.as_bytes())
             .await
@@ -433,6 +502,51 @@ mod tests {
             other => panic!("expected an HTTP error, got {other}"),
         }
         server.await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_conforming_reply_reads_as_constrained() {
+        let (base, server) = stub(
+            r#"{"content":"{\"trellis_probe_ok\":true}","tokens_predicted":5}"#,
+            "200 OK",
+        )
+        .await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        assert!(c.probe_constraint().await.unwrap());
+        server.await.ok();
+    }
+
+    #[tokio::test]
+    async fn prose_instead_of_the_demanded_key_reads_as_unconstrained() {
+        // The direction that matters. Believing output is constrained when it
+        // is not is the silent failure; the reverse only costs a warning.
+        let (base, server) = stub(
+            r#"{"content":"Sure! Here is some JSON: {\"answer\": 42}","tokens_predicted":9}"#,
+            "200 OK",
+        )
+        .await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        assert!(!c.probe_constraint().await.unwrap());
+        server.await.ok();
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_slot_count_comes_from_props() {
+        let (base, server) = stub(r#"{"total_slots":4}"#, "200 OK").await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(c.probe_slots().await.unwrap(), Some(4));
+        let sent = server.await.unwrap();
+        assert!(sent.starts_with("GET /props"), "{sent}");
+    }
+
+    #[tokio::test]
+    async fn batching_runtimes_report_no_fixed_slot_count() {
+        // vLLM and SGLang batch continuously; inventing a number would be
+        // worse than saying the scheduler decides.
+        for d in [Dialect::VllmOpenAi, Dialect::Sglang] {
+            let c = RuntimeClient::new("http://127.0.0.1:1", d, None).unwrap();
+            assert_eq!(c.probe_slots().await.unwrap(), None);
+        }
     }
 
     #[tokio::test]
