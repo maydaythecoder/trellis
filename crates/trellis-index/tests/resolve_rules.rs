@@ -708,3 +708,116 @@ fn a_sibling_class_overriding_an_inherited_method_yields_candidates() {
     )]);
     assert_eq!(target_of(&b, "repo.add()"), "?? [app.m.add, app.m.add]");
 }
+
+#[test]
+fn a_name_we_could_not_follow_inside_a_first_party_module_stays_a_miss() {
+    // The point ADR 0015's asymmetry turns on.
+    //
+    // `type_is_demonstrably_external` requires every binding for the name to
+    // resolve to `Bound::External`. A name imported from a module that really
+    // is in the tree, which that module does not define, follows to
+    // `Bound::Unfollowed` — ignorance, not evidence — so the site stays in the
+    // denominator as a miss.
+    //
+    // If `Unfollowed` ever collapsed into `External`, every unfollowable
+    // first-party import would leave the denominator and the bound figure
+    // would rise with the resolver's own ignorance.
+    let present: &[(&str, &str)] = &[
+        ("app/__init__.py", ""),
+        (
+            "app/present.py",
+            "class Thing:\n    def run(self):\n        return 1\n",
+        ),
+        (
+            "app/m.py",
+            "from app.present import Thing\n\ndef go(x: Thing):\n    return x.run()\n",
+        ),
+    ];
+    let b = bindings(present);
+    assert_eq!(target_of(&b, "x.run()"), "-> app.present.run");
+    assert_eq!(index_of(present).coverage.external, 0);
+
+    // Same module, a name it does not define.
+    let missing_name: &[(&str, &str)] = &[
+        ("app/__init__.py", ""),
+        ("app/present.py", "class Other:\n    pass\n"),
+        (
+            "app/m.py",
+            "from app.present import Thing\n\ndef go(x: Thing):\n    return x.run()\n",
+        ),
+    ];
+    let c = index_of(missing_name).coverage;
+    assert_eq!(
+        c.external, 0,
+        "a name we failed to follow inside a first-party module is ignorance, \
+         not evidence that the callee is third-party"
+    );
+    assert_eq!(c.unresolved, 1);
+}
+
+#[test]
+fn a_module_under_a_first_party_root_that_is_not_in_the_tree_is_external() {
+    // This is the `poetry.core` decision, reached through a receiver type
+    // rather than through an import, and it is recorded here because it looks
+    // like a hole and is not one.
+    //
+    // `from app.absent import Thing` where no `app/absent.py` exists is
+    // exactly the shape of `from poetry.core...` in the poetry tree: a root
+    // package that is first-party, and a module under it that is a separate
+    // distribution. Treating those as first-party put 379 imports in the
+    // denominator as misses and understated `Name` recall by 14.5 points.
+    //
+    // `external_or_unresolvable` therefore requires the module to be a real
+    // local package before calling it ours, and that judgement is inherited
+    // here. The cost is that a genuinely first-party module absent from the
+    // tree — generated, or a broken import — is excluded. That is the same
+    // trade the import path already makes, and reversing it here alone would
+    // make the two paths disagree about the same module.
+    let src: &[(&str, &str)] = &[
+        ("app/__init__.py", ""),
+        (
+            "app/m.py",
+            "from app.absent import Thing\n\ndef go(x: Thing):\n    return x.run()\n",
+        ),
+    ];
+    assert_eq!(index_of(src).coverage.external, 1);
+}
+
+#[test]
+fn every_call_site_lands_in_exactly_one_bucket() {
+    // `total()` is resolved + ambiguous + unresolved, and `external` is
+    // deliberately outside it (ADR 0002). Together they must still account for
+    // every call site the parser found.
+    //
+    // Asserted because ADR 0015 moves sites between the two populations, and a
+    // sum that stops balancing is the first sign of a double-count or a
+    // dropped site — neither of which any other test would notice, since both
+    // leave the bound figure looking plausible.
+    let src: &[(&str, &str)] = &[
+        (
+            "app/m.py",
+            "import os\n\nclass Env:\n    def run(self):\n        return 1\n\n\
+             def go(e: Env, val: str, cb, x: Mystery):\n    \
+             e.run()\n    val.lower()\n    cb()\n    x.run()\n    \
+             os.getcwd()\n    return helper()\n",
+        ),
+        ("app/other.py", "def helper():\n    return 2\n"),
+    ];
+    let index = index_of(src);
+    let c = &index.coverage;
+    assert_eq!(
+        c.total() + c.external,
+        index.sites.len() as u32,
+        "resolved {} + ambiguous {} + unresolved {} + external {} must equal \
+         {} call sites",
+        c.resolved,
+        c.candidates,
+        c.unresolved,
+        c.external,
+        index.sites.len()
+    );
+    // And the buckets are the ones we expect, so a balanced-but-wrong split
+    // cannot pass.
+    assert_eq!(c.resolved, 1, "e.run() only; helper() is not imported here");
+    assert!(c.external >= 2, "val.lower() and os.getcwd()");
+}

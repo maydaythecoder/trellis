@@ -54,6 +54,23 @@ evidence:
 For a qualified type (`pathlib.Path`) the module alias is judged, since that is
 what determines where the name comes from.
 
+**`Bound::Unfollowed` is not `Bound::External`,** and the whole asymmetry rests
+on that. A name imported from a module that is in the tree, which that module
+does not define, follows to `Unfollowed` and stays a miss.
+`a_name_we_could_not_follow_inside_a_first_party_module_stays_a_miss` holds it.
+
+One case looks like a hole and is not. `from app.absent import Thing`, where no
+such module exists in the tree, is classified external — because it is exactly
+the shape of `from poetry.core...`: a first-party root package with a module
+under it belonging to a separate distribution. Treating those as first-party
+put 379 imports in the denominator as misses and understated `Name` recall by
+14.5 points, which is why `external_or_unresolvable` requires the module to be
+a real local package. This decision inherits that judgement rather than
+reversing it in one path and leaving the import path disagreeing about the same
+module. The cost — a genuinely first-party module absent from the tree is
+excluded — is recorded in
+`a_module_under_a_first_party_root_that_is_not_in_the_tree_is_external`.
+
 **Everything else stays a miss.** A type the resolver merely fails to resolve
 is ignorance, not evidence, and ignorance belongs in the denominator. This
 asymmetry is the entire safety property of the decision: if failure to resolve
@@ -141,8 +158,18 @@ measurement that is wrong in the pessimistic direction is still wrong, and it
 misdirects the work that follows it.
 
 **Use a type checker's inferred types instead of annotations.** mypy already
-knows the receiver's type exactly. It is also the thing being verified —
-`trellis-index` must not depend on a checker whose output the loop treats as
-ground truth, and a graph whose shape depends on a separate tool's
-configuration is not reproducible from the repository alone. ADR 0001 keeps the
-resolver self-contained.
+knows the receiver's type exactly, and would resolve far more than annotations
+do.
+
+It is also the thing issuing the verdicts. Constraint 2 says a correctness
+claim comes only from a process that executes, and `trellis-checks` runs mypy
+to produce exactly that claim (ADR 0004). A graph built from mypy's inferences
+would put the blast radius *downstream of the verifier* — the tool deciding
+what a change can affect would be reading the output of the tool deciding
+whether the change is correct. That is a circularity, not merely a
+dependency, and it would make the two agree by construction in precisely the
+cases where an independent check is worth having.
+
+The reproducibility objection stands alongside it: a graph whose shape depends
+on a separate tool's configuration is not derivable from the repository alone.
+ADR 0001 keeps the resolver self-contained for both reasons.
