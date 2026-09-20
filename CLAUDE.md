@@ -42,6 +42,25 @@ counted as a miss even when its true callee is third-party, which §2 excludes
 from the denominator outright. Only the hand-audited sample produces a
 comparable figure. See A-30.
 
+## Receiver typing, and why it is allowed to be wrong in only one direction
+
+`trellis-index` types receivers from annotations and constructor assignments
+(ADR 0012). Every rule there can only *add* resolutions, so every one is a new
+chance to emit an unsound edge. Three invariants hold it in place, and all
+three earned their place by catching a real defect:
+
+- A **declared type is an upper bound, not an identity.** If any first-party
+  subclass overrides the method, the result is `Candidates` over the base and
+  every override. Deliberately not applied to `self.m()`, where the audit
+  protocol resolves to the enclosing class.
+- A type fact is honoured **only when it resolves to a first-party class**, so
+  `x = make_env()` types nothing.
+- **Conflicting statements type nothing**, and `list[Env]` types `list`.
+
+Before changing any of them, run the audit: `examples/check_soundness.rs` over
+the corpus must stay at zero violations, and precision on the audited sample
+must stay at 100%.
+
 ## Crate boundaries are load-bearing
 
 ```
