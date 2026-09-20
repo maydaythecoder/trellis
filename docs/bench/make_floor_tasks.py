@@ -7,8 +7,14 @@ metric, because the whole architecture rests on the model acting sensibly on
 check output.
 
 **Every task is verified, not assumed.** A mutation only becomes a task when
-the checker is clean before it and fails after it. An unverified task set would
-measure the checker's blind spots and call the result a model floor.
+the checker reports *more* errors in that file than it did before. An
+unverified task set would measure the checker's blind spots and call the
+result a model floor.
+
+The bar is "more errors", not "zero before": poetry's `src/` is not clean
+under `--ignore-missing-imports` when poetry's own dependencies are absent.
+Comparing counts is also the more faithful test, since check-recovery is
+defined as failures falling.
 
 Usage:
     python docs/bench/make_floor_tasks.py <repo-root> <out.json> [--limit N]
@@ -38,6 +44,10 @@ MYPY_ARGS = [
     "--no-error-summary",
     "--no-color-output",
     "--hide-error-context",
+    # Report only the file asked about. Without this, mypy reports the whole
+    # import closure and a "did this file get worse" comparison drowns in
+    # errors from elsewhere.
+    "--follow-imports=silent",
 ]
 
 
@@ -109,8 +119,20 @@ MUTATIONS = [
 ]
 
 
-def run_mypy(root: Path, target: Path) -> tuple[bool, str]:
-    """Returns (clean, output). A crash counts as not clean and is reported."""
+def run_mypy(root: Path, target: Path) -> tuple[int, str]:
+    """Returns (errors in `target`, output).
+
+    Counts errors **in the target file only**, and compares counts rather than
+    demanding zero. poetry's `src/` is not clean under
+    `--ignore-missing-imports` when poetry's own dependencies are absent: the
+    checker reports `Class cannot subclass "X" (has type "Any")` all over the
+    tree. Requiring a clean baseline would therefore yield no tasks at all.
+
+    Comparing counts is also the more faithful test. Check-recovery is defined
+    as failures falling, so a task only needs the defect to *raise* the count
+    above the file's own baseline — which is exactly the signal the model will
+    be asked to act on.
+    """
     try:
         p = subprocess.run(
             [sys.executable, "-m", "mypy", *MYPY_ARGS, str(target)],
@@ -120,9 +142,11 @@ def run_mypy(root: Path, target: Path) -> tuple[bool, str]:
             timeout=300,
         )
     except subprocess.TimeoutExpired:
-        return False, "mypy timed out"
+        return -1, "mypy timed out"
     out = (p.stdout or "") + (p.stderr or "")
-    return p.returncode == 0, out.strip()
+    name = target.name
+    errors = [l for l in out.splitlines() if ": error:" in l and name in l]
+    return len(errors), "\n".join(errors)
 
 
 def first_error_line(output: str) -> str:
@@ -145,9 +169,10 @@ def build(root: Path, limit: int) -> list[Task]:
         rel = path.relative_to(root).as_posix()
         original = path.read_text(encoding="utf-8")
 
-        # The file must be clean first, or "the check fails" proves nothing.
-        clean, before = run_mypy(root, path)
-        if not clean:
+        # Baseline for this file. A task must make it worse; it does not have
+        # to start from zero.
+        baseline, _ = run_mypy(root, path)
+        if baseline < 0:
             continue
 
         for mut in MUTATIONS:
@@ -156,10 +181,10 @@ def build(root: Path, limit: int) -> list[Task]:
             for old, new in mut.find(original):
                 mutated = original.replace(old, new, 1)
                 path.write_text(mutated, encoding="utf-8")
-                caught, after = run_mypy(root, path)
+                after_n, after = run_mypy(root, path)
                 path.write_text(original, encoding="utf-8")
 
-                if caught:
+                if after_n <= baseline:
                     # The checker did not notice. Not a task: it would measure
                     # the checker's blind spot, not the model.
                     continue
@@ -172,12 +197,15 @@ def build(root: Path, limit: int) -> list[Task]:
                         defect_new=new,
                         kind=mut.kind,
                         gold_note=mut.note,
-                        detected_by="mypy",
+                        detected_by=f"mypy ({baseline} -> {after_n} errors in file)",
                         evidence=first_error_line(after),
                     )
                 )
                 print(f"  [{len(tasks):2}] {mut.kind:24} {rel}", flush=True)
-                break  # one defect per file keeps tasks independent
+                # One defect per mutation kind per file. A file can therefore
+                # yield several tasks, which is fine because tasks are applied
+                # one at a time and never stacked.
+                break
 
     return tasks
 

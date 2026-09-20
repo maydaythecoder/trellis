@@ -1,0 +1,209 @@
+{
+ "corpus": "poetry-2.5.0",
+ "checker": "mypy --ignore-missing-imports --no-error-summary --no-color-output --hide-error-context --follow-imports=silent",
+ "built_s": 13.3,
+ "count": 20,
+ "protocol": "Apply defect_old -> defect_new to file, then ask the agent to make the checks pass. Every task is verified: the checker was clean before the mutation and failed after it. Grade on check-recovery (did failures fall), not on matching gold_note.",
+ "tasks": [
+  {
+   "id": "t00",
+   "file": "src/poetry/config/config.py",
+   "defect_old": "\n\ndef boolean_validator(val: str) -> bool:",
+   "defect_new": "\n\ndef boolean_validator(val: str) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\config\\config.py:37: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t01",
+   "file": "src/poetry/config/config.py",
+   "defect_old": "self._get_environment_repositories()",
+   "defect_new": "self._get_environment_repositories_typo()",
+   "kind": "undefined-method",
+   "gold_note": "calls a method that does not exist on the class",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\config\\config.py:338: error: \"Config\" has no attribute \"_get_environment_repositories_typo\"; maybe \"_get_environment_repositories\"?  [attr-defined]"
+  },
+  {
+   "id": "t02",
+   "file": "src/poetry/config/config.py",
+   "defect_old": "\n    def __post_init__(self, policy: str",
+   "defect_new": "\n    def __post_init__(self, policy: int",
+   "kind": "wrong-argument-type",
+   "gold_note": "parameter annotation contradicts its callers",
+   "detected_by": "mypy (0 -> 2 errors in file)",
+   "evidence": "src\\poetry\\config\\config.py:88: error: Argument 2 of \"__post_init__\" is incompatible with supertype \"dataclass\"; supertype defines the argument type as \"str | list[str] | None\"  [override]"
+  },
+  {
+   "id": "t03",
+   "file": "src/poetry/config/config.py",
+   "defect_old": "                if env_value is not None:",
+   "defect_new": "                if True:",
+   "kind": "dropped-optional-guard",
+   "gold_note": "removes a None guard the type checker relies on",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\config\\config.py:348: error: Argument 1 has incompatible type \"str | None\"; expected \"str\"  [arg-type]"
+  },
+  {
+   "id": "t04",
+   "file": "src/poetry/config/config_source.py",
+   "defect_old": "\n    def dry_run(self, config_source: ConfigSource, io: IO | None = None) -> bool:",
+   "defect_new": "\n    def dry_run(self, config_source: ConfigSource, io: IO | None = None) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 2 errors in file)",
+   "evidence": "src\\poetry\\config\\config_source.py:65: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t05",
+   "file": "src/poetry/config/dict_config_source.py",
+   "defect_old": "\n    def add_property(self, key: str",
+   "defect_new": "\n    def add_property(self, key: int",
+   "kind": "wrong-argument-type",
+   "gold_note": "parameter annotation contradicts its callers",
+   "detected_by": "mypy (1 -> 2 errors in file)",
+   "evidence": "src\\poetry\\config\\dict_config_source.py:23: error: Argument 1 of \"get_property\" is incompatible with supertype \"poetry.config.config_source.ConfigSource\"; supertype defines the argument type as \"int | Sequence[str]\"  [override]"
+  },
+  {
+   "id": "t06",
+   "file": "src/poetry/config/file_config_source.py",
+   "defect_old": "self.secure()",
+   "defect_new": "self.secure_typo()",
+   "kind": "undefined-method",
+   "gold_note": "calls a method that does not exist on the class",
+   "detected_by": "mypy (1 -> 2 errors in file)",
+   "evidence": "src\\poetry\\config\\file_config_source.py:36: error: Argument 1 of \"get_property\" is incompatible with supertype \"poetry.config.config_source.ConfigSource\"; supertype defines the argument type as \"int | Sequence[str]\"  [override]"
+  },
+  {
+   "id": "t07",
+   "file": "src/poetry/config/file_config_source.py",
+   "defect_old": "\n    def remove_property(self, key: str",
+   "defect_new": "\n    def remove_property(self, key: int",
+   "kind": "wrong-argument-type",
+   "gold_note": "parameter annotation contradicts its callers",
+   "detected_by": "mypy (1 -> 2 errors in file)",
+   "evidence": "src\\poetry\\config\\file_config_source.py:36: error: Argument 1 of \"get_property\" is incompatible with supertype \"poetry.config.config_source.ConfigSource\"; supertype defines the argument type as \"int | Sequence[str]\"  [override]"
+  },
+  {
+   "id": "t08",
+   "file": "src/poetry/config/source.py",
+   "defect_old": "self.to_dict()",
+   "defect_new": "self.to_dict_typo()",
+   "kind": "undefined-method",
+   "gold_note": "calls a method that does not exist on the class",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\config\\source.py:41: error: \"Source\" has no attribute \"to_dict_typo\"  [attr-defined]"
+  },
+  {
+   "id": "t09",
+   "file": "src/poetry/console/application.py",
+   "defect_old": "\n    def _run(self, io: IO) -> int:",
+   "defect_new": "\n    def _run(self, io: IO) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (1 -> 5 errors in file)",
+   "evidence": "src\\poetry\\console\\application.py:124: error: Class cannot subclass \"BaseApplication\" (has type \"Any\")  [misc]"
+  },
+  {
+   "id": "t10",
+   "file": "src/poetry/console/commands/about.py",
+   "defect_old": "\n    def handle(self) -> int:",
+   "defect_new": "\n    def handle(self) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\about.py:27: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t11",
+   "file": "src/poetry/console/commands/add.py",
+   "defect_old": "\n    def handle(self) -> int:",
+   "defect_new": "\n    def handle(self) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 5 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\add.py:126: error: Return type \"str\" of \"handle\" incompatible with return type \"int\" in supertype \"poetry.console.commands.init.InitCommand\"  [override]"
+  },
+  {
+   "id": "t12",
+   "file": "src/poetry/console/commands/build.py",
+   "defect_old": "\n    def _requires_isolated_build(self) -> bool:",
+   "defect_new": "\n    def _requires_isolated_build(self) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 4 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\build.py:101: error: Incompatible return value type (got \"bool\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t13",
+   "file": "src/poetry/console/commands/build.py",
+   "defect_old": "self._has_build_backend_defined()",
+   "defect_new": "self._has_build_backend_defined_typo()",
+   "kind": "undefined-method",
+   "gold_note": "calls a method that does not exist on the class",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\build.py:94: error: \"BuildHandler\" has no attribute \"_has_build_backend_defined_typo\"; maybe \"_has_build_backend_defined\"?  [attr-defined]"
+  },
+  {
+   "id": "t14",
+   "file": "src/poetry/console/commands/cache/clear.py",
+   "defect_old": "\n    def handle(self) -> int:",
+   "defect_new": "\n    def handle(self) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 5 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\cache\\clear.py:63: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t15",
+   "file": "src/poetry/console/commands/cache/list.py",
+   "defect_old": "\n    def handle(self) -> int:",
+   "defect_new": "\n    def handle(self) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 2 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\cache\\list.py:18: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t16",
+   "file": "src/poetry/console/commands/check.py",
+   "defect_old": "\n    def handle(self) -> int:",
+   "defect_new": "\n    def handle(self) -> str:",
+   "kind": "return-type-annotation",
+   "gold_note": "return annotation contradicts what the body returns",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\check.py:205: error: Incompatible return value type (got \"int\", expected \"str\")  [return-value]"
+  },
+  {
+   "id": "t17",
+   "file": "src/poetry/console/commands/check.py",
+   "defect_old": "\n    def _validate_readme(self, readme: str",
+   "defect_new": "\n    def _validate_readme(self, readme: int",
+   "kind": "wrong-argument-type",
+   "gold_note": "parameter annotation contradicts its callers",
+   "detected_by": "mypy (0 -> 3 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\check.py:91: error: If condition is always false  [redundant-expr]"
+  },
+  {
+   "id": "t18",
+   "file": "src/poetry/console/commands/check.py",
+   "defect_old": "                if readme_path is not None:",
+   "defect_new": "                if True:",
+   "kind": "dropped-optional-guard",
+   "gold_note": "removes a None guard the type checker relies on",
+   "detected_by": "mypy (0 -> 1 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\check.py:164: error: Argument 1 to \"_validate_readme\" of \"CheckCommand\" has incompatible type \"Any | None\"; expected \"str | list[str]\"  [arg-type]"
+  },
+  {
+   "id": "t19",
+   "file": "src/poetry/console/commands/command.py",
+   "defect_old": "self.get_application()",
+   "defect_new": "self.get_application_typo()",
+   "kind": "undefined-method",
+   "gold_note": "calls a method that does not exist on the class",
+   "detected_by": "mypy (1 -> 2 errors in file)",
+   "evidence": "src\\poetry\\console\\commands\\command.py:16: error: Class cannot subclass \"BaseCommand\" (has type \"Any\")  [misc]"
+  }
+ ]
+}
