@@ -121,11 +121,7 @@ OPEN_QUESTIONS Q-13.
    samples already scored twice.
 5. **A human re-audit before any v1.0 gate claim** (A-34, Q-15), sized on the
    expected first-party count: ~1,000 draws for 400 in the denominator.
-6. **A test for the converging path.** Every test in `trellis-loop` asserts a
-   refusal to converge. The positive case was demonstrated by hand against a
-   demo repository and is not defended by anything in the suite, so a change
-   that broke convergence outright would pass.
-7. Deferred: Q-14's latent unsound edge on the self-dispatch path.
+6. Deferred: Q-14's latent unsound edge on the self-dispatch path.
 
 ## What the last iteration found
 
@@ -169,6 +165,11 @@ name the test that would fail if it were reverted.
   edited a file it saw in that output.
 - **A resumed session was told everything except what the last run verified.**
   `context_lines` read only the always-empty `factual.checks`.
+- **The converging path had no test**, and the suite proved it: replacing the
+  `Done` branch's `last_check_passed()` with `false`, so no run can ever
+  converge, made exactly one test fail — the new one. Every test in
+  `trellis-loop` asserted a *refusal* to converge; the positive case was shown
+  by hand and encoded nowhere.
 - **An edit that changes nothing reported `applied: true`** — writing identical
   bytes back, telling the model it acted, and entering the rollback set and the
   trail's proposed list. Refused now.
