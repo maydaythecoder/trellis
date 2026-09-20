@@ -105,9 +105,22 @@ OPEN_QUESTIONS Q-13.
 2. **Wire `trellis run`**: orchestrator + agent loop + rollback on
    non-convergence, behind the CLI. The pieces exist and are tested
    individually; nothing joins them yet.
-3. **The model floor (S7).** Weights are downloading (0.5B Q4 and Coder-3B Q4
-   from HuggingFace at ~51 KB/s, resumable, in `.bench/models/`). The probe rig
-   is unwritten; `candle` is verified to build here, which ADR 0013 records.
+3. **The model floor (S7).** Three things gate it and all three are moving:
+   - *Weights.* Downloading (0.5B Q4, then Coder-3B Q4) from HuggingFace at
+     ~51 KB/s, resumable, via `docs/bench/fetch_models.sh`.
+   - *Task set.* `docs/bench/make_floor_tasks.py` injects realistic defects
+     into poetry's `src/` and **verifies each one**: the checker must be clean
+     before the mutation and fail after it, or it is not a task. An unverified
+     set would measure the checker's blind spots and call it a model floor.
+   - *A runtime.* `candle` is verified to build here (ADR 0013); the probe rig
+     itself is unwritten.
+
+**Environment blocker found 2026-09-19: no `pytest`, no `mypy`, no `ruff`.**
+The grounded checks are the thing Constraint 2 rests on, and they cannot
+execute on this machine until those install — which also blocks v0.2's exit
+condition ("one real change runs end to end"), not just the floor. Install is
+running in the background over the same slow link. Recorded because it is a
+real gate on the milestone, not a local annoyance.
 4. **S6 degradation UX.** `trellis radius Factory` reports 92 resolved call
    sites beside 2,382 unresolved ones. Honest and unusable, and it is the first
    screen a user meets. A v0.3 blocker.
