@@ -22,6 +22,14 @@ use crate::tools::ToolResult;
 use std::time::Instant;
 use trellis_checks::CheckKind;
 
+/// How many identical call-and-result pairs in a row mean the run is stuck.
+///
+/// Two can be legitimate: a check re-run after an edit that did not take, a
+/// radius queried again after a reindex. Three identical calls with identical
+/// results is a model going nowhere, and every iteration after that spends the
+/// user's wall clock to reach the same conclusion.
+const NO_PROGRESS_REPEATS: u32 = 3;
+
 /// What the model asks for on a turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCall {
@@ -82,6 +90,13 @@ pub enum NotConverged {
     },
     BudgetExhausted(Exhaustion),
     ModelFailed(String),
+    /// The same call came back with the same result, repeatedly. The model is
+    /// not going to get anywhere and the remaining budget would be spent
+    /// finding that out slowly.
+    NoProgress {
+        repeated: String,
+        times: u32,
+    },
 }
 
 impl NotConverged {
@@ -95,6 +110,14 @@ impl NotConverged {
             ),
             NotConverged::BudgetExhausted(e) => format!("budget exhausted: {}", e.explain()),
             NotConverged::ModelFailed(e) => format!("the model could not continue: {e}"),
+            NotConverged::NoProgress { repeated, times } => format!(
+                concat!(
+                    "no progress: the same call was made {} times with the same ",
+                    "result, so the rest of the budget would only have confirmed ",
+                    "it. The call was {}. Nothing was accepted."
+                ),
+                times, repeated
+            ),
         }
     }
 }
@@ -357,13 +380,52 @@ pub async fn run_seeded<M: Model>(
                 if verdict_passed == Some(true) {
                     checks_passed += 1;
                 }
+                let observation = render(&call, &result);
+
+                // A loop that repeats itself is finished, whatever the budget
+                // says.
+                //
+                // Seen in every run against a below-floor model, and once
+                // against a user who typed "hello": six identical
+                // `RunChecks { paths: [] }` in a row, five minutes of CPU, and
+                // a rollback. Twice can be a legitimate retry after an edit;
+                // three identical calls with identical results is a model
+                // going nowhere, and the remaining iterations only confirm it
+                // more slowly.
+                //
+                // The observation is compared, not just the call: re-running
+                // the same check after a real edit is progress, and its result
+                // differs.
+                let repeats = t
+                    .turns
+                    .iter()
+                    .rev()
+                    .take(NO_PROGRESS_REPEATS as usize - 1)
+                    .filter(|p| p.call == call && p.observation == observation)
+                    .count() as u32
+                    + 1;
+
                 t.turns.push(Turn {
-                    observation: render(&call, &result),
-                    call,
+                    observation,
+                    call: call.clone(),
                     verdict_passed,
                     check_kind,
                     radius_counts,
                 });
+
+                if repeats >= NO_PROGRESS_REPEATS {
+                    tracing::warn!(?call, repeats, "no progress; stopping");
+                    return (
+                        Outcome::NotConverged {
+                            reason: NotConverged::NoProgress {
+                                repeated: format!("{call:?}"),
+                                times: repeats,
+                            },
+                            iterations,
+                        },
+                        t,
+                    );
+                }
             }
         }
     }
@@ -579,6 +641,116 @@ mod tests {
             typecheck: argv,
             ..CheckConfig::default()
         }
+    }
+
+    #[tokio::test]
+    async fn a_run_that_repeats_itself_stops_rather_than_spending_the_budget() {
+        // Seen in every run against a below-floor model, and once against a
+        // user who typed "hello": six identical `RunChecks { paths: [] }` in a
+        // row, five minutes of CPU, and a rollback. The budget was doing its
+        // job; it was just measuring the wrong thing.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(1)).spawn();
+        let steps = std::iter::repeat_n(
+            Step::Call(ToolCall::RunChecks {
+                paths: vec![],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            20,
+        )
+        .collect();
+        let mut m = Scripted::new(steps);
+
+        let budget = Budget {
+            max_iterations: 20,
+            ..Budget::default()
+        };
+        let (outcome, t) = run("go nowhere", &mut m, &h, &budget).await;
+
+        match outcome {
+            Outcome::NotConverged {
+                reason: NotConverged::NoProgress { times, .. },
+                iterations,
+            } => {
+                assert_eq!(times, NO_PROGRESS_REPEATS);
+                assert_eq!(
+                    iterations, NO_PROGRESS_REPEATS,
+                    "stops ON the third, not after the twentieth"
+                );
+            }
+            other => panic!("expected a no-progress stop, got {other:?}"),
+        }
+        assert_eq!(t.turns.len(), NO_PROGRESS_REPEATS as usize);
+    }
+
+    #[tokio::test]
+    async fn two_identical_calls_are_not_yet_a_loop() {
+        // A check re-run after an edit that did not take is a legitimate
+        // second attempt. Stopping at two would cut off runs that were about
+        // to work.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(1)).spawn();
+        let check = || {
+            Step::Call(ToolCall::RunChecks {
+                paths: vec![],
+                kinds: vec![CheckKind::Typecheck],
+            })
+        };
+        let mut m = Scripted::new(vec![
+            check(),
+            check(),
+            Step::Done {
+                summary: "tried twice".into(),
+            },
+        ]);
+
+        let (outcome, _) = run("twice", &mut m, &h, &budget()).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::StoppedWithoutPassingChecks { .. },
+                    ..
+                }
+            ),
+            "two repeats must reach the model's own `done`, not a no-progress \
+             stop: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_call_with_a_different_result_is_progress() {
+        // The observation is compared, not just the call. Re-running a check
+        // after a real edit IS progress, and its result differs — a stop keyed
+        // only on the call would kill the ordinary fix-then-verify loop.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker_wanting("MARKER")).spawn();
+        let check = || {
+            Step::Call(ToolCall::RunChecks {
+                paths: vec![],
+                kinds: vec![CheckKind::Typecheck],
+            })
+        };
+        let mut m = Scripted::new(vec![
+            check(),
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return 1  # MARKER".into(),
+            }),
+            check(),
+            Step::Done {
+                summary: "fixed".into(),
+            },
+        ]);
+
+        let (outcome, t) = run("fix it", &mut m, &h, &budget()).await;
+        assert!(
+            outcome.converged(),
+            "check, edit, check is the normal shape and must converge: {outcome:?}"
+        );
+        let verdicts: Vec<Option<bool>> = t.turns.iter().map(|x| x.verdict_passed).collect();
+        assert_eq!(verdicts, vec![Some(false), None, Some(true)]);
     }
 
     #[tokio::test]
@@ -1081,14 +1253,18 @@ mod tests {
     async fn an_exhausted_budget_escalates_once_then_stops() {
         let d = repo();
         let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
-        // A model that never stops on its own.
-        let steps = std::iter::repeat_n(
-            Step::Call(ToolCall::BlastRadius {
-                symbol: "helper".into(),
-            }),
-            50,
-        )
-        .collect();
+        // A model that never stops on its own, and never repeats itself
+        // either — the symbol varies so the no-progress stop cannot fire and
+        // the budget is unambiguously what ends the run. Before that stop
+        // existed this was fifty identical calls, and the test then proved
+        // something narrower than it claimed.
+        let steps = (0..50)
+            .map(|i| {
+                Step::Call(ToolCall::BlastRadius {
+                    symbol: format!("helper{i}"),
+                })
+            })
+            .collect();
         let mut m = Scripted::new(steps);
 
         let tight = Budget {
