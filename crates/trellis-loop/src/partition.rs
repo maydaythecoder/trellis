@@ -41,7 +41,25 @@ pub struct Partition {
 }
 
 impl Partition {
-    fn new(conservative: bool) -> Self {
+    /// The one partition that runs alone, before anything else starts.
+    ///
+    /// Holds every unit the index could not vouch for and every unit that
+    /// contends for a file one of those touches (S19).
+    fn shared() -> Self {
+        Self::empty(true)
+    }
+
+    /// A partition that may run concurrently with the others.
+    fn parallel() -> Self {
+        Self::empty(false)
+    }
+
+    /// Private, and the only place the flag is written as a bare bool.
+    ///
+    /// `Partition::new(true)` at a call site said nothing about what `true`
+    /// meant, and the two states are not symmetric: one of them is the
+    /// conservative bucket the whole staging exists to keep separate.
+    fn empty(conservative: bool) -> Self {
         Self {
             id: PartitionId(0),
             units: Vec::new(),
@@ -183,7 +201,7 @@ impl Plan {
 ///    a unit touching two groups joins them, because splitting would hand two
 ///    agents intersecting work.
 pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
-    let mut shared = Partition::new(true);
+    let mut shared = Partition::shared();
     let mut rest: Vec<WorkUnit> = Vec::new();
 
     for unit in units {
@@ -217,7 +235,7 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
 
         match hits.as_slice() {
             [] => {
-                let mut p = Partition::new(false);
+                let mut p = Partition::parallel();
                 p.absorb(unit);
                 parallel.push(p);
             }
@@ -225,7 +243,7 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
             _ => {
                 // Merge every partition this unit joins, lowest index first
                 // so the result does not depend on iteration order.
-                let mut merged = Partition::new(false);
+                let mut merged = Partition::parallel();
                 for &i in hits.iter().rev() {
                     merged.merge(parallel.remove(i));
                 }

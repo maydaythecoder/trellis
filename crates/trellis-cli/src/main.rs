@@ -690,10 +690,14 @@ impl Driver {
             }
             trellis_model::ModelSpec::Runtime { dialect, base } => {
                 let client = trellis_model::RuntimeClient::new(base, *dialect, None)?;
-                Ok(Driver::Runtime(trellis_loop::RuntimeModel::new(
-                    client,
-                    !unconstrained,
-                )))
+                // Named rather than `new(client, !unconstrained)`: the flag is
+                // called --unconstrained, so a negated bool at the call site
+                // meant reading two negations to learn which tier runs.
+                Ok(Driver::Runtime(if unconstrained {
+                    trellis_loop::RuntimeModel::unconstrained(client)
+                } else {
+                    trellis_loop::RuntimeModel::constrained(client)
+                }))
             }
         }
     }

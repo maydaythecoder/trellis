@@ -37,20 +37,33 @@ pub struct RuntimeModel {
 }
 
 impl RuntimeModel {
-    /// `constrained` selects tier 2 over tier 4.
+    /// Tier 2: the schema goes to the runtime, which enforces it.
     ///
-    /// It is a caller's decision rather than something guessed here, because
-    /// only a probe can tell whether the runtime honours guided decoding — and
-    /// a runtime silently ignores parameters it does not recognise, so
-    /// guessing wrong yields unconstrained output that looks like success.
-    pub fn new(client: RuntimeClient, constrained: bool) -> Self {
+    /// The default, and the tier the design assumes. Which tier applies is a
+    /// caller's decision rather than something guessed here, because only a
+    /// probe can tell whether a runtime honours guided decoding — and a
+    /// runtime silently ignores parameters it does not recognise, so guessing
+    /// wrong yields unconstrained output that looks like success.
+    pub fn constrained(client: RuntimeClient) -> Self {
+        Self::at(client, AdapterTier::RuntimeConstrained)
+    }
+
+    /// Tier 4: no schema is sent and the reply is validated afterwards.
+    ///
+    /// Materially worse — a run can fail on format alone — which is why it is
+    /// reached through `--unconstrained` rather than by silent fallback.
+    pub fn unconstrained(client: RuntimeClient) -> Self {
+        Self::at(client, AdapterTier::ValidateAndRetry)
+    }
+
+    /// Private: the two constructors above are the only tiers this serves.
+    ///
+    /// Taking an `AdapterTier` publicly would accept tier 1 and tier 3, which
+    /// this type cannot drive — and tier 3 is descoped outright by ADR 0013.
+    fn at(client: RuntimeClient, tier: AdapterTier) -> Self {
         Self {
             client,
-            tier: if constrained {
-                AdapterTier::RuntimeConstrained
-            } else {
-                AdapterTier::ValidateAndRetry
-            },
+            tier,
             max_tokens: 512,
             tokens: 0,
             last_prompt_bytes: None,
@@ -202,7 +215,7 @@ impl RuntimeModel {
 pub(crate) fn prompt_for_test(t: &Transcript) -> String {
     let c = RuntimeClient::new("http://127.0.0.1:8080", Dialect::LlamaCpp, None)
         .expect("a loopback base URL is always valid");
-    RuntimeModel::new(c, true).prompt(t)
+    RuntimeModel::constrained(c).prompt(t)
 }
 
 /// Pulls the first JSON object out of a completion.
@@ -409,11 +422,11 @@ mod tests {
     fn tier_is_chosen_by_the_caller_not_guessed() {
         let c = RuntimeClient::new("http://127.0.0.1:8080", Dialect::LlamaCpp, None).unwrap();
         assert_eq!(
-            RuntimeModel::new(c.clone(), true).tier(),
+            RuntimeModel::constrained(c.clone()).tier(),
             AdapterTier::RuntimeConstrained
         );
         assert_eq!(
-            RuntimeModel::new(c, false).tier(),
+            RuntimeModel::unconstrained(c).tier(),
             AdapterTier::ValidateAndRetry
         );
     }
@@ -421,7 +434,7 @@ mod tests {
     #[test]
     fn the_prompt_carries_the_task_the_transcript_and_the_final_notice() {
         let c = RuntimeClient::new("http://127.0.0.1:8080", Dialect::LlamaCpp, None).unwrap();
-        let m = RuntimeModel::new(c, true);
+        let m = RuntimeModel::constrained(c);
         let t = Transcript {
             task: "fix the type error".into(),
             turns: vec![crate::agent::Turn {
@@ -456,7 +469,7 @@ mod tests {
         // The tail holds the checker's summary and its first real error, which
         // is what a reader acts on.
         let c = RuntimeClient::new("http://127.0.0.1:8080", Dialect::LlamaCpp, None).unwrap();
-        let m = RuntimeModel::new(c, true);
+        let m = RuntimeModel::constrained(c);
         let mut obs = "X".repeat(3000);
         obs.push_str("THE-IMPORTANT-TAIL");
         let t = Transcript {
