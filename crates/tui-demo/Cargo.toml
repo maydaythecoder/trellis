@@ -1,0 +1,24 @@
+[package]
+name = "tui-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Standalone by design: this crate depends on nothing else in the workspace.
+# The TUI is built against a mock event source so it can be run, resized,
+# panicked and exited without a model, a runtime or a repository.
+publish = false
+
+[dependencies]
+# `crossterm` is listed directly only to turn on `event-stream`. Its version
+# must match the one ratatui uses — 0.29 is ratatui 0.30's default — and in
+# code we always reach it through `ratatui::crossterm::...` so the types are
+# guaranteed identical. Never `use crossterm::...` directly.
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+color-eyre = "0.6"
+
+[lints]
+workspace = true
