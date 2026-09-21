@@ -9,8 +9,8 @@
 //! input (S10).
 
 pub mod query;
-pub mod store;
-pub mod untrusted;
+mod store;
+mod untrusted;
 
 pub use store::{iso_now, latest, now, slugify, timestamp_now, write};
 pub use untrusted::{Integrity, RecordedCheck, UntrustedTrail};

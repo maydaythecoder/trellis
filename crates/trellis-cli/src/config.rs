@@ -17,7 +17,7 @@ use trellis_checks::CheckConfig;
 use trellis_loop::{Budget, CostRegime};
 
 #[derive(Debug, Default, Deserialize)]
-pub struct RepoConfig {
+pub(crate) struct RepoConfig {
     #[serde(default)]
     pub checks: Option<ChecksSection>,
     #[serde(default)]
@@ -38,7 +38,7 @@ pub struct RepoConfig {
 /// key never goes in a file TRELLIS reads (ADR 0010) — a runtime that needs
 /// one is configured with it directly, out of this tool's sight.
 #[derive(Debug, Deserialize)]
-pub struct ModelSection {
+pub(crate) struct ModelSection {
     /// e.g. `llamacpp:http://127.0.0.1:8080` or `scripted:fix.json`.
     pub spec: Option<String>,
     /// Send no schema and validate the reply instead (tier 4). Opt-in, since
@@ -49,20 +49,20 @@ pub struct ModelSection {
 /// Rules the loop obeys, read from the repository rather than configured per
 /// session. Enforced by the orchestrator; see `trellis_loop::governance`.
 #[derive(Debug, Deserialize)]
-pub struct GovernanceSection {
+pub(crate) struct GovernanceSection {
     /// Paths no run may edit: `vendor/`, `*.lock`, `setup.py`.
     pub deny_write: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ChecksSection {
+pub(crate) struct ChecksSection {
     pub typecheck: Option<Vec<String>>,
     pub tests: Option<Vec<String>>,
     pub python: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct BudgetSection {
+pub(crate) struct BudgetSection {
     pub max_iterations: Option<u32>,
     pub max_wall_clock_s: Option<u64>,
     pub max_tokens: Option<u64>,
@@ -77,7 +77,7 @@ pub struct BudgetSection {
 /// that is quietly inert.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
-pub struct AgentsSection {
+pub(crate) struct AgentsSection {
     /// `1`, or the string `"auto"`. Never derived from CPU count (S18).
     pub count: Option<toml::Value>,
     pub failure_policy: Option<String>,
@@ -90,7 +90,7 @@ impl RepoConfig {
     /// running the default `mypy` because a user's TOML had a typo is exactly
     /// the confident-verdict-about-the-wrong-thing failure the file exists to
     /// prevent.
-    pub fn load(root: &Path) -> Result<Self> {
+    pub(crate) fn load(root: &Path) -> Result<Self> {
         let path = root.join(".trellis").join("config.toml");
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Ok(Self::default());
@@ -98,7 +98,7 @@ impl RepoConfig {
         toml::from_str(&text).with_context(|| format!("{} is not valid TOML", path.display()))
     }
 
-    pub fn checks(&self) -> CheckConfig {
+    pub(crate) fn checks(&self) -> CheckConfig {
         let mut c = CheckConfig::default();
         if let Some(s) = &self.checks {
             if let Some(v) = &s.typecheck {
@@ -115,12 +115,12 @@ impl RepoConfig {
     }
 
     /// The repository's default model spec, if it set one.
-    pub fn model(&self) -> Option<String> {
+    pub(crate) fn model(&self) -> Option<String> {
         self.model.as_ref().and_then(|m| m.spec.clone())
     }
 
     /// Whether this repository asks for tier 4.
-    pub fn unconstrained(&self) -> bool {
+    pub(crate) fn unconstrained(&self) -> bool {
         self.model
             .as_ref()
             .and_then(|m| m.unconstrained)
@@ -128,7 +128,7 @@ impl RepoConfig {
     }
 
     /// The repository's write rules, or none.
-    pub fn governance(&self) -> trellis_loop::Governance {
+    pub(crate) fn governance(&self) -> trellis_loop::Governance {
         let rules = self
             .governance
             .as_ref()
@@ -148,7 +148,7 @@ impl RepoConfig {
     /// **task**, never configuration: it cannot set the model, lift a denied
     /// path, or change a budget. Everything that binds a run stays in
     /// `config.toml` and `governance/`, where a reviewer looks for it.
-    pub fn prompt(root: &Path, name: &str) -> Result<String> {
+    pub(crate) fn prompt(root: &Path, name: &str) -> Result<String> {
         // No path separators: `--prompt ../../etc/passwd` must not read
         // outside the prompts directory, and a name is a name.
         if name.contains('/') || name.contains('\\') || name.contains("..") {
@@ -187,7 +187,7 @@ impl RepoConfig {
     /// Absent is normal and not an error. Unreadable is reported by the
     /// caller rather than swallowed: a project that wrote a context file and
     /// silently did not get it is worse off than one that never wrote one.
-    pub fn notes(root: &Path) -> Result<Option<String>> {
+    pub(crate) fn notes(root: &Path) -> Result<Option<String>> {
         let path = root.join(".trellis").join("context.md");
         match std::fs::read_to_string(&path) {
             Ok(s) if s.trim().is_empty() => Ok(None),
@@ -198,7 +198,7 @@ impl RepoConfig {
         }
     }
 
-    pub fn budget(&self) -> Budget {
+    pub(crate) fn budget(&self) -> Budget {
         let mut b = Budget::default();
         if let Some(s) = &self.budget {
             if let Some(v) = s.max_iterations {

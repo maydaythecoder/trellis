@@ -4,12 +4,12 @@
 //! `docs/adr/0001-resolver-scope.md`.
 
 pub mod cache;
-pub mod coverage;
-pub mod graph;
-pub mod incremental;
+mod coverage;
+mod graph;
+mod incremental;
 pub mod parse;
 pub mod radius;
-pub mod resolve;
+mod resolve;
 
 pub use coverage::Coverage;
 pub use graph::{

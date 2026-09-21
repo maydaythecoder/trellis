@@ -55,51 +55,6 @@ pub struct EditOutcome {
     pub span: (usize, usize),
 }
 
-/// Argument types for each tool. `schemars::JsonSchema` on every one: the
-/// derived schema is what `trellis-model` compiles into a grammar, so the
-/// model is constrained to well-formed calls by construction.
-pub mod args {
-    use schemars::JsonSchema;
-    use serde::Deserialize;
-
-    #[derive(Debug, Deserialize, JsonSchema)]
-    pub struct BlastRadiusArgs {
-        /// Fully qualified symbol, e.g.
-        /// `poetry.installation.installer.Installer.run`.
-        pub symbol: String,
-    }
-
-    #[derive(Debug, Deserialize, JsonSchema)]
-    pub struct ReadFileArgs {
-        /// Repository-relative path.
-        pub path: String,
-    }
-
-    #[derive(Debug, Deserialize, JsonSchema)]
-    pub struct EditArgs {
-        pub path: String,
-        /// Exact text to replace. The grammar guarantees this is a
-        /// well-formed string; it does not guarantee the string occurs in
-        /// the file (S7 metric 3: valid is not correct).
-        pub old: String,
-        pub new: String,
-    }
-
-    #[derive(Debug, Deserialize, JsonSchema)]
-    pub struct RunChecksArgs {
-        /// Repository-relative paths the change touched.
-        pub paths: Vec<String>,
-        pub kinds: Vec<CheckRequest>,
-    }
-
-    #[derive(Debug, Deserialize, JsonSchema)]
-    pub enum CheckRequest {
-        Typecheck,
-        Tests,
-        Import,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

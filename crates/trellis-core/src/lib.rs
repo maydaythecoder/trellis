@@ -4,7 +4,7 @@
 //! parsing, models, or processes. Everything else in the workspace may
 //! depend on it; it depends on nothing in the workspace.
 
-pub mod ids;
+mod ids;
 pub mod interner;
 
 pub use ids::{CallSiteId, FileId, PartitionId, RunId, SymbolId};

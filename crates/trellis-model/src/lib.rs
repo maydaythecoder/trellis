@@ -9,10 +9,10 @@
 //! settled the question S17 left open.
 
 pub mod catalog;
-pub mod grammar;
-pub mod runtime;
-pub mod spec;
-pub mod tier;
+mod grammar;
+mod runtime;
+mod spec;
+mod tier;
 
 pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
 pub use grammar::{GrammarError, ToolGrammar};

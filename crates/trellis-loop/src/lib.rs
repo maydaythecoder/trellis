@@ -4,15 +4,15 @@
 //! stages in a pipeline written around it. See
 //! `docs/adr/0005-loop-shape.md`.
 
-pub mod adapter;
-pub mod agent;
-pub mod budget;
-pub mod governance;
-pub mod orchestrator;
+mod adapter;
+mod agent;
+mod budget;
+mod governance;
+mod orchestrator;
 pub mod partition;
-pub mod scripted;
-pub mod tools;
-pub mod wire;
+mod scripted;
+mod tools;
+mod wire;
 
 pub use adapter::RuntimeModel;
 pub use agent::{

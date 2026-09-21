@@ -56,6 +56,15 @@ trellis-vcs    = { path = "crates/trellis-vcs" }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+# `pub` on an item nothing outside the crate can reach is a claim about API
+# that is not true. It matters most in `trellis-cli`, which is a binary: `pub`
+# there reaches nobody at all, and seventeen items were written that way.
+#
+# The value is the lint being on rather than the seventeen edits. Quality audit
+# Pass 5 is about visibility, and a pass that fixes a class by hand without
+# preventing its return has done half the work.
+unreachable_pub = "warn"
+
 # The shipped binary.
 #
 # `panic = "abort"` is deliberately NOT set, and it is the obvious thing to

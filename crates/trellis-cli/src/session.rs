@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use trellis_index::Index;
 
-pub struct Session {
+pub(crate) struct Session {
     root: PathBuf,
     index: Index,
     /// Parsed once, on the way in. Holding the string meant every consumer
@@ -81,7 +81,7 @@ verified: 0 — not measured, which is not the same as nothing being ",
 );
 
 impl Session {
-    pub fn open(root: &Path, model: Option<String>) -> Result<Self> {
+    pub(crate) fn open(root: &Path, model: Option<String>) -> Result<Self> {
         let started = std::time::Instant::now();
         let index = trellis_index::build_cached(root);
         let elapsed = started.elapsed();
@@ -145,7 +145,7 @@ impl Session {
     /// sequence, fell past the command match, and ran an agent task. The
     /// control-character guard below stays as well: it costs nothing, and it
     /// is the thing that actually caught that defect.
-    pub fn run(mut self) -> Result<()> {
+    pub(crate) fn run(mut self) -> Result<()> {
         let mut rl = rustyline::DefaultEditor::new().context("starting the line editor")?;
 
         let history = history_path(&self.root);
