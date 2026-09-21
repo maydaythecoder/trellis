@@ -1,0 +1,5 @@
+crates/trellis-model/src/runtime.rs:249:9: replace RuntimeClient::probe_constraint -> Result<bool, RuntimeError> with Ok(true)
+crates/trellis-model/src/runtime.rs:249:9: replace RuntimeClient::probe_constraint -> Result<bool, RuntimeError> with Ok(false)
+crates/trellis-model/src/runtime.rs:283:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(None)
+crates/trellis-model/src/runtime.rs:300:9: replace RuntimeClient::get -> Result<String, RuntimeError> with Ok(String::new())
+crates/trellis-model/src/runtime.rs:300:9: replace RuntimeClient::get -> Result<String, RuntimeError> with Ok("xyzzy".into())

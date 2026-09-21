@@ -355,6 +355,16 @@ fn truncate(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// How long a stub waits for the client to connect before giving up.
+    ///
+    /// Loopback, so a real connection arrives in microseconds. This only ever
+    /// fires when the client did not make a request at all.
+    const ACCEPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// What a stub yields when nobody connected. No assertion matches it, so
+    /// the test fails with a readable message instead of hanging.
+    const NO_REQUEST: &str = "<no request was made>";
+
     #[test]
     fn a_bare_object_is_extracted() {
         assert_eq!(
@@ -560,7 +570,10 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let accepted = tokio::time::timeout(ACCEPT_WINDOW, listener.accept()).await;
+            let Ok(Ok((mut sock, _))) = accepted else {
+                return NO_REQUEST.to_string();
+            };
             let mut buf = vec![0u8; 65536];
             let n = sock.read(&mut buf).await.unwrap();
             let got = String::from_utf8_lossy(&buf[..n]).into_owned();

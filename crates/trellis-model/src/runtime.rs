@@ -366,6 +366,16 @@ impl RuntimeClient {
 mod tests {
     use super::*;
 
+    /// How long a stub waits for the client to connect before giving up.
+    ///
+    /// Loopback, so a real connection arrives in microseconds. This only ever
+    /// fires when the client did not make a request at all.
+    const ACCEPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// What a stub yields when nobody connected. No assertion matches it, so
+    /// the test fails with a readable message instead of hanging.
+    const NO_REQUEST: &str = "<no request was made>";
+
     fn client(d: Dialect) -> RuntimeClient {
         RuntimeClient::new("http://127.0.0.1:8080", d, Some("m".into())).unwrap()
     }
@@ -459,6 +469,17 @@ mod tests {
 
     /// A stub runtime, so the request shape and response parsing are tested
     /// without llama.cpp being installed.
+    ///
+    /// The accept is bounded, and that is not belt-and-braces. A mutant that
+    /// makes the client skip its request — `get -> Ok(String::new())`, say —
+    /// leaves nothing to accept, and an unbounded `accept().await` then hangs
+    /// the test rather than failing it. Five of `trellis-model`'s mutants
+    /// came back as timeouts for exactly that reason: no verdict, where the
+    /// honest answer was "caught". A hang is also the worst failure mode in
+    /// CI, because it stalls instead of reporting.
+    ///
+    /// On timeout the handle yields `NO_REQUEST`, which no assertion here
+    /// matches, so the test fails in a second with a readable message.
     async fn stub(
         response: &'static str,
         status: &'static str,
@@ -466,7 +487,10 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let accepted = tokio::time::timeout(ACCEPT_WINDOW, listener.accept()).await;
+            let Ok(Ok((mut sock, _))) = accepted else {
+                return NO_REQUEST.to_string();
+            };
             let mut buf = vec![0u8; 8192];
             let n = sock.read(&mut buf).await.unwrap();
             let received = String::from_utf8_lossy(&buf[..n]).into_owned();

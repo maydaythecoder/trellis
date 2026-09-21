@@ -53,7 +53,11 @@ cannot be read as a score again by mistake.
 crate            self-test    workspace    delta
 trellis-vcs         59.3%        92.6%     +33.3 pts     (16/11 -> 25/2)
 trellis-core        50.0%        70.0%     +20.0 pts     (5/5  -> 7/3)
+trellis-model       82.9%    not computable                see below
 ```
+
+`trellis-checks` was never reached: the job was killed for system memory,
+the third such kill, and it has not been restarted.
 
 Zero timeouts in both, and the same viable-mutant count each way, which is
 the check that the two runs are comparable at all.
@@ -97,6 +101,38 @@ damage is a missing line break in a message. The rollback-failure path matters
 — it is the worst moment TRELLIS has — but what matters about it is that it is
 loud, names the worktree and gives the commands, and all three of those are
 tested. A separator is not. Class C.
+
+### `trellis-model`: five mutants with no verdict, and the reason was ours
+
+The run returned 31 caught, 6 missed and **5 timeouts**. The script's own rule
+is that more than two timeouts makes a result unusable, so no score is quoted
+here — the honest statement is that it lies somewhere in **[73.8%, 85.7%]**,
+an interval too wide to be worth anything.
+
+The five are worth more than the score, because they were not a tool
+artefact:
+
+```
+runtime.rs:249  probe_constraint -> Ok(true)
+runtime.rs:249  probe_constraint -> Ok(false)
+runtime.rs:283  probe_slots      -> Ok(None)
+runtime.rs:300  get              -> Ok(String::new())
+runtime.rs:300  get              -> Ok("xyzzy".into())
+```
+
+All five make the client skip its HTTP request. The test stubs then had an
+unbounded `listener.accept().await`, so with nobody connecting the stub task
+waited forever and `server.await` hung the test. A hang is recorded as a
+timeout, which is neither caught nor missed — so five mutants that the suite
+*does* detect were reported as undetected.
+
+Both stubs now bound the accept and yield `NO_REQUEST` on expiry. Verified by
+applying `get -> Ok(String::new())` by hand: **three tests fail in 7 seconds**
+where the same mutant previously ran to a 300-second timeout.
+
+The second reason this mattered is CI. A hang stalls a build instead of
+reporting, and it would have done so on any machine, not only under
+mutation.
 
 ### `trellis-core`: what survives even with everything running
 

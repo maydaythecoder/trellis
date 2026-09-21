@@ -1,0 +1,6 @@
+crates/trellis-model/src/catalog.rs:128:9: replace CatalogEntry::gib -> f64 with 0.0
+crates/trellis-model/src/catalog.rs:128:9: replace CatalogEntry::gib -> f64 with 1.0
+crates/trellis-model/src/catalog.rs:128:9: replace CatalogEntry::gib -> f64 with -1.0
+crates/trellis-model/src/catalog.rs:128:27: replace / with % in CatalogEntry::gib
+crates/trellis-model/src/catalog.rs:128:27: replace / with * in CatalogEntry::gib
+crates/trellis-model/src/tier.rs:104:9: replace BatchingCapability::supports_multi_agent -> bool with false
