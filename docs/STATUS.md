@@ -194,7 +194,25 @@ audit's own §0 requires a finished campaign, so they run in that order.
    built once already. `work/` now joins it in the scaffolded
    `.trellis/.gitignore`.
 
-6. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+6. **`trellis-index` triage — four unsound-edge guards, now defended.** The
+   resolver holds 45 of the crate's 92 survivors, and four of those could be
+   replaced with `true` while the suite stayed green. Each emits an **unsound
+   edge**: a `Resolved` naming one of several candidates, or `f.attr()`
+   resolving into a function's own body. **v1.0 gate condition 2 is "zero
+   unsound edges", and the suite did not defend it on the attribute path.**
+   Four tests, each verified against its own mutant.
+
+   One of the four I first judged an equivalent mutant and was wrong —
+   checking rather than assuming is what turned it into a finding.
+
+7. **A hang, not a timeout.** Five of `trellis-model`'s mutants came back
+   without a verdict because the test stubs had an unbounded
+   `listener.accept().await`: a mutant that skips the client's request left
+   the stub waiting forever. Both stubs are now bounded. The worse
+   consequence was never mutation — a hang stalls a CI build instead of
+   reporting.
+
+8. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was
