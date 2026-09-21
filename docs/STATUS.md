@@ -283,9 +283,11 @@ audit's own §0 requires a finished campaign, so they run in that order.
     started now measures code about to change. **That re-run is what the held
     `main.rs` split waits on** — it is the baseline the split must not move.
 
-13. **Triage: 27 of the 144 closed, three clusters, and two defects.**
-    Each mutant applied by hand and watched to fail; `main.rs` is
-    byte-identical before and after each of the three commits.
+13. **Triage: 66 of the 144 closed, and two of them were defects.**
+    Each mutant applied by hand and watched to fail. No production code
+    changed except one `f.pad` fix and one comment — every other commit in
+    the run touches tests only, and `git diff` on `main.rs` was checked
+    empty after each.
 
     - **`radius_of`, 12 — a false all-clear.** The largest single-function
       cluster in the workspace, and the `== 0` mutant prints "every call site
@@ -305,11 +307,47 @@ audit's own §0 requires a finished campaign, so they run in that order.
       because overlapping radii would count the same unbound sites once per
       query. The comment said so and nothing checked it.
 
+    - **`version_of`, 5 — a found tool with no version.** Three died to the
+      `init` tests the moment those existed. Two needed the *value*, because
+      `Some("")` and `Some("xyzzy")` both look like a tool that was found.
+    - **`cmd_why` and `cmd_log`, 9 — the query that could not answer its own
+      question.** The factual section records files; a user holds a symbol.
+      Both the `==` resolving the symbol and the `!` collecting its file
+      survived, and either alone reinstates the wedge-run failure
+      `03-v0.3-memory.md` names. Plus the changed-versus-merely-named
+      distinction, the ALTERED line, and `log`'s residue row.
+    - **`session.rs`, 26 across three commits — nothing had ever fed the
+      session input.** `Command::output()` gives a child a null stdin, so
+      every existing CLI test watched the session see EOF and leave.
+      Everything printed inside the loop, and every command arm reached from
+      the prompt, was unreachable from the suite. Five of the arms `/help`
+      documents had no test; `/help`, the banner and `/status` could each
+      return `()` and print nothing while the caller reported success.
+    - **`accept_with`, 4 — the `unexamined` half of both decisions.** A file
+      the index never parsed contributes *zero* unresolved calls, so a
+      condition reading only `unbound` treats a total unknown as a clean
+      bill of health and commits it without asking. The session indexes at
+      open, so any file a run creates is that case.
+
     **C-022, found by reading output rather than by any mutant.** `Reason`'s
     `Display` used `f.write_str`, which ignores the caller's width, so
     `radius_of`'s `{reason:<22}` was a silent no-op: the reason rows ran
     ragged while the `(other)` row — a plain `&str`, which does pad — lined
     up. No mutation operator produces "this format spec does nothing".
+
+    **C-024, an equivalent mutant rather than a gap.** `cmd_why`'s
+    `None if m.task_mentions` can be `true` and nothing fails, because
+    `mentions_any` only yields a `Mention` when
+    `touched_file.is_some() || task_mentions`. The guard stays as
+    documentation, with a comment saying so, because the next run surfaces
+    it again and an unexplained survivor reads as a test gap.
+
+    **78 survivors remain**, and the largest groups are `pull_model` (6),
+    `cmd_run` (6), `list_models` (5), `cmd_doctor` (5), `cmd_index` (4) and
+    `main` (4). `pull_model` is the model-download path and does HTTP; the
+    campaign already records that transport cannot be exercised on this
+    machine, so it should be triaged as unexercisable-here with the reason
+    rather than given a mock built for six mutants.
 
 13. **Two safety boundaries found in what looked like a tail.**
     `resolve_in_repo`, the guard keeping a model's path inside the tree
