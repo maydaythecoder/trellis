@@ -1,0 +1,83 @@
+# Dependency policy for `cargo deny check`.
+#
+# Written 2026-09-21, during the quality audit's Tier 10. Before this file
+# existed `cargo deny` failed on licences for a reason that was purely
+# procedural: with no policy, nothing is allowed, so every MIT crate in the
+# tree was rejected. That is a missing configuration, not a licensing problem.
+
+[licenses]
+# TRELLIS ships under Apache-2.0. Every expression below was read out of the
+# lockfile rather than copied from a template, and each offers an option
+# compatible with that.
+#
+# Not present and not allowed: anything copyleft as the only option. One crate
+# offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the first two are taken and
+# the LGPL option is simply not exercised, which is what an OR expression
+# means.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    # Public-domain dedication, with an MIT fallback for jurisdictions that do
+    # not recognise one. Used by the regex crates.
+    "Unlicense",
+    "Zlib",
+    # MIT with the attribution clause removed — strictly more permissive than
+    # MIT, which is already allowed above.
+    "MIT-0",
+    # Boost. Permissive, and does not require attribution in binaries.
+    "BSL-1.0",
+]
+
+# `Apache-2.0 WITH LLVM-exception` appears on the compiler-builtins family.
+# The exception only removes an attribution requirement, so it is strictly
+# more permissive than plain Apache-2.0.
+exceptions = []
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[advisories]
+# Accepted, with reasons. Nothing here is a blanket ignore, and each entry
+# says what would make it stop being acceptable.
+ignore = [
+    # RUSTSEC-2023-0089 — atomic-polyfill is unmaintained (archived upstream).
+    #
+    # Chain: atomic-polyfill <- heapless 0.7 <- postcard <- trellis-index.
+    # postcard is the index cache format, chosen because bincode 3.0 is a
+    # protest release that deliberately fails to compile.
+    #
+    # Unmaintained rather than vulnerable, and `cargo tree -i atomic-polyfill`
+    # on the host target prints nothing: it is gated behind targets lacking
+    # native atomics and is not compiled for either supported platform
+    # (x86_64 Windows, x86_64 Linux). The advisory names `portable-atomic` as
+    # the successor, which heapless 0.8 moved to.
+    #
+    # Revisit when postcard takes a heapless 0.8 dependency. Stops being
+    # acceptable the moment TRELLIS supports a target without native atomics,
+    # which no roadmap item proposes.
+    "RUSTSEC-2023-0089",
+]
+
+[bans]
+# Duplicate major versions are a size and confusion cost, not a correctness
+# one, so they warn rather than fail. `deny` here would block routine
+# dependency updates for no safety gain.
+multiple-versions = "warn"
+
+# Catches `foo = "*"` from a registry, which is a supply-chain hazard: any
+# future publish becomes a silent upgrade. The workspace's own crates are
+# path dependencies with no version, which the lint also reads as wildcards
+# and which carry none of that risk — they resolve to the source tree in this
+# repository and nowhere else.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
