@@ -710,10 +710,22 @@ impl Driver {
                 "scripted, {} steps — real loop, real checks, real rollback; judgement stubbed",
                 m.len()
             ),
+            // `degradation()` answers "what do you lose at this tier", and
+            // printed bare it read as `LlamaCpp via RuntimeConstrained —
+            // none for correctness; grammar compilation happens in the
+            // serving runtime`, which says nothing to a reader who has not
+            // memorised the tier table. Number the tier and label the string.
             Driver::Runtime(m) => format!(
-                "{:?} via {:?} — {}",
+                "{:?}, tier {} — degradation: {}",
                 m.dialect(),
-                m.tier(),
+                match m.tier() {
+                    trellis_model::AdapterTier::Native => "1, native tool calls",
+                    trellis_model::AdapterTier::RuntimeConstrained =>
+                        "2, schema enforced by the runtime",
+                    trellis_model::AdapterTier::HarnessConstrained => "3",
+                    trellis_model::AdapterTier::ValidateAndRetry =>
+                        "4, no schema; the reply is validated after",
+                },
                 m.tier().degradation()
             ),
         }
@@ -743,7 +755,6 @@ fn cmd_run(
     let cfg = config::RepoConfig::load(root)?;
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
     let mut driver = Driver::build(&spec, unconstrained)?;
-    println!("model:    {}", driver.describe());
 
     // Reachability before the snapshot, and the ordering is the whole point.
     //
@@ -768,11 +779,25 @@ fn cmd_run(
 ",
                 "did not start. Start the runtime, or point at a different one
 ",
-                "with `--model <runtime>:http://host:port`, then try again."
+                "with `--model <runtime>:http://host:port`, then try again.
+
+",
+                "To exercise the loop with no runtime at all — real checks,
+",
+                "real edits, real rollback, scripted decisions — use
+",
+                "`--model scripted:<file.json>`. `trellis model` lists
+",
+                "weights you can fetch."
             ),
             e
         );
     }
+
+    // Printed after reachability, not before. Describing the tier of a
+    // runtime that is not listening is noise ahead of the only line that
+    // matters.
+    println!("model:    {}", driver.describe());
 
     // Read before the snapshot, so a missing or corrupt trail fails the run
     // before anything has been written.
