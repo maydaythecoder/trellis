@@ -119,10 +119,17 @@ const IGNORE: &str = r#"# Written by TRELLIS. The index is derived state: keyed 
 # the thing that then refuses to walk through it. Delete the line below if
 # you would rather commit it; TRELLIS will not rewrite this file.
 #
+# work/ is the same kind of thing: v1.1 puts one git worktree per partition
+# under it, and a linked worktree inside the repository shows up in
+# `git status` as untracked. A run that creates partitions would then leave
+# the tree dirty and the *next* run would refuse to start (ADR 0009) — the
+# same wall as above, built by a different file.
+#
 # Nothing else here is ignored. runs/, config.toml, context.md and
 # governance/ are meant to be committed — the trail is the point.
 index.bin
 .gitignore
+work/
 "#;
 
 /// Reads the index, but only when it matches the current file set.
@@ -215,11 +222,21 @@ mod tests {
             .collect();
         assert_eq!(
             rules,
-            ["index.bin", ".gitignore"],
-            "the blob, and this file itself: TRELLIS writes it unasked, so it \
-             must not be the reason the worktree is dirty. The trail stays \
-             committable."
+            ["index.bin", ".gitignore", "work/"],
+            "everything TRELLIS writes unasked, and nothing else: the blob,              this file itself, and the per-partition worktrees. None may be              the reason the worktree is dirty. The trail stays committable."
         );
+        // C-010, and it is a list that had to grow *before* the feature that
+        // needs it. `Worktree::create` puts a git worktree at
+        // `.trellis/work/<run>/partition-<n>`, and a linked worktree inside
+        // the repository shows up in `git status` as untracked — so a run
+        // that partitions would dirty the tree and the next run would refuse
+        // to start. Found by writing the first test of `Worktree`, which
+        // until then was dead code nothing exercised.
+        //
+        // `ignore_the_blob` never overwrites an existing file, so a
+        // repository that ran TRELLIS before this line existed keeps the old
+        // one. Acceptable only because no release has shipped partition
+        // worktrees yet.
         assert!(
             !ignore.contains("  "),
             "no folded indentation in a file written into someone's repo: {ignore:?}"

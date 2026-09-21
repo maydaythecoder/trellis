@@ -715,4 +715,136 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// C-002: `Worktree` is written ahead of need for brief 4.13's
+    /// per-partition isolation and nothing calls it yet, so both its mutants
+    /// survive every run — the mutation evidence for a finding first made by
+    /// reading.
+    ///
+    /// Tested rather than deleted. It has no replacement, unlike
+    /// `tools::args` which `ToolCallWire` superseded and
+    /// `Trail::factual_is_intact` which duplicated a better check; and it
+    /// sits in the per-partition rollback path, so when v1.1 wires it up it
+    /// needs to already work. Dead-and-verified is the right state for code
+    /// deliberately written early. Dead-and-unverified is not.
+    #[test]
+    fn a_partition_worktree_is_created_on_its_own_branch() {
+        let dir = temp_repo("worktree-create");
+        let base = git(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let wt = Worktree::create(&dir, "20260921-run", 0, &base).expect("worktree add");
+
+        assert!(wt.path.exists(), "the worktree directory must exist");
+        assert!(
+            wt.path.join("a.py").exists(),
+            "and carry a checkout of the base commit"
+        );
+        assert_eq!(wt.branch, "trellis/20260921-run/p0");
+        assert!(
+            wt.path.ends_with("partition-0"),
+            "the path names the partition: {}",
+            wt.path.display()
+        );
+
+        // Isolation is the whole point: editing inside the worktree must not
+        // reach the tree a run was started from, because that tree is what
+        // ADR 0009's clean-worktree gate is checked against.
+        //
+        // Asserted against the parent's *tracked* file rather than against an
+        // empty `git status`, and the difference is C-010. The worktree lives
+        // at `.trellis/work/...` inside the repository, so git reports that
+        // directory as untracked however well isolated the edit is. That is a
+        // real problem — it dirties the tree and the next run refuses to
+        // start — and it is fixed where it belongs, in the `.trellis/.gitignore`
+        // the index cache scaffolds. It is not this property.
+        std::fs::write(
+            wt.path.join("a.py"),
+            "def f():
+    return 2
+",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():
+    return 1
+",
+            "an edit in the partition's worktree reached the parent"
+        );
+        let dirty = git(&dir, &["status", "--porcelain"]).unwrap();
+        assert!(
+            !dirty.contains("a.py"),
+            "the parent's tracked files must be untouched: {dirty}"
+        );
+
+        wt.discard().expect("worktree remove");
+    }
+
+    #[test]
+    fn discarding_a_partition_removes_its_directory_and_its_branch() {
+        // "A failed partition's work never lands partially" — the branch has
+        // to go too. Leaving it behind means a later run finds a branch named
+        // for a partition that failed, holding commits nothing will integrate.
+        let dir = temp_repo("worktree-discard");
+        let base = git(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let wt = Worktree::create(&dir, "20260921-run", 3, &base).expect("worktree add");
+        std::fs::write(wt.path.join("a.py"), "def f():\n    return 3\n").unwrap();
+
+        let branches_before = git(&dir, &["branch", "--list"]).unwrap();
+        assert!(
+            branches_before.contains("trellis/20260921-run/p3"),
+            "{branches_before}"
+        );
+
+        wt.discard().expect("worktree remove");
+
+        assert!(!wt.path.exists(), "the directory must be gone");
+        let branches_after = git(&dir, &["branch", "--list"]).unwrap();
+        assert!(
+            !branches_after.contains("trellis/20260921-run/p3"),
+            "the branch outlived the worktree: {branches_after}"
+        );
+        // And the parent is untouched by any of it.
+        assert!(
+            git(&dir, &["status", "--porcelain"])
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn two_partitions_get_separate_worktrees() {
+        // The property v1.1 depends on. Two agents editing the same file in
+        // different partitions must not see each other, which is what makes
+        // "filesystem isolation for free" true rather than hopeful.
+        let dir = temp_repo("worktree-two");
+        let base = git(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let a = Worktree::create(&dir, "run", 0, &base).expect("first");
+        let b = Worktree::create(&dir, "run", 1, &base).expect("second");
+        assert_ne!(a.path, b.path);
+        assert_ne!(a.branch, b.branch);
+
+        std::fs::write(a.path.join("a.py"), "def f():\n    return 10\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(b.path.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "one partition's edit was visible in another's worktree"
+        );
+
+        a.discard().expect("discard first");
+        assert!(b.path.exists(), "discarding one must not remove the other");
+        b.discard().expect("discard second");
+    }
 }

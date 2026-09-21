@@ -10,7 +10,7 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **375** passing, 0 failed, 0 ignored (328 at the baseline commit) |
+| Tests | **381** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
 | Mutation score | **still none.** Two workspace runs stopped for memory; six crates measured individually, but per-crate runs test only that crate — see Tier 6 |
 
@@ -387,7 +387,8 @@ type system as the proof obligation, which is ADR 0004's whole point.
 | ID | Tier | Finding | State |
 |----|------|---------|-------|
 | C-001 | 5, 6 | `trellis-cli` had no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | **Fixed**, `0ba3b5f` — 20 tests, and it caught `trellis model` refusing to run outside a repository against its own stated intent |
-| C-002 | 5 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | Reported |
+| C-002 | 5, 6 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | **Tested, not deleted** — it has no replacement and v1.1's brief 4.13 specifies it, so dead-and-verified is the right state. Writing the tests found C-010 |
+| C-010 | 6 | `Worktree::create` puts a git worktree at `.trellis/work/<run>/partition-<n>`, inside the repository. A linked worktree there reads as untracked, so a run that partitions dirties the tree and **the next run refuses to start** (ADR 0009) | **Fixed** — `work/` added to the `.trellis/.gitignore` the index cache scaffolds. The same wall `index.bin` built once already, in a different file |
 | C-008 | 6 | `Trail::factual_is_intact` was dead code, and its three surviving mutants said nothing about the tests | **Fixed** — deleted. The integrity check actually wired in is `UntrustedTrail::integrity`, which takes the raw JSON off disk rather than a parsed `Trail`, because a trail is read back as untrusted data (S10) |
 | C-009 | 6 | Per-crate mutation runs test only that crate, so dependents' tests never run and every score understates | **Measured** — `Interner::deserialize -> Default` survives `-p trellis-core` (1 test) and is killed twice by the workspace suite. `--test-workspace true` re-runs in progress for the four affordable crates |
 | C-004 | — | The C-003 fix changed the cache's serialised shape without bumping `FORMAT_VERSION`; the commit's claim about it was unverified and its stated mechanism wrong | **Fixed**, `ec2463c` — found by review, not by any tier |
