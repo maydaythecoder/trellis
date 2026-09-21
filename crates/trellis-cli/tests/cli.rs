@@ -1918,3 +1918,51 @@ fn diff_offers_no_remainder_at_exactly_the_number_of_lines_it_shows() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn the_index_percentages_partition_the_call_sites_they_describe() {
+    // resolved, ambiguous and unresolved are the three outcomes a call site
+    // can have — ADR 0002 keeps them three precisely so none is collapsed
+    // into another — so their percentages are a partition and must come to
+    // a hundred. All four mutants of the arithmetic that produces them
+    // survived, and each breaks that in its own way: one makes every figure
+    // a multiple of the total, one adds a hundred to each, one divides them
+    // to nothing.
+    //
+    // Asserted as the invariant rather than against fixed numbers, so the
+    // test says what the figures mean rather than what this fixture happens
+    // to produce.
+    let d = repo("index-percentages");
+    let out = run(&d, &["index"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+
+    let pct_on = |label: &str| -> f64 {
+        let line = s
+            .lines()
+            .find(|l| l.trim_start().starts_with(label) && l.contains('%'))
+            .unwrap_or_else(|| panic!("no `{label}` line with a percentage:\n{s}"));
+        let open = line.find('(').unwrap_or_else(|| panic!("got {line:?}"));
+        let close = line[open..]
+            .find('%')
+            .map(|i| open + i)
+            .unwrap_or_else(|| panic!("got {line:?}"));
+        line[open + 1..close]
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("`{}` is not a percentage: {e}", &line[open + 1..close]))
+    };
+
+    let parts = [
+        pct_on("resolved"),
+        pct_on("ambiguous"),
+        pct_on("unresolved"),
+    ];
+    let sum: f64 = parts.iter().sum();
+    assert!(
+        (sum - 100.0).abs() < 0.3,
+        "the three outcomes must account for every first-party call site \
+         and nothing else; {parts:?} came to {sum}:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
