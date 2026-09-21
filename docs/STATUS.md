@@ -265,8 +265,24 @@ audit's own §0 requires a finished campaign, so they run in that order.
 
 12. **Five crates are at zero survivors** — `trellis-checks`, `trellis-model`,
     `trellis-core`, `trellis-trail`, and `trellis-vcs` down to two (one dead
-    code, one Class C). `trellis-cli` is having its first per-crate run now;
-    it is the only crate that never had one.
+    code, one Class C).
+
+    **`trellis-cli` finished, and it is the worst score in the workspace:
+    131 caught / 185 missed / 16 unviable / 1 timeout — 41.5% self-test**
+    (`cargo mutants -p trellis-cli`, at `4cefe4a`, results in
+    `docs/bench/mutants-by-crate/trellis-cli/`). Self-test, so it understates
+    as every per-crate figure does; but `trellis-cli` is the top of the
+    dependency graph and nothing else's tests run its code, so here the
+    understatement is small and 41.5% is close to the real number.
+
+    Not yet triaged, and **the run is stale in one direction only**: every
+    commit since `4cefe4a` is TUI or run-output work, so the `src/tui/`
+    entries name a module that no longer exists and drop out, while the
+    survivors in `cmd_log`, `cmd_why`, `models_dir`, `weights_path` and
+    `Session::dispatch` are untouched by anything since. Triage those first;
+    re-measure after, because a run started now measures code about to
+    change. **That re-run is what the held `main.rs` split waits on** — it is
+    the baseline the split must not move.
 
 13. **Two safety boundaries found in what looked like a tail.**
     `resolve_in_repo`, the guard keeping a model's path inside the tree

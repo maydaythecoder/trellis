@@ -59,6 +59,34 @@ fn report_outcome(tx: &Sender<Message>, outcome: Result<crate::RunExit>) {
     let _ = tx.blocking_send(Message::RunFinished);
 }
 
+/// What the interface is told when a run did not fail but *vanished*.
+///
+/// The same silent pane as above, arriving through the one door
+/// `report_outcome` cannot cover: if `cmd_run` panics, it never returns, so
+/// nothing reports and `RunFinished` is never sent — leaving an interface
+/// that holds input forever and can only be quit.
+///
+/// The worktree line is not hedging. `cmd_run` rolls back on its own
+/// non-converged path and there is no `catch_unwind` and no `Drop` guard
+/// around the snapshot, so a panic partway through genuinely leaves the tree
+/// as the agent left it. Saying so, and naming the command that shows it, is
+/// the difference between a recoverable surprise and a lost afternoon.
+fn lost_run_report(join: &tokio::task::JoinError) -> Vec<Message> {
+    let what = if join.is_panic() {
+        "the run panicked"
+    } else {
+        "the run was cancelled before it finished"
+    };
+    vec![
+        Message::AgentToken(format!("! {what}\n")),
+        Message::AgentToken(
+            "! the worktree was NOT rolled back — check `git status` before rerunning\n"
+                .to_string(),
+        ),
+        Message::RunFinished,
+    ]
+}
+
 pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>) -> Result<()> {
     // Refused rather than attempted when there is no terminal to drive.
     // `EventStream` waits on console input, which never arrives from a pipe,
@@ -104,19 +132,29 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
             let tx = tx.clone();
             async move {
                 while let Some(task) = task_rx.recv().await {
-                    let (root, spec, tx) = (root.clone(), spec.clone(), tx.clone());
+                    let (root, spec) = (root.clone(), spec.clone());
+                    let (run_tx, lost_tx) = (tx.clone(), tx.clone());
                     // `spawn_blocking`, because `cmd_run` blocks on its own
                     // runtime and must not sit on a worker of this one.
-                    let _ = tokio::task::spawn_blocking(move || {
+                    let joined = tokio::task::spawn_blocking(move || {
                         use tracing_subscriber::layer::SubscriberExt;
-                        let layer = LoopLayer::new(tx.clone());
+                        let layer = LoopLayer::new(run_tx.clone());
                         let subscriber = tracing_subscriber::registry().with(layer);
                         let outcome = tracing::subscriber::with_default(subscriber, || {
                             crate::cmd_run(&root, &task, &spec, false, "1", false)
                         });
-                        report_outcome(&tx, outcome);
+                        report_outcome(&run_tx, outcome);
                     })
                     .await;
+                    // Discarding this `JoinError` reopened the silent pane:
+                    // a panicking run reports nothing and never hands input
+                    // back. `send` rather than `blocking_send` — this half
+                    // is on the runtime, and `blocking_send` panics there.
+                    if let Err(join) = joined {
+                        for m in lost_run_report(&join) {
+                            let _ = lost_tx.send(m).await;
+                        }
+                    }
                 }
             }
         });
@@ -231,6 +269,36 @@ mod tests {
         assert!(
             !text.to_lowercase().contains("fail"),
             "a non-converged run is not the interface's verdict to give:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_panics_reports_it_and_hands_input_back() {
+        // Driven through a real `JoinError` rather than a hand-made one:
+        // the bug was that this value was discarded, so the test has to be
+        // holding the same value the driver holds.
+        let join = tokio::task::spawn_blocking(|| panic!("checker blew up"))
+            .await
+            .expect_err("the task panicked, so the join has to be an error");
+
+        let mut state = AppState {
+            running: true,
+            ..Default::default()
+        };
+        for m in lost_run_report(&join) {
+            state.update(m);
+        }
+
+        let text = state.transcript.join("\n");
+        assert!(text.contains("panicked"), "got:\n{text}");
+        assert!(
+            text.contains("git status"),
+            "a panic leaves the tree as the agent left it, and the viewer has \
+             to be told how to see that:\n{text}"
+        );
+        assert!(
+            !state.running,
+            "a panicking run left the interface holding input forever"
         );
     }
 
