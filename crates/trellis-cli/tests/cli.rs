@@ -1392,3 +1392,204 @@ fn the_trail_sums_reach_across_queries_and_takes_the_widest_doubt() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// why / log — reading the trail back
+// ---------------------------------------------------------------------------
+
+/// A repository plus a script that edits the file defining `greet`.
+///
+/// The run does not converge and is rolled back — a `done` with no passing
+/// check never converges, because only an executed check accepts a change —
+/// and that is fine here: the trail is written after the rollback and
+/// survives it, which is the property `why` depends on.
+fn repo_with_an_edit_script(name: &str) -> PathBuf {
+    let d = scratch(name);
+    git(&d, &["init", "-q"]);
+    git(&d, &["config", "user.email", "t@example.invalid"]);
+    git(&d, &["config", "user.name", "t"]);
+    git(&d, &["config", "core.autocrlf", "false"]);
+
+    std::fs::create_dir_all(d.join("app")).unwrap();
+    std::fs::write(d.join("app/__init__.py"), "").unwrap();
+    std::fs::write(
+        d.join("app/core.py"),
+        "def greet(name):\n    return \"hello\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("app/use.py"),
+        "from app.core import greet\n\ndef w(x):\n    return greet(x)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("script.json"),
+        concat!(
+            r#"{"steps":[{"tool":"edit","path":"app/core.py","#,
+            r#""old":"return \"hello\"","new":"return \"hi\""},"#,
+            r#"{"tool":"done","summary":"changed the greeting"}]}"#,
+        ),
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "fixture"]);
+    d
+}
+
+/// Runs the scripted edit once, leaving one more trail behind.
+fn leave_a_trail(root: &Path, task: &str) {
+    let out = run(root, &["run", "--model", "scripted:script.json", task]);
+    assert!(
+        !out.status.success(),
+        "a run with no passing check must not converge:\n{}",
+        combined(&out)
+    );
+}
+
+/// The newest trail file on disk.
+fn newest_trail(root: &Path) -> PathBuf {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(root.join(".trellis/runs"))
+        .expect("a run writes .trellis/runs")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    v.sort();
+    v.pop().expect("at least one trail")
+}
+
+#[test]
+fn why_finds_a_run_by_the_symbol_whose_file_it_changed() {
+    // The failure `03-v0.3-memory.md` names, and the one the first wedge run
+    // actually hit. The factual section records FILES; a user asking "why
+    // does this function look like this" holds a SYMBOL. Matching the symbol
+    // against paths finds nothing unless the two happen to share a name, so
+    // `why` reported "no file matching `boolean_validator` was changed"
+    // about a run that had changed the file defining it — the trail written
+    // faithfully and the query unable to answer the question it exists for.
+    //
+    // The mapping is recomputed from the index rather than recorded, which
+    // is also why it works on trails written before it existed.
+    let d = repo_with_an_edit_script("why-symbol");
+    leave_a_trail(&d, "tweak the greeting");
+
+    let s = stdout(&run(&d, &["why", "greet"]));
+    assert!(
+        s.contains("changed: app/core.py"),
+        "`why` on a symbol must reach the file that defines it:\n{s}"
+    );
+    assert!(
+        !s.contains("no run in the trail mentions"),
+        "the run is there and it changed that file:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn why_separates_a_file_that_changed_from_a_word_in_the_task() {
+    // The distinction is the whole value of this command. A run that *edited*
+    // the file is evidence about why the code looks like this; a run that
+    // merely named it in a task string is context. Reported alike, the
+    // weaker one reads as the stronger — and the stronger one loses the fact
+    // that a file actually moved.
+    let d = repo_with_an_edit_script("why-mentions");
+    leave_a_trail(&d, "tweak the greeting");
+
+    let changed = stdout(&run(&d, &["why", "greet"]));
+    assert!(
+        !changed.contains("named in the task"),
+        "a run that changed the file must not be reported as merely naming it:\n{changed}"
+    );
+
+    // "greeting" is a word in the task and not a symbol anywhere, so this is
+    // the other half of the same branch.
+    let mentioned = stdout(&run(&d, &["why", "greeting"]));
+    assert!(
+        mentioned.contains("named in the task"),
+        "a run that only named it must say so rather than staying silent:\n{mentioned}"
+    );
+    assert!(
+        !mentioned.contains("changed:"),
+        "nothing matching `greeting` was changed:\n{mentioned}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn why_says_when_a_trail_no_longer_matches_its_digest() {
+    // A trail lives in a repository that takes contributions, so it is read
+    // back as untrusted data (S10). Tamper-evidence is only worth having if
+    // the surface that reads it says so: a silently altered record is worse
+    // than no record, because it is believed.
+    let d = repo_with_an_edit_script("why-altered");
+    leave_a_trail(&d, "tweak the greeting");
+
+    let clean = stdout(&run(&d, &["why", "greet"]));
+    assert!(
+        !clean.contains("ALTERED"),
+        "an untouched trail must not be reported as altered:\n{clean}"
+    );
+
+    // Edit inside the factual section, which is what the digest covers, and
+    // deliberately not `proposed` — so the `changed:` line stays identical
+    // and the only difference is the integrity verdict.
+    let p = newest_trail(&d);
+    let text = std::fs::read_to_string(&p).unwrap();
+    let tampered = text.replace("\"radius_queries\": 0", "\"radius_queries\": 9");
+    assert_ne!(text, tampered, "the tamper must actually change the file");
+    std::fs::write(&p, tampered).unwrap();
+
+    let s = stdout(&run(&d, &["why", "greet"]));
+    assert!(s.contains("ALTERED"), "an edited trail must say so:\n{s}");
+    assert!(
+        s.contains("changed: app/core.py"),
+        "and must still report what it records, flagged rather than hidden:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn log_lists_the_runs_it_found() {
+    let d = repo_with_an_edit_script("log-lists");
+    leave_a_trail(&d, "first pass");
+
+    let s = stdout(&run(&d, &["log"]));
+    assert!(s.contains("run(s), newest first"), "got:\n{s}");
+    assert!(s.contains("first pass"), "the task must appear:\n{s}");
+    assert!(
+        !s.contains("no trails"),
+        "there is a trail, so the empty message is wrong:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn log_says_how_many_runs_it_did_not_show() {
+    // Same residue rule as the radius report. A listing that silently stops
+    // at the limit tells the reader they have seen everything, and the one
+    // thing a decision trail must not do is imply there is no more history.
+    let d = repo_with_an_edit_script("log-residue");
+    leave_a_trail(&d, "first pass");
+    leave_a_trail(&d, "second pass");
+
+    let s = stdout(&run(&d, &["log", "--limit", "1"]));
+    assert!(
+        s.contains("1 older"),
+        "two runs shown one at a time must account for the other:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn log_does_not_offer_more_when_it_showed_everything() {
+    // The boundary, and the only input that separates `>` from `>=`.
+    let d = repo_with_an_edit_script("log-boundary");
+    leave_a_trail(&d, "first pass");
+    leave_a_trail(&d, "second pass");
+
+    let s = stdout(&run(&d, &["log", "--limit", "2"]));
+    assert!(
+        !s.contains("older, use --limit"),
+        "everything was shown, so there is nothing older to offer:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -372,7 +372,7 @@ neighbour below — and it has not been re-run since that was fixed.
 
 ### What the triage produced
 
-Twenty-two numbered findings in the table below, C-001 to C-023, plus three
+Twenty-three numbered findings in the table below, C-001 to C-024, plus three
 that predate the numbering. C-007 is the only id in that range with no row:
 it was the `usize as u32` truncation question, examined and found clear, and
 is recorded as such in `QUALITY_LEDGER.md` rather than as a finding here —
@@ -506,6 +506,7 @@ type system as the proof obligation, which is ADR 0004's whole point.
 
 | ID | Tier | Finding | State |
 |----|------|---------|-------|
+| C-024 | 6 | `cmd_why`'s `None if m.task_mentions` guard: replacing it with `true` survives, and is a genuine **equivalent mutant**. `mentions_any` yields a `Mention` only when `touched_file.is_some() \|\| task_mentions`, so a `None` in that arm implies the task mentioned it and the guard cannot be false where it is reached | **Triaged, not fixed** — the guard stays as documentation of the invariant, with a comment at the site saying so. The `false` mutant *is* killed, so the arm itself is tested. Recorded because the next run surfaces it again and an unexplained survivor reads as a test gap |
 | C-021 | 6 | `radius_of`'s twelve survivors — the largest single-function cluster in `trellis-cli` — sat on the two branches deciding how much doubt reaches the screen. The `== 0` mutant prints **"every call site in the N files this radius touches was bound"** over a radius with real doubt: a false claim of completeness, which Constraint 1 forbids outright. The existing test greps for `"call site"`, a phrase in *both* branches, so it passed either way | **Fixed** — nine integration tests, each verified against its own mutant. The residue rows are now held to a stated invariant: what is on screen sums to the headline figure |
 | C-022 | 6 | `Reason`'s `Display` used `f.write_str`, which ignores the width the caller asked for, so `radius_of`'s `{reason:<22}` was a silent no-op. Every reason row ran ragged while the `(other)` row — a plain `&str`, which does pad — lined up, breaking the column where a reader compares counts | **Fixed** — `f.pad`. Found by writing a test for the residue row and reading the output it printed, not by any mutant: no mutation operator produces "the format spec does nothing" |
 | C-023 | — | The TUI could show a typed task and then nothing. A run failing before its first turn emits no tracing event, so the bridge had nothing to forward; `ddc1f59` fixed that and shipped the claim untested, because the event loop refuses a pipe and the path is unreachable from a shell. Separately, `spawn_blocking(..).await` was discarded, so a *panicking* run reported nothing and never handed input back | **Fixed** — `report_outcome` and `lost_run_report` split out and driven through the real `update`; six tests, two of which fail when the forwarding is removed |

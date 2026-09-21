@@ -459,6 +459,13 @@ fn cmd_why(root: &Path, query: &str) -> Result<()> {
         // evidence about why the code looks like this; a run that merely named
         // it in a task string is context, and reporting them alike would let
         // the weaker one be read as the stronger.
+        // The guard is always true when it is reached, and is kept as
+        // documentation rather than as a branch. `mentions_any` only yields a
+        // `Mention` when `touched_file.is_some() || task_mentions`, so a
+        // `None` here implies the task mentioned it. Replacing it with `true`
+        // is therefore an equivalent mutant — recorded as such in
+        // CORRECTNESS_LEDGER.md rather than left looking like a test gap,
+        // because the next run will surface it again.
         match &m.touched_file {
             Some(f) => println!("    changed: {f}"),
             None if m.task_mentions => {
