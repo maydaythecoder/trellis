@@ -71,10 +71,27 @@ for crate in "${CRATES[@]}"; do
     c=$(wc -l < "$dest/caught.txt")
     m=$(wc -l < "$dest/missed.txt")
     t=$(wc -l < "$dest/timeout.txt")
-    echo "== $crate: caught $c, missed $m, timeout $t, at $COMMIT"
+    u=$(wc -l < "$dest/unviable.txt")
+    echo "== $crate: caught $c, missed $m, timeout $t, unviable $u, at $COMMIT"
+
     # A timeout is neither caught nor missed. More than a couple means the
     # run says nothing and the score must not be computed from it.
     [ "$t" -gt 2 ] && echo "== $crate: WARNING $t timeouts — treat this result as unusable"
+
+    # An unviable mutant is one that did not compile, and a healthy rate is
+    # 5-28% across this workspace. A run under memory pressure misclassifies
+    # starved builds as unviable *before* it is killed, so a high rate is the
+    # detector for a corrupt result — and unviable is the silent bucket,
+    # excluded from the score, so nothing else notices.
+    #
+    # Measured: trellis-cli returned 83.5% unviable with only four of ~278
+    # carrying an actual compile error. Operator swaps like `>` to `>=` were
+    # reported unviable, which cannot happen for real.
+    total=$((c + m + u))
+    if [ "$total" -gt 0 ] && [ $((u * 100 / total)) -gt 40 ]; then
+        echo "== $crate: WARNING $u of $total unviable — a starved build looks"
+        echo "==         exactly like this. Treat the result as unusable."
+    fi
 done
 
 echo
