@@ -40,6 +40,14 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         ));
     };
 
+    // What the status bar shows. Derived once, here, rather than guessed by
+    // the view.
+    let spec_label = spec.clone();
+    let tier_label = match spec.split(':').next() {
+        Some("scripted") => "scripted".to_string(),
+        _ => "2".to_string(),
+    };
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
         // Bounded. The loop can outrun a redraw during a turn burst, and an
@@ -62,9 +70,35 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                         use tracing_subscriber::layer::SubscriberExt;
                         let layer = LoopLayer::new(tx.clone());
                         let subscriber = tracing_subscriber::registry().with(layer);
-                        tracing::subscriber::with_default(subscriber, || {
-                            let _ = crate::cmd_run(&root, &task, &spec, false, "1", false);
+                        let outcome = tracing::subscriber::with_default(subscriber, || {
+                            crate::cmd_run(&root, &task, &spec, false, "1", false)
                         });
+                        // A run can fail before its first turn — an
+                        // unreachable runtime, a dirty worktree — and then
+                        // there is no tracing event to carry the reason.
+                        // Without this the pane shows a task that produced
+                        // nothing, which is the failure mode this interface
+                        // was built to end.
+                        match outcome {
+                            Err(e) => {
+                                for line in format!("{e:#}").lines() {
+                                    let _ = tx.blocking_send(tui::message::Message::AgentToken(
+                                        format!(
+                                            "! {line}
+"
+                                        ),
+                                    ));
+                                }
+                            }
+                            Ok(exit) => {
+                                let _ =
+                                    tx.blocking_send(tui::message::Message::AgentToken(format!(
+                                        "· run finished, exit {}
+",
+                                        exit.code()
+                                    )));
+                            }
+                        }
                         // Whatever happened, the interface takes input again.
                         let _ = tx.blocking_send(tui::message::Message::RunFinished);
                     })
@@ -73,7 +107,11 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
             }
         });
 
-        let mut state = tui::app::AppState::default();
+        let mut state = tui::app::AppState {
+            model: spec_label.clone(),
+            tier: tier_label.clone(),
+            ..Default::default()
+        };
         // A task on the command line starts immediately; without one the
         // interface opens idle and waits for the user to type.
         if let Some(t) = task {

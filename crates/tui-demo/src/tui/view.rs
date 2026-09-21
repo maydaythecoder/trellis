@@ -100,9 +100,23 @@ fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  model "),
-        Span::styled("mock", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if state.model.is_empty() {
+                "none".to_string()
+            } else {
+                state.model.clone()
+            },
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  tier "),
-        Span::styled("2", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if state.tier.is_empty() {
+                "—".to_string()
+            } else {
+                state.tier.clone()
+            },
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  worktree "),
         worktree,
     ]);

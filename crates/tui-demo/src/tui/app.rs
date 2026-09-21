@@ -15,6 +15,11 @@ const TRANSCRIPT_CAP: usize = 2000;
 
 #[derive(Debug, Default)]
 pub struct AppState {
+    /// What the status bar says about the model, set by whoever is driving
+    /// runs. The view used to hardcode "mock", which was a lie in every
+    /// binary except the demo.
+    pub model: String,
+    pub tier: String,
     /// What the user is typing. Submitted on Enter.
     pub input: String,
     /// Set by `update` when Enter is pressed, drained by the event loop,

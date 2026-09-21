@@ -97,6 +97,12 @@ enum Command {
         prompt: Option<String>,
     },
 
+    /// The line-based session: one command at a time, scrollback kept.
+    ///
+    /// What bare `trellis` used to do. It is still what runs without a
+    /// terminal, and it holds the commands the full-screen view does not —
+    /// /diff, /accept, /revert, /radius.
+    Session,
     /// Scaffold `.trellis/` and report what is missing before it bites.
     Init,
 
@@ -109,6 +115,9 @@ enum Command {
     Tui {
         /// A task to start immediately. Omit it to open idle and type one.
         task: Option<String>,
+        /// Override the configured model, same spec as `trellis run --model`.
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Continue from the last trail entry.
@@ -220,10 +229,19 @@ fn main() -> Result<()> {
     }
 
     let Some(command) = cli.command else {
-        // Bare `trellis` is a session, not a usage error. One-shot commands
-        // re-derived the index for every question and made the user re-type
-        // --root and --model; holding them is the shape the orchestrator's
-        // single-owner index was built for.
+        // Bare `trellis` opens the full-screen interface. It used to open the
+        // line session, and people kept typing `trellis` expecting the thing
+        // they had been shown — which is a fair expectation to have of the
+        // default surface.
+        //
+        // The line session is still there as `trellis session`, and is still
+        // what runs when there is no terminal to take over: a pipe, a
+        // redirect, or CI.
+        let spec = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return tui_run::run(&root, None, spec);
+        }
         return session::Session::open(&root, None)?.run();
     };
 
@@ -263,9 +281,11 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Session => session::Session::open(&root, None)?.run(),
         Command::Init => cmd_init(&root),
-        Command::Tui { task } => {
-            tui_run::run(&root, task, config::RepoConfig::load(&root)?.model())
+        Command::Tui { task, model } => {
+            let spec = model.or_else(|| config::RepoConfig::load(&root).ok()?.model());
+            tui_run::run(&root, task, spec)
         }
         Command::Resume => cmd_resume(&root),
         Command::Log { limit } => cmd_log(&root, limit),

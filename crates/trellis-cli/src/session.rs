@@ -138,6 +138,10 @@ impl Session {
         }
         println!();
         println!("Type a task to run the loop. /help for commands, /exit to leave.");
+        // Named here rather than only in /help. Someone who wants the
+        // full-screen view looks for it on the way in, not in a command
+        // list they have to know to ask for.
+        println!("`trellis tui` opens the same run full-screen: transcript, edits, checks.");
         println!();
     }
 
