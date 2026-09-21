@@ -213,6 +213,11 @@ pub const SCHEMA: u32 = 1;
 impl Trail {
     /// SHA-256 over `factual`, serialized canonically.
     ///
+    /// Written by `cmd_run` when a trail is recorded. The *check* against it
+    /// lives in [`UntrustedTrail::integrity`], which reads the raw JSON as it
+    /// came off disk — a trail is read back as untrusted data (S10), so the
+    /// thing that verifies it takes bytes rather than a parsed `Trail`.
+    ///
     /// `serde_json` orders struct fields by declaration and `BTreeMap` keys by
     /// sort order, so the same `Factual` always serializes identically. That
     /// determinism is what makes the digest checkable rather than decorative.
@@ -221,11 +226,6 @@ impl Trail {
         let json = serde_json::to_vec(factual).unwrap_or_default();
         let digest = Sha256::digest(&json);
         digest.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    /// Whether the recorded digest still matches the section it covers.
-    pub fn factual_is_intact(&self) -> bool {
-        Self::compute_factual_sha256(&self.factual) == self.factual_sha256
     }
 }
 
