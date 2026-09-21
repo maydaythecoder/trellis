@@ -283,7 +283,7 @@ audit's own §0 requires a finished campaign, so they run in that order.
     started now measures code about to change. **That re-run is what the held
     `main.rs` split waits on** — it is the baseline the split must not move.
 
-13. **Triage: 66 of the 144 closed, and two of them were defects.**
+13. **Triage: 70 of the 144 closed, and two of them were defects.**
     Each mutant applied by hand and watched to fail. No production code
     changed except one `f.pad` fix and one comment — every other commit in
     the run touches tests only, and `git diff` on `main.rs` was checked
@@ -342,9 +342,13 @@ audit's own §0 requires a finished campaign, so they run in that order.
     documentation, with a comment saying so, because the next run surfaces
     it again and an unexplained survivor reads as a test gap.
 
-    **78 survivors remain**, and the largest groups are `pull_model` (6),
-    `cmd_run` (6), `list_models` (5), `cmd_doctor` (5), `cmd_index` (4) and
-    `main` (4). `pull_model` is the model-download path and does HTTP; the
+    - **`cmd_index`, 4 — a percentage column that did not have to add up.**
+      resolved, ambiguous and unresolved partition the same population, so
+      the three figures come to a hundred; every mutant of the arithmetic
+      produces a column that still looks like percentages and is not.
+
+    **74 survivors remain**, and the largest groups are `pull_model` (6),
+    `cmd_run` (6), `list_models` (5), `cmd_doctor` (5) and `main` (4). `pull_model` is the model-download path and does HTTP; the
     campaign already records that transport cannot be exercised on this
     machine, so it should be triaged as unexercisable-here with the reason
     rather than given a mock built for six mutants.
