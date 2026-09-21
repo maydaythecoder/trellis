@@ -1613,4 +1613,122 @@ def other():
             );
         }
     }
+    /// The message of the commit `accept` just wrote.
+    fn head_message(root: &Path) -> String {
+        let out = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%B"])
+            .current_dir(root)
+            .output()
+            .expect("git log");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    #[test]
+    fn a_changed_file_the_index_never_parsed_still_asks() {
+        // The other half of the doubt condition, and the one no test reached.
+        // A file the index never saw contributes *zero* unresolved calls,
+        // because nothing was resolved in it either — so a condition looking
+        // only at `unbound` reads a total unknown as a clean bill of health.
+        //
+        // The session builds its index at open, so any file the run creates
+        // afterwards is exactly this case, which makes it the ordinary one
+        // rather than a corner.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 1\n",
+        )
+        .unwrap();
+        init_git(d.path());
+
+        let mut s = Session::open(d.path(), None).unwrap();
+        // Created after the index was built, so it is unexamined rather than
+        // merely unresolved.
+        std::fs::write(
+            d.path().join("app/brand_new.py"),
+            "def fresh():\n    return 2\n",
+        )
+        .unwrap();
+
+        let doubt = trellis_index::doubt_in_files(&s.index, &["app/brand_new.py".to_string()]);
+        assert_eq!(
+            doubt.unbound, 0,
+            "this test is only meaningful when the *unexamined* half is what triggers the prompt"
+        );
+        assert!(doubt.unexamined() > 0, "the file must be unexamined");
+
+        let mut asked = false;
+        s.accept_with("", &mut || {
+            asked = true;
+            Some('a')
+        })
+        .unwrap();
+        assert!(
+            asked,
+            "a file nothing is known about was accepted without asking"
+        );
+    }
+
+    #[test]
+    fn a_commit_with_no_doubt_carries_no_coverage_paragraph() {
+        // The gap goes into the commit so it survives — `git log` is where
+        // someone asks later what was unknown when a human said yes. The
+        // condition choosing between the two messages is two comparisons,
+        // and inverting either puts a coverage paragraph on a commit that
+        // had nothing to report. A caveat attached to everything is a
+        // caveat nobody reads.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 1\n",
+        )
+        .unwrap();
+        init_git(d.path());
+
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 2\n",
+        )
+        .unwrap();
+        s.accept_with("a clean change", &mut || Some('a')).unwrap();
+
+        let msg = head_message(d.path());
+        assert!(msg.contains("a clean change"), "got:\n{msg}");
+        assert!(
+            !msg.contains("Coverage at approval"),
+            "nothing was unknown, so nothing should be recorded as unknown:\n{msg}"
+        );
+    }
+
+    #[test]
+    fn a_commit_made_over_doubt_records_what_was_unknown() {
+        // And the direction that matters. "Proceed with gaps recorded" only
+        // means something if the gap is still there to read afterwards; a
+        // trail beside the repository records the run, and this records what
+        // a human accepted in spite of.
+        let d = repo_with_doubt();
+        let mut s = Session::open(d.path(), None).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 12\n",
+        )
+        .unwrap();
+        s.accept_with("a change over doubt", &mut || Some('a'))
+            .unwrap();
+
+        let msg = head_message(d.path());
+        assert!(msg.contains("a change over doubt"), "got:\n{msg}");
+        assert!(
+            msg.contains("Coverage at approval"),
+            "the gap has to reach `git log`, not only the terminal:\n{msg}"
+        );
+        assert!(
+            msg.contains("not defects"),
+            "and it must say what an unresolved call is, or the note reads \
+             as a list of bugs someone shipped:\n{msg}"
+        );
+    }
 }
