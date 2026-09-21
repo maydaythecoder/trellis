@@ -212,7 +212,22 @@ audit's own §0 requires a finished campaign, so they run in that order.
    consequence was never mutation — a hang stalls a CI build instead of
    reporting.
 
-8. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+8. **`radius.rs` triage — ADR 0016's own rule was unasserted.**
+   `replace != with ==` in `add_touched_file_misses` inverts the narrowing
+   into the S19 collision it prevents, and nothing caught it: the suite
+   asserted the coverage counts that function fills in and never the flag it
+   sets. Two tests now, one per direction.
+
+   Also settled by triage rather than by test: `ensure_adjacency`'s
+   `< -> <=` is a genuine **equivalent mutant** (`resize_with` at the same
+   length is a no-op), and five more survivors were the fourth dead-code
+   cluster — `all_edges_certain` and `note_unresolved`, both deleted.
+
+   **The pattern is now worth stating as a rule:** a cluster of survivors on
+   one small function is usually not a test gap, and "does anything call
+   this" is a cheaper first question than "what should I assert".
+
+9. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was
