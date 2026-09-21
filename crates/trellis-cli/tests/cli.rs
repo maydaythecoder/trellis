@@ -1593,3 +1593,141 @@ fn log_does_not_offer_more_when_it_showed_everything() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// session — the interactive surface, driven the way a user drives it
+// ---------------------------------------------------------------------------
+
+/// Runs `trellis session` over a pipe, feeding it `lines`.
+///
+/// `Command::output()` gives a child a null stdin, so the session sees EOF
+/// and leaves before reading anything. Everything printed from inside the
+/// loop — the banner, `/help`, `/status`, the coverage block — is reachable
+/// only through a real stdin, which is why none of it had a test.
+fn session_with(root: &Path, lines: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("session")
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must be built before its integration tests run");
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(lines.as_bytes())
+        .expect("the session must accept input");
+    child.wait_with_output().expect("the session must finish")
+}
+
+#[test]
+fn every_command_help_lists_is_routed_somewhere() {
+    // Each of these is one match arm, and deleting any of them leaves the
+    // command falling through to "unknown command" — a command the tool
+    // documents in its own `/help` and then refuses. Five of the arms had no
+    // test at all.
+    //
+    // Asserted on the *error text* rather than on success, because several
+    // of these legitimately fail in a fixture with no checkers and no trail.
+    // Failing for the right reason is the property; succeeding is not.
+    let d = repo("session-routing");
+    for cmd in ["/help", "/?", "/index", "/check", "/doctor", "/resume"] {
+        let out = session_with(&d, &format!("{cmd}\n/exit\n"));
+        let s = combined(&out);
+        assert!(
+            !s.contains("unknown command"),
+            "`{cmd}` is in /help and was not routed:\n{s}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn help_lists_the_commands_rather_than_printing_nothing() {
+    // `help` is a bare `fn` whose whole body is printing, so replacing it
+    // with `()` leaves `/help` returning Ok and saying nothing. A help
+    // command that silently succeeds is worse than a missing one: the user
+    // concludes there are no commands.
+    let d = repo("session-help");
+    let s = stdout(&session_with(&d, "/help\n/exit\n"));
+
+    for expected in ["/radius", "/check", "/doctor", "/accept", "/model", "/exit"] {
+        assert!(
+            s.contains(expected),
+            "`{expected}` missing from /help:\n{s}"
+        );
+    }
+    assert!(
+        s.contains("trellis tui"),
+        "the full-screen view is a command the user cannot discover any \
+         other way, so /help has to name it:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_banner_reports_the_index_and_carries_its_caveat() {
+    // The coverage figure is the product's honesty mechanism and does not
+    // get to be absent because the surface changed (S2). The banner is also
+    // a bare printing function, so `()` leaves a session that opens to a
+    // blank prompt and says nothing about what it indexed.
+    let d = repo("session-banner");
+    let s = stdout(&session_with(&d, "/exit\n"));
+
+    assert!(s.contains("TRELLIS"), "got:\n{s}");
+    assert!(s.contains("definitions"), "it must say what it found:\n{s}");
+    assert!(
+        s.contains("a lower bound on recall, not recall"),
+        "the figure must carry its caveat here as it does everywhere else, \
+         or it reads as recall to everyone who sees it once:\n{s}"
+    );
+    assert!(
+        s.contains("/help"),
+        "a prompt with no way in is a dead end:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn status_reports_the_state_the_session_is_holding() {
+    // The point of a session is the state it keeps between tasks — the
+    // index, the model, the tier. `/status` is how a user sees it, and as
+    // `()` it prints nothing while still returning Ok.
+    let d = repo("session-status");
+    let s = stdout(&session_with(&d, "/status\n/exit\n"));
+
+    assert!(s.contains("root"), "got:\n{s}");
+    assert!(s.contains("index"), "got:\n{s}");
+    assert!(
+        s.contains("model    none"),
+        "no model is set in this fixture and status must say so rather than \
+         omit the line:\n{s}"
+    );
+    assert!(
+        s.contains("tier"),
+        "the tier decides whether a run can fail on format alone:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_unknown_command_is_refused_rather_than_run_as_a_task() {
+    // The other side of the routing table. Anything beginning with `/` that
+    // is not a command must be refused, not handed to the agent loop as a
+    // task — `/radiuss describe` typed at a prompt would otherwise start a
+    // run against a repository.
+    let d = repo("session-unknown");
+    let s = combined(&session_with(&d, "/nosuchcommand\n/exit\n"));
+    assert!(s.contains("unknown command"), "got:\n{s}");
+    assert!(
+        s.contains("/help"),
+        "and it must say where the list is:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
