@@ -141,44 +141,52 @@ back saying the harness gave the model what it needed.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-**The v1.0 task order from `04-v1.0-harness.md` is complete, all twelve items.
-The gate was run and is not met** (`docs/bench/gate-20260920.md`). What
-follows is what actually stands in the way, sorted by whether code can move
-it.
+**Every item that code can move is done.** The v1.0 task order is complete, the
+gate has been run (`docs/bench/gate-20260920.md`) and is not met, and the last
+buildable item — coverage mapping, so `Verified` stops being 0 — landed with
+it. What is left needs a person, a model, or an idea nobody has had yet.
 
-### Blocked on something that is not code
+### Needs a person
 
-1. **The human re-audit** (A-34, Q-15) — the only thing between the project
-   and a call on gate condition 2. The packet is ready to produce and the
-   pipeline is validated end to end: two commands, no network,
+1. **The third independent human audit** (A-34, Q-15). The only thing between
+   the project and a call on gate condition 2, which is otherwise mechanically
+   met over the full corpus. The packet is ready to produce and the pipeline
+   is validated end to end: two commands, no network,
    `audit_sample ... 1000 <fresh-seed>` then `split_audit.py <dir> 40`, giving
-   25 blind chunks of 40. It must report **wrongly excluded** as well as
-   recall — ADR 0015 lets a site leave the denominator on the strength of an
-   annotation, and no automated check can see a wrong exclusion (S21).
+   25 blind chunks of 40.
 
-2. **A model that can do the work.** Closes gate condition 3 and the plus-row
-   together. Two configurations measured, both repaired nothing; the A/B
-   established the harness is not the limit. This needs a better model, not
-   better code.
+   It must report **wrongly excluded** as well as recall. ADR 0015 lets a site
+   leave the denominator on the strength of an annotation, and no automated
+   check can see a wrong exclusion (S21). If `resolve.rs` moves before
+   scoring, regenerate `answers.json` — the seed reproduces the sites, never
+   the verdicts.
 
-3. **The 85% backstop** (gate condition 1). Both candidates are measured and
-   rejected — fixtures already closed at 10 sites, return-type propagation 67
-   sites for 0.4pp against a rule that can only add unsound edges. This one
-   needs a new idea rather than more effort.
+### Needs a model
 
-### Buildable now
+2. **A local model that can do the work.** Closes gate condition 3 and the
+   plus-row together, and unblocks v0.3's conflict escalation, which needs a
+   model able to name the second rule it could not satisfy. Two configurations
+   measured, both repaired nothing; the A/B established the harness is not the
+   limit. Bonsai-2-27B is downloaded and set as the catalogue default but
+   nothing here can execute it — the weights are Qwen35 ternary and the candle
+   path uses `quantized_qwen2`, so serving it needs llama.cpp.
 
-4. ~~Coverage mapping, so `Verified` stops being 0.~~ **Done.** Real counts
-   from `coverage.json` over the callers of what changed. The v0.2 gate row
-   moves from Partial to Yes.
+3. **A frontier API through the adapter** (v0.2 gate). Needs a key, which by
+   ADR 0010 never goes in a file TRELLIS reads — the runtime is configured
+   with it directly, out of this tool's sight.
 
-5. **Governance conflict escalation** — v0.3's one open gate item. Ranking
-   works; detecting that a failure is a *conflict* rather than a mistake needs
-   a model that can name the second rule it could not satisfy, so this sits
-   behind item 2.
+### Needs an idea
 
-**v0.1 is complete. v0.3 is eight of nine. v0.2 is five met, one descoped by
-ADR 0013, four partial or unmet** — both gates audited line by line below,
+4. **The 85% backstop** (gate condition 1, currently 72.0%). Both candidates
+   are measured and rejected: fixtures already closed at 10 sites,
+   return-type propagation 67 sites for 0.4pp against a rule that can only add
+   unsound edges. A third finding — the denominator error — was real and
+   corrected, and moved no recall figure. This one needs a new idea rather
+   than more effort, and `docs/bench/receiver_shapes.py` is where to look for
+   it.
+
+**v0.1 is complete. v0.3 is eight of nine. v0.2 is six met, one descoped by
+ADR 0013, three partial or unmet** — both gates audited line by line below,
 against the code rather than against the milestone prose that had them marked
 done.
 

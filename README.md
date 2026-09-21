@@ -15,7 +15,7 @@ trellis tui                      # the same, full-screen
 trellis why <symbol>             # what past runs did to it, from the trail
 ```
 
-**Status: v0.1 complete, v0.2 at five met with one descoped by ADR, v0.3 at eight of nine.** The
+**Status: v0.1 complete, v0.2 at six met with one descoped by ADR, v0.3 at eight of nine.** The
 resolver, the agent loop, rollback, governance, the trail and resume all work
 and are tested. What is not done is listed in `docs/STATUS.md`, item by item,
 against the code rather than against the plan.

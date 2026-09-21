@@ -131,7 +131,7 @@ demoted from guarantee to hint.
 
 ## Status
 
-**v0.1 complete. v0.3 at eight of nine. v0.2 at five met with one descoped by ADR.** The resolver,
+**v0.1 complete. v0.3 at eight of nine. v0.2 at six met with one descoped by ADR.** The resolver,
 the agent loop, the orchestrator, rollback, governance, the trail, resume, a
 session and a full-screen interface all exist and are tested — 320 tests, and
 `docs/STATUS.md` audits every claim in this repository against the code rather
