@@ -2154,7 +2154,13 @@ mod interrupt_tests {
     use super::*;
 
     fn temp_repo(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("trellis-cli-test-{name}"));
+        // Process id in the path, because these fixtures `remove_dir_all` then
+        // `create_dir_all` a fixed location. Two test processes running at once
+        // — which is exactly what `cargo mutants -j N` does — delete each
+        // other's repository mid-test and fail for a reason that has nothing
+        // to do with the code under test.
+        let dir =
+            std::env::temp_dir().join(format!("trellis-cli-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for args in [
@@ -2290,7 +2296,8 @@ mod doctor_tests {
     use super::*;
 
     fn repo(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("trellis-doctor-{name}"));
+        let dir =
+            std::env::temp_dir().join(format!("trellis-doctor-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("app")).unwrap();
         for args in [
@@ -2414,7 +2421,7 @@ mod doctor_tests {
         // Zero definitions reads as a repository with no code. The likelier
         // cause is a wrong --root or a tree `discover` skips, and the line
         // says so instead of leaving a user staring at 0.
-        let dir = std::env::temp_dir().join("trellis-doctor-empty");
+        let dir = std::env::temp_dir().join(format!("trellis-doctor-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::process::Command::new("git")
@@ -2439,7 +2446,7 @@ mod init_tests {
     use super::*;
 
     fn bare(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("trellis-init-{name}"));
+        let d = std::env::temp_dir().join(format!("trellis-init-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

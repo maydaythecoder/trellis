@@ -369,7 +369,13 @@ mod tests {
     use super::*;
 
     fn temp_repo(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("trellis-vcs-test-{name}"));
+        // Process id in the path, because these fixtures `remove_dir_all` then
+        // `create_dir_all` a fixed location. Two test processes running at once
+        // — which is exactly what `cargo mutants -j N` does — delete each
+        // other's repository mid-test and fail for a reason that has nothing
+        // to do with the code under test.
+        let dir =
+            std::env::temp_dir().join(format!("trellis-vcs-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q"]).unwrap();
