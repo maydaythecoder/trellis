@@ -1,6 +1,5 @@
 //! Blast radius: which first-party call sites reach a symbol.
 
-use crate::coverage::Coverage;
 use crate::graph::{Index, Reason};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -151,13 +150,6 @@ impl RadiusReport {
     pub fn site_count(&self) -> usize {
         self.certain.len() + self.ambiguous.len()
     }
-
-    /// Deliberately not named `is_complete`. Under Constraint 1 no radius
-    /// is ever known to be complete; this reports only that nothing we saw
-    /// was ambiguous, which is a weaker and truthful claim.
-    pub fn all_edges_certain(&self) -> bool {
-        self.ambiguous.is_empty() && self.coverage.unbound_in_touched_files == 0
-    }
 }
 
 /// Computes the reverse reachable set of `root`, following incoming edges.
@@ -301,12 +293,6 @@ fn add_touched_file_misses(index: &Index, report: &mut RadiusReport) {
             }
         }
     }
-}
-
-/// Records that a call site could not be bound, for the coverage figures
-/// the resolver reports per run.
-pub fn note_unresolved(coverage: &mut Coverage, reason: Reason) {
-    coverage.record_unresolved(reason);
 }
 
 #[cfg(test)]
