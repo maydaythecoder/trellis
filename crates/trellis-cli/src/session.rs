@@ -825,23 +825,8 @@ mod tests {
     }
 
     fn git_repo(dir: &Path) {
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .expect("git");
-        };
-        run(&["init", "-q"]);
-        run(&["config", "user.email", "t@example.invalid"]);
-        run(&["config", "user.name", "t"]);
-        // Otherwise a checkout rewrites LF to CRLF under a global
-        // `autocrlf=true`, and the byte-for-byte assertion below measures
-        // git's line-ending policy instead of whether revert restored the
-        // file.
-        run(&["config", "core.autocrlf", "false"]);
-        run(&["add", "-A"]);
-        run(&["commit", "-qm", "init"]);
+        crate::testutil::git_init(dir);
+        crate::testutil::git_commit_all(dir, "init");
     }
 
     #[test]
@@ -1227,20 +1212,8 @@ mod tests {
     }
 
     fn init_git(root: &std::path::Path) {
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "user.email", "t@example.invalid"],
-            vec!["config", "user.name", "t"],
-            vec!["config", "core.autocrlf", "false"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "init"],
-        ] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(root)
-                .output()
-                .unwrap();
-        }
+        crate::testutil::git_init(root);
+        crate::testutil::git_commit_all(root, "init");
     }
 
     #[test]

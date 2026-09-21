@@ -14,6 +14,8 @@
 
 mod config;
 mod session;
+#[cfg(test)]
+mod testutil;
 mod tui;
 
 use anyhow::{Context, Result};
@@ -2162,27 +2164,8 @@ mod interrupt_tests {
     use super::*;
 
     fn temp_repo(name: &str) -> PathBuf {
-        // Process id in the path, because these fixtures `remove_dir_all` then
-        // `create_dir_all` a fixed location. Two test processes running at once
-        // — which is exactly what `cargo mutants -j N` does — delete each
-        // other's repository mid-test and fail for a reason that has nothing
-        // to do with the code under test.
-        let dir =
-            std::env::temp_dir().join(format!("trellis-cli-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "user.email", "t@example.invalid"],
-            vec!["config", "user.name", "t"],
-            vec!["config", "core.autocrlf", "false"],
-        ] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&dir)
-                .output()
-                .unwrap();
-        }
+        let dir = crate::testutil::scratch(&format!("cli-test-{name}"));
+        crate::testutil::git_init(&dir);
         std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
         for args in [vec!["add", "-A"], vec!["commit", "-qm", "init"]] {
             std::process::Command::new("git")
@@ -2304,22 +2287,9 @@ mod doctor_tests {
     use super::*;
 
     fn repo(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("trellis-doctor-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testutil::scratch(&format!("doctor-{name}"));
         std::fs::create_dir_all(dir.join("app")).unwrap();
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "user.email", "t@example.invalid"],
-            vec!["config", "user.name", "t"],
-            vec!["config", "core.autocrlf", "false"],
-        ] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&dir)
-                .output()
-                .unwrap();
-        }
+        crate::testutil::git_init(&dir);
         std::fs::write(
             dir.join("app/util.py"),
             "def helper():
@@ -2454,30 +2424,12 @@ mod init_tests {
     use super::*;
 
     fn bare(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("trellis-init-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        crate::testutil::scratch(&format!("init-{name}"))
     }
 
     fn repo(name: &str) -> PathBuf {
         let d = bare(name);
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "user.email", "t@example.invalid"],
-            vec!["config", "user.name", "t"],
-            // Pinned like every other git fixture here. Without it, git on
-            // Windows normalises line endings on `add`, and a test that
-            // asserts a clean `status --porcelain` can see its own untouched
-            // files reported as modified.
-            vec!["config", "core.autocrlf", "false"],
-        ] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&d)
-                .output()
-                .unwrap();
-        }
+        crate::testutil::git_init(&d);
         d
     }
 
