@@ -10,9 +10,9 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **359** passing, 0 failed, 0 ignored (328 at the baseline commit) |
+| Tests | **375** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
-| Mutation score | **running** — see Tier 6 |
+| Mutation score | **partial** — 842 of ~1,253 mutants; see Tier 6 before quoting any figure |
 
 Every figure here is against `94c285c`. A score quoted without its commit is
 not a baseline, because the next commit moves it.
@@ -135,30 +135,94 @@ fires rather than a corrupt decode failing in its place.
 
 ## Tier 6 — Mutation
 
-**Running.** `cargo mutants --workspace --no-shuffle -j 4` against `94c285c`,
-~1,253 mutants.
+**Partial. The run was stopped at 842 of ~1,253 mutants** — Claude Code killed
+it because the system was low on memory while the session was idle. Not a
+failure of the run, and nothing in it to debug. It has not been restarted.
 
-At 153 mutants tested the shape is already unambiguous and it agrees with
-Tier 5 exactly:
+What it did establish, against `94c285c`:
 
 ```
-caught 45 · missed 85 · unviable 18 · timeout 0
-missed by file:  main.rs 85   coverage.rs 2
+tested 842 of ~1253      caught 421 · missed 320 · unviable 93 · timeout 3
+
+crate              caught  missed    score
+trellis-checks         31       2    93.9%
+trellis-cli           111     206    35.0%
+trellis-core            5       3    62.5%
+trellis-index         274     109    71.5%
+                      421     320    56.8%
+
+never reached:  trellis-loop · trellis-model · trellis-trail · trellis-vcs
 ```
 
-**85 of 87 missed mutants are in the one file with no tests.** Mutants like
-`replace cmd_log -> Result<()> with Ok(())` and `replace discover_root ->
-Result<PathBuf> with Ok(Default::default())` survive because nothing ever
-calls those functions outside the dispatch in `main`.
+**56.8% is not a workspace score and must not be quoted as one.** `--no-shuffle`
+walks packages in a fixed order, so the 411 untested mutants are not a random
+remainder — they are four whole crates, and those four carry the highest line
+coverage in the repository (`agent.rs` 96.3%, `tier.rs` 96.8%, `trail/lib.rs`
+96.6%, `wire.rs` 100%). The partial figure is therefore biased **low**, by an
+amount this run cannot measure.
 
-This is why C-001 is the campaign's highest-leverage finding rather than a
-tidiness note: the quality audit's standing rule is *"mutation score must not
-drop"*, and a score cannot drop from zero. Its Pass 5 intends to split
-`main.rs` by command — exactly the refactor that rule guards — and the guard
-is blind there today.
+It is also **pre-C-001**: `trellis-cli` at 35.0% is the state before
+`crates/trellis-cli/tests/cli.rs` existed, and 108 of its 206 misses are in
+`main.rs`.
 
-Final score, the full missed-mutant triage, and the delta after C-001 is
-fixed go here when the run lands.
+### Triage of the 320 that survived
+
+Four buckets, by what each says.
+
+**1. Already addressed — `main.rs`, 108 mutants.** `replace cmd_log -> Result<()>
+with Ok(())` and its siblings. These are C-001 exactly, and the CLI suite
+landed after this baseline was taken. A re-run is the only thing that can say
+by how much.
+
+**2. A real gap in the newest code — `radius.rs`, 35 mutants.** The largest
+cluster sits on the functions ADR 0016 added: `doubt_in_files`,
+`callers_of_files`, `file_ids`, `FileDoubt::{one_line, unexamined}`.
+
+> `replace doubt_in_files -> FileDoubt with Default::default()` survives.
+
+That one matters beyond arithmetic. `FileDoubt` is the doubt half of the two
+facts ADR 0002 and ADR 0014 require every radius to ship with, and a default
+`FileDoubt` reports **zero doubt** — silent confidence about files nothing is
+known about, which is the precise failure Constraint 1 exists to prevent. The
+narrowing shipped with `examples/narrowing_safety.rs` measuring its safety and
+with no unit test on the functions themselves.
+
+**3. Python syntax the walker handles and no test writes — `parse.rs`, 15.**
+Deleted match arms survive for `relative_import`, `lambda`, `as_pattern`,
+`named_expression`, and the splat parameter patterns. Each is a real form the
+corpus contains and the suite does not.
+
+Buckets 2 and 3 are closed, `44aaa00`: ten tests on the approval-time view
+and six on the binding forms. The `doubt_in_files` one is stated as its own
+test, because `FileDoubt::default()` is a legitimate value meaning *nothing is
+in doubt* and the defect was that it was reachable by accident from a file
+that had doubt in it.
+
+Two of the binding-form tests were written and then deleted: `relative_import`
+was already covered by `relative_import_resolves` and
+`parent_relative_import_resolves`, which the surviving mutant did not imply.
+A mutant surviving says a *behaviour* is unasserted, not that a function is
+untested — the deleted arm there must be reachable by some other path.
+
+**4. Counters and accessors — the remainder.** `+=` becoming `*=` in
+`Coverage::merge` and `RadiusCoverage::record_ambiguous`; `site_count`,
+`symbol_count`, `file_count` returning 0 or 1; `Reason::explain` returning an
+empty string. Low severity individually. `Reason::explain` is the one worth
+noting: it is what the CLI prints to say *why* an edge is uncertain, so an
+empty return leaves the output shaped correctly and saying nothing.
+
+### The three timeouts
+
+```
+tui/mod.rs:181       replace spawn_run with ()
+incremental.rs:118   replace += with *= in input_edit
+incremental.rs:124   replace += with *= in input_edit
+```
+
+These look like genuine consequences of the mutation rather than load
+artifacts — a TUI waiting forever for a run that was never spawned, and byte
+offsets multiplied instead of advanced being fed to tree-sitter. **Not
+confirmed**, because confirming means re-running them and the run is stopped.
 
 ## Tier 7 — Property and fuzz
 

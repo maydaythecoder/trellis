@@ -676,3 +676,233 @@ pub fn doubt_in_files(index: &Index, paths: &[String]) -> FileDoubt {
     d.sites.sort();
     d
 }
+
+/// The approval-time view: `doubt_in_files` and what it is counted over.
+///
+/// A separate module from `tests` above because these functions arrived with
+/// ADR 0016, after that module was written, and were added below it. The
+/// mutation baseline found the consequence: `replace doubt_in_files ->
+/// FileDoubt with Default::default()` survived the whole suite, and a default
+/// `FileDoubt` reports **zero doubt** — silent confidence about files nothing
+/// is known about, which is the exact failure Constraint 1 exists to prevent.
+#[cfg(test)]
+mod approval_view_tests {
+    use super::*;
+    use crate::resolve::build_from_sources;
+
+    /// Two files: one whose calls all bind, one with a call that cannot.
+    ///
+    /// `mystery(thing)` takes an untyped parameter, so `thing.run()` is
+    /// `MethodDispatchUntyped` — the reason that dominates every real corpus
+    /// and the one the approval line has to render well.
+    fn corpus() -> Index {
+        build_from_sources(&[
+            (
+                "app/core.py".into(),
+                "def greet(name):\n    return name\n".into(),
+            ),
+            (
+                "app/edge.py".into(),
+                concat!(
+                    "from app.core import greet\n\n",
+                    "def welcome(who):\n",
+                    "    return greet(who)\n\n",
+                    "def mystery(thing):\n",
+                    "    return thing.run()\n"
+                )
+                .into(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn doubt_is_counted_only_in_the_files_named() {
+        // The restriction *is* the feature. Repository-wide doubt on poetry is
+        // 11,233 sites, a number that teaches a user to skip the line; at
+        // approval the files being accepted are known exactly.
+        let ix = corpus();
+
+        let clean = doubt_in_files(&ix, &["app/core.py".into()]);
+        assert_eq!(clean.unbound, 0, "core.py has no unbindable call");
+        assert_eq!(clean.files_examined, 1);
+
+        let dirty = doubt_in_files(&ix, &["app/edge.py".into()]);
+        assert!(
+            dirty.unbound > 0,
+            "thing.run() on an untyped parameter cannot bind, and must be counted"
+        );
+        assert_eq!(
+            dirty.by_reason.get(&Reason::MethodDispatchUntyped).copied(),
+            Some(dirty.unbound),
+            "the reason must be recorded, not just the total: {:?}",
+            dirty.by_reason
+        );
+    }
+
+    #[test]
+    fn a_defaulted_report_is_never_what_a_dirty_file_produces() {
+        // Stated as its own test because this is the mutant that survived.
+        // `FileDoubt::default()` is a perfectly valid value meaning "nothing
+        // is in doubt", and it must not be reachable by accident from a file
+        // that has doubt in it.
+        let ix = corpus();
+        let d = doubt_in_files(&ix, &["app/edge.py".into()]);
+        assert_ne!(
+            d,
+            FileDoubt::default(),
+            "a file with an unbindable call must not report as clean"
+        );
+        assert!(
+            !d.sites.is_empty(),
+            "and the sites must be listed, not only counted"
+        );
+        assert_eq!(
+            d.sites.len() as u32,
+            d.unbound,
+            "every counted site must be one the caller can show"
+        );
+    }
+
+    #[test]
+    fn an_unbound_site_names_the_function_it_is_in() {
+        // Without the enclosing name the advice is "write more tests", which
+        // is not advice. With it, a user can execute one function and turn an
+        // edge the graph could not follow into behaviour a check observes.
+        let ix = corpus();
+        let d = doubt_in_files(&ix, &["app/edge.py".into()]);
+        let site = d.sites.first().expect("one unbound site");
+        assert_eq!(site.path, "app/edge.py");
+        assert_eq!(
+            site.enclosing.as_deref(),
+            Some("mystery"),
+            "the site must name the function whose body holds the call"
+        );
+    }
+
+    #[test]
+    fn a_file_the_index_never_parsed_is_visible_rather_than_silent() {
+        // `unexamined()` is the whole point: a changed file TRELLIS did not
+        // index contributes zero doubt, and zero doubt reads as confidence.
+        let ix = corpus();
+        let d = doubt_in_files(&ix, &["app/core.py".into(), "app/ghost.py".into()]);
+        assert_eq!(d.files_named, 2, "both were asked about");
+        assert_eq!(d.files_examined, 1, "only one is in the index");
+        assert_eq!(d.unexamined(), 1);
+
+        // And the honest case must not report a phantom gap.
+        let known = doubt_in_files(&ix, &["app/core.py".into()]);
+        assert_eq!(known.unexamined(), 0);
+    }
+
+    #[test]
+    fn non_python_paths_are_not_files_the_graph_failed_at() {
+        // A changed README is not a file the graph could not examine; it is a
+        // file the graph was never about. Counting it fires the approval
+        // prompt on runs with nothing to report, which is how a coverage line
+        // teaches a user to dismiss it.
+        let ix = corpus();
+        let d = doubt_in_files(
+            &ix,
+            &[
+                "README.md".into(),
+                ".trellis/config.toml".into(),
+                "app/core.py".into(),
+            ],
+        );
+        assert_eq!(d.files_named, 1, "only the Python path was asked about");
+        assert_eq!(d.unexamined(), 0);
+    }
+
+    #[test]
+    fn paths_are_matched_as_the_caller_can_supply_them() {
+        // `git status` gives backslashes on Windows and `./`-prefixed paths in
+        // some invocations. The index stores neither.
+        let ix = corpus();
+        for spelling in ["app/edge.py", "app\\edge.py", "./app/edge.py"] {
+            let d = doubt_in_files(&ix, &[spelling.to_string()]);
+            assert_eq!(
+                d.files_examined, 1,
+                "`{spelling}` must resolve to the indexed file"
+            );
+            assert!(d.unbound > 0, "`{spelling}` lost the doubt it carries");
+        }
+    }
+
+    #[test]
+    fn one_line_reports_the_count_with_the_scale_it_ranges_over() {
+        // A user meets this on every partial-coverage run. A bare count with
+        // no scale is not readable: "40 call sites bound to nothing" means
+        // something different across 1 file and across 400.
+        let ix = corpus();
+
+        let clean = doubt_in_files(&ix, &["app/core.py".into()]).one_line();
+        assert!(
+            clean.contains("every call site") && clean.contains("was bound"),
+            "the no-doubt case must say so plainly: {clean}"
+        );
+        assert!(!clean.contains('%'), "no ratio is computable here: {clean}");
+
+        let dirty = doubt_in_files(&ix, &["app/edge.py".into()]).one_line();
+        assert!(dirty.contains("bound to nothing"), "{dirty}");
+        assert!(dirty.contains("1 file"), "the scale must be there: {dirty}");
+        assert!(!dirty.contains('%'), "no ratio is computable here: {dirty}");
+    }
+
+    #[test]
+    fn callers_of_files_is_the_population_verified_is_counted_over() {
+        // S3. "The callers still work" is a claim about callers, so the set
+        // has to be the callers — not the changed files, and not the whole
+        // repository.
+        let ix = corpus();
+        let callers = callers_of_files(&ix, &["app/core.py".into()]);
+        assert!(
+            !callers.is_empty(),
+            "greet is called from edge.py; changing core.py has a caller"
+        );
+        assert!(
+            callers.iter().all(|c| c.path == "app/edge.py"),
+            "the callers are in the calling file, not the changed one: {callers:?}"
+        );
+        assert!(
+            callers.iter().any(|c| c.certain),
+            "a direct `from app.core import greet` call is a Resolved edge"
+        );
+
+        // A file nobody calls into has no callers, which is a real answer and
+        // not the same as not knowing.
+        assert!(callers_of_files(&ix, &["app/edge.py".into()]).is_empty());
+    }
+
+    #[test]
+    fn one_call_site_reaching_two_changed_symbols_is_one_caller() {
+        // Deduplicated by (file, offset). Counting it twice would inflate the
+        // denominator `Verified` is reported against.
+        let ix = build_from_sources(&[
+            (
+                "app/two.py".into(),
+                "def a():\n    return 1\n\ndef b():\n    return 2\n".into(),
+            ),
+            (
+                "app/use.py".into(),
+                "from app.two import a, b\n\ndef go():\n    return a() + b()\n".into(),
+            ),
+        ]);
+        let callers = callers_of_files(&ix, &["app/two.py".into()]);
+        let mut keys: Vec<(String, usize)> =
+            callers.iter().map(|c| (c.path.clone(), c.offset)).collect();
+        let before = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(before, keys.len(), "a call site was reported twice");
+    }
+
+    #[test]
+    fn the_site_list_is_ordered_so_two_runs_print_the_same_thing() {
+        let ix = corpus();
+        let paths = vec!["app/edge.py".to_string(), "app/core.py".to_string()];
+        let a = doubt_in_files(&ix, &paths);
+        let reversed: Vec<String> = paths.iter().rev().cloned().collect();
+        let b = doubt_in_files(&ix, &reversed);
+        assert_eq!(a, b, "the report must not depend on the order of the input");
+    }
+}

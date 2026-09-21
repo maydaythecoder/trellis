@@ -910,3 +910,90 @@ fn shadowing_on_a_base_class_propagates_to_the_subclass() {
     ]);
     assert_eq!(target_of(&b, "self.helper()"), "!! ShadowedAmbiguous");
 }
+
+// ---------------------------------------------------------------------------
+// Binding forms the walker handles and no test wrote.
+//
+// Found by the mutation baseline: `delete match arm "as_pattern"`,
+// `"named_expression"`, `"lambda"`, `"list_splat_pattern" |
+// "dictionary_splat_pattern"` and `"relative_import"` all survived the suite.
+// Each arm implements rule 1 of the audit protocol — a local binding
+// suppresses resolution to a same-named definition — so a deleted arm is an
+// unsound edge, which is the failure v1.0 gate item 2 is about.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_with_alias_shadows_a_definition() {
+    // `with ... as handler` binds `handler` locally. Binding the call to the
+    // module-level `handler` would name a function that is never called here.
+    let b = bindings(&[(
+        "app/m.py",
+        "def handler():\n    return 1\n\ndef go(ctx):\n    with ctx as handler:\n        return handler()\n",
+    )]);
+    assert_eq!(target_of(&b, "handler()"), "!! LocalBinding");
+}
+
+#[test]
+fn an_except_alias_shadows_a_definition() {
+    // The same `as_pattern` node, reached through `except E as e`. Worth its
+    // own test because the alias sits in a different position and the arm
+    // falls back to the last named child when there is no `alias` field.
+    let b = bindings(&[(
+        "app/m.py",
+        "def err():\n    return 1\n\ndef go():\n    try:\n        pass\n    except ValueError as err:\n        return err()\n",
+    )]);
+    assert_eq!(target_of(&b, "err()"), "!! LocalBinding");
+}
+
+#[test]
+fn a_walrus_binds_in_the_enclosing_scope() {
+    // `:=` binds where it appears, not in a sub-scope, so `make()` decides
+    // what `probe` is and the module-level `probe` is not it.
+    let b = bindings(&[(
+        "app/m.py",
+        "def probe():\n    return 1\n\ndef go(make):\n    if (probe := make()):\n        return probe()\n    return 0\n",
+    )]);
+    assert_eq!(target_of(&b, "probe()"), "!! LocalBinding");
+}
+
+#[test]
+fn a_lambda_parameter_shadows_within_its_body() {
+    // Recorded against the enclosing function, which is conservative: it can
+    // suppress a resolution inside the lambda's sibling code that a perfect
+    // scope model would keep. Suppressing an edge is a missing number;
+    // inventing one is a blast radius that lies.
+    let b = bindings(&[(
+        "app/m.py",
+        "def fn():\n    return 1\n\ndef go():\n    f = lambda fn: fn()\n    return f\n",
+    )]);
+    assert_eq!(target_of(&b, "fn()"), "!! LocalBinding");
+}
+
+#[test]
+fn splat_parameters_shadow_like_any_other() {
+    // `*args` and `**kwargs` are parameters written differently. The walker
+    // reaches them through their own node kinds, so they need their own test.
+    let star = bindings(&[(
+        "app/m.py",
+        "def items():\n    return 1\n\ndef go(*items):\n    return items()\n",
+    )]);
+    assert_eq!(target_of(&star, "items()"), "!! LocalBinding");
+
+    let double = bindings(&[(
+        "app/m.py",
+        "def opts():\n    return 1\n\ndef go(**opts):\n    return opts()\n",
+    )]);
+    assert_eq!(target_of(&double, "opts()"), "!! LocalBinding");
+}
+
+#[test]
+fn a_subscript_assignment_does_not_shadow_a_local_name() {
+    // The other half of `an_attribute_assignment_does_not_shadow_a_local_name`.
+    // `cache[k] = x` binds an element, not the name `run`, so treating it as
+    // a local binding would lose a real edge for no soundness gain.
+    let b = bindings(&[(
+        "app/m.py",
+        "def run():\n    return 1\n\ndef go(cache, k):\n    cache[k] = 1\n    return run()\n",
+    )]);
+    assert_eq!(target_of(&b, "run()"), "-> app.m.run");
+}
