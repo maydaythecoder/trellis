@@ -237,7 +237,21 @@ audit's own §0 requires a finished campaign, so they run in that order.
    `tests/determinism.rs` asserts the graph is a function of its sources and
    attributes that to `discover` sorting, then never calls it.
 
-10. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+10. **`type_head`, six survivors, and why they hid.** The suite tested its
+    effects through `bindings()`, and every annotation in those fixtures is a
+    bare class name — so the union handling, the quote stripping, the
+    subscript rule and the character class were all unexercised. Five tests
+    now, four verified against their mutants.
+
+    The subscript one is ADR 0012's rule as a test: `list[Env]` types `list`,
+    because typing `xs` as `Env` would resolve `xs.append()` to a method of
+    `Env`.
+
+    **`trellis-index` triage: 25 of 92 accounted for.** The remainder is
+    mostly display strings, counter arithmetic and the filesystem group
+    around `read_sources` and `content_hash`.
+
+11. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was

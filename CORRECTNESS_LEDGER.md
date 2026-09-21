@@ -10,7 +10,7 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **392** passing, 0 failed, 0 ignored (328 at the baseline commit) |
+| Tests | **397** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
 | Mutation score | **still none.** Two workspace runs stopped for memory; six crates measured individually, but per-crate runs test only that crate — see Tier 6 |
 
@@ -389,6 +389,7 @@ type system as the proof obligation, which is ADR 0004's whole point.
 | C-001 | 5, 6 | `trellis-cli` had no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | **Fixed**, `0ba3b5f` — 20 tests, and it caught `trellis model` refusing to run outside a repository against its own stated intent |
 | C-002 | 5, 6 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | **Tested, not deleted** — it has no replacement and v1.1's brief 4.13 specifies it, so dead-and-verified is the right state. Writing the tests found C-010 |
 | C-012 | 6 | ADR 0016's rule — the root's own file exempted from clearing `partitionable` — was asserted in neither direction. `replace != with ==` inverts it into the S19 collision the flag prevents | **Fixed** — two tests, one per direction, both verified against the mutant. One also kills `delete ! in blast_radius`, the line carrying `is_partitionable` into the report |
+| C-015 | 6 | `type_head` — what an annotation says the receiver is — had six survivors. The suite tested its effects through fixtures whose annotations are all a bare class name, so unions, quoted forward references, the subscript rule and the character class were unexercised | **Fixed** — five tests, four verified against their mutants |
 | C-014 | 6 | `discover` — what the graph counts as first-party — was reached by no test. The suite builds every index from in-memory sources, so the skip-list, the extension filter and the sort that makes ids stable were all unexercised | **Fixed** — five tests, three verified against their mutants |
 | C-013 | 6 | Dead code, fourth instance: `RadiusReport::all_edges_certain` and `radius::note_unresolved`, five survivors between them, zero references | **Fixed** — deleted |
 | C-011 | 6 | Four guards in the resolver's attribute path could be replaced with `true` and the suite stayed green. Each mutant **emits an unsound edge** — a `Resolved` naming one of several candidates, or an attribute resolved into a function's body | **Fixed** — four tests, each verified against its own mutant. v1.0 gate condition 2 is "zero unsound edges", and the suite did not defend it on this path |
