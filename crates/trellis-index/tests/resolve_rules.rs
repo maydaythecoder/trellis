@@ -997,3 +997,140 @@ fn a_subscript_assignment_does_not_shadow_a_local_name() {
     )]);
     assert_eq!(target_of(&b, "run()"), "-> app.m.run");
 }
+
+// ---------------------------------------------------------------------------
+// Two definitions of one method name, on the attribute path.
+//
+// Found by mutation testing. `Some(m) if m.len() == 1 => self.emit(m[0])`
+// appears twice — `resolve_attribute` for a class in scope, `attr_of_bound`
+// for an imported one — and replacing either guard with `true` survived the
+// whole suite. That mutant emits a **Resolved** edge to `m[0]` when several
+// definitions exist, which is an unsound edge: the graph would name one
+// specific callee out of two it cannot choose between.
+//
+// v1.0 gate condition 2 is "zero unsound edges". The suite had the one-method
+// case on both paths (`class_qualified_call_resolves_to_the_method`,
+// `imported_class_qualified_call_resolves`) and the several-definitions case
+// only at module scope (`two_definitions_at_one_scope_yield_candidates`), so
+// the guard that does the work was covered by neither.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_methods_of_one_name_on_a_class_yield_candidates() {
+    // A class body that defines `make` twice. Which one is live depends on
+    // execution order, which static analysis cannot see — the same reasoning
+    // as the module-scope case, applied where the receiver is a class.
+    let b = bindings(&[(
+        "app/m.py",
+        concat!(
+            "class C:\n",
+            "    @staticmethod\n",
+            "    def make():\n",
+            "        return 1\n",
+            "    @staticmethod\n",
+            "    def make():\n",
+            "        return 2\n",
+            "\n",
+            "def go():\n",
+            "    return C.make()\n"
+        ),
+    )]);
+    assert_eq!(target_of(&b, "C.make()"), "?? [app.m.make, app.m.make]");
+}
+
+#[test]
+fn two_methods_on_an_imported_class_yield_candidates() {
+    // The same guard in `attr_of_bound`, reached when the class arrived
+    // through an import rather than being in scope. A separate code path, so
+    // a separate test — the first version of this pair tested only the local
+    // one and left the imported mutant alive.
+    let b = bindings(&[
+        (
+            "app/model.py",
+            concat!(
+                "class Factory:\n",
+                "    @classmethod\n",
+                "    def create(cls):\n",
+                "        return 1\n",
+                "    @classmethod\n",
+                "    def create(cls):\n",
+                "        return 2\n"
+            ),
+        ),
+        (
+            "app/main.py",
+            "from app.model import Factory\n\ndef go():\n    return Factory.create()\n",
+        ),
+    ]);
+    assert_eq!(
+        target_of(&b, "Factory.create()"),
+        "?? [app.model.create, app.model.create]"
+    );
+}
+
+#[test]
+fn an_attribute_of_a_function_is_not_a_lookup_in_its_body() {
+    // `f.attr()` where `f` is a function, and `f` happens to contain a nested
+    // definition called `attr`. Those are unrelated: the attribute lives on
+    // the function *object*, and the nested `attr` is a local of one call.
+    //
+    // The `kind == SymbolKind::Class` guard is what keeps them apart, and
+    // mutation testing reported replacing it with `true` as surviving. That
+    // mutant would resolve this call to the nested definition — an edge to a
+    // function that this call site cannot reach.
+    let b = bindings(&[(
+        "app/m.py",
+        concat!(
+            "def f():
+",
+            "    def attr():
+",
+            "        return 1
+",
+            "    return attr
+",
+            "
+",
+            "def go():
+",
+            "    return f.attr()
+"
+        ),
+    )]);
+    assert_eq!(target_of(&b, "f.attr()"), "!! MethodDispatchUntyped");
+}
+
+#[test]
+fn an_attribute_of_an_imported_function_is_not_a_lookup_in_its_body() {
+    // The same rule as the test above, on the other code path. `attr_of_bound`
+    // handles a receiver that arrived through an import, and its
+    // `kind == SymbolKind::Class` guard is a separate line with a separate
+    // mutant — which survived the test above, because that one never imports.
+    //
+    // Two paths, two guards, two tests. The pattern has now repeated three
+    // times in this file: local and imported are never covered by one case.
+    let b = bindings(&[
+        (
+            "app/m.py",
+            concat!(
+                "def f():
+",
+                "    def attr():
+",
+                "        return 1
+",
+                "    return attr
+"
+            ),
+        ),
+        (
+            "app/use.py",
+            "from app.m import f
+
+def go():
+    return f.attr()
+",
+        ),
+    ]);
+    assert_eq!(target_of(&b, "f.attr()"), "!! MethodDispatchUntyped");
+}
