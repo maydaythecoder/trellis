@@ -1,0 +1,93 @@
+crates/trellis-checks/src/lib.rs:77:5: replace typecheck -> Verdict with Default::default()
+crates/trellis-checks/src/lib.rs:88:5: replace run_tests -> Verdict with Default::default()
+crates/trellis-checks/src/lib.rs:100:5: replace import_check -> Verdict with Default::default()
+crates/trellis-checks/src/lib.rs:119:5: replace governance_audit -> Verdict with Default::default()
+crates/trellis-checks/src/lib.rs:197:5: replace run -> ProcessOutput with Default::default()
+crates/trellis-checks/src/governance.rs:95:5: replace load -> Result<Vec<Rule>, GovernanceError> with Ok(vec![Default::default()])
+crates/trellis-checks/src/verdict.rs:83:9: replace Verdict::from_typecheck -> Self with Default::default()
+crates/trellis-checks/src/verdict.rs:87:9: replace Verdict::from_tests -> Self with Default::default()
+crates/trellis-checks/src/verdict.rs:91:9: replace Verdict::from_governance -> Self with Default::default()
+crates/trellis-checks/src/verdict.rs:95:9: replace Verdict::from_import -> Self with Default::default()
+crates/trellis-checks/src/verdict.rs:101:9: replace Verdict::from_output -> Self with Default::default()
+crates/trellis-checks/src/verdict.rs:122:9: replace Verdict::detail -> &CheckDetail with Box::leak(Box::new(Default::default()))
+crates/trellis-checks/src/verdict.rs:126:9: replace Verdict::kind -> CheckKind with Default::default()
+crates/trellis-cli/src/main.rs:497:5: replace resolve -> Result<&'static trellis_model::CatalogEntry> with Ok(Box::leak(Box::new(Default::default())))
+crates/trellis-cli/src/main.rs:676:9: replace Driver::build -> Result<Self> with Ok(Default::default())
+crates/trellis-cli/src/main.rs:727:5: replace cmd_run -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/main.rs:1031:5: replace interrupted_run -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/main.rs:1370:5: replace resolve_symbol -> Result<trellis_core::SymbolId> with Ok(Default::default())
+crates/trellis-cli/src/session.rs:85:9: replace Session::open -> Result<Self> with Ok(Default::default())
+crates/trellis-cli/src/session.rs:273:21: replace && with || in Session::dispatch
+crates/trellis-cli/src/tui/mod.rs:205:5: replace run_task -> RunReport with Default::default()
+crates/trellis-cli/src/tui/events.rs:63:9: replace Events::start -> Self with Default::default()
+crates/trellis-cli/src/tui/events.rs:106:9: replace Events::next -> Option<Event> with Some(Default::default())
+crates/trellis-cli/src/tui/events.rs:111:9: replace Events::sender -> Sender<Event> with Sender::new()
+crates/trellis-cli/src/tui/events.rs:111:9: replace Events::sender -> Sender<Event> with Sender::from_iter([Default::default()])
+crates/trellis-cli/src/tui/events.rs:111:9: replace Events::sender -> Sender<Event> with Sender::new(Default::default())
+crates/trellis-cli/src/tui/events.rs:111:9: replace Events::sender -> Sender<Event> with Sender::from(Default::default())
+crates/trellis-cli/src/tui/terminal.rs:36:9: replace TerminalGuard::enter -> io::Result<Self> with Ok(Default::default())
+crates/trellis-cli/src/tui/terminal.rs:52:9: replace TerminalGuard::terminal -> &mut DefaultTerminal with Box::leak(Box::new(Default::default()))
+crates/trellis-core/src/interner.rs:32:9: replace Interner::intern -> Sym with Default::default()
+crates/trellis-core/src/interner.rs:44:9: replace Interner::get -> Option<Sym> with Some(Default::default())
+crates/trellis-index/src/graph.rs:116:9: replace Target::symbols -> &[SymbolId] with Vec::leak(vec![Default::default()])
+crates/trellis-index/src/graph.rs:278:9: replace Index::outgoing -> impl Iterator<Item =&Edge> with ::std::iter::once(Box::leak(Box::new(Default::default())))
+crates/trellis-index/src/graph.rs:289:9: replace Index::incoming -> impl Iterator<Item =&Edge> with ::std::iter::once(Box::leak(Box::new(Default::default())))
+crates/trellis-index/src/incremental.rs:46:9: replace Session::open -> Self with Default::default()
+crates/trellis-index/src/incremental.rs:50:9: replace Session::from_sources -> Self with Default::default()
+crates/trellis-index/src/incremental.rs:112:5: replace input_edit -> InputEdit with Default::default()
+crates/trellis-index/src/parse.rs:140:9: delete match arm 1 in type_head
+crates/trellis-index/src/parse.rs:187:5: replace collect_with_tree -> (FileFacts, Option<tree_sitter::Tree>) with (Default::default(), Some(Default::default()))
+crates/trellis-index/src/parse.rs:423:25: replace && with || in collect_params
+crates/trellis-index/src/parse.rs:422:25: replace && with || in collect_params
+crates/trellis-index/src/parse.rs:449:9: replace && with || in in_class_body
+crates/trellis-index/src/parse.rs:476:5: replace import_fact -> ImportFact with Default::default()
+crates/trellis-index/src/parse.rs:534:9: replace && with || in import_fact
+crates/trellis-index/src/parse.rs:533:9: replace && with || in import_fact
+crates/trellis-index/src/parse.rs:543:5: replace callee_shape -> CalleeShape with Default::default()
+crates/trellis-index/src/radius.rs:71:9: replace RadiusCoverage::reasons_by_frequency -> Vec<(Reason, u32)> with vec![(Default::default(), 0)]
+crates/trellis-index/src/radius.rs:71:9: replace RadiusCoverage::reasons_by_frequency -> Vec<(Reason, u32)> with vec![(Default::default(), 1)]
+crates/trellis-index/src/radius.rs:170:5: replace blast_radius -> RadiusReport with Default::default()
+crates/trellis-index/src/radius.rs:214:17: replace && with || in blast_radius
+crates/trellis-index/src/radius.rs:579:5: replace file_ids -> (HashSet<FileId>, u32) with (HashSet::from_iter([Default::default()]), 0)
+crates/trellis-index/src/radius.rs:579:5: replace file_ids -> (HashSet<FileId>, u32) with (HashSet::from_iter([Default::default()]), 1)
+crates/trellis-index/src/radius.rs:613:5: replace callers_of_files -> Vec<CallerSite> with vec![Default::default()]
+crates/trellis-index/src/resolve.rs:506:13: replace && with || in build_from_facts
+crates/trellis-index/src/resolve.rs:826:5: replace lookup_module -> Option<FileId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:851:5: replace external_or_unresolvable -> ImportBinding with Default::default()
+crates/trellis-index/src/resolve.rs:866:5: replace enclosing_symbol -> Option<SymbolId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:901:9: replace Resolver<'_>::resolve -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:912:9: replace Resolver<'_>::resolve_name -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:977:9: replace Resolver<'_>::find_class -> Option<SymbolId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:988:21: replace && with || in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:986:21: replace && with || in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:1010:17: replace && with || in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:1089:9: replace Resolver<'_>::lookup_method -> MethodLookup with Default::default()
+crates/trellis-index/src/resolve.rs:1161:9: replace Resolver<'_>::method_outcome -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::from_iter([[Default::default(); 4]])
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::new([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::from([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1190:21: replace && with || in Resolver<'_>::overriding_subclasses
+crates/trellis-index/src/resolve.rs:1221:9: replace Resolver<'_>::typed_receiver -> Option<Outcome> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::from_iter([[Default::default(); 4]])
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::new([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::from([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1307:9: replace Resolver<'_>::resolve_attribute -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1329:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1328:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1327:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1326:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1343:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1360:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1410:9: replace Resolver<'_>::enclosing_class_symbol -> Option<SymbolId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:1434:9: replace Resolver<'_>::outcome_of_bindings -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1442:9: replace Resolver<'_>::attr_of_bindings -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1452:9: replace Resolver<'_>::attr_of_bound -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1487:9: replace Resolver<'_>::follow -> Bound with Default::default()
+crates/trellis-index/src/resolve.rs:1508:9: replace Resolver<'_>::lookup_in_module -> Bound with Default::default()
+crates/trellis-index/src/resolve.rs:1555:9: replace Resolver<'_>::emit -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1563:9: replace Resolver<'_>::collapse -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1579:5: replace merge_bounds -> Bound with Default::default()
+crates/trellis-index/src/resolve.rs:1607:5: replace merge_outcomes -> Outcome with Default::default()
+crates/trellis-loop/src/adapter.rs:61:9: replace RuntimeModel::tier -> AdapterTier with Default::default()
+crates/trellis-loop/src/adapter.rs:65:9: replace RuntimeModel::dialect -> Dialect with Default::default()
+crates/trellis-loop/src/adapter.rs:69:9: replace RuntimeModel::with_max_tokens -> Self with Default::default()
