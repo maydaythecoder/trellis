@@ -70,6 +70,13 @@ impl RuntimeModel {
         }
     }
 
+    /// The client, so a caller can check the runtime is there before
+    /// committing to a run. See `cmd_run`: reachability is established
+    /// before the git snapshot, not by the loop's first call.
+    pub fn client(&self) -> &RuntimeClient {
+        &self.client
+    }
+
     pub fn tier(&self) -> AdapterTier {
         self.tier
     }

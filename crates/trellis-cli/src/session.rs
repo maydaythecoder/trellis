@@ -130,7 +130,10 @@ impl Session {
             None => println!("           no call sites examined"),
         }
         match &self.model {
-            Some(m) => println!("  model    {m}"),
+            Some(m) => {
+                println!("  model    {m}");
+                self.warn_if_unreachable(m);
+            }
             None => println!("  model    none — /model <spec> before running a task"),
         }
         println!();
@@ -309,6 +312,38 @@ impl Session {
     /// A warning, never a refusal. The runtime may not be started yet, and a
     /// tool that would not let you name a server before launching it is
     /// wrong about the order people work in.
+    /// Says so, in the banner, when the configured runtime is not listening.
+    ///
+    /// The spec is kept either way — a runtime started a minute later will
+    /// be used, and rewriting the user's configuration because a port was
+    /// briefly closed would be worse than a warning.
+    ///
+    /// A connect rather than `probe_constraint`, which sends a real
+    /// completion: this runs on every session start and must not make
+    /// opening a prompt wait on a model's first token. Tier is still probed
+    /// by `/model`, where the user asked for it.
+    fn warn_if_unreachable(&self, spec: &trellis_model::ModelSpec) {
+        let trellis_model::ModelSpec::Runtime { dialect, base } = spec else {
+            return;
+        };
+        let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, None) else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Runtime::new() else {
+            return;
+        };
+        if let Err(e) = rt.block_on(client.reachable()) {
+            println!("           NOT REACHABLE — {e}");
+            println!(concat!(
+                "           A task would be refused before anything is ",
+                "snapshotted.
+",
+                "           Start the runtime, or /model <spec> to point ",
+                "somewhere else."
+            ));
+        }
+    }
+
     fn probe_model(&self, spec: &trellis_model::ModelSpec) {
         // A scripted model has no runtime to probe, and the type says so —
         // this used to re-split the string and return silently on three
@@ -796,6 +831,16 @@ fn help() {
             "  /unconstrained    toggle tier 4 (no schema; can fail on format)\n",
             "  /status           root, index, model, tier\n",
             "  /exit             leave\n",
+            "
+",
+            "  trellis tui       the full-screen view: transcript, run state
+",
+            "                    and task entry at once. A separate command
+",
+            "                    rather than a slash, because it takes over
+",
+            "                    the terminal — leaving it returns here.
+",
             "\n",
             "Each task is a fresh run: its own snapshot, its own budget, and a\n",
             "rollback to the state it started from if it does not converge. The\n",

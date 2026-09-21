@@ -745,6 +745,35 @@ fn cmd_run(
     let mut driver = Driver::build(&spec, unconstrained)?;
     println!("model:    {}", driver.describe());
 
+    // Reachability before the snapshot, and the ordering is the whole point.
+    //
+    // `Driver::build` parses a URL; it does not connect. So a runtime that
+    // is not listening used to be discovered by the loop's *first* model
+    // call — after a git snapshot had been taken — and the run would then
+    // roll back and write a trail for work that never began. Four dead runs
+    // in a row look identical to four real failures, and each one leaves a
+    // trail file behind.
+    //
+    // A refused connection is not a failed run. It is a run that could not
+    // start, and it should cost nothing.
+    if let Driver::Runtime(m) = &driver
+        && let Err(e) = tokio::runtime::Runtime::new()?.block_on(m.client().reachable())
+    {
+        anyhow::bail!(
+            concat!(
+                "{}
+
+",
+                "Nothing was snapshotted and nothing was rolled back — the run
+",
+                "did not start. Start the runtime, or point at a different one
+",
+                "with `--model <runtime>:http://host:port`, then try again."
+            ),
+            e
+        );
+    }
+
     // Read before the snapshot, so a missing or corrupt trail fails the run
     // before anything has been written.
     let prior = if resume {

@@ -137,6 +137,31 @@ impl RuntimeClient {
         })
     }
 
+    /// Can a TCP connection be opened at all?
+    ///
+    /// No HTTP, no generation, no dialect — just the connect. Cheap enough
+    /// to run before a run starts, and that is the point: `cmd_run` takes a
+    /// git snapshot before its first model call, so a refused connection
+    /// discovered *inside* the loop costs a snapshot, a rollback and a trail
+    /// file for a run that never made a call. Four of those in a row is what
+    /// a dead runtime looked like.
+    ///
+    /// Five seconds, and the number is chosen so a *refusal* wins the race.
+    /// A closed port on Windows takes a beat to answer, and
+    /// `RuntimeError::Connect` — "the target machine actively refused it" —
+    /// tells a user what to do, where a timeout only tells them to wait.
+    /// This only ever targets a local runtime; a remote endpoint is tier 1
+    /// or tier 4 and does not come through here.
+    pub async fn reachable(&self) -> Result<(), RuntimeError> {
+        const WINDOW: Duration = Duration::from_secs(5);
+        let addr = format!("{}:{}", self.host, self.port);
+        match tokio::time::timeout(WINDOW, TcpStream::connect(&addr)).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(source)) => Err(RuntimeError::Connect { base: addr, source }),
+            Err(_) => Err(RuntimeError::Timeout(WINDOW)),
+        }
+    }
+
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self
@@ -677,6 +702,26 @@ mod tests {
         assert!(
             matches!(e, RuntimeError::Timeout(d) if d == Duration::from_millis(150)),
             "the error must carry the timeout that fired, not a default: {e}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reachable_answers_without_generating_anything() {
+        // Used before a run takes its git snapshot, so it has to be cheap and
+        // it has to be right. A listening socket is reachable even though
+        // nothing ever replies on it — that is the question being asked.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let c = RuntimeClient::new(&format!("http://{addr}"), Dialect::LlamaCpp, None).unwrap();
+        assert!(c.reachable().await.is_ok());
+
+        // Port 1 on loopback: reserved and never listening.
+        let dead = RuntimeClient::new("http://127.0.0.1:1", Dialect::LlamaCpp, None).unwrap();
+        let e = dead.reachable().await.unwrap_err();
+        assert!(
+            matches!(e, RuntimeError::Connect { .. }),
+            "a closed port must read as refused rather than as a timeout, \
+             because refused is the one a user can act on: {e}"
         );
     }
 }

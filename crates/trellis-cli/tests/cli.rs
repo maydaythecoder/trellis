@@ -592,3 +592,58 @@ fn help_describes_the_commands_without_marketing_them() {
         assert!(s.contains(cmd), "--help omits `{cmd}`");
     }
 }
+
+#[test]
+fn an_unreachable_runtime_costs_nothing() {
+    // The failure a user actually hit, four times in one sitting.
+    //
+    // `Driver::build` parses a URL; it does not connect. So a runtime that
+    // was not listening used to be discovered by the loop's *first* model
+    // call — after the git snapshot — and the run would roll back and write
+    // a trail for work that never began. Four dead attempts looked exactly
+    // like four real failures and left four trail files behind.
+    //
+    // A refused connection is not a failed run. It is a run that could not
+    // start, and it must cost nothing.
+    let d = repo("dead-runtime");
+
+    let out = run(
+        &d,
+        &["run", "--model", "llamacpp:http://127.0.0.1:1", "a task"],
+    );
+    let s = combined(&out);
+
+    assert!(
+        !out.status.success(),
+        "a dead runtime must fail the run: {s}"
+    );
+    assert!(
+        s.contains("cannot reach the runtime"),
+        "it must name what it could not reach: {s}"
+    );
+    assert!(
+        s.contains("Nothing was snapshotted"),
+        "and say the run did not start, so the user knows there is nothing \
+         to clean up: {s}"
+    );
+
+    // The two things that must not have happened.
+    assert!(
+        !d.join(".trellis/runs").exists()
+            || std::fs::read_dir(d.join(".trellis/runs"))
+                .map(|mut r| r.next().is_none())
+                .unwrap_or(true),
+        "a run that never started must not write a trail"
+    );
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "the worktree must be untouched"
+    );
+
+    let _ = std::fs::remove_dir_all(&d);
+}
