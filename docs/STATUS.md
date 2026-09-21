@@ -141,50 +141,89 @@ back saying the harness gave the model what it needed.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-**v1.1 was started at the owner's instruction, with its stated prerequisite
-unmet.** `05-v1.1-multi-agent.md` requires "v1.0 shipped"; the v1.0 gate was
-run on 2026-09-20 and is not met. Recorded here rather than left for a reader
-to discover, the same way the TUI's non-goal was.
+**The current work is a correctness campaign and a quality audit, both started
+at the owner's instruction, and they took priority over v1.1.** The campaign's
+record is `CORRECTNESS_LEDGER.md`; the audit's is `QUALITY_LEDGER.md`. The
+audit's own §0 requires a finished campaign, so they run in that order.
 
-The first thing v1.1 asks for turned out to be a measurement, and it changes
-what the rest of the milestone is worth.
+### In flight
 
-### The finding that should be decided before more is built
+1. **The mutation baseline.** `cargo mutants --workspace --no-shuffle -j 4`
+   against `94c285c`, ~1,253 mutants, several hours. Nothing in the quality
+   audit's Passes 3–7 starts until it lands, because §9 makes mutation score
+   the check that catches refactor damage — *"a refactor that makes code
+   harder to test shows up here and nowhere else"* — and there is no score to
+   compare against yet.
 
-1. **Multi-agent work is gated on recall, not on concurrency engineering.**
-   `docs/bench/decomposition-20260921.md`. A two-symbol change on poetry
-   partitions **4.0%** of the time; five symbols, 15.5%; mean groups never
-   above 1.17. And those are *random* symbol sets, so real correlated changes
-   decompose less.
+   Its shape was clear by mutant 341 and it agrees with the coverage
+   measurement exactly: the misses are concentrated in `trellis-cli`, and
+   `main.rs` alone accounts for more than half of them.
 
-   The cause is not the milestone's hypothesis. **98.1%** of symbols satisfy
-   S19's stated rule; only **2.9%** of work units are partitionable, because
-   `blast_radius` also clears the flag when any unbound call site exists in
-   any file the radius touches — and poetry has 11,233 of those.
+### Closed this iteration
 
-   Two readings, and the artifact deliberately picks neither: the rule is
-   correct and v1.1 is worth little at 72% recall, or the touched-file test is
-   over-broad for a safety decision when it was introduced for a reporting
-   one. **Loosening it is an ADR, not a commit.** The milestone says the
-   conservative version ships first and loosening is "an experiment to run
-   with measurements in hand" — the measurements are now in hand.
+2. **Tiers 5, 9 and 10 of the campaign.** Coverage is 82.74% lines and the
+   full table is in `docs/bench/coverage-20260921.md`. Concurrency was audited
+   rather than tooled, because the audit's result is that there is little for a
+   tool to find: no `Mutex`, `RwLock`, `Atomic`, `OnceLock` or `thread_local`
+   anywhere in `crates/*/src`. Dependencies are clean, and `cargo deny` passes
+   for the first time now that `deny.toml` states a policy.
 
-### Built this iteration
+3. **C-001 — the CLI had no tests at all.** `crates/trellis-cli` had no
+   `tests/` directory; every `cmd_*` was reached from the dispatch in `main`
+   and from nowhere else. Twenty integration tests now drive the real binary.
+   They found a defect on the first run: `trellis model` refused to run outside
+   a repository, against a comment in `main.rs` stating it must.
 
-2. `trellis partitions <symbol>...` — the dry run the milestone says to build
-   early, naming which units grouped, what they share, and which were
-   serialized for having edges the graph could not bind. It takes symbols
-   rather than a task sentence, because decomposing prose needs a model and
-   none is above the floor.
+4. **C-003 — index determinism, and what asserting it turned up.** The graph
+   is deterministic; its serialised bytes were not. `Interner` serialised a
+   `HashMap` that is a second copy of every key in the vector beside it, so
+   `.trellis/index.bin` differed on every rebuild of unchanged sources. On
+   poetry: 586.9 KiB → 492.6 KiB, and byte-identical across rebuilds.
+
+   Worth noting *how* it was found. The first version of the test compared
+   `serde_json::to_value`, which normalises map key order and reported the two
+   builds identical — the exact defect it was written to catch.
+
+### Open findings, not yet acted on
+
+5. **C-002 — `trellis_vcs::Worktree` is dead code.** `create` and `discard`,
+   written ahead of need for brief 4.13's per-partition isolation, referenced
+   from nowhere and covered by nothing. Either v1.1 uses them, in which case
+   they need tests before they carry per-partition rollback, or they are
+   deleted. Sequencing, not correctness, so it waits for a v1.1 decision.
+
+6. **A v1.1 hazard recorded before it bites.** The orchestrator's `serve` loop
+   is strictly sequential and `run_checks` awaits subprocesses inside it. With
+   one agent that is a throughput property. With N agents sharing an
+   orchestrator, one long check serialises everyone.
+
+7. **Q-003 to Q-005**, the quality audit's reported-not-fixed findings, all
+   waiting on the same baseline.
+
+### The v1.1 finding that should be decided before more is built
+
+8. **Multi-agent work is gated on recall, not on concurrency engineering.**
+   `docs/bench/decomposition-20260921.md`, and ADR 0016 resolves the part that
+   was resolvable. Narrowing the touched-file test moved unit partitionability
+   from 2.9% to 80.2% and the two-symbol decomposition ratio from 4.0% to
+   95.0%.
+
+   **The guarantee did not survive unconditionally.** 12.66% of newly admitted
+   pairs carry a plausible collision, measured by `examples/narrowing_safety.rs`
+   over 2,000 random pairs. What makes the residual tolerable is the staging:
+   contended and uncertain work runs alone and first, so the pairs most likely
+   to collide are never run concurrently. Excluding test files is the obvious
+   next experiment and was deliberately not taken, because that is a second
+   loosening stacked on the first without its own measurement.
 
 ### Still needs a person, a model, or an idea
 
-3. **The third independent human audit** (A-34). The only thing between the
+9. **The third independent human audit** (A-34). The only thing between the
    project and a call on v1.0 gate condition 2.
-4. **A local model that can do the work.** Closes v1.0 condition 3 and the
-   plus-row, and unblocks v0.3's conflict escalation.
-5. **The 85% backstop.** Now doubly load-bearing: it gates v1.0 condition 1
-   *and* is the thing that would make v1.1 worth building.
+10. **A local model that can do the work.** Closes v1.0 condition 3 and the
+    plus-row, and unblocks v0.3's conflict escalation.
+11. **The 85% backstop.** Now doubly load-bearing: it gates v1.0 condition 1
+    *and* is what would make v1.1 worth building.
 
 **v0.1 is complete. v0.3 is eight of nine. v0.2 is six met, one descoped by
 ADR 0013, three partial or unmet** — both gates audited line by line below,

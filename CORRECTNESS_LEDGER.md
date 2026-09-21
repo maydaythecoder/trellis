@@ -10,7 +10,7 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | 328 passing, 0 failed, 0 ignored |
+| Tests | **352** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
 | Mutation score | **running** — see Tier 6 |
 
@@ -87,11 +87,19 @@ tui/ (5 files)             632 lines    156 missed   75.32%   =  9.4% of all mis
 everything else           7597 lines    670 missed   91.18%
 ```
 
-**Finding C-001 — the CLI command layer has no test at all.**
-`crates/trellis-cli` has no `tests/` directory. Its three `#[cfg(test)]`
+**Finding C-001 — the CLI command layer had no test at all. Fixed, `0ba3b5f`.**
+`crates/trellis-cli` had no `tests/` directory. Its three `#[cfg(test)]`
 modules test extracted helpers; every `cmd_*` entry point is called from
 exactly one place, the dispatch in `main`, and from no test. Ten commands,
 829 uncovered lines.
+
+`crates/trellis-cli/tests/cli.rs` now drives the real binary through
+`CARGO_BIN_EXE_trellis` — twenty tests, asserting mostly *what the output may
+not say*, because both project constraints are negative. It found a defect on
+its first run: `main.rs` carried a comment saying `trellis model` must work
+outside a repository, models being user state rather than repository state,
+while `needs_repo` exempted only `init`. The comment was right and the code
+did not do it.
 
 The library crates sit at 91.18%. The remaining gap is a TTY-bound TUI shell
 (deliberate — `model.rs` and `view.rs` were factored out precisely so the
@@ -165,10 +173,33 @@ What concurrency exists, and what was checked:
 | `main.rs:826,1648,2109`, `session.rs:329` | `Runtime::new()` + `block_on` | All four sit in **sync** functions reached from a **sync** `fn main` — there is no `#[tokio::main]` in the tree. No nested-runtime panic is reachable. |
 | `resolve.rs:475`, `incremental.rs:57` | `rayon` `par_iter().map().collect()` | Order-preserving by rayon's contract, and `discover` sorts, so `FileId`/`SymbolId` assignment is positional and deterministic. **Untested** — see C-003. |
 
-**Finding C-003 — index determinism is relied on and never asserted.** The
-cache (`build_cached`) and every stored radius assume that indexing the same
-sources twice yields the same graph. That holds because rayon preserves order,
-which is a dependency's guarantee, not ours. One test closes it.
+**Finding C-003 — index determinism was relied on and never asserted. Fixed,
+`0ba3b5f`, and the test found something.** The graph *is* deterministic: every
+field of two builds over identical sources compares equal. Its serialised
+bytes were not. `Interner` held `lookup: HashMap<Box<str>, Sym>` — a second
+copy of every key in the `store` vector beside it — and serialised it, and a
+`HashMap` iterates in an order that differs between instances holding
+identical contents.
+
+So `.trellis/index.bin` differed on every rebuild of unchanged sources. Not a
+correctness fault (the cache is fingerprint-keyed and round-trips fine) but a
+file that changes when nothing changed cannot be compared, hashed, or used as
+evidence that nothing moved — which is an odd property for this project to
+have shipped.
+
+The interner now serialises as the store alone and rebuilds `lookup` on load.
+That also makes the invariant *lookup agrees with store* hold by construction,
+where it was previously taken on trust from a file on disk.
+
+```
+poetry 2.5.0, 3,735 symbols:   index.bin  586.9 KiB -> 492.6 KiB   (-16.1%)
+                               rebuild    differed every time -> byte-identical
+```
+
+The first version of the test would have missed this. It compared
+`serde_json::to_value`, which normalises map key order and reported the two
+builds identical — the exact defect it was written to catch. It compares text
+now, and a second test asserts byte-reproducibility outright.
 
 ## Tier 10 — Dependencies
 
@@ -205,9 +236,9 @@ type system as the proof obligation, which is ADR 0004's whole point.
 
 | ID | Tier | Finding | State |
 |----|------|---------|-------|
-| C-001 | 5, 6 | `trellis-cli` has no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | Open |
+| C-001 | 5, 6 | `trellis-cli` had no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | **Fixed**, `0ba3b5f` — 20 tests, and it caught `trellis model` refusing to run outside a repository against its own stated intent |
 | C-002 | 5 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | Reported |
-| C-003 | 9 | Index determinism under rayon is depended on by the cache and never asserted | Open |
+| C-003 | 9 | Index determinism under rayon is depended on by the cache and never asserted | **Fixed**, `0ba3b5f` — the graph was deterministic, its bytes were not; interner no longer serialises a derivable map |
 | — | 3 | Test fixtures collided between concurrent processes | **Fixed**, `c526c83` |
 | — | 0 | Toolchain unpinned | **Fixed**, `94c285c` |
 | — | 10 | No dependency policy; `cargo deny` could not pass | **Fixed**, `bc705e1` |
