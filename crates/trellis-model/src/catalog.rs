@@ -193,4 +193,31 @@ mod tests {
             assert_ne!(e.bytes % 1_000_000, 0, "{} looks rounded", e.name);
         }
     }
+
+    #[test]
+    fn a_size_in_bytes_reads_as_gibibytes() {
+        // Five mutants lived here — the whole of `gib` — because nothing
+        // asserted it. It is what `trellis model` prints beside each entry,
+        // and a wrong figure there is the number someone checks their disk
+        // against before a multi-gigabyte download.
+        let entry = |bytes| CatalogEntry {
+            name: "x",
+            repo: "r",
+            file: "f",
+            bytes,
+            license: "",
+            resident_gb: 0.0,
+            expectation: "",
+        };
+        assert!((entry(1_073_741_824).gib() - 1.0).abs() < f64::EPSILON);
+        assert!((entry(536_870_912).gib() - 0.5).abs() < f64::EPSILON);
+        assert!((entry(0).gib() - 0.0).abs() < f64::EPSILON);
+        // Gibibytes, not gigabytes: 1e9 bytes is 0.93 GiB, and the
+        // difference is the whole reason the unit is named.
+        assert!((entry(1_000_000_000).gib() - 0.931_322_6).abs() < 1e-6);
+        // Every real entry is a plausible download rather than a placeholder.
+        for e in CATALOG {
+            assert!(e.gib() > 0.0 && e.gib() < 200.0, "{}: {}", e.name, e.gib());
+        }
+    }
 }

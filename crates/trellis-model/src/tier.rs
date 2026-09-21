@@ -371,4 +371,24 @@ mod tests {
             "both the checker and the test runner need the remedy, not just              whichever is listed first: {text}"
         );
     }
+
+    #[test]
+    fn only_measured_continuous_batching_supports_multi_agent() {
+        // S18. `supports_multi_agent -> false` survived, and false is the
+        // safe direction — which is exactly why it hid. The claim that needs
+        // defending is the *true* one: multi-agent is enabled only by a
+        // measured continuous-batching runtime, never by a default and never
+        // by not knowing.
+        assert!(
+            BatchingCapability::Continuous {
+                measured_concurrency: 4
+            }
+            .supports_multi_agent()
+        );
+        assert!(!BatchingCapability::SingleStream.supports_multi_agent());
+        assert!(
+            !BatchingCapability::Unknown.supports_multi_agent(),
+            "not knowing is not permission"
+        );
+    }
 }
