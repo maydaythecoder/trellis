@@ -323,4 +323,95 @@ mod tests {
         );
         assert!(mentions(&all(d.path()), "nosuchsymbol").is_empty());
     }
+
+    /// `run_id` is what `trellis resume <run_id>` names, and it has to name
+    /// something for every run — including trails written before the field
+    /// existed, which fall back to the filename.
+    ///
+    /// Two mutants survived on it: returning an empty string and returning
+    /// `"xyzzy"`. Nothing asserted either branch.
+    #[test]
+    fn a_run_id_comes_from_the_trail_or_from_the_filename() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260921-120000-000-with-id.json",
+            r#"{"run_id":"20260921-120000-000-with-id","task":"t","factual":{"proposed":[]}}"#,
+        );
+        write(
+            d.path(),
+            "20260101-090000-000-no-id.json",
+            r#"{"task":"older","factual":{"proposed":[]}}"#,
+        );
+
+        let entries = all(d.path());
+        let ids: Vec<String> = entries.iter().map(Entry::run_id).collect();
+        assert!(
+            ids.contains(&"20260921-120000-000-with-id".to_string()),
+            "the recorded run_id must be used when present: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"20260101-090000-000-no-id".to_string()),
+            "a trail with no run_id must fall back to its filename stem: {ids:?}"
+        );
+        assert!(
+            ids.iter().all(|s| !s.is_empty() && s != "unknown"),
+            "every run must have a handle `resume` can name: {ids:?}"
+        );
+    }
+
+    /// The integrity verdict a user actually sees. `cmd_log` and `cmd_why`
+    /// read `Entry::integrity`, so this is the path the `ALTERED` line is
+    /// printed from — `store::latest` only logs a warning alongside it.
+    #[test]
+    fn a_tampered_trail_surfaces_as_altered_in_the_listing() {
+        let d = tempfile::tempdir().unwrap();
+
+        // A trail whose digest matches its factual section, built the way a
+        // run builds it.
+        let factual = crate::Factual {
+            proposed: vec!["app/core.py".into()],
+            radius: crate::RadiusCounts::default(),
+            checks: Vec::new(),
+            check_outcomes: vec![crate::CheckOutcome {
+                kind: "Tests".into(),
+                passed: true,
+            }],
+            approved_by: crate::Approval::Human,
+            mode_counts: crate::ModeCounts::default(),
+            context: None,
+        };
+        let digest = crate::Trail::compute_factual_sha256(&factual);
+        let factual_json = serde_json::to_string(&factual).unwrap();
+        let good = format!(
+            r#"{{"run_id":"good-run","task":"t","factual_sha256":"{digest}","factual":{factual_json}}}"#
+        );
+        write(d.path(), "20260921-120000-000-good.json", &good);
+
+        // The same trail with one value changed: a failed check made to look
+        // like a passed one, which is the edit that would matter.
+        let bad = good
+            .replace("\"passed\":true", "\"passed\":false")
+            .replace("good-run", "bad-run");
+        assert_ne!(bad, good, "the fixture must actually differ");
+        write(d.path(), "20260921-130000-000-bad.json", &bad);
+
+        let entries = all(d.path());
+        let by_id = |id: &str| -> &Entry {
+            entries
+                .iter()
+                .find(|e| e.run_id().contains(id))
+                .unwrap_or_else(|| panic!("no entry matching {id}"))
+        };
+        assert_eq!(
+            by_id("good").integrity,
+            crate::Integrity::Intact,
+            "an untouched trail must not be reported as altered"
+        );
+        assert_eq!(
+            by_id("bad").integrity,
+            crate::Integrity::Altered,
+            "an edited check outcome must be visible in the listing"
+        );
+    }
 }

@@ -324,4 +324,44 @@ mod tests {
         let e = latest(d.path()).unwrap_err();
         assert!(format!("{e}").contains("20260920-000000-x.json"), "{e}");
     }
+
+    /// `now`, `timestamp_now` and `iso_now` read the clock, so no test can
+    /// pin their value — six mutants survived on that, all of them replacing
+    /// the result with `""` or `"xyzzy"`.
+    ///
+    /// The *shape* is assertable, and the shape is what the rest of the
+    /// system depends on: a filename that sorts, and an ISO string a reader
+    /// can parse. Both are pinned here without pinning a time.
+    #[test]
+    fn the_clock_functions_return_the_shape_everything_downstream_expects() {
+        let stamp = timestamp_now();
+        // `YYYYMMDD-HHMMSS-mmm`
+        assert_eq!(stamp.len(), 19, "unexpected timestamp shape: {stamp}");
+        let parts: Vec<&str> = stamp.split('-').collect();
+        assert_eq!(parts.len(), 3, "{stamp}");
+        assert_eq!((parts[0].len(), parts[1].len(), parts[2].len()), (8, 6, 3));
+        assert!(
+            stamp.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "a filename component must be digits and dashes: {stamp}"
+        );
+        // The year is this century, which rules out an epoch of zero as well
+        // as a replaced constant.
+        let year: u32 = parts[0][..4].parse().expect("a four-digit year");
+        assert!((2020..2200).contains(&year), "implausible year: {stamp}");
+
+        let iso = iso_now();
+        assert_eq!(iso.len(), 20, "unexpected ISO shape: {iso}");
+        assert!(iso.ends_with('Z'), "ISO-8601 UTC: {iso}");
+        assert_eq!(&iso[4..5], "-");
+        assert_eq!(&iso[10..11], "T");
+
+        // `now` reads the clock once and derives both, so the two must agree
+        // about the date rather than straddling a second boundary.
+        let (n_stamp, n_iso) = now();
+        assert_eq!(
+            n_stamp[..8],
+            n_iso.replace('-', "")[..8],
+            "the filename and the ISO string came from different clock reads"
+        );
+    }
 }
