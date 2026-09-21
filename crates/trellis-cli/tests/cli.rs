@@ -1731,3 +1731,190 @@ fn an_unknown_command_is_refused_rather_than_run_as_a_task() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// How many diff lines `/diff` shows before collapsing the rest.
+///
+/// Mirrored rather than imported — `tests/cli.rs` is a separate crate and
+/// `DIFF_LINES` is private — and asserted against the shipped behaviour by
+/// the two tests below sitting either side of it. If it moves, the boundary
+/// test fails rather than silently testing nothing.
+const DIFF_LINES: usize = 60;
+
+#[test]
+fn index_rebuilds_rather_than_reporting_a_cached_answer() {
+    // `/index` is the command whose whole job is to refresh, which is why it
+    // calls `build` and not `build_cached`. As `Ok(())` it returns success
+    // having done nothing, and the session then holds a stale graph while
+    // reporting that it reindexed.
+    let d = repo("session-reindex");
+    let s = stdout(&session_with(&d, "/index\n/exit\n"));
+    assert!(
+        s.contains("indexed") && s.contains("files"),
+        "`/index` must say what it rebuilt:\n{s}"
+    );
+    assert!(
+        s.matches("call site").count() >= 2,
+        "the coverage summary travels with it, as it does in the banner:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn diff_shows_the_change_and_not_only_its_filename() {
+    // "Acceptance is yours" is not a real offer if taking it up means
+    // leaving for another terminal. The filename says a file moved; only the
+    // body says whether to accept it.
+    let d = repo("session-diff");
+    std::fs::write(
+        d.join("app/core.py"),
+        "def greet(name):\n    return f\"HELLO {name}\"\n",
+    )
+    .unwrap();
+
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(s.contains("app/core.py"), "the file must be named:\n{s}");
+    assert!(
+        s.contains("+    return f\"HELLO {name}\""),
+        "and the change itself shown:\n{s}"
+    );
+    assert!(
+        s.contains("/accept") && s.contains("/revert"),
+        "both ways out must be offered where the change is shown:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn diff_says_how_much_of_a_long_change_it_did_not_show() {
+    // The same residue rule as the radius report and the log listing. A diff
+    // that stops at sixty lines without saying so shows a user part of a
+    // change and lets them accept it believing they saw all of it.
+    let d = repo("session-diff-long");
+    let mut body = String::from("def greet(name):\n");
+    for i in 0..(DIFF_LINES * 2) {
+        body.push_str(&format!("    x{i} = {i}\n"));
+    }
+    body.push_str("    return name\n");
+    std::fs::write(d.join("app/core.py"), body).unwrap();
+
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(
+        s.contains("more lines"),
+        "a change far longer than the limit must account for the rest:\n{s}"
+    );
+    assert!(s.contains("git diff"), "and name how to see it:\n{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn diff_does_not_offer_more_when_it_showed_the_whole_change() {
+    // The boundary. A two-line edit followed by "... 0 more lines" is a
+    // listing claiming a remainder that does not exist.
+    let d = repo("session-diff-short");
+    std::fs::write(
+        d.join("app/core.py"),
+        "def greet(name):\n    return f\"hi {name}\"\n",
+    )
+    .unwrap();
+
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(
+        !s.contains("more lines"),
+        "the whole change fitted, so there is nothing more to offer:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn diff_on_a_clean_worktree_says_so_rather_than_printing_nothing() {
+    // The other branch. Silence here is indistinguishable from a command
+    // that failed, and the user's next move — accept, or run again — differs
+    // between those two.
+    let d = repo("session-diff-clean");
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(
+        s.contains("nothing pending") && s.contains("clean"),
+        "got:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn diff_opens_no_diff_section_for_a_file_git_has_never_seen() {
+    // An untracked file is pending and has no diff: git cannot show what it
+    // has never seen, so `diff` comes back empty while `pending` names the
+    // file. The guard that notices this survived as `true`, and its only
+    // effect is a blank line — but the rule is real, and the case is
+    // reachable by the most ordinary thing a run does, which is write a new
+    // file.
+    //
+    // Asserted as "no section was opened" rather than on exact whitespace.
+    // The window starts mid-line, so the remainder of the listing line
+    // counts as one: two is the clean shape, three means an empty diff block
+    // was started.
+    let d = repo("session-untracked");
+    std::fs::write(d.join("app/fresh.py"), "def brand_new():\n    return 1\n").unwrap();
+
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(s.contains("app/fresh.py"), "the file must be listed:\n{s}");
+
+    let window = s
+        .split_once("app/fresh.py")
+        .and_then(|(_, rest)| rest.split_once("/accept"))
+        .map(|(mid, _)| mid)
+        .unwrap_or_else(|| panic!("the listing and the offer must both appear:\n{s}"));
+    let blanks = window.lines().filter(|l| l.trim().is_empty()).count();
+    assert_eq!(
+        blanks, 2,
+        "an empty diff section was opened for an untracked file; between the \
+         listing and the offer there should be nothing but the line break \
+         and one blank line, found {blanks}:\n{window:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn diff_offers_no_remainder_at_exactly_the_number_of_lines_it_shows() {
+    // The boundary, and the only input that separates `>` from `>=` on the
+    // diff listing. `>=` at exactly DIFF_LINES prints "... 0 more lines —
+    // `git diff` for the rest" under a diff that already showed everything.
+    //
+    // The fixture converges on the length rather than hardcoding a body that
+    // happens to produce it: a diff's line count includes git's own headers
+    // and hunk markers, so a hand-counted fixture would be pinned to one
+    // git's formatting and would quietly stop testing the boundary under
+    // another. Each added source line adds exactly one line to the same
+    // hunk, so one correction is enough.
+    let d = repo("session-diff-boundary");
+    let path = d.join("app/core.py");
+
+    let write_body = |n: usize| {
+        let mut b = String::from("def greet(name):\n");
+        for i in 0..n {
+            b.push_str(&format!("    x{i} = {i}\n"));
+        }
+        b.push_str("    return name\n");
+        std::fs::write(&path, b).unwrap();
+    };
+    let diff_lines = || trellis_vcs::diff(&d).unwrap().lines().count();
+
+    let probe = 40;
+    write_body(probe);
+    let measured = diff_lines();
+    let target = probe as isize + (DIFF_LINES as isize - measured as isize);
+    assert!(target >= 0, "the boundary is below an empty change");
+    write_body(target as usize);
+
+    assert_eq!(
+        diff_lines(),
+        DIFF_LINES,
+        "this test is only meaningful at exactly the limit"
+    );
+
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(
+        !s.contains("more lines"),
+        "the diff was exactly the length shown, so there is no remainder:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
