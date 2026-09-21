@@ -275,14 +275,41 @@ audit's own §0 requires a finished campaign, so they run in that order.
     dependency graph and nothing else's tests run its code, so here the
     understatement is small and 41.5% is close to the real number.
 
-    Not yet triaged, and **the run is stale in one direction only**: every
-    commit since `4cefe4a` is TUI or run-output work, so the `src/tui/`
-    entries name a module that no longer exists and drop out, while the
-    survivors in `cmd_log`, `cmd_why`, `models_dir`, `weights_path` and
-    `Session::dispatch` are untouched by anything since. Triage those first;
-    re-measure after, because a run started now measures code about to
-    change. **That re-run is what the held `main.rs` split waits on** — it is
-    the baseline the split must not move.
+    **The run is stale in one direction only**: every commit since `4cefe4a`
+    is TUI or run-output work, so the 41 `src/tui/` entries name a module
+    that no longer exists and drop out, leaving **144 live survivors**. The
+    rest sit in functions nothing since has touched, so a survivor there then
+    is a survivor now. Triage those first; re-measure after, because a run
+    started now measures code about to change. **That re-run is what the held
+    `main.rs` split waits on** — it is the baseline the split must not move.
+
+13. **Triage: 27 of the 144 closed, three clusters, and two defects.**
+    Each mutant applied by hand and watched to fail; `main.rs` is
+    byte-identical before and after each of the three commits.
+
+    - **`radius_of`, 12 — a false all-clear.** The largest single-function
+      cluster in the workspace, and the `== 0` mutant prints "every call site
+      in the N files this radius touches was bound" over a radius with real
+      doubt. Constraint 1 forbids exactly that. It survived because the
+      existing test greps for "call site", a phrase in *both* branches, so it
+      passed either way. The rest are ADR 0014's residue rows, now held to
+      the invariant that what is on screen sums to the headline figure.
+    - **`cmd_init`, 9 — "Ready." with no typechecker.** Every mutant of
+      `blocking` makes `init` call a repository ready when it has neither a
+      typechecker nor a test runner. Without a typecheck verdict no run can
+      converge, so that is the command reporting success for work it cannot
+      do — CLAUDE.md's own stated worst case, in the first command a new
+      user runs.
+    - **`record_trail`, 6 — the sum/max rule was stated and unasserted.**
+      Reach sums across queries; doubt takes the widest single radius,
+      because overlapping radii would count the same unbound sites once per
+      query. The comment said so and nothing checked it.
+
+    **C-022, found by reading output rather than by any mutant.** `Reason`'s
+    `Display` used `f.write_str`, which ignores the caller's width, so
+    `radius_of`'s `{reason:<22}` was a silent no-op: the reason rows ran
+    ragged while the `(other)` row — a plain `&str`, which does pad — lined
+    up. No mutation operator produces "this format spec does nothing".
 
 13. **Two safety boundaries found in what looked like a tail.**
     `resolve_in_repo`, the guard keeping a model's path inside the tree
