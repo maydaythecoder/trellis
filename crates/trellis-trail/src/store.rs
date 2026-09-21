@@ -242,6 +242,38 @@ mod tests {
         assert!(timestamp_from_epoch(1_000_000_000) < timestamp_from_epoch(1_789_000_000));
     }
 
+    /// The three dates above are correct and were not enough: five mutants
+    /// survived inside `civil_from_days`.
+    ///
+    /// They all land in the same arithmetic, and the reason they hid is that
+    /// the two branches of `if mp < 10 { mp + 3 } else { mp - 9 }` are only
+    /// distinguishable in **January and February** — and `mp - 9` against
+    /// `mp / 9` agrees even then for January, where `mp` is 10. February is
+    /// the only month that separates them.
+    ///
+    /// Expected values generated from Python's `datetime`, which is the
+    /// cross-check the test above already asks for: an independent
+    /// implementation rather than this one's own output.
+    #[test]
+    fn the_calendar_holds_at_the_dates_that_separate_the_arithmetic() {
+        // mp = 10. January, where several of the mutants coincide.
+        assert_eq!(timestamp_from_epoch(0), "19700101-000000");
+        // mp = 11. February is the only month that tells `mp - 9` from
+        // `mp / 9`, and no test reached it before.
+        assert_eq!(timestamp_from_epoch(1_707_000_000), "20240203-224000");
+        // A leap day, and the day after it.
+        assert_eq!(timestamp_from_epoch(1_709_208_000), "20240229-120000");
+        assert_eq!(timestamp_from_epoch(1_709_294_400), "20240301-120000");
+        // 2000 is a leap year and 2100 is not: the 400-year rule, which the
+        // `doe / 146_096` term exists for.
+        assert_eq!(timestamp_from_epoch(951_782_400), "20000229-000000");
+        assert_eq!(timestamp_from_epoch(4_107_542_400), "21000301-000000");
+        // A year boundary, one second apart, where the day-of-month `+ 1`
+        // and the year carry both have to be right at once.
+        assert_eq!(timestamp_from_epoch(1_767_225_599), "20251231-235959");
+        assert_eq!(timestamp_from_epoch(1_767_225_600), "20260101-000000");
+    }
+
     #[test]
     fn a_trail_round_trips_as_untrusted() {
         let d = tempfile::tempdir().unwrap();
