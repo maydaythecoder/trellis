@@ -1,0 +1,3 @@
+crates/trellis-core/src/interner.rs:41:9: replace <impl serde::Serialize for Interner>::serialize -> Result<S::Ok, S::Error> with Ok(Default::default())
+crates/trellis-core/src/interner.rs:75:9: replace Interner::intern -> Sym with Default::default()
+crates/trellis-core/src/interner.rs:87:9: replace Interner::get -> Option<Sym> with Some(Default::default())

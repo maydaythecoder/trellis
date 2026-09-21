@@ -1,0 +1,7 @@
+crates/trellis-core/src/interner.rs:47:9: replace <impl serde::Deserialize<'de> for Interner>::deserialize -> Result<Self, D::Error> with Ok(Default::default())
+crates/trellis-core/src/interner.rs:64:9: replace Interner::from_store -> Self with Default::default()
+crates/trellis-core/src/interner.rs:87:9: replace Interner::get -> Option<Sym> with None
+crates/trellis-core/src/interner.rs:93:9: replace Interner::resolve -> &str with ""
+crates/trellis-core/src/interner.rs:93:9: replace Interner::resolve -> &str with "xyzzy"
+crates/trellis-core/src/interner.rs:97:9: replace Interner::len -> usize with 0
+crates/trellis-core/src/interner.rs:97:9: replace Interner::len -> usize with 1

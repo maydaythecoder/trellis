@@ -146,17 +146,44 @@ at the owner's instruction, and they took priority over v1.1.** The campaign's
 record is `CORRECTNESS_LEDGER.md`; the audit's is `QUALITY_LEDGER.md`. The
 audit's own §0 requires a finished campaign, so they run in that order.
 
-### In flight
+### Tier 6 — measured per crate, and the measurement needed correcting twice
 
-1. **The mutation baseline, running again at `486fff1`.** The first attempt
-   was stopped at 842 of ~1,253 for system memory pressure; this one runs at
-   `-j 2` for that reason and takes roughly twice as long. Its raw output is
-   preserved in `docs/bench/mutants-94c285c/`.
+1. **Seven of eight crates measured, 75.2% — as *self-test* scores.**
+   `docs/bench/mutants-by-crate/`. Two whole-workspace runs were killed for
+   memory at 842 and 295 of ~1,253 mutants; per-crate runs finish, the whole
+   set in under an hour.
 
-   The two runs are **not** a before/after. The first never reached
-   `trellis-loop`, `trellis-model`, `trellis-trail` or `trellis-vcs`, so its
-   56.8% and whatever this one returns are measured over different
-   populations.
+   **`cargo mutants -p X` runs only X's tests.** A mutant a dependent's tests
+   would catch reads as surviving, so every figure understates. Proven rather
+   than argued: `Interner::deserialize -> Default` survives `-p trellis-core`
+   (which runs **one test**) and is killed twice by the workspace suite.
+
+2. **The corrected measurement, `--test-workspace true`.**
+   `docs/bench/mutants-by-crate-ws/`. Affordable only where the mutant count
+   is small, because it costs the full 46-second suite per mutant.
+
+   ```
+   crate            self-test    workspace    delta
+   trellis-core        50.0%        70.0%     +20.0 pts
+   ```
+
+   `trellis-vcs`, `trellis-model` and `trellis-checks` are running.
+   `trellis-trail`, `trellis-loop` and `trellis-index` stay as self-test
+   scores — 1.5, 2.5 and 5 hours respectively is not worth it.
+
+3. **Two configuration errors, both caught before they became numbers.**
+   `-j 2` on the whole-workspace run reached a third as far as `-j 4`, so the
+   memory hypothesis was wrong. `-j 4` on the workspace-test run timed out
+   *every* mutant — 10 timeouts and 0 verdicts on `trellis-core` — because
+   four concurrent copies of a 46-second suite contend on git and temp I/O.
+   Both are recorded in `DECISIONS.md`; the second now makes the script warn
+   and mark a result unusable above two timeouts.
+
+4. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+   the tier/schema wiring and JSON escape handling, both verified by applying
+   the exact mutant and watching the test fail. `Trail::factual_is_intact`
+   turned out to be dead code duplicating `UntrustedTrail::integrity`, and was
+   deleted (C-008).
 
 ### The quality audit: Passes 0–5 and 7 done, 6 held
 

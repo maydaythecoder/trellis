@@ -1,0 +1,3 @@
+crates/trellis-core/src/ids.rs:55:9: replace <impl std::fmt::Display for RunId>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-core/src/interner.rs:101:9: replace Interner::is_empty -> bool with true
+crates/trellis-core/src/interner.rs:101:9: replace Interner::is_empty -> bool with false
