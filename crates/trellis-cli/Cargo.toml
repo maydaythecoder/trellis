@@ -32,6 +32,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 walkdir.workspace = true
 rustyline.workspace = true
+tui-demo = { path = "../tui-demo" }
 ratatui = "0.30"
 crossterm = "0.29.0"
 

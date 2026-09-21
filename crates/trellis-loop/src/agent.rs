@@ -538,10 +538,26 @@ pub async fn run_seeded<M: Model>(
                 // at the finish and useless for anything watching it happen.
                 // `RUST_LOG=trellis=info` gets this too; it is not a hook the
                 // interface owns.
+                // The radius counts and the prompt size are recorded on the
+                // `Turn` below and were not on the event, so anything
+                // watching a run could see that a turn happened and not what
+                // it found. They are emitted as separate fields rather than
+                // a formatted string because a subscriber should not have to
+                // parse prose back into numbers.
+                let (rad_resolved, rad_candidates, rad_unresolved) = match radius_counts {
+                    Some((r, c, u)) => (Some(r), Some(c), Some(u)),
+                    None => (None, None, None),
+                };
                 tracing::info!(
                     turn = iterations,
                     call = %call_label(&call),
                     verdict = ?verdict_passed,
+                    check_kind = check_kind.as_deref().unwrap_or(""),
+                    observation = %tail(&observation, 6),
+                    resolved = rad_resolved,
+                    candidates = rad_candidates,
+                    unresolved = rad_unresolved,
+                    prompt_bytes = prompt_bytes,
                     "turn"
                 );
 

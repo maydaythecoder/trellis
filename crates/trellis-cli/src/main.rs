@@ -16,7 +16,8 @@ mod config;
 mod session;
 #[cfg(test)]
 mod testutil;
-mod tui;
+mod tui_bridge;
+mod tui_run;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -99,11 +100,16 @@ enum Command {
     /// Scaffold `.trellis/` and report what is missing before it bites.
     Init,
 
-    /// Full-screen interface: transcript, run state and task entry at once.
+    /// Watch a run happen: transcript, edits, checks, radius and budget.
     ///
     /// The line-based session stays the default. This is the surface for
-    /// watching a run rather than issuing one command at a time.
-    Tui,
+    /// watching one run rather than issuing a sequence of commands, and it
+    /// renders the same `AppState` the standalone `tui_demo` binary does —
+    /// only the source of events differs.
+    Tui {
+        /// The task to run, watched while it happens.
+        task: String,
+    },
 
     /// Continue from the last trail entry.
     Resume,
@@ -258,7 +264,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Init => cmd_init(&root),
-        Command::Tui => tui::run(&root, config::RepoConfig::load(&root)?.model()),
+        Command::Tui { task } => {
+            tui_run::run(&root, &task, config::RepoConfig::load(&root)?.model())
+        }
         Command::Resume => cmd_resume(&root),
         Command::Log { limit } => cmd_log(&root, limit),
         Command::Why { symbol } => cmd_why(&root, &symbol),
@@ -656,10 +664,6 @@ impl RunExit {
             RunExit::Interrupted { restored: true } => 130,
             RunExit::Interrupted { restored: false } => 2,
         }
-    }
-
-    fn converged(self) -> bool {
-        matches!(self, RunExit::Converged)
     }
 }
 

@@ -2503,6 +2503,7 @@ dependencies = [
  "trellis-model",
  "trellis-trail",
  "trellis-vcs",
+ "tui-demo",
  "walkdir",
 ]
 
