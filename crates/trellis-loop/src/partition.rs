@@ -93,6 +93,42 @@ pub enum FailurePolicy {
     LandClean,
 }
 
+/// Builds the work unit for one target symbol.
+///
+/// The radius is the reverse reachable set — the callers — because that is
+/// what two agents can collide through. The file set is every file holding
+/// either the target, a symbol in its radius, or a call site reaching it:
+/// two agents editing one file conflict no matter how disjoint their call
+/// graphs are, which is the failure this exists to prevent.
+///
+/// `partitionable` is taken from the radius report rather than recomputed.
+/// It is false when any edge involved was `Candidates` or `Unresolved`, so a
+/// unit the graph cannot vouch for cannot be made to look disjoint (S19).
+pub fn unit_for(index: &Index, target: SymbolId) -> WorkUnit {
+    let report = trellis_index::radius::blast_radius(index, target);
+
+    let mut files: HashSet<FileId> = HashSet::new();
+    files.insert(index.symbols[target.index()].file);
+    for s in &report.symbols {
+        files.insert(index.symbols[s.index()].file);
+    }
+    for e in report.certain.iter().chain(&report.ambiguous) {
+        files.insert(index.sites[e.site.index()].file);
+    }
+
+    let mut radius: HashSet<SymbolId> = report.symbols.iter().copied().collect();
+    // The target is in its own radius: two units naming the same symbol are
+    // not disjoint, and leaving it out would let them look that way.
+    radius.insert(target);
+
+    WorkUnit {
+        target,
+        radius,
+        files,
+        partitionable: report.partitionable,
+    }
+}
+
 /// Groups work units into partitions that may run in parallel.
 ///
 /// Optimistic partitioning, pessimistic integration: this is a *filter*
@@ -173,30 +209,122 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Vec<Partition> {
     partitions
 }
 
-/// Debug view behind `trellis partitions`: which units grouped, which radii
-/// collided, which symbols forced serialization.
-pub fn explain(partitions: &[Partition]) -> String {
+/// Debug view behind `trellis partitions`.
+///
+/// `04-v1.1-multi-agent.md` calls this "a debugging tool you will use
+/// constantly", and asks it to show which units grouped, which radii
+/// collided, which symbols forced serialization, and which were
+/// unpartitionable for having unresolved callers. Counts alone answer none of
+/// those, so this names symbols.
+///
+/// Takes the index because a `SymbolId` is an arena offset: printing `17` to
+/// a user debugging a partition plan is printing nothing.
+pub fn explain(index: &Index, partitions: &[Partition]) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
+
+    if partitions.is_empty() {
+        return "no partitions: nothing to do
+"
+        .to_string();
+    }
+
+    let name = |sym: SymbolId| -> String {
+        let e = &index.symbols[sym.index()];
+        format!(
+            "{}.{}",
+            index.files[e.file.index()].module,
+            index.interner.resolve(e.name)
+        )
+    };
+
+    let parallel = partitions.iter().filter(|p| !p.conservative).count();
+    let _ = writeln!(
+        s,
+        "{} partition(s); {} may run concurrently.",
+        partitions.len(),
+        parallel
+    );
+    let _ = writeln!(s);
+
     for p in partitions {
         let _ = writeln!(
             s,
-            "partition {} — {} unit(s), {} symbol(s) in radius, {} file(s){}",
+            "partition {}  {} unit(s) · {} symbol(s) in radius · {} file(s){}",
             p.id.0,
             p.units.len(),
             p.radius.len(),
             p.files.len(),
-            if p.conservative {
-                "  [conservative: contains units reached through uncertain edges; \
-                 serialized because the graph cannot prove them disjoint]"
-            } else {
-                ""
-            }
+            if p.conservative { "   SERIALIZED" } else { "" }
         );
+
+        for u in &p.units {
+            let _ = writeln!(
+                s,
+                "    {}{}",
+                name(u.target),
+                if u.partitionable {
+                    ""
+                } else {
+                    "   — reached through an edge the graph could not bind"
+                }
+            );
+        }
+
+        // Why these units share a partition. A unit alone is not evidence of
+        // a collision; two or more means their radii or files intersected,
+        // and naming the overlap is the answer a user came here for.
+        if p.units.len() > 1 && !p.conservative {
+            let mut shared: Vec<String> = Vec::new();
+            for (i, a) in p.units.iter().enumerate() {
+                for b in p.units.iter().skip(i + 1) {
+                    for sym in a.radius.intersection(&b.radius) {
+                        shared.push(name(*sym));
+                    }
+                    for f in a.files.intersection(&b.files) {
+                        shared.push(index.files[f.index()].path.clone());
+                    }
+                }
+            }
+            shared.sort();
+            shared.dedup();
+            if !shared.is_empty() {
+                let _ = writeln!(s, "    grouped because they share:");
+                for x in shared.iter().take(6) {
+                    let _ = writeln!(s, "      {x}");
+                }
+                if shared.len() > 6 {
+                    let _ = writeln!(s, "      ... and {} more", shared.len() - 6);
+                }
+            }
+        }
+
+        if p.conservative {
+            let _ = writeln!(
+                s,
+                "{}",
+                concat!(
+                    "    These run one after another in a single agent. The graph ",
+                    "cannot prove
+    they are disjoint, and two agents colliding ",
+                    "through an edge nobody saw is
+    the failure this ",
+                    "conservatism exists to prevent (S19)."
+                )
+            );
+        }
+        let _ = writeln!(s);
     }
-    if partitions.is_empty() {
-        s.push_str("no partitions: nothing to do\n");
-    }
+
+    s.push_str(concat!(
+        "Partitioning is a filter on what MAY run concurrently, never a ",
+        "correctness
+guarantee: it is only as good as the graph's recall, ",
+        "which is partial. Every
+run still ends with the full check suite ",
+        "across the union.
+"
+    ));
     s
 }
 
@@ -364,12 +492,52 @@ mod tests {
     }
 
     #[test]
-    fn explain_names_why_a_partition_is_conservative() {
+    fn explain_names_the_symbol_and_why_it_serialized() {
+        // The doc calls this "a debugging tool you will use constantly", so
+        // counts are not enough: a user asking why their task did not
+        // parallelise needs the symbol, not partition 0's cardinality.
         let index = index_with(4);
         let mut u = unit(1, &[1], &[0]);
         u.partitionable = false;
-        let text = explain(&plan(&index, vec![u]));
-        assert!(text.contains("conservative"));
-        assert!(text.contains("uncertain edges"));
+        let text = explain(&index, &plan(&index, vec![u]));
+
+        assert!(text.contains("SERIALIZED"), "{text}");
+        assert!(
+            text.contains("could not bind"),
+            "it must say why the unit is untrusted: {text}"
+        );
+        assert!(
+            text.contains("S19"),
+            "and point at the risk it is defending: {text}"
+        );
+        assert!(
+            text.contains("m.s1"),
+            "the symbol must be named, not its arena offset: {text}"
+        );
+    }
+
+    #[test]
+    fn explain_names_what_two_grouped_units_share() {
+        // "Which radii collided" is the question this tool exists to answer.
+        let index = index_with(6);
+        let a = unit(1, &[1, 2], &[0]);
+        let b = unit(3, &[2, 3], &[0]);
+        let text = explain(&index, &plan(&index, vec![a, b]));
+
+        assert!(text.contains("grouped because they share"), "{text}");
+        assert!(
+            text.contains("m.s2"),
+            "the overlapping symbol must be named: {text}"
+        );
+    }
+
+    #[test]
+    fn explain_says_a_plan_is_a_filter_rather_than_a_guarantee() {
+        // S19's whole point. A dry run that reads as a proof of disjointness
+        // is how someone concludes the integrated check is optional.
+        let index = index_with(3);
+        let text = explain(&index, &plan(&index, vec![unit(1, &[1], &[0])]));
+        assert!(text.contains("never a correctness"), "{text}");
+        assert!(text.contains("full check suite"), "{text}");
     }
 }

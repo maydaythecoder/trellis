@@ -128,7 +128,16 @@ enum Command {
     },
 
     /// Dry run: show the partition plan and why.
-    Partitions { task: String },
+    /// Dry run: which symbols may be worked on in parallel, and why not.
+    ///
+    /// Takes the symbols to be changed rather than a task sentence.
+    /// Decomposing prose into work units needs a model, and the planner does
+    /// not — so the debugging tool works today and does not wait on one.
+    Partitions {
+        /// One or more symbols this change would touch.
+        #[arg(required = true)]
+        symbols: Vec<String>,
+    },
 
     /// One line per recorded run: task, outcome, integrity.
     Log {
@@ -251,17 +260,7 @@ fn main() -> Result<()> {
         Command::Log { limit } => cmd_log(&root, limit),
         Command::Why { symbol } => cmd_why(&root, &symbol),
         Command::Model { action } => cmd_models(action),
-        Command::Partitions { .. } => {
-            anyhow::bail!(concat!(
-                "not implemented yet: `partitions` needs concurrent multi-agent ",
-                "execution, which is v1.1 and is gated on single-agent numbers ",
-                "that do not exist yet.\n\n",
-                "Working today: index, radius, run, resume, check, doctor.\n\n",
-                "The partition planner itself is built and property-tested ",
-                "(`trellis_loop::partition::plan`); what is missing is running the ",
-                "partitions concurrently and reconciling their checks."
-            ))
-        }
+        Command::Partitions { symbols } => cmd_partitions(&root, &symbols),
     }
 }
 
@@ -1308,21 +1307,72 @@ fn cmd_radius(root: &Path, query: &str) -> Result<()> {
 /// per session rather than once per question. The two paths must not drift:
 /// a session that renders a radius differently from `trellis radius` would be
 /// two products wearing one name.
-pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
-    let qualified = |s: &trellis_index::SymbolEntry| {
-        format!(
-            "{}.{}",
-            index.files[s.file.index()].module,
-            index.interner.resolve(s.name)
-        )
-    };
+/// The partition plan for a set of symbols, without running anything.
+///
+/// `05-v1.1-multi-agent.md` asks for this early — "a debugging tool you will
+/// use constantly" — because every other part of multi-agent work is debugged
+/// through it.
+///
+/// **It takes symbols, not a task sentence.** The milestone's sketch is
+/// `trellis partitions "<task>"`, and turning prose into work units needs a
+/// model able to decompose a task. None is available above the floor, and
+/// waiting for one would mean the planner stayed undebuggable. Naming the
+/// symbols is what a user would have to do to check the plan anyway.
+fn cmd_partitions(root: &Path, symbols: &[String]) -> Result<()> {
+    let index = trellis_index::build_cached(root);
 
+    let mut units = Vec::with_capacity(symbols.len());
+    for q in symbols {
+        let target = resolve_symbol(&index, q)?;
+        units.push(trellis_loop::partition::unit_for(&index, target));
+    }
+
+    let plan = trellis_loop::partition::plan(&index, units);
+    print!("{}", trellis_loop::partition::explain(&index, &plan));
+
+    // The agent count is bounded by the backend, not by the plan. Saying so
+    // here rather than only in `doctor` because this is where someone forms
+    // an expectation about how much faster their run will be (S18).
+    println!();
+    println!(
+        "{}",
+        concat!(
+            "How many of these actually run at once is the serving backend's ",
+            "decision,
+not this plan's: N agents against a runtime without ",
+            "continuous batching queue
+on one GPU. `trellis doctor --model ",
+            "<spec>` reports which you have."
+        )
+    );
+    Ok(())
+}
+
+/// The fully qualified name of a symbol, as every surface shows it.
+fn qualified(index: &trellis_index::Index, s: &trellis_index::SymbolEntry) -> String {
+    format!(
+        "{}.{}",
+        index.files[s.file.index()].module,
+        index.interner.resolve(s.name)
+    )
+}
+
+/// Finds the one symbol a query names, or explains why it cannot.
+///
+/// Extracted from `radius_of` when `partitions` needed the same matching.
+/// A second copy would have been a second set of rules about what a user may
+/// type, and the two would have drifted the first time either was relaxed.
+///
+/// Ambiguity is an error rather than a first match: choosing silently between
+/// two definitions with the same name would put a blast radius — or a
+/// partition boundary — on a symbol the user did not mean.
+fn resolve_symbol(index: &trellis_index::Index, query: &str) -> Result<trellis_core::SymbolId> {
     let matches: Vec<trellis_core::SymbolId> = index
         .symbols
         .iter()
         .enumerate()
         .filter(|(_, s)| {
-            let q = qualified(s);
+            let q = qualified(index, s);
             q == query
                 || q.ends_with(&format!(".{query}"))
                 || index.interner.resolve(s.name) == query
@@ -1330,28 +1380,31 @@ pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
         .map(|(i, _)| trellis_core::SymbolId::from_index(i))
         .collect();
 
-    match matches.len() {
-        0 => anyhow::bail!(
-            "no first-party definition matches `{query}`. \
-             Note that only definitions inside the repository root are indexed."
+    match matches.as_slice() {
+        [] => anyhow::bail!(
+            "no first-party definition matches `{query}`.              Note that only definitions inside the repository root are indexed."
         ),
-        1 => {}
-        n => {
-            eprintln!("`{query}` matches {n} definitions:");
-            for &m in &matches {
+        [one] => Ok(*one),
+        many => {
+            eprintln!("`{query}` matches {} definitions:", many.len());
+            for &m in many {
                 let s = &index.symbols[m.index()];
                 eprintln!(
                     "  {}  ({}, byte {})",
-                    qualified(s),
+                    qualified(index, s),
                     index.files[s.file.index()].path,
                     s.span.0
                 );
             }
-            anyhow::bail!("ambiguous symbol: qualify it further");
+            anyhow::bail!("ambiguous symbol: qualify it further")
         }
     }
+}
 
-    let target = matches[0];
+pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
+    let qualified = |s: &trellis_index::SymbolEntry| qualified(index, s);
+    let target = resolve_symbol(index, query)?;
+
     let report = trellis_index::radius::blast_radius(index, target);
     let s = &index.symbols[target.index()];
 

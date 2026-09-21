@@ -141,49 +141,50 @@ back saying the harness gave the model what it needed.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-**Every item that code can move is done.** The v1.0 task order is complete, the
-gate has been run (`docs/bench/gate-20260920.md`) and is not met, and the last
-buildable item — coverage mapping, so `Verified` stops being 0 — landed with
-it. What is left needs a person, a model, or an idea nobody has had yet.
+**v1.1 was started at the owner's instruction, with its stated prerequisite
+unmet.** `05-v1.1-multi-agent.md` requires "v1.0 shipped"; the v1.0 gate was
+run on 2026-09-20 and is not met. Recorded here rather than left for a reader
+to discover, the same way the TUI's non-goal was.
 
-### Needs a person
+The first thing v1.1 asks for turned out to be a measurement, and it changes
+what the rest of the milestone is worth.
 
-1. **The third independent human audit** (A-34, Q-15). The only thing between
-   the project and a call on gate condition 2, which is otherwise mechanically
-   met over the full corpus. The packet is ready to produce and the pipeline
-   is validated end to end: two commands, no network,
-   `audit_sample ... 1000 <fresh-seed>` then `split_audit.py <dir> 40`, giving
-   25 blind chunks of 40.
+### The finding that should be decided before more is built
 
-   It must report **wrongly excluded** as well as recall. ADR 0015 lets a site
-   leave the denominator on the strength of an annotation, and no automated
-   check can see a wrong exclusion (S21). If `resolve.rs` moves before
-   scoring, regenerate `answers.json` — the seed reproduces the sites, never
-   the verdicts.
+1. **Multi-agent work is gated on recall, not on concurrency engineering.**
+   `docs/bench/decomposition-20260921.md`. A two-symbol change on poetry
+   partitions **4.0%** of the time; five symbols, 15.5%; mean groups never
+   above 1.17. And those are *random* symbol sets, so real correlated changes
+   decompose less.
 
-### Needs a model
+   The cause is not the milestone's hypothesis. **98.1%** of symbols satisfy
+   S19's stated rule; only **2.9%** of work units are partitionable, because
+   `blast_radius` also clears the flag when any unbound call site exists in
+   any file the radius touches — and poetry has 11,233 of those.
 
-2. **A local model that can do the work.** Closes gate condition 3 and the
-   plus-row together, and unblocks v0.3's conflict escalation, which needs a
-   model able to name the second rule it could not satisfy. Two configurations
-   measured, both repaired nothing; the A/B established the harness is not the
-   limit. Bonsai-2-27B is downloaded and set as the catalogue default but
-   nothing here can execute it — the weights are Qwen35 ternary and the candle
-   path uses `quantized_qwen2`, so serving it needs llama.cpp.
+   Two readings, and the artifact deliberately picks neither: the rule is
+   correct and v1.1 is worth little at 72% recall, or the touched-file test is
+   over-broad for a safety decision when it was introduced for a reporting
+   one. **Loosening it is an ADR, not a commit.** The milestone says the
+   conservative version ships first and loosening is "an experiment to run
+   with measurements in hand" — the measurements are now in hand.
 
-3. **A frontier API through the adapter** (v0.2 gate). Needs a key, which by
-   ADR 0010 never goes in a file TRELLIS reads — the runtime is configured
-   with it directly, out of this tool's sight.
+### Built this iteration
 
-### Needs an idea
+2. `trellis partitions <symbol>...` — the dry run the milestone says to build
+   early, naming which units grouped, what they share, and which were
+   serialized for having edges the graph could not bind. It takes symbols
+   rather than a task sentence, because decomposing prose needs a model and
+   none is above the floor.
 
-4. **The 85% backstop** (gate condition 1, currently 72.0%). Both candidates
-   are measured and rejected: fixtures already closed at 10 sites,
-   return-type propagation 67 sites for 0.4pp against a rule that can only add
-   unsound edges. A third finding — the denominator error — was real and
-   corrected, and moved no recall figure. This one needs a new idea rather
-   than more effort, and `docs/bench/receiver_shapes.py` is where to look for
-   it.
+### Still needs a person, a model, or an idea
+
+3. **The third independent human audit** (A-34). The only thing between the
+   project and a call on v1.0 gate condition 2.
+4. **A local model that can do the work.** Closes v1.0 condition 3 and the
+   plus-row, and unblocks v0.3's conflict escalation.
+5. **The 85% backstop.** Now doubly load-bearing: it gates v1.0 condition 1
+   *and* is the thing that would make v1.1 worth building.
 
 **v0.1 is complete. v0.3 is eight of nine. v0.2 is six met, one descoped by
 ADR 0013, three partial or unmet** — both gates audited line by line below,
