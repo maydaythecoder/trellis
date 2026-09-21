@@ -179,7 +179,22 @@ audit's own §0 requires a finished campaign, so they run in that order.
    Both are recorded in `DECISIONS.md`; the second now makes the script warn
    and mark a result unusable above two timeouts.
 
-4. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+4. **`trellis-vcs`: 59.3% -> 92.6%, and the biggest gap so far.** Nine of its
+   eleven survivors die the moment `trellis-cli`'s session tests run. Two
+   remain: `Worktree::discard` (C-002, dead code) and a message separator in
+   `reset_and_clean` that needs two simultaneous git failures to reach — the
+   latter triaged and deliberately left.
+
+5. **C-010 — a defect v1.1 would have shipped, found by testing dead code.**
+   C-002's `Worktree` was tested rather than deleted, and the first test
+   failed for real: `Worktree::create` puts a git worktree at
+   `.trellis/work/<run>/partition-<n>`, **inside the repository**, where git
+   reports it as untracked. A run that partitions would dirty the tree and the
+   *next* run would refuse to start (ADR 0009) — the same wall `index.bin`
+   built once already. `work/` now joins it in the scaffolded
+   `.trellis/.gitignore`.
+
+6. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was
