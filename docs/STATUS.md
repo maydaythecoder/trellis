@@ -146,33 +146,51 @@ at the owner's instruction, and they took priority over v1.1.** The campaign's
 record is `CORRECTNESS_LEDGER.md`; the audit's is `QUALITY_LEDGER.md`. The
 audit's own §0 requires a finished campaign, so they run in that order.
 
-### Blocked on a rerun nobody has asked for
+### In flight
 
-1. **The mutation baseline was stopped at 842 of ~1,253 mutants.** Claude Code
-   killed it because the system was low on memory while the session was idle —
-   not a failure of the run, and nothing in it to debug. **It has not been
-   restarted**, and should be started again only on request.
+1. **The mutation baseline, running again at `486fff1`.** The first attempt
+   was stopped at 842 of ~1,253 for system memory pressure; this one runs at
+   `-j 2` for that reason and takes roughly twice as long. Its raw output is
+   preserved in `docs/bench/mutants-94c285c/`.
 
-   What it established is in `CORRECTNESS_LEDGER.md` Tier 6, with the caveat
-   attached to the number rather than left for a reader to supply:
+   The two runs are **not** a before/after. The first never reached
+   `trellis-loop`, `trellis-model`, `trellis-trail` or `trellis-vcs`, so its
+   56.8% and whatever this one returns are measured over different
+   populations.
 
-   ```
-   trellis-checks   93.9%      trellis-cli    35.0%  (pre-C-001)
-   trellis-core     62.5%      trellis-index  71.5%
-                              — 56.8% over what ran
+### The quality audit: Passes 0–5 and 7 done, 6 held
 
-   never reached:  trellis-loop · trellis-model · trellis-trail · trellis-vcs
-   ```
+The original position was that Passes 3–7 all wait for the mutation baseline.
+Too broad. The distinction that matters is **what the compiler covers**.
 
-   **56.8% is not a workspace score.** `--no-shuffle` walks packages in order,
-   so the 411 untested mutants are four whole crates rather than a random
-   remainder — and those four carry the highest line coverage in the
-   repository, so the figure is biased low by an amount this run cannot
-   measure. Quoting it without that is the same error as quoting `trellis
-   index`'s percentage as recall.
+2. **Passes 3, 4, 5 — done.** `Partition::{shared,parallel}` and
+   `RuntimeModel::{constrained,unconstrained}` replace bool parameters that
+   said nothing at the call site. `unreachable_pub` is on at workspace level,
+   and nineteen `pub mod` became `mod`, leaving the six module paths that
+   actually cross a crate boundary. None of this can make code harder to
+   test, which is the damage the mutation rule exists to catch.
 
-   The quality audit's Passes 3–7 stay blocked, because §9 requires a score to
-   compare against and a partial one over half the workspace is not it.
+3. **Pass 7 — done.** Lints as advisory. **Seven of the eight readability
+   lints it names fire zero times.** `doc_markdown` fires 15 times and 14 are
+   clippy reading document and product names as identifiers. It also
+   corrected this project's own long-function figures: the ledger's crude
+   fn-to-fn span over-counted by 25–40% by including doc comments.
+
+4. **Q-009, the finding narrowing produced.** Closing the module paths made
+   `unreachable_pub` fire on `trellis_loop::tools::args` — five argument
+   structs used by nothing, an unwired design that `ToolCallWire` superseded.
+   Deleted, 45 lines. Pass 2 had missed it because it compiles, it is
+   commented, and it looks purposeful.
+
+   Its first recorded rationale was wrong and the correction is in
+   `QUALITY_LEDGER.md` rather than amended away.
+
+5. **Pass 6 is held, and it is the one the rule was written for.** §3 warns
+   that duplication is cheaper than the wrong abstraction, and an extraction
+   that buries logic inside a shared helper is exactly what a mutation score
+   detects and a green suite does not. **The `main.rs` split is held with
+   it** — it is the change the new CLI suite was written to protect, so
+   measuring that protection before relying on it is the right order.
 
 ### Closed this iteration
 
