@@ -78,6 +78,12 @@ impl std::fmt::Display for Reason {
     /// user, the model's context and the recorded figures in `docs/bench/`,
     /// so a rename of a variant should be a deliberate change to output here
     /// rather than a silent consequence of a refactor.
+    ///
+    /// `f.pad`, not `f.write_str`. `write_str` goes straight to the sink and
+    /// ignores the width the caller asked for, so `{reason:<22}` in the
+    /// radius report was a no-op: the reason rows ran ragged while the
+    /// `(other)` row — a plain `&str`, which does pad — lined up, and the
+    /// column looked broken in exactly the place a reader compares counts.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             Reason::MethodDispatchUntyped => "MethodDispatchUntyped",
@@ -89,7 +95,7 @@ impl std::fmt::Display for Reason {
             Reason::LocalBinding => "LocalBinding",
             Reason::UnboundName => "UnboundName",
         };
-        f.write_str(s)
+        f.pad(s)
     }
 }
 
@@ -299,5 +305,38 @@ impl Index {
     /// S19: such a symbol must not be split across partitions.
     pub fn is_partitionable(&self, s: SymbolId) -> bool {
         self.incoming(s).all(|e| e.target.is_certain())
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::Reason;
+
+    #[test]
+    fn a_reason_honours_the_width_the_caller_asked_for() {
+        // `trellis radius` prints its doubt table with `{reason:<22}`, and a
+        // Display impl written with `write_str` ignores that silently — the
+        // column specification compiles, reads correctly, and does nothing.
+        // The `(other)` residue row is a plain `&str` and did pad, so the
+        // table lined up on the one row that was not a reason.
+        assert_eq!(
+            format!("[{:<22}]", Reason::LocalBinding),
+            "[LocalBinding          ]"
+        );
+        assert_eq!(
+            format!("[{:>22}]", Reason::StarImport),
+            "[            StarImport]"
+        );
+    }
+
+    #[test]
+    fn an_unpadded_reason_is_still_exactly_its_name() {
+        // These strings reach the model's context and the recorded figures
+        // in docs/bench/, so padding must not have changed the bare form.
+        assert_eq!(
+            Reason::MethodDispatchUntyped.to_string(),
+            "MethodDispatchUntyped"
+        );
+        assert_eq!(format!("{}", Reason::UnboundName), "UnboundName");
     }
 }
