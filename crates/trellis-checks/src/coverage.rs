@@ -171,4 +171,50 @@ mod tests {
         assert!(c.is_empty());
         assert!(!c.covers("anything.py", 1));
     }
+
+    /// Two mutants survived here, and between them they are the whole of
+    /// `audit_modes`'s gate: `load` returning `None` and `is_empty`
+    /// returning `true` both make every call site report as **Reviewed**
+    /// rather than **Verified**.
+    ///
+    /// That is the S3 distinction — "the callers still work" meaning a test
+    /// executed them, or meaning a model read them and did not object — and
+    /// ADR 0003 keeps the two counts apart precisely because collapsing them
+    /// is what makes a user feel lied to the first time something breaks
+    /// after a clean run.
+    ///
+    /// The existing tests cover `parse`, which takes a string. Neither
+    /// reached `load`, which takes a directory, nor asserted that a report
+    /// with files in it is *not* empty.
+    #[test]
+    fn load_reads_a_report_from_disk_and_a_populated_one_is_not_empty() {
+        let dir =
+            std::env::temp_dir().join(format!("trellis-coverage-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // No report yet: absence, not failure.
+        assert!(
+            LineCoverage::load(&dir).is_none(),
+            "a directory with no coverage.json has no coverage"
+        );
+
+        std::fs::write(
+            dir.join("coverage.json"),
+            r#"{"files": {"app/core.py": {"executed_lines": [1, 2, 5]}}}"#,
+        )
+        .unwrap();
+
+        let c = LineCoverage::load(&dir).expect("a report on disk must load");
+        assert!(
+            !c.is_empty(),
+            "a report naming a file is not empty — this is what decides \
+             Verified from Reviewed"
+        );
+        assert!(c.knows("app/core.py"));
+        assert!(c.covers("app/core.py", 2));
+        assert!(!c.covers("app/core.py", 3), "line 3 was not executed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
