@@ -647,3 +647,61 @@ fn an_unreachable_runtime_costs_nothing() {
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_failed_check_says_why_it_failed() {
+    // Reported from a real session: three turns printed "check FAILED" and
+    // nothing else, so the one thing a user needs — what the checker
+    // objected to — was the one thing not shown. The observation already
+    // held it; it was what the model was given and the user was not.
+    let d = repo("why-failed");
+    std::fs::write(
+        d.join("app/core.py"),
+        "def add(a: int, b: int) -> int:\n    return a + b\n\nx: str = add(1, 2)\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[checks]\ntypecheck = [\"trellis-no-such-typechecker\"]\n",
+    )
+    .unwrap();
+    let script = d.join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[{"tool":"run_checks","paths":[],"kinds":["typecheck"]}]}"#,
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "fixture"]);
+
+    let out = run(
+        &d,
+        &[
+            "run",
+            "--model",
+            &format!("scripted:{}", script.display()),
+            "make it typecheck",
+        ],
+    );
+    let s = combined(&out);
+
+    assert!(
+        s.contains("check FAILED"),
+        "the turn list still marks it: {s}"
+    );
+    assert!(
+        s.contains("why the check failed:"),
+        "and the run must say why, not only that: {s}"
+    );
+    assert!(
+        s.contains("command:"),
+        "naming the exact command is half the answer — it is how someone \
+         reruns it by hand: {s}"
+    );
+    assert!(
+        s.contains("trellis-no-such-typechecker"),
+        "the checker's own output must reach the user: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

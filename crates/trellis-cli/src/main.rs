@@ -911,8 +911,51 @@ fn cmd_run(
         };
         println!("  {:>2}. {:?} {}", i + 1, t.call, mark);
     }
+
+    // The list above says a check failed. This says why.
+    //
+    // The observation already holds the kind, the exact command and the tail
+    // of its output — it is what the model was shown — and until now the user
+    // was the only party in the loop who could not see it. "check FAILED"
+    // three times is not something anyone can act on.
+    //
+    // Printed once, for the most recent failure, rather than under every
+    // turn: a no-progress stop means the same call produced the same result
+    // repeatedly, and three copies of one mypy report is not three pieces of
+    // information.
+    if let Some(t) = turns
+        .turns
+        .iter()
+        .rev()
+        .find(|t| t.verdict_passed == Some(false))
+    {
+        const SHOWN: usize = 24;
+        println!();
+        println!("why the check failed:");
+        let lines: Vec<&str> = t.observation.lines().collect();
+        for line in lines.iter().take(SHOWN) {
+            println!("  {line}");
+        }
+        if lines.len() > SHOWN {
+            println!(
+                "  … {} more line(s); the full output is in the trail",
+                lines.len() - SHOWN
+            );
+        }
+    }
+
     println!();
-    println!("files written: {}", transcript.join(", "));
+    println!(
+        "files written: {}",
+        if transcript.is_empty() {
+            // "files written:" followed by nothing reads as truncated
+            // output. A run that wrote nothing is an ordinary outcome and
+            // should say so.
+            "none".to_string()
+        } else {
+            transcript.join(", ")
+        }
+    );
     // Context fill (v0.2 gate). Bytes, because TRELLIS does not tokenize.
     let measured: Vec<usize> = turns.turns.iter().filter_map(|t| t.prompt_bytes).collect();
     if let (Some(first), Some(peak)) = (measured.first(), measured.iter().max()) {
