@@ -1201,6 +1201,16 @@ fn init_says_ready_when_both_checks_resolve() {
         !s.contains("prerequisite(s) missing"),
         "nothing was missing, so nothing should be reported as missing:\n{s}"
     );
+    // The *version the tool reported*, not merely that something was found.
+    // Without this the line could carry any string — or an empty one — and
+    // still read as present, which is the difference between "mypy 1.8.0"
+    // and a blank the user cannot act on. Both checks are configured as
+    // `git`, so both lines must carry git's own answer.
+    assert_eq!(
+        s.matches("git version").count(),
+        2,
+        "both check lines must show the version the command itself printed:\n{s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
