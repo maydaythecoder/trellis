@@ -465,6 +465,76 @@ mod tests {
             "the two counts must be separated in the prose, not merely adjacent: {s}"
         );
     }
+
+    /// ADR 0016's rule, in both directions, because one direction is the
+    /// whole change and the other is what makes it safe.
+    ///
+    /// `add_touched_file_misses` clears `partitionable` for an unbindable
+    /// call in a touched file **other than the root's own**. Before the
+    /// narrowing it cleared for any touched file at all, which on poetry left
+    /// 2.9% of work units partitionable and made the decomposition ratio 4%.
+    ///
+    /// Mutation testing reported `replace != with == in
+    /// add_touched_file_misses` as surviving. That mutant inverts the rule
+    /// outright — it would clear the flag *only* for the root's own file and
+    /// leave it set for every other — which is precisely the S19 collision
+    /// the flag exists to prevent. The suite asserted the coverage counts
+    /// this function fills in and never the flag it sets.
+    #[test]
+    fn an_unbound_call_outside_the_root_file_makes_the_radius_unpartitionable() {
+        let i = index(&[
+            ("app/target.py", "def target():\n    return 1\n"),
+            (
+                "app/caller.py",
+                "from app.target import target\n\
+                 def go(obj):\n\
+                 \x20   target()\n\
+                 \x20   obj.run()\n",
+            ),
+        ]);
+        let r = blast_radius(&i, symbol(&i, "target"));
+
+        assert!(
+            r.coverage.unbound_in_touched_files >= 1,
+            "obj.run() is unbindable and in a touched file"
+        );
+        assert!(
+            !r.partitionable,
+            "an unbindable call in a caller's file means this radius cannot be \
+             proven disjoint from another (S19)"
+        );
+    }
+
+    #[test]
+    fn an_unbound_call_in_the_root_file_alone_leaves_it_partitionable() {
+        // The narrowing itself. The root's own file is where the agent will
+        // be working, so an unbindable call there is not a *second* party
+        // that might collide with it — it is the same party.
+        let i = index(&[
+            (
+                "app/target.py",
+                "def target(thing):\n    return thing.run()\n",
+            ),
+            (
+                "app/caller.py",
+                "from app.target import target\n\
+                 def go():\n\
+                 \x20   return target(1)\n",
+            ),
+        ]);
+        let r = blast_radius(&i, symbol(&i, "target"));
+
+        assert!(
+            r.coverage.unbound_in_touched_files >= 1,
+            "thing.run() is unbindable and sits in the root's own file"
+        );
+        assert!(
+            r.partitionable,
+            "doubt confined to the root's own file must not make the unit \
+             unpartitionable — that is ADR 0016, and undoing it returns the \
+             decomposition ratio to 4%"
+        );
+    }
 }
 
 /// What the graph could not see, restricted to a given set of files.
