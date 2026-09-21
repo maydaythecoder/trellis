@@ -23,10 +23,19 @@ cd "$(dirname "$0")/.."
 COMMIT=$(git rev-parse --short HEAD)
 if [ "${WORKSPACE_TESTS:-0}" = "1" ]; then
     OUT="docs/bench/mutants-by-crate-ws"
-    SCOPE=(--test-workspace true)
+    # -j 1, and this is not the same judgement as the -j 2 that failed on
+    # the whole-workspace runs. There the bottleneck was memory across many
+    # short test runs; here each run is the full suite (46s warm), and four
+    # of those at once contend on git and temp-directory I/O hard enough
+    # that every mutant exceeded the auto-derived timeout — 10 timeouts and
+    # 0 verdicts on trellis-core. A timeout is neither caught nor missed,
+    # so the whole run was unusable.
+    SCOPE=(--test-workspace true --timeout 300)
+    JOBS=1
 else
     OUT="docs/bench/mutants-by-crate"
     SCOPE=()
+    JOBS=4
 fi
 mkdir -p "$OUT"
 
@@ -46,7 +55,7 @@ for crate in "${CRATES[@]}"; do
     rm -rf mutants.out mutants.out.old
     # Not `set -e`: a crate that fails to build should not take the rest of
     # the run with it. The saved files say what happened either way.
-    cargo mutants -p "$crate" "${SCOPE[@]}" --no-shuffle -j 4 2>&1 | tail -5
+    cargo mutants -p "$crate" "${SCOPE[@]}" --no-shuffle -j "$JOBS" 2>&1 | tail -5
 
     if [ ! -f mutants.out/caught.txt ]; then
         echo "== $crate: no results — build failure or killed before the baseline"
@@ -61,7 +70,11 @@ for crate in "${CRATES[@]}"; do
 
     c=$(wc -l < "$dest/caught.txt")
     m=$(wc -l < "$dest/missed.txt")
-    echo "== $crate: caught $c, missed $m, at $COMMIT"
+    t=$(wc -l < "$dest/timeout.txt")
+    echo "== $crate: caught $c, missed $m, timeout $t, at $COMMIT"
+    # A timeout is neither caught nor missed. More than a couple means the
+    # run says nothing and the score must not be computed from it.
+    [ "$t" -gt 2 ] && echo "== $crate: WARNING $t timeouts — treat this result as unusable"
 done
 
 echo
