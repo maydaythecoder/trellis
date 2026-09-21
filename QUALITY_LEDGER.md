@@ -1,6 +1,6 @@
 # Quality audit ledger
 
-**Status: in progress.** Passes 0–2 complete, 3–7 not started. The
+**Status: in progress.** Passes 0–5 complete, 6 held. The
 prerequisite was not met when this began; it is now met except for Tier 6,
 which is running. See *Prerequisite* below.
 
@@ -33,11 +33,25 @@ makes code harder to test shows up here and nowhere else."*
 | 10 — Dependencies | **Run and clean.** `cargo audit` and `cargo deny check` both pass; `deny.toml` states the policy |
 | 11 — Formal | N/A |
 
-**Consequence for this audit.** Passes 1–2 are compiler-verified renames and
-comment work, which the test suite alone is sufficient to check. Passes 3–7 —
-particularly Pass 4 (types) and Pass 6 (duplication) — are where a refactor can
-quietly make code less testable, and those are not started until a mutation
-baseline exists.
+**Consequence for this audit, revised.** The original position was that
+Passes 3–7 all wait for the mutation baseline. That was too broad, and the
+distinction worth drawing is what the compiler covers.
+
+Passes 3, 4 and 5 are **type-level and compiler-verified**: named constructors
+replacing bool parameters, and visibility narrowing. Neither can make code
+harder to test — narrowing made the compiler find dead code, which is the
+opposite — so the mutation score is not the instrument that would catch a
+mistake in them. They are done.
+
+**Pass 6 (duplication) is held**, and it is the one the rule was written for.
+§3 warns that duplication is cheaper than the wrong abstraction, and an
+extraction that buries logic inside a shared helper is exactly the damage a
+mutation score detects and a green test suite does not. It waits.
+
+**The `main.rs` split is also held.** It is a move rather than a
+restructuring, but it is large, and it is the change the CLI integration
+suite was written to protect — which makes measuring that protection before
+relying on it the right order.
 
 ## A caveat about independence
 
@@ -69,9 +83,10 @@ coverage         82.74% lines · 82.52% regions · 86.34% functions
 |----|------|-------|----------|-------|--------|-----------|--------|
 | Q-001 | 1 | B | `trellis-index/src/incremental.rs:84` | `update()` returns `bool` with no way to read what `true` means | Renamed `try_update` | `try_` is the Rust convention for an operation that may decline; the why-comment explaining *when* it declines is untouched | `2a61ad6` |
 | Q-002 | 1 | B | `trellis-cli/src/main.rs:1101` | `rollback_or_explain` — "or" reads as alternatives | Renamed `rollback_and_report` | It always rolls back and always reports; explaining is what happens *when the rollback fails*, not instead of it | `2a61ad6` |
-| Q-003 | 3 | A | `trellis-loop/src/partition.rs:186,220,228` | `Partition::new(true)` / `Partition::new(false)` at three call sites | **Reported, not fixed** | §7 names this exactly. Fix is two named constructors (`shared()` / `parallel()`), which is Pass 3 and waits for the mutation baseline | — |
-| Q-004 | 3 | B | `trellis-loop/src/adapter.rs:46` | `RuntimeModel::new(client, constrained: bool)`, called as `new(client, !unconstrained)` | **Reported, not fixed** | A double negative at the call site. An enum would read, but that is Pass 4 | — |
-| Q-005 | 5 | B | workspace-wide | ~250 undocumented `pub` items | **Reported, not fixed** | Verified `trellis_loop::tools` and `trellis_loop::budget` are referenced from no other crate. These are over-wide visibility, not public API — the fix is narrowing, not writing 250 doc comments. Pass 5 |
+| Q-003 | 3 | A | `trellis-loop/src/partition.rs` | `Partition::new(true)` / `Partition::new(false)` at three call sites | **Fixed** | `shared()` and `parallel()`. The two states are not symmetric — one is the conservative bucket the staging exists to keep separate — and `true` said none of that | `297dbe8` |
+| Q-004 | 4 | B | `trellis-loop/src/adapter.rs` | `RuntimeModel::new(client, constrained)`, called as `new(client, !unconstrained)` | **Fixed** | `constrained()` and `unconstrained()`, matching the flag the user types. Not an `AdapterTier` parameter: that accepts tier 1 and tier 3, which this type cannot drive | `297dbe8` |
+| Q-005 | 5 | B | workspace-wide | ~250 undocumented `pub` items | **Fixed** | `unreachable_pub` on at workspace level (17 items in the binary); 19 `pub mod` narrowed to `mod`, leaving the six module paths that cross a crate boundary. The re-exports already covered everything, and the compiler confirms nothing took the second path | `988f3f3` |
+| Q-009 | 5 | A | `trellis-loop/src/tools.rs` | `pub mod args` — five argument structs used by nothing, whose doc comment described a mechanism the crate graph forbids | **Fixed** | It claimed `trellis-model` compiles these into the grammar. `trellis-model` does not depend on `trellis-loop` and must not; the real schema is `ToolCallWire::schema()` at `adapter.rs:265`. Dead code documenting a false path is worse than dead code | `988f3f3` |
 | Q-006 | 2 | C | `trellis-checks/src/lib.rs:222` | `TODO(v0.2): parse structured output per tool` — v0.2 has passed | **Left alone** | It carries a milestone reference and the work is still genuinely open (`failure_count` is still `None`). Deleting it would lose a real open item; §4 only condemns a TODO with no owner, ticket, or date |
 | Q-007 | 2 | B | `CLAUDE.md:32` | Claimed `run`, `resume` and `partitions` "exit with a clear 'not implemented yet'". All three have been implemented since v0.2 | **Fixed** | A stale instruction file is worse than none: a reader trusts it and stubs a command that already works. Rewrote it to keep the rule (do not fake a command) while stating the current fact | pending |
 | Q-008 | 2 | — | workspace-wide | Suspected `cargo fmt` string-folding defects — prose literals broken mid-sentence by a source line break | **None found** | 198 literals span a line break; 17 survived filtering for mid-sentence prose; all 17 rendered and every one is a deliberate hand-wrap at 73–78 columns. The remainder are `\` continuations or literal test fixtures. Recorded so it is not re-litigated | — |
