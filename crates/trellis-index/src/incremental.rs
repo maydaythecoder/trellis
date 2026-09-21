@@ -81,7 +81,7 @@ impl Session {
     /// a reopen, not an update, and pretending otherwise would silently
     /// produce a graph that disagrees with the filesystem.
     #[tracing::instrument(skip_all, fields(path = rel_path))]
-    pub fn update(&mut self, rel_path: &str, new_src: &str) -> bool {
+    pub fn try_update(&mut self, rel_path: &str, new_src: &str) -> bool {
         let Some(i) = self.sources.iter().position(|(p, _)| p == rel_path) else {
             return false;
         };
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(s.index().coverage.resolved, 1, "go calls helper");
 
         // Add a second call to the same function.
-        let ok = s.update(
+        let ok = s.try_update(
             "app/main.py",
             "from app.util import helper\n\ndef go():\n    helper()\n    return helper()\n",
         );
@@ -190,7 +190,7 @@ mod tests {
         let mut s = Session::from_sources(sources());
         assert_eq!(s.index().coverage.resolved, 1);
 
-        s.update("app/util.py", "def renamed():\n    return 1\n");
+        s.try_update("app/util.py", "def renamed():\n    return 1\n");
         assert_eq!(
             s.index().coverage.resolved,
             0,
@@ -206,7 +206,7 @@ mod tests {
         let edited = "from app.util import helper\n\ndef go():\n    return helper()\n\ndef second():\n    return helper()\n";
 
         let mut s = Session::from_sources(sources());
-        s.update("app/main.py", edited);
+        s.try_update("app/main.py", edited);
 
         let mut cold_sources = sources();
         cold_sources[1].1 = edited.to_string();
@@ -222,7 +222,7 @@ mod tests {
     fn updating_an_unknown_path_is_refused() {
         let mut s = Session::from_sources(sources());
         assert!(
-            !s.update("app/new_file.py", "def x():\n    pass\n"),
+            !s.try_update("app/new_file.py", "def x():\n    pass\n"),
             "adding a file changes the module map and the id space; that is a \
              reopen, not an update"
         );

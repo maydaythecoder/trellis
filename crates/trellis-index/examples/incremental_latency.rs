@@ -56,12 +56,12 @@ fn main() {
         // realistic, and it is labelled as such in the output.
         let edited = format!("{original}\n\ndef _trellis_probe_{n}():\n    return {n}\n");
         let t = Instant::now();
-        let ok = session.update(&path, &edited);
+        let ok = session.try_update(&path, &edited);
         times.push(t.elapsed().as_secs_f64() * 1000.0);
         assert!(ok, "the probe file must be part of the session");
     }
     // Leave the session holding the file's real contents.
-    session.update(&path, &original);
+    session.try_update(&path, &original);
 
     times.sort_by(f64::total_cmp);
     let pct = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];

@@ -949,7 +949,7 @@ fn cmd_run(
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_or_explain(&snapshot);
+            let restored = rollback_and_report(&snapshot);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -1052,7 +1052,7 @@ fn handle_interrupt(
         println!("files this run had written: {}", touched.join(", "));
     }
 
-    let restored = rollback_or_explain(snapshot);
+    let restored = rollback_and_report(snapshot);
 
     // The turn list cannot be recovered: it lives in the loop's future, which
     // was just cancelled. The factual half that matters survives, because the
@@ -1098,7 +1098,7 @@ fn handle_interrupt(
 ///
 /// Returns whether the worktree was restored, so the caller can pick an exit
 /// code that says which.
-fn rollback_or_explain(snapshot: &trellis_vcs::Snapshot) -> bool {
+fn rollback_and_report(snapshot: &trellis_vcs::Snapshot) -> bool {
     match snapshot.rollback() {
         Ok(()) => {
             let restored = snapshot.is_restored().unwrap_or(false);
@@ -2267,7 +2267,7 @@ mod interrupt_tests {
         snap.head = "0".repeat(40);
 
         assert!(
-            !rollback_or_explain(&snap),
+            !rollback_and_report(&snap),
             "the recovery path must never report a restoration it did not make"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2279,7 +2279,7 @@ mod interrupt_tests {
         let snap = trellis_vcs::snapshot(&dir).unwrap();
         std::fs::write(dir.join("a.py"), "def f():\n    return 5\n").unwrap();
 
-        assert!(rollback_or_explain(&snap));
+        assert!(rollback_and_report(&snap));
         assert!(snap.is_restored().unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }

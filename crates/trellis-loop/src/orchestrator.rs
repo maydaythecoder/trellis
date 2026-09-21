@@ -360,7 +360,7 @@ impl Orchestrator {
         // Keep the graph in step with the tree. A stale index would let the
         // next blast radius describe code that no longer exists, so a refusal
         // here is reported rather than dropped — the write already happened.
-        if !self.session.update(path, &updated) {
+        if !self.session.try_update(path, &updated) {
             return ToolResult::Error(format!(
                 concat!(
                     "{} was written but is not part of the index session, so ",

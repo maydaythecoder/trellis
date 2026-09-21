@@ -1,0 +1,9 @@
+# Pinned so every measurement in docs/bench/ and every compile-fail fixture in
+# crates/trellis-checks/tests/forge/ means the same thing on every machine.
+#
+# That second one is not hypothetical: the Verdict seal's proof passed on
+# rustc 1.93 and failed on 1.95, because the two emit different macro
+# backtrace notes. See docs/bench/precision-20260920.md.
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]
