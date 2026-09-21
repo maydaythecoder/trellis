@@ -18,7 +18,18 @@ use std::path::Path;
 /// Bumped whenever the serialized shape changes. An older blob is discarded,
 /// not migrated: it is derived state, so rebuilding is always correct and
 /// always cheap relative to being wrong.
-const FORMAT_VERSION: u32 = 1;
+///
+/// **2** — `Interner` stopped serialising its lookup map, which is derivable
+/// from the store beside it (C-003). Postcard is not self-describing, so a
+/// version-1 blob's bytes would be read against the new shape; bumping this
+/// is what makes that impossible rather than merely unlikely.
+///
+/// Note the order `load` works in: the whole blob is deserialised *before*
+/// `version` is compared, so this constant cannot rescue a payload change on
+/// its own — it works because it is also hashed into `fingerprint`, and
+/// because `version` and `fingerprint` both precede `index` in the struct and
+/// so are read from bytes the change did not move.
+const FORMAT_VERSION: u32 = 2;
 
 /// Written by reference so saving never clones the whole arena.
 #[derive(serde::Serialize)]
@@ -148,7 +159,8 @@ mod tests {
 
     #[test]
     fn roundtrips_and_preserves_the_graph() {
-        let dir = std::env::temp_dir().join("trellis-cache-roundtrip");
+        let dir =
+            std::env::temp_dir().join(format!("trellis-cache-roundtrip-{}", std::process::id()));
         let path = dir.join("index.bin");
         let _ = std::fs::remove_file(&path);
 
@@ -185,7 +197,8 @@ mod tests {
         // untracked cache makes `git status` dirty, and a dirty worktree
         // blocks the next run (ADR 0009) — a tool that writes a cache and
         // then refuses to start because of it has built its own wall.
-        let dir = std::env::temp_dir().join("trellis-cache-gitignore");
+        let dir =
+            std::env::temp_dir().join(format!("trellis-cache-gitignore-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("index.bin");
 
@@ -231,7 +244,8 @@ mod tests {
 
     #[test]
     fn a_changed_file_set_invalidates_the_blob() {
-        let dir = std::env::temp_dir().join("trellis-cache-invalidate");
+        let dir =
+            std::env::temp_dir().join(format!("trellis-cache-invalidate-{}", std::process::id()));
         let path = dir.join("index.bin");
         let _ = std::fs::remove_file(&path);
 
@@ -250,5 +264,68 @@ mod tests {
             load(&path, fingerprint(&src)).is_some(),
             "the unchanged file set must still load"
         );
+    }
+
+    #[test]
+    fn a_blob_from_an_older_format_is_discarded() {
+        // Postcard is not self-describing: nothing in the bytes says which
+        // shape wrote them, so a payload change reads the old bytes against
+        // the new layout. `FORMAT_VERSION` is what stops that, and this
+        // asserts the guard actually fires rather than a corrupt decode
+        // happening to fail for it.
+        //
+        // The blob below is *well-formed under the current layout* and
+        // carries the *correct* fingerprint. Only the version is old. If
+        // `load` returned it, the constant would be decoration.
+        let dir = std::env::temp_dir().join(format!("trellis-cache-oldver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+
+        let src = sources();
+        let index = crate::build_from_sources(&src);
+
+        let stale = BlobRef {
+            version: FORMAT_VERSION - 1,
+            fingerprint: index.fingerprint,
+            index: &index,
+        };
+        std::fs::write(&path, postcard::to_stdvec(&stale).unwrap()).unwrap();
+
+        assert!(
+            load(&path, fingerprint(&src)).is_none(),
+            "a blob written by an older format must be rebuilt, not read"
+        );
+
+        // And the fingerprint is the second, independent guard: the version
+        // is hashed into it, so a blob an older build wrote does not match
+        // what this build expects even before the version is compared.
+        let stale_both = BlobRef {
+            version: FORMAT_VERSION - 1,
+            fingerprint: 0,
+            index: &index,
+        };
+        std::fs::write(&path, postcard::to_stdvec(&stale_both).unwrap()).unwrap();
+        assert!(load(&path, fingerprint(&src)).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_truncated_blob_is_a_miss_rather_than_a_panic() {
+        // Half a file is what a crash mid-write leaves behind, and the
+        // caller's only correct response to any of it is to rebuild.
+        let dir = std::env::temp_dir().join(format!("trellis-cache-trunc-{}", std::process::id()));
+        let path = dir.join("index.bin");
+        let src = sources();
+        save(&crate::build_from_sources(&src), &path).expect("save");
+
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(load(&path, fingerprint(&src)).is_none());
+
+        std::fs::write(&path, b"not postcard at all").unwrap();
+        assert!(load(&path, fingerprint(&src)).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

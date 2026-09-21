@@ -55,9 +55,11 @@ impl Interner {
 
     /// Rebuilds the index from the stored strings.
     ///
-    /// A duplicate in `store` keeps the *first* handle, matching what
-    /// `intern` would have produced building the same sequence, so a
-    /// round-trip through this is the identity on anything `intern` made.
+    /// `intern` never pushes a duplicate, so a store it wrote has none. The
+    /// keep-the-first rule is for a store it did not write — a corrupt or
+    /// hand-edited cache file — where the alternative is that `get` and
+    /// `resolve` disagree: `get` would answer with the last index and
+    /// `resolve(Sym(i))` with the string at the first.
     fn from_store(store: Vec<Box<str>>) -> Self {
         let mut lookup = HashMap::with_capacity(store.len());
         for (i, s) in store.iter().enumerate() {
