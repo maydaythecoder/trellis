@@ -14,17 +14,58 @@ use std::collections::HashMap;
 )]
 pub struct Sym(pub u32);
 
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug)]
 pub struct Interner {
     // `Box<str>` rather than `String`: never resized after insertion, and
     // saves the capacity word per entry across a few hundred thousand names.
+    //
+    // Derivable from `store` and therefore never serialised — see the
+    // `Serialize`/`Deserialize` impls below.
     lookup: HashMap<Box<str>, Sym>,
     store: Vec<Box<str>>,
+}
+
+/// Serialised as the store alone.
+///
+/// `lookup` is a second copy of every key, and a `HashMap` iterates in an
+/// order that differs between instances holding identical contents. Writing
+/// it meant `.trellis/index.bin` was both twice the size it needed to be and
+/// different on every rebuild of unchanged sources — the graph was always
+/// deterministic, its bytes were not. C-003.
+///
+/// Rebuilding on load is also the safer direction. The invariant that
+/// `lookup` agrees with `store` then holds by construction, where before it
+/// was taken on trust from a file on disk.
+impl serde::Serialize for Interner {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.store.serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Interner {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self::from_store(Vec::<Box<str>>::deserialize(d)?))
+    }
 }
 
 impl Interner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Rebuilds the index from the stored strings.
+    ///
+    /// A duplicate in `store` keeps the *first* handle, matching what
+    /// `intern` would have produced building the same sequence, so a
+    /// round-trip through this is the identity on anything `intern` made.
+    fn from_store(store: Vec<Box<str>>) -> Self {
+        let mut lookup = HashMap::with_capacity(store.len());
+        for (i, s) in store.iter().enumerate() {
+            lookup
+                .entry(s.clone())
+                .or_insert(Sym(u32::try_from(i).expect("interner exhausted")));
+        }
+        Self { lookup, store }
     }
 
     /// Interns `s`, returning the existing handle when already present.

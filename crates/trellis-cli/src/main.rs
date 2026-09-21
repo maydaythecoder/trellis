@@ -181,13 +181,17 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let explicit = cli.root.is_some();
-    // `init` is the one command whose whole purpose is a directory that is
-    // not set up yet, so it may not require a discovered repository. Every
-    // other command refusing here is deliberate — `trellis index` in a home
+    // Two commands are exempt, and both for the same reason: they are how
+    // someone gets ready to use a repository, so requiring one inverts the
+    // order. `init` scaffolds `.trellis/` in a directory that is not set up
+    // yet; `model` fetches weights, which are user state and live outside any
+    // repository — the dispatch arm below says so and, until this list
+    // included it, was wrong, because discovery already failed up here.
+    //
+    // Every other command refusing is deliberate. `trellis index` in a home
     // folder once walked 25,147 files before anyone could tell it had not
-    // found one — but making `init` share that refusal means the command for
-    // getting started cannot be run before you have started.
-    let needs_repo = !matches!(cli.command, Some(Command::Init));
+    // found a repository.
+    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }));
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -254,11 +258,11 @@ fn main() -> Result<()> {
         Command::Init => cmd_init(&root),
         Command::Tui => tui::run(&root, config::RepoConfig::load(&root)?.model()),
         Command::Resume => cmd_resume(&root),
-        // Deliberately before the root is used for anything: models are user
-        // state, not repository state, and `trellis model` must work outside
-        // a repository.
         Command::Log { limit } => cmd_log(&root, limit),
         Command::Why { symbol } => cmd_why(&root, &symbol),
+        // Takes no root at all: models are user state, not repository state.
+        // The exemption that makes this reachable outside a repository is in
+        // `needs_repo` above — this arm alone was never enough.
         Command::Model { action } => cmd_models(action),
         Command::Partitions { symbols } => cmd_partitions(&root, &symbols),
     }
