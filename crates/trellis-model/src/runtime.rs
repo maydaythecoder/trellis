@@ -552,6 +552,11 @@ mod tests {
         assert_eq!(c.probe_slots().await.unwrap(), Some(4));
         let sent = server.await.unwrap();
         assert!(sent.starts_with("GET /props"), "{sent}");
+        assert!(
+            sent.contains("Connection: close"),
+            "the reader runs the body to EOF rather than parsing a length, \
+             so the request has to ask for the connection to close: {sent}"
+        );
     }
 
     #[tokio::test]
@@ -570,5 +575,84 @@ mod tests {
         let c = RuntimeClient::new("http://127.0.0.1:1", Dialect::LlamaCpp, None).unwrap();
         let e = c.complete("hello", None, 8).await.unwrap_err();
         assert!(matches!(e, RuntimeError::Connect { .. }), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_runtime_that_does_not_report_slots_is_unknown_rather_than_one() {
+        // S18, and the direction of the error matters. `auto_agents` maps
+        // Unknown to 1, so being unable to read a slot count already produces
+        // the conservative answer. What must not happen is this returning
+        // `Some(1)`, which would be a *measurement* of single-stream serving
+        // rather than an admission of not knowing — and a measurement is what
+        // `supports_multi_agent` is entitled to believe.
+        let (base, server) = stub(r#"{"model_path":"x.gguf"}"#, "200 OK").await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(
+            c.probe_slots().await.unwrap(),
+            None,
+            "a missing total_slots is not knowledge that there is one slot"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_missing_props_endpoint_is_an_error_not_a_guess() {
+        // An older llama.cpp without `/props` answers 404. Swallowing that
+        // into `Ok(None)` would be defensible; making it an error is better,
+        // because `doctor` can then say the probe failed rather than report
+        // an unknown it did not actually establish — and the two are
+        // different claims.
+        //
+        // The status survives as a status rather than being flattened into a
+        // parse failure, so the message names 404 instead of complaining that
+        // HTML is not JSON.
+        let (base, server) = stub("<html>Not Found</html>", "404 Not Found").await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let e = c.probe_slots().await.unwrap_err();
+        assert!(
+            matches!(e, RuntimeError::Http { status: 404, .. }),
+            "a 404 must stay a 404: {e}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_props_body_that_is_not_json_says_what_it_was_reading() {
+        // Reached when something answers 200 that is not llama.cpp — a proxy,
+        // or the wrong port. The error names `/props` so the user can tell
+        // which probe failed rather than seeing a bare parse error.
+        let (base, server) = stub("not json at all", "200 OK").await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let e = c.probe_slots().await.unwrap_err();
+        assert!(matches!(e, RuntimeError::Shape(_)), "{e}");
+        assert!(
+            format!("{e}").contains("/props is not JSON"),
+            "the error must name what it was reading: {e}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_configured_timeout_is_the_one_that_applies() {
+        // `with_timeout` is how `doctor` keeps a probe from hanging a
+        // terminal on a runtime that accepts a connection and then stalls.
+        // The stub below accepts and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _held = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            // Held open, deliberately silent, until the test ends.
+            std::future::pending::<()>().await;
+            drop(sock);
+        });
+
+        let c = RuntimeClient::new(&format!("http://{addr}"), Dialect::LlamaCpp, None)
+            .unwrap()
+            .with_timeout(Duration::from_millis(150));
+        let e = c.probe_slots().await.unwrap_err();
+        assert!(
+            matches!(e, RuntimeError::Timeout(d) if d == Duration::from_millis(150)),
+            "the error must carry the timeout that fired, not a default: {e}"
+        );
     }
 }
