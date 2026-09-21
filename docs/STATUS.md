@@ -263,7 +263,24 @@ audit's own §0 requires a finished campaign, so they run in that order.
     test can pin a value for, but whose *shape* is what the rest of the
     system depends on.
 
-12. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+12. **Five crates are at zero survivors** — `trellis-checks`, `trellis-model`,
+    `trellis-core`, `trellis-trail`, and `trellis-vcs` down to two (one dead
+    code, one Class C). `trellis-cli` is having its first per-crate run now;
+    it is the only crate that never had one.
+
+13. **Two safety boundaries found in what looked like a tail.**
+    `resolve_in_repo`, the guard keeping a model's path inside the tree
+    rollback covers, had no test — and its surviving mutant accepts
+    `../../etc/passwd`, which is relative and therefore not absolute.
+    `Partition::compatible_with` is S19 in one function, and its mutant hands
+    two agents the same file whenever their call graphs are disjoint.
+
+    The second is the more instructive: it survived because the rule was only
+    ever tested **through `plan`**, which never constructs such a pair.
+    Testing a rule through a caller that cannot violate it proves the caller,
+    not the rule.
+
+14. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was

@@ -10,7 +10,7 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **412** passing, 0 failed, 0 ignored (328 at the baseline commit) |
+| Tests | **415** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
 | Mutation score | **still none.** Two workspace runs stopped for memory; six crates measured individually, but per-crate runs test only that crate — see Tier 6 |
 
@@ -438,6 +438,8 @@ type system as the proof obligation, which is ADR 0004's whole point.
 | C-001 | 5, 6 | `trellis-cli` had no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | **Fixed**, `0ba3b5f` — 20 tests, and it caught `trellis model` refusing to run outside a repository against its own stated intent |
 | C-002 | 5, 6 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | **Tested, not deleted** — it has no replacement and v1.1's brief 4.13 specifies it, so dead-and-verified is the right state. Writing the tests found C-010 |
 | C-012 | 6 | ADR 0016's rule — the root's own file exempted from clearing `partitionable` — was asserted in neither direction. `replace != with ==` inverts it into the S19 collision the flag prevents | **Fixed** — two tests, one per direction, both verified against the mutant. One also kills `delete ! in blast_radius`, the line carrying `is_partitionable` into the report |
+| C-019 | 6 | `Orchestrator::resolve_in_repo` — the guard keeping a model's proposed path inside the tree rollback covers — had no test. The surviving `\|\| -> &&` accepts `../../etc/passwd`, which is relative and so not absolute | **Fixed** — both halves tested, mutant verified dead |
+| C-020 | 6 | `Partition::compatible_with` is S19 in one function, and its `&& -> \|\|` survived: two agents handed the same file whenever their call graphs happen to be disjoint. It was only ever tested through `plan`, which cannot produce such a pair | **Fixed** — testing a rule through a caller that cannot violate it proves the caller, not the rule |
 | C-018 | 6 | `trellis-checks`, `trellis-core` and `trellis-model` survivors: the two mutants deciding Verified from Reviewed, a crate whose one test could not reach its own code, and the GiB figure users check their disk against | **Fixed** — 6 tests, all verified dead. `trellis-checks` and `trellis-model` are now at zero survivors |
 | C-017 | 6 | `trellis-trail`'s remaining survivors: the calendar behind every trail filename was correct at three dates and unasserted at the rest, `run_id`'s filename fallback was untested, and the integrity verdict users see had no assertion | **Fixed** — 4 tests. Five calendar mutants verified dead, and `mp - 9` vs `mp / 9` is separated by a February date alone |
 | C-016 | 6 | Trail tamper-evidence worked only because `schemars` transitively enables `serde_json/preserve_order`. Declared nowhere, tested by nothing, and dropping that dependency would make every trail read as `Altered` | **Fixed** — both sides now hash through `Value`, so they agree whatever `Map` is. Verified in a build with the feature and one without |
