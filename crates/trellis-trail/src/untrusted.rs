@@ -322,4 +322,121 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("previous task: t")));
         assert!(!lines.iter().any(|l| l.contains("recorded check")));
     }
+
+    /// The v0.3 gate asks for the factual section to be tamper-evident, and
+    /// **nothing in the workspace asserted `Integrity` at all.** Three
+    /// mutants survived on the two halves of it: `compute_factual_sha256`
+    /// returning an empty string or `"xyzzy"`, and the comparison inside
+    /// `integrity` flipped from `==` to `!=`.
+    ///
+    /// Written as a round trip rather than against a hand-computed digest.
+    /// A fixture with a digest worked out by hand tests that this code agrees
+    /// with my arithmetic; a round trip tests the property that matters —
+    /// **a trail this project wrote reads back as intact** — and it fails if
+    /// either half moves.
+    fn a_trail(proposed: &str) -> crate::Trail {
+        crate::Trail {
+            schema: crate::SCHEMA,
+            run_id: "20260921-053000-rename-installer-run".into(),
+            task: "rename Installer.run".into(),
+            base_commit: "abc1234".into(),
+            started_at: "2026-09-21T05:30:00Z".into(),
+            provenance: crate::Provenance {
+                trellis_version: "0.0.1".into(),
+                model: None,
+                tier: None,
+            },
+            factual_sha256: String::new(),
+            factual: crate::Factual {
+                proposed: vec![proposed.to_string()],
+                radius: crate::RadiusCounts::default(),
+                checks: Vec::new(),
+                check_outcomes: vec![crate::CheckOutcome {
+                    kind: "Tests".into(),
+                    passed: true,
+                }],
+                approved_by: crate::Approval::Human,
+                mode_counts: crate::ModeCounts::default(),
+                context: None,
+            },
+            judgment: crate::Judgment::default(),
+        }
+    }
+
+    /// Writes the trail the way `cmd_run` does: digest first, over the
+    /// section as built.
+    fn written(t: &mut crate::Trail) -> String {
+        t.factual_sha256 = crate::Trail::compute_factual_sha256(&t.factual);
+        serde_json::to_string(t).unwrap()
+    }
+
+    #[test]
+    fn a_trail_this_project_wrote_reads_back_as_intact() {
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).expect("a trail we wrote must parse");
+        assert_eq!(
+            read.integrity(&json),
+            Integrity::Intact,
+            "the writer and the reader disagree about the same bytes"
+        );
+    }
+
+    #[test]
+    fn editing_the_factual_section_is_detected() {
+        // The whole point. A trail lives in a repository that takes
+        // contributions (S10), so the question is not whether someone *can*
+        // edit it — they can — but whether the edit is visible.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+
+        let tampered = json.replace("\"app/core.py\"", "\"app/somewhere_else.py\"");
+        assert_ne!(tampered, json, "the fixture must actually have changed");
+
+        let read = UntrustedTrail::from_json(&tampered).expect("still valid JSON");
+        assert_eq!(
+            read.integrity(&tampered),
+            Integrity::Altered,
+            "an edited factual section must not read as intact"
+        );
+    }
+
+    #[test]
+    fn a_changed_check_outcome_is_detected() {
+        // The edit someone would actually make: turning a failed run into a
+        // passed one. `check_outcomes` is the inert record of what executed,
+        // and it is inside the digest for exactly this reason.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+
+        let tampered = json.replace("\"passed\":true", "\"passed\":false");
+        assert_ne!(tampered, json);
+        let read = UntrustedTrail::from_json(&tampered).unwrap();
+        assert_eq!(read.integrity(&tampered), Integrity::Altered);
+    }
+
+    #[test]
+    fn no_digest_is_unrecorded_rather_than_altered() {
+        // The distinction the enum's own comment insists on: a trail written
+        // before the field existed is not evidence of tampering, and
+        // reporting both as "unverified" would hide the only case that should
+        // alarm anyone.
+        let read = UntrustedTrail::from_json(TRAIL).expect("the fixture has no digest");
+        assert_eq!(read.integrity(TRAIL), Integrity::Unrecorded);
+    }
+
+    #[test]
+    fn a_digest_over_json_that_will_not_parse_is_altered() {
+        // Reached when the file was edited into something invalid. There is
+        // no honest reading of it other than "this is not what was written".
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity("{ not json"), Integrity::Altered);
+        assert_eq!(
+            read.integrity("{}"),
+            Integrity::Altered,
+            "valid JSON with no factual section is not intact either"
+        );
+    }
 }

@@ -213,6 +213,26 @@ pub const SCHEMA: u32 = 1;
 impl Trail {
     /// SHA-256 over `factual`, serialized canonically.
     ///
+    /// **Through `Value`, so the key order matches the reader's.** The check
+    /// that reads this back — [`UntrustedTrail::integrity`] — parses the file
+    /// and hashes `v["factual"]`, and `serde_json::Map` is a `BTreeMap`, so
+    /// its keys come back sorted. Hashing the struct directly emits fields in
+    /// *declaration* order, which is a different byte sequence and therefore
+    /// a different digest.
+    ///
+    /// Measured, for one `Factual`:
+    ///
+    /// ```text
+    /// to_vec(&factual)                 dedc5e7e…   {"proposed":…
+    /// to_vec(&to_value(&factual))      6a2530b3…   {"approved_by":…
+    /// to_vec(parse(to_string(factual)))6a2530b3…   {"approved_by":…
+    /// ```
+    ///
+    /// **This is necessary and is not known to be sufficient.** A trail
+    /// written by `cmd_run` still reads back as `Altered`, for a reason not
+    /// yet established — see C-016 in CORRECTNESS_LEDGER.md. The round-trip
+    /// test in `untrusted.rs` passes; the end-to-end path does not.
+    ///
     /// Written by `cmd_run` when a trail is recorded. The *check* against it
     /// lives in [`UntrustedTrail::integrity`], which reads the raw JSON as it
     /// came off disk — a trail is read back as untrusted data (S10), so the
@@ -223,7 +243,9 @@ impl Trail {
     /// determinism is what makes the digest checkable rather than decorative.
     pub fn compute_factual_sha256(factual: &Factual) -> String {
         use sha2::{Digest, Sha256};
-        let json = serde_json::to_vec(factual).unwrap_or_default();
+        let json = serde_json::to_value(factual)
+            .and_then(|v| serde_json::to_vec(&v))
+            .unwrap_or_default();
         let digest = Sha256::digest(&json);
         digest.iter().map(|b| format!("{b:02x}")).collect()
     }
