@@ -2342,3 +2342,41 @@ fn model_path_names_a_real_location_under_the_data_directory() {
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn pull_stops_before_the_network_when_the_weights_are_already_here() {
+    // The only branch of `pull` that can be tested without fetching half a
+    // gigabyte, and the one worth the most: it is what stops a re-run of
+    // `trellis model pull` from re-downloading a file that is already
+    // complete. Inverting the comparison turns the guard into its opposite
+    // and every repeat invocation becomes a fresh download.
+    //
+    // Safe precisely because it returns *before* curl. Nothing else here is
+    // — see the ledger entry on why the rest of this function is triaged
+    // rather than tested.
+    let d = repo("model-pull-present");
+    let data = scratch("model-pull-data");
+    let dir = models_dir_in(&data);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let entry = trellis_model::catalog::find(trellis_model::DEFAULT).unwrap();
+    let f = std::fs::File::create(dir.join(entry.file)).unwrap();
+    f.set_len(entry.bytes).unwrap();
+    drop(f);
+
+    let out = run_with_data_dir(&d, &data, &["model", "pull"]);
+    let s = combined(&out);
+    assert!(out.status.success(), "{s}");
+    assert!(
+        s.contains("is already here"),
+        "a complete file must end the command, not start a download:\n{s}"
+    );
+    assert!(
+        !s.contains("from https://"),
+        "and it must not even name the URL, because nothing is being \
+         fetched:\n{s}"
+    );
+
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
