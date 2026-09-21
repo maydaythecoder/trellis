@@ -372,8 +372,14 @@ neighbour below — and it has not been re-run since that was fixed.
 
 ### What the triage produced
 
-Nineteen findings, C-001 to C-020. The ones that were defects rather than
-test gaps:
+Twenty-two numbered findings in the table below, C-001 to C-023, plus three
+that predate the numbering. C-007 is the only id in that range with no row:
+it was the `usize as u32` truncation question, examined and found clear, and
+is recorded as such in `QUALITY_LEDGER.md` rather than as a finding here —
+an id that produced no defect still costs an id, because renumbering would
+break every reference already written.
+
+The ones that were defects rather than test gaps:
 
 - **C-010** — a partition worktree would have dirtied the repository and made
   the *next* run refuse to start. Found by writing the first test of code

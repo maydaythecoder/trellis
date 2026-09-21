@@ -179,6 +179,17 @@ crate and `trellis-vcs` another, so two copies survive any reasonable version
 of it. A fix that reaches five sevenths of a class is worth doing with the
 mutation score in hand rather than without it.
 
+**The count has since grown, and this is the note for when the pass runs.**
+The `trellis-cli` mutation triage added five more fixture builders in
+`tests/cli.rs` — `repo_with_doubt`, `repo_with_doubt_in_n_files`,
+`repo_without_doubt`, `repo_with_checks`,
+`repo_with_resolved_and_ambiguous_reach` — each opening with the same four
+`git init` / `git config` lines. Deliberately not extracted while the pass is
+held: they were written to *differ* in the Python they scaffold, which is the
+whole point of each, and the shared part is four lines of setup with no
+branching. But it is the same class as the cluster above and the same drift
+risk — `core.autocrlf false` is in all five, and was checked, not assumed.
+
 ### The two generators, verified rather than assumed
 
 `docs/bench/decomposition-20260921.md` claims *"the same splitmix64 generator
