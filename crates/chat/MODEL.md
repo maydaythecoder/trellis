@@ -83,16 +83,37 @@ score it as working. Only a populated `tool_calls` array counts
 
 ## Results
 
-**Not run on this machine. Ollama is not installed here** (`command -v
-ollama` finds nothing), so no model has been pulled and no rate has been
-measured. The harness is written and tested against recorded response
-shapes; the numbers below are blank because measuring them needs the
-runtime, not because the measurement was skipped.
-
 | model | valid `tool_calls` /20 | correct tool /20 | answered in prose /20 | date |
 |---|---|---|---|---|
-| `qwen3:8b` | pending | pending | pending | — |
+| `qwen3:8b` | **20/20 (100%)** | 20/20 (100%) | 0/20 (0%) | 2026-09-21 |
 | `gpt-oss-20b` | pending | pending | pending | — |
 
-Fill these in from `toolcall_smoke`'s own output. A figure typed here without
-having run it is worse than a blank row.
+Measured with `toolcall_smoke` against ollama 0.34.2 at
+`http://localhost:11434/v1`, model `qwen3:8b` (5.2 GB, `500a1f067a9f`), on
+the 16GB Windows machine this repository lives on. Two tools defined,
+twenty runs, one prompt.
+
+**Read that 100% narrowly.** It is higher than the ~85% the brief cites, and
+the difference is probably the prompt rather than the model: "What does
+src/main.rs contain? Read it." makes the selection obvious, so this measures
+*format reliability on an easy choice* and not tool selection under
+ambiguity. A prompt where either tool could plausibly apply is a different
+measurement and would be a useful second one.
+
+What it does establish is that the transport and the response shape work end
+to end, which is what the baseline is for. `tests/live_model.rs` asserts the
+same thing on every `cargo test` when an endpoint is up, and skips when
+there is not one — skipped rather than failed, because a suite that goes red
+on every machine without a model teaches everyone to ignore a red suite.
+
+Streaming, measured at the same time: ten chunks for a ten-word answer, so
+tokens really do arrive one at a time rather than as one lump at the end.
+
+`gpt-oss-20b` is still worth running — MoE at ~3.6B active is the right
+shape for this machine, and it may well beat qwen3 on judgment while scoring
+the same here:
+
+```bash
+ollama pull gpt-oss:20b
+CHAT_MODEL=gpt-oss:20b cargo run --bin toolcall_smoke
+```
