@@ -81,6 +81,19 @@ pub enum BatchingCapability {
     /// Batch-size-1 oriented. Multi-agent mode degrades to sequential
     /// agents and says so.
     SingleStream,
+    /// Batches continuously, but the runtime does not report how much.
+    ///
+    /// vLLM, SGLang and ollama batch by design and expose no slot count, so
+    /// "does it batch" and "how much" have different answers — and
+    /// `Unknown` could only say the first one, wrongly. `doctor` said
+    /// *"unknown; multi-agent mode runs agents sequentially"* on one line
+    /// and *"batches continuously, so multi-agent mode is supported in
+    /// principle"* two paragraphs later, leaving the reader to work out
+    /// which was true.
+    ///
+    /// Still yields one agent: an unmeasured capacity is not a number to
+    /// invent, and that half of the old line was right.
+    ContinuousUnmeasured,
     /// Could not be determined. Treated as `SingleStream`, and reported as
     /// unknown rather than as a measurement.
     Unknown,
@@ -96,7 +109,9 @@ impl BatchingCapability {
             BatchingCapability::Continuous {
                 measured_concurrency,
             } => measured_concurrency.max(1),
-            BatchingCapability::SingleStream | BatchingCapability::Unknown => 1,
+            BatchingCapability::SingleStream
+            | BatchingCapability::ContinuousUnmeasured
+            | BatchingCapability::Unknown => 1,
         }
     }
 
@@ -161,6 +176,10 @@ impl Probe {
             BatchingCapability::SingleStream => "batching:   single-stream; multi-agent mode runs \
                  agents sequentially"
                 .to_string(),
+            BatchingCapability::ContinuousUnmeasured => {
+                "batching:   continuous, concurrency not reported; `--agents auto` stays at 1"
+                    .to_string()
+            }
             BatchingCapability::Unknown => "batching:   unknown; treated as single-stream, \
                  multi-agent mode runs agents sequentially"
                 .to_string(),
@@ -390,5 +409,81 @@ mod tests {
             !BatchingCapability::Unknown.supports_multi_agent(),
             "not knowing is not permission"
         );
+    }
+}
+
+#[cfg(test)]
+mod batching_report_tests {
+    use super::*;
+
+    /// The batching line, for a given capability.
+    fn line(b: BatchingCapability) -> String {
+        let probe = Probe {
+            model_id: "m".into(),
+            runtime: "r".into(),
+            tier: None,
+            batching: b,
+            typecheck: Some("mypy 1.0".into()),
+            tests: Some("pytest 8.0".into()),
+            coverage_available: true,
+        };
+        probe
+            .report()
+            .into_iter()
+            .find(|l| l.starts_with("batching:"))
+            .expect("the report always has a batching line")
+    }
+
+    #[test]
+    fn a_runtime_that_batches_but_reports_no_count_is_not_called_single_stream() {
+        // `doctor` against ollama said "unknown; treated as single-stream,
+        // multi-agent mode runs agents sequentially" on one line, and
+        // "batches continuously, so multi-agent mode is supported in
+        // principle" two paragraphs below it. Both from the same probe.
+        //
+        // The type could not hold the real answer: "does it batch" and "how
+        // much" have different ones, and `Unknown` could only express the
+        // first, wrongly.
+        let l = line(BatchingCapability::ContinuousUnmeasured);
+        assert!(l.contains("continuous"), "{l}");
+        assert!(
+            !l.contains("single-stream"),
+            "it batches; saying otherwise contradicts the note below it: {l}"
+        );
+        assert!(
+            !l.contains("sequentially"),
+            "and that was the half that was wrong: {l}"
+        );
+        assert!(
+            l.contains("not reported"),
+            "the unknown half still has to be said: {l}"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_capacity_still_yields_one_agent() {
+        // The half of the old line that was right. A capacity nobody
+        // measured is not a number to invent, and inventing one produces a
+        // slower run the user cannot explain.
+        assert_eq!(BatchingCapability::ContinuousUnmeasured.auto_agents(), 1);
+        assert_eq!(BatchingCapability::Unknown.auto_agents(), 1);
+        assert_eq!(BatchingCapability::SingleStream.auto_agents(), 1);
+        assert_eq!(
+            BatchingCapability::Continuous {
+                measured_concurrency: 4
+            }
+            .auto_agents(),
+            4
+        );
+    }
+
+    #[test]
+    fn genuinely_unknown_still_reads_as_unknown() {
+        // The new variant must not swallow the old one: a runtime that
+        // could not be probed at all is a different state from one that
+        // batches without saying how much.
+        let l = line(BatchingCapability::Unknown);
+        assert!(l.contains("unknown"), "{l}");
+        assert!(!l.contains("continuous"), "{l}");
     }
 }

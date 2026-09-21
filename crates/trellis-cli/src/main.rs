@@ -1789,7 +1789,15 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
         let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
             .with_timeout(std::time::Duration::from_secs(30));
         runtime = format!("{dialect:?} at {base}");
-        model_id = "whatever the runtime has loaded".into();
+        // True of llama.cpp, which serves what it was started with and is
+        // never told. Not true once the spec names a weight — saying it
+        // anyway would report ignorance the harness does not have, on the
+        // one line a reader checks to confirm they are about to drive what
+        // they think they are.
+        model_id = match model {
+            Some(m) => format!("{m} (named in the spec)"),
+            None => "whatever the runtime has loaded".into(),
+        };
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -1839,7 +1847,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                     // Continuous batching is inherent here, but the concurrency
                     // its scheduler will actually grant is not a number to
                     // invent, so `--agents auto` stays conservative.
-                    batching = BatchingCapability::Unknown;
+                    batching = BatchingCapability::ContinuousUnmeasured;
                     notes.push(
                         concat!(
                             "This runtime batches continuously, so multi-agent mode is supported ",
