@@ -1,0 +1,22 @@
+crates/trellis-trail/src/lib.rs:220:9: replace Trail::compute_factual_sha256 -> String with String::new()
+crates/trellis-trail/src/lib.rs:228:53: replace == with != in Trail::factual_is_intact
+crates/trellis-trail/src/lib.rs:220:9: replace Trail::compute_factual_sha256 -> String with "xyzzy".into()
+crates/trellis-trail/src/lib.rs:228:9: replace Trail::factual_is_intact -> bool with true
+crates/trellis-trail/src/lib.rs:228:9: replace Trail::factual_is_intact -> bool with false
+crates/trellis-trail/src/query.rs:31:9: replace Entry::run_id -> String with String::new()
+crates/trellis-trail/src/query.rs:31:9: replace Entry::run_id -> String with "xyzzy".into()
+crates/trellis-trail/src/store.rs:60:5: replace timestamp_now -> String with String::new()
+crates/trellis-trail/src/store.rs:60:5: replace timestamp_now -> String with "xyzzy".into()
+crates/trellis-trail/src/store.rs:86:48: replace - with + in civil_from_days
+crates/trellis-trail/src/store.rs:86:48: replace - with / in civil_from_days
+crates/trellis-trail/src/store.rs:86:33: replace + with - in civil_from_days
+crates/trellis-trail/src/store.rs:86:33: replace + with * in civil_from_days
+crates/trellis-trail/src/store.rs:91:45: replace - with / in civil_from_days
+crates/trellis-trail/src/store.rs:97:5: replace iso_now -> String with String::new()
+crates/trellis-trail/src/store.rs:97:5: replace iso_now -> String with "xyzzy".into()
+crates/trellis-trail/src/store.rs:106:5: replace now -> (String, String) with (String::new(), String::new())
+crates/trellis-trail/src/store.rs:106:5: replace now -> (String, String) with (String::new(), "xyzzy".into())
+crates/trellis-trail/src/store.rs:106:5: replace now -> (String, String) with ("xyzzy".into(), String::new())
+crates/trellis-trail/src/store.rs:106:5: replace now -> (String, String) with ("xyzzy".into(), "xyzzy".into())
+crates/trellis-trail/src/store.rs:169:26: replace == with != in latest
+crates/trellis-trail/src/untrusted.rs:143:17: replace == with != in UntrustedTrail::integrity

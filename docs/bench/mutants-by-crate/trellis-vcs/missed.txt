@@ -1,0 +1,11 @@
+crates/trellis-vcs/src/lib.rs:185:5: replace pending -> Result<Vec<String>, VcsError> with Ok(vec![])
+crates/trellis-vcs/src/lib.rs:191:21: delete ! in pending
+crates/trellis-vcs/src/lib.rs:210:5: replace diff -> Result<String, VcsError> with Ok(String::new())
+crates/trellis-vcs/src/lib.rs:210:5: replace diff -> Result<String, VcsError> with Ok("xyzzy".into())
+crates/trellis-vcs/src/lib.rs:210:8: delete ! in diff
+crates/trellis-vcs/src/lib.rs:225:5: replace discard_pending -> Result<(), VcsError> with Ok(())
+crates/trellis-vcs/src/lib.rs:246:20: delete ! in reset_and_clean
+crates/trellis-vcs/src/lib.rs:185:5: replace pending -> Result<Vec<String>, VcsError> with Ok(vec!["xyzzy".into()])
+crates/trellis-vcs/src/lib.rs:185:5: replace pending -> Result<Vec<String>, VcsError> with Ok(vec![String::new()])
+crates/trellis-vcs/src/lib.rs:185:8: delete ! in pending
+crates/trellis-vcs/src/lib.rs:353:9: replace Worktree::discard -> Result<(), VcsError> with Ok(())

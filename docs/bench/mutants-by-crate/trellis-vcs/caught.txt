@@ -1,0 +1,16 @@
+crates/trellis-vcs/src/lib.rs:67:5: replace dirty_worktree_message -> String with String::new()
+crates/trellis-vcs/src/lib.rs:67:5: replace dirty_worktree_message -> String with "xyzzy".into()
+crates/trellis-vcs/src/lib.rs:105:5: replace rollback_failure_message -> String with String::new()
+crates/trellis-vcs/src/lib.rs:105:5: replace rollback_failure_message -> String with "xyzzy".into()
+crates/trellis-vcs/src/lib.rs:142:5: replace git -> Result<String, VcsError> with Ok(String::new())
+crates/trellis-vcs/src/lib.rs:142:5: replace git -> Result<String, VcsError> with Ok("xyzzy".into())
+crates/trellis-vcs/src/lib.rs:143:8: delete ! in git
+crates/trellis-vcs/src/lib.rs:164:5: replace commit_paths -> Result<(), VcsError> with Ok(())
+crates/trellis-vcs/src/lib.rs:236:5: replace reset_and_clean -> Result<(), VcsError> with Ok(())
+crates/trellis-vcs/src/lib.rs:261:8: delete ! in snapshot
+crates/trellis-vcs/src/lib.rs:268:8: delete ! in snapshot
+crates/trellis-vcs/src/lib.rs:295:9: replace Snapshot::rollback -> Result<(), VcsError> with Ok(())
+crates/trellis-vcs/src/lib.rs:303:9: replace Snapshot::is_restored -> Result<bool, VcsError> with Ok(true)
+crates/trellis-vcs/src/lib.rs:303:9: replace Snapshot::is_restored -> Result<bool, VcsError> with Ok(false)
+crates/trellis-vcs/src/lib.rs:305:30: replace && with || in Snapshot::is_restored
+crates/trellis-vcs/src/lib.rs:305:17: replace == with != in Snapshot::is_restored

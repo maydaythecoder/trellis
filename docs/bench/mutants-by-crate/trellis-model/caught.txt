@@ -1,0 +1,29 @@
+crates/trellis-model/src/catalog.rs:109:5: replace find -> Option<&'static CatalogEntry> with None
+crates/trellis-model/src/catalog.rs:109:36: replace == with != in find
+crates/trellis-model/src/catalog.rs:121:9: replace CatalogEntry::url -> String with String::new()
+crates/trellis-model/src/catalog.rs:121:9: replace CatalogEntry::url -> String with "xyzzy".into()
+crates/trellis-model/src/runtime.rs:61:9: replace Dialect::parse -> Option<Self> with None
+crates/trellis-model/src/runtime.rs:62:13: delete match arm "llamacpp" | "llama.cpp" | "llama_cpp" in Dialect::parse
+crates/trellis-model/src/runtime.rs:63:13: delete match arm "vllm" | "openai" in Dialect::parse
+crates/trellis-model/src/runtime.rs:64:13: delete match arm "sglang" in Dialect::parse
+crates/trellis-model/src/runtime.rs:72:9: replace Dialect::name -> &'static str with ""
+crates/trellis-model/src/runtime.rs:72:9: replace Dialect::name -> &'static str with "xyzzy"
+crates/trellis-model/src/runtime.rs:80:9: replace Dialect::path -> &'static str with ""
+crates/trellis-model/src/runtime.rs:80:9: replace Dialect::path -> &'static str with "xyzzy"
+crates/trellis-model/src/runtime.rs:154:9: replace RuntimeClient::body -> Value with Default::default()
+crates/trellis-model/src/runtime.rs:283:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(Some(0))
+crates/trellis-model/src/runtime.rs:283:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(Some(1))
+crates/trellis-model/src/runtime.rs:309:9: replace RuntimeClient::post -> Result<String, RuntimeError> with Ok(String::new())
+crates/trellis-model/src/runtime.rs:309:9: replace RuntimeClient::post -> Result<String, RuntimeError> with Ok("xyzzy".into())
+crates/trellis-model/src/runtime.rs:355:12: delete ! in RuntimeClient::request
+crates/trellis-model/src/spec.rs:83:9: replace <impl std::fmt::Display for ModelSpec>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-model/src/tier.rs:36:9: replace AdapterTier::degradation -> &'static str with ""
+crates/trellis-model/src/tier.rs:36:9: replace AdapterTier::degradation -> &'static str with "xyzzy"
+crates/trellis-model/src/tier.rs:59:9: replace AdapterTier::is_constrained -> bool with true
+crates/trellis-model/src/tier.rs:59:9: replace AdapterTier::is_constrained -> bool with false
+crates/trellis-model/src/tier.rs:95:9: replace BatchingCapability::auto_agents -> u32 with 1
+crates/trellis-model/src/tier.rs:95:9: replace BatchingCapability::auto_agents -> u32 with 0
+crates/trellis-model/src/tier.rs:104:9: replace BatchingCapability::supports_multi_agent -> bool with true
+crates/trellis-model/src/tier.rs:145:9: replace Probe::report -> Vec<String> with vec![]
+crates/trellis-model/src/tier.rs:145:9: replace Probe::report -> Vec<String> with vec![String::new()]
+crates/trellis-model/src/tier.rs:145:9: replace Probe::report -> Vec<String> with vec!["xyzzy".into()]

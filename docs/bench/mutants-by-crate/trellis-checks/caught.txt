@@ -1,0 +1,31 @@
+crates/trellis-checks/src/lib.rs:133:38: replace && with || in governance_audit
+crates/trellis-checks/src/lib.rs:133:41: delete ! in governance_audit
+crates/trellis-checks/src/lib.rs:150:8: delete ! in governance_audit
+crates/trellis-checks/src/lib.rs:188:55: replace || with && in governance_audit
+crates/trellis-checks/src/lib.rs:188:35: delete ! in governance_audit
+crates/trellis-checks/src/coverage.rs:47:9: replace LineCoverage::parse -> Option<Self> with None
+crates/trellis-checks/src/coverage.rs:47:9: replace LineCoverage::parse -> Option<Self> with Some(Default::default())
+crates/trellis-checks/src/coverage.rs:73:9: replace LineCoverage::covers -> bool with true
+crates/trellis-checks/src/coverage.rs:42:9: replace LineCoverage::load -> Option<Self> with Some(Default::default())
+crates/trellis-checks/src/coverage.rs:86:9: replace LineCoverage::knows -> bool with true
+crates/trellis-checks/src/coverage.rs:73:9: replace LineCoverage::covers -> bool with false
+crates/trellis-checks/src/coverage.rs:86:9: replace LineCoverage::knows -> bool with false
+crates/trellis-checks/src/coverage.rs:90:9: replace LineCoverage::is_empty -> bool with false
+crates/trellis-checks/src/coverage.rs:95:5: replace normalise -> String with String::new()
+crates/trellis-checks/src/coverage.rs:95:5: replace normalise -> String with "xyzzy".into()
+crates/trellis-checks/src/governance.rs:44:9: replace Rank::fails_the_audit -> bool with true
+crates/trellis-checks/src/governance.rs:44:9: replace Rank::fails_the_audit -> bool with false
+crates/trellis-checks/src/governance.rs:95:5: replace load -> Result<Vec<Rule>, GovernanceError> with Ok(vec![])
+crates/trellis-checks/src/governance.rs:102:53: replace == with != in load
+crates/trellis-checks/src/governance.rs:149:5: replace violations -> Scan with Default::default()
+crates/trellis-checks/src/governance.rs:176:33: replace + with - in violations
+crates/trellis-checks/src/governance.rs:153:69: replace && with || in violations
+crates/trellis-checks/src/governance.rs:176:33: replace + with * in violations
+crates/trellis-checks/src/governance.rs:187:5: replace in_scope -> bool with true
+crates/trellis-checks/src/governance.rs:187:5: replace in_scope -> bool with false
+crates/trellis-checks/src/governance.rs:196:5: replace deny_write_paths -> Vec<String> with vec![]
+crates/trellis-checks/src/governance.rs:196:5: replace deny_write_paths -> Vec<String> with vec![String::new()]
+crates/trellis-checks/src/governance.rs:196:5: replace deny_write_paths -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-checks/src/verdict.rs:101:34: replace == with != in Verdict::from_output
+crates/trellis-checks/src/verdict.rs:118:9: replace Verdict::passed -> bool with true
+crates/trellis-checks/src/verdict.rs:118:9: replace Verdict::passed -> bool with false

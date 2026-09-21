@@ -1,0 +1,5 @@
+crates/trellis-core/src/interner.rs:87:9: replace Interner::get -> Option<Sym> with None
+crates/trellis-core/src/interner.rs:93:9: replace Interner::resolve -> &str with ""
+crates/trellis-core/src/interner.rs:93:9: replace Interner::resolve -> &str with "xyzzy"
+crates/trellis-core/src/interner.rs:97:9: replace Interner::len -> usize with 0
+crates/trellis-core/src/interner.rs:97:9: replace Interner::len -> usize with 1

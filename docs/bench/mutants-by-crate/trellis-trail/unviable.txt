@@ -1,0 +1,6 @@
+crates/trellis-trail/src/query.rs:64:5: replace all -> Vec<Entry> with vec![Default::default()]
+crates/trellis-trail/src/query.rs:122:5: replace mentions_any -> Vec<Mention> with vec![Default::default()]
+crates/trellis-trail/src/query.rs:151:5: replace mentions -> Vec<Mention> with vec![Default::default()]
+crates/trellis-trail/src/store.rs:147:5: replace latest -> std::io::Result<Option<(PathBuf, UntrustedTrail)>> with Ok(Some((Default::default(), Default::default())))
+crates/trellis-trail/src/untrusted.rs:116:9: replace UntrustedTrail::from_json -> serde_json::Result<Self> with Ok(Default::default())
+crates/trellis-trail/src/untrusted.rs:126:9: replace UntrustedTrail::integrity -> Integrity with Default::default()

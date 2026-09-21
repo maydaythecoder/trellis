@@ -1,0 +1,2 @@
+crates/trellis-checks/src/coverage.rs:90:9: replace LineCoverage::is_empty -> bool with true
+crates/trellis-checks/src/coverage.rs:42:9: replace LineCoverage::load -> Option<Self> with None
