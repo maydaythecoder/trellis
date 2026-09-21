@@ -228,10 +228,15 @@ impl Trail {
     /// to_vec(parse(to_string(factual)))6a2530b3…   {"approved_by":…
     /// ```
     ///
-    /// **This is necessary and is not known to be sufficient.** A trail
-    /// written by `cmd_run` still reads back as `Altered`, for a reason not
-    /// yet established — see C-016 in CORRECTNESS_LEDGER.md. The round-trip
-    /// test in `untrusted.rs` passes; the end-to-end path does not.
+    /// **Why it matters that both sides go through `Value`.** Hashing the
+    /// struct directly agrees with the reader only while
+    /// `serde_json::Map` is an `IndexMap` — that is, while
+    /// `serde_json/preserve_order` is enabled. It is, but by `schemars`,
+    /// which this crate does not depend on and which enables it to derive
+    /// tool-call schemas in `trellis-loop`. Tamper-evidence resting on a
+    /// sibling crate's transitive feature is not a property anyone declared
+    /// or tested. Going through `Value` here means both sides share whatever
+    /// `Map` is and agree either way. C-016.
     ///
     /// Written by `cmd_run` when a trail is recorded. The *check* against it
     /// lives in [`UntrustedTrail::integrity`], which reads the raw JSON as it

@@ -288,51 +288,54 @@ re-derive that it is harmless.
 This is a negative result and is kept on purpose. A category examined and
 found clear is worth writing down; the alternative is examining it again.
 
-## C-016 — trail integrity, open
+## C-016 — trail integrity depended on a feature nothing declared
 
-**Established, by measurement:**
+**Closed.** The finding is real; the first two versions of this entry
+described it wrongly, and both are stated below because the method is what
+this campaign is for.
 
-- Nothing in the workspace asserted `Integrity` before this. Three mutants
-  survived on the two halves of the check.
-- The writer hashed the `Factual` **struct**, which serialises in declaration
-  order. The reader parses the file to a `Value` and hashes `v["factual"]`,
-  and `serde_json::Map` is a `BTreeMap`, so its keys come back **sorted**.
-  Two different byte sequences, two different digests:
+### What is actually true
 
-  ```text
-  to_vec(&factual)                    dedc5e7e…   {"proposed":…
-  to_vec(&to_value(&factual))         6a2530b3…   {"approved_by":…
-  to_vec(parse(to_string(&factual)))  6a2530b3…   {"approved_by":…
-  ```
+`Trail::compute_factual_sha256` hashed the `Factual` **struct**, which
+serialises in declaration order. `UntrustedTrail::integrity` parses the file
+and hashes `v["factual"]` — a `serde_json::Value`. Whether those agree
+depends entirely on what `serde_json::Map` is:
 
-- `compute_factual_sha256` now goes through `Value`, so it produces the
-  reader's byte sequence. Verified directly: for the exact `Factual` a real
-  run writes, the current source returns `bc234785…`, which is precisely what
-  the reader computes from that run's file.
+| `serde_json/preserve_order` | `Map` is | reader emits | agrees with the struct? |
+|---|---|---|---|
+| **on** | `IndexMap` | insertion order = file order = declaration order | yes |
+| **off** | `BTreeMap` | sorted | **no** |
 
-**Not established, and this is the open part:**
+It is **on**, because `schemars` enables it — a crate `trellis-trail` does not
+depend on, pulled in by `trellis-loop` and `trellis-model` to derive
+tool-call schemas. So trail tamper-evidence worked, by way of a transitive
+feature flag turned on for an unrelated reason, declared nowhere and tested
+by nothing. Drop `schemars`, or have it stop needing `preserve_order`, and
+every trail ever written starts reading as `Altered`.
 
-- A trail written by `cmd_run` **still** reads back as `Altered`. Its file
-  records `fb3eb5c0…` where the current source returns `bc234785…` for the
-  same content — and only one production path sets the field
-  (`main.rs:1275`), which calls `compute_factual_sha256`.
-- Checked and ruled out: a stale build (a debug binary from current source
-  behaves the same), `factual` being mutated after the digest is taken (it is
-  moved into the struct immediately), a second trail-writing path (there is
-  none), and `to_json` doing anything but `to_string_pretty`.
+`compute_factual_sha256` now goes through `Value` as well, so both sides
+share whatever `Map` is and agree either way. Verified in both builds: the
+CLI (feature on) reports no integrity line for a freshly written trail, and
+`cargo test -p trellis-trail` (feature off) passes the round trip, which it
+did not before the change.
 
-**User-visible effect.** `trellis log` and `trellis why` print `ALTERED: the
-factual section no longer matches its digest`, and `store::latest` logs a
-warning, on every honest trail. A tamper signal that fires on every record
-teaches a reader to ignore the one that matters, which is worse than not
-having one — and it contradicts the comment directly above the code, which
-says integrity is printed "only when it is not the ordinary case".
+### The two wrong versions, and what produced each
 
-**Two claims I made during this and had to withdraw**, recorded because the
-campaign's value is in the method: that the fix resolved the end-to-end
-defect (it does not), and that users currently see the `ALTERED` line on
-every run (they do — but I first reported the opposite, from a `head -8` that
-cut the output above it).
+**"Every trail reads as `Altered`."** Wrong. It came from probing with
+`cargo run -p trellis-trail --example`, which builds a smaller dependency
+graph where `preserve_order` is off — so the probe read with `BTreeMap`
+semantics a file written with `IndexMap` ones. **The mismatch was in the
+instrument, not the product.** The correct signal was available the whole
+time: `trellis log` printed no integrity line, and I talked myself out of it.
+
+**"Users don't see the `ALTERED` line."** Also wrong, and in the opposite
+direction — asserted from a `head -8` that cut the output above where the
+line would have appeared. Neither the claim nor its retraction was measured.
+
+The lesson that generalises: **a probe built from a different dependency
+graph is a different program.** Feature unification makes `cargo run -p X
+--example` and the real binary disagree about library behaviour, silently,
+and nothing warns.
 
 ## Tier 7 — Property and fuzz
 
@@ -435,7 +438,7 @@ type system as the proof obligation, which is ADR 0004's whole point.
 | C-001 | 5, 6 | `trellis-cli` had no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | **Fixed**, `0ba3b5f` — 20 tests, and it caught `trellis model` refusing to run outside a repository against its own stated intent |
 | C-002 | 5, 6 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | **Tested, not deleted** — it has no replacement and v1.1's brief 4.13 specifies it, so dead-and-verified is the right state. Writing the tests found C-010 |
 | C-012 | 6 | ADR 0016's rule — the root's own file exempted from clearing `partitionable` — was asserted in neither direction. `replace != with ==` inverts it into the S19 collision the flag prevents | **Fixed** — two tests, one per direction, both verified against the mutant. One also kills `delete ! in blast_radius`, the line carrying `is_partitionable` into the report |
-| C-016 | 6 | **Every trail `trellis run` writes reads back as `Integrity::Altered`.** The v0.3 gate asks for the factual section to be tamper-evident, and nothing in the workspace asserted `Integrity` at all | **OPEN** — one cause found and fixed, and it was not sufficient. See below |
+| C-016 | 6 | Trail tamper-evidence worked only because `schemars` transitively enables `serde_json/preserve_order`. Declared nowhere, tested by nothing, and dropping that dependency would make every trail read as `Altered` | **Fixed** — both sides now hash through `Value`, so they agree whatever `Map` is. Verified in a build with the feature and one without |
 | C-015 | 6 | `type_head` — what an annotation says the receiver is — had six survivors. The suite tested its effects through fixtures whose annotations are all a bare class name, so unions, quoted forward references, the subscript rule and the character class were unexercised | **Fixed** — five tests, four verified against their mutants |
 | C-014 | 6 | `discover` — what the graph counts as first-party — was reached by no test. The suite builds every index from in-memory sources, so the skip-list, the extension filter and the sort that makes ids stable were all unexercised | **Fixed** — five tests, three verified against their mutants |
 | C-013 | 6 | Dead code, fourth instance: `RadiusReport::all_edges_certain` and `radius::note_unresolved`, five survivors between them, zero references | **Fixed** — deleted |
