@@ -135,11 +135,26 @@ fires rather than a corrupt decode failing in its place.
 
 ## Tier 6 — Mutation
 
-**Partial. The run was stopped at 842 of ~1,253 mutants** — Claude Code killed
-it because the system was low on memory while the session was idle. Not a
-failure of the run, and nothing in it to debug. It has not been restarted.
+**Running again, at `486fff1`, on request.** The first attempt was stopped at
+842 of ~1,253 mutants — Claude Code killed the background job because the
+system was low on memory while the session was idle, which was not a failure
+of the run. Its raw output is kept in `docs/bench/mutants-94c285c/` so the
+triage below can be checked against the list it came from.
 
-What it did establish, against `94c285c`:
+Two things about the restart are deliberate and change what the result means:
+
+- **`-j 2`, not `-j 4`.** Memory was the failure mode, so halving the
+  concurrent test processes is the change most likely to let it finish. It
+  roughly doubles the wall time.
+- **At `486fff1`, not at `94c285c`.** Everything closed since the first
+  attempt — the CLI suite, the approval-view tests, the binding forms — landed
+  in between. Re-running the old commit would measure a state that no longer
+  exists; running HEAD produces the score the quality audit's §9 rule actually
+  needs. The figures below stay as the record of where the campaign started,
+  and the two are **not** comparable as a before/after, because the second run
+  covers four crates the first never reached.
+
+What the stopped run established, against `94c285c`:
 
 ```
 tested 842 of ~1253      caught 421 · missed 320 · unviable 93 · timeout 3
