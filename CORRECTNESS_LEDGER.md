@@ -12,7 +12,7 @@ convenient.
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
 | Tests | **375** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
-| Mutation score | **none.** Two runs, both stopped for memory; neither reached six of eight crates. See Tier 6 |
+| Mutation score | **still none.** Two workspace runs stopped for memory; six crates measured individually, but per-crate runs test only that crate — see Tier 6 |
 
 Every figure here is against `94c285c`. A score quoted without its commit is
 not a baseline, because the next commit moves it.

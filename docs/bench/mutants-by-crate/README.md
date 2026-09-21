@@ -12,6 +12,46 @@ kill costs at most the crate in flight rather than everything since the
 beginning. `trellis-loop` took 12 minutes; the whole set is well inside what
 survives.
 
+## Read these as self-test scores, not coverage
+
+**`cargo mutants -p <crate>` runs only that crate's own tests.** A mutant that
+a *dependent* crate's tests would catch is reported as surviving, because
+those tests never run.
+
+This is not a small effect. `cargo test -p trellis-core` runs **one test**,
+and `trellis-core` is exercised almost entirely by its dependents. Proven
+rather than assumed:
+
+```
+mutant:  Interner::deserialize -> Ok(Default::default())     (interner.rs:47)
+
+cargo test -p trellis-core     1 passed          -> mutant SURVIVES
+cargo test --workspace         2 tests FAILED    -> mutant is CAUGHT
+                               cache::tests::roundtrips_and_preserves_the_graph
+                               cache::tests::a_changed_file_set_invalidates_the_blob
+```
+
+So every figure below **understates** the real score, by an amount that scales
+with how much of a crate's behaviour is exercised from outside it:
+
+| crate | own tests | distortion |
+|---|---|---|
+| `trellis-core` | 1 | **severe** — 50.0% is 10 mutants judged by one test |
+| `trellis-vcs` | few | large |
+| `trellis-index`, `trellis-loop`, `trellis-cli` | many | modest |
+| `trellis-model`, `trellis-trail`, `trellis-checks` | many, and leaf-ish | small |
+
+`cargo mutants --test-workspace true -p <crate>` is the correct measurement:
+mutate one crate, run the whole suite. It costs the full suite per mutant
+(~60s against a few seconds), which is affordable for the small crates and not
+for the large ones. The plan is to re-run the worst-distorted with it and to
+label the rest as what they are.
+
+**Nothing below is wrong as a self-test score.** "Does this crate test its own
+code" is a real property and a useful one — `trellis-core` genuinely has one
+test. It is simply not the property the word "mutation score" implies, and the
+first version of this file implied it.
+
 ## Scores
 
 ```
@@ -39,10 +79,11 @@ here because both whole-workspace attempts covered it and the figures are in
 there. It owns `Verdict`, and the grounding contract is what the whole design
 rests on. Two survivors, both in `coverage.rs`.
 
-**`trellis-core` 50.0%** is the lowest and the least alarming: ten mutants
-total, on newtype accessors and the interner. A percentage over ten mutants is
-noise, and this is the clearest case in the set for reading the count rather
-than the ratio.
+**`trellis-core` 50.0%** is the lowest, the least alarming, and the most
+misleading. Ten mutants total, on newtype accessors and the interner — a
+percentage over ten mutants is noise before anything else. And per the section
+above, it is ten mutants judged by a single test, while the workspace suite
+catches at least one of the five survivors outright.
 
 Worth noting it moved: run 1 measured this crate at 62.5% over **eight**
 mutants. The count changed because `Interner` gained `from_store` and a hand-
