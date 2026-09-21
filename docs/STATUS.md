@@ -251,7 +251,19 @@ audit's own §0 requires a finished campaign, so they run in that order.
     mostly display strings, counter arithmetic and the filesystem group
     around `read_sources` and `content_hash`.
 
-11. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+11. **`trellis-trail` is triaged out.** The calendar behind every trail
+    filename was right at three dates and unasserted at the rest — five
+    mutants lived in `civil_from_days`, and the reason is that `mp - 9` and
+    `mp / 9` agree in January, so **February is the only month that
+    separates them** and no test used one. Eight dates now, generated from
+    Python's `datetime`.
+
+    Also closed: `run_id`'s filename fallback, the `Integrity` verdict
+    `cmd_log` prints, and the clock functions' shapes — six mutants that no
+    test can pin a value for, but whose *shape* is what the rest of the
+    system depends on.
+
+12. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was
