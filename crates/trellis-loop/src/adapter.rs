@@ -19,6 +19,13 @@ use crate::agent::{Model, Step, Transcript};
 use crate::wire::ToolCallWire;
 use trellis_model::{AdapterTier, Dialect, RuntimeClient};
 
+/// The default per-reply ceiling handed to a runtime.
+///
+/// See the note at its use site: this is a cap, so raising it is free for a
+/// model that stops early and is the difference between working and not for
+/// one that reasons out loud first.
+pub(crate) const DEFAULT_MAX_REPLY_TOKENS: u32 = 2048;
+
 /// How many times a malformed response is retried before the run ends.
 ///
 /// Small on purpose. A model that cannot produce a valid call in a handful of
@@ -64,7 +71,22 @@ impl RuntimeModel {
         Self {
             client,
             tier,
-            max_tokens: 512,
+            // A **ceiling**, not a target: a model that emits a forty-token
+            // tool call stops at forty whatever this says, so a generous
+            // one costs a concise model nothing.
+            //
+            // 512 cost a reasoning model everything. qwen3:8b emits its
+            // reasoning before its answer and both count against this, so
+            // on a prompt of the length this loop actually builds it
+            // returned an empty completion with `finish_reason: length` —
+            // which reaches the loop as "no JSON object in output at all,
+            // which is what an ignored schema looks like". The diagnosis
+            // pointed at the schema and the cause was the budget.
+            //
+            // Measured, not guessed: the same 3,164-character prompt
+            // against the same model returns nothing at 512 and the correct
+            // edit at 2048.
+            max_tokens: DEFAULT_MAX_REPLY_TOKENS,
             tokens: 0,
             last_prompt_bytes: None,
         }
@@ -634,6 +656,45 @@ mod tests {
         assert!(
             !sent.contains("oneOf"),
             "tier 4 sends no schema — that is what makes it tier 4: {sent}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reply_budget_tests {
+    use super::*;
+
+    #[test]
+    fn the_reply_ceiling_reaches_the_wire_with_room_for_a_model_that_reasons() {
+        // Measured against qwen3:8b on ollama, on a 3,164-character prompt
+        // of the shape this loop builds: nothing at 512 with
+        // `finish_reason: length`, and the correct edit at 2048.
+        //
+        // The failure it caused was worse than a truncated answer. An empty
+        // completion reaches the loop as "no JSON object in output at all,
+        // which is what an ignored schema looks like" — so a budget problem
+        // was reported as a schema problem, and four retries hit the same
+        // wall.
+        //
+        // Asserted on the request body rather than on the constant: a
+        // constant compared against itself proves nothing, and the thing
+        // that broke was what the runtime was actually asked for.
+        let client = RuntimeClient::new(
+            "http://127.0.0.1:11434",
+            trellis_model::Dialect::VllmOpenAi,
+            Some("qwen3:8b".into()),
+        )
+        .expect("a plain-http base parses");
+
+        let body = client.body("a prompt", None, DEFAULT_MAX_REPLY_TOKENS);
+        let asked = body["max_tokens"].as_u64().expect("max_tokens is sent");
+        assert!(
+            asked >= 2048,
+            "a reasoning model spends this budget before it answers; asked for {asked}"
+        );
+        assert_eq!(
+            body["model"], "qwen3:8b",
+            "and the weight is named, or ollama answers `model 'default' not found`"
         );
     }
 }

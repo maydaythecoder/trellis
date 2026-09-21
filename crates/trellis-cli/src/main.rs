@@ -721,8 +721,12 @@ impl Driver {
                     .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
                 Ok(Driver::Scripted(m))
             }
-            trellis_model::ModelSpec::Runtime { dialect, base } => {
-                let client = trellis_model::RuntimeClient::new(base, *dialect, None)?;
+            trellis_model::ModelSpec::Runtime {
+                dialect,
+                base,
+                model,
+            } => {
+                let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?;
                 // Named rather than `new(client, !unconstrained)`: the flag is
                 // called --unconstrained, so a negated bool at the call site
                 // meant reading two negations to learn which tier runs.
@@ -1768,7 +1772,12 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
 
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
-        let trellis_model::ModelSpec::Runtime { dialect, base } = &spec else {
+        let trellis_model::ModelSpec::Runtime {
+            dialect,
+            base,
+            model,
+        } = &spec
+        else {
             anyhow::bail!(
                 concat!(
                     "`{}` is a scripted model, which has no runtime to probe. ",
@@ -1777,7 +1786,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                 spec
             );
         };
-        let client = trellis_model::RuntimeClient::new(base, *dialect, None)?
+        let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
             .with_timeout(std::time::Duration::from_secs(30));
         runtime = format!("{dialect:?} at {base}");
         model_id = "whatever the runtime has loaded".into();

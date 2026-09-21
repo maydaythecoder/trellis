@@ -327,10 +327,15 @@ impl Session {
     /// opening a prompt wait on a model's first token. Tier is still probed
     /// by `/model`, where the user asked for it.
     fn warn_if_unreachable(&self, spec: &trellis_model::ModelSpec) {
-        let trellis_model::ModelSpec::Runtime { dialect, base } = spec else {
+        let trellis_model::ModelSpec::Runtime {
+            dialect,
+            base,
+            model,
+        } = spec
+        else {
             return;
         };
-        let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, None) else {
+        let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, model.clone()) else {
             return;
         };
         let Ok(rt) = tokio::runtime::Runtime::new() else {
@@ -353,10 +358,15 @@ impl Session {
         // this used to re-split the string and return silently on three
         // different kinds of unparseable input, which meant a typo produced
         // no message at all.
-        let trellis_model::ModelSpec::Runtime { dialect, base } = spec else {
+        let trellis_model::ModelSpec::Runtime {
+            dialect,
+            base,
+            model,
+        } = spec
+        else {
             return;
         };
-        let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, None)
+        let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, model.clone())
             .map(|c| c.with_timeout(std::time::Duration::from_secs(5)))
         else {
             return;
