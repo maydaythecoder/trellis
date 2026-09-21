@@ -192,7 +192,7 @@ Deleted match arms survive for `relative_import`, `lambda`, `as_pattern`,
 `named_expression`, and the splat parameter patterns. Each is a real form the
 corpus contains and the suite does not.
 
-Buckets 2 and 3 are closed, `44aaa00`: ten tests on the approval-time view
+Buckets 2 and 3 are closed: ten tests on the approval-time view
 and six on the binding forms. The `doubt_in_files` one is stated as its own
 test, because `FileDoubt::default()` is a legitimate value meaning *nothing is
 in doubt* and the defect was that it was reachable by accident from a file
