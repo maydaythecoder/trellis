@@ -96,6 +96,41 @@ claim "3.1× on tasks that decompose, which is 40% of tasks" is the shape it
 asks for; on this evidence the second number is nearer 4%, and a speedup
 multiplied by 4% is not a headline.
 
+## Resolved: narrowed, staged, and measured — ADR 0016
+
+The touched-file test was narrowed so the root's own file counts toward the
+reported doubt but not toward the partitioning decision, and `plan` now
+returns a staged `Plan { shared, parallel }`.
+
+```
+                        before   after
+unit partitionable        2.9%   80.2%
+decomposed (2 symbols)    4.0%   95.0%
+mean groups               1.04    1.95
+```
+
+**The guarantee did not survive unconditionally, and that is recorded rather
+than smoothed over.** `examples/narrowing_safety.rs` tests the threat model
+directly — an unbound site in a file one partition edits whose true callee is
+in the other's radius — over 2,000 random pairs:
+
+```
+compatible under the narrowed rule:      1304
+of those, the broad rule refused:        1303
+of those, a plausible collision exists:   165   (12.66%)
+```
+
+Not zero. The examples concentrate in test files, which is the pytest-fixture
+shape already recorded as 51% of first-party misses.
+
+What survives is the guarantee the milestone actually makes — partition-local
+passes never substitute for the integrated check — and the staging is what
+makes the residual risk tolerable: contended and uncertain work runs alone and
+first, so the pairs most likely to collide are the ones never run
+concurrently. Excluding test files is the obvious next experiment and was not
+taken here, because that is a second loosening stacked on the first without
+its own measurement.
+
 ## Reproducing
 
 ```
