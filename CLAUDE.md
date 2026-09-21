@@ -29,9 +29,10 @@ cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed>
 cargo run --release -p trellis-index --example audit_score  -- <dir>
 ```
 
-`trellis run`, `resume` and `partitions` exit with a clear "not implemented
-yet" — they need the agent loop (v0.2). Do not stub them into something that
-appears to work.
+`trellis run`, `resume` and `partitions` are implemented. They were stubs
+until the agent loop landed in v0.2, and the rule that kept them stubs still
+holds for anything added next: a command that appears to work without doing
+the work is worse than one that says it is not built yet.
 
 ## The number that is easy to misread
 

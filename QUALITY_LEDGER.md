@@ -1,18 +1,18 @@
 # Quality audit ledger
 
 **Status: in progress.** Passes 0–2 complete, 3–7 not started. The
-prerequisite was not met when this began and is still being repaired — see
-*Prerequisite* below before reading anything else here as authoritative.
+prerequisite was not met when this began; it is now met except for Tier 6,
+which is running. See *Prerequisite* below.
 
 | | |
 |---|---|
 | Repository root | `C:\Users\mayda\Documents\dev\trellis` |
 | Risk profile | **application** — a CLI binary. The eight crates are internal to one workspace; none is published, so `pub` mostly means "visible to a sibling crate" rather than public API. This matters in Pass 5. |
-| Correctness campaign | `ef9036d`, **incomplete** |
-| Mutation score baseline | **none — does not exist** |
-| Coverage baseline | **none — does not exist** |
+| Correctness campaign | `94c285c`, see CORRECTNESS_LEDGER.md — Tiers 0–5 and 7–11 done, Tier 6 running |
+| Mutation score baseline | **running** against `94c285c`; the audit's §9 rule is not yet enforceable |
+| Coverage baseline | **82.74% lines** against `94c285c` (`docs/bench/coverage-20260921.md`) |
 
-## Prerequisite: not met
+## Prerequisite: met except for Tier 6
 
 The quality audit's §0 requires a finished correctness campaign, because §9
 makes mutation score the check that catches refactor damage: *"a refactor that
@@ -20,17 +20,17 @@ makes code harder to test shows up here and nowhere else."*
 
 | Tier | State |
 |---|---|
-| 0 — Baseline | **Was incomplete.** No `rust-toolchain.toml`, no `CORRECTNESS_LEDGER.md`. Toolchain now pinned to 1.93.0 |
+| 0 — Baseline | **Now met.** `rust-toolchain.toml` pins 1.93.0; `CORRECTNESS_LEDGER.md` written |
 | 1 — Compilation | Clean. `cargo check --all-targets --all-features` |
 | 2 — Lints | Clean, including `clippy::correctness` and `clippy::suspicious` |
 | 3 — Tests | Green. 328 passing, 0 ignored |
 | 4 — Manual review | Partial |
-| 5 — Coverage | **Not run.** `cargo-llvm-cov` installing |
-| 6 — Mutation | **Not run.** `cargo-mutants` installing. This is the missing safety net |
+| 5 — Coverage | **Run.** 82.74% lines. Half the gap is one file: `main.rs` at 39.09%, which has no test |
+| 6 — Mutation | **Running.** ~1,253 mutants. Still the missing safety net until it lands |
 | 7 — Property/fuzz | Partial. Property tests exist (`partition_invariants`, `bidirectional`); no fuzz targets |
 | 8 — UB / unsafe | **N/A.** `unsafe_code = "forbid"` at workspace level |
-| 9 — Concurrency | **Not run.** There is async and threaded code (orchestrator actor, TUI) |
-| 10 — Dependencies | **Not run.** `cargo-audit`, `cargo-deny` installing |
+| 9 — Concurrency | **Run, by audit.** No shared mutable state anywhere in `crates/*/src`; five sites checked individually |
+| 10 — Dependencies | **Run and clean.** `cargo audit` and `cargo deny check` both pass; `deny.toml` states the policy |
 | 11 — Formal | N/A |
 
 **Consequence for this audit.** Passes 1–2 are compiler-verified renames and
@@ -59,8 +59,8 @@ library source   19,020 lines across 44 files
 largest files    main.rs 2527 · agent.rs 1794 · resolve.rs 1630 · session.rs 1527
 longest fns      build_from_facts 277 · cmd_run 261 · run_seeded 224 · cmd_init 202
                  (crude: fn-to-fn span, includes doc comments — a pointer, not a measurement)
-mutation score   —
-coverage         —
+mutation score   pending (running against 94c285c)
+coverage         82.74% lines · 82.52% regions · 86.34% functions
 ```
 
 ## Findings
@@ -73,8 +73,10 @@ coverage         —
 | Q-004 | 3 | B | `trellis-loop/src/adapter.rs:46` | `RuntimeModel::new(client, constrained: bool)`, called as `new(client, !unconstrained)` | **Reported, not fixed** | A double negative at the call site. An enum would read, but that is Pass 4 | — |
 | Q-005 | 5 | B | workspace-wide | ~250 undocumented `pub` items | **Reported, not fixed** | Verified `trellis_loop::tools` and `trellis_loop::budget` are referenced from no other crate. These are over-wide visibility, not public API — the fix is narrowing, not writing 250 doc comments. Pass 5 |
 | Q-006 | 2 | C | `trellis-checks/src/lib.rs:222` | `TODO(v0.2): parse structured output per tool` — v0.2 has passed | **Left alone** | It carries a milestone reference and the work is still genuinely open (`failure_count` is still `None`). Deleting it would lose a real open item; §4 only condemns a TODO with no owner, ticket, or date |
+| Q-007 | 2 | B | `CLAUDE.md:32` | Claimed `run`, `resume` and `partitions` "exit with a clear 'not implemented yet'". All three have been implemented since v0.2 | **Fixed** | A stale instruction file is worse than none: a reader trusts it and stubs a command that already works. Rewrote it to keep the rule (do not fake a command) while stating the current fact | pending |
+| Q-008 | 2 | — | workspace-wide | Suspected `cargo fmt` string-folding defects — prose literals broken mid-sentence by a source line break | **None found** | 198 literals span a line break; 17 survived filtering for mid-sentence prose; all 17 rendered and every one is a deliberate hand-wrap at 73–78 columns. The remainder are `\` continuations or literal test fixtures. Recorded so it is not re-litigated | — |
 
-## Pass 2 result: almost nothing to delete
+## Pass 2 result: almost nothing to delete, and one stale claim
 
 The survey for §4's delete-list found no commented-out code, no section
 banners, no changelog comments, and one TODO that carries a reference and is
@@ -84,6 +86,18 @@ happened to begin with `for`.
 The additive half of Pass 2 — missing doc comments — collapsed into Q-005,
 because the right fix for most of those items is narrowing visibility rather
 than documenting them.
+
+What the survey *did* find is Q-007: `CLAUDE.md` still told a reader that three
+implemented commands were stubs. Comments were clean; the instruction file was
+not, which is the inversion worth noticing — the file nobody compiles is the
+one that rots.
+
+Q-008 is a negative result kept on purpose. A prose string broken mid-sentence
+by `cargo fmt` had been a real recurring defect in this repository, so the
+whole workspace was rescanned. Seventeen candidates survived filtering and all
+seventeen, when rendered, were deliberate hand-wraps. The scan is worth
+repeating after a `cargo fmt` that touches output strings; it is not worth
+repeating otherwise.
 
 ## Left alone deliberately
 
