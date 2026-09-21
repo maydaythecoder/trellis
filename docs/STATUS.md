@@ -227,7 +227,17 @@ audit's own §0 requires a finished campaign, so they run in that order.
    one small function is usually not a test gap, and "does anything call
    this" is a cheaper first question than "what should I assert".
 
-9. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
+9. **`discover` — the graph's own definition of first-party — was untested.**
+   Six survivors, `discover -> vec![]` among them. The suite builds every
+   index from in-memory `(path, source)` pairs, so the skip-list, the
+   extension filter and the sort were exercised only by the CLI. Five tests
+   now; three verified against their mutants.
+
+   The sort one closes a gap this repository had already opened:
+   `tests/determinism.rs` asserts the graph is a function of its sources and
+   attributes that to `discover` sorting, then never calls it.
+
+10. **Triage so far.** `trellis-loop`'s survivors produced two real fixes —
    the tier/schema wiring and JSON escape handling, both verified by applying
    the exact mutant and watching the test fail. `Trail::factual_is_intact`
    turned out to be dead code duplicating `UntrustedTrail::integrity`, and was
