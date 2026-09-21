@@ -14,5 +14,12 @@ publish = false
 serde.workspace = true
 thiserror.workspace = true
 
+# Test-only. The interner rebuilds its lookup on deserialize (C-003), and
+# that invariant belongs to the type rather than to whichever consumer
+# happens to round-trip it — trellis-index's cache tests were the only thing
+# exercising it.
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

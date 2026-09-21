@@ -55,3 +55,20 @@ impl std::fmt::Display for RunId {
         f.write_str(&self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_id_displays_as_the_string_it_holds() {
+        // `RunId` names the trail file and the worktree directory, so its
+        // `Display` is a path component rather than a debug rendering. The
+        // mutant replacing the impl with `Ok(())` prints nothing, and every
+        // path built from it silently loses a segment.
+        let r = RunId("20260921-053000-000-rename-installer".into());
+        assert_eq!(r.to_string(), "20260921-053000-000-rename-installer");
+        assert_eq!(format!("{r}"), r.0);
+        assert!(!r.to_string().is_empty());
+    }
+}

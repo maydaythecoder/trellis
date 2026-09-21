@@ -120,4 +120,38 @@ mod tests {
         assert_eq!(i.get("other"), Some(c));
         assert_eq!(i.get("absent"), None);
     }
+
+    #[test]
+    fn an_empty_interner_is_empty_and_a_used_one_is_not() {
+        // Two mutants, `is_empty -> true` and `-> false`, and neither branch
+        // was asserted. Kept rather than deleted despite having no caller:
+        // clippy's `len_without_is_empty` wants it beside `len`, so removing
+        // it would trade a survivor for a lint.
+        let mut i = Interner::new();
+        assert!(i.is_empty());
+        assert_eq!(i.len(), 0);
+        i.intern("x");
+        assert!(!i.is_empty());
+    }
+
+    #[test]
+    fn a_serialized_interner_rebuilds_its_lookup() {
+        // C-003 made this serialize as the store alone, rebuilding `lookup`
+        // on load. The invariant that matters afterwards is that `get` and
+        // `resolve` still agree — a store with no index would resolve fine
+        // and answer `get` with nothing.
+        let mut i = Interner::new();
+        let a = i.intern("alpha");
+        let b = i.intern("beta");
+
+        let json = serde_json::to_string(&i).expect("serialises");
+        let back: Interner = serde_json::from_str(&json).expect("round trips");
+
+        assert_eq!(back.len(), 2);
+        assert_eq!(back.resolve(a), "alpha");
+        assert_eq!(back.resolve(b), "beta");
+        assert_eq!(back.get("alpha"), Some(a), "the lookup must be rebuilt");
+        assert_eq!(back.get("beta"), Some(b));
+        assert_eq!(back.get("never interned"), None);
+    }
 }
