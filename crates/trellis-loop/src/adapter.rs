@@ -496,4 +496,124 @@ mod tests {
             "prompt should not carry the whole observation"
         );
     }
+
+    /// Found by mutation testing: deleting the `'\\'` arm, deleting the `'"'`
+    /// arm, and forcing the `escaped` guard to false all survived the suite.
+    ///
+    /// The bug that admits is not exotic. `edit` carries `old` and `new`
+    /// verbatim from a source file, and Python is full of quotes — the
+    /// project's own fixture writes `return f"hello {name}"`. Without escape
+    /// tracking the scan ends the string early at the `\"`, then reads the
+    /// rest of the call as structure, and the object closes at the wrong
+    /// brace or never closes at all.
+    #[test]
+    fn an_escaped_quote_inside_a_string_does_not_end_it() {
+        // Two details here are load-bearing and neither was obvious. The
+        // test went through three versions before it killed the mutant it
+        // was written for, and the reason is worth writing down.
+        //
+        // Escape handling is only *observable* through the depth count. With
+        // no brace inside the string, dropping out of it early changes
+        // nothing about where the object closes and the extracted text is
+        // identical either way — so version one asserted the text and passed
+        // against the very mutant it targeted.
+        //
+        // Adding a brace was not enough either. Escaped quotes come in
+        // pairs, so a scanner that ignores `\` flips out of the string and
+        // back in again, and the brace still lands inside one. It needs an
+        // **odd** number of escaped quotes before the brace: then the broken
+        // scanner is outside the string when it meets `{`, counts it as
+        // structure, and the object never closes.
+        let call = r#"{"tool":"edit","path":"a.py","old":"say \" {","new":"}"}"#;
+        let got = extract_json(call).expect("the object is complete and must be found");
+        assert_eq!(got, call, "the scan stopped at an escaped quote");
+
+        let w: ToolCallWire = serde_json::from_str(got).expect("a well-formed edit");
+        match w {
+            ToolCallWire::Edit { old, new, .. } => {
+                assert_eq!(old, r#"say " {"#);
+                assert_eq!(new, "}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_trailing_backslash_before_the_closing_quote_is_still_an_escape() {
+        // `\\` ends the escape, so the `"` after it really does close the
+        // string. Getting this backwards leaves the scanner inside a string
+        // forever and the call is reported as truncated.
+        let call = r#"{"tool":"edit","path":"a.py","old":"C:\\tmp\\","new":"D:\\tmp\\"}"#;
+        let got = extract_json(call).expect("a path ending in a backslash is still a string");
+        assert_eq!(got, call);
+        let v: serde_json::Value = serde_json::from_str(got).expect("valid JSON");
+        assert_eq!(v["old"], "C:\\tmp\\");
+    }
+
+    /// A stub runtime that records the request body and answers once.
+    ///
+    /// The adapter's tier decides whether a schema is sent, and that decision
+    /// is only observable in the bytes on the wire — which is why asserting
+    /// on `tier()` alone left it untested.
+    async fn recording_stub(reply: &'static str) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let got = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let out = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                reply.len()
+            );
+            sock.write_all(out.as_bytes()).await.unwrap();
+            sock.shutdown().await.ok();
+            got
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn one_turn(task: &str) -> Transcript {
+        Transcript {
+            task: task.into(),
+            turns: Vec::new(),
+            final_notice: false,
+            prior: None,
+            repo: crate::agent::RepoContext::default(),
+        }
+    }
+
+    /// Found by mutation testing: `replace == with !=` on the line that
+    /// decides whether a schema is sent survived the whole suite.
+    ///
+    /// That mutant inverts the tier design outright — tier 2 would send
+    /// nothing and tier 4 would send a schema — and `tier()` returning the
+    /// right value says nothing about it, because the tier is only half the
+    /// wiring. This asserts the other half, on the bytes.
+    #[tokio::test]
+    async fn tier_two_sends_the_schema_and_tier_four_does_not() {
+        let reply = r#"{"content":"{\"tool\":\"done\",\"summary\":\"ok\"}","tokens_predicted":5}"#;
+
+        let (base, server) = recording_stub(reply).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let mut m = RuntimeModel::constrained(c);
+        m.next_step(&one_turn("t")).await.expect("a valid call");
+        let sent = server.await.unwrap();
+        assert!(
+            sent.contains("json_schema") || sent.contains("grammar") || sent.contains("oneOf"),
+            "tier 2 must put the schema in the request: {sent}"
+        );
+
+        let (base, server) = recording_stub(reply).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let mut m = RuntimeModel::unconstrained(c);
+        m.next_step(&one_turn("t")).await.expect("a valid call");
+        let sent = server.await.unwrap();
+        assert!(
+            !sent.contains("oneOf"),
+            "tier 4 sends no schema — that is what makes it tier 4: {sent}"
+        );
+    }
 }

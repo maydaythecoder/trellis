@@ -1,0 +1,123 @@
+crates/trellis-loop/src/adapter.rs:93:9: replace RuntimeModel::prompt -> String with String::new()
+crates/trellis-loop/src/adapter.rs:93:9: replace RuntimeModel::prompt -> String with "xyzzy".into()
+crates/trellis-loop/src/adapter.rs:186:46: replace > with < in RuntimeModel::prompt
+crates/trellis-loop/src/adapter.rs:229:5: replace extract_json -> Option<&str> with None
+crates/trellis-loop/src/adapter.rs:117:12: delete ! in RuntimeModel::prompt
+crates/trellis-loop/src/adapter.rs:119:16: delete ! in RuntimeModel::prompt
+crates/trellis-loop/src/adapter.rs:186:46: replace > with == in RuntimeModel::prompt
+crates/trellis-loop/src/adapter.rs:229:5: replace extract_json -> Option<&str> with Some("")
+crates/trellis-loop/src/adapter.rs:229:5: replace extract_json -> Option<&str> with Some("xyzzy")
+crates/trellis-loop/src/adapter.rs:240:17: delete match arm '"' in extract_json
+crates/trellis-loop/src/adapter.rs:238:22: replace match guard escaped with true in extract_json
+crates/trellis-loop/src/adapter.rs:247:13: delete match arm '{' in extract_json
+crates/trellis-loop/src/adapter.rs:249:23: replace -= with += in extract_json
+crates/trellis-loop/src/adapter.rs:248:13: delete match arm '}' in extract_json
+crates/trellis-loop/src/adapter.rs:247:26: replace += with -= in extract_json
+crates/trellis-loop/src/adapter.rs:247:26: replace += with *= in extract_json
+crates/trellis-loop/src/adapter.rs:249:23: replace -= with /= in extract_json
+crates/trellis-loop/src/adapter.rs:250:26: replace == with != in extract_json
+crates/trellis-loop/src/agent.rs:124:9: replace NotConverged::explain -> String with String::new()
+crates/trellis-loop/src/agent.rs:124:9: replace NotConverged::explain -> String with "xyzzy".into()
+crates/trellis-loop/src/agent.rs:172:9: replace Outcome::converged -> bool with true
+crates/trellis-loop/src/agent.rs:172:9: replace Outcome::converged -> bool with false
+crates/trellis-loop/src/agent.rs:214:9: replace RepoContext::is_empty -> bool with true
+crates/trellis-loop/src/agent.rs:214:30: replace && with || in RepoContext::is_empty
+crates/trellis-loop/src/agent.rs:214:9: replace RepoContext::is_empty -> bool with false
+crates/trellis-loop/src/agent.rs:250:9: replace Transcript::last_check_passed -> bool with true
+crates/trellis-loop/src/agent.rs:250:9: replace Transcript::last_check_passed -> bool with false
+crates/trellis-loop/src/agent.rs:313:9: replace Model::prompt_bytes -> Option<usize> with Some(0)
+crates/trellis-loop/src/agent.rs:313:9: replace Model::prompt_bytes -> Option<usize> with Some(1)
+crates/trellis-loop/src/agent.rs:470:28: replace += with -= in run_seeded
+crates/trellis-loop/src/agent.rs:439:28: delete ! in run_seeded
+crates/trellis-loop/src/agent.rs:470:28: replace += with *= in run_seeded
+crates/trellis-loop/src/agent.rs:492:21: delete match arm ToolResult::Checks(v) in run_seeded
+crates/trellis-loop/src/agent.rs:481:20: delete ! in run_seeded
+crates/trellis-loop/src/agent.rs:507:35: replace == with != in run_seeded
+crates/trellis-loop/src/agent.rs:508:35: replace += with -= in run_seeded
+crates/trellis-loop/src/agent.rs:508:35: replace += with *= in run_seeded
+crates/trellis-loop/src/agent.rs:533:21: replace + with - in run_seeded
+crates/trellis-loop/src/agent.rs:533:21: replace + with * in run_seeded
+crates/trellis-loop/src/agent.rs:531:40: replace == with != in run_seeded
+crates/trellis-loop/src/agent.rs:557:28: replace >= with < in run_seeded
+crates/trellis-loop/src/agent.rs:531:65: replace == with != in run_seeded
+crates/trellis-loop/src/agent.rs:590:5: replace render -> String with String::new()
+crates/trellis-loop/src/agent.rs:674:5: replace scope_note -> String with String::new()
+crates/trellis-loop/src/agent.rs:674:5: replace scope_note -> String with "xyzzy".into()
+crates/trellis-loop/src/agent.rs:590:5: replace render -> String with "xyzzy".into()
+crates/trellis-loop/src/agent.rs:675:46: replace match guard paths.is_empty() with true in scope_note
+crates/trellis-loop/src/agent.rs:675:46: replace match guard paths.is_empty() with false in scope_note
+crates/trellis-loop/src/agent.rs:688:5: replace unrun_note -> String with String::new()
+crates/trellis-loop/src/agent.rs:688:5: replace unrun_note -> String with "xyzzy".into()
+crates/trellis-loop/src/agent.rs:691:46: replace == with != in unrun_note
+crates/trellis-loop/src/agent.rs:691:70: replace + with - in unrun_note
+crates/trellis-loop/src/agent.rs:691:70: replace + with * in unrun_note
+crates/trellis-loop/src/budget.rs:80:9: replace Budget::exceeded -> Option<Exhaustion> with None
+crates/trellis-loop/src/budget.rs:82:33: replace >= with < in Budget::exceeded
+crates/trellis-loop/src/budget.rs:80:29: replace >= with < in Budget::exceeded
+crates/trellis-loop/src/budget.rs:84:32: replace >= with < in Budget::exceeded
+crates/trellis-loop/src/budget.rs:99:9: replace Budget::split -> Budget with Default::default()
+crates/trellis-loop/src/budget.rs:101:50: replace / with * in Budget::split
+crates/trellis-loop/src/budget.rs:101:50: replace / with % in Budget::split
+crates/trellis-loop/src/budget.rs:103:42: replace / with % in Budget::split
+crates/trellis-loop/src/budget.rs:103:42: replace / with * in Budget::split
+crates/trellis-loop/src/governance.rs:59:9: replace Rule::matches -> bool with true
+crates/trellis-loop/src/governance.rs:62:36: replace == with != in Rule::matches
+crates/trellis-loop/src/governance.rs:70:9: replace Rule::as_written -> String with String::new()
+crates/trellis-loop/src/governance.rs:59:9: replace Rule::matches -> bool with false
+crates/trellis-loop/src/governance.rs:70:9: replace Rule::as_written -> String with "xyzzy".into()
+crates/trellis-loop/src/governance.rs:92:9: replace Governance::is_empty -> bool with false
+crates/trellis-loop/src/governance.rs:105:9: replace Governance::denies_write -> Option<&Rule> with None
+crates/trellis-loop/src/orchestrator.rs:118:9: replace Handle::touched -> Vec<String> with vec![]
+crates/trellis-loop/src/orchestrator.rs:118:9: replace Handle::touched -> Vec<String> with vec![String::new()]
+crates/trellis-loop/src/orchestrator.rs:128:9: replace Handle::is_alive -> bool with true
+crates/trellis-loop/src/orchestrator.rs:118:9: replace Handle::touched -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-loop/src/orchestrator.rs:128:9: replace Handle::is_alive -> bool with false
+crates/trellis-loop/src/orchestrator.rs:132:9: replace Handle::has_governance_rules -> bool with true
+crates/trellis-loop/src/orchestrator.rs:128:9: delete ! in Handle::is_alive
+crates/trellis-loop/src/orchestrator.rs:132:9: replace Handle::has_governance_rules -> bool with false
+crates/trellis-loop/src/orchestrator.rs:217:40: delete ! in Orchestrator::serve
+crates/trellis-loop/src/orchestrator.rs:243:19: replace == with != in Orchestrator::blast_radius
+crates/trellis-loop/src/orchestrator.rs:245:55: replace == with != in Orchestrator::blast_radius
+crates/trellis-loop/src/orchestrator.rs:301:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:301:32: replace == with != in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:333:16: replace == with != in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:345:17: replace != with == in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:357:43: replace == with != in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:357:12: delete ! in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:363:12: delete ! in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:377:27: replace + with - in Orchestrator::apply_edit
+crates/trellis-loop/src/orchestrator.rs:424:21: replace == with != in Orchestrator::run_checks
+crates/trellis-loop/src/orchestrator.rs:437:9: replace Orchestrator::resolve_in_repo -> Result<PathBuf, String> with Ok(Default::default())
+crates/trellis-loop/src/orchestrator.rs:438:68: replace == with != in Orchestrator::resolve_in_repo
+crates/trellis-loop/src/partition.rs:79:9: replace Partition::compatible_with -> bool with false
+crates/trellis-loop/src/partition.rs:83:9: replace Partition::collides_with_unit -> bool with true
+crates/trellis-loop/src/partition.rs:83:9: replace Partition::collides_with_unit -> bool with false
+crates/trellis-loop/src/partition.rs:83:48: replace || with && in Partition::collides_with_unit
+crates/trellis-loop/src/partition.rs:83:9: delete ! in Partition::collides_with_unit
+crates/trellis-loop/src/partition.rs:83:51: delete ! in Partition::collides_with_unit
+crates/trellis-loop/src/partition.rs:93:9: replace Partition::merge with ()
+crates/trellis-loop/src/partition.rs:87:9: replace Partition::absorb with ()
+crates/trellis-loop/src/partition.rs:182:9: replace Plan::in_order -> impl Iterator<Item =&Partition> with ::std::iter::empty()
+crates/trellis-loop/src/partition.rs:204:5: replace plan -> Plan with Default::default()
+crates/trellis-loop/src/partition.rs:208:32: replace || with && in plan
+crates/trellis-loop/src/partition.rs:208:35: delete ! in plan
+crates/trellis-loop/src/partition.rs:208:12: delete ! in plan
+crates/trellis-loop/src/partition.rs:220:27: delete ! in plan
+crates/trellis-loop/src/partition.rs:263:14: replace += with -= in plan
+crates/trellis-loop/src/partition.rs:263:14: replace += with *= in plan
+crates/trellis-loop/src/partition.rs:271:14: replace += with -= in plan
+crates/trellis-loop/src/partition.rs:288:5: replace explain -> String with String::new()
+crates/trellis-loop/src/partition.rs:288:5: replace explain -> String with "xyzzy".into()
+crates/trellis-loop/src/partition.rs:291:30: replace && with || in explain
+crates/trellis-loop/src/partition.rs:354:26: replace > with == in explain
+crates/trellis-loop/src/partition.rs:354:26: replace > with < in explain
+crates/trellis-loop/src/partition.rs:357:48: replace + with - in explain
+crates/trellis-loop/src/partition.rs:354:33: delete ! in explain
+crates/trellis-loop/src/partition.rs:368:16: delete ! in explain
+crates/trellis-loop/src/partition.rs:373:33: replace > with < in explain
+crates/trellis-loop/src/scripted.rs:49:9: replace ScriptedModel::len -> usize with 0
+crates/trellis-loop/src/scripted.rs:49:9: replace ScriptedModel::len -> usize with 1
+crates/trellis-loop/src/scripted.rs:65:17: replace += with -= in <impl Model for ScriptedModel>::next_step
+crates/trellis-loop/src/scripted.rs:65:17: replace += with *= in <impl Model for ScriptedModel>::next_step
+crates/trellis-loop/src/tools.rs:43:9: replace ToolResult::is_passing_check -> bool with true
+crates/trellis-loop/src/wire.rs:103:9: replace ToolCallWire::schema -> serde_json::Value with Default::default()
