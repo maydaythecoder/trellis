@@ -264,6 +264,27 @@ fn add_touched_file_misses(index: &Index, report: &mut RadiusReport) {
     // count is read against and it is true whether or not anything is unbound.
     report.coverage.touched_files = touched.len() as u32;
 
+    // The root's own file counts toward the reported doubt but NOT toward the
+    // partitioning decision, and the split is the point.
+    //
+    // Measured 2026-09-21: 96.9% of units were unpartitionable because of
+    // this one condition, against 26% for caller files — 271 of poetry's 451
+    // files hold an unbound call somewhere, so nearly every symbol's own file
+    // is disqualifying. It cost almost all of partitionability.
+    //
+    // It also does no safety work that is not already done. Partition
+    // compatibility requires disjoint *file* sets as well as disjoint radii,
+    // and a unit's own file is always in its file set — so two units in one
+    // file can never be parallelised regardless of what this flag says. What
+    // remains is the claim that an unbound call *somewhere in my file* makes
+    // my caller set untrustworthy, and that is true of an unbound call
+    // anywhere; the file boundary is not evidence.
+    //
+    // Over-approximating doubt is right for a *report*, which is what
+    // `coverage` is. It is not automatically right for a *decision*, which is
+    // what `partitionable` is, and reusing one flag for both imported a
+    // reporting heuristic into a safety rule. See ADR 0016.
+    let root_file = index.symbols[report.root.index()].file;
     for edge in &index.edges {
         if let Target::Unresolved(r) = &edge.target {
             let file = index.sites[edge.from.index()].file;
@@ -271,9 +292,12 @@ fn add_touched_file_misses(index: &Index, report: &mut RadiusReport) {
                 report
                     .coverage
                     .record_unbound(*r, &index.files[file.index()].path);
-                // An unbindable call in a file this radius touches means the
-                // radius cannot be trusted to be disjoint from another (S19).
-                report.partitionable = false;
+                if file != root_file {
+                    // An unbindable call in a file this radius touches, other
+                    // than the root's own, means the radius cannot be trusted
+                    // to be disjoint from another (S19).
+                    report.partitionable = false;
+                }
             }
         }
     }
