@@ -1546,4 +1546,71 @@ def other():
              3.7% for a resolver audited at 72%: {line}"
         );
     }
+    #[test]
+    fn the_history_filename_keeps_what_is_readable_and_drops_what_is_not() {
+        // The filter is four conditions and every one of them survived the
+        // mutation run. Each is a different way to get a filename that is
+        // either unreadable or not a legal path component: drop the letters
+        // and the name is punctuation, keep the spaces and quoting breaks,
+        // keep the `!` and a shell surprises someone.
+        let Some(p) = history_path(Path::new("/x/my repo!@#-name_1")) else {
+            // No HOME and no LOCALAPPDATA, as the neighbouring tests allow.
+            return;
+        };
+        let file = p.file_name().unwrap().to_str().unwrap();
+        let stem = file.split('-').next().unwrap();
+
+        assert!(
+            file.starts_with("myrepo-name_1-"),
+            "expected the readable characters kept in order and the rest \
+             dropped, then the hash; got {file}"
+        );
+        for bad in [' ', '!', '@', '#'] {
+            assert!(
+                !stem.contains(bad),
+                "`{bad}` survived into the filename: {file}"
+            );
+        }
+        assert!(
+            file.contains('-') && file.contains('_'),
+            "`-` and `_` are legal and readable and must survive: {file}"
+        );
+    }
+
+    #[test]
+    fn audit_mode_note_picks_the_unmeasured_shape_only_when_nothing_was_measured() {
+        // The neighbouring test asserts what `NO_COVERAGE_NOTE` *says*.
+        // Nothing asserted *when it is chosen*, which is a different
+        // question and the one the surviving mutant answers wrongly.
+        //
+        // The `&&` selecting between the two shapes survives as `||`, and as
+        // `||` any run with one zero reports "nothing was measured" over
+        // figures it actually has. Verified-without-reviewed is the *good*
+        // outcome — every caller covered by an executed test — so the mutant
+        // loses precisely the result worth reporting. S3 is the whole
+        // distinction this product turns on.
+        assert_eq!(
+            audit_mode_note(trellis_trail::ModeCounts {
+                verified: 0,
+                reviewed: 0,
+            }),
+            NO_COVERAGE_NOTE,
+            "an unmeasured run must say so rather than report zeroes"
+        );
+
+        for (v, r) in [(3, 0), (0, 4), (2, 5)] {
+            let note = audit_mode_note(trellis_trail::ModeCounts {
+                verified: v,
+                reviewed: r,
+            });
+            assert_ne!(
+                note, NO_COVERAGE_NOTE,
+                "counts of {v}/{r} were reported as nothing measured"
+            );
+            assert!(
+                note.contains(&format!("{v} verified")) && note.contains(&format!("{r} reviewed")),
+                "both figures must appear, and never added: {note}"
+            );
+        }
+    }
 }
