@@ -15,10 +15,17 @@ use tokio::sync::mpsc;
 /// that runs in front of a user. Without this the exit path — the one thing
 /// that decides whether the terminal is left usable — could only be checked
 /// by hand.
+/// `task_tx` carries submitted tasks out to whatever performs runs.
+///
+/// The loop does not run anything itself: `update` records the intent on
+/// `AppState::submitted` and this drains it. That is what keeps the state
+/// transition pure and lets the same interface drive a mock in one binary
+/// and the real agent loop in another.
 pub async fn run<B>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut AppState,
     mut work_rx: mpsc::Receiver<Message>,
+    task_tx: mpsc::Sender<String>,
 ) -> color_eyre::Result<()>
 where
     B: ratatui::backend::Backend,
@@ -66,6 +73,21 @@ where
             state.update(m);
         }
 
+        // Drained after every batch: a task typed during a burst of work
+        // messages must not wait for the next keystroke to be noticed.
+        if let Some(task) = state.submitted.take()
+            && task_tx.send(task).await.is_err()
+        {
+            // Nothing is listening for tasks any more, so nothing can run.
+            // Saying so beats an input box that silently does nothing.
+            state.update(Message::AgentToken(
+                "· nothing is listening for tasks; the run driver is gone
+"
+                .into(),
+            ));
+            state.update(Message::RunFinished);
+        }
+
         if state.should_quit {
             break;
         }
@@ -91,15 +113,19 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut state = AppState::default();
         let (tx, rx) = mpsc::channel(16);
+        let (task_tx, _task_rx) = mpsc::channel(8);
 
         tx.send(Message::AgentToken("working\n".into()))
             .await
             .unwrap();
         tx.send(Message::Quit).await.unwrap();
 
-        let out = tokio::time::timeout(Duration::from_secs(5), run(&mut terminal, &mut state, rx))
-            .await
-            .expect("the loop must not hang on Quit");
+        let out = tokio::time::timeout(
+            Duration::from_secs(5),
+            run(&mut terminal, &mut state, rx, task_tx),
+        )
+        .await
+        .expect("the loop must not hang on Quit");
 
         assert!(out.is_ok(), "the loop must return Ok so main can restore");
         assert!(state.should_quit);
@@ -112,6 +138,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut state = AppState::default();
         let (tx, rx) = mpsc::channel(64);
+        let (task_tx, _task_rx) = mpsc::channel(8);
 
         for i in 0..20 {
             tx.send(Message::AgentToken(format!("tok{i} ")))
@@ -120,10 +147,13 @@ mod tests {
         }
         tx.send(Message::Quit).await.unwrap();
 
-        tokio::time::timeout(Duration::from_secs(5), run(&mut terminal, &mut state, rx))
-            .await
-            .expect("must not hang")
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run(&mut terminal, &mut state, rx, task_tx),
+        )
+        .await
+        .expect("must not hang")
+        .unwrap();
 
         let line = state.transcript.join("");
         assert!(line.contains("tok0"), "the first token survived: {line}");

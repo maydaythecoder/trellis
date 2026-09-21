@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, 
 /// Below this the six-region layout has no room to be legible.
 const MIN_WIDTH: u16 = 80;
 const MIN_HEIGHT: u16 = 24;
+// Status 1 + budget 3 + input 3 + a body worth looking at.
 
 pub fn render(state: &AppState, frame: &mut Frame) {
     let area = frame.area();
@@ -27,6 +28,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
             Constraint::Length(1), // status
             Constraint::Min(0),    // body
             Constraint::Length(3), // budget
+            Constraint::Length(3), // task entry
         ])
         .split(area);
 
@@ -50,6 +52,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     render_checks(state, right[1], frame);
     render_radius(state, right[2], frame);
     render_budget(state, rows[2], frame);
+    render_input(state, rows[3], frame);
 
     // Last, so it is over everything, and `Clear` first so what is under it
     // is wiped rather than showing through the gaps.
@@ -194,6 +197,28 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(gauge, area);
 }
 
+fn render_input(state: &AppState, area: Rect, frame: &mut Frame) {
+    let (title, body, style) = if state.running {
+        (
+            " running — input held until it finishes ",
+            String::new(),
+            Style::default().fg(Color::DarkGray),
+        )
+    } else {
+        (
+            " task  ·  enter to run  ·  esc to clear, esc again to quit ",
+            // A block cursor, so an empty line still shows where typing goes.
+            format!("{}█", state.input),
+            Style::default(),
+        )
+    };
+    let p = Paragraph::new(body)
+        .style(style)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(p, area);
+}
+
 fn render_modal(diff: &str, area: Rect, frame: &mut Frame) {
     let modal = centred(60, 60, area);
     frame.render_widget(Clear, modal);
@@ -324,5 +349,34 @@ mod tests {
         let after = drawn(&s, 80, 24);
         assert!(after.contains("[y] accept"), "got:\n{after}");
         assert!(after.contains("+++ b/src/index/resolve.rs"));
+    }
+
+    #[test]
+    fn the_task_line_shows_what_is_typed_and_how_to_send_it() {
+        let mut s = populated();
+        s.input = "fix the type error".into();
+        let out = drawn(&s, 80, 24);
+        assert!(out.contains("fix the type error"), "got:\n{out}");
+        assert!(
+            out.contains("enter to run"),
+            "the key that sends it:\n{out}"
+        );
+        assert!(out.contains("esc"), "and the one that leaves:\n{out}");
+        assert!(
+            out.contains('\u{2588}'),
+            "a block cursor, so an empty line still shows where typing goes"
+        );
+    }
+
+    #[test]
+    fn while_running_the_task_line_says_so_instead_of_taking_input() {
+        let mut s = populated();
+        s.running = true;
+        let out = drawn(&s, 80, 24);
+        assert!(out.contains("running"), "got:\n{out}");
+        assert!(
+            out.contains("input held"),
+            "and says why it is not taking any:\n{out}"
+        );
     }
 }

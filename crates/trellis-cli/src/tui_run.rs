@@ -15,7 +15,7 @@ use anyhow::Result;
 use std::path::Path;
 use tui_demo::tui;
 
-pub(crate) fn run(root: &Path, task: &str, model_spec: Option<String>) -> Result<()> {
+pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>) -> Result<()> {
     // Refused rather than attempted when there is no terminal to drive.
     // `EventStream` waits on console input, which never arrives from a pipe,
     // so the interface would paint one frame and hang — and a hang that has
@@ -24,15 +24,18 @@ pub(crate) fn run(root: &Path, task: &str, model_spec: Option<String>) -> Result
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!(concat!(
-            "`trellis tui` needs a terminal, and this is a pipe or a redirect.\n",
+            "`trellis tui` needs a terminal, and this is a pipe or a redirect.
+",
             "Run it directly, or use `trellis run` which works fine without one."
         ));
     }
 
     let Some(spec) = model_spec else {
         anyhow::bail!(concat!(
-            "no model configured, and the interface would have nothing to show.\n",
-            "Set one with `trellis model`, or in .trellis/config.toml, or pass\n",
+            "no model configured, and a run would have nothing to drive it.
+",
+            "Set one with `trellis model`, or in .trellis/config.toml, or pass
+",
             "`--model <spec>` to `trellis run`."
         ));
     };
@@ -42,36 +45,54 @@ pub(crate) fn run(root: &Path, task: &str, model_spec: Option<String>) -> Result
         // Bounded. The loop can outrun a redraw during a turn burst, and an
         // unbounded channel turns that into memory growth.
         let (tx, rx) = tokio::sync::mpsc::channel(256);
+        let (task_tx, mut task_rx) = tokio::sync::mpsc::channel::<String>(8);
 
-        // The subscriber is installed for the duration of the run and
-        // nothing else: `cmd_run` writes to stdout, which now belongs to the
-        // display, so the run happens on a worker thread with its output
-        // captured by the layer rather than printed.
-        let layer = LoopLayer::new(tx.clone());
+        // One driver, serving every task the user types. It owns the
+        // subscriber install and the worker thread so the interface does
+        // not have to know a run is a thread at all.
         let root = root.to_path_buf();
-        let task_owned = task.to_string();
+        let driver = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                while let Some(task) = task_rx.recv().await {
+                    let (root, spec, tx) = (root.clone(), spec.clone(), tx.clone());
+                    // `spawn_blocking`, because `cmd_run` blocks on its own
+                    // runtime and must not sit on a worker of this one.
+                    let _ = tokio::task::spawn_blocking(move || {
+                        use tracing_subscriber::layer::SubscriberExt;
+                        let layer = LoopLayer::new(tx.clone());
+                        let subscriber = tracing_subscriber::registry().with(layer);
+                        tracing::subscriber::with_default(subscriber, || {
+                            let _ = crate::cmd_run(&root, &task, &spec, false, "1", false);
+                        });
+                        // Whatever happened, the interface takes input again.
+                        let _ = tx.blocking_send(tui::message::Message::RunFinished);
+                    })
+                    .await;
+                }
+            }
+        });
 
-        let worker = std::thread::Builder::new()
-            .name("trellis-tui-run".into())
-            .spawn(move || {
-                use tracing_subscriber::layer::SubscriberExt;
-                let subscriber = tracing_subscriber::registry().with(layer);
-                tracing::subscriber::with_default(subscriber, || {
-                    let _ = crate::cmd_run(&root, &task_owned, &spec, false, "1", false);
-                });
-                // The interface stays up after the run ends so the result can
-                // be read; `q` closes it.
-                let _ = tx.blocking_send(tui::message::Message::RunFinished);
-            })?;
+        let mut state = tui::app::AppState::default();
+        // A task on the command line starts immediately; without one the
+        // interface opens idle and waits for the user to type.
+        if let Some(t) = task {
+            state.transcript.push(format!("> {t}"));
+            state.running = true;
+            let _ = task_tx.send(t).await;
+        } else {
+            state
+                .transcript
+                .push("type a task and press enter · esc to quit".into());
+        }
 
         let mut terminal = tui::terminal::init();
-        let mut state = tui::app::AppState::default();
-        let result = tui::events::run(&mut terminal, &mut state, rx).await;
+        let result = tui::events::run(&mut terminal, &mut state, rx, task_tx).await;
         tui::terminal::restore();
 
-        // Joined after the terminal is handed back, so a panic in the run
+        // Aborted after the terminal is handed back, so a panic inside a run
         // surfaces onto a readable screen.
-        let _ = worker.join();
+        driver.abort();
         result.map_err(|e| anyhow::anyhow!("{e}"))
     })
 }

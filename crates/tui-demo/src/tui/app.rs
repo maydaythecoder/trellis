@@ -15,6 +15,16 @@ const TRANSCRIPT_CAP: usize = 2000;
 
 #[derive(Debug, Default)]
 pub struct AppState {
+    /// What the user is typing. Submitted on Enter.
+    pub input: String,
+    /// Set by `update` when Enter is pressed, drained by the event loop,
+    /// which is what keeps `update` free of IO: it records the intent, and
+    /// something outside it does the work.
+    pub submitted: Option<String>,
+    /// True between submitting a task and the run reporting finished. Input
+    /// is refused while it holds — one run at a time, because two runs
+    /// sharing a worktree is the collision the whole design avoids.
+    pub running: bool,
     pub transcript: Vec<String>,
     pub edits: Vec<Edit>,
     pub checks: Vec<Check>,
@@ -97,7 +107,8 @@ impl AppState {
             }
             Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
             Message::Quit => self.should_quit = true,
-            Message::Tick | Message::Resize(..) | Message::RunFinished => {}
+            Message::RunFinished => self.running = false,
+            Message::Tick | Message::Resize(..) => {}
         }
     }
 
@@ -158,11 +169,40 @@ impl AppState {
             return;
         }
         match k.code {
-            KeyCode::Char('q') => self.should_quit = true,
+            // Esc on an empty line leaves; Esc with text clears it. `q` is a
+            // letter now that there is somewhere to type, so it cannot also
+            // be the way out — Ctrl-C does that too, handled in the loop.
+            KeyCode::Esc if self.input.is_empty() => self.should_quit = true,
+            KeyCode::Esc => self.input.clear(),
+            KeyCode::Enter => self.submit(),
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
             KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
             _ => {}
         }
+    }
+
+    /// Hands the typed line to whatever is driving runs.
+    ///
+    /// Refused while one is in flight rather than queued: a queue would let
+    /// a second task start against a worktree the first is still editing.
+    fn submit(&mut self) {
+        let task = self.input.trim().to_string();
+        if task.is_empty() {
+            return;
+        }
+        if self.running {
+            self.transcript
+                .push("· a run is already in flight; wait for it to finish".into());
+            return;
+        }
+        self.input.clear();
+        self.running = true;
+        self.transcript.push(format!("> {task}"));
+        self.submitted = Some(task);
     }
 }
 
@@ -185,10 +225,21 @@ mod tests {
     }
 
     #[test]
-    fn q_quits() {
+    fn esc_on_an_empty_line_quits() {
+        // Was `q`. Task entry took the letters, so the exit moved to Esc —
+        // and to Ctrl-C, which the event loop turns into `Quit` before this
+        // ever sees it.
         let mut s = AppState::default();
         assert!(!s.should_quit);
-        s.update(press(KeyCode::Char('q')));
+        s.update(press(KeyCode::Esc));
+        assert!(s.should_quit);
+    }
+
+    #[test]
+    fn quit_is_still_reachable_as_a_message() {
+        // Ctrl-C arrives this way rather than as a key.
+        let mut s = AppState::default();
+        s.update(Message::Quit);
         assert!(s.should_quit);
     }
 
@@ -312,5 +363,136 @@ mod tests {
         s.update(Message::RunFinished);
         assert_eq!(s.radius.resolved, 47);
         assert_eq!(s.budget.tokens, 8400);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyEventState, KeyModifiers};
+
+    fn press(code: KeyCode) -> Message {
+        Message::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    fn type_in(s: &mut AppState, text: &str) {
+        for c in text.chars() {
+            s.update(press(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn typing_then_enter_submits_the_line() {
+        let mut s = AppState::default();
+        type_in(&mut s, "fix the type error");
+        assert_eq!(s.input, "fix the type error");
+        assert!(s.submitted.is_none(), "nothing leaves before Enter");
+
+        s.update(press(KeyCode::Enter));
+        assert_eq!(s.submitted.as_deref(), Some("fix the type error"));
+        assert!(s.input.is_empty(), "the line is cleared for the next one");
+        assert!(s.running, "and the interface knows a run is in flight");
+        assert_eq!(s.transcript.last().unwrap(), "> fix the type error");
+    }
+
+    #[test]
+    fn q_types_a_q_now_that_there_is_somewhere_to_type() {
+        // The spec's original binding. Once the interface takes text, a
+        // letter cannot also be the exit, and silently quitting mid-sentence
+        // would be the worst version of that.
+        let mut s = AppState::default();
+        type_in(&mut s, "quit the queue");
+        assert_eq!(s.input, "quit the queue");
+        assert!(!s.should_quit);
+    }
+
+    #[test]
+    fn esc_clears_a_line_and_leaves_an_empty_one() {
+        let mut s = AppState::default();
+        type_in(&mut s, "half a thought");
+        s.update(press(KeyCode::Esc));
+        assert!(s.input.is_empty(), "first Esc clears");
+        assert!(!s.should_quit, "and does not also quit");
+
+        s.update(press(KeyCode::Esc));
+        assert!(s.should_quit, "Esc on an empty line leaves");
+    }
+
+    #[test]
+    fn backspace_deletes_and_stops_at_empty() {
+        let mut s = AppState::default();
+        type_in(&mut s, "ab");
+        s.update(press(KeyCode::Backspace));
+        assert_eq!(s.input, "a");
+        s.update(press(KeyCode::Backspace));
+        s.update(press(KeyCode::Backspace));
+        assert_eq!(s.input, "", "popping an empty string is not a panic");
+    }
+
+    #[test]
+    fn an_empty_line_submits_nothing() {
+        let mut s = AppState::default();
+        s.update(press(KeyCode::Enter));
+        assert!(s.submitted.is_none());
+        assert!(!s.running);
+
+        type_in(&mut s, "   ");
+        s.update(press(KeyCode::Enter));
+        assert!(s.submitted.is_none(), "whitespace is not a task");
+    }
+
+    #[test]
+    fn a_second_task_is_refused_while_one_is_running() {
+        // Two runs sharing a worktree is the collision the whole design
+        // avoids; a queue would only delay it.
+        let mut s = AppState::default();
+        type_in(&mut s, "first");
+        s.update(press(KeyCode::Enter));
+        s.submitted.take();
+
+        type_in(&mut s, "second");
+        s.update(press(KeyCode::Enter));
+        assert!(s.submitted.is_none(), "the second must not be submitted");
+        assert!(
+            s.transcript.iter().any(|l| l.contains("already in flight")),
+            "and the refusal must be visible: {:?}",
+            s.transcript
+        );
+
+        // Once the run reports finished, input is taken again.
+        s.update(Message::RunFinished);
+        assert!(!s.running);
+        s.update(press(KeyCode::Enter));
+        assert_eq!(s.submitted.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn the_modal_takes_the_keys_while_it_is_up() {
+        let mut s = AppState::default();
+        s.update(Message::ApprovalRequested {
+            diff: String::new(),
+        });
+
+        // Anything that is not an answer is swallowed rather than typed.
+        type_in(&mut s, "fix the");
+        assert!(
+            s.input.is_empty(),
+            "keys under a modal are not input: {:?}",
+            s.input
+        );
+        assert!(s.modal.is_some(), "and do not dismiss it either");
+
+        // The answer closes it, and only then does typing resume. A key
+        // pressed after that lands in the input, which is ordinary terminal
+        // behaviour rather than a leak.
+        s.update(press(KeyCode::Char('y')));
+        assert!(s.modal.is_none());
+        type_in(&mut s, "ok");
+        assert_eq!(s.input, "ok");
     }
 }

@@ -107,8 +107,8 @@ enum Command {
     /// renders the same `AppState` the standalone `tui_demo` binary does —
     /// only the source of events differs.
     Tui {
-        /// The task to run, watched while it happens.
-        task: String,
+        /// A task to start immediately. Omit it to open idle and type one.
+        task: Option<String>,
     },
 
     /// Continue from the last trail entry.
@@ -265,7 +265,7 @@ fn main() -> Result<()> {
         }
         Command::Init => cmd_init(&root),
         Command::Tui { task } => {
-            tui_run::run(&root, &task, config::RepoConfig::load(&root)?.model())
+            tui_run::run(&root, task, config::RepoConfig::load(&root)?.model())
         }
         Command::Resume => cmd_resume(&root),
         Command::Log { limit } => cmd_log(&root, limit),
