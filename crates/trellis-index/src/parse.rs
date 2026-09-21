@@ -675,4 +675,72 @@ class C:
             "call site must carry its full enclosing scope chain"
         );
     }
+
+    /// `type_head` decides what an annotation says the receiver is, and its
+    /// whole job is to decline rather than guess. Six mutants survived on it
+    /// because nothing tested it directly — the suite tested the *effects*
+    /// through `bindings()`, on annotations that all happen to be a bare
+    /// class name.
+    ///
+    /// ADR 0012's three invariants live here or downstream of here, and each
+    /// one exists because it caught a real unsound edge. This is the unit the
+    /// first of them is implemented in.
+    #[test]
+    fn a_bare_class_name_is_the_head() {
+        assert_eq!(type_head("Env"), Some("Env".to_string()));
+        assert_eq!(type_head("  Env  "), Some("Env".to_string()));
+        // Dotted paths stay whole: `models.Env` resolves through the import
+        // table, and splitting it would lose which module it came from.
+        assert_eq!(type_head("models.Env"), Some("models.Env".to_string()));
+    }
+
+    #[test]
+    fn a_quoted_forward_reference_is_unwrapped() {
+        // `def go(e: "Env")` is how Python spells a type that is not defined
+        // yet. Leaving the quotes on makes the head fail the character check
+        // and type nothing, which silently loses every forward reference in
+        // a codebase that uses them.
+        assert_eq!(type_head("\"Env\""), Some("Env".to_string()));
+        assert_eq!(type_head("'Env'"), Some("Env".to_string()));
+    }
+
+    #[test]
+    fn a_subscript_types_the_container_not_its_parameter() {
+        // ADR 0012, stated as a rule and now as a test: `list[Env]` types
+        // `list`. Typing `xs` as `Env` because it was annotated `list[Env]`
+        // would resolve `xs.append()` to a method of `Env` — an unsound edge,
+        // and the most tempting one in this function.
+        assert_eq!(type_head("list[Env]"), Some("list".to_string()));
+        assert_eq!(type_head("dict[str, Env]"), Some("dict".to_string()));
+        assert_eq!(
+            type_head("Optional[Env]"),
+            Some("Optional".to_string()),
+            "Optional is a container like any other here; only `| None` is special"
+        );
+    }
+
+    #[test]
+    fn an_optional_union_is_the_type_and_a_real_union_is_nothing() {
+        // `Env | None` is an Env that might be absent, and the absence is not
+        // a type with methods. `Env | Other` names two, and choosing either
+        // would be a guess.
+        assert_eq!(type_head("Env | None"), Some("Env".to_string()));
+        assert_eq!(type_head("None | Env"), Some("Env".to_string()));
+        assert_eq!(type_head("Env | Other"), None);
+        assert_eq!(type_head("Env | Other | None"), None);
+    }
+
+    #[test]
+    fn anything_it_cannot_read_types_nothing() {
+        // Declining is always safe here; a wrong answer is not.
+        assert_eq!(type_head(""), None);
+        assert_eq!(type_head("   "), None);
+        assert_eq!(type_head("None"), None, "None alone names no type");
+        assert_eq!(type_head("[Env]"), None, "no head before the bracket");
+        assert_eq!(type_head("Callable[..., int]"), Some("Callable".into()));
+        // Characters a Python identifier or dotted path cannot contain.
+        for weird in ["Env-Other", "Env Other", "(Env)", "Env()", "*Env"] {
+            assert_eq!(type_head(weird), None, "`{weird}` should type nothing");
+        }
+    }
 }
