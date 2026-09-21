@@ -1,6 +1,6 @@
 # Quality audit ledger
 
-**Status: in progress.** Passes 0–5 and 7 complete; 6 surveyed, its extraction held. The
+**Status: Passes 0–7 complete.** One item is deferred and named below: the `main.rs` split, which waits on a `trellis-cli` mutation baseline that four memory kills have prevented. The
 prerequisite was not met when this began; it is now met except for Tier 6,
 which is running. See *Prerequisite* below.
 
@@ -279,6 +279,55 @@ but is a large enough diff to want its own pass.
 
 ## Final metrics
 
-Pending. Against a baseline of 328 tests and 0 clippy warnings, both are
-unchanged after Pass 1. Mutation score and coverage cannot be compared until
-the baseline exists.
+```
+                      at the start (94c285c)        now
+tests                 328 passing                   415 passing
+clippy                0 warnings                    0 warnings, plus unreachable_pub
+library source        19,020 lines / 44 files       20,434 lines / 45 files
+mutation score        none — did not exist          7 of 8 crates measured
+coverage              none — did not exist          82.74% lines (94c285c)
+```
+
+**The line count went up, and that is the honest shape of this audit.** It
+deleted four pieces of dead code and unified six fixtures into one, and it
+added far more in tests — 87 of them — and in comments explaining why a guard
+is written the way it is. An audit that shrank the tree would have been
+optimising the metric §8 names as a trap.
+
+### Long functions, corrected
+
+Pass 7 replaced this ledger's own figures. The baseline measured a fn-to-fn
+span, which includes doc comments and over-counted by 25–40% in a file this
+heavily commented:
+
+```
+                  this ledger's baseline   clippy   file
+build_from_facts             277            234     resolve.rs
+cmd_run                      261            188     main.rs
+run_seeded                   224            171     agent.rs
+```
+
+Still long; the decision under *Left alone deliberately* stands, and the
+numbers behind it are now measured rather than estimated.
+
+### What each pass produced
+
+| Pass | Result |
+|---|---|
+| 1 — Naming | Two renames, Q-001 and Q-002 |
+| 2 — Deletions | Almost nothing to delete, and one stale claim in `CLAUDE.md` (Q-007). A workspace rescan for the `cargo fmt` string-folding defect found **none** (Q-008) |
+| 3 — Call sites | `Partition::{shared,parallel}` (Q-003). Complete: every other bool parameter is passed a named variable or a meaningful expression |
+| 4 — Types | `RuntimeModel::{constrained,unconstrained}` (Q-004) |
+| 5 — Visibility | `unreachable_pub` on; nineteen `pub mod` narrowed. Narrowing then exposed Q-009, dead code Pass 2 had walked past |
+| 6 — Duplication | Production code has **none**. Every repeated block is in tests, and one class had already drifted — two of seven git fixtures had lost `core.autocrlf false`. Six unified into `testutil.rs` |
+| 7 — Lints | **Seven of the eight readability lints fire zero times.** `doc_markdown` fires 15 times and 14 are clippy reading document and product names as identifiers |
+
+### Deferred, with what it waits on
+
+**The `main.rs` split.** 2,527 lines, and the obvious candidate for splitting
+by command. It is the change the CLI integration suite was written to protect,
+and §9 wants a mutation score to compare against — `trellis-cli` is the one
+crate that has never completed a per-crate run, stopped four times by system
+memory. Deferring it is the §7 call: the split is correct-and-large, the
+measurement that would make it safe is not available, and a 2,500-line file
+that works beats a half-split one that nobody measured.
