@@ -7,14 +7,27 @@
 # and the saving step means a kill costs at most the crate in flight
 # instead of everything since the start.
 #
+# `cargo mutants -p X` runs only X's tests, so a mutant that a dependent's
+# tests would catch is reported as surviving. Set WORKSPACE_TESTS=1 to mutate
+# one crate and run the whole suite instead — the correct measurement, at the
+# cost of the full suite per mutant. Results land in a separate directory so
+# the two are never mixed.
+#
 # Usage:  scripts/mutate-by-crate.sh [crate ...]
+#         WORKSPACE_TESTS=1 scripts/mutate-by-crate.sh [crate ...]
 # With no arguments, runs every crate that has never been measured.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 COMMIT=$(git rev-parse --short HEAD)
-OUT="docs/bench/mutants-by-crate"
+if [ "${WORKSPACE_TESTS:-0}" = "1" ]; then
+    OUT="docs/bench/mutants-by-crate-ws"
+    SCOPE=(--test-workspace true)
+else
+    OUT="docs/bench/mutants-by-crate"
+    SCOPE=()
+fi
 mkdir -p "$OUT"
 
 CRATES=("$@")
@@ -33,7 +46,7 @@ for crate in "${CRATES[@]}"; do
     rm -rf mutants.out mutants.out.old
     # Not `set -e`: a crate that fails to build should not take the rest of
     # the run with it. The saved files say what happened either way.
-    cargo mutants -p "$crate" --no-shuffle -j 4 2>&1 | tail -5
+    cargo mutants -p "$crate" "${SCOPE[@]}" --no-shuffle -j 4 2>&1 | tail -5
 
     if [ ! -f mutants.out/caught.txt ]; then
         echo "== $crate: no results — build failure or killed before the baseline"
