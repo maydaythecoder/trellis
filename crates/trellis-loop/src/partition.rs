@@ -648,4 +648,49 @@ mod tests {
         assert!(text.contains("never a correctness"), "{text}");
         assert!(text.contains("full check suite"), "{text}");
     }
+
+    /// S19, as the one function that states it.
+    ///
+    /// `compatible_with` is `radius disjoint && files disjoint`, and mutation
+    /// reported `&& -> ||` as surviving. That mutant calls two partitions
+    /// compatible when *either* is disjoint — so two agents whose call graphs
+    /// do not overlap would be handed the same file, which is the merge
+    /// conflict the file check exists for and which no amount of graph
+    /// disjointness prevents.
+    ///
+    /// `plan` never produces such a pair, which is why the suite did not
+    /// notice: the property was tested through its caller, where the inputs
+    /// that would break it cannot arise.
+    #[test]
+    fn partitions_sharing_a_file_are_never_compatible() {
+        let mk = |syms: &[u32], files: &[u32]| {
+            let mut p = Partition::parallel();
+            p.radius = syms
+                .iter()
+                .map(|&i| SymbolId::from_index(i as usize))
+                .collect();
+            p.files = files
+                .iter()
+                .map(|&i| FileId::from_index(i as usize))
+                .collect();
+            p
+        };
+
+        // Disjoint in both: the only compatible case.
+        assert!(mk(&[1, 2], &[10]).compatible_with(&mk(&[3, 4], &[11])));
+
+        // Disjoint radii, **shared file**. Two symbols in one file cannot be
+        // edited by two agents however unrelated their call graphs are.
+        assert!(
+            !mk(&[1, 2], &[10]).compatible_with(&mk(&[3, 4], &[10])),
+            "a shared file must defeat compatibility on its own"
+        );
+
+        // Shared radius, disjoint files: also incompatible, and this is the
+        // half a reader expects.
+        assert!(!mk(&[1, 2], &[10]).compatible_with(&mk(&[2, 3], &[11])));
+
+        // Neither disjoint.
+        assert!(!mk(&[1], &[10]).compatible_with(&mk(&[1], &[10])));
+    }
 }

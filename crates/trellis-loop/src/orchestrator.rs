@@ -813,4 +813,59 @@ scope = [\"{scope}\"]
             "a file edited twice is one file to restore, not two"
         );
     }
+
+    /// The sandbox boundary, and nothing tested it.
+    ///
+    /// `resolve_in_repo` is what keeps a model's proposed path inside the
+    /// tree rollback covers. Mutation reported `replace || with &&` as
+    /// surviving, and that mutant only rejects a path that is **both**
+    /// absolute **and** contains `..` — so `../../etc/passwd`, which is
+    /// neither exotic nor hard for a model to emit, would be accepted and
+    /// written outside the repository.
+    ///
+    /// The grammar guarantees these strings are well-formed and nothing
+    /// more (S7 metric 3). Well-formed is not safe.
+    #[test]
+    fn a_path_that_escapes_the_repository_is_refused() {
+        let d = repo();
+        let o = Orchestrator::new(d.path(), CheckConfig::default());
+
+        for bad in [
+            "../outside.py",
+            "../../etc/passwd",
+            "app/../../outside.py",
+            "app/./../../outside.py",
+        ] {
+            let e = o
+                .resolve_in_repo(bad)
+                .expect_err(&format!("`{bad}` escapes the root and must be refused"));
+            assert!(e.contains(".."), "the error must say why: {e}");
+        }
+
+        // Absolute paths, in both spellings this project runs on.
+        for bad in ["/etc/passwd", r"C:\Windows\System32\drivers\etc\hosts"] {
+            if Path::new(bad).is_absolute() {
+                assert!(
+                    o.resolve_in_repo(bad).is_err(),
+                    "`{bad}` is absolute and must be refused"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_ordinary_relative_path_resolves_under_the_root() {
+        // The other half: the guard must not be so strict that normal work
+        // is impossible. A refusal that blocks `app/util.py` would be found
+        // in a minute; one that admits `../` would not.
+        let d = repo();
+        let o = Orchestrator::new(d.path(), CheckConfig::default());
+
+        let p = o.resolve_in_repo("app/util.py").expect("an ordinary path");
+        assert!(p.starts_with(d.path()), "{p:?} is outside {:?}", d.path());
+        assert!(p.ends_with("util.py"));
+
+        // A `.` component is not an escape.
+        assert!(o.resolve_in_repo("./app/util.py").is_ok());
+    }
 }
