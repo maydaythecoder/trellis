@@ -10,7 +10,7 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **352** passing, 0 failed, 0 ignored (328 at the baseline commit) |
+| Tests | **359** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
 | Mutation score | **running** — see Tier 6 |
 
@@ -110,6 +110,28 @@ layer that needs a live runtime.
 `discard`, written ahead of need for brief 4.13's per-partition isolation,
 referenced from nowhere. Not merely uncovered — unreferenced. Reported rather
 than deleted: v1.1 plans to use them and the question is sequencing.
+
+**Finding C-004 — the fix for C-003 shipped a defect of its own. Fixed,
+`ec2463c`.** Changing what `Interner` serialises changed the shape of
+`.trellis/index.bin`, and `FORMAT_VERSION` — the constant that exists for
+exactly this — was not bumped. Postcard is not self-describing, so nothing in
+an old blob says which layout wrote it.
+
+The commit that introduced it asserted the opposite: *"old cache files no
+longer parse; `load` already treats that as a miss."* That was not verified,
+and the stated mechanism is wrong — `load` deserialises the whole blob
+*before* comparing `version`, so the constant cannot rescue a payload change
+by itself. What makes the guard work is that `version` and `fingerprint` both
+precede `index` in the struct, and that `FORMAT_VERSION` is hashed into the
+fingerprint.
+
+Worth keeping in the ledger rather than quietly fixing. The campaign's own
+repair introduced a live defect, and it was caught by review rather than by
+any of the eleven tiers: the test suite was green across the change, because
+no test wrote a blob in one format and read it in another. The test that now
+exists writes a blob that is well-formed under the current layout, carries the
+correct fingerprint, and differs only in version — so it proves the guard
+fires rather than a corrupt decode failing in its place.
 
 ## Tier 6 — Mutation
 
@@ -238,6 +260,9 @@ type system as the proof obligation, which is ADR 0004's whole point.
 |----|------|---------|-------|
 | C-001 | 5, 6 | `trellis-cli` had no `tests/`; ten `cmd_*` entry points untested; 829 uncovered lines and 85 of the first 87 missed mutants | **Fixed**, `0ba3b5f` — 20 tests, and it caught `trellis model` refusing to run outside a repository against its own stated intent |
 | C-002 | 5 | `trellis_vcs::Worktree::{create,discard}` is unreferenced dead code | Reported |
+| C-004 | — | The C-003 fix changed the cache's serialised shape without bumping `FORMAT_VERSION`; the commit's claim about it was unverified and its stated mechanism wrong | **Fixed**, `ec2463c` — found by review, not by any tier |
+| C-005 | 3 | Three cache fixtures still used fixed temp paths — the last of the collision class from `c526c83` | **Fixed**, `ec2463c` |
+| C-006 | 3 | Two of the new CLI assertions were vacuous: one passed on `"no tests ran"` matching `"no "` while the tools were in fact installed and running; the other checked for two phrases `explain` never emits | **Fixed**, `ec2463c` — both now written against output that was read |
 | C-003 | 9 | Index determinism under rayon is depended on by the cache and never asserted | **Fixed**, `0ba3b5f` — the graph was deterministic, its bytes were not; interner no longer serialises a derivable map |
 | — | 3 | Test fixtures collided between concurrent processes | **Fixed**, `c526c83` |
 | — | 0 | Toolchain unpinned | **Fixed**, `94c285c` |
