@@ -12,7 +12,7 @@ convenient.
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
 | Tests | **375** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
-| Mutation score | **partial** — 842 of ~1,253 mutants; see Tier 6 before quoting any figure |
+| Mutation score | **none.** Two runs, both stopped for memory; neither reached six of eight crates. See Tier 6 |
 
 Every figure here is against `94c285c`. A score quoted without its commit is
 not a baseline, because the next commit moves it.
@@ -135,50 +135,70 @@ fires rather than a corrupt decode failing in its place.
 
 ## Tier 6 — Mutation
 
-**Running again, at `486fff1`, on request.** The first attempt was stopped at
-842 of ~1,253 mutants — Claude Code killed the background job because the
-system was low on memory while the session was idle, which was not a failure
-of the run. Its raw output is kept in `docs/bench/mutants-94c285c/` so the
-triage below can be checked against the list it came from.
+**Two attempts, both stopped for system memory pressure. There is still no
+workspace mutation score**, and the quality audit's Pass 6 stays blocked on
+it.
 
-Two things about the restart are deliberate and change what the result means:
+| | reached | of | at | concurrency |
+|---|---|---|---|---|
+| run 1 | 842 | ~1253 | `94c285c` | `-j 4` |
+| run 2 | 295 | ~1253 | `486fff1` | `-j 2` |
 
-- **`-j 2`, not `-j 4`.** Memory was the failure mode, so halving the
-  concurrent test processes is the change most likely to let it finish. It
-  roughly doubles the wall time.
-- **At `486fff1`, not at `94c285c`.** Everything closed since the first
-  attempt — the CLI suite, the approval-view tests, the binding forms — landed
-  in between. Re-running the old commit would measure a state that no longer
-  exists; running HEAD produces the score the quality audit's §9 rule actually
-  needs. The figures below stay as the record of where the campaign started,
-  and the two are **not** comparable as a before/after, because the second run
-  covers four crates the first never reached.
+Raw output for both is kept under `docs/bench/`, so every figure below can be
+checked against the list it came from.
 
-What the stopped run established, against `94c285c`:
+### `-j 2` was a deliberate change and it did not work
+
+Run 2 halved the concurrency specifically to reduce the memory footprint that
+stopped run 1. It got **a third as far**, at roughly twice the wall time per
+mutant. Whatever drives the kill is not this job's concurrency.
+
+Stated plainly because the reasoning was mine and the evidence is against it.
+A third attempt should not reach for `-j 1`.
+
+### What run 1 established, at `94c285c`
 
 ```
-tested 842 of ~1253      caught 421 · missed 320 · unviable 93 · timeout 3
+caught 421 · missed 320 · unviable 93 · timeout 3
 
-crate              caught  missed    score
-trellis-checks         31       2    93.9%
-trellis-cli           111     206    35.0%
-trellis-core            5       3    62.5%
-trellis-index         274     109    71.5%
-                      421     320    56.8%
+trellis-checks    93.9%      trellis-cli    35.0%
+trellis-core      62.5%      trellis-index  71.5%
+                 — 56.8% over what ran
 
-never reached:  trellis-loop · trellis-model · trellis-trail · trellis-vcs
+never reached: trellis-loop · trellis-model · trellis-trail · trellis-vcs
 ```
 
-**56.8% is not a workspace score and must not be quoted as one.** `--no-shuffle`
-walks packages in a fixed order, so the 411 untested mutants are not a random
-remainder — they are four whole crates, and those four carry the highest line
-coverage in the repository (`agent.rs` 96.3%, `tier.rs` 96.8%, `trail/lib.rs`
-96.6%, `wire.rs` 100%). The partial figure is therefore biased **low**, by an
-amount this run cannot measure.
+**56.8% is not a workspace score.** `--no-shuffle` walks packages in order, so
+the untested remainder is four whole crates rather than a random sample — and
+those four carry the highest line coverage in the repository, so the figure is
+biased low by an amount neither run can measure.
 
-It is also **pre-C-001**: `trellis-cli` at 35.0% is the state before
-`crates/trellis-cli/tests/cli.rs` existed, and 108 of its 206 misses are in
-`main.rs`.
+### What run 2 established: one file, and it is the one that mattered
+
+Run 2 reached only `trellis-checks` and part of `trellis-cli`, dying inside
+`session.rs`. One file is complete in **both** runs and therefore comparable:
+
+```
+main.rs survivors    108  (94c285c, no CLI tests)
+                  ->  88  (486fff1, with the CLI suite)
+
+twenty mutants stopped surviving.  none started.
+```
+
+Percentages are deliberately not quoted: run 1's `caught.txt` was not
+preserved per file, only its survivors were, so survivor counts are what the
+evidence supports. That was an error in how run 1 was archived and run 2 keeps
+all four files.
+
+The twenty are the C-001 measurement. Seven `cmd_*` entry points could have
+had their whole bodies replaced with `Ok(())` and the suite would have stayed
+green; so could `main`. Two are the `!needs_repo` guards — the gate that let
+`trellis model` refuse to run outside a repository against its own comment,
+which the same suite found by reading.
+
+**88 still survive in `main.rs`**, concentrated in the paths integration tests
+do not reach: model pull, interrupt handling, output formatting. A first cut,
+not a solved file. `docs/bench/mutants-486fff1/README.md` has the list.
 
 ### Triage of the 320 that survived
 
