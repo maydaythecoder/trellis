@@ -104,8 +104,21 @@ fn arbitrary_units(rng: &mut Rng, n_symbols: u32, n_files: u32, n_units: u32) ->
         .collect()
 }
 
+/// The S19 property, restated for a staged plan.
+///
+/// Staging changed what the invariant *is*, so it is written out rather than
+/// relaxed. Three claims, and only the first is about concurrency:
+///
+/// 1. **Parallel partitions are pairwise disjoint** in radius and files.
+///    These genuinely run at the same time, and this is the claim that makes
+///    that safe.
+/// 2. **The shared stage is file-disjoint from every parallel partition.** It
+///    runs first, so a shared *radius* is fine — but a shared file would be a
+///    merge conflict across stages, which time does not fix.
+/// 3. **Every unit the index cannot vouch for is in the shared stage**, never
+///    in a parallel one.
 #[test]
-fn planned_partitions_are_pairwise_disjoint() {
+fn a_staged_plan_keeps_concurrent_work_disjoint() {
     for seed in 1..400u64 {
         let mut rng = Rng(seed | 1);
         let n_symbols = 2 + rng.below(12);
@@ -114,25 +127,75 @@ fn planned_partitions_are_pairwise_disjoint() {
 
         let index = index_with_uncertainty(&mut rng, n_symbols);
         let units = arbitrary_units(&mut rng, n_symbols, n_files, n_units);
-        let partitions = plan(&index, units);
+        let p = plan(&index, units);
 
-        for (i, a) in partitions.iter().enumerate() {
-            for b in &partitions[i + 1..] {
+        // 1 — the partitions that actually run together.
+        for (i, a) in p.parallel.iter().enumerate() {
+            for b in &p.parallel[i + 1..] {
                 assert!(
                     a.radius.is_disjoint(&b.radius),
-                    "seed {seed}: partitions {} and {} share a symbol yet were \
-                     planned to run concurrently",
+                    "seed {seed}: parallel partitions {} and {} share a symbol",
                     a.id.0,
                     b.id.0
                 );
                 assert!(
                     a.files.is_disjoint(&b.files),
-                    "seed {seed}: partitions {} and {} share a file yet were \
-                     planned to run concurrently",
+                    "seed {seed}: parallel partitions {} and {} share a file",
                     a.id.0,
                     b.id.0
                 );
             }
+        }
+
+        // 2 — across stages, files still cannot overlap.
+        if let Some(shared) = &p.shared {
+            for b in &p.parallel {
+                assert!(
+                    shared.files.is_disjoint(&b.files),
+                    "seed {seed}: shared stage and partition {} share a file,                      which running in sequence does not make safe",
+                    b.id.0
+                );
+            }
+        }
+
+        // 3 — S19 itself.
+        for b in &p.parallel {
+            for u in &b.units {
+                assert!(
+                    u.partitionable && index.is_partitionable(u.target),
+                    "seed {seed}: partition {} runs a unit the index cannot                      vouch for; it belongs in the shared stage",
+                    b.id.0
+                );
+            }
+        }
+    }
+}
+
+/// Ids are assigned once, densely, shared first.
+///
+/// Integration order is id order, and the milestone requires it deterministic
+/// so a failure reproduces. A duplicate or a gap would make "apply in
+/// partition order" ambiguous.
+#[test]
+fn partition_ids_are_dense_and_shared_is_first() {
+    for seed in 1..400u64 {
+        let mut rng = Rng(seed | 1);
+        let n_symbols = 2 + rng.below(12);
+        let n_files = 1 + rng.below(5);
+        let n_units = 1 + rng.below(10);
+        let index = index_with_uncertainty(&mut rng, n_symbols);
+        let units = arbitrary_units(&mut rng, n_symbols, n_files, n_units);
+        let p = plan(&index, units);
+
+        let ids: Vec<u32> = p.in_order().map(|x| x.id.0).collect();
+        let expected: Vec<u32> = (0..ids.len() as u32).collect();
+        assert_eq!(ids, expected, "seed {seed}: ids are not dense in order");
+
+        if let Some(shared) = &p.shared {
+            assert_eq!(
+                shared.id.0, 0,
+                "seed {seed}: the shared stage must be first"
+            );
         }
     }
 }
@@ -149,8 +212,8 @@ fn planning_never_loses_or_duplicates_a_unit() {
         let units = arbitrary_units(&mut rng, n_symbols, n_files, n_units);
         let expected = units.len();
 
-        let partitions = plan(&index, units);
-        let got: usize = partitions.iter().map(|p| p.units.len()).sum();
+        let p = plan(&index, units);
+        let got: usize = p.in_order().map(|x| x.units.len()).sum();
 
         // The merge-to-fixpoint step removes partitions from the vector while
         // iterating; dropping a unit there would silently skip work the user
@@ -158,22 +221,6 @@ fn planning_never_loses_or_duplicates_a_unit() {
         assert_eq!(
             got, expected,
             "seed {seed}: unit count changed during planning"
-        );
-    }
-}
-
-#[test]
-fn partition_ids_are_dense_and_ordered() {
-    let mut rng = Rng(12345);
-    let index = index_with_uncertainty(&mut rng, 10);
-    let units = arbitrary_units(&mut rng, 10, 4, 8);
-    let partitions = plan(&index, units);
-
-    for (i, p) in partitions.iter().enumerate() {
-        assert_eq!(
-            p.id.index(),
-            i,
-            "ids are assigned after all merging is done"
         );
     }
 }

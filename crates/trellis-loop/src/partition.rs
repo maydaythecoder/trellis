@@ -129,7 +129,43 @@ pub fn unit_for(index: &Index, target: SymbolId) -> WorkUnit {
     }
 }
 
-/// Groups work units into partitions that may run in parallel.
+/// A staged plan: shared work first, then concurrent work.
+///
+/// **One agent goes to the shared files; separate agents run from that
+/// point.** The orchestrator owns that discretion, which is why the plan has
+/// a shape rather than being a flat list.
+///
+/// The earlier design merged everything the graph could not vouch for into
+/// one partition *alongside* the others, then absorbed every partition that
+/// collided with it. On poetry that collapsed 95% of tasks to a single group.
+/// Staging inverts it: contended work runs alone and first, and once it has
+/// landed the rest are free, because the thing that made them unsafe was
+/// running *concurrently* with it — not running at all.
+#[derive(Debug, Clone, Default)]
+pub struct Plan {
+    /// Run first, alone, in one agent: work the graph cannot vouch for, and
+    /// work contending for the same files.
+    pub shared: Option<Partition>,
+    /// Run concurrently, once `shared` has landed. Mutually compatible by
+    /// construction; deliberately *not* required to be compatible with
+    /// `shared`, because they no longer overlap it in time.
+    pub parallel: Vec<Partition>,
+}
+
+impl Plan {
+    /// How many agents this plan can occupy at its widest.
+    pub fn width(&self) -> usize {
+        self.parallel.len().max(usize::from(self.shared.is_some()))
+    }
+
+    /// Every partition, shared first. Integration order is this order, and it
+    /// is deterministic: same inputs, same sequence, so a failure reproduces.
+    pub fn in_order(&self) -> impl Iterator<Item = &Partition> {
+        self.shared.iter().chain(self.parallel.iter())
+    }
+}
+
+/// Groups work units into a staged plan.
 ///
 /// Optimistic partitioning, pessimistic integration: this is a *filter*
 /// deciding what may run concurrently, never a correctness guarantee. It is
@@ -137,26 +173,42 @@ pub fn unit_for(index: &Index, target: SymbolId) -> WorkUnit {
 /// Constraint 1. Partition-local checks therefore never substitute for the
 /// integrated full check (S19 patch 2).
 ///
-/// Units the index cannot vouch for are merged into one conservative
-/// partition (S19 patch 1) rather than allowed to look disjoint.
-pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Vec<Partition> {
-    let mut partitions: Vec<Partition> = Vec::new();
-    let mut conservative = Partition::new(true);
+/// Three rules, in order:
+///
+/// 1. A unit the index cannot vouch for goes to `shared` (S19 patch 1).
+/// 2. A unit contending for a file `shared` already holds goes to `shared`
+///    too — two agents cannot edit one file, and the one that waits is the
+///    one that can.
+/// 3. Everything else groups by mutual compatibility, merging transitively:
+///    a unit touching two groups joins them, because splitting would hand two
+///    agents intersecting work.
+pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
+    let mut shared = Partition::new(true);
+    let mut rest: Vec<WorkUnit> = Vec::new();
 
     for unit in units {
-        // A unit reached through an uncertain edge, or targeting a symbol
-        // the index cannot vouch for, joins every other such unit. One
-        // agent handles them serially, because we cannot prove they do not
-        // collide through an edge we never saw.
         if !unit.partitionable || !index.is_partitionable(unit.target) {
-            conservative.absorb(unit);
-            continue;
+            shared.absorb(unit);
+        } else {
+            rest.push(unit);
         }
+    }
 
-        // Collect every existing partition this unit touches. More than one
-        // means the unit transitively joins them, so they merge: splitting
-        // them would put two agents on intersecting work.
-        let hits: Vec<usize> = partitions
+    // Rule 2, to a fixpoint: absorbing a unit widens `shared`'s file set and
+    // can pull in another that was previously clear of it.
+    loop {
+        let Some(i) = rest
+            .iter()
+            .position(|u| !shared.files.is_disjoint(&u.files))
+        else {
+            break;
+        };
+        shared.absorb(rest.remove(i));
+    }
+
+    let mut parallel: Vec<Partition> = Vec::new();
+    for unit in rest {
+        let hits: Vec<usize> = parallel
             .iter()
             .enumerate()
             .filter(|(_, p)| p.collides_with_unit(&unit))
@@ -167,46 +219,41 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Vec<Partition> {
             [] => {
                 let mut p = Partition::new(false);
                 p.absorb(unit);
-                partitions.push(p);
+                parallel.push(p);
             }
-            [i] => partitions[*i].absorb(unit),
-            many => {
-                // Merge right-to-left so the earlier indices stay valid.
-                let keep = many[0];
-                for &i in many[1..].iter().rev() {
-                    let removed = partitions.remove(i);
-                    partitions[keep].merge(removed);
+            [only] => parallel[*only].absorb(unit),
+            _ => {
+                // Merge every partition this unit joins, lowest index first
+                // so the result does not depend on iteration order.
+                let mut merged = Partition::new(false);
+                for &i in hits.iter().rev() {
+                    merged.merge(parallel.remove(i));
                 }
-                partitions[keep].absorb(unit);
+                merged.absorb(unit);
+                parallel.push(merged);
             }
         }
     }
 
-    if !conservative.units.is_empty() {
-        // The conservative partition was built alongside the regular ones and
-        // has never been checked against them, so it can intersect one: a
-        // certain unit with radius {1,4} and an uncertain unit with radius {4}
-        // land in separate partitions that share symbol 4. Since the entire
-        // meaning of this function's output is "these may run concurrently",
-        // that would hand two agents intersecting work while reporting them
-        // disjoint — the S19 failure by a different route.
-        //
-        // Absorb every colliding regular partition, to a fixpoint: absorbing
-        // one widens the conservative radius and can pull in another.
-        while let Some(i) = partitions
-            .iter()
-            .position(|p| !p.compatible_with(&conservative))
-        {
-            let removed = partitions.remove(i);
-            conservative.merge(removed);
-        }
-        partitions.push(conservative);
+    // Deterministic ids: shared is always 0 when present, so integration
+    // order is stable across runs and a failure reproduces.
+    let mut next = 0u32;
+    let shared = if shared.units.is_empty() {
+        None
+    } else {
+        shared.id = PartitionId::from_index(next as usize);
+        next += 1;
+        Some(shared)
+    };
+    // Sorted by the smallest target id they hold, so the same input always
+    // numbers them the same way regardless of how the groups were built.
+    parallel.sort_by_key(|p| p.units.iter().map(|u| u.target.0).min());
+    for p in &mut parallel {
+        p.id = PartitionId::from_index(next as usize);
+        next += 1;
     }
 
-    for (i, p) in partitions.iter_mut().enumerate() {
-        p.id = PartitionId::from_index(i);
-    }
-    partitions
+    Plan { shared, parallel }
 }
 
 /// Debug view behind `trellis partitions`.
@@ -219,14 +266,12 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Vec<Partition> {
 ///
 /// Takes the index because a `SymbolId` is an arena offset: printing `17` to
 /// a user debugging a partition plan is printing nothing.
-pub fn explain(index: &Index, partitions: &[Partition]) -> String {
+pub fn explain(index: &Index, plan: &Plan) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
 
-    if partitions.is_empty() {
-        return "no partitions: nothing to do
-"
-        .to_string();
+    if plan.shared.is_none() && plan.parallel.is_empty() {
+        return "no partitions: nothing to do\n".to_string();
     }
 
     let name = |sym: SymbolId| -> String {
@@ -238,16 +283,26 @@ pub fn explain(index: &Index, partitions: &[Partition]) -> String {
         )
     };
 
-    let parallel = partitions.iter().filter(|p| !p.conservative).count();
-    let _ = writeln!(
-        s,
-        "{} partition(s); {} may run concurrently.",
-        partitions.len(),
-        parallel
-    );
+    match (&plan.shared, plan.parallel.len()) {
+        (Some(_), 0) => {
+            let _ = writeln!(
+                s,
+                "One stage: everything contends, so one agent runs it all."
+            );
+        }
+        (Some(_), n) => {
+            let _ = writeln!(
+                s,
+                "Two stages: one agent takes the shared work first, then {n} run concurrently."
+            );
+        }
+        (None, n) => {
+            let _ = writeln!(s, "One stage: {n} partition(s), all concurrent.");
+        }
+    }
     let _ = writeln!(s);
 
-    for p in partitions {
+    for p in plan.in_order() {
         let _ = writeln!(
             s,
             "partition {}  {} unit(s) · {} symbol(s) in radius · {} file(s){}",
@@ -255,7 +310,11 @@ pub fn explain(index: &Index, partitions: &[Partition]) -> String {
             p.units.len(),
             p.radius.len(),
             p.files.len(),
-            if p.conservative { "   SERIALIZED" } else { "" }
+            if p.conservative {
+                "   SHARED — runs first, alone"
+            } else {
+                ""
+            }
         );
 
         for u in &p.units {
@@ -304,12 +363,15 @@ pub fn explain(index: &Index, partitions: &[Partition]) -> String {
                 s,
                 "{}",
                 concat!(
-                    "    These run one after another in a single agent. The graph ",
-                    "cannot prove
-    they are disjoint, and two agents colliding ",
-                    "through an edge nobody saw is
-    the failure this ",
-                    "conservatism exists to prevent (S19)."
+                    "    One agent runs these, before anything else starts. They ",
+                    "either contend for
+    a file or reach through an edge the ",
+                    "graph could not bind, and two agents
+    colliding through an ",
+                    "edge nobody saw is the failure this prevents (S19).
+",
+                    "    The partitions below are safe *because* this one has ",
+                    "already landed."
                 )
             );
         }
@@ -369,16 +431,24 @@ mod tests {
     fn disjoint_units_partition_separately() {
         let index = index_with(8);
         let p = plan(&index, vec![unit(1, &[1, 2], &[0]), unit(3, &[3, 4], &[1])]);
-        assert_eq!(p.len(), 2);
-        assert!(p[0].compatible_with(&p[1]));
+        assert!(
+            p.shared.is_none(),
+            "nothing contends, so nothing runs first"
+        );
+        assert_eq!(p.parallel.len(), 2);
+        assert!(p.parallel[0].compatible_with(&p.parallel[1]));
     }
 
     #[test]
     fn units_sharing_a_symbol_are_serialized_into_one_partition() {
         let index = index_with(8);
         let p = plan(&index, vec![unit(1, &[1, 2], &[0]), unit(3, &[2, 3], &[1])]);
-        assert_eq!(p.len(), 1, "intersecting radii must not run in parallel");
-        assert_eq!(p[0].units.len(), 2);
+        assert_eq!(
+            p.parallel.len(),
+            1,
+            "intersecting radii must not run in parallel"
+        );
+        assert_eq!(p.parallel[0].units.len(), 2);
     }
 
     #[test]
@@ -386,7 +456,7 @@ mod tests {
         let index = index_with(8);
         let p = plan(&index, vec![unit(1, &[1], &[0]), unit(2, &[2], &[0])]);
         assert_eq!(
-            p.len(),
+            p.parallel.len(),
             1,
             "two symbols in one file cannot be edited by two agents, \
              however disjoint their call graphs"
@@ -405,8 +475,8 @@ mod tests {
                 unit(5, &[1, 3], &[2]),
             ],
         );
-        assert_eq!(p.len(), 1);
-        assert_eq!(p[0].units.len(), 3);
+        assert_eq!(p.parallel.len(), 1);
+        assert_eq!(p.parallel[0].units.len(), 3);
     }
 
     #[test]
@@ -435,14 +505,18 @@ mod tests {
             ],
         );
 
-        assert_eq!(p.len(), 2);
-        let cons: Vec<_> = p.iter().filter(|p| p.conservative).collect();
-        assert_eq!(cons.len(), 1);
+        // The uncertain unit runs first, alone; the clean one runs after.
+        let shared = p
+            .shared
+            .as_ref()
+            .expect("the uncertain unit is shared work");
         assert_eq!(
-            cons[0].units[0].target,
+            shared.units[0].target,
             SymbolId(4),
             "a unit the graph cannot vouch for must not be allowed to look disjoint"
         );
+        assert_eq!(p.parallel.len(), 1);
+        assert_eq!(p.parallel[0].units[0].target, SymbolId(1));
     }
 
     #[test]
@@ -451,12 +525,15 @@ mod tests {
         let mut u = unit(1, &[1], &[0]);
         u.partitionable = false;
         let p = plan(&index, vec![u]);
-        assert_eq!(p.len(), 1);
-        assert!(p[0].conservative);
+        assert!(p.parallel.is_empty());
+        assert!(p.shared.expect("shared work").conservative);
     }
 
+    /// The shared stage may overlap a parallel one in *radius* — it runs
+    /// first, so they never contend — but never in *files*, because running
+    /// in sequence does not resolve a merge conflict.
     #[test]
-    fn the_conservative_partition_never_intersects_a_regular_one() {
+    fn the_shared_stage_never_shares_a_file_with_a_parallel_one() {
         let mut index = index_with(8);
         index.sites.push(CallSiteEntry {
             kind: trellis_index::CalleeKind::Name,
@@ -474,12 +551,21 @@ mod tests {
         // not end up in two partitions that are declared concurrent-safe.
         let p = plan(&index, vec![unit(1, &[1, 4], &[0]), unit(4, &[4], &[9])]);
 
-        for (i, a) in p.iter().enumerate() {
-            for b in &p[i + 1..] {
+        for (i, a) in p.parallel.iter().enumerate() {
+            for b in &p.parallel[i + 1..] {
                 assert!(
                     a.compatible_with(b),
                     "partitions {} and {} intersect but were planned to run concurrently",
                     a.id.0,
+                    b.id.0
+                );
+            }
+        }
+        if let Some(shared) = &p.shared {
+            for b in &p.parallel {
+                assert!(
+                    shared.files.is_disjoint(&b.files),
+                    "the shared stage and partition {} would collide on a file",
                     b.id.0
                 );
             }
@@ -501,7 +587,11 @@ mod tests {
         u.partitionable = false;
         let text = explain(&index, &plan(&index, vec![u]));
 
-        assert!(text.contains("SERIALIZED"), "{text}");
+        assert!(text.contains("SHARED"), "{text}");
+        assert!(
+            text.contains("runs first"),
+            "the shared stage's whole point is that it precedes the rest: {text}"
+        );
         assert!(
             text.contains("could not bind"),
             "it must say why the unit is untrusted: {text}"

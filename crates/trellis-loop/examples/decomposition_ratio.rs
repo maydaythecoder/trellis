@@ -69,14 +69,14 @@ fn main() {
                 .collect();
 
             let p = plan(&index, units);
-            // What matters is how many groups may run *at once*, so the
-            // conservative partition counts as one however much it holds.
-            let concurrent = p.len();
+            // How many agents the plan can occupy at its widest. The shared
+            // stage runs alone, so it is width 1 however much it holds.
+            let concurrent = p.width();
             groups_total += concurrent;
             if concurrent > 1 {
                 decomposed += 1;
             }
-            if p.iter().all(|x| x.conservative) {
+            if p.parallel.is_empty() {
                 all_serial += 1;
             }
         }
