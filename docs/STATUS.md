@@ -411,12 +411,32 @@ done.
   quietly resolved: the roadmap says one thing and the repository now does
   another, and a reader should not have to discover that by running it.
 
-  The line-based session remains the default; `trellis tui` is opt-in.
-  Model-view-controller split across `tui/{model,view,events,terminal}.rs`,
-  with the model holding no terminal and no I/O so the interface's behaviour
-  is tested without one. The UI thread blocks on a single channel and never
-  on work: runs go to a worker thread and report progress through `tracing`,
-  which CLAUDE.md already designates the one telemetry path.
+  **It is now what bare `trellis` opens**, which widens the deviation rather
+  than narrowing it, and is also at the owner's instruction. The line session
+  moved to `trellis session` and stays the fallback when there is no terminal
+  — bare `trellis` under a pipe still gets it, because the event loop waits on
+  console input that never arrives from one and would otherwise paint a frame
+  and hang. A hang has to be killed, and a kill runs no destructors, which is
+  the one way to leave a terminal broken that no guard covers.
+
+  The interface lives in its own crate, `tui-demo`, which depends on no other
+  crate in this workspace — so `AppState`, `render` and the event loop are
+  testable with no index, no model and no terminal, and `cargo run --bin
+  tui_demo` drives the same code from a mock source. `trellis-cli` supplies
+  only the *event source*: `tui_bridge.rs` is a `tracing_subscriber::Layer`,
+  not a second channel wired into the loop, so `RUST_LOG=trellis=info` still
+  sees the same events and CLAUDE.md's one-telemetry-path rule holds.
+
+  **The failure this interface exists to end had reproduced inside it, and
+  the fix shipped unverified.** A run that fails before its first turn — an
+  unreachable runtime, a dirty worktree — emits no turn event, so the bridge
+  had nothing to forward and a typed task produced an empty pane. `ddc1f59`
+  fixed it and claimed so without a test; the event loop refuses a pipe, so
+  the path is unreachable from a shell and the claim could not be checked the
+  way the rest of this repository checks things. It now is: `report_outcome`
+  is split out of the driver and five tests drive it through the real
+  `update`, two of which fail when the forwarding is removed. Verified by
+  applying that mutant, not by reading the code.
 
   Still no completion, and the transcript is the only pane that scrolls.
 - **`discover()` does not read `.gitignore`.** It skips a fixed list — `.venv`,

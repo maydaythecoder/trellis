@@ -13,7 +13,51 @@
 use crate::tui_bridge::LoopLayer;
 use anyhow::Result;
 use std::path::Path;
+use tokio::sync::mpsc::Sender;
 use tui_demo::tui;
+use tui_demo::tui::message::Message;
+
+/// What the interface is told when a run ends, whatever way it ended.
+///
+/// Separate from the driver so it can be exercised without a terminal. The
+/// event loop refuses a pipe on purpose (see below), which makes the failing
+/// path unreachable from a shell — so the only honest way to show that a
+/// failed run reaches the pane is to call this directly from a test.
+///
+/// The `Err` arm is the point. A run can fail *before its first turn* — an
+/// unreachable runtime, a dirty worktree — and then no tracing event is ever
+/// emitted, so the bridge has nothing to forward and the pane shows a task
+/// that produced nothing at all. That is the exact failure this interface
+/// was built to end, and without this it happened inside it.
+fn report_outcome(tx: &Sender<Message>, outcome: Result<crate::RunExit>) {
+    match outcome {
+        Err(e) => {
+            // `{:#}` so the causes travel with the error; a bare `{}` would
+            // report "run failed" and drop the reason it failed.
+            let rendered = format!("{e:#}");
+            let mut said_something = false;
+            for line in rendered.lines().filter(|l| !l.trim().is_empty()) {
+                let _ = tx.blocking_send(Message::AgentToken(format!("! {line}\n")));
+                said_something = true;
+            }
+            // An error that renders to nothing would otherwise be silence
+            // wearing an error's clothes.
+            if !said_something {
+                let _ = tx.blocking_send(Message::AgentToken(
+                    "! the run failed and reported no reason\n".to_string(),
+                ));
+            }
+        }
+        Ok(exit) => {
+            let _ = tx.blocking_send(Message::AgentToken(format!(
+                "· run finished, exit {}\n",
+                exit.code()
+            )));
+        }
+    }
+    // Whatever happened, the interface takes input again.
+    let _ = tx.blocking_send(Message::RunFinished);
+}
 
 pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>) -> Result<()> {
     // Refused rather than attempted when there is no terminal to drive.
@@ -24,18 +68,15 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!(concat!(
-            "`trellis tui` needs a terminal, and this is a pipe or a redirect.
-",
+            "`trellis tui` needs a terminal, and this is a pipe or a redirect.\n",
             "Run it directly, or use `trellis run` which works fine without one."
         ));
     }
 
     let Some(spec) = model_spec else {
         anyhow::bail!(concat!(
-            "no model configured, and a run would have nothing to drive it.
-",
-            "Set one with `trellis model`, or in .trellis/config.toml, or pass
-",
+            "no model configured, and a run would have nothing to drive it.\n",
+            "Set one with `trellis model`, or in .trellis/config.toml, or pass\n",
             "`--model <spec>` to `trellis run`."
         ));
     };
@@ -73,34 +114,7 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                         let outcome = tracing::subscriber::with_default(subscriber, || {
                             crate::cmd_run(&root, &task, &spec, false, "1", false)
                         });
-                        // A run can fail before its first turn — an
-                        // unreachable runtime, a dirty worktree — and then
-                        // there is no tracing event to carry the reason.
-                        // Without this the pane shows a task that produced
-                        // nothing, which is the failure mode this interface
-                        // was built to end.
-                        match outcome {
-                            Err(e) => {
-                                for line in format!("{e:#}").lines() {
-                                    let _ = tx.blocking_send(tui::message::Message::AgentToken(
-                                        format!(
-                                            "! {line}
-"
-                                        ),
-                                    ));
-                                }
-                            }
-                            Ok(exit) => {
-                                let _ =
-                                    tx.blocking_send(tui::message::Message::AgentToken(format!(
-                                        "· run finished, exit {}
-",
-                                        exit.code()
-                                    )));
-                            }
-                        }
-                        // Whatever happened, the interface takes input again.
-                        let _ = tx.blocking_send(tui::message::Message::RunFinished);
+                        report_outcome(&tx, outcome);
                     })
                     .await;
                 }
@@ -133,4 +147,105 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         driver.abort();
         result.map_err(|e| anyhow::anyhow!("{e}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tui_demo::tui::app::AppState;
+
+    /// Drains a channel through the same `update` the running interface
+    /// uses, so what is asserted is what a viewer would have on screen —
+    /// not what was put on the wire.
+    fn screen(outcome: Result<crate::RunExit>) -> AppState {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        report_outcome(&tx, outcome);
+        drop(tx);
+        let mut state = AppState {
+            running: true,
+            ..Default::default()
+        };
+        while let Ok(m) = rx.try_recv() {
+            state.update(m);
+        }
+        state
+    }
+
+    #[test]
+    fn a_run_that_fails_before_its_first_turn_still_says_why() {
+        // The unreachable-runtime shape, which emits no turn event at all:
+        // before this path existed the pane showed the typed task and then
+        // nothing, which is the failure this interface exists to end.
+        let err = anyhow::anyhow!("cannot reach the runtime at 127.0.0.1:8793")
+            .context("the run could not start");
+        let state = screen(Err(err));
+
+        let text = state.transcript.join("\n");
+        assert!(
+            text.contains("cannot reach the runtime at 127.0.0.1:8793"),
+            "the reason has to survive to the pane, not just the exit code:\n{text}"
+        );
+        assert!(
+            text.contains("the run could not start"),
+            "and so does the context it was raised with:\n{text}"
+        );
+        assert!(
+            state.transcript.iter().any(|l| l.starts_with("! ")),
+            "a failure is marked as one:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_failure_arrives_as_lines_rather_than_one_run_on() {
+        let state = screen(Err(anyhow::anyhow!(
+            "the worktree has uncommitted changes.\ncommit or stash them, then run again."
+        )));
+        let marked = state
+            .transcript
+            .iter()
+            .filter(|l| l.starts_with("! "))
+            .count();
+        assert_eq!(marked, 2, "got:\n{:#?}", state.transcript);
+    }
+
+    #[test]
+    fn a_failure_that_renders_to_nothing_is_still_not_silence() {
+        // An error whose Display is empty would otherwise reproduce the bug
+        // exactly — a task, then nothing.
+        let state = screen(Err(anyhow::anyhow!("")));
+        assert!(
+            state.transcript.iter().any(|l| l.contains("no reason")),
+            "got:\n{:#?}",
+            state.transcript
+        );
+    }
+
+    #[test]
+    fn a_run_that_ends_reports_its_exit_code_rather_than_a_verdict() {
+        // 1 is "did not converge, tree restored". The interface reports the
+        // code; it does not translate it into a claim about correctness,
+        // which is not its to make.
+        let state = screen(Ok(crate::RunExit::NotConverged { restored: true }));
+        let text = state.transcript.join("\n");
+        assert!(text.contains("exit 1"), "got:\n{text}");
+        assert!(
+            !text.to_lowercase().contains("fail"),
+            "a non-converged run is not the interface's verdict to give:\n{text}"
+        );
+    }
+
+    #[test]
+    fn every_ending_hands_input_back() {
+        // A run that ended without clearing `running` leaves an interface
+        // that never takes another task — recoverable only by quitting.
+        for outcome in [
+            Ok(crate::RunExit::Converged),
+            Ok(crate::RunExit::NotConverged { restored: false }),
+            Ok(crate::RunExit::Interrupted { restored: true }),
+            Err(anyhow::anyhow!("boom")),
+        ] {
+            let state = screen(outcome);
+            assert!(!state.running, "input stayed held after a run ended");
+        }
+    }
 }
