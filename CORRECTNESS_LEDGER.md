@@ -10,7 +10,7 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **476** passing, 0 failed, 0 ignored (328 at the baseline commit, 415 when the campaign's tiers closed) |
+| Tests | **487** passing, 0 failed, 0 ignored (328 at the baseline commit, 415 when the campaign's tiers closed) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%), at `94c285c` and not re-measured since |
 | Mutation score | **all 8 crates**, as self-test scores; three re-measured with the full suite. `trellis-cli` completed last, at `4cefe4a`: **41.5%**, the worst in the workspace — see Tier 6 |
 
@@ -19,12 +19,13 @@ respectively. A score quoted without its commit is not a baseline, because
 the next commit moves it — and the test count above is the only figure here
 that tracks `HEAD`, because it is the one that changes every commit.
 
-**The mutation figure is now stale in a known direction.** 66 of
-`trellis-cli`'s 144 live survivors have been triaged since it was measured,
-so the real score at `HEAD` is higher than 41.5% by roughly that much. It is
-left as measured rather than estimated: the re-run is what replaces it, and
-an estimate in this row would be exactly the fabricated figure the rule at
-the end of CLAUDE.md forbids.
+**The mutation figure is now stale in a known direction.** Of
+`trellis-cli`'s 144 live survivors, **87 are now killed by a test**, 9 are
+triaged as unexercisable on this machine (C-025), and 1 is an equivalent
+mutant (C-024) — 97 accounted for, 47 untouched. So the real score at `HEAD`
+is well above 41.5%. It is left as measured rather than estimated: the
+re-run is what replaces it, and an estimate in this row would be exactly the
+fabricated figure the rule at the end of CLAUDE.md forbids.
 
 ## Tier 0 — Baseline
 

@@ -283,7 +283,8 @@ audit's own §0 requires a finished campaign, so they run in that order.
     started now measures code about to change. **That re-run is what the held
     `main.rs` split waits on** — it is the baseline the split must not move.
 
-13. **Triage: 70 of the 144 closed, and two of them were defects.**
+13. **Triage: 87 of the 144 killed by a test, 9 triaged as unexercisable,
+    1 an equivalent mutant — 97 accounted for, 47 left.** Two were defects.
     Each mutant applied by hand and watched to fail. No production code
     changed except one `f.pad` fix and one comment — every other commit in
     the run touches tests only, and `git diff` on `main.rs` was checked
@@ -347,8 +348,32 @@ audit's own §0 requires a finished campaign, so they run in that order.
       the three figures come to a hundred; every mutant of the arithmetic
       produces a column that still looks like percentages and is not.
 
-    **74 survivors remain**, and the largest groups are `pull_model` (6),
-    `cmd_run` (6), `list_models` (5), `cmd_doctor` (5) and `main` (4). `pull_model` is the model-download path and does HTTP; the
+    - **`cmd_run` and `cmd_check`, 8 — lines that are true and withheld.**
+      The governance count a run is under, printed before the loop because
+      that is the only moment it helps; what a failed check objected to, on
+      *both* streams, because checkers differ in which they use; and the
+      post-run coverage block, printed where CONVERGED is most likely to be
+      misread as "tested".
+    - **`trellis model`, 7 — the catalogue needs no network to be wrong.**
+      `list_models` is `fs::metadata` against a size the catalogue knows.
+      Three states with a different action behind each, and every mutant
+      collapses two of them. The complete-file case needed a 491 MB file;
+      `set_len` makes it sparse, 64 ms, no blocks.
+    - **`pull_model`, 2 of 6 — the early return, which is all that is safe.**
+      It stops a repeat `model pull` re-downloading a complete file.
+
+    **C-025: 9 survivors are unexercisable here** — `pull_model`'s remaining
+    four live past the `curl` invocation, and `cmd_doctor`'s five sit on
+    `probe_slots`, which needs a live llama.cpp reporting its slot count.
+    Recorded with the reason rather than left as unexplained survivors.
+    Probing whether curl could be blocked by clearing `PATH` started a real
+    468 MB download — on Windows curl resolves from the system directory
+    whatever `PATH` says — so `DECISIONS.md` now forbids any test reaching
+    past that early return.
+
+    **47 survivors are untouched**, the largest groups being `Session`'s
+    remaining display functions, `main`'s root-discovery guards, and
+    `cmd_doctor`'s repository-side half. `pull_model` is the model-download path and does HTTP; the
     campaign already records that transport cannot be exercised on this
     machine, so it should be triaged as unexercisable-here with the reason
     rather than given a mock built for six mutants.
