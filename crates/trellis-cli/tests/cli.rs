@@ -2196,3 +2196,149 @@ fn a_converged_run_over_code_with_no_doubt_reports_none() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// model — the weights catalogue, which needs no network to be wrong
+// ---------------------------------------------------------------------------
+
+/// Runs a command with the user's data directory pointed at `data`.
+///
+/// `models_dir` reads `LOCALAPPDATA` on Windows and `XDG_DATA_HOME` (then
+/// `HOME`) elsewhere. Both are set, so the test says the same thing on
+/// either platform and never touches the real one — writing a fake weights
+/// file into someone's actual model directory is not a thing a test does.
+fn run_with_data_dir(root: &Path, data: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(args)
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("LOCALAPPDATA", data)
+        .env("XDG_DATA_HOME", data)
+        .env("HOME", data)
+        .output()
+        .expect("the binary must be built before its integration tests run")
+}
+
+/// Where `models_dir` will look, given that data directory.
+fn models_dir_in(data: &Path) -> PathBuf {
+    data.join("trellis").join("models")
+}
+
+#[test]
+fn the_model_list_reports_each_weight_as_absent_partial_or_complete() {
+    // Three states and a different action behind each: fetch it, resume it,
+    // use it. Collapsing any two — which every mutant of the guard does —
+    // makes the list say the wrong thing about work the user has already
+    // paid for. On a slow link the difference between resuming and
+    // restarting is hours, which is why a partial file is named rather than
+    // hidden.
+    //
+    // No network is involved in any of this: the state is `fs::metadata`
+    // against a size the catalogue already knows.
+    let d = repo("model-list");
+    let data = scratch("model-list-data");
+    let dir = models_dir_in(&data);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Nothing fetched yet.
+    let s = stdout(&run_with_data_dir(&d, &data, &["model"]));
+    assert!(
+        s.contains("not fetched"),
+        "an empty directory means nothing is fetched:\n{s}"
+    );
+    assert!(
+        !s.contains("downloaded") && !s.contains("partial"),
+        "and nothing is downloaded or partial:\n{s}"
+    );
+
+    // The smallest entry, part-way down.
+    let entry = trellis_model::CATALOG
+        .iter()
+        .min_by_key(|e| e.bytes)
+        .expect("the catalogue is not empty");
+    let path = dir.join(entry.file);
+    std::fs::write(&path, vec![0u8; 1024]).unwrap();
+    let s = stdout(&run_with_data_dir(&d, &data, &["model"]));
+    assert!(
+        s.contains("partial"),
+        "a file shorter than the published size is a resumable download, \
+         not a usable weight:\n{s}"
+    );
+
+    // The same entry, complete. Written sparse: the file is half a gigabyte
+    // and none of it is read, so `set_len` costs nothing and the point is
+    // the length `metadata` reports.
+    let f = std::fs::File::options().write(true).open(&path).unwrap();
+    f.set_len(entry.bytes).unwrap();
+    drop(f);
+    let s = stdout(&run_with_data_dir(&d, &data, &["model"]));
+    assert!(
+        s.contains("downloaded"),
+        "a file at or past the published size is usable:\n{s}"
+    );
+    assert!(
+        !s.contains("partial"),
+        "and must not still be offered as resumable:\n{s}"
+    );
+
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn exactly_one_catalogue_entry_is_marked_the_default() {
+    // The marker is how a user picks without reading four descriptions, so
+    // it is worth nothing if it is on all of them or none. Inverting the
+    // comparison moves it onto every entry but the right one.
+    let d = repo("model-default");
+    let data = scratch("model-default-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+
+    let s = stdout(&run_with_data_dir(&d, &data, &["model"]));
+    assert_eq!(
+        s.matches("(default)").count(),
+        1,
+        "exactly one entry carries the marker:\n{s}"
+    );
+    assert!(
+        s.contains(&format!("{} (default)", trellis_model::DEFAULT)),
+        "and it is the one the catalogue names as the default:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn model_path_names_a_real_location_under_the_data_directory() {
+    // `trellis model path` exists so a user can put the file there
+    // themselves — over a link the downloader cannot use, or from a copy on
+    // another machine. A path that is empty, or that is not where the tool
+    // will actually look, sends them to do the work twice.
+    //
+    // Both `models_dir` and `weights_path` can be replaced with a default
+    // `PathBuf`, which is the empty one, and the command still prints a line
+    // and exits zero.
+    let d = repo("model-path");
+    let data = scratch("model-path-data");
+
+    let s = stdout(&run_with_data_dir(&d, &data, &["model", "path"]));
+    let printed = s.trim();
+    assert!(
+        !printed.is_empty(),
+        "an empty path is not an answer:\n{s:?}"
+    );
+
+    let expected = models_dir_in(&data).join(
+        trellis_model::catalog::find(trellis_model::DEFAULT)
+            .expect("the default is in the catalogue")
+            .file,
+    );
+    assert_eq!(
+        Path::new(printed),
+        expected,
+        "the path printed must be the one `model` itself looks in, or a \
+         user who puts the file there finds it was not enough"
+    );
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
