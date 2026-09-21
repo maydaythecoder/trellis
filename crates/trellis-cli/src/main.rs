@@ -2466,6 +2466,11 @@ mod init_tests {
             vec!["init", "-q"],
             vec!["config", "user.email", "t@example.invalid"],
             vec!["config", "user.name", "t"],
+            // Pinned like every other git fixture here. Without it, git on
+            // Windows normalises line endings on `add`, and a test that
+            // asserts a clean `status --porcelain` can see its own untouched
+            // files reported as modified.
+            vec!["config", "core.autocrlf", "false"],
         ] {
             std::process::Command::new("git")
                 .args(&args)

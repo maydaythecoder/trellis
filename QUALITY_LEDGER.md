@@ -1,6 +1,6 @@
 # Quality audit ledger
 
-**Status: in progress.** Passes 0–5 and 7 complete, 6 held. The
+**Status: in progress.** Passes 0–5 and 7 complete; 6 surveyed, its extraction held. The
 prerequisite was not met when this began; it is now met except for Tier 6,
 which is running. See *Prerequisite* below.
 
@@ -144,6 +144,59 @@ split can be made once rather than twice.
 warning — *duplication is cheaper than the wrong abstraction* — is the part of
 this audit most likely to do harm. It waits for the mutation baseline, which
 is precisely the signal that detects an extraction having buried logic.
+
+## Pass 6 — surveyed, and it found a defect rather than an abstraction
+
+The pass §3 warns about most: *duplication is cheaper than the wrong
+abstraction*. Surveyed with a normalised-line scan for repeated runs of eight
+or more statements, comments and formatting excluded.
+
+**Every repeated block is in test or example code. Production code has none.**
+
+Four clusters:
+
+| what | copies | verdict |
+|---|---|---|
+| A git-repo test fixture | 7 | **Drifted — see below** |
+| splitmix64, in the measurement examples | 3 | Left alone |
+| xorshift64star, in the property tests | 2 | Left alone |
+| A `sources()` fixture, cache.rs and incremental.rs | 2 | Left alone |
+
+### The git fixture had already diverged
+
+Seven copies set up a temporary git repository. Five pin
+`core.autocrlf false`; **two did not** — `init_tests::repo` in `main.rs`, and
+`repo()` in the CLI integration suite written earlier in this same audit.
+
+That is not hypothetical harm. Git on Windows normalises line endings on
+`add` without it, and `a_missing_scripted_model_fails_before_anything_is_touched`
+asserts an empty `git status --porcelain` over files the test wrote itself.
+It passed, but on the strength of nothing.
+
+**Both fixed.** The extraction is not done: it could unify five of the seven —
+`main.rs` and `session.rs` share a crate — while `tests/cli.rs` is a separate
+crate and `trellis-vcs` another, so two copies survive any reasonable version
+of it. A fix that reaches five sevenths of a class is worth doing with the
+mutation score in hand rather than without it.
+
+### The two generators, verified rather than assumed
+
+`docs/bench/decomposition-20260921.md` claims *"the same splitmix64 generator
+as the audit sampler, so a seed means the same thing across the project's
+measurement tools."* Checked: the three measurement examples are
+byte-identical splitmix64 (`0x9E3779B97F4A7C15`, `0xBF58476D1CE4E5B9`), and
+the two property tests use xorshift64star (`0x2545F4914F6CDD1D`) — a different
+generator, which the claim does not cover because it says *measurement tools*.
+
+**The claim is true and correctly scoped.** Recorded because verifying it was
+the point of looking, and a claim checked and found sound is worth as much
+here as one found wrong.
+
+Left alone deliberately. Six lines of a named standard algorithm, in three
+standalone tools each meant to be read in isolation. The alternative is an RNG
+in `trellis-core`, whose charter is ids, the interner and errors — stretching
+a foundation crate to hold a measurement utility is the wrong abstraction §3
+is warning about.
 
 ## A correction to Q-009
 

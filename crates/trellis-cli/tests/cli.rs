@@ -58,6 +58,12 @@ fn repo(name: &str) -> PathBuf {
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
     git(&d, &["config", "user.name", "t"]);
+    // Every other git fixture in this workspace pins this and these two did
+    // not — found by the Pass 6 duplication survey, which is the argument
+    // for that pass in one line. Without it git normalises line endings on
+    // `add`, and `a_missing_scripted_model_fails_before_anything_is_touched`
+    // asserts an empty `status --porcelain` on files it wrote itself.
+    git(&d, &["config", "core.autocrlf", "false"]);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
