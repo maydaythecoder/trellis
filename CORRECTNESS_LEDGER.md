@@ -12,7 +12,7 @@ convenient.
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
 | Tests | **415** passing, 0 failed, 0 ignored (328 at the baseline commit) |
 | Line coverage | **82.74%** (regions 82.52%, functions 86.34%) |
-| Mutation score | **still none.** Two workspace runs stopped for memory; six crates measured individually, but per-crate runs test only that crate — see Tier 6 |
+| Mutation score | **7 of 8 crates**, as self-test scores; three re-measured with the full suite. `trellis-cli` never completed — see Tier 6 |
 
 Every figure here is against `94c285c`. A score quoted without its commit is
 not a baseline, because the next commit moves it.
@@ -336,6 +336,71 @@ The lesson that generalises: **a probe built from a different dependency
 graph is a different program.** Feature unification makes `cargo run -p X
 --example` and the real binary disagree about library behaviour, silently,
 and nothing warns.
+
+## Tier 6 — final
+
+**Seven of eight crates measured. `trellis-cli` never completed**, stopped
+four times by system memory: twice as part of a whole-workspace run, once at
+`-j 2`, and once as a per-crate run whose partial output was corrupt.
+
+### Self-test scores — what a crate's own tests catch
+
+```
+trellis-checks   31/2    93.9%        trellis-trail    98/22   81.7%
+trellis-model    29/6    82.9%        trellis-index   291/92   76.0%
+trellis-loop    123/57   68.3%        trellis-vcs      16/11   59.3%
+trellis-core      5/5    50.0%
+                                      seven crates   593/195   75.3%
+```
+
+`cargo mutants -p X` runs only X's tests, so these understate by however much
+a crate is exercised from outside itself. That is not a footnote — it is the
+difference between a number and a different number:
+
+```
+crate            self-test    whole suite    delta
+trellis-vcs         59.3%         92.6%      +33.3 pts
+trellis-core        50.0%         70.0%      +20.0 pts
+trellis-model       82.9%    not computable  5 timeouts, unusable by our own rule
+```
+
+`trellis-model`'s re-run is **not** reported as 83.8%. Thirty-seven verdicts
+and five timeouts gives a range of [73.8%, 85.7%], and computing a percentage
+over the verdicts alone is exactly the error the timeout guard exists to
+prevent. Its five timeouts turned out to be our own bug — see C-016's
+neighbour below — and it has not been re-run since that was fixed.
+
+### What the triage produced
+
+Nineteen findings, C-001 to C-020. The ones that were defects rather than
+test gaps:
+
+- **C-010** — a partition worktree would have dirtied the repository and made
+  the *next* run refuse to start. Found by writing the first test of code
+  that had none.
+- **C-016** — trail tamper-evidence worked only because `schemars`
+  transitively enables `serde_json/preserve_order`. Undeclared, untested, and
+  one dependency change from every trail reading as `Altered`.
+- **C-019** — the guard keeping a model's path inside the repository accepted
+  `../../etc/passwd` under its surviving mutant, because that path is
+  relative and so not absolute.
+- **C-020** — S19's own rule, `radius disjoint && files disjoint`, would hand
+  two agents the same file. It survived because it was only tested through
+  `plan`, which cannot construct such a pair.
+- The stub hang: an unbounded `accept()` meant a mutant that skipped the
+  client's request hung the test rather than failing it. Five mutants the
+  suite *does* catch were reported as timeouts, and in CI it would have
+  stalled a build rather than reporting.
+
+Four pieces of dead code were deleted and one tested rather than deleted,
+because it had a named future use.
+
+### What this tier does not establish
+
+There is **no workspace mutation score**, and the per-crate figures are not
+one. `trellis-cli` is unmeasured, and it is the largest crate and the one
+with the most tests added during the campaign — so the number most likely to
+have moved is the one missing.
 
 ## Tier 7 — Property and fuzz
 
