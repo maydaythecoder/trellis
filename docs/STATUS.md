@@ -146,18 +146,33 @@ at the owner's instruction, and they took priority over v1.1.** The campaign's
 record is `CORRECTNESS_LEDGER.md`; the audit's is `QUALITY_LEDGER.md`. The
 audit's own §0 requires a finished campaign, so they run in that order.
 
-### In flight
+### Blocked on a rerun nobody has asked for
 
-1. **The mutation baseline.** `cargo mutants --workspace --no-shuffle -j 4`
-   against `94c285c`, ~1,253 mutants, several hours. Nothing in the quality
-   audit's Passes 3–7 starts until it lands, because §9 makes mutation score
-   the check that catches refactor damage — *"a refactor that makes code
-   harder to test shows up here and nowhere else"* — and there is no score to
-   compare against yet.
+1. **The mutation baseline was stopped at 842 of ~1,253 mutants.** Claude Code
+   killed it because the system was low on memory while the session was idle —
+   not a failure of the run, and nothing in it to debug. **It has not been
+   restarted**, and should be started again only on request.
 
-   Its shape was clear by mutant 341 and it agrees with the coverage
-   measurement exactly: the misses are concentrated in `trellis-cli`, and
-   `main.rs` alone accounts for more than half of them.
+   What it established is in `CORRECTNESS_LEDGER.md` Tier 6, with the caveat
+   attached to the number rather than left for a reader to supply:
+
+   ```
+   trellis-checks   93.9%      trellis-cli    35.0%  (pre-C-001)
+   trellis-core     62.5%      trellis-index  71.5%
+                              — 56.8% over what ran
+
+   never reached:  trellis-loop · trellis-model · trellis-trail · trellis-vcs
+   ```
+
+   **56.8% is not a workspace score.** `--no-shuffle` walks packages in order,
+   so the 411 untested mutants are four whole crates rather than a random
+   remainder — and those four carry the highest line coverage in the
+   repository, so the figure is biased low by an amount this run cannot
+   measure. Quoting it without that is the same error as quoting `trellis
+   index`'s percentage as recall.
+
+   The quality audit's Passes 3–7 stay blocked, because §9 requires a score to
+   compare against and a partial one over half the workspace is not it.
 
 ### Closed this iteration
 
@@ -174,7 +189,18 @@ audit's own §0 requires a finished campaign, so they run in that order.
    They found a defect on the first run: `trellis model` refused to run outside
    a repository, against a comment in `main.rs` stating it must.
 
-4. **C-003 — index determinism, and what asserting it turned up.** The graph
+4. **Two clusters the partial baseline pointed at, closed.** Ten tests on the
+   approval-time view — `doubt_in_files` could have been replaced by
+   `FileDoubt::default()` and the whole suite still passed, which would have
+   reported **zero doubt** for files nothing is known about. Six on binding
+   forms whose match arms could be deleted undetected: with/except aliases,
+   the walrus operator, lambda parameters, splat parameters.
+
+5. **C-004 — the C-003 fix shipped a defect.** It changed the cache's
+   serialised shape without bumping `FORMAT_VERSION`, and the commit message
+   asserted a mechanism that does not hold. Found by review, not by any tier.
+
+6. **C-003 — index determinism, and what asserting it turned up.** The graph
    is deterministic; its serialised bytes were not. `Interner` serialised a
    `HashMap` that is a second copy of every key in the vector beside it, so
    `.trellis/index.bin` differed on every rebuild of unchanged sources. On
