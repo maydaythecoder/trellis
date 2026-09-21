@@ -1241,3 +1241,144 @@ fn init_calls_a_committed_worktree_clean() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// the trail's radius counts — which of them sum, and which deliberately do not
+// ---------------------------------------------------------------------------
+
+/// A repository with one symbol reached by resolved edges and one reached
+/// only ambiguously, plus doubt in both radii.
+///
+/// The override lives in its own module on purpose. A method's qualified name
+/// does not carry its class, so a base and an override in one file are both
+/// `app.core.execute` and `radius` refuses them as ambiguous — there is no
+/// way to ask about either. Split across modules they are `app.core.execute`
+/// and `app.sub.execute`, the base is nameable, and a call on a `Base`-typed
+/// receiver resolves to `Candidates` over both (ADR 0012: a declared type is
+/// an upper bound, not an identity).
+fn repo_with_resolved_and_ambiguous_reach(name: &str) -> PathBuf {
+    let d = scratch(name);
+    git(&d, &["init", "-q"]);
+    git(&d, &["config", "user.email", "t@example.invalid"]);
+    git(&d, &["config", "user.name", "t"]);
+    git(&d, &["config", "core.autocrlf", "false"]);
+
+    std::fs::create_dir_all(d.join("app")).unwrap();
+    std::fs::write(d.join("app/__init__.py"), "").unwrap();
+    std::fs::write(
+        d.join("app/core.py"),
+        concat!(
+            "class Base:\n    def execute(self):\n        return 1\n\n",
+            "def greet(name):\n    return f\"hello {name}\"\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("app/sub.py"),
+        concat!(
+            "from app.core import Base\n\n",
+            "class Sub(Base):\n    def execute(self):\n        return 2\n\n",
+            "def murky(thing):\n    return thing.spin()\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("app/use.py"),
+        concat!(
+            "from app.core import Base, greet\n\n",
+            "def go(b: Base):\n    return b.execute()\n\n",
+            "def also(b: Base):\n    return b.execute()\n\n",
+            "def hi(w):\n    return greet(w)\n\n",
+            "def hey(w):\n    return greet(w)\n\n",
+            "def vague(thing):\n    return thing.run()\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("script.json"),
+        concat!(
+            r#"{"steps":["#,
+            r#"{"tool":"blast_radius","symbol":"app.core.execute"},"#,
+            r#"{"tool":"blast_radius","symbol":"app.core.greet"},"#,
+            r#"{"tool":"done","summary":"looked"}]}"#,
+        ),
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "fixture"]);
+    d
+}
+
+/// The `N` from one of the two doubt headlines `radius` can print.
+fn unbound_reported_by_radius(root: &Path, symbol: &str) -> u32 {
+    let s = stdout(&run(root, &["radius", symbol]));
+    s.lines()
+        .find(|l| l.contains("bound to nothing") || l.contains("was bound"))
+        .and_then(|l| l.split_whitespace().next()?.parse().ok())
+        .unwrap_or_else(|| panic!("no doubt headline for {symbol}:\n{s}"))
+}
+
+#[test]
+fn the_trail_sums_reach_across_queries_and_takes_the_widest_doubt() {
+    // Two facts in one run, because they are only interesting together.
+    //
+    // Reach *is* additive: each query asks about a different symbol, so "how
+    // many call sites did this run examine" is the sum. Doubt is not. Two
+    // radii in one repository touch overlapping files, so adding their
+    // unbound counts counts the same call sites once per query — a figure
+    // that grows with how many questions were asked rather than with how
+    // much is unknown. The widest single query is a true statement about a
+    // real radius; the sum is a statement about nothing.
+    //
+    // The fixture is built so the two differ: each radius reports the same
+    // doubt, so a sum would be double the max and the two rules cannot be
+    // confused for one another by accident.
+    let d = repo_with_resolved_and_ambiguous_reach("trail-radius-counts");
+
+    let per_query = [
+        unbound_reported_by_radius(&d, "app.core.execute"),
+        unbound_reported_by_radius(&d, "app.core.greet"),
+    ];
+    let widest = per_query.iter().copied().max().unwrap();
+    let summed: u32 = per_query.iter().sum();
+    assert_ne!(
+        widest, summed,
+        "this fixture is only meaningful when a sum and a max differ; got {per_query:?}"
+    );
+
+    let out = run(
+        &d,
+        &["run", "--model", "scripted:script.json", "look around"],
+    );
+    // A `done` with no passing check does not converge, and must not: only an
+    // executed check accepts a change. The trail is written either way, and
+    // is written *after* the rollback so it survives it.
+    assert!(
+        !out.status.success(),
+        "a run that only looked around must not report convergence:\n{}",
+        combined(&out)
+    );
+
+    // Read back the way the product reads it: `UntrustedTrail`, never
+    // `Trail`. A trail lives in a repository that may take contributions, so
+    // reading one is reading attacker-influenceable text (S10).
+    let (_, trail) = trellis_trail::latest(&d)
+        .expect("the trail directory must be readable")
+        .expect("a run that reached its first turn writes a trail");
+    let r = &trail.factual.radius;
+
+    assert_eq!(r.radius_queries, 2, "two queries were made: {r:?}");
+    assert_eq!(
+        r.reached_resolved, 2,
+        "`greet` has two resolved callers and `execute` none, so the sum is two: {r:?}"
+    );
+    assert_eq!(
+        r.reached_ambiguous, 2,
+        "`execute` is reached twice through Candidates and `greet` never: {r:?}"
+    );
+    assert_eq!(
+        r.widest_unbound_in_touched_files, widest,
+        "the widest single radius, not a sum — a sum here would be {summed}: {r:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
