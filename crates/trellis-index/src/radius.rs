@@ -540,6 +540,78 @@ impl FileDoubt {
     }
 }
 
+/// Resolves caller-supplied paths to the index's file ids.
+///
+/// Python sources only. A changed `README.md` is not a file the graph failed
+/// to examine, it is a file the graph was never about — and `.trellis/` is
+/// this tool's own directory. Counting either fires the approval prompt on
+/// runs with nothing to report, which is how a coverage line teaches a user
+/// to dismiss it.
+///
+/// Returns the ids and how many distinct Python paths were asked about, so a
+/// caller can tell "changed a file the index never parsed" from "changed
+/// nothing the graph cares about".
+fn file_ids(index: &Index, paths: &[String]) -> (HashSet<FileId>, u32) {
+    let want: HashSet<String> = paths
+        .iter()
+        .map(|p| p.replace('\\', "/").trim_start_matches("./").to_string())
+        .filter(|p| p.ends_with(".py"))
+        .collect();
+
+    let mut ids = HashSet::new();
+    for (i, f) in index.files.iter().enumerate() {
+        if want.contains(&f.path.replace('\\', "/")) {
+            ids.insert(FileId::from_index(i));
+        }
+    }
+    (ids, want.len() as u32)
+}
+
+/// One call site that reaches a symbol defined in the files a run changed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallerSite {
+    pub path: String,
+    /// Byte offset. The index does no I/O, so turning this into a line number
+    /// is the caller's job and happens once, at attribution time.
+    pub offset: usize,
+    /// True when a single `Resolved` edge put it here. A `Candidates` edge
+    /// means this symbol is one of several possibilities and none was chosen.
+    pub certain: bool,
+}
+
+/// Every call site reaching any symbol defined in `paths`.
+///
+/// **This is the population S3's `Verified` is counted over.** "The callers
+/// still work" is a claim about callers, so the set has to be the callers —
+/// not the changed files, and not the whole repository. Deduplicated, because
+/// one call site reaching two changed symbols is one caller, not two.
+pub fn callers_of_files(index: &Index, paths: &[String]) -> Vec<CallerSite> {
+    let (ids, _) = file_ids(index, paths);
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut out = Vec::new();
+
+    for (i, sym) in index.symbols.iter().enumerate() {
+        if !ids.contains(&sym.file) {
+            continue;
+        }
+        for edge in index.incoming(SymbolId::from_index(i)) {
+            let site = &index.sites[edge.from.index()];
+            let certain = matches!(edge.target, crate::graph::Target::Resolved(_));
+            let key = (site.file.index(), site.span.0);
+            if !seen.insert(key) {
+                continue;
+            }
+            out.push(CallerSite {
+                path: index.files[site.file.index()].path.clone(),
+                offset: site.span.0,
+                certain,
+            });
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Counts the call sites in `paths` that bound to no definition.
 ///
 /// Paths are matched as the index stores them, with separators normalised, so
@@ -547,26 +619,10 @@ impl FileDoubt {
 pub fn doubt_in_files(index: &Index, paths: &[String]) -> FileDoubt {
     use crate::graph::Target;
 
-    // Python sources only. A changed `README.md` is not a file the graph
-    // failed to examine, it is a file the graph was never about — and
-    // `.trellis/` is this tool's own directory. Counting either as unexamined
-    // fires the approval prompt on runs with nothing to report, which is how
-    // a coverage line teaches a user to dismiss it.
-    let want: HashSet<String> = paths
-        .iter()
-        .map(|p| p.replace('\\', "/").trim_start_matches("./").to_string())
-        .filter(|p| p.ends_with(".py"))
-        .collect();
-
-    let mut ids: HashSet<FileId> = HashSet::new();
-    for (i, f) in index.files.iter().enumerate() {
-        if want.contains(&f.path.replace('\\', "/")) {
-            ids.insert(FileId::from_index(i));
-        }
-    }
+    let (ids, named) = file_ids(index, paths);
 
     let mut d = FileDoubt {
-        files_named: want.len() as u32,
+        files_named: named,
         files_examined: ids.len() as u32,
         ..Default::default()
     };

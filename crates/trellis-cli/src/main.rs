@@ -1135,6 +1135,53 @@ fn rollback_or_explain(snapshot: &trellis_vcs::Snapshot) -> bool {
 /// Everything in `factual` comes from a tool result the run actually received.
 /// Nothing is defaulted into it: a figure nobody measured has no business in
 /// the section whose promise is that it is machine-checkable.
+/// Splits the callers of what changed into verified and reviewed.
+///
+/// **S3, finally populated from evidence.** "The callers still work" means two
+/// things: covered by a test that ran and passed, or read by a model that did
+/// not object. The second is a weak signal. Until there was coverage data both
+/// counts were 0 and the tools had to explain that the zero meant "not
+/// measured" rather than "nothing verified".
+///
+/// The population is the **callers** — call sites reaching a symbol defined in
+/// a file the run changed — because that is what the sentence is about. Not
+/// the changed files, and not the repository.
+///
+/// Returns zeros when there is no `coverage.json`, which is still the common
+/// case. That is the same answer as before and means the same thing: nothing
+/// was measured. The difference is that it is now an absence of data rather
+/// than an absence of code, and a repository can fix it by adding
+/// `--cov-report=json` to the test command it already has.
+pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::ModeCounts {
+    let mut counts = trellis_trail::ModeCounts::default();
+    let Some(coverage) = trellis_checks::coverage::LineCoverage::load(root) else {
+        return counts;
+    };
+    if coverage.is_empty() || touched.is_empty() {
+        return counts;
+    }
+
+    let index = trellis_index::build_cached(root);
+    let callers = trellis_index::callers_of_files(&index, touched);
+
+    // Sources are read once each rather than per call site: a hot file can
+    // hold hundreds of callers, and re-reading it for every one turns an
+    // attribution pass into the slowest part of a run.
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for c in &callers {
+        let src = sources
+            .entry(c.path.clone())
+            .or_insert_with(|| std::fs::read_to_string(root.join(&c.path)).unwrap_or_default());
+        let line = src[..c.offset.min(src.len())].lines().count() as u32;
+        counts.record(if coverage.covers(&c.path, line) {
+            trellis_checks::AuditMode::Verified
+        } else {
+            trellis_checks::AuditMode::Reviewed
+        });
+    }
+    counts
+}
+
 fn record_trail(
     root: &Path,
     task: &str,
@@ -1144,9 +1191,7 @@ fn record_trail(
     base_commit: &str,
     model: Option<&str>,
 ) -> Result<std::path::PathBuf> {
-    use trellis_trail::{
-        CheckOutcome, Factual, Judgment, ModeCounts, Provenance, RadiusCounts, SCHEMA, Trail,
-    };
+    use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
     // Reach counts sum across queries; the unbound count does not.
     //
@@ -1199,7 +1244,7 @@ fn record_trail(
         checks: Vec::new(),
         check_outcomes,
         approved_by: approved,
-        mode_counts: ModeCounts::default(),
+        mode_counts: audit_modes(root, touched),
         context,
     };
 

@@ -4,6 +4,7 @@
 //! Every public entry point here spawns a real process and reports what it
 //! did. Nothing in this crate consults a model.
 
+pub mod coverage;
 pub mod governance;
 mod verdict;
 

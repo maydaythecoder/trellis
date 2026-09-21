@@ -36,13 +36,38 @@ pub struct Session {
     tasks_run: u32,
 }
 
-/// The sentence S3 turns on, held in one place.
+/// What a passing run claims about its callers, given what was measured.
 ///
-/// A `const` rather than a literal inside the printer, so the test asserts
-/// the string a user actually sees. A test carrying its own copy would keep
-/// passing after someone edited the real one, which is the failure mode this
-/// whole sentence exists to prevent, one level up.
-const AUDIT_MODE_NOTE: &str = concat!(
+/// S3 turns on this sentence. Two shapes, because the honest thing to say
+/// depends on whether there is evidence:
+///
+/// - **With coverage data**, real counts, never added together. `ModeCounts`
+///   has no `total()` for that reason.
+/// - **Without it**, the zero has to be labelled. "0 verified" invites exactly
+///   one wrong reading — that nothing is verified — when what it means is that
+///   nothing was measured.
+///
+/// Held here rather than inline so the tests read the shipped string. A test
+/// carrying its own copy would keep passing after someone edited the real one,
+/// which is the failure this sentence exists to prevent, one level up.
+fn audit_mode_note(counts: trellis_trail::ModeCounts) -> String {
+    if counts.verified == 0 && counts.reviewed == 0 {
+        return NO_COVERAGE_NOTE.to_string();
+    }
+    format!(
+        concat!(
+            "
+callers:  {} verified by an executed test, {} reviewed only.
+",
+            "          Reviewed means no test covered it — a weak signal, and ",
+            "deliberately
+          not added to the first number."
+        ),
+        counts.verified, counts.reviewed
+    )
+}
+
+const NO_COVERAGE_NOTE: &str = concat!(
     "
 verified: 0 — not measured, which is not the same as nothing being ",
     "verified.
@@ -50,11 +75,9 @@ verified: 0 — not measured, which is not the same as nothing being ",
     "          Your checks ran and passed; a run cannot converge without ",
     "that. What
 ",
-    "          TRELLIS cannot yet tell you is WHICH call sites in the radius ",
-    "your
-",
-    "          tests actually exercised, so it reports no figure rather than ",
-    "a guess."
+    "          is missing is coverage data: add --cov-report=json to the test ",
+    "command
+          in .trellis/config.toml and this becomes a real count."
 );
 
 impl Session {
@@ -433,6 +456,16 @@ impl Session {
             .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
             .collect();
 
+        // What the run claims about its callers is printed at every approval,
+        // whether or not anything is unresolved. A clean coverage line is
+        // exactly when someone is most likely to read "converged" as
+        // "tested", so that is the moment the distinction matters most.
+        //
+        // It was nested inside the doubt block until a live run showed it
+        // silent on a repository with nothing unresolved — while the comment
+        // above it said "printed unconditionally".
+        self.print_audit_mode(&paths);
+
         let doubt = trellis_index::doubt_in_files(&self.index, &paths);
         if doubt.unbound > 0 || doubt.unexamined() > 0 {
             self.print_coverage(&doubt);
@@ -522,7 +555,6 @@ impl Session {
                 )
             );
         }
-        Self::print_audit_mode();
         Self::print_choices();
     }
 
@@ -537,8 +569,8 @@ impl Session {
     /// Printed unconditionally, including when nothing is unresolved. A clean
     /// coverage line is exactly when someone is most likely to read
     /// "converged" as "tested", which is the reading this prevents.
-    fn print_audit_mode() {
-        println!("{AUDIT_MODE_NOTE}");
+    fn print_audit_mode(&self, paths: &[String]) {
+        println!("{}", audit_mode_note(crate::audit_modes(&self.root, paths)));
     }
 
     fn print_choices() {
@@ -1277,7 +1309,7 @@ def other():
         // "0 verified" invites exactly one wrong reading. Asserted against
         // the shipped constant, not a copy: a test holding its own version
         // would keep passing after someone edited the real one.
-        let text = AUDIT_MODE_NOTE;
+        let text = NO_COVERAGE_NOTE;
         assert!(text.contains("not measured"), "{text}");
         assert!(
             text.contains("not the same as nothing being verified"),
@@ -1290,6 +1322,45 @@ def other():
         for line in text.lines() {
             let body = line.trim_start();
             assert!(!body.contains("  "), "folded indentation: {body:?}");
+        }
+    }
+
+    #[test]
+    fn real_counts_replace_the_unmeasured_note_and_are_never_summed() {
+        // The whole point of populating it. With evidence the note reports
+        // two numbers; without, it labels the zero. `ModeCounts` has no
+        // `total()`, and the rendered line must not invent one either.
+        let with = audit_mode_note(trellis_trail::ModeCounts {
+            verified: 2,
+            reviewed: 1,
+        });
+        assert!(with.contains("2 verified"), "{with}");
+        assert!(with.contains("1 reviewed"), "{with}");
+        assert!(
+            with.contains("weak signal"),
+            "reviewed must stay labelled as weak, or the two read as equivalent: {with}"
+        );
+        assert!(
+            !with.contains(" 3 "),
+            "the two counts are never added: {with}"
+        );
+        assert!(!with.contains("not measured"), "{with}");
+
+        let without = audit_mode_note(trellis_trail::ModeCounts::default());
+        assert!(without.contains("not measured"), "{without}");
+        assert!(
+            without.contains("--cov-report=json"),
+            "and it must say how to get a real number: {without}"
+        );
+
+        // Past the label column, as `Probe::report`'s guard does: `callers:`
+        // is padded to align with `coverage:` on purpose, and the defect is a
+        // run of spaces inside a sentence.
+        for text in [with, without] {
+            for line in text.lines() {
+                let body = line.split_once(':').map_or(line, |(_, r)| r).trim_start();
+                assert!(!body.contains("  "), "folded indentation: {body:?}");
+            }
         }
     }
 

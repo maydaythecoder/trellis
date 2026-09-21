@@ -168,14 +168,9 @@ it.
 
 ### Buildable now
 
-4. **Coverage mapping, so `Verified` stops being 0.** The largest remaining
-   code item and the one with the most product value. S3's distinction is
-   structurally right and empirically empty: the type forbids collapsing
-   `Verified` and `Reviewed`, and nothing populates either, so every trail
-   records `0/0` and the approval prompt has to explain that the zero means
-   "not measured". Deriving which tests cover which call sites from
-   `pytest --cov` data would populate it honestly and close the v0.2 gate row
-   that reads *"Partial — no coverage mapping exists"*.
+4. ~~Coverage mapping, so `Verified` stops being 0.~~ **Done.** Real counts
+   from `coverage.json` over the callers of what changed. The v0.2 gate row
+   moves from Partial to Yes.
 
 5. **Governance conflict escalation** — v0.3's one open gate item. Ranking
    works; detecting that a failure is a *conflict* rather than a mistake needs
@@ -314,6 +309,52 @@ which is how all seven were caught. Every previous fix added a local
 assertion; this one guards the whole report at once: no line may carry a
 double space past its label column, checked across probe states, and
 mutation-verified by reintroducing a folded string.
+
+## `Verified` stops being 0
+
+The one buildable item left after the gate, and the largest remaining piece of
+product value. S3's distinction was structurally right and empirically empty:
+the type forbade collapsing `Verified` and `Reviewed`, and nothing populated
+either, so every trail recorded `0/0` and every surface had to explain that the
+zero meant *not measured*.
+
+**TRELLIS does not run coverage.** It reads `coverage.json` if the repository's
+own test command produced one. Owning the invocation means guessing at
+`pytest --cov=<what?>`, a plugin the user may not have, and a flag set that
+differs per project; the contract is a file format instead — coverage.py's JSON
+report, which `pytest-cov` and bare `coverage` both emit.
+
+**The population is the callers**, not the changed files and not the
+repository: call sites reaching a symbol defined in a file the run changed,
+deduplicated, because one site reaching two changed symbols is one caller.
+That is what "the callers still work" is a claim about.
+
+Demonstrated on a fixture built so the answer is checkable by hand — one caller
+the tests execute, one they do not:
+
+```
+mode_counts: {'verified': 2, 'reviewed': 1}
+```
+
+`util.py:6` and `run_tests.py:2` ran; `util.py:10`, inside a function nothing
+calls, did not. **A `def` line executing does not count**: importing a module
+runs its `def` statements, so treating that as evidence the function ran would
+make `Verified` meaningless. The parser was written against real coverage.py
+7.16.1 output, and the fixture in its tests is captured from that rather than
+written by hand.
+
+Three things worth carrying:
+
+- **The counts are still never summed.** `ModeCounts` has no `total()`, and the
+  rendered line is asserted not to contain their sum.
+- **No coverage data is not an error.** Coverage strengthens a claim, so its
+  absence weakens the claim rather than failing the run — the opposite of a
+  governance rule, which must be an error precisely because it cannot go quiet.
+- **The note now prints at every approval.** It was nested inside the
+  unresolved-edges block, so a repository with nothing unresolved saw nothing —
+  while the comment directly above it said "printed unconditionally". Found by
+  running it, on a fixture where everything resolves. A clean coverage line is
+  exactly when someone is most likely to read "converged" as "tested".
 
 ## The gate, run
 
@@ -848,7 +889,7 @@ support, in the document a reader consults to find out.
 | **Tier 3 works**: a model with no native tool calling completes a task under harness-side constraint | **Descoped by ADR 0013** (accepted 2026-09-19), which states plainly that "v0.2 ships tier 2 and tier 4, not tier 3". llguidance is the grammar engine *inside* llama.cpp, vLLM and SGLang, so for every local runtime a user actually has, tier 2 delivers the identical grammar artifact to the identical engine. Tier 3's marginal value is confined to runtimes exposing logits without guided decoding. `AdapterTier::HarnessConstrained` stays in the enum so the set of tiers `doctor` can report is closed |
 | Budgets enforce; exceeding one escalates then rolls back | **Yes** |
 | `trellis doctor` reports the active tier and what degrades | **Yes** |
-| `Verified` and `Reviewed` tracked separately and shown at approval | **Partial.** The type forbids collapsing them (no `total()`), and every trail records `0/0`. No coverage mapping exists, so nothing ever populates them |
+| `Verified` and `Reviewed` tracked separately and shown at approval | **Yes**, as of 2026-09-20. Populated from `coverage.json` when the repository's test command produces one, over the callers of what changed; shown at every approval, not only when something is unresolved. Still never summed — `ModeCounts` has no `total()`. With no coverage data the counts are 0 and the prompt says that means *not measured* |
 | Instrumentation: iterations, tokens, wall-clock, **context fill** | **Yes**, as of 2026-09-20. Context fill was not measured anywhere; each turn now records the prompt that produced it, in bytes, and the trail records first, peak and turns measured |
 
 ### The one that matters, and the one that was a bookkeeping error

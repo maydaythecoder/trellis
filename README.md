@@ -89,20 +89,37 @@ them into one reassuring number.
 
 ### What TRELLIS reports today, exactly
 
-**`Verified` is currently always 0, and that means "not measured" — not
-"nothing is verified."**
+**It reports real counts when your test run produced coverage data, and
+labels the zero when it did not.**
 
-Mapping which tests cover which call sites is not built. Your test suite does
-run, and a failing suite still blocks convergence — the grounding contract is
-intact and a run cannot converge without an executed check that passed. What
-is missing is the attribution: TRELLIS cannot yet tell you *which* of the call
-sites in the blast radius your tests actually exercised.
+```
+callers:  2 verified by an executed test, 1 reviewed only.
+          Reviewed means no test covered it — a weak signal, and deliberately
+          not added to the first number.
+```
 
-So a run that converges means: the checks you configured ran and passed. It
-does not yet mean anything more specific than that, and the trail records
-`0 verified, 0 reviewed` rather than inventing a figure. When the mapping is
-built the numbers will be populated from coverage data; until then the zeros
-are an honest absence and are labelled as one.
+The population is the **callers** — call sites reaching a symbol defined in a
+file the run changed — because that is what "the callers still work" is a
+claim about. Not the changed files, and not the repository.
+
+TRELLIS does not run coverage itself. It reads `coverage.json` if your test
+run produced one, which means adding `--cov-report=json` to the test command
+you already configured. Owning the invocation would mean guessing at
+`pytest --cov=<what?>`, a plugin you may not have, and a flag set that differs
+per project; the contract here is a file format instead.
+
+With no coverage data you get this, and the label is the point:
+
+```
+verified: 0 — not measured, which is not the same as nothing being verified.
+          Your checks ran and passed; a run cannot converge without that. What
+          is missing is coverage data: add --cov-report=json to the test command
+          in .trellis/config.toml and this becomes a real count.
+```
+
+A `def` line executing does not count. Importing a module runs its `def`
+statements, so treating that as evidence the function ran would make
+`Verified` meaningless — only the line holding the call itself counts.
 
 ---
 
