@@ -59,19 +59,19 @@ crate               caught  missed     score   measured at
 trellis-checks          31       2     93.9%   8850288
 trellis-model           29       6     82.9%   8850288
 trellis-trail           98      22     81.7%   8850288
+trellis-index          291      92     76.0%   8850288
 trellis-loop           123      57     68.3%   8850288
 trellis-vcs             16      11     59.3%   8850288
 trellis-core             5       5     50.0%   8850288
-                       302     103     74.6%
+                       593     195     75.2%
 
-trellis-index                                  running
 trellis-cli                                    not run — see below
 ```
 
-**This is not a workspace score yet.** Two crates are missing and they are the
-two largest: `trellis-index` is in flight, and `trellis-cli` has not been run
-here because both whole-workspace attempts covered it and the figures are in
-`docs/bench/mutants-486fff1/`.
+**Seven of eight crates, 75.2% as self-test scores.** `trellis-cli` is not run
+here: both whole-workspace attempts covered it, and its figures are in
+`docs/bench/mutants-486fff1/`. Total wall time for the seven was under an
+hour, against two whole-workspace attempts that were killed after far longer.
 
 ## What the numbers are worth, per crate
 

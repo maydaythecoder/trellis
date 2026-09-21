@@ -1,0 +1,59 @@
+crates/trellis-index/src/graph.rs:116:9: replace Target::symbols -> &[SymbolId] with Vec::leak(vec![Default::default()])
+crates/trellis-index/src/graph.rs:278:9: replace Index::outgoing -> impl Iterator<Item =&Edge> with ::std::iter::once(Box::leak(Box::new(Default::default())))
+crates/trellis-index/src/graph.rs:289:9: replace Index::incoming -> impl Iterator<Item =&Edge> with ::std::iter::once(Box::leak(Box::new(Default::default())))
+crates/trellis-index/src/incremental.rs:46:9: replace Session::open -> Self with Default::default()
+crates/trellis-index/src/incremental.rs:50:9: replace Session::from_sources -> Self with Default::default()
+crates/trellis-index/src/incremental.rs:112:5: replace input_edit -> InputEdit with Default::default()
+crates/trellis-index/src/parse.rs:140:9: delete match arm 1 in type_head
+crates/trellis-index/src/parse.rs:187:5: replace collect_with_tree -> (FileFacts, Option<tree_sitter::Tree>) with (Default::default(), Some(Default::default()))
+crates/trellis-index/src/parse.rs:422:25: replace && with || in collect_params
+crates/trellis-index/src/parse.rs:423:25: replace && with || in collect_params
+crates/trellis-index/src/parse.rs:449:9: replace && with || in in_class_body
+crates/trellis-index/src/parse.rs:476:5: replace import_fact -> ImportFact with Default::default()
+crates/trellis-index/src/parse.rs:533:9: replace && with || in import_fact
+crates/trellis-index/src/parse.rs:534:9: replace && with || in import_fact
+crates/trellis-index/src/parse.rs:543:5: replace callee_shape -> CalleeShape with Default::default()
+crates/trellis-index/src/radius.rs:71:9: replace RadiusCoverage::reasons_by_frequency -> Vec<(Reason, u32)> with vec![(Default::default(), 0)]
+crates/trellis-index/src/radius.rs:71:9: replace RadiusCoverage::reasons_by_frequency -> Vec<(Reason, u32)> with vec![(Default::default(), 1)]
+crates/trellis-index/src/radius.rs:170:5: replace blast_radius -> RadiusReport with Default::default()
+crates/trellis-index/src/radius.rs:214:17: replace && with || in blast_radius
+crates/trellis-index/src/radius.rs:579:5: replace file_ids -> (HashSet<FileId>, u32) with (HashSet::from_iter([Default::default()]), 0)
+crates/trellis-index/src/radius.rs:579:5: replace file_ids -> (HashSet<FileId>, u32) with (HashSet::from_iter([Default::default()]), 1)
+crates/trellis-index/src/radius.rs:613:5: replace callers_of_files -> Vec<CallerSite> with vec![Default::default()]
+crates/trellis-index/src/resolve.rs:506:13: replace && with || in build_from_facts
+crates/trellis-index/src/resolve.rs:826:5: replace lookup_module -> Option<FileId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:851:5: replace external_or_unresolvable -> ImportBinding with Default::default()
+crates/trellis-index/src/resolve.rs:866:5: replace enclosing_symbol -> Option<SymbolId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:901:9: replace Resolver<'_>::resolve -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:912:9: replace Resolver<'_>::resolve_name -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:977:9: replace Resolver<'_>::find_class -> Option<SymbolId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:988:21: replace && with || in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:1010:17: replace && with || in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:986:21: replace && with || in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:1089:9: replace Resolver<'_>::lookup_method -> MethodLookup with Default::default()
+crates/trellis-index/src/resolve.rs:1161:9: replace Resolver<'_>::method_outcome -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::from_iter([[Default::default(); 4]])
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::new([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::from([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1190:21: replace && with || in Resolver<'_>::overriding_subclasses
+crates/trellis-index/src/resolve.rs:1221:9: replace Resolver<'_>::typed_receiver -> Option<Outcome> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::from_iter([[Default::default(); 4]])
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::new([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1307:9: replace Resolver<'_>::resolve_attribute -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::from([Default::default(); 4])
+crates/trellis-index/src/resolve.rs:1329:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1328:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1326:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1327:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1343:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1360:13: replace && with || in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1410:9: replace Resolver<'_>::enclosing_class_symbol -> Option<SymbolId> with Some(Default::default())
+crates/trellis-index/src/resolve.rs:1434:9: replace Resolver<'_>::outcome_of_bindings -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1442:9: replace Resolver<'_>::attr_of_bindings -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1452:9: replace Resolver<'_>::attr_of_bound -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1487:9: replace Resolver<'_>::follow -> Bound with Default::default()
+crates/trellis-index/src/resolve.rs:1508:9: replace Resolver<'_>::lookup_in_module -> Bound with Default::default()
+crates/trellis-index/src/resolve.rs:1555:9: replace Resolver<'_>::emit -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1563:9: replace Resolver<'_>::collapse -> Outcome with Default::default()
+crates/trellis-index/src/resolve.rs:1579:5: replace merge_bounds -> Bound with Default::default()
+crates/trellis-index/src/resolve.rs:1607:5: replace merge_outcomes -> Outcome with Default::default()

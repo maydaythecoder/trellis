@@ -1,0 +1,2 @@
+crates/trellis-index/src/incremental.rs:118:15: replace += with *= in input_edit
+crates/trellis-index/src/incremental.rs:124:16: replace += with *= in input_edit

@@ -1,0 +1,291 @@
+crates/trellis-index/src/cache.rs:55:5: replace fingerprint -> u64 with 0
+crates/trellis-index/src/cache.rs:55:5: replace fingerprint -> u64 with 1
+crates/trellis-index/src/cache.rs:69:5: replace save -> std::io::Result<usize> with Ok(0)
+crates/trellis-index/src/cache.rs:69:5: replace save -> std::io::Result<usize> with Ok(1)
+crates/trellis-index/src/cache.rs:100:5: replace ignore_the_blob -> std::io::Result<()> with Ok(())
+crates/trellis-index/src/cache.rs:137:21: replace != with == in load
+crates/trellis-index/src/cache.rs:137:59: replace != with == in load
+crates/trellis-index/src/cache.rs:137:39: replace || with && in load
+crates/trellis-index/src/coverage.rs:37:9: replace Coverage::total -> u32 with 0
+crates/trellis-index/src/cache.rs:135:5: replace load -> Option<Index> with Some(Default::default())
+crates/trellis-index/src/cache.rs:135:5: replace load -> Option<Index> with None
+crates/trellis-index/src/coverage.rs:37:9: replace Coverage::total -> u32 with 1
+crates/trellis-index/src/coverage.rs:37:41: replace + with - in Coverage::total
+crates/trellis-index/src/coverage.rs:37:23: replace + with * in Coverage::total
+crates/trellis-index/src/coverage.rs:37:23: replace + with - in Coverage::total
+crates/trellis-index/src/coverage.rs:37:41: replace + with * in Coverage::total
+crates/trellis-index/src/coverage.rs:47:9: replace Coverage::resolved_fraction -> Option<f64> with None
+crates/trellis-index/src/coverage.rs:47:9: replace Coverage::resolved_fraction -> Option<f64> with Some(0.0)
+crates/trellis-index/src/coverage.rs:47:9: replace Coverage::resolved_fraction -> Option<f64> with Some(1.0)
+crates/trellis-index/src/coverage.rs:47:9: replace Coverage::resolved_fraction -> Option<f64> with Some(-1.0)
+crates/trellis-index/src/coverage.rs:48:16: replace > with == in Coverage::resolved_fraction
+crates/trellis-index/src/coverage.rs:48:16: replace > with < in Coverage::resolved_fraction
+crates/trellis-index/src/coverage.rs:48:16: replace > with >= in Coverage::resolved_fraction
+crates/trellis-index/src/coverage.rs:48:54: replace / with % in Coverage::resolved_fraction
+crates/trellis-index/src/coverage.rs:48:54: replace / with * in Coverage::resolved_fraction
+crates/trellis-index/src/coverage.rs:52:9: replace Coverage::record_resolved with ()
+crates/trellis-index/src/coverage.rs:52:23: replace += with -= in Coverage::record_resolved
+crates/trellis-index/src/coverage.rs:52:23: replace += with *= in Coverage::record_resolved
+crates/trellis-index/src/coverage.rs:56:9: replace Coverage::record_candidates with ()
+crates/trellis-index/src/coverage.rs:56:25: replace += with -= in Coverage::record_candidates
+crates/trellis-index/src/coverage.rs:56:25: replace += with *= in Coverage::record_candidates
+crates/trellis-index/src/coverage.rs:60:9: replace Coverage::record_unresolved with ()
+crates/trellis-index/src/coverage.rs:60:25: replace += with -= in Coverage::record_unresolved
+crates/trellis-index/src/coverage.rs:60:25: replace += with *= in Coverage::record_unresolved
+crates/trellis-index/src/coverage.rs:61:47: replace += with -= in Coverage::record_unresolved
+crates/trellis-index/src/coverage.rs:61:47: replace += with *= in Coverage::record_unresolved
+crates/trellis-index/src/coverage.rs:67:9: replace Coverage::record_external with ()
+crates/trellis-index/src/coverage.rs:67:23: replace += with -= in Coverage::record_external
+crates/trellis-index/src/coverage.rs:67:23: replace += with *= in Coverage::record_external
+crates/trellis-index/src/coverage.rs:73:9: replace Coverage::merge with ()
+crates/trellis-index/src/coverage.rs:73:23: replace += with -= in Coverage::merge
+crates/trellis-index/src/coverage.rs:73:23: replace += with *= in Coverage::merge
+crates/trellis-index/src/coverage.rs:75:25: replace += with -= in Coverage::merge
+crates/trellis-index/src/coverage.rs:75:25: replace += with *= in Coverage::merge
+crates/trellis-index/src/coverage.rs:76:23: replace += with *= in Coverage::merge
+crates/trellis-index/src/coverage.rs:78:52: replace += with -= in Coverage::merge
+crates/trellis-index/src/coverage.rs:78:52: replace += with *= in Coverage::merge
+crates/trellis-index/src/coverage.rs:87:9: replace Coverage::summary -> String with String::new()
+crates/trellis-index/src/coverage.rs:87:9: replace Coverage::summary -> String with "xyzzy".into()
+crates/trellis-index/src/graph.rs:116:9: replace Target::symbols -> &[SymbolId] with Vec::leak(Vec::new())
+crates/trellis-index/src/graph.rs:129:9: replace Target::is_certain -> bool with true
+crates/trellis-index/src/graph.rs:129:9: replace Target::is_certain -> bool with false
+crates/trellis-index/src/graph.rs:251:9: replace Index::push_edge -> usize with 0
+crates/trellis-index/src/graph.rs:267:9: replace Index::ensure_adjacency with ()
+crates/trellis-index/src/graph.rs:251:9: replace Index::push_edge -> usize with 1
+crates/trellis-index/src/graph.rs:267:30: replace + with - in Index::ensure_adjacency
+crates/trellis-index/src/graph.rs:267:30: replace + with * in Index::ensure_adjacency
+crates/trellis-index/src/graph.rs:268:31: replace < with > in Index::ensure_adjacency
+crates/trellis-index/src/graph.rs:268:31: replace < with == in Index::ensure_adjacency
+crates/trellis-index/src/graph.rs:271:31: replace < with == in Index::ensure_adjacency
+crates/trellis-index/src/graph.rs:271:31: replace < with > in Index::ensure_adjacency
+crates/trellis-index/src/graph.rs:278:9: replace Index::outgoing -> impl Iterator<Item =&Edge> with ::std::iter::empty()
+crates/trellis-index/src/graph.rs:289:9: replace Index::incoming -> impl Iterator<Item =&Edge> with ::std::iter::empty()
+crates/trellis-index/src/graph.rs:301:9: replace Index::is_partitionable -> bool with false
+crates/trellis-index/src/graph.rs:301:9: replace Index::is_partitionable -> bool with true
+crates/trellis-index/src/incremental.rs:70:9: replace Session::index -> &Index with Box::leak(Box::new(Default::default()))
+crates/trellis-index/src/incremental.rs:85:9: replace Session::try_update -> bool with true
+crates/trellis-index/src/incremental.rs:85:9: replace Session::try_update -> bool with false
+crates/trellis-index/src/incremental.rs:85:63: replace == with != in Session::try_update
+crates/trellis-index/src/incremental.rs:117:30: replace && with || in input_edit
+crates/trellis-index/src/incremental.rs:117:17: replace < with == in input_edit
+crates/trellis-index/src/incremental.rs:117:17: replace < with > in input_edit
+crates/trellis-index/src/incremental.rs:117:17: replace < with <= in input_edit
+crates/trellis-index/src/incremental.rs:117:43: replace == with != in input_edit
+crates/trellis-index/src/incremental.rs:118:15: replace += with -= in input_edit
+crates/trellis-index/src/incremental.rs:122:33: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:123:31: replace && with || in input_edit
+crates/trellis-index/src/incremental.rs:122:33: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:123:18: replace < with == in input_edit
+crates/trellis-index/src/incremental.rs:123:18: replace < with <= in input_edit
+crates/trellis-index/src/incremental.rs:123:18: replace < with > in input_edit
+crates/trellis-index/src/incremental.rs:123:60: replace == with != in input_edit
+crates/trellis-index/src/incremental.rs:123:50: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:123:46: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:123:46: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:123:50: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:123:79: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:123:79: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:123:75: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:123:75: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:124:16: replace += with -= in input_edit
+crates/trellis-index/src/incremental.rs:127:28: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:127:28: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:128:28: replace - with + in input_edit
+crates/trellis-index/src/incremental.rs:128:28: replace - with / in input_edit
+crates/trellis-index/src/incremental.rs:143:42: replace == with != in point_at
+crates/trellis-index/src/incremental.rs:142:5: replace point_at -> Point with Default::default()
+crates/trellis-index/src/incremental.rs:144:50: replace == with != in point_at
+crates/trellis-index/src/incremental.rs:145:31: replace - with + in point_at
+crates/trellis-index/src/incremental.rs:145:31: replace - with / in point_at
+crates/trellis-index/src/incremental.rs:145:26: replace - with + in point_at
+crates/trellis-index/src/parse.rs:129:5: replace type_head -> Option<String> with None
+crates/trellis-index/src/parse.rs:129:5: replace type_head -> Option<String> with Some(String::new())
+crates/trellis-index/src/parse.rs:129:5: replace type_head -> Option<String> with Some("xyzzy".into())
+crates/trellis-index/src/parse.rs:129:56: replace == with != in type_head
+crates/trellis-index/src/parse.rs:129:44: replace == with != in type_head
+crates/trellis-index/src/parse.rs:137:21: delete ! in type_head
+crates/trellis-index/src/parse.rs:137:41: replace != with == in type_head
+crates/trellis-index/src/parse.rs:146:12: delete ! in type_head
+crates/trellis-index/src/parse.rs:148:42: replace || with && in type_head
+crates/trellis-index/src/parse.rs:161:5: replace parser -> tree_sitter::Parser with Default::default()
+crates/trellis-index/src/parse.rs:174:5: replace collect -> FileFacts with Default::default()
+crates/trellis-index/src/parse.rs:187:5: replace collect_with_tree -> (FileFacts, Option<tree_sitter::Tree>) with (Default::default(), None)
+crates/trellis-index/src/parse.rs:198:5: replace text -> &'a str with ""
+crates/trellis-index/src/parse.rs:198:5: replace text -> &'a str with "xyzzy"
+crates/trellis-index/src/parse.rs:202:5: replace walk with ()
+crates/trellis-index/src/parse.rs:205:13: delete match arm "function_definition" | "class_definition" in walk
+crates/trellis-index/src/parse.rs:237:13: delete match arm "import_statement" | "import_from_statement" in walk
+crates/trellis-index/src/parse.rs:240:13: delete match arm "call" in walk
+crates/trellis-index/src/parse.rs:256:13: delete match arm "for_statement" | "for_in_clause" in walk
+crates/trellis-index/src/parse.rs:249:13: delete match arm "assignment" | "augmented_assignment" in walk
+crates/trellis-index/src/parse.rs:263:13: delete match arm "as_pattern" in walk
+crates/trellis-index/src/parse.rs:274:13: delete match arm "named_expression" in walk
+crates/trellis-index/src/parse.rs:211:44: replace == with != in walk
+crates/trellis-index/src/parse.rs:283:13: delete match arm "lambda" in walk
+crates/trellis-index/src/parse.rs:296:5: replace base_classes -> Vec<String> with vec![String::new()]
+crates/trellis-index/src/parse.rs:296:5: replace base_classes -> Vec<String> with vec![]
+crates/trellis-index/src/parse.rs:296:19: replace != with == in base_classes
+crates/trellis-index/src/parse.rs:296:5: replace base_classes -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-index/src/parse.rs:306:30: replace != with == in base_classes
+crates/trellis-index/src/parse.rs:330:5: replace collect_assigned_type with ()
+crates/trellis-index/src/parse.rs:331:9: delete match arm "identifier" in collect_assigned_type
+crates/trellis-index/src/parse.rs:332:9: delete match arm "attribute" in collect_assigned_type
+crates/trellis-index/src/parse.rs:348:29: replace != with == in collect_assigned_type
+crates/trellis-index/src/parse.rs:336:17: delete match arm (Some("self"), Some(a), Some(class_scope)) in collect_assigned_type
+crates/trellis-index/src/parse.rs:371:5: replace enclosing_class_scope -> Option<Vec<String>> with None
+crates/trellis-index/src/parse.rs:371:5: replace enclosing_class_scope -> Option<Vec<String>> with Some(vec!["xyzzy".into()])
+crates/trellis-index/src/parse.rs:371:18: replace >= with < in enclosing_class_scope
+crates/trellis-index/src/parse.rs:371:52: replace - with + in enclosing_class_scope
+crates/trellis-index/src/parse.rs:371:52: replace - with / in enclosing_class_scope
+crates/trellis-index/src/parse.rs:385:5: replace collect_bound_names with ()
+crates/trellis-index/src/parse.rs:386:9: delete match arm "identifier" in collect_bound_names
+crates/trellis-index/src/parse.rs:408:13: delete match arm "identifier" in collect_params
+crates/trellis-index/src/parse.rs:405:5: replace collect_params with ()
+crates/trellis-index/src/parse.rs:434:13: delete match arm "list_splat_pattern" | "dictionary_splat_pattern" in collect_params
+crates/trellis-index/src/parse.rs:414:13: delete match arm "typed_parameter" | "default_parameter" | "typed_default_parameter" in collect_params
+crates/trellis-index/src/parse.rs:447:5: replace in_class_body -> bool with true
+crates/trellis-index/src/parse.rs:422:37: replace == with != in collect_params
+crates/trellis-index/src/parse.rs:447:5: replace in_class_body -> bool with false
+crates/trellis-index/src/parse.rs:449:21: replace == with != in in_class_body
+crates/trellis-index/src/parse.rs:454:30: replace == with != in in_class_body
+crates/trellis-index/src/parse.rs:456:35: replace == with != in in_class_body
+crates/trellis-index/src/parse.rs:461:5: replace decorators_of -> Vec<String> with vec![]
+crates/trellis-index/src/parse.rs:461:5: replace decorators_of -> Vec<String> with vec![String::new()]
+crates/trellis-index/src/parse.rs:464:22: replace != with == in decorators_of
+crates/trellis-index/src/parse.rs:461:5: replace decorators_of -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-index/src/parse.rs:470:30: replace == with != in decorators_of
+crates/trellis-index/src/parse.rs:493:13: delete match arm "wildcard_import" in import_fact
+crates/trellis-index/src/parse.rs:500:13: delete match arm "dotted_name" | "aliased_import" in import_fact
+crates/trellis-index/src/parse.rs:502:55: replace == with != in import_fact
+crates/trellis-index/src/parse.rs:497:60: replace == with != in import_fact
+crates/trellis-index/src/parse.rs:505:53: replace == with != in import_fact
+crates/trellis-index/src/parse.rs:532:20: replace == with != in import_fact
+crates/trellis-index/src/parse.rs:547:9: delete match arm "identifier" in callee_shape
+crates/trellis-index/src/radius.rs:66:9: replace RadiusCoverage::reached -> u32 with 0
+crates/trellis-index/src/parse.rs:548:9: delete match arm "attribute" in callee_shape
+crates/trellis-index/src/radius.rs:66:9: replace RadiusCoverage::reached -> u32 with 1
+crates/trellis-index/src/radius.rs:66:31: replace + with * in RadiusCoverage::reached
+crates/trellis-index/src/radius.rs:71:9: replace RadiusCoverage::reasons_by_frequency -> Vec<(Reason, u32)> with vec![]
+crates/trellis-index/src/radius.rs:78:9: replace RadiusCoverage::files_by_doubt -> Vec<(&str, u32)> with vec![]
+crates/trellis-index/src/radius.rs:78:9: replace RadiusCoverage::files_by_doubt -> Vec<(&str, u32)> with vec![("", 0)]
+crates/trellis-index/src/radius.rs:78:9: replace RadiusCoverage::files_by_doubt -> Vec<(&str, u32)> with vec![("", 1)]
+crates/trellis-index/src/radius.rs:78:9: replace RadiusCoverage::files_by_doubt -> Vec<(&str, u32)> with vec![("xyzzy", 0)]
+crates/trellis-index/src/radius.rs:78:9: replace RadiusCoverage::files_by_doubt -> Vec<(&str, u32)> with vec![("xyzzy", 1)]
+crates/trellis-index/src/radius.rs:88:9: replace RadiusCoverage::summary -> String with String::new()
+crates/trellis-index/src/radius.rs:88:9: replace RadiusCoverage::summary -> String with "xyzzy".into()
+crates/trellis-index/src/radius.rs:88:65: replace == with != in RadiusCoverage::summary
+crates/trellis-index/src/radius.rs:88:27: replace == with != in RadiusCoverage::summary
+crates/trellis-index/src/radius.rs:107:9: replace RadiusCoverage::record_resolved with ()
+crates/trellis-index/src/radius.rs:107:31: replace += with -= in RadiusCoverage::record_resolved
+crates/trellis-index/src/radius.rs:107:31: replace += with *= in RadiusCoverage::record_resolved
+crates/trellis-index/src/radius.rs:115:9: replace RadiusCoverage::record_unbound with ()
+crates/trellis-index/src/radius.rs:115:39: replace += with -= in RadiusCoverage::record_unbound
+crates/trellis-index/src/radius.rs:115:39: replace += with *= in RadiusCoverage::record_unbound
+crates/trellis-index/src/radius.rs:116:47: replace += with *= in RadiusCoverage::record_unbound
+crates/trellis-index/src/radius.rs:116:47: replace += with -= in RadiusCoverage::record_unbound
+crates/trellis-index/src/radius.rs:117:60: replace += with -= in RadiusCoverage::record_unbound
+crates/trellis-index/src/radius.rs:117:60: replace += with *= in RadiusCoverage::record_unbound
+crates/trellis-index/src/radius.rs:253:5: replace add_touched_file_misses with ()
+crates/trellis-index/src/radius.rs:525:9: replace FileDoubt::one_line -> String with String::new()
+crates/trellis-index/src/radius.rs:525:9: replace FileDoubt::one_line -> String with "xyzzy".into()
+crates/trellis-index/src/radius.rs:526:25: replace == with != in FileDoubt::one_line
+crates/trellis-index/src/radius.rs:563:9: replace FileDoubt::unexamined -> u32 with 0
+crates/trellis-index/src/radius.rs:563:9: replace FileDoubt::unexamined -> u32 with 1
+crates/trellis-index/src/radius.rs:579:5: replace file_ids -> (HashSet<FileId>, u32) with (HashSet::new(), 0)
+crates/trellis-index/src/radius.rs:579:5: replace file_ids -> (HashSet<FileId>, u32) with (HashSet::new(), 1)
+crates/trellis-index/src/radius.rs:613:5: replace callers_of_files -> Vec<CallerSite> with vec![]
+crates/trellis-index/src/radius.rs:618:12: delete ! in callers_of_files
+crates/trellis-index/src/radius.rs:625:16: delete ! in callers_of_files
+crates/trellis-index/src/radius.rs:644:5: replace doubt_in_files -> FileDoubt with Default::default()
+crates/trellis-index/src/radius.rs:649:9: delete field files_named from struct FileDoubt expression in doubt_in_files
+crates/trellis-index/src/radius.rs:658:12: delete ! in doubt_in_files
+crates/trellis-index/src/radius.rs:650:9: delete field files_examined from struct FileDoubt expression in doubt_in_files
+crates/trellis-index/src/radius.rs:661:19: replace += with -= in doubt_in_files
+crates/trellis-index/src/radius.rs:661:19: replace += with *= in doubt_in_files
+crates/trellis-index/src/radius.rs:662:45: replace += with -= in doubt_in_files
+crates/trellis-index/src/radius.rs:662:45: replace += with *= in doubt_in_files
+crates/trellis-index/src/resolve.rs:367:5: replace key -> String with String::new()
+crates/trellis-index/src/resolve.rs:367:5: replace key -> String with "xyzzy".into()
+crates/trellis-index/src/resolve.rs:393:5: replace module_path_of -> String with String::new()
+crates/trellis-index/src/resolve.rs:393:5: replace module_path_of -> String with "xyzzy".into()
+crates/trellis-index/src/resolve.rs:396:17: replace == with != in module_path_of
+crates/trellis-index/src/resolve.rs:471:5: replace build_from_sources -> Index with Default::default()
+crates/trellis-index/src/resolve.rs:490:5: replace build_from_facts -> Index with Default::default()
+crates/trellis-index/src/resolve.rs:510:60: delete ! in build_from_facts
+crates/trellis-index/src/resolve.rs:506:16: delete ! in build_from_facts
+crates/trellis-index/src/resolve.rs:543:46: delete ! in build_from_facts
+crates/trellis-index/src/resolve.rs:552:16: delete ! in build_from_facts
+crates/trellis-index/src/resolve.rs:565:21: replace += with *= in build_from_facts
+crates/trellis-index/src/resolve.rs:565:21: replace += with -= in build_from_facts
+crates/trellis-index/src/resolve.rs:566:27: replace == with != in build_from_facts
+crates/trellis-index/src/resolve.rs:600:43: replace && with || in build_from_facts
+crates/trellis-index/src/resolve.rs:600:57: replace == with != in build_from_facts
+crates/trellis-index/src/resolve.rs:600:38: replace == with != in build_from_facts
+crates/trellis-index/src/resolve.rs:688:54: replace - with + in build_from_facts
+crates/trellis-index/src/resolve.rs:715:25: replace += with -= in build_from_facts
+crates/trellis-index/src/resolve.rs:715:25: replace += with *= in build_from_facts
+crates/trellis-index/src/resolve.rs:768:5: replace is_transparent -> bool with true
+crates/trellis-index/src/resolve.rs:768:5: replace is_transparent -> bool with false
+crates/trellis-index/src/resolve.rs:782:5: replace package_of -> String with String::new()
+crates/trellis-index/src/resolve.rs:782:5: replace package_of -> String with "xyzzy".into()
+crates/trellis-index/src/resolve.rs:800:5: replace absolute_module -> String with String::new()
+crates/trellis-index/src/resolve.rs:800:5: replace absolute_module -> String with "xyzzy".into()
+crates/trellis-index/src/resolve.rs:800:14: replace == with != in absolute_module
+crates/trellis-index/src/resolve.rs:818:5: replace join_module -> String with String::new()
+crates/trellis-index/src/resolve.rs:818:5: replace join_module -> String with "xyzzy".into()
+crates/trellis-index/src/resolve.rs:826:5: replace lookup_module -> Option<FileId> with None
+crates/trellis-index/src/resolve.rs:866:5: replace enclosing_symbol -> Option<SymbolId> with None
+crates/trellis-index/src/resolve.rs:852:8: delete ! in external_or_unresolvable
+crates/trellis-index/src/resolve.rs:934:44: replace == with != in Resolver<'_>::resolve_name
+crates/trellis-index/src/resolve.rs:939:24: delete ! in Resolver<'_>::resolve_name
+crates/trellis-index/src/resolve.rs:944:32: replace == with != in Resolver<'_>::resolve_name
+crates/trellis-index/src/resolve.rs:977:9: replace Resolver<'_>::find_class -> Option<SymbolId> with None
+crates/trellis-index/src/resolve.rs:978:68: replace == with != in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:1002:39: replace == with != in Resolver<'_>::find_class
+crates/trellis-index/src/resolve.rs:1035:9: replace Resolver<'_>::type_is_demonstrably_external -> bool with true
+crates/trellis-index/src/resolve.rs:1035:9: replace Resolver<'_>::type_is_demonstrably_external -> bool with false
+crates/trellis-index/src/resolve.rs:1055:28: replace match guard !binds.is_empty() with false in Resolver<'_>::type_is_demonstrably_external
+crates/trellis-index/src/resolve.rs:1055:28: delete ! in Resolver<'_>::type_is_demonstrably_external
+crates/trellis-index/src/resolve.rs:1061:32: replace && with || in Resolver<'_>::type_is_demonstrably_external
+crates/trellis-index/src/resolve.rs:1061:18: delete ! in Resolver<'_>::type_is_demonstrably_external
+crates/trellis-index/src/resolve.rs:1067:9: replace Resolver<'_>::stated_type -> Option<String> with None
+crates/trellis-index/src/resolve.rs:1067:9: replace Resolver<'_>::stated_type -> Option<String> with Some(String::new())
+crates/trellis-index/src/resolve.rs:1067:9: replace Resolver<'_>::stated_type -> Option<String> with Some("xyzzy".into())
+crates/trellis-index/src/resolve.rs:1072:35: replace == with != in Resolver<'_>::stated_type
+crates/trellis-index/src/resolve.rs:1089:12: delete ! in Resolver<'_>::lookup_method
+crates/trellis-index/src/resolve.rs:1089:44: replace == with != in Resolver<'_>::lookup_method
+crates/trellis-index/src/resolve.rs:1113:17: delete match arm 1 in Resolver<'_>::lookup_method
+crates/trellis-index/src/resolve.rs:1127:50: replace - with + in Resolver<'_>::lookup_method
+crates/trellis-index/src/resolve.rs:1151:13: delete match arm 1 in Resolver<'_>::lookup_method
+crates/trellis-index/src/resolve.rs:1150:13: delete match arm 0 in Resolver<'_>::lookup_method
+crates/trellis-index/src/resolve.rs:1180:9: replace Resolver<'_>::overriding_subclasses -> SmallVec<[SymbolId; 4]> with SmallVec::new()
+crates/trellis-index/src/resolve.rs:1185:20: delete ! in Resolver<'_>::overriding_subclasses
+crates/trellis-index/src/resolve.rs:1221:9: replace Resolver<'_>::typed_receiver -> Option<Outcome> with None
+crates/trellis-index/src/resolve.rs:1255:13: delete match arm MethodLookup::One{owner, ..} in Resolver<'_>::typed_receiver
+crates/trellis-index/src/resolve.rs:1291:9: replace Resolver<'_>::import_symbols -> SmallVec<[SymbolId; 4]> with SmallVec::new()
+crates/trellis-index/src/resolve.rs:1312:27: replace || with && in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1312:17: replace == with != in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1312:35: replace == with != in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1326:16: delete ! in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1359:12: delete ! in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1366:12: delete ! in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1376:37: replace match guard self.symbols[s.index()].kind == SymbolKind::Class with false in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1376:66: replace == with != in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1380:44: replace match guard m.len() == 1 with false in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1410:9: replace Resolver<'_>::enclosing_class_symbol -> Option<SymbolId> with None
+crates/trellis-index/src/resolve.rs:1380:52: replace == with != in Resolver<'_>::resolve_attribute
+crates/trellis-index/src/resolve.rs:1417:63: replace == with != in Resolver<'_>::enclosing_class_symbol
+crates/trellis-index/src/resolve.rs:1419:34: replace == with != in Resolver<'_>::enclosing_class_symbol
+crates/trellis-index/src/resolve.rs:1422:20: delete ! in Resolver<'_>::enclosing_class_symbol
+crates/trellis-index/src/resolve.rs:1458:62: replace == with != in Resolver<'_>::attr_of_bound
+crates/trellis-index/src/resolve.rs:1458:33: replace match guard self.symbols[s.index()].kind == SymbolKind::Class with false in Resolver<'_>::attr_of_bound
+crates/trellis-index/src/resolve.rs:1465:32: replace match guard m.len() == 1 with false in Resolver<'_>::attr_of_bound
+crates/trellis-index/src/resolve.rs:1465:40: replace == with != in Resolver<'_>::attr_of_bound
+crates/trellis-index/src/resolve.rs:1480:9: replace Resolver<'_>::interned_name -> String with String::new()
+crates/trellis-index/src/resolve.rs:1480:9: replace Resolver<'_>::interned_name -> String with "xyzzy".into()
+crates/trellis-index/src/resolve.rs:1508:12: delete ! in Resolver<'_>::lookup_in_module
+crates/trellis-index/src/resolve.rs:1514:31: replace == with != in Resolver<'_>::lookup_in_module
+crates/trellis-index/src/resolve.rs:1525:22: replace == with != in Resolver<'_>::lookup_in_module
+crates/trellis-index/src/resolve.rs:1592:9: delete match arm (1, None, false) in merge_bounds
+crates/trellis-index/src/resolve.rs:1607:19: replace == with != in merge_outcomes
