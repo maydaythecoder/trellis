@@ -1,0 +1,2 @@
+crates/trellis-vcs/src/lib.rs:246:20: delete ! in reset_and_clean
+crates/trellis-vcs/src/lib.rs:353:9: replace Worktree::discard -> Result<(), VcsError> with Ok(())

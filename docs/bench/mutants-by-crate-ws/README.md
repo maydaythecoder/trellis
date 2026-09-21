@@ -51,11 +51,18 @@ cannot be read as a score again by mistake.
 
 ```
 crate            self-test    workspace    delta
-trellis-core        50.0%        70.0%     +20.0 pts     (5/5 -> 7/3, 0 timeouts)
+trellis-vcs         59.3%        92.6%     +33.3 pts     (16/11 -> 25/2)
+trellis-core        50.0%        70.0%     +20.0 pts     (5/5  -> 7/3)
 ```
 
-Same ten viable mutants both ways, which is the check that the two runs are
-comparable at all.
+Zero timeouts in both, and the same viable-mutant count each way, which is
+the check that the two runs are comparable at all.
+
+**The self-test figures were badly misleading, and `trellis-vcs` is the clear
+case.** 59.3% reads like a crate with thin tests. 92.6% is what it actually
+is: nine of its eleven survivors die the moment `trellis-cli`'s session tests
+run, because `pending`, `diff` and `discard_pending` are driven from there and
+from nowhere inside `trellis-vcs`.
 
 ### What the difference is made of
 
@@ -72,7 +79,26 @@ and `a_changed_file_set_invalidates_the_blob`. `trellis-core` has one test of
 its own and is exercised almost entirely by its dependents, which is exactly
 the shape this measurement exists to expose.
 
-### What survives even with everything running
+### `trellis-vcs`: two survivors, one of them already known
+
+```
+lib.rs:246  delete ! in reset_and_clean
+lib.rs:353  Worktree::discard -> Ok(())
+```
+
+The second is **C-002** — `Worktree` is dead code written ahead of need for
+brief 4.13, and this is the mutation evidence for a finding that was made by
+reading. Nothing calls it, so nothing can catch it.
+
+The first is triaged and deliberately not fixed. It is `if !detail.is_empty()`,
+the separator between two error strings when **both** `reset --hard` and
+`clean -fd` fail. Reaching it needs two simultaneous git failures, and the
+damage is a missing line break in a message. The rollback-failure path matters
+— it is the worst moment TRELLIS has — but what matters about it is that it is
+loud, names the worktree and gives the commands, and all three of those are
+tested. A separator is not. Class C.
+
+### `trellis-core`: what survives even with everything running
 
 ```
 ids.rs:55       RunId's Display impl -> Ok(())
