@@ -1118,3 +1118,126 @@ fn radius_reason_table_lines_up() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// init — what "Ready" is allowed to mean
+// ---------------------------------------------------------------------------
+
+/// A repository whose configured checks are commands that certainly exist.
+///
+/// `git --version` rather than `mypy --version`: `version_of` runs whatever
+/// is configured with `--version` and asks only whether it succeeded, and a
+/// test that depends on the developer having mypy installed asserts
+/// something different on every machine. That mistake is already recorded
+/// against an earlier version of the check tests.
+fn repo_with_checks(name: &str, typecheck: &str, tests: &str) -> PathBuf {
+    let d = scratch(name);
+    git(&d, &["init", "-q"]);
+    git(&d, &["config", "user.email", "t@example.invalid"]);
+    git(&d, &["config", "user.name", "t"]);
+    git(&d, &["config", "core.autocrlf", "false"]);
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!("[checks]\ntypecheck = [\"{typecheck}\"]\ntests = [\"{tests}\"]\n"),
+    )
+    .unwrap();
+    d
+}
+
+#[test]
+fn init_does_not_say_ready_when_a_prerequisite_is_missing() {
+    // The strongest claim this command makes. Without a typechecker there is
+    // no typecheck verdict, and without a verdict no run can converge — so
+    // "Ready" over a missing tool is the command reporting success for work
+    // it cannot do, which CLAUDE.md names as worse than saying it is not
+    // built yet.
+    let d = repo_with_checks(
+        "init-missing",
+        "trellis-no-such-typechecker",
+        "trellis-no-such-runner",
+    );
+    let out = run(&d, &["init"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+
+    assert!(s.contains("NOT FOUND"), "got:\n{s}");
+    assert!(
+        !s.contains("Ready."),
+        "init called a repository ready with both checks missing:\n{s}"
+    );
+    assert!(
+        s.contains("2 prerequisite(s) missing"),
+        "and it has to say how many, not merely withhold the all-clear:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn init_counts_each_missing_prerequisite_rather_than_noticing_one() {
+    // A count that saturates at one reads as a single problem and sends the
+    // user back for a second round after they fix it.
+    let d = repo_with_checks("init-one-missing", "git", "trellis-no-such-runner");
+    let s = stdout(&run(&d, &["init"]));
+    assert!(
+        s.contains("1 prerequisite(s) missing"),
+        "one missing tool must count as one:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn init_says_ready_when_both_checks_resolve() {
+    // The other direction. A command that can never say "Ready" is as
+    // useless as one that always does, and a guard asserted in one direction
+    // can be inverted for free.
+    let d = repo_with_checks("init-ready", "git", "git");
+    let out = run(&d, &["init"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+
+    assert!(s.contains("Ready."), "got:\n{s}");
+    assert!(
+        !s.contains("prerequisite(s) missing"),
+        "nothing was missing, so nothing should be reported as missing:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn init_reports_the_worktree_it_just_dirtied_instead_of_calling_it_clean() {
+    // `init` writes into `.trellis/`, so by the time it prints this line the
+    // tree it is describing is one it dirtied. Reporting "clean" there would
+    // be wrong at the moment it is printed, and wrong in the direction that
+    // matters: a run needs a clean tree so rollback is exact (ADR 0009), and
+    // the user would find that out from the run refusing instead.
+    let d = repo_with_checks("init-dirty", "git", "git");
+    let s = stdout(&run(&d, &["init"]));
+    assert!(
+        s.contains("uncommitted change(s)"),
+        "init wrote files and then called the tree clean:\n{s}"
+    );
+    assert!(
+        !s.contains("worktree   clean"),
+        "both lines cannot be true at once:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn init_calls_a_committed_worktree_clean() {
+    // And the inverse, with everything init wrote committed. Without this
+    // the line could be hardwired to "dirty" and still pass above.
+    let d = repo_with_checks("init-clean", "git", "git");
+    assert!(run(&d, &["init"]).status.success());
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "scaffold"]);
+
+    let s = stdout(&run(&d, &["init"]));
+    assert!(s.contains("worktree   clean"), "got:\n{s}");
+    assert!(
+        !s.contains("uncommitted change(s)"),
+        "nothing is uncommitted, so nothing should be reported as such:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
