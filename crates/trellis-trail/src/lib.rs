@@ -122,7 +122,7 @@ impl ModeCounts {
     }
 
     /// Deliberately returns both numbers and a label, never a single
-    /// percentage. There is no total() here on purpose.
+    /// percentage. There is no `total()` here on purpose — ADR 0003.
     pub fn summary(&self) -> String {
         format!(
             "{} verified by an executed check; {} reviewed only \

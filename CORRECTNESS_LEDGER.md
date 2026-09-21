@@ -239,6 +239,35 @@ artifacts — a TUI waiting forever for a run that was never spawned, and byte
 offsets multiplied instead of advanced being fed to tree-sitter. **Not
 confirmed**, because confirming means re-running them and the run is stopped.
 
+## Tier 2b — Truncating casts, examined
+
+Raised by the quality audit's Pass 7, which found `cast_possible_truncation`
+to be the largest pedantic category at 47 hits. Casts are not a readability
+signal, so Pass 7 left them; they are a correctness question and belong here.
+
+**Examined, and clear.** All 47 are `usize -> u32` or `usize -> u64` on the
+length of a collection derived from a Python repository: symbols, files, call
+sites, edges, the number of leading dots in a relative import. Truncation
+needs a count above `u32::MAX`, and the one arena that could plausibly grow
+already refuses first —
+
+```rust
+let sym = Sym(u32::try_from(self.store.len()).expect("interner exhausted"));
+```
+
+— and every symbol interns a name, so the symbol count cannot outrun it.
+
+One theoretical case, named rather than fixed. `tui/view.rs` computes a cursor
+column as `(app.input.chars().count() as u16).min(inner.width...)`: the cast
+happens *before* the clamp, so an input line longer than 65,535 characters
+would wrap to a small column instead of clamping to the pane width. It is a
+cursor position in a TUI, it requires typing 65k characters into one line, and
+it corrupts nothing. Recorded so that the next reader does not have to
+re-derive that it is harmless.
+
+This is a negative result and is kept on purpose. A category examined and
+found clear is worth writing down; the alternative is examining it again.
+
 ## Tier 7 — Property and fuzz
 
 Partial. Property tests exist (`partition_invariants`, `bidirectional`); there

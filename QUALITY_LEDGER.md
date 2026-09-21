@@ -1,6 +1,6 @@
 # Quality audit ledger
 
-**Status: in progress.** Passes 0–5 complete, 6 held. The
+**Status: in progress.** Passes 0–5 and 7 complete, 6 held. The
 prerequisite was not met when this began; it is now met except for Tier 6,
 which is running. See *Prerequisite* below.
 
@@ -86,7 +86,7 @@ coverage         82.74% lines · 82.52% regions · 86.34% functions
 | Q-003 | 3 | A | `trellis-loop/src/partition.rs` | `Partition::new(true)` / `Partition::new(false)` at three call sites | **Fixed** | `shared()` and `parallel()`. The two states are not symmetric — one is the conservative bucket the staging exists to keep separate — and `true` said none of that | `297dbe8` |
 | Q-004 | 4 | B | `trellis-loop/src/adapter.rs` | `RuntimeModel::new(client, constrained)`, called as `new(client, !unconstrained)` | **Fixed** | `constrained()` and `unconstrained()`, matching the flag the user types. Not an `AdapterTier` parameter: that accepts tier 1 and tier 3, which this type cannot drive | `297dbe8` |
 | Q-005 | 5 | B | workspace-wide | ~250 undocumented `pub` items | **Fixed** | `unreachable_pub` on at workspace level (17 items in the binary); 19 `pub mod` narrowed to `mod`, leaving the six module paths that cross a crate boundary. The re-exports already covered everything, and the compiler confirms nothing took the second path | `988f3f3` |
-| Q-009 | 5 | A | `trellis-loop/src/tools.rs` | `pub mod args` — five argument structs used by nothing, whose doc comment described a mechanism the crate graph forbids | **Fixed** | It claimed `trellis-model` compiles these into the grammar. `trellis-model` does not depend on `trellis-loop` and must not; the real schema is `ToolCallWire::schema()` at `adapter.rs:265`. Dead code documenting a false path is worse than dead code | `988f3f3` |
+| Q-009 | 5 | B | `trellis-loop/src/tools.rs` | `pub mod args` — five argument structs used by nothing | **Fixed** | A design that was possible and never wired. `ToolCallWire`, one tagged enum compiled to one grammar, superseded per-tool argument structs, and `args` went dead when `wire.rs` landed — the production schema is `ToolCallWire::schema()` at `adapter.rs:265`. Narrowing the module surface is what exposed it | `988f3f3` |
 | Q-006 | 2 | C | `trellis-checks/src/lib.rs:222` | `TODO(v0.2): parse structured output per tool` — v0.2 has passed | **Left alone** | It carries a milestone reference and the work is still genuinely open (`failure_count` is still `None`). Deleting it would lose a real open item; §4 only condemns a TODO with no owner, ticket, or date |
 | Q-007 | 2 | B | `CLAUDE.md:32` | Claimed `run`, `resume` and `partitions` "exit with a clear 'not implemented yet'". All three have been implemented since v0.2 | **Fixed** | A stale instruction file is worse than none: a reader trusts it and stubs a command that already works. Rewrote it to keep the rule (do not fake a command) while stating the current fact | pending |
 | Q-008 | 2 | — | workspace-wide | Suspected `cargo fmt` string-folding defects — prose literals broken mid-sentence by a source line break | **None found** | 198 literals span a line break; 17 survived filtering for mid-sentence prose; all 17 rendered and every one is a deliberate hand-wrap at 73–78 columns. The remainder are `\` continuations or literal test fixtures. Recorded so it is not re-litigated | — |
@@ -144,6 +144,78 @@ split can be made once rather than twice.
 warning — *duplication is cheaper than the wrong abstraction* — is the part of
 this audit most likely to do harm. It waits for the mutation baseline, which
 is precisely the signal that detects an extraction having buried logic.
+
+## A correction to Q-009
+
+The row above was first recorded as Class A with a different reason: that the
+deleted comment "described a mechanism the crate graph forbids", because
+`trellis-model` does not depend on `trellis-loop`.
+
+**That is wrong, and the commit message `988f3f3` carries the same error.**
+The comment said trellis-model compiles the structs into a grammar, which
+means `trellis_model::ToolGrammar::for_args::<T>()` — generic over any
+`JsonSchema` type precisely so a caller can hand it one of its own. trellis-loop
+depends on trellis-model, so that call was always legal. Nothing forbade it.
+
+The real finding is smaller and the deletion still right: the structs were an
+unwired design, superseded by `ToolCallWire` before anything called them.
+Downgraded from A to B accordingly.
+
+Recorded rather than quietly amended, the same way C-004 is in
+CORRECTNESS_LEDGER.md. An audit that corrects its own record silently is
+worth no more than the claims it was auditing.
+
+## Pass 7 — lints as advisory
+
+`cargo clippy -W clippy::pedantic -W clippy::nursery`, mined for readability
+signal only. The pass says outright not to apply these mechanically, and most
+pedantic hits are Class C.
+
+**Seven of the eight lints it names as relevant fire zero times.**
+
+```
+too_many_arguments             0        wildcard_imports               0
+cognitive_complexity           0        module_name_repetitions        0
+fn_params_excessive_bools      0        missing_docs_in_private_items  0
+type_complexity                0        doc_markdown                  15
+```
+
+`fn_params_excessive_bools` at zero is worth noting next to Q-003 and Q-004:
+the defect there was never *many* bools, it was one bool whose meaning lived
+in the callee. A lint would not have found either.
+
+**`doc_markdown`, 15 hits, 14 false.** Clippy reads `OPEN_QUESTIONS.md`,
+`CORRECTNESS_LEDGER.md`, `PyCG`, `Pyright`, `vLLM`, `SGLang` and `llama.cpp`
+as Rust identifiers wanting backticks. They are document names, product names
+and a command line. One was real and is fixed: `ModeCounts::summary`'s comment
+said "There is no total() here on purpose" — `total()` genuinely is an item,
+and the comment is load-bearing, so it now reads `` `total()` `` and cites
+ADR 0003.
+
+**`too_many_lines`, 6 hits, and a correction to this ledger's own baseline.**
+Clippy counts statements rather than the fn-to-fn span this file measured
+crudely at the start, and the difference is large:
+
+```
+                      crude (this ledger)   clippy   file
+build_from_facts              277            234     resolve.rs:489
+cmd_run                       261            188     main.rs:727
+run_seeded                    224            171     agent.rs:351
+```
+
+The baseline said its own measure was "a pointer, not a measurement" and it
+was right to: it over-counted by 25–40% because it included doc comments,
+and these functions are heavily commented. They are still long. The decision
+recorded under *Left alone deliberately* stands — each is one sequence of
+steps with no branching to hide — but the numbers it was made against were
+inflated and are corrected here.
+
+**Not mined, and deliberately.** `cast_possible_truncation` is the largest
+pedantic category at 47. Pass 7 is a readability pass and casts are not a
+readability signal, so they are out of scope here. They are a *correctness*
+question — a `usize as u32` that can truncate is a real defect class — and
+belong to the campaign rather than the audit, and are recorded there as
+C-007: examined, and clear.
 
 ## Escalations
 
