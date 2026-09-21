@@ -1,0 +1,30 @@
+{
+  // `crates/trellis-checks/tests/forge/` holds files that are SUPPOSED to
+  // fail to compile. They are the trybuild proof that a `Verdict` cannot be
+  // forged from outside `trellis-checks` — three forgery attempts, each with
+  // its committed compiler output in a `.stderr` beside it.
+  //
+  // rust-analyzer scans them like any other source and reports three errors,
+  // which look like breakage and are the opposite: if they ever stop
+  // erroring, the seal is gone and `cargo test -p trellis-checks --test seal`
+  // fails.
+  //
+  // Excluding them here is not silencing a lint. The lint is correct; the
+  // file is a fixture, and the editor has no way to know that.
+  "rust-analyzer.files.excludeDirs": [
+    "crates/trellis-checks/tests/forge",
+    ".bench"
+  ],
+
+  // `.bench/` holds fetched corpora and scratch fixtures — poetry 2.5.0 and
+  // several copies of it. Indexing them slows the editor and the matches
+  // drown out the repository's own code in search.
+  "search.exclude": {
+    ".bench/**": true,
+    "target/**": true
+  },
+  "files.watcherExclude": {
+    ".bench/**": true,
+    "target/**": true
+  }
+}
