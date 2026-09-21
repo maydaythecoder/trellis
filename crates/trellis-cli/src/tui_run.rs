@@ -159,21 +159,15 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
             }
         });
 
-        let mut state = tui::app::AppState {
-            model: spec_label.clone(),
-            tier: tier_label.clone(),
-            ..Default::default()
-        };
+        let mut state = tui::app::AppState::with_model(spec_label.clone(), tier_label.clone());
         // A task on the command line starts immediately; without one the
         // interface opens idle and waits for the user to type.
         if let Some(t) = task {
-            state.transcript.push(format!("> {t}"));
+            state.push_line(format!("> {t}"));
             state.running = true;
             let _ = task_tx.send(t).await;
         } else {
-            state
-                .transcript
-                .push("type a task and press enter · esc to quit".into());
+            state.push_line("type a task and press enter · esc to quit".into());
         }
 
         let mut terminal = tui::terminal::init();
@@ -199,10 +193,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         report_outcome(&tx, outcome);
         drop(tx);
-        let mut state = AppState {
-            running: true,
-            ..Default::default()
-        };
+        let mut state = AppState::default().with_running(true);
         while let Ok(m) = rx.try_recv() {
             state.update(m);
         }
@@ -281,10 +272,7 @@ mod tests {
             .await
             .expect_err("the task panicked, so the join has to be an error");
 
-        let mut state = AppState {
-            running: true,
-            ..Default::default()
-        };
+        let mut state = AppState::default().with_running(true);
         for m in lost_run_report(&join) {
             state.update(m);
         }

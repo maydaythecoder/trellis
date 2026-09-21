@@ -220,7 +220,7 @@ fn render_input(state: &AppState, area: Rect, frame: &mut Frame) {
         )
     } else {
         (
-            " task  ·  enter to run  ·  esc to clear, esc again to quit ",
+            " task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ",
             // A block cursor, so an empty line still shows where typing goes.
             format!("{}█", state.input),
             Style::default(),
