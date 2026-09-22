@@ -172,7 +172,9 @@ either, the larger one unshipped — is the one that keeps costing. Owner's call
 
 Found while reviewing this session's own additions, 2026-09-22.
 
-**Q-20 — Should the answer path be able to see the code?**
+**Q-20 — Should the answer path be able to see the code? — ANSWERED**
+*Resolved 2026-09-22: the file inventory, not the contents — the middle option below. Measured after: 18/18 classification unchanged, `which files are in this repository?` names all five real files and invents none, and questions about code decline by naming the file they cannot read.*
+
 `ask::classify` sends the input and nothing else: no file list, no contents.
 That is right for a classifier and wrong for the thing whose reply the user
 reads as an answer. Measured: asked which functions `app/calc.py` contains, it

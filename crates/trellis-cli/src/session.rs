@@ -439,7 +439,8 @@ impl Session {
         // because it was not one.
         if let Ok(spec) = model.parse::<trellis_model::ModelSpec>() {
             let rt = tokio::runtime::Runtime::new()?;
-            match rt.block_on(crate::ask::classify(&spec, task)) {
+            let inventory = trellis_index::discover_relative(&self.root);
+            match rt.block_on(crate::ask::classify(&spec, task, &inventory)) {
                 Ok(crate::ask::Intent::Answer(text)) => {
                     println!("{}", crate::plain(&text));
                     println!();

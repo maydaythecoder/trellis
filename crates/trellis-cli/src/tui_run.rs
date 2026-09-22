@@ -250,6 +250,15 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
             }
         });
 
+        // The inventory the answer path is grounded on.
+        //
+        // Read once at startup rather than per input: it is a directory walk,
+        // and a question typed while a run is writing files should not pay for
+        // one. The cost is that a file created during the session is not in the
+        // list until the next one - which is the right trade for a list whose
+        // job is to stop the model inventing names.
+        let inventory = trellis_index::discover_relative(&root);
+
         let driver = tokio::spawn({
             let tx = tx.clone();
             async move {
@@ -294,7 +303,7 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                     // expensively. The model is asked once what the input
                     // is; a question is answered here, and only a request to
                     // change the code reaches `cmd_run` untouched.
-                    match crate::ask::classify(&spec_for_ask, &task).await {
+                    match crate::ask::classify(&spec_for_ask, &task, &inventory).await {
                         Ok(crate::ask::Intent::Answer(text)) => {
                             for line in text.lines() {
                                 let _ = tx

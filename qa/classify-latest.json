@@ -110,5 +110,19 @@
     "expect": "task",
     "got": "task",
     "match": true
+  },
+  {
+    "id": "question_files",
+    "run": 1,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
+  },
+  {
+    "id": "question_files",
+    "run": 2,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
   }
 ]
