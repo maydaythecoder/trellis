@@ -19,13 +19,13 @@
     {
       "id": "docstring",
       "task": "add a docstring to the total function saying it returns the sum of its argument",
-      "why": "A single-file edit that adds rather than corrects. No check can fail on it, so it isolates whether the loop can finish work the checks are indifferent to.",
+      "why": "A single-file edit that adds rather than corrects. Expected to converge, and it cannot: `app/calc.py` does not typecheck at baseline, because the fixture's deliberate `describe` defect lives in it. Any run that checks that file fails on a defect the task does not address, so no amount of correct docstring work reaches a passing check. The expectation was wrong, and the reason is a property of the fixture rather than of the harness: a latent defect makes every task in its file unconvergeable unless the task also fixes it. Corrected 2026-09-22, with the original expectation recorded in BASELINE.md rather than erased.",
       "expect": {
-        "converges": true,
+        "converges": false,
         "writes": [
           "app/calc.py"
         ],
-        "checks_pass": true
+        "checks_pass": false
       }
     },
     {

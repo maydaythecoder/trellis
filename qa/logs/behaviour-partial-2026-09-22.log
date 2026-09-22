@@ -1,0 +1,8 @@
+fixture   C:\Users\mayda\documents\dev\trellis-demo
+baseline  31daaaf
+cases     8 x 1
+
+  match    annotate     conv=True  (expected True ) iters=3    actions=4  refused=1  writes=['app/calc.py'] checks=['Typecheck+', 'Governance+'] 28.7s
+  MISMATCH docstring    conv=False (expected True ) iters=4    actions=4  refused=1  writes=['app/calc.py'] checks=['Typecheck-', 'Typecheck-'] 321.2s
+  match    rename       conv=False (expected False) iters=7    actions=7  refused=2  writes=['app/calc.py'] checks=['Typecheck-', 'Typecheck-', 'Typecheck-'] 297.4s
+  MISMATCH camel        conv=False (expected False) iters=0    actions=0  refused=0  writes=[] checks=[] 241.8s

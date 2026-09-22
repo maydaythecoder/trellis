@@ -153,6 +153,16 @@ def main():
 
                 converged, iterations, writes, trail = parse_run(out)
                 actions, checks = parse_trail(trail) if trail else ([], [])
+
+                # Every run's own words, kept. The first suite produced a row
+                # reading `iters=0 actions=0` after four minutes, and there was
+                # nothing left to say why — the output had gone to a pipe and
+                # the trail recorded a run that never took a turn. A row you
+                # cannot explain is not yet a measurement.
+                logs = HERE / "logs" / "behaviour"
+                logs.mkdir(parents=True, exist_ok=True)
+                (logs / f"{case['id']}-{run_n + 1}.log").write_text(out, encoding="utf-8")
+
                 reset(repo, commit)
 
                 exp = case["expect"]
