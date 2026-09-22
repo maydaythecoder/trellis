@@ -940,28 +940,17 @@ fn cmd_run(
     if let Driver::Runtime(m) = &driver
         && !unconstrained
     {
-        match probe_rt.block_on(m.client().probe_constraint()) {
-            Ok(true) => schema_note = Some("schema:   honoured by this runtime (probed)".into()),
-            Ok(false) => {
-                // Not a warning and not a failure. The loop already validates
-                // and retries; what was wrong was the claim, so the fix is to
-                // report the tier that is actually running.
-                driver = Driver::build(&spec, true)?;
-                schema_note = Some(
-                    "schema:   sent and ignored by this runtime, so it is not enforced. \
-                     Running\n          unconstrained; malformed calls are retried rather \
-                     than prevented."
-                        .into(),
-                );
-            }
-            // A probe that could not run leaves the tier assumed. Saying so
-            // is the difference between an unverified claim and a false one.
-            Err(e) => {
-                schema_note = Some(format!(
-                    "schema:   enforcement not verified ({e}); the tier above is assumed"
-                ));
-            }
+        let probed = probe_rt
+            .block_on(m.client().probe_constraint())
+            .map_err(|e| e.to_string());
+        let (unconstrain, note) = schema_report(&probed);
+        if unconstrain {
+            // Not a warning and not a failure. The loop already validates and
+            // retries; what was wrong was the claim, so the fix is to report
+            // the tier that is actually running.
+            driver = Driver::build(&spec, true)?;
         }
+        schema_note = Some(note);
     }
 
     // Printed after reachability, not before. Describing the tier of a
@@ -2107,6 +2096,32 @@ fn graph_lines(g: &trellis_index::ModuleGraph, limit: usize) -> Vec<String> {
     out
 }
 
+/// What a constraint probe means for the run about to start.
+///
+/// Returns whether to rebuild the driver unconstrained, and the line to print.
+/// Separated from `cmd_run` so the three outcomes are testable without a
+/// runtime — which matters, because the failure this exists to prevent is a
+/// confident sentence rather than a crash.
+fn schema_report(probed: &Result<bool, String>) -> (bool, String) {
+    match probed {
+        Ok(true) => (false, "schema:   honoured by this runtime (probed)".into()),
+        Ok(false) => (
+            true,
+            "schema:   sent and ignored by this runtime, so it is not enforced. Running\n\
+             \x20         unconstrained; malformed calls are retried rather than prevented."
+                .into(),
+        ),
+        // A probe that could not run leaves the tier assumed. Saying so is the
+        // difference between an unverified claim and a false one — and it must
+        // not silently change the tier, because a transient network error is
+        // not evidence about the runtime's capabilities.
+        Err(e) => (
+            false,
+            format!("schema:   enforcement not verified ({e}); the tier above is assumed"),
+        ),
+    }
+}
+
 /// The codebase graph for `root`, as lines, for a caller with no stdout.
 ///
 /// Builds the index rather than reading the cache: the interface offers this
@@ -3044,6 +3059,49 @@ mod init_tests {
             prompt_bytes: Some(1_000),
             radius_counts: None,
         }
+    }
+
+    #[test]
+    fn an_ignored_schema_downgrades_the_tier_rather_than_the_sentence() {
+        // The defect: every run against ollama printed "tier 2, schema
+        // enforced by the runtime" for a runtime that accepts `guided_json`
+        // and ignores it. Rewording would have swapped a false claim for a
+        // vaguer one; the tier itself has to change.
+        let (unconstrain, note) = schema_report(&Ok(false));
+        assert!(
+            unconstrain,
+            "the run must not claim a tier it does not have"
+        );
+        assert!(note.contains("ignored"), "{note}");
+        assert!(
+            note.contains("retried rather than prevented"),
+            "and say what that costs: {note}"
+        );
+    }
+
+    #[test]
+    fn an_honoured_schema_keeps_the_tier_and_says_it_was_probed() {
+        let (unconstrain, note) = schema_report(&Ok(true));
+        assert!(!unconstrain);
+        assert!(
+            note.contains("probed"),
+            "the claim names its evidence: {note}"
+        );
+    }
+
+    #[test]
+    fn a_probe_that_could_not_run_says_the_tier_is_assumed() {
+        // A transient network error is not evidence about the runtime's
+        // capabilities, so it must not silently change the tier — but it must
+        // also not leave the banner asserting something nothing checked.
+        let (unconstrain, note) = schema_report(&Err("connection reset".into()));
+        assert!(
+            !unconstrain,
+            "a failed probe is not a measurement of an ignored schema"
+        );
+        assert!(note.contains("not verified"), "{note}");
+        assert!(note.contains("connection reset"), "with the reason: {note}");
+        assert!(note.contains("assumed"), "{note}");
     }
 
     #[test]
