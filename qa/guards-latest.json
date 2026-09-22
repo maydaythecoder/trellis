@@ -79,5 +79,12 @@
     "checks": {
       "says": true
     }
+  },
+  {
+    "id": "resume_not_a_verdict",
+    "match": true,
+    "checks": {
+      "did not converge": true
+    }
   }
 ]

@@ -128,6 +128,12 @@ def main():
                 d["factual"]["proposed"] = ["something/else.py"]
                 newest.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
+            # A converged run's trail, with the worktree put back clean so the
+            # next run may start. The trail commit survives; the edits do not.
+            if g.get("setup") == "resumable":
+                sh(["trellis", "run", "--model", g["seed_model"], "fix the annotation"], repo)
+                sh(["git", "checkout", "--", "."], repo)
+
             before = trails(repo)
             cmd = ["trellis"] + g.get("command", ["run"])
             if g.get("model"):

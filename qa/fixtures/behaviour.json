@@ -206,6 +206,21 @@
       "expect": {
         "says": "ALTERED"
       }
+    },
+    {
+      "id": "resume_not_a_verdict",
+      "why": "The hazard the whole seeding design is shaped around. A previous run's trail records that its checks passed. Seed that as a turn and the first thing a resumed run could do is emit `done` - and the loop would call that converged, on the strength of a check executed against a tree that may no longer exist and may never have existed on this branch (S11, Constraint 2). Prior context is deliberately not `turns`. This resumes from a genuinely converged run and immediately says done: it must not converge. Verified to reach what it tests rather than passing trivially: the run reports `5 lines of prior context, fenced as data` before declining to converge, so the context really was loaded and really did not count as a check.",
+      "setup": "resumable",
+      "seed_model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-annotate.json",
+      "command": [
+        "run",
+        "--resume"
+      ],
+      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-done-only.json",
+      "task": "carry on from before",
+      "expect": {
+        "converges": false
+      }
     }
   ]
 }

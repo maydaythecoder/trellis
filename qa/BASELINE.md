@@ -59,7 +59,7 @@ Deterministic: scripted or refused, using no model at all, so a single run is
 enough to quote and the rows cannot drift with a weight. They also cost no GPU,
 which is why they ran while the model suite was blocked.
 
-**10 of 10 hold.**
+**11 of 11 hold.**
 
 | case | what it establishes |
 |---|---|
@@ -73,6 +73,7 @@ which is why they ran while the model suite was blocked.
 | `path_escape` | An edit aimed through `../` is refused before anything is written. |
 | `noop_edit` | An edit replacing text with itself is refused, not reported as applied. |
 | `tampered_trail` | A trail edited by hand after it was written is reported as `ALTERED`, not presented as intact. |
+| `resume_not_a_verdict` | A run resumed from a genuinely converged trail cannot converge by saying `done`. The prior run's passing check is context, never a turn. |
 
 The two `done` cases are the most load-bearing claims in the project — ADR 0004
 and Constraint 2, that a model never issues a correctness verdict — and neither
@@ -85,6 +86,15 @@ do, which is the kind that rots unnoticed. `tampered_trail` is the same shape
 one step further out: later agents read trails as context, so a false fact in
 one propagates with the authority of a record (S11), and the seal is what stops
 that being silent.
+
+`resume_not_a_verdict` is the hazard the seeding design is shaped around, and
+the subtlest of the eleven. A previous run's trail records that its checks
+passed; seed that as a *turn* and the first thing a resumed run could do is emit
+`done`, converging on a check executed against a tree that may no longer exist
+and may never have existed on this branch. Prior context is deliberately not
+`turns`. Verified to reach what it tests rather than pass trivially: the run
+reports `5 lines of prior context, fenced as data` and then declines to
+converge, so the context was genuinely loaded and genuinely did not count.
 
 ## Model cases — 4 of 8, qwen3:8b, n=1
 
