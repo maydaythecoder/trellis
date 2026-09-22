@@ -277,6 +277,55 @@ The convergence rate did not move and is not claimed to have. What moved is the
 waste and its variance: every converged run is now identical at four actions
 with exactly one refused edit.
 
+### 7. The repeat notice — **measured and rejected; nothing shipped**
+
+The hypothesis from the last iteration: at `temperature: 0.0` an identical
+observation invites an identical call, so telling the model it has already
+tried exactly this should break the loop that lost one run in five.
+
+It does not, and the number that motivated it was too small. Measured at
+temperature 0.0 — determinism is the whole phenomenon, so measuring at 0.7
+would have been measuring something else — across three anchors a real run had
+actually repeated:
+
+| observation after two identical failures | chose a different anchor |
+|---|---|
+| current | **3 / 3** |
+| with "you have already made this exact call N times" | 2 / 3 |
+
+The notice also produced one reply that spent its whole budget reasoning and
+returned nothing, which is now the third time a longer instruction has bought
+that failure.
+
+**The probe did not reproduce the failure it was built to explain**, and that
+is the more useful finding. Under it the current observation escapes the repeat
+3/3, yet a real run had repeated. So the hypothesis is untested rather than
+refuted — the reconstruction diverged from the real prompt, which is the exact
+mistake recorded two iterations ago and repeated here. Six further runs with
+tracing captured no repeat at all.
+
+Across 11 runs since the anchor fix: **10/11 converged, mean 4.1 actions, 1.1
+refused edits** for converged runs, against 4/5, 5.0 and 2.0 before it. The
+repeat is a ~9% event, not a 20% one, and no code shipped for it.
+
+### 8. `trellis run` claimed a schema was enforced when it was not — **fixed**
+
+Every run against ollama printed `tier 2, schema enforced by the runtime —
+degradation: none for correctness`. Ollama does not implement `guided_json`;
+that is vLLM's parameter, and ollama accepts and ignores it. Measured: the same
+prompt three times with and without the schema returned byte-identical text and
+an identical completion-token count, which a schema that changed sampling could
+not produce.
+
+`doctor` had probed this all along and reported `ValidateAndRetry` correctly.
+The claim was only ever in `trellis run`, which took its tier from the
+`--unconstrained` flag and asked the runtime nothing — and that is the line a
+user actually reads. It now probes once at start-up, reusing the runtime the
+reachability check already builds, and reports all three outcomes: honoured,
+ignored (rebuild unconstrained, say so), or probe failed (tier left assumed,
+and say *that*). Behaviour is unchanged, because the loop was already
+validating and retrying. What changed is that the report is true.
+
 ### What is worth doing next
 
 **Four actions is the floor this design has, not the floor that exists.** The
@@ -286,13 +335,15 @@ fetches the file. Getting to three means the content reaching the prompt before
 the first call, and the honest version of that is not obvious: seeding whichever
 file a task's symbol resolves to would be the graph guessing at intent.
 
-**The failing run failed the same way both times.** At `temperature: 0.0` a
-wrong call tends to repeat: run 1 emitted `old: "    -> int"` three times
-identically until the no-progress guard stopped it. The guard works — the run
-ends rather than burning its budget — but the run is still lost, and the reason
-is that an identical observation invites an identical call. Telling the model
-that it has already tried exactly this is cheap. It is also a hypothesis, and
-this section's own standard is that it gets measured before it ships.
+**Every measurement so far is one task, one fixture, one model.** The anchor
+result is solid for `describe` in `trellis-demo` against qwen3:8b and is not
+evidence about anything else. A second task in the same repository, and the same
+task against `llama3.1:8b`, would cost an hour and would say whether four
+actions is a property of this loop or of this sentence.
+
+**Reconstructed prompts have now misled this work twice.** Both times the fix
+was to capture the real one from the `trace` event. That is cheap and it is not
+yet the default habit.
 
 ### Paused behind the five
 

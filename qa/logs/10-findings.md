@@ -208,7 +208,7 @@ second is worth routing around with llama.cpp.
 
 ## F8 — `tier 2, schema enforced by the runtime` is false against ollama
 
-**Open. Evidence recorded; the fix belongs to `doctor`.**
+**FIXED.** And narrower than first recorded: `doctor` was already correct.
 
 Every run prints, before its first turn:
 
@@ -241,9 +241,29 @@ runtime. Malformed calls are then read as model weakness when they may be an
 unenforced grammar. It is also the claim CLAUDE.md's "state what is true and
 what is not known" exists to prevent.
 
-**Not fixed here, deliberately.** The honest fix is for `doctor` to *probe*
-whether the schema is honoured rather than infer it from the dialect name —
-send a request whose schema forbids the reply the model would otherwise give,
-and see which comes back. That is the same shape as the existing tier probe
-and belongs beside it. Changing the wording alone would replace a false claim
-with a vaguer one and leave the tier assignment wrong.
+**Correction to the first version of this entry.** It said the fix belonged to
+`doctor`. It did not: `doctor` has probed this all along via
+`RuntimeClient::probe_constraint`, and against this runtime it already reported
+
+```
+tier:       ValidateAndRetry — malformed tool calls are retried, not prevented
+The runtime ignored the schema, so output is NOT constrained.
+```
+
+The false claim was only ever in `trellis run`, which took its tier from the
+`--unconstrained` flag and never asked the runtime anything. That is also where
+it mattered most, because the run banner is the line a user actually reads.
+
+**Fixed** by probing once at run start, between the reachability check and the
+banner, reusing the runtime that check already builds. One request against an
+already-loaded model, ahead of a run measured in minutes. Three outcomes, all
+reported:
+
+- honoured — the tier stands, and the banner says it was probed;
+- ignored — the driver is rebuilt unconstrained and the banner says so, which
+  is what now prints against ollama;
+- probe failed — the tier is left as assumed and the banner says *that*, which
+  is the difference between an unverified claim and a false one.
+
+Behaviour is unchanged: the loop already validated and retried, because the
+schema was being ignored regardless. What changed is that the report is true.

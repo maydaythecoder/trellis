@@ -893,8 +893,9 @@ fn cmd_run(
     //
     // A refused connection is not a failed run. It is a run that could not
     // start, and it should cost nothing.
+    let probe_rt = tokio::runtime::Runtime::new()?;
     if let Driver::Runtime(m) = &driver
-        && let Err(e) = tokio::runtime::Runtime::new()?.block_on(m.client().reachable())
+        && let Err(e) = probe_rt.block_on(m.client().reachable())
     {
         anyhow::bail!(
             concat!(
@@ -920,10 +921,56 @@ fn cmd_run(
         );
     }
 
+    // Whether the runtime actually honours the schema, rather than whether
+    // its dialect name suggests it should.
+    //
+    // The tier came from the `--unconstrained` flag alone, so every run
+    // against ollama printed "tier 2, schema enforced by the runtime —
+    // degradation: none for correctness". Ollama does not implement
+    // `guided_json`; that is vLLM's parameter, and ollama accepts and ignores
+    // it. Measured rather than inferred: the same prompt three times with and
+    // without the schema returned byte-identical text and an identical
+    // completion-token count, which a schema that changed sampling could not
+    // produce.
+    //
+    // `doctor` has probed this all along and reports it correctly. The run
+    // did not, and the run is where the claim was read. One request, against
+    // a model already loaded, ahead of a run measured in minutes.
+    let mut schema_note: Option<String> = None;
+    if let Driver::Runtime(m) = &driver
+        && !unconstrained
+    {
+        match probe_rt.block_on(m.client().probe_constraint()) {
+            Ok(true) => schema_note = Some("schema:   honoured by this runtime (probed)".into()),
+            Ok(false) => {
+                // Not a warning and not a failure. The loop already validates
+                // and retries; what was wrong was the claim, so the fix is to
+                // report the tier that is actually running.
+                driver = Driver::build(&spec, true)?;
+                schema_note = Some(
+                    "schema:   sent and ignored by this runtime, so it is not enforced. \
+                     Running\n          unconstrained; malformed calls are retried rather \
+                     than prevented."
+                        .into(),
+                );
+            }
+            // A probe that could not run leaves the tier assumed. Saying so
+            // is the difference between an unverified claim and a false one.
+            Err(e) => {
+                schema_note = Some(format!(
+                    "schema:   enforcement not verified ({e}); the tier above is assumed"
+                ));
+            }
+        }
+    }
+
     // Printed after reachability, not before. Describing the tier of a
     // runtime that is not listening is noise ahead of the only line that
     // matters.
     let _ = writeln!(out, "model:    {}", driver.describe());
+    if let Some(note) = schema_note {
+        let _ = writeln!(out, "{note}");
+    }
 
     // Read before the snapshot, so a missing or corrupt trail fails the run
     // before anything has been written.
