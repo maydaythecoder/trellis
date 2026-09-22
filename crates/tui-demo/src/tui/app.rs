@@ -325,11 +325,21 @@ impl AppState {
 
         let mut parts = input.strip_prefix('/')?.split_whitespace();
         let name = parts.next().unwrap_or("");
+
+        // `/codebase` reads the index off disk, and this function is pure by
+        // design — that is what keeps `update` free of IO. Declining it sends
+        // it on to the driver, which does the read and streams the graph back
+        // as transcript lines.
+        if name == "codebase" {
+            return None;
+        }
+
         Some(match name {
             "help" | "?" => vec![
                 "· this view runs one task at a time against the model in the status bar.".into(),
                 "  /model    what is driving runs".into(),
                 "  /graph    the blast radius, and what it does not claim".into(),
+                "  /codebase which modules call which, and how much is unbound".into(),
                 "  /clear    empty the transcript".into(),
                 "  /help     this".into(),
                 "  esc       clear the line; again to leave".into(),
@@ -464,6 +474,45 @@ mod tests {
         assert!(
             text.contains("/help"),
             "and it must say where to look: {text}"
+        );
+    }
+
+    #[test]
+    fn codebase_is_handed_to_the_driver_rather_than_answered_or_refused() {
+        // It needs the index off disk, and this module is pure. Two wrong
+        // answers were available: refuse it as an unknown command, which is
+        // what every other unrecognised slash gets, or invent a reply from
+        // state that does not hold the graph.
+        let mut s = AppState {
+            input: "/codebase".into(),
+            ..Default::default()
+        };
+        s.update(key(KeyCode::Enter, KeyEventKind::Press));
+
+        assert_eq!(
+            s.submitted.as_deref(),
+            Some("/codebase"),
+            "it has to reach the driver, which can read the index"
+        );
+        let text = s.transcript.join("\n");
+        assert!(
+            !text.contains("not a command here"),
+            "and must not be refused on the way: {text}"
+        );
+    }
+
+    #[test]
+    fn codebase_is_listed_in_help_beside_the_command_it_is_not() {
+        let mut s = AppState {
+            input: "/help".into(),
+            ..Default::default()
+        };
+        s.update(key(KeyCode::Enter, KeyEventKind::Press));
+        let text = s.transcript.join("\n");
+        assert!(text.contains("/codebase"), "{text}");
+        assert!(
+            text.contains("/graph"),
+            "the two are different graphs and both are listed: {text}"
         );
     }
 

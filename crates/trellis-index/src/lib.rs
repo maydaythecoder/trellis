@@ -7,6 +7,7 @@ pub mod cache;
 mod coverage;
 mod graph;
 mod incremental;
+pub mod modules;
 pub mod parse;
 pub mod radius;
 mod resolve;
@@ -16,6 +17,7 @@ pub use graph::{
     CallSiteEntry, CalleeKind, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target,
 };
 pub use incremental::Session;
+pub use modules::{ModuleGraph, ModuleNode, module_graph};
 pub use parse::{
     BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact, TypeFact,
     collect as parse_facts,

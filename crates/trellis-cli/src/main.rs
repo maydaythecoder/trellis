@@ -44,7 +44,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Build or refresh the index; print coverage.
-    Index,
+    Index {
+        /// Also draw the codebase as a graph of modules.
+        ///
+        /// Coverage says how much of the graph the resolver bound. This says
+        /// what the graph *is*: which modules call into which, and how much
+        /// doubt sits on each.
+        #[arg(long)]
+        graph: bool,
+        /// How many modules to draw, busiest first.
+        #[arg(long, default_value = "40")]
+        limit: usize,
+    },
 
     /// Blast radius for a symbol, with its confidence breakdown.
     Radius {
@@ -255,7 +266,7 @@ fn main() -> Result<()> {
     };
 
     match command {
-        Command::Index => cmd_index(&root),
+        Command::Index { graph, limit } => cmd_index(&root, graph, limit),
         Command::Doctor { model } => {
             // Falls back to the repository's configured model.
             //
@@ -1885,7 +1896,7 @@ pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
 /// every time and never abbreviated to a bare "complete". `resolved` is the
 /// only figure that carries a blast-radius claim; `ambiguous` and
 /// `unresolved` are the cost the user is asked to read.
-fn cmd_index(root: &Path) -> Result<()> {
+fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
     // `index` always rebuilds — it is the command whose job is to refresh
     // the cache, so reading the cache here would make it a no-op.
     let started = std::time::Instant::now();
@@ -1967,7 +1978,112 @@ fn cmd_index(root: &Path) -> Result<()> {
          not a verified recall figure: it counts\nagreement with itself. Only the \
          hand-audited sample measures recall."
     );
+
+    if graph {
+        println!();
+        for line in graph_lines(&trellis_index::module_graph(&index), limit) {
+            println!("{line}");
+        }
+    }
     Ok(())
+}
+
+/// The codebase as a graph of modules.
+///
+/// Drawn the way the other graphs in this project are drawn — nodes with
+/// converging edges — because the alternative is a table, and a table of
+/// module names is the thing a graph exists instead of.
+///
+/// Every row carries its own doubt. A module with no outgoing edges is one
+/// nothing was *bound* out of, which is not the same as one that calls
+/// nothing; `?` is how a reader tells those apart (Constraint 1). The three
+/// counts stay three counts and are never divided (ADR 0014).
+fn graph_lines(g: &trellis_index::ModuleGraph, limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if g.nodes.is_empty() {
+        out.push("codebase graph: no first-party modules were indexed.".into());
+        return out;
+    }
+
+    out.push(format!("codebase graph — {} module(s)", g.nodes.len()));
+    out.push(format!(
+        "  {} call site(s) bound across modules, {} ambiguous, {} unresolved",
+        g.bound_edges(),
+        g.ambiguous(),
+        g.unresolved()
+    ));
+    out.push("  three counts, not a ratio: they come from different populations.".into());
+    out.push(String::new());
+
+    let width = g
+        .nodes
+        .iter()
+        .take(limit)
+        .map(|n| n.module.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(48);
+
+    for n in g.nodes.iter().take(limit) {
+        // The node, then its edges. An arrow per callee, indented under the
+        // module they leave, so the shape reads down the page.
+        let doubt = match (n.ambiguous, n.unresolved) {
+            (0, 0) => String::new(),
+            (a, 0) => format!("   ~{a}"),
+            (0, u) => format!("   ?{u}"),
+            (a, u) => format!("   ~{a} ?{u}"),
+        };
+        let glyph = if n.calls.is_empty() { '○' } else { '●' };
+        out.push(format!(
+            "  {glyph} {:<width$}  {:>3} def{}",
+            truncate_module(&n.module, width),
+            n.defines,
+            doubt
+        ));
+        for (i, (callee, count)) in n.calls.iter().enumerate() {
+            let connector = if i + 1 == n.calls.len() { '└' } else { '├' };
+            out.push(format!("    {connector}─▶ {callee}  ×{count}"));
+        }
+    }
+
+    if g.nodes.len() > limit {
+        out.push(String::new());
+        out.push(format!(
+            "  ... {} more module(s), not drawn.",
+            g.nodes.len() - limit
+        ));
+    }
+    out.push(String::new());
+    out.push("  ● bound out of   ○ nothing bound out of   ~ambiguous   ?unresolved".into());
+    out.push("  An edge is a call site the resolver bound to a definition in another".into());
+    out.push("  module. Absence of an edge is absence of a binding, not absence of a call.".into());
+    out
+}
+
+/// The codebase graph for `root`, as lines, for a caller with no stdout.
+///
+/// Builds the index rather than reading the cache: the interface offers this
+/// while a repository is being edited, and a cached graph would describe the
+/// tree as it stood before the run the user has just watched.
+pub(crate) fn codebase_lines(root: &Path, limit: usize) -> Vec<String> {
+    let sources = trellis_index::read_sources(root);
+    let index = trellis_index::build_from_sources(&sources);
+    graph_lines(&trellis_index::module_graph(&index), limit)
+}
+
+/// Cuts a module path to the column, keeping the end.
+///
+/// The tail is what distinguishes `poetry.console.commands.add` from
+/// `poetry.console.commands.remove`; the head is shared by hundreds of them.
+fn truncate_module(m: &str, width: usize) -> String {
+    let n = m.chars().count();
+    if n <= width {
+        return m.to_string();
+    }
+    let keep = width.saturating_sub(1);
+    std::iter::once('…')
+        .chain(m.chars().skip(n - keep))
+        .collect()
 }
 
 fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {

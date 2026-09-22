@@ -204,6 +204,38 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
             let tx = tx.clone();
             async move {
                 while let Some(task) = task_rx.recv().await {
+                    // `/codebase` is a filesystem read, so the interface
+                    // declined it and it arrived here. Answered before the
+                    // classifier, because it is not a question for a model
+                    // and sending it to one would spend a call discovering
+                    // that.
+                    if task.trim_start().starts_with("/codebase") {
+                        let root = root.clone();
+                        let limit = task
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .unwrap_or(20);
+                        // On a blocking worker: indexing a large repository
+                        // is seconds of parsing, and doing it on this thread
+                        // would freeze the interface that is meant to be
+                        // showing it.
+                        let lines = tokio::task::spawn_blocking(move || {
+                            crate::codebase_lines(&root, limit)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            vec!["! reading the index panicked; nothing was changed".into()]
+                        });
+                        for line in lines {
+                            let _ = tx
+                                .send(tui::message::Message::AgentToken(format!("{line}\n")))
+                                .await;
+                        }
+                        let _ = tx.send(tui::message::Message::RunFinished).await;
+                        continue;
+                    }
+
                     // Not everything typed here is work.
                     //
                     // Every input used to become an agent run — a snapshot,

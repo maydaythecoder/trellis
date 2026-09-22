@@ -144,9 +144,10 @@ operation that let it go stale three times in one session.*
 **The owner reset the order on 2026-09-21: "i need it to work before its good,
 focus on working then improve."** Five items, in their words: text output for
 non-tasks, then actions for tasks, then an action log, then an action graph,
-then a codebase graph. The correctness campaign and the quality audit
-(`CORRECTNESS_LEDGER.md`, `QUALITY_LEDGER.md`) are paused behind them, not
-abandoned.
+then a codebase graph. **All five are done**, each verified against qwen3:8b
+through the interface rather than asserted. The correctness campaign and the
+quality audit (`CORRECTNESS_LEDGER.md`, `QUALITY_LEDGER.md`) are paused behind
+them, not abandoned.
 
 ### 1. Text output for non-tasks — **done**
 
@@ -189,30 +190,65 @@ A run's narration goes to a `&mut dyn Write`. It used to `println!` onto the
 terminal ratatui owned, drawing the rollback notice and the trail path through
 the panes mid-border.
 
-### 3. An action log — **next**
+### 3. An action log — **done**
 
-The trail records what a run *proposed* and what the checks *said*. It does not
-record what the agent **did**: `factual` has `proposed`, `checks` and
-`check_outcomes`, and no list of tool calls. So the one question a reader asks
-first — what did it actually do, in order — is answerable only from a terminal
-scrollback that no longer exists.
+`Factual.actions` holds one entry per turn: the tool, what it was aimed at,
+what came back in one line, and whether it wrote. `trellis log --actions`
+prints them.
 
-Wanted: every action, in order, with its outcome, persisted in the trail and
-readable back. Constraints that already apply and do not relax here — the
-digest covers it (ADR 0007), it reads back as untrusted data (S10), and an
-action's outcome is not a verdict (ADR 0004).
+No `passed` field, deliberately — an edit that applied is not an edit that was
+correct, and `check_outcomes` remains the only field carrying a correctness
+claim (ADR 0004). `wrote` is the bit that cannot be recovered from anywhere
+else: `proposed` names the files a run ended up touching, not which action did
+the touching. A trail written before the field says so rather than reporting
+"0 actions"; those are different claims and the turn count tells them apart.
 
-### 4. An action graph
+Immediately useful. The first run recorded under it converged in 5 iterations
+and the log shows why it was not 2 — three were edits refused for a bad anchor,
+which nothing previously recorded.
 
-Item 3's list, drawn. The interface already has the shape in `radius` and in
-`tui-demo`'s converging-edge rendering; `ui_examples/preview.webp` is the
-reference, and the owner asked for it on the side rather than in the centre.
+### 4. An action graph — **done**
 
-### 5. A codebase graph
+The log, drawn, leading the right-hand column. Nodes are the tools the loop can
+call, edges converge on a focus counting the run's actions, a filled node ran
+and a ring did not. `*` marks the action that changed the tree, and the caption
+counts those — never as a fraction of actions, because the two populations are
+not comparable (ADR 0014).
 
-The index already holds it. What is missing is a view of it that never claims
-completeness (Constraint 1) and never collapses reach and doubt into a ratio
-(ADR 0014).
+A refused edit is on the graph. The run this pane exists to show is the one that
+tried three times and wrote once, and a graph built from successes would draw
+that as a run that acted once.
+
+Building it surfaced three defects, all the live view disagreeing with the trail
+about the same run: a second `edit` node spelled `Edit`, from the "no progress"
+warning carrying a `call` field; "nothing written to the tree" for a run whose
+trail recorded the write, because `%` reaches a subscriber through
+`record_debug` and `observation` was claimed only in `record_str`; and the
+governance audit pushing a turn with no event, so the trail recorded a check
+the interface never saw.
+
+### 5. A codebase graph — **done**
+
+`trellis_index::module_graph` collapses the symbol graph to modules: a node is a
+module, an edge means some definition in one calls some definition in another,
+and carries how many call sites did. `trellis index --graph` draws it, and
+`/codebase` draws it in the interface — one renderer, because two would drift.
+
+It refuses the two things this project keeps having to refuse. No fraction: bound
+edges, ambiguous and unresolved are three counts from different populations, and
+dividing them once printed "3.7% resolved" for a resolver audited at 72%
+(ADR 0014). No claim of completeness: a module with no outgoing edges is one
+nothing was *bound* out of, not one that calls nothing, and the per-node
+unresolved count is how a reader tells those apart (Constraint 1).
+
+### What is worth doing next
+
+Not more features. The five are done and each is verified against a live model
+rather than asserted. What the action log now makes visible is where the next
+work is: the loop converges, but it spends turns re-guessing edit anchors it has
+already been shown. That is a measurable quantity — actions per converged run —
+and it is the first number in this project that can be improved against a
+recorded baseline rather than an impression.
 
 ### Paused behind the five
 
