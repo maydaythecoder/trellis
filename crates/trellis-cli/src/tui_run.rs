@@ -83,6 +83,32 @@ impl std::io::Write for TranscriptSink {
     }
 }
 
+/// The tier label for the status bar, from what the runtime actually does.
+///
+/// Three answers, and the third is why this returns a label rather than a
+/// tier: a probe that could not run has not established that the schema is
+/// ignored, only that nothing is known. Saying `?` is the difference between
+/// an unverified claim and a false one — the same distinction `trellis run`
+/// draws in its banner, kept in step here deliberately.
+async fn tier_from_probe(spec: &trellis_model::ModelSpec) -> String {
+    let trellis_model::ModelSpec::Runtime {
+        dialect,
+        base,
+        model,
+    } = spec
+    else {
+        return "scripted".to_string();
+    };
+    let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, model.clone()) else {
+        return "?".to_string();
+    };
+    match client.probe_constraint().await {
+        Ok(true) => "2".to_string(),
+        Ok(false) => "4, no schema".to_string(),
+        Err(_) => "?".to_string(),
+    }
+}
+
 /// What the interface is told when a run ends, whatever way it ended.
 ///
 /// Separate from the driver so it can be exercised without a terminal. The
@@ -175,12 +201,20 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         ));
     };
 
-    // What the status bar shows. Derived once, here, rather than guessed by
-    // the view.
+    // What the status bar shows before anything has been asked.
+    //
+    // This used to read `_ => "2"`, under a comment claiming the tier was
+    // derived here rather than guessed by the view. It was a guess that had
+    // moved: every runtime spec produced "2" regardless of the runtime, so
+    // the status bar said `tier 2` while the run beneath it said `tier 4, no
+    // schema` — two halves of one screen disagreeing about the same fact.
+    //
+    // Whether a runtime honours a schema cannot be read off its address. It
+    // has to be asked, and the answer arrives from the probe below.
     let spec_label = spec.clone();
     let tier_label = match spec.split(':').next() {
         Some("scripted") => "scripted".to_string(),
-        _ => "2".to_string(),
+        _ => "probing…".to_string(),
     };
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -200,6 +234,22 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         let spec_for_ask: trellis_model::ModelSpec = spec
             .parse()
             .unwrap_or(trellis_model::ModelSpec::Scripted(std::path::PathBuf::new()));
+        // Ask the runtime what it actually does with a schema, and label the
+        // status bar with the answer.
+        //
+        // Its own task, so the interface opens immediately and a task typed
+        // in the first second is not queued behind a model call. The label
+        // settles a moment later; until then it says it is still asking,
+        // which is true and is not the same as "2".
+        tokio::spawn({
+            let tx = tx.clone();
+            let spec = spec_for_ask.clone();
+            async move {
+                let label = tier_from_probe(&spec).await;
+                let _ = tx.send(tui::message::Message::TierKnown(label)).await;
+            }
+        });
+
         let driver = tokio::spawn({
             let tx = tx.clone();
             async move {
@@ -358,6 +408,31 @@ mod tests {
             out.push(t);
         }
         out
+    }
+
+    #[tokio::test]
+    async fn a_runtime_that_cannot_be_reached_does_not_claim_a_tier() {
+        // The defect: the status bar said `tier 2` for every runtime spec,
+        // derived from nothing, while the run beneath it reported `tier 4, no
+        // schema`. A probe that could not run has established that nothing is
+        // known — not that the schema is honoured.
+        let spec: trellis_model::ModelSpec = "vllm:http://127.0.0.1:1"
+            .parse()
+            .expect("a loopback spec parses");
+        assert_eq!(tier_from_probe(&spec).await, "?");
+    }
+
+    #[tokio::test]
+    async fn a_scripted_model_is_labelled_as_one_without_asking_anything() {
+        let spec: trellis_model::ModelSpec = "scripted:/tmp/x.json".parse().unwrap();
+        assert_eq!(tier_from_probe(&spec).await, "scripted");
+    }
+
+    #[test]
+    fn the_status_bar_takes_the_tier_the_probe_reports() {
+        let mut s = AppState::with_model("m".into(), "probing…".into());
+        s.update(Message::TierKnown("4, no schema".into()));
+        assert_eq!(s.tier, "4, no schema");
     }
 
     #[test]

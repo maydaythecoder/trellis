@@ -112,6 +112,7 @@ impl AppState {
                 status: EditStatus::Proposed,
             }),
             Message::CheckFinished { name, passed } => self.checks.push(Check { name, passed }),
+            Message::TierKnown(t) => self.tier = t,
             Message::ActionTaken {
                 tool,
                 target,

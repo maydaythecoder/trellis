@@ -21,6 +21,13 @@ pub enum Message {
         name: String,
         passed: bool,
     },
+    /// What a probe found the adapter tier to be.
+    ///
+    /// The status bar used to show a tier derived from the spec string, which
+    /// for every runtime spec meant the constant `2`. Whether a runtime
+    /// honours a schema cannot be read off its address — it has to be asked —
+    /// so the label arrives once something has asked.
+    TierKnown(String),
     /// One thing the agent did. The action graph is drawn from these.
     ///
     /// Carried as its parts rather than as the rendered call label the

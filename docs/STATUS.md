@@ -510,6 +510,27 @@ a filename that could close the prompt's file list, nine sites printing
 untrusted trail content to a terminal, and two undocumented structural
 divergences (Q-18, Q-19). What remains in this document needs a model.
 
+### 16. The status bar claimed a tier nothing had asked for
+
+Found by the owner, from a screenshot: the status bar read `tier 2` while the
+run three lines below it read `tier 4, no schema`. Two halves of one screen
+disagreeing about the same fact.
+
+The cause was a single line — `_ => "2".to_string()` — under a comment claiming
+the tier was "derived once, here, rather than guessed by the view". It was a
+guess that had moved: every runtime spec produced `2` regardless of the runtime.
+
+`trellis run` was fixed to probe two iterations ago and the interface was not,
+which is the same omission as the sanitiser: a rule applied at one site and not
+the others. The interface now asks, in its own task so the first frame is not
+delayed by a model call, and shows `probing…` until the answer arrives. Three
+outcomes, matching the run's banner deliberately: `2`, `4, no schema`, or `?`
+when the probe could not run — because a probe that failed has established that
+nothing is known, not that the schema is ignored.
+
+Measured after the change: the label settles in under three seconds and reads
+`tier 4, no schema` against ollama, which is what the run says.
+
 ### What is worth doing next
 
 **Confirm the empty-reply fix at n>1** when memory allows. One run is a
