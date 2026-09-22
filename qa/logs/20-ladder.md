@@ -177,3 +177,45 @@ Two consequences that have to be stated, not averaged away:
 `GPULayers:27 ... NumThreads:8 KvSize:4096` — note context was capped at 4096 by
 both daemons, well under qwen3's advertised 40960. Not varied here; noted so a
 later run does not read a context difference as a model difference.
+
+---
+
+## qwen3:8b is not slow — it is thinking. Measured, not inferred.
+
+The baseline's 4.34 s TTFT reads as "an 8B is too slow to drive a TUI". That
+reading is wrong, and the harness's own definition of TTFT is why.
+
+`ttft()` counts the first chunk where `delta.content` or `delta.tool_calls` is
+truthy. qwen3 is a thinking model: it streams its reasoning in a separate
+`reasoning` field with `content` set to the empty string, which is falsy. So the
+harness skips every reasoning chunk and reports time-to-first-*answer*.
+
+Streamed one request and looked at the actual deltas:
+```
+FIRST DELTA at 0.42s keys=['role', 'content', 'reasoning']
+  chunk 1 {"role": "assistant", "content": "", "reasoning": "Okay"}
+  chunk 2 {"content": "", "reasoning": ","}
+  chunk 3 {"content": "", "reasoning": " the"}
+FIRST CONTENT at 2.59s
+all delta keys seen: ['content', 'reasoning', 'role']
+```
+**Tokens start at 0.42 s. Answer tokens start at 2.59 s.** The 2.2 s between is
+thinking, and the harness attributes all of it to latency.
+
+Turning thinking off (native `/api/chat`, `think: false`, same warm model):
+```
+think=True   first content 2.86s   full reply 3.22s
+think=False  first content 0.22s   full reply 0.30s
+```
+**13x on time to first content, 11x on the complete reply.**
+
+Tool calling survives it — 3-case probe, not the full 20, and labelled as such:
+```
+case 1   0.69s  tool=read_file  args={"path": "src/main.rs"}   (expected, match)
+case 2   0.45s  tool=read_file  args={"path": "Cargo.toml"}    (expected, match)
+case 11  0.28s  tool=run_tests  args={}                        (expected, match)
+```
+
+Caveat kept attached to the number: qwen3 held a **full** 5.58 GB VRAM offload
+for these, while rung 6's qwen2.5:3b had 27/37 layers. Not yet apples to apples;
+the re-run below fixes that.

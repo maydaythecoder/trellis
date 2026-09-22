@@ -1,0 +1,33 @@
+endpoint  http://127.0.0.1:11434/v1
+model     gemma2:9b
+cases     20
+max_tokens 2048
+
+  1  ERROR       HTTP Error 400: Bad Request                                                           
+  2  ERROR       HTTP Error 400: Bad Request                                                           
+  3  ERROR       HTTP Error 400: Bad Request                                                           
+  4  ERROR       HTTP Error 400: Bad Request                                                           
+  5  ERROR       HTTP Error 400: Bad Request                                                           
+  6  ERROR       HTTP Error 400: Bad Request                                                           
+  7  ERROR       HTTP Error 400: Bad Request                                                           
+  8  ERROR       HTTP Error 400: Bad Request                                                           
+  9  ERROR       HTTP Error 400: Bad Request                                                           
+ 10  ERROR       HTTP Error 400: Bad Request                                                           
+ 11  ERROR       HTTP Error 400: Bad Request                                                           
+ 12  ERROR       HTTP Error 400: Bad Request                                                           
+ 13  ERROR       HTTP Error 400: Bad Request                                                           
+ 14  ERROR       HTTP Error 400: Bad Request                                                           
+ 15  ERROR       HTTP Error 400: Bad Request                                                           
+ 16  ERROR       HTTP Error 400: Bad Request                                                           
+ 17  ERROR       HTTP Error 400: Bad Request                                                           
+ 18  ERROR       HTTP Error 400: Bad Request                                                           
+ 19  ERROR       HTTP Error 400: Bad Request                                                           
+ 20  ERROR       HTTP Error 400: Bad Request                                                           
+
+valid tool_calls   0/20 (0%)
+correct tool       0/20 (0%)
+correct arguments  0/20 (0%)
+text / JSON-in-prose 0/20 (0%)
+transport errors   20/20
+wall clock         0.8s for 20 requests
+time to first token 63.99s

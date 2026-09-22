@@ -165,8 +165,37 @@ async fn run_effects(
                         let c = c.clone();
                         let msgs = history.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = c.stream(&msgs, None, ctx.clone()).await {
-                                let _ = ctx.send(client::Chunk::Token(format!("! {e}"))).await;
+                            // Offered, then retried without if the model
+                            // cannot take them.
+                            //
+                            // Not every weight supports tools, and the
+                            // endpoint refuses the whole request when one
+                            // does not — ollama answers "llama3:latest does
+                            // not support tools" and returns nothing. So
+                            // offering them unconditionally turns a model
+                            // that worked into one that fails every turn,
+                            // which is what happened the moment they were
+                            // wired up. One retry, and the user is told the
+                            // model is answering without tools rather than
+                            // left wondering why the graph never fills.
+                            let offered = tools();
+                            let first = c.stream(&msgs, Some(&offered), ctx.clone()).await;
+                            if let Err(e) = first {
+                                if e.contains("does not support tools") {
+                                    let _ = ctx
+                                        .send(client::Chunk::Token(
+                                            "! this model does not support tools;                                              answering without them
+"
+                                                .into(),
+                                        ))
+                                        .await;
+                                    if let Err(e2) = c.stream(&msgs, None, ctx.clone()).await {
+                                        let _ =
+                                            ctx.send(client::Chunk::Token(format!("! {e2}"))).await;
+                                    }
+                                } else {
+                                    let _ = ctx.send(client::Chunk::Token(format!("! {e}"))).await;
+                                }
                                 let _ = ctx.send(client::Chunk::Done).await;
                             }
                         });
@@ -457,6 +486,68 @@ async fn run_effects(
             }
         }
     }
+}
+
+/// The tools this interface offers the model.
+///
+/// **It offered none.** The stream was opened with `None`, so no definitions
+/// ever reached the endpoint, so no model could ever answer with a
+/// `tool_calls` array — which made the `Chunk::ToolCall` arm that forwards
+/// one to the interface unreachable in production. The tool pane and the
+/// graph could only ever have been filled by the mock, which synthesises a
+/// call it was never offered.
+///
+/// The names match `tui::widgets::graph::KNOWN_TOOLS`, so a call that comes
+/// back lands on a node the graph already draws rather than appending an
+/// unknown one.
+fn tools() -> Vec<client::Tool> {
+    vec![
+        client::Tool::new(
+            "read_file",
+            "Read a file from the repository and return its contents.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "path relative to the repository root" }
+                },
+                "required": ["path"]
+            }),
+        ),
+        client::Tool::new(
+            "run_tests",
+            "Run the project's test suite, optionally filtered to matching test names.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "filter": { "type": "string", "description": "substring of the test names to run" }
+                }
+            }),
+        ),
+        client::Tool::new(
+            "edit",
+            "Replace an exact string in a file. `old` must occur exactly once.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "old": { "type": "string" },
+                    "new": { "type": "string" }
+                },
+                "required": ["path", "old", "new"]
+            }),
+        ),
+        client::Tool::new(
+            "blast_radius",
+            "Which first-party call sites reach a symbol, with its coverage.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "dotted symbol name" }
+                },
+                "required": ["symbol"]
+            }),
+        ),
+    ]
 }
 
 /// Four bytes to a token.
