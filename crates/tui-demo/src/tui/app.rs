@@ -40,6 +40,8 @@ pub struct AppState {
     /// runtime` render as `> hello! cannot reach the runtime`: two
     /// unrelated statements read as one sentence.
     line_open: bool,
+    /// What the agent has done this run, in order. The action graph's data.
+    pub actions: Vec<Action>,
     pub edits: Vec<Edit>,
     pub checks: Vec<Check>,
     pub radius: Radius,
@@ -47,6 +49,19 @@ pub struct AppState {
     pub modal: Option<Modal>,
     pub scroll: u16,
     pub should_quit: bool,
+}
+
+/// One thing the agent did.
+///
+/// No outcome field and no `passed`. The graph says what was done and whether
+/// it wrote; whether it was *correct* is the checks pane's business, and only
+/// an executed check can answer it (ADR 0004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    pub tool: String,
+    pub target: String,
+    /// Whether this action changed the working tree.
+    pub wrote: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +112,15 @@ impl AppState {
                 status: EditStatus::Proposed,
             }),
             Message::CheckFinished { name, passed } => self.checks.push(Check { name, passed }),
+            Message::ActionTaken {
+                tool,
+                target,
+                wrote,
+            } => self.actions.push(Action {
+                tool,
+                target,
+                wrote,
+            }),
             Message::RadiusUpdated {
                 resolved,
                 candidates,

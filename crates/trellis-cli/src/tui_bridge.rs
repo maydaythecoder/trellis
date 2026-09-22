@@ -54,12 +54,24 @@ impl Visit for TurnFields {
         }
     }
 
+    /// Where `%` values arrive as well as `?` ones.
+    ///
+    /// Both sigils reach a subscriber through `record_debug` — `%` wraps the
+    /// value in a type whose `Debug` delegates to `Display`. So a field
+    /// handled only in `record_str` is silently dropped when the emitter
+    /// writes `field = %value`, and `observation` was: the loop emits
+    /// `observation = %tail(...)`, nothing here claimed it, and the action
+    /// graph reported "nothing written to the tree" for a run whose trail
+    /// recorded the write. The test that should have caught it passed a plain
+    /// `&str`, which takes the other path.
     fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
         let s = format!("{v:?}");
         match f.name() {
             "verdict" => self.verdict = Some(s),
             "message" => self.message = Some(s.trim_matches('"').to_string()),
             "call" => self.call = Some(s),
+            "observation" => self.observation = Some(s),
+            "check_kind" => self.check_kind = Some(s),
             _ => {}
         }
     }
@@ -90,7 +102,12 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         let mut f = TurnFields::default();
         event.record(&mut f);
 
-        let Some(call) = f.call.clone() else {
+        // A turn is an event with *both* a call and a turn number. A `call`
+        // alone is not enough: the loop's "no progress; stopping" warning
+        // carried one too, as a `Debug` rendering, and the graph grew a second
+        // `Edit` node — spelled with a capital E, because that is how the
+        // variant's name is spelled — beside the real one.
+        let Some(call) = f.call.clone().filter(|_| f.turn.is_some()) else {
             // Not a turn. Anything the loop says at warn or above is still
             // worth showing — "no progress; stopping" is the explanation for
             // a run that is about to end.
@@ -116,6 +133,27 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
             for l in obs.lines().take(6) {
                 self.emit(Message::AgentToken(format!("    {l}\n")));
             }
+        }
+
+        // Every turn is an action, whatever it was and however it went. The
+        // graph is drawn from these, so a refused edit has to reach it too:
+        // a run that tried four times and wrote once is the run the graph
+        // exists to show, and one built only from successes would draw it as
+        // a run that acted once.
+        {
+            let mut parts = call.splitn(2, ' ');
+            let tool = parts.next().unwrap_or_default().to_string();
+            let target = parts.next().unwrap_or_default().to_string();
+            self.emit(Message::ActionTaken {
+                tool,
+                target,
+                // Only an applied edit changed the tree. The observation is
+                // the only place that says so.
+                wrote: call.starts_with("edit ")
+                    && f.observation
+                        .as_deref()
+                        .is_some_and(|o| o.contains("applied: true")),
+            });
         }
 
         // An edit is a proposal until the checks and the user agree.
@@ -252,6 +290,97 @@ mod tests {
             !got.iter()
                 .any(|m| matches!(m, Message::CheckFinished { .. })),
             "an edit is not a check: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_turn_becomes_an_action_whether_or_not_it_wrote() {
+        // The run the graph exists to show: several attempts, one write.
+        // Drawn from successes alone it would look like a run that acted once.
+        let refused = capture(|| {
+            tracing::info!(
+                turn = 1u64,
+                call = "edit app/calc.py",
+                verdict = ?None::<bool>,
+                observation = "error: edit anchor not found in app/calc.py",
+                "turn"
+            );
+        });
+        assert!(
+            refused.iter().any(|m| matches!(
+                m,
+                Message::ActionTaken { tool, target, wrote }
+                    if tool == "edit" && target == "app/calc.py" && !*wrote
+            )),
+            "a refused edit is still an action, and wrote nothing: {refused:?}"
+        );
+
+        let applied = capture(|| {
+            tracing::info!(
+                turn = 2u64,
+                call = "edit app/calc.py",
+                verdict = ?None::<bool>,
+                observation = "edited app/calc.py (applied: true, bytes 59..87)",
+                "turn"
+            );
+        });
+        assert!(
+            applied
+                .iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if *wrote)),
+            "an applied edit did: {applied:?}"
+        );
+    }
+
+    #[test]
+    fn an_observation_written_with_the_display_sigil_still_arrives() {
+        // How the loop actually emits it. `%` reaches a subscriber through
+        // `record_debug`, not `record_str`, so a field claimed only in the
+        // latter is dropped — and this one was, which made the action graph
+        // say "nothing written to the tree" about a run that wrote. The test
+        // above passes a plain `&str` and takes the other path, which is why
+        // it did not catch this.
+        let got = capture(|| {
+            tracing::info!(
+                turn = 3u64,
+                call = %"edit app/calc.py",
+                verdict = ?None::<bool>,
+                observation = %"edited app/calc.py (applied: true, bytes 59..87)",
+                "turn"
+            );
+        });
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if *wrote)),
+            "the write has to survive the sigil the loop actually uses: {got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::AgentToken(t) if t.contains("applied: true"))),
+            "and reach the transcript: {got:?}"
+        );
+    }
+
+    #[test]
+    fn the_no_progress_warning_is_not_counted_as_another_turn() {
+        // It carries a `call` field, as a `Debug` rendering of the repeated
+        // call, and the graph grew a second `Edit` node beside the real one —
+        // spelled with a capital E, because that is the variant's name.
+        let got = capture(|| {
+            tracing::warn!(
+                repeated_call = ?"Edit { path: \"app/calc.py\" }",
+                repeats = 3,
+                "no progress; stopping"
+            );
+        });
+        assert!(
+            !got.iter().any(|m| matches!(m, Message::ActionTaken { .. })),
+            "a diagnosis of several turns is not one more of them: {got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::AgentToken(t) if t.contains("no progress"))),
+            "but it still has to reach the pane: {got:?}"
         );
     }
 

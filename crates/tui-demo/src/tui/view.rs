@@ -40,6 +40,10 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            // The action graph gets the emphasis and the sidebar, both asked
+            // for. `Fill(2)` against the panes below it: it is the pane that
+            // answers "what is it doing", and the others qualify the answer.
+            Constraint::Fill(2), // action graph
             Constraint::Fill(1), // edits
             Constraint::Fill(1), // checks
             // Six: three node rows, the caption, and two borders. At four
@@ -51,9 +55,10 @@ pub fn render(state: &AppState, frame: &mut Frame) {
 
     render_status(state, rows[0], frame);
     render_transcript(state, body[0], frame);
-    render_edits(state, right[0], frame);
-    render_checks(state, right[1], frame);
-    render_radius(state, right[2], frame);
+    render_actions(state, right[0], frame);
+    render_edits(state, right[1], frame);
+    render_checks(state, right[2], frame);
+    render_radius(state, right[3], frame);
     render_budget(state, rows[2], frame);
     render_input(state, rows[3], frame);
 
@@ -239,6 +244,152 @@ fn render_radius(state: &AppState, area: Rect, frame: &mut Frame) {
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Tools the loop can call, in the order the prompt offers them.
+///
+/// A fixed list rather than a tally of what has been called, so the graph can
+/// show a tool that was available and was *not* used. That difference is what
+/// makes it a graph rather than a list of counts: a run that never read a file
+/// before editing it looks different from one that did, and a pane built only
+/// from what happened cannot show the difference.
+const TOOLS: [&str; 4] = ["blast_radius", "read_file", "edit", "run_checks"];
+
+/// The action graph: what this run has called, as converging edges.
+///
+/// The reference is `ui_examples/preview.webp` — nodes with edges meeting at a
+/// focus — and the owner asked for it on the side rather than in the centre,
+/// so it leads the right-hand column and the transcript keeps its width.
+///
+/// A filled node is a tool that ran, a ring one that did not. Counts sit
+/// against the node they belong to. Nothing here says whether anything was
+/// *correct*: that is the checks pane, and only an executed check can say it.
+fn render_actions(state: &AppState, area: Rect, frame: &mut Frame) {
+    let block = Block::default().borders(Borders::ALL).title(" actions ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width < 24 {
+        return;
+    }
+
+    // Anything the model called that this list has not heard of still belongs
+    // on the graph: a node missing because a constant was out of date would
+    // make the picture a lie about what ran.
+    let mut names: Vec<&str> = TOOLS.to_vec();
+    for a in &state.actions {
+        if !names.contains(&a.tool.as_str()) {
+            names.push(&a.tool);
+        }
+    }
+
+    let mid = names.len() / 2;
+    let label_w = names.iter().map(|n| n.len()).max().unwrap_or(0);
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, name) in names.iter().enumerate() {
+        let calls = state.actions.iter().filter(|a| a.tool == *name).count();
+        let wrote = state.actions.iter().any(|a| a.tool == *name && a.wrote);
+        let connector = if i == 0 {
+            '┐'
+        } else if i == names.len() - 1 {
+            '┘'
+        } else {
+            '┤'
+        };
+        let (glyph, colour) = if calls == 0 {
+            ('○', Color::DarkGray)
+        } else if wrote {
+            // The one node whose colour carries a fact rather than a status:
+            // this tool changed the tree.
+            ('●', Color::Yellow)
+        } else {
+            ('●', Color::Green)
+        };
+        let label_style = if calls == 0 {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        let mut spans = vec![
+            Span::styled(format!("  {name:<label_w$}"), label_style),
+            Span::styled(
+                if calls == 0 {
+                    "     ".to_string()
+                } else {
+                    format!("{calls:>4} ")
+                },
+                Style::default().fg(colour).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(glyph.to_string(), Style::default().fg(colour)),
+            Span::styled(
+                format!("─{connector}"),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        if i == mid {
+            let n = state.actions.len();
+            spans.push(Span::styled("──◆ ", Style::default().fg(Color::Magenta)));
+            spans.push(Span::styled(
+                format!("{n} action{}", if n == 1 { "" } else { "s" }),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // What the graph cannot show in a node: how much of this reached the tree.
+    // Said as a count of actions, never as a fraction of them — the two
+    // populations a ratio would divide are not comparable (ADR 0014).
+    if inner.height as usize > lines.len() {
+        let wrote = state.actions.iter().filter(|a| a.wrote).count();
+        lines.push(Line::from(Span::styled(
+            if state.actions.is_empty() {
+                "  nothing yet".to_string()
+            } else if wrote == 0 {
+                "  nothing written to the tree".to_string()
+            } else {
+                format!("  {wrote} wrote to the tree")
+            },
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    // The most recent actions, newest last, in whatever room is left. The
+    // graph says what kind of work happened; this says what it was aimed at.
+    let room = (inner.height as usize).saturating_sub(lines.len());
+    if room > 0 && !state.actions.is_empty() {
+        for a in state.actions.iter().rev().take(room).rev() {
+            let mark = if a.wrote { '*' } else { '·' };
+            lines.push(Line::from(Span::styled(
+                truncate(
+                    &format!("  {mark} {} {}", a.tool, a.target),
+                    inner.width as usize,
+                ),
+                Style::default().fg(if a.wrote {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                }),
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Cuts a line to the pane, saying so, rather than letting it wrap.
+///
+/// A wrapped row breaks the edge column and the graph stops reading as one
+/// figure.
+fn truncate(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    s.chars()
+        .take(width.saturating_sub(1))
+        .chain(['…'])
+        .collect()
 }
 
 fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
@@ -438,5 +589,93 @@ mod tests {
             out.contains("input held"),
             "and says why it is not taking any:\n{out}"
         );
+    }
+
+    fn acted(actions: &[(&str, &str, bool)]) -> AppState {
+        let mut s = populated();
+        for (tool, target, wrote) in actions {
+            s.update(Message::ActionTaken {
+                tool: (*tool).into(),
+                target: (*target).into(),
+                wrote: *wrote,
+            });
+        }
+        s
+    }
+
+    #[test]
+    fn every_tool_is_a_node_before_any_of_them_is_called() {
+        // A pane built only from what happened could not show what was
+        // available and was not chosen, which is half of what makes this a
+        // graph rather than a list of counts.
+        let out = drawn(&populated(), 100, 40);
+        for tool in TOOLS {
+            assert!(out.contains(tool), "`{tool}` missing:\n{out}");
+        }
+        assert!(out.contains('○'), "an uncalled tool is a ring:\n{out}");
+        assert!(out.contains("nothing yet"), "{out}");
+    }
+
+    #[test]
+    fn a_refused_edit_is_on_the_graph_and_is_not_counted_as_a_write() {
+        // The run this pane exists to show: four attempts, one write. Drawn
+        // from successes alone it would look like a run that acted once.
+        let s = acted(&[
+            ("edit", "app/calc.py", false),
+            ("edit", "app/calc.py", false),
+            ("edit", "app/calc.py", true),
+        ]);
+        let out = drawn(&s, 100, 40);
+        assert!(out.contains("3 actions"), "all three are actions:\n{out}");
+        assert!(out.contains("1 wrote to the tree"), "one wrote:\n{out}");
+    }
+
+    #[test]
+    fn a_run_that_only_looked_says_so_rather_than_leaving_it_blank() {
+        let s = acted(&[("read_file", "app/calc.py", false)]);
+        let out = drawn(&s, 100, 40);
+        assert!(out.contains("1 action"), "{out}");
+        assert!(!out.contains("1 actions"), "one action, not one actions");
+        assert!(
+            out.contains("nothing written to the tree"),
+            "silence here reads as an unfinished pane:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_tool_this_view_has_never_heard_of_still_reaches_the_graph() {
+        // A node missing because a constant was out of date would make the
+        // picture a lie about what actually ran.
+        let s = acted(&[("summon_kraken", "the deep", false)]);
+        let out = drawn(&s, 100, 40);
+        assert!(out.contains("summon_kraken"), "{out}");
+    }
+
+    #[test]
+    fn the_edges_converge_on_one_focus() {
+        let out = drawn(&acted(&[("edit", "a.py", true)]), 100, 40);
+        assert_eq!(
+            out.matches('◆').count(),
+            2,
+            "one focus for actions and one for radius, not one per row:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_long_target_is_cut_rather_than_wrapped_through_the_edges() {
+        let long = "app/".to_string() + &"very_deep/".repeat(12) + "mod.py";
+        let s = acted(&[("edit", &long, true)]);
+        // Tall enough that the recent-action rows have room, narrow enough
+        // that this path cannot fit in one.
+        let out = drawn(&s, 80, 40);
+        assert!(out.contains('…'), "a cut row says it was cut:\n{out}");
+    }
+
+    #[test]
+    fn the_graph_survives_a_pane_too_narrow_to_draw_it() {
+        let s = acted(&[("edit", "a.py", true)]);
+        for w in [80u16, 81, 90, 120] {
+            let _ = drawn(&s, w, 24);
+        }
     }
 }

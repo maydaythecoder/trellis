@@ -444,6 +444,24 @@ pub async fn run_seeded<M: Model>(
                     };
                     if let Some(ToolResult::Checks(v)) = &gate {
                         let detail = v.detail();
+                        // The gate's audit is a turn like any other and has to
+                        // report like one. It used to go straight into `turns`
+                        // with no event, so the trail recorded a governance
+                        // check that anything watching the run — the
+                        // interface's checks pane, its action graph —
+                        // never saw. A trail and a live view that disagree
+                        // about what ran is worse than either alone.
+                        tracing::info!(
+                            turn = iterations,
+                            call = %call_label(&ToolCall::RunChecks {
+                                paths: Vec::new(),
+                                kinds: vec![CheckKind::Governance],
+                            }),
+                            verdict = ?Some(v.passed()),
+                            check_kind = %format!("{:?}", detail.kind),
+                            observation = %tail(&detail.stdout, 6),
+                            "turn"
+                        );
                         t.turns.push(Turn {
                             observation: detail.stdout.clone(),
                             call: ToolCall::RunChecks {
@@ -590,7 +608,10 @@ pub async fn run_seeded<M: Model>(
                 });
 
                 if repeats >= NO_PROGRESS_REPEATS {
-                    tracing::warn!(?call, repeats, "no progress; stopping");
+                    // `repeated_call` rather than `call`: a field named `call` is what
+                    // the interface reads as a turn, and this is a diagnosis of
+                    // several turns rather than one more of them.
+                    tracing::warn!(repeated_call = ?call, repeats, "no progress; stopping");
                     return (
                         Outcome::NotConverged {
                             reason: NotConverged::NoProgress {

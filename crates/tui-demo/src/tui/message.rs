@@ -21,6 +21,16 @@ pub enum Message {
         name: String,
         passed: bool,
     },
+    /// One thing the agent did. The action graph is drawn from these.
+    ///
+    /// Carried as its parts rather than as the rendered call label the
+    /// transcript shows: the graph groups by tool and counts writes, and
+    /// re-parsing a string assembled for display is not a way to know either.
+    ActionTaken {
+        tool: String,
+        target: String,
+        wrote: bool,
+    },
     RadiusUpdated {
         resolved: usize,
         candidates: usize,
