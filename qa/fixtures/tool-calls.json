@@ -1,0 +1,57 @@
+{
+  "_comment": "Twenty questions, each requiring exactly one of two tools. Frozen so a later run measures the same thing and the numbers are comparable. Ten per tool, deliberately balanced: a model that always picks the first tool scores 10/20 on 'correct tool' rather than accidentally passing.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file from the repository and return its contents.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "path relative to the repository root" }
+          },
+          "required": ["path"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_tests",
+        "description": "Run the project's test suite, optionally filtered to matching test names.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "filter": { "type": "string", "description": "substring of the test names to run" }
+          },
+          "required": []
+        }
+      }
+    }
+  ],
+  "system": "You have tools. Use them rather than describing what you would do. Reply with a tool call, not prose.",
+  "cases": [
+    { "id": 1,  "prompt": "What does src/main.rs contain? Read it.",                              "tool": "read_file", "args": { "path": "src/main.rs" } },
+    { "id": 2,  "prompt": "Show me the contents of Cargo.toml.",                                  "tool": "read_file", "args": { "path": "Cargo.toml" } },
+    { "id": 3,  "prompt": "Open src/lib.rs and tell me what is in it.",                           "tool": "read_file", "args": { "path": "src/lib.rs" } },
+    { "id": 4,  "prompt": "I need to see README.md.",                                             "tool": "read_file", "args": { "path": "README.md" } },
+    { "id": 5,  "prompt": "Read the file at src/tui/app.rs.",                                     "tool": "read_file", "args": { "path": "src/tui/app.rs" } },
+    { "id": 6,  "prompt": "Fetch the contents of .gitignore for me.",                             "tool": "read_file", "args": { "path": ".gitignore" } },
+    { "id": 7,  "prompt": "What is written in docs/BRIEF.md?",                                    "tool": "read_file", "args": { "path": "docs/BRIEF.md" } },
+    { "id": 8,  "prompt": "Load src/model/client.rs so I can review it.",                         "tool": "read_file", "args": { "path": "src/model/client.rs" } },
+    { "id": 9,  "prompt": "Print the contents of build.rs.",                                      "tool": "read_file", "args": { "path": "build.rs" } },
+    { "id": 10, "prompt": "Take a look inside src/commands/mod.rs.",                              "tool": "read_file", "args": { "path": "src/commands/mod.rs" } },
+
+    { "id": 11, "prompt": "Run the test suite.",                                                  "tool": "run_tests", "args": {} },
+    { "id": 12, "prompt": "Execute the tests and tell me if they pass.",                          "tool": "run_tests", "args": {} },
+    { "id": 13, "prompt": "Run only the tests whose names contain 'parser'.",                     "tool": "run_tests", "args": { "filter": "parser" } },
+    { "id": 14, "prompt": "Please run the tests matching 'scroll'.",                              "tool": "run_tests", "args": { "filter": "scroll" } },
+    { "id": 15, "prompt": "Check whether the suite is green.",                                    "tool": "run_tests", "args": {} },
+    { "id": 16, "prompt": "Run the tests filtered to 'context'.",                                 "tool": "run_tests", "args": { "filter": "context" } },
+    { "id": 17, "prompt": "I want to know if anything is failing — run them.",                    "tool": "run_tests", "args": {} },
+    { "id": 18, "prompt": "Kick off the test run for tests named like 'loader'.",                 "tool": "run_tests", "args": { "filter": "loader" } },
+    { "id": 19, "prompt": "Verify the project by running its tests.",                             "tool": "run_tests", "args": {} },
+    { "id": 20, "prompt": "Run the tests that mention 'terminal'.",                               "tool": "run_tests", "args": { "filter": "terminal" } }
+  ]
+}

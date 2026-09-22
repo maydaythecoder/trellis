@@ -1,0 +1,1 @@
+{"cycles":1,"errors":[["sh -c 'sleep 4; echo \"slow failure $(date +%s%N)\" >&2; exit 1': `sh -c 'sleep 4; echo \"slow failure $(date +%s%N)\" >&2; exit 1'` killed by /stop"]]}
