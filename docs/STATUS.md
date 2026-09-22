@@ -381,6 +381,45 @@ annotation, and the 4-action figure describes the latter only.
 Two of the six turns still went to ambiguous anchors, because a rename's
 natural anchor is a bare identifier that occurs several times.
 
+### 10. A bound on one dimension is not a bound — three found by reading
+
+No inference this iteration: the harness had just killed three background tasks
+for system memory pressure, so the measurement backlog stayed parked and the
+session's own new code got read instead. Mutation testing would have been the
+project's usual tool and is memory-hungry, which is exactly what was scarce.
+
+- **`excerpt` bounded lines but not bytes.** It quotes a file back when an edit
+  anchor misses, capped at 120 lines — and generated Python puts data blobs on
+  one line, so 120 lines can be megabytes. That text goes into an observation,
+  which goes into the prompt, where the window is the scarce resource (S5). Now
+  capped at 8 KiB as well, cut on a character boundary because Python source is
+  UTF-8 and an identifier does not have to be ASCII.
+- **The codebase graph bounded modules but not edges per module.** `--limit`
+  capped how many nodes were drawn and capped nothing else, so one hub — a
+  `utils` every module imports — could emit more rows than the whole rest of
+  the listing, into the terminal or into the interface's transcript. Ten edges
+  per node now, heaviest first, remainder stated.
+- **`trellis partitions` printed its summary twice**, from two doc-comment
+  lines saying the same thing differently, and `trellis tui` still advertised
+  the panes it had before the action graph was added.
+
+The first two are the same mistake in two places, and it is the mistake this
+project keeps making in the other direction as well: a limit that reads like a
+limit and is not one.
+
+### 11. The CLI surface has drifted from the brief — recorded as Q-18
+
+`BRIEF.md` §4.12 fixes six commands and CLAUDE.md restates the rule. The binary
+ships thirteen. Two of the seven additions have a written rationale;
+**`session`, `tui`, `log`, `why` and `model` have none** outside this document,
+which is a running log rather than a record of what was decided.
+
+None can assert a verdict or weaken a check, which is why it went unnoticed —
+no individual addition looked like a decision. The question is not whether to
+delete them but whether §4.12 is the specification and the binary has drifted,
+or §4.12 is stale. Either is fine; two documents asserting different surfaces
+is not, because the brief is what a reader is told to trust. Owner's call.
+
 ### What is worth doing next
 
 **Confirm the empty-reply fix at n>1** when memory allows. One run is a

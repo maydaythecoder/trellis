@@ -530,18 +530,42 @@ impl Orchestrator {
 /// help. A file longer than this says so and names `read_file`.
 const EXCERPT_LINES: usize = 120;
 
+/// How many bytes of a file a failed anchor may quote back.
+///
+/// A line bound alone is not a bound. Generated Python embeds data blobs on a
+/// single line, so 120 lines can be megabytes — and this text goes into an
+/// observation, which goes into the prompt, where the window is the scarce
+/// resource (S5). Roughly 120 lines of ordinary code, so the line limit is
+/// what bites for a file a person wrote and this is what bites for one a
+/// program wrote.
+const EXCERPT_BYTES: usize = 8_192;
+
 /// A file, as text to put in front of the model, bounded and honest about it.
 fn excerpt(src: &str) -> String {
     let total = src.lines().count();
-    if total <= EXCERPT_LINES {
-        return src.to_string();
+    let mut out: String = if total <= EXCERPT_LINES {
+        src.to_string()
+    } else {
+        let head: Vec<&str> = src.lines().take(EXCERPT_LINES).collect();
+        format!(
+            "{}\n...{} more line(s) not shown. Use read_file for the rest.",
+            head.join("\n"),
+            total - EXCERPT_LINES
+        )
+    };
+
+    if out.len() > EXCERPT_BYTES {
+        // On a character boundary: a Python file is UTF-8 and slicing by
+        // bytes would panic on the identifier of anyone who does not write
+        // in ASCII.
+        let cut = (0..=EXCERPT_BYTES)
+            .rev()
+            .find(|i| out.is_char_boundary(*i))
+            .unwrap_or(0);
+        out.truncate(cut);
+        out.push_str("\n...cut here; the rest of this file is too large to show.");
     }
-    let head: Vec<&str> = src.lines().take(EXCERPT_LINES).collect();
-    format!(
-        "{}\n...{} more line(s) not shown. Use read_file for the rest.",
-        head.join("\n"),
-        total - EXCERPT_LINES
-    )
+    out
 }
 
 #[cfg(test)]
@@ -775,6 +799,30 @@ mod tests {
     fn a_short_file_is_quoted_whole_and_unannotated() {
         let src = "a\nb\nc\n";
         assert_eq!(excerpt(src), src, "nothing to say about an uncut file");
+    }
+
+    #[test]
+    fn a_few_enormous_lines_are_bounded_too() {
+        // A line bound alone is not a bound. Generated Python embeds data
+        // blobs on one line, so a file well under the line limit can still be
+        // megabytes — and this goes into the prompt, where the window is the
+        // scarce resource (S5).
+        let src = format!("data = \"{}\"\n", "x".repeat(200_000));
+        let e = excerpt(&src);
+        assert!(e.len() <= EXCERPT_BYTES + 64, "{} bytes", e.len());
+        assert!(e.contains("too large to show"), "and it says so");
+    }
+
+    #[test]
+    fn a_cut_never_lands_inside_a_character() {
+        // Python source is UTF-8, and an identifier does not have to be
+        // ASCII. Slicing by bytes would panic on the first contributor who
+        // does not write in English.
+        let src = format!("# {}\n", "é".repeat(200_000));
+        let e = excerpt(&src);
+        assert!(e.len() <= EXCERPT_BYTES + 64, "{} bytes", e.len());
+        // Round-trips, which it could not do if the cut split a code point.
+        assert_eq!(String::from_utf8(e.clone().into_bytes()).unwrap(), e);
     }
 
     #[tokio::test]

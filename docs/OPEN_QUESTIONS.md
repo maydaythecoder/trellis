@@ -112,6 +112,29 @@ cheapest exit. Whether that holds on the tenth partial-coverage run in an hour
 is an empirical question about people, not code, and cannot be answered from
 this side of a real user.
 
+**Q-18 — Is the CLI surface beyond brief §4.12 ratified, or scope creep?**
+§4.12 fixes six commands: `index`, `radius`, `run`, `resume`, `check`,
+`doctor`. CLAUDE.md restates the rule — the surface "is fixed by brief 4.12 and
+does not grow to suit us". The binary ships thirteen.
+
+Two of the seven additions have a written rationale: `partitions` is described
+in §4.13, and `init` in `04-v1.0-harness.md`. **Five do not: `session`, `tui`,
+`log`, `why`, `model`.** They appear only in `STATUS.md`, which is a running log
+of what happened rather than a record of what was decided.
+
+Each is defensible on its own. `log` and `why` read the decision trail, which
+the brief does require; `tui` and `session` are how a user watches a run; `model`
+fetches weights. None of them can assert a verdict or weaken a check, so nothing
+structural is at risk. That is exactly why it went unnoticed: no individual
+addition looked like a decision.
+
+The question is not whether to delete them. It is whether §4.12 is the
+specification and the binary has drifted from it, or §4.12 is stale and should
+say what the tool is. Either answer is fine; leaving both documents asserting
+different surfaces is not, because the brief is what a reader is told to trust.
+
+Owner's call. Found by auditing `--help` against the brief, 2026-09-22.
+
 ---
 
 ## Flagged as unverifiable from here

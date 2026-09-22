@@ -123,7 +123,7 @@ enum Command {
     /// Scaffold `.trellis/` and report what is missing before it bites.
     Init,
 
-    /// Watch a run happen: transcript, edits, checks, radius and budget.
+    /// Watch a run happen: actions, transcript, edits, checks, radius, budget.
     ///
     /// The line-based session stays the default. This is the surface for
     /// watching one run rather than issuing a sequence of commands, and it
@@ -161,7 +161,6 @@ enum Command {
         model: Option<String>,
     },
 
-    /// Dry run: show the partition plan and why.
     /// Dry run: which symbols may be worked on in parallel, and why not.
     ///
     /// Takes the symbols to be changed rather than a task sentence.
@@ -2034,6 +2033,14 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
 /// nothing was *bound* out of, which is not the same as one that calls
 /// nothing; `?` is how a reader tells those apart (Constraint 1). The three
 /// counts stay three counts and are never divided (ADR 0014).
+/// How many outgoing edges one module draws before it says how many it left.
+///
+/// Ten, because past that the row stops being a shape and becomes a list, and
+/// because the point of the picture is which modules a module leans on rather
+/// than an exhaustive inventory — `trellis radius` answers the exhaustive
+/// question.
+const MAX_EDGES_DRAWN: usize = 10;
+
 fn graph_lines(g: &trellis_index::ModuleGraph, limit: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if g.nodes.is_empty() {
@@ -2076,9 +2083,28 @@ fn graph_lines(g: &trellis_index::ModuleGraph, limit: usize) -> Vec<String> {
             n.defines,
             doubt
         ));
-        for (i, (callee, count)) in n.calls.iter().enumerate() {
-            let connector = if i + 1 == n.calls.len() { '└' } else { '├' };
-            out.push(format!("    {connector}─▶ {callee}  ×{count}"));
+        // Bounded per node, not only per graph. `--limit` caps how many
+        // modules are drawn and used to cap nothing else, so a single hub —
+        // a `utils` every module imports, a CLI that calls into all of them —
+        // could emit as many rows as the whole rest of the listing. That also
+        // reaches the interface, where `/codebase` streams these into the
+        // transcript.
+        //
+        // Edges are sorted by count, so the ones kept are the heaviest, and
+        // the remainder is stated rather than dropped.
+        let shown = n.calls.len().min(MAX_EDGES_DRAWN);
+        for (i, (callee, count)) in n.calls.iter().take(shown).enumerate() {
+            let last = i + 1 == shown && n.calls.len() == shown;
+            out.push(format!(
+                "    {}─▶ {callee}  ×{count}",
+                if last { '└' } else { '├' }
+            ));
+        }
+        if n.calls.len() > shown {
+            out.push(format!(
+                "    └─  and {} more module(s) called from here, not drawn.",
+                n.calls.len() - shown
+            ));
         }
     }
 
@@ -3059,6 +3085,34 @@ mod init_tests {
             prompt_bytes: Some(1_000),
             radius_counts: None,
         }
+    }
+
+    #[test]
+    fn a_hub_module_does_not_draw_an_unbounded_number_of_edges() {
+        use trellis_index::{ModuleGraph, ModuleNode};
+        // `--limit` caps modules and used to cap nothing else, so one module
+        // every other one imports could emit more rows than the whole rest of
+        // the listing — including into the interface's transcript.
+        let g = ModuleGraph {
+            nodes: vec![ModuleNode {
+                module: "app.cli".into(),
+                path: "app/cli.py".into(),
+                defines: 1,
+                calls: (0..40).map(|i| (format!("app.m{i}"), 40 - i)).collect(),
+                ambiguous: 0,
+                unresolved: 0,
+            }],
+        };
+        let lines = graph_lines(&g, 40);
+        let edges = lines.iter().filter(|l| l.contains("─▶")).count();
+        assert_eq!(edges, MAX_EDGES_DRAWN, "{lines:#?}");
+        assert!(
+            lines.iter().any(|l| l.contains("30 more module(s) called")),
+            "and the remainder is stated, not dropped: {lines:#?}"
+        );
+        // The heaviest edges are the ones kept — they are sorted by count.
+        assert!(lines.iter().any(|l| l.contains("app.m0")), "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.contains("app.m39")), "{lines:#?}");
     }
 
     #[test]
