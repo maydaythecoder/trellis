@@ -428,6 +428,19 @@ pub fn build(root: &Path) -> Index {
 }
 
 /// Reads every indexable file under `root` as a `(relative path, source)` pair.
+/// Every first-party Python file, as repository-relative paths.
+///
+/// The same walk the graph is built from, deliberately: a second walker in
+/// another crate would drift from this one, and the drift would be silent —
+/// a prompt naming a file the index does not know, or omitting one it does.
+///
+/// Separators are `/` on every platform, because these paths are handed to a
+/// model that must quote them inside JSON, and a Windows `\` is either an
+/// invalid escape or a lie about the path.
+pub fn discover_relative(root: &Path) -> Vec<String> {
+    discover(root).iter().map(|p| rel_path(root, p)).collect()
+}
+
 pub fn read_sources(root: &Path) -> Vec<(String, String)> {
     discover(root)
         .iter()

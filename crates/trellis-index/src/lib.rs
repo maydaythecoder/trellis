@@ -25,5 +25,5 @@ pub use radius::{
 };
 pub use resolve::{
     absolute_module, build, build_cached, build_from_facts, build_from_sources, discover,
-    module_path_of, read_sources,
+    discover_relative, module_path_of, read_sources,
 };

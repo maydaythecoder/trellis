@@ -14,7 +14,7 @@
 //! on the skip-list and the extension filter.
 
 use std::path::{Path, PathBuf};
-use trellis_index::discover;
+use trellis_index::{discover, discover_relative};
 
 /// A repository tree, written from a list of relative paths.
 fn tree(name: &str, files: &[&str]) -> PathBuf {
@@ -153,5 +153,37 @@ fn a_tree_with_no_python_is_empty_rather_than_an_error() {
     // `trellis index` has to report honestly rather than crash on.
     let root = tree("nopython", &["README.md", "src/main.rs"]);
     assert!(found(&root).is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn relative_paths_use_forward_slashes_on_every_platform() {
+    // These paths go into a prompt, where the model must quote them inside
+    // JSON. A Windows separator is either an invalid escape or, once the
+    // model escapes it, a path that no longer names the file.
+    let root = tree("relsep", &["app/calc.py", "app/sub/deep.py"]);
+    let rel = discover_relative(&root);
+    assert!(
+        rel.iter().all(|p| !p.contains('\\')),
+        "a backslash reached a path the model has to quote: {rel:?}"
+    );
+    assert!(rel.contains(&"app/sub/deep.py".to_string()), "{rel:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_relative_walk_is_the_same_walk_the_graph_is_built_from() {
+    // Two walkers would drift, and the drift would be silent: a prompt
+    // naming a file the index skipped, or omitting one it parsed.
+    let root = tree(
+        "relsame",
+        &[
+            "app/calc.py",
+            "app/__pycache__/calc.py",
+            "README.md",
+            "tests/test_calc.py",
+        ],
+    );
+    assert_eq!(discover_relative(&root), found(&root));
     let _ = std::fs::remove_dir_all(&root);
 }
