@@ -489,3 +489,56 @@ time. That is a configuration problem, not a
 model problem, and it will silently look like a model problem.
 
 Run complete.
+
+---
+
+## Correction: `think: false` does not work where the app would need it
+
+The ladder run recommended `qwen3:8b` with `think: false`, reporting TTFT
+2.86 s → 0.22 s. I re-measured before wiring it in, and the recommendation does
+not survive contact with the endpoint the app actually uses.
+
+**On the OpenAI-compatible `/v1/chat/completions` endpoint the field is silently
+dropped.** Identical output either way:
+
+| | completion_tokens | content | `reasoning` key |
+|---|---|---|---|
+| default | 415 | `One Rust keyword is **\`fn\`**…` | present |
+| `think: false` | 415 | *byte-identical* | present |
+
+Warm TTFT, three runs each: 5.61 s median with thinking, 5.56 s with
+`think: false`. Inside noise. The 9.84 s → 5.58 s I saw on the first pair was
+cold-load variance, not the flag.
+
+**On ollama's native `/api/chat` it works, and dramatically:**
+
+| | wall | eval_tokens | thinking chars | content |
+|---|---|---|---|---|
+| default | 6.31 s | 415 | 1442 | "One Rust keyword is **\`fn\`**. It is used to…" |
+| `think: false` | **0.11 s** | **4** | **0** | "\`let\`" |
+
+Fifty-seven times faster. The lever is real; it is on the wrong endpoint.
+
+**`/no_think` in the prompt is worse, not a substitute.** Via `/v1`: 12.47 s and
+841 tokens against 5.34 s and 345 for the plain question. The model reasons
+*about* the directive rather than skipping reasoning. This matches what the
+earlier §4 variation table recorded and explains it.
+
+### What this means, and why nothing was changed
+
+There is **no vendor-neutral way to disable qwen3's thinking through the
+OpenAI-compatible endpoint.** Taking the 57× win means calling ollama's native
+API, which abandons the property that makes the client work against llama.cpp —
+and llama.cpp is the only route to grammar-constrained decoding and to the
+models ollama refuses for template reasons (F15). That is an architectural
+trade, not a fix, so it is reported rather than taken.
+
+No flag was added. A `think: false` that the endpoint ignores would be a setting
+that claims something the code does not do, which is the exact class of defect
+this run spent its time removing.
+
+### One thing that softens the problem
+
+With tools in play the thinking cost is small, because a tool call is short:
+96 completion tokens and 1.50 s, against 345 and 5.34 s for a prose answer. The
+expensive case is conversation, not the agentic path.
