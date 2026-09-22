@@ -373,19 +373,38 @@ impl Orchestrator {
         // So a miss now shows the file. It is the cheapest thing that turns a
         // wasted iteration into an anchor copied from real text.
         let hits = src.matches(old).count();
-        if hits == 0 {
-            return ToolResult::Error(format!(
-                "edit anchor not found in {path}. `old` must be text copied from the \
-                 file, not reconstructed from the task. Here is {path}:\n{}",
-                excerpt(src)
-            ));
-        }
-        if hits > 1 {
-            return ToolResult::Error(format!(
-                "edit anchor occurs {hits} times in {path}; it must occur exactly once \
-                 so the edit is unambiguous. Extend `old` with the lines around it \
-                 until only one place in the file matches."
-            ));
+        if hits != 1 {
+            // Both failures end the same way: with the file. Only the
+            // zero-hit branch used to, and the action log showed what that
+            // cost — every converged run went AMBIGUOUS, then NOT-FOUND, then
+            // applied. Told only that its anchor was ambiguous, with nothing
+            // to extend it *from*, the model invented one; the invention
+            // missed; the miss finally showed it the file; and the turn after
+            // that succeeded.
+            //
+            // Measured over eight attempts at that exact turn against
+            // qwen3:8b: 0 of 8 produced a usable anchor without the file, 6
+            // of 8 with it. Without it the model wrote `def describe() -> int:`
+            // every single time — a plausible signature for a function whose
+            // real one takes an argument.
+            //
+            // The wording is unchanged, and that is also measured. A variant
+            // asking for "one or more whole lines copied exactly" scored 3 of
+            // 8: the longer instruction pushed more replies into spending the
+            // whole reply budget reasoning and returning nothing.
+            let why = if hits == 0 {
+                format!(
+                    "edit anchor not found in {path}. `old` must be text copied from \
+                     the file, not reconstructed from the task."
+                )
+            } else {
+                format!(
+                    "edit anchor occurs {hits} times in {path}; it must occur exactly \
+                     once so the edit is unambiguous. Extend `old` with the lines \
+                     around it until only one place in the file matches."
+                )
+            };
+            return ToolResult::Error(format!("{why} Here is {path}:\n{}", excerpt(src)));
         }
         let at = src.find(old.as_str()).expect("occurrence counted");
         let updated = format!("{}{}{}", &src[..at], new, &src[at + old.len()..]);
@@ -614,7 +633,17 @@ mod tests {
         // Ambiguity is fixed by a longer anchor, and the message has to say
         // so — "occurs 2 times" alone leaves the model to work that out.
         match h.edit("app/main.py", "    return 1", "    return 2").await {
-            ToolResult::Error(e) => assert!(e.contains("Extend `old`"), "{e}"),
+            ToolResult::Error(e) => {
+                assert!(e.contains("Extend `old`"), "{e}");
+                // And it has to say what to extend it *from*. Measured at the
+                // turn after this failure against qwen3:8b: 0 of 8 attempts
+                // produced a usable anchor without the file, 6 of 8 with it.
+                assert!(
+                    e.contains("def a():") && e.contains("def b():"),
+                    "an anchor cannot be extended from a file the model has \
+                     not been shown: {e}"
+                );
+            }
             other => panic!("{other:?}"),
         }
     }

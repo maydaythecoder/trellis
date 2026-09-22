@@ -241,14 +241,58 @@ dividing them once printed "3.7% resolved" for a resolver audited at 72%
 nothing was *bound* out of, not one that calls nothing, and the per-node
 unresolved count is how a reader tells those apart (Constraint 1).
 
+### 6. Actions per converged run — **measured, improved, and now the metric**
+
+The first number here improved against a recorded baseline rather than an
+impression. The action log made it visible; it is what the log was for.
+
+Every converged run went **AMBIGUOUS, then NOT-FOUND, then applied**. Told only
+that its anchor matched several places, with nothing to extend it *from*, the
+model invented one; the invention missed; the miss finally showed it the file;
+and the turn after that succeeded. Only the zero-hit branch quoted the file
+back — the ambiguous branch did not.
+
+Measured at that exact turn against qwen3:8b, eight attempts each:
+
+| observation after an ambiguous anchor | usable anchor next turn |
+|---|---|
+| without the file (what shipped) | **0 / 8** |
+| with the file, wording unchanged | **6 / 8** |
+| with the file, "one or more whole lines copied exactly" | 3 / 8 |
+
+Without the file the model wrote `def describe() -> int:` every single time — a
+plausible signature for a function whose real one takes an argument. The
+rewording was rejected on measurement, not taste: the longer instruction pushed
+more replies into spending the whole reply budget reasoning and returning
+nothing at all.
+
+End to end, five runs each side of the change, same task and same fixture:
+
+| | converged | actions | refused edits |
+|---|---|---|---|
+| before | 4/5 | 6, 5, 5, 4 (mean 5.0) | 3, 2, 2, 1 (mean 2.0) |
+| after | 4/5 | 4, 4, 4, 4 (mean 4.0) | 1, 1, 1, 1 (mean 1.0) |
+
+The convergence rate did not move and is not claimed to have. What moved is the
+waste and its variance: every converged run is now identical at four actions
+with exactly one refused edit.
+
 ### What is worth doing next
 
-Not more features. The five are done and each is verified against a live model
-rather than asserted. What the action log now makes visible is where the next
-work is: the loop converges, but it spends turns re-guessing edit anchors it has
-already been shown. That is a measurable quantity — actions per converged run —
-and it is the first number in this project that can be improved against a
-recorded baseline rather than an impression.
+**Four actions is the floor this design has, not the floor that exists.** The
+one remaining refused edit is turn 1, where the model has never seen the file —
+its first anchor is necessarily a guess, and the guess costs the turn that
+fetches the file. Getting to three means the content reaching the prompt before
+the first call, and the honest version of that is not obvious: seeding whichever
+file a task's symbol resolves to would be the graph guessing at intent.
+
+**The failing run failed the same way both times.** At `temperature: 0.0` a
+wrong call tends to repeat: run 1 emitted `old: "    -> int"` three times
+identically until the no-progress guard stopped it. The guard works — the run
+ends rather than burning its budget — but the run is still lost, and the reason
+is that an identical observation invites an identical call. Telling the model
+that it has already tried exactly this is cheap. It is also a hypothesis, and
+this section's own standard is that it gets measured before it ships.
 
 ### Paused behind the five
 
