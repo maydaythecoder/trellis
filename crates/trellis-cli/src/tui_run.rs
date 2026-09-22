@@ -128,10 +128,56 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         // subscriber install and the worker thread so the interface does
         // not have to know a run is a thread at all.
         let root = root.to_path_buf();
+        // Parsed once. `classify` needs the runtime's address and weight,
+        // and re-parsing per turn would be a second place that decides what
+        // a spec means.
+        let spec_for_ask: trellis_model::ModelSpec = spec
+            .parse()
+            .unwrap_or(trellis_model::ModelSpec::Scripted(std::path::PathBuf::new()));
         let driver = tokio::spawn({
             let tx = tx.clone();
             async move {
                 while let Some(task) = task_rx.recv().await {
+                    // Not everything typed here is work.
+                    //
+                    // Every input used to become an agent run — a snapshot,
+                    // the loop, the repository's checks, a rollback and a
+                    // trail — so typing `hello` failed, and failed
+                    // expensively. The model is asked once what the input
+                    // is; a question is answered here, and only a request to
+                    // change the code reaches `cmd_run` untouched.
+                    match crate::ask::classify(&spec_for_ask, &task).await {
+                        Ok(crate::ask::Intent::Answer(text)) => {
+                            for line in text.lines() {
+                                let _ = tx
+                                    .send(tui::message::Message::AgentToken(format!(
+                                        "{line}
+"
+                                    )))
+                                    .await;
+                            }
+                            let _ = tx.send(tui::message::Message::RunFinished).await;
+                            continue;
+                        }
+                        Ok(crate::ask::Intent::Task) => {}
+                        // A runtime that cannot be reached is reported here
+                        // rather than silently falling through to a run that
+                        // would fail the same way a moment later with a
+                        // longer message.
+                        Err(e) => {
+                            for line in format!("{e:#}").lines() {
+                                let _ = tx
+                                    .send(tui::message::Message::AgentToken(format!(
+                                        "! {line}
+"
+                                    )))
+                                    .await;
+                            }
+                            let _ = tx.send(tui::message::Message::RunFinished).await;
+                            continue;
+                        }
+                    }
+
                     let (root, spec) = (root.clone(), spec.clone());
                     let (run_tx, lost_tx) = (tx.clone(), tx.clone());
                     // `spawn_blocking`, because `cmd_run` blocks on its own

@@ -12,6 +12,7 @@
 //! `partitions` needs concurrent multi-agent execution (v1.1) and exits
 //! non-zero with a message naming what is missing, rather than pretending.
 
+mod ask;
 mod config;
 mod session;
 #[cfg(test)]
@@ -66,8 +67,13 @@ enum Command {
         /// A scripted run exercises the real loop, real files, real checks and
         /// real rollback — everything except judgement. Results from it are
         /// never a model floor (S7).
+        ///
+        /// Falls back to `[model] spec` in `.trellis/config.toml`, which is
+        /// where a repository states the runtime it actually has. Requiring
+        /// the flag anyway meant `trellis run` refused to start beside a
+        /// config that named the model precisely.
         #[arg(long)]
-        model: String,
+        model: Option<String>,
         /// Send no schema and validate the reply instead (tier 4).
         ///
         /// Only for a runtime that does not honour guided decoding. It is
@@ -247,7 +253,18 @@ fn main() -> Result<()> {
 
     match command {
         Command::Index => cmd_index(&root),
-        Command::Doctor { model } => cmd_doctor(&root, model.as_deref()),
+        Command::Doctor { model } => {
+            // Falls back to the repository's configured model.
+            //
+            // It did not, and the result was `doctor` reporting "not
+            // configured" about a repository whose `.trellis/config.toml`
+            // names a model and whose TUI shows it in the status bar. The
+            // one command whose job is "is this set up" was the one command
+            // that did not look.
+            let configured = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
+            let spec = model.as_deref().map(str::to_string).or(configured);
+            cmd_doctor(&root, spec.as_deref())
+        }
         Command::Check { paths } => cmd_check(&root, paths),
         Command::Radius { symbol } => cmd_radius(&root, &symbol),
         Command::Run {
@@ -273,6 +290,12 @@ fn main() -> Result<()> {
                 }
                 None => task,
             };
+            let model = model
+                .or_else(|| config::RepoConfig::load(&root).ok()?.model())
+                .context(
+                    "no model. Pass --model, or set [model] spec in \
+                     .trellis/config.toml",
+                )?;
             let exit = cmd_run(&root, &task, &model, unconstrained, &agents, resume)?;
             // The one place that decides the process ends, because this is
             // the one caller that *is* the process.
@@ -913,11 +936,24 @@ fn cmd_run(
             format!("{} [{rank}] — {}", r.name, r.description.trim())
         });
     }
+    // What the repository contains, from the index's own walk.
+    //
+    // Without it the model guesses a path from the symbol in the task and
+    // every tool call lands on a file that does not exist. This is a walk,
+    // not a parse: the paths are wanted, not the graph, and a run should not
+    // pay for an index it may never query.
+    let files = trellis_index::discover_relative(root);
+    println!(
+        "files:    {} first-party Python file(s) named to the model",
+        files.len()
+    );
+
     let seed = trellis_loop::Seed {
         prior,
         repo: trellis_loop::RepoContext {
             notes,
             rules: prompt_rules,
+            files,
         },
     };
 
