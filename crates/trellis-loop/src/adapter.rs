@@ -24,7 +24,14 @@ use trellis_model::{AdapterTier, Dialect, RuntimeClient};
 /// See the note at its use site: this is a cap, so raising it is free for a
 /// model that stops early and is the difference between working and not for
 /// one that reasons out loud first.
-pub(crate) const DEFAULT_MAX_REPLY_TOKENS: u32 = 2048;
+pub(crate) const DEFAULT_MAX_REPLY_TOKENS: u32 = 4096;
+
+/// How far an empty reply may raise the ceiling before the run gives up.
+///
+/// A bound rather than unlimited doubling: a model that will not stop is a
+/// model below the floor (S7), and discovering that at 64k tokens a turn
+/// costs a user minutes per iteration to learn what 16k already showed.
+const MAX_REPLY_CEILING: u32 = 16_384;
 
 /// How many times a malformed response is retried before the run ends.
 ///
@@ -338,11 +345,14 @@ impl Model for RuntimeModel {
         tracing::debug!(prompt_bytes = prompt.len(), turns = t.turns.len());
         let schema = (self.tier == AdapterTier::RuntimeConstrained).then(ToolCallWire::schema);
         let mut last = String::new();
+        // Raised on an empty reply, which is the one failure retrying cannot
+        // fix by itself. See `budget` below.
+        let mut budget = self.max_tokens;
 
         for attempt in 1..=MAX_FORMAT_RETRIES {
             let completion = self
                 .client
-                .complete(&prompt, schema.as_ref(), self.max_tokens)
+                .complete(&prompt, schema.as_ref(), budget)
                 .await
                 // A transport failure is terminal: retrying a refused
                 // connection just spends the budget discovering it again.
@@ -378,6 +388,32 @@ impl Model for RuntimeModel {
                         completion.tokens,
                         truncate(&completion.text)
                     )
+                } else if completion.text.trim().is_empty() {
+                    // Not a formatting failure at all, and reporting it as one
+                    // sent a reader to check their runtime's schema support.
+                    //
+                    // A reasoning model emits its thinking before its answer,
+                    // and ollama strips that thinking out of `text`. Spend the
+                    // whole budget thinking and what comes back is a
+                    // successful response whose text is empty.
+                    //
+                    // Retrying is what the loop did, four times, with an
+                    // identical prompt and an identical ceiling. Captured from
+                    // a failing run and replayed: the model wanted 1,665
+                    // tokens for a one-line rename against a 1,510-byte
+                    // prompt — 81% of the 2,048 ceiling — and ordinary
+                    // variance put it over. So the retry raises the ceiling,
+                    // which is the only thing about the request that could
+                    // have been wrong.
+                    let raised = budget.saturating_mul(2).min(MAX_REPLY_CEILING);
+                    let note = format!(
+                        "the reply was empty after {} tokens: the model spent its \
+                         whole budget reasoning and never reached an answer. \
+                         Retrying with {raised}.",
+                        completion.tokens
+                    );
+                    budget = raised;
+                    note
                 } else {
                     format!(
                         concat!(
@@ -660,6 +696,109 @@ mod tests {
             got
         });
         (format!("http://{addr}"), handle)
+    }
+
+    /// A stub that answers several requests in order, recording each body.
+    ///
+    /// The single-reply stub cannot show what a *retry* asks for, and the
+    /// retry is where the escalation lives.
+    async fn replaying_stub(
+        replies: Vec<&'static str>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for reply in replies {
+                let accepted = tokio::time::timeout(ACCEPT_WINDOW, listener.accept()).await;
+                let Ok(Ok((mut sock, _))) = accepted else {
+                    break;
+                };
+                let mut buf = vec![0u8; 65536];
+                let n = sock.read(&mut buf).await.unwrap();
+                bodies.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                );
+                sock.write_all(out.as_bytes()).await.unwrap();
+                sock.shutdown().await.ok();
+            }
+            bodies
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// `max_tokens` from a recorded request body.
+    fn asked_for(body: &str) -> u64 {
+        let json = body.split("\r\n\r\n").nth(1).expect("a body");
+        serde_json::from_str::<serde_json::Value>(json).expect("JSON")["max_tokens"]
+            .as_u64()
+            .expect("max_tokens is sent")
+    }
+
+    #[tokio::test]
+    async fn an_empty_reply_retries_with_a_larger_budget_rather_than_the_same_one() {
+        // The failure this exists for, captured from a real run and replayed:
+        // a rename task returned an empty completion four times and ended the
+        // run. The loop was re-sending an identical prompt with an identical
+        // ceiling, so all four attempts were the same request.
+        //
+        // The model wanted 1,665 tokens for that turn against a 2,048 ceiling.
+        // Nothing about the *prompt* was wrong, so retrying it unchanged could
+        // not help; the ceiling was the only thing that could.
+        let empty = r#"{"choices":[{"text":""}],"usage":{"completion_tokens":4096}}"#;
+        let good = r#"{"choices":[{"text":"{\"tool\":\"read_file\",\"path\":\"a.py\"}"}],"usage":{"completion_tokens":20}}"#;
+        let (base, handle) = replaying_stub(vec![empty, good]).await;
+
+        let client = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let mut m = RuntimeModel::unconstrained(client);
+        let step = m
+            .next_step(&one_turn("t"))
+            .await
+            .expect("the retry succeeds");
+        assert!(
+            matches!(step, Step::Call(crate::agent::ToolCall::ReadFile { .. })),
+            "{step:?}"
+        );
+
+        let bodies = handle.await.unwrap();
+        assert_eq!(bodies.len(), 2, "one retry, not four");
+        let (first, second) = (asked_for(&bodies[0]), asked_for(&bodies[1]));
+        assert_eq!(first, u64::from(DEFAULT_MAX_REPLY_TOKENS));
+        assert_eq!(
+            second,
+            first * 2,
+            "a retry that changes nothing is not a retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_reply_is_not_reported_as_an_ignored_schema() {
+        // It was, and that sent a reader to check their runtime's guided
+        // decoding support when the answer was that the model reasoned past
+        // its budget. Four retries then hit the same wall and the run ended
+        // with a message about schemas.
+        let empty = r#"{"choices":[{"text":"   "}],"usage":{"completion_tokens":4096}}"#;
+        let (base, handle) = replaying_stub(vec![empty, empty, empty, empty]).await;
+        let client = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let mut m = RuntimeModel::unconstrained(client);
+        let err = m.next_step(&one_turn("t")).await.expect_err("all empty");
+        assert!(err.contains("spent its whole budget reasoning"), "{err}");
+        assert!(
+            !err.contains("ignored schema"),
+            "a budget problem must not be reported as a schema problem: {err}"
+        );
+
+        // And the ceiling stops doubling rather than growing without bound.
+        let asked: Vec<u64> = handle.await.unwrap().iter().map(|b| asked_for(b)).collect();
+        assert!(
+            asked.iter().all(|n| *n <= u64::from(MAX_REPLY_CEILING)),
+            "a model that will not stop is below the floor; discovering that \
+             at 64k tokens a turn costs minutes per iteration: {asked:?}"
+        );
+        assert!(asked.windows(2).all(|w| w[1] >= w[0]), "{asked:?}");
     }
 
     fn one_turn(task: &str) -> Transcript {
