@@ -407,7 +407,7 @@ fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
     println!();
     for e in entries.iter().take(limit) {
         let f = &e.trail.factual;
-        println!("{}  {}", e.run_id(), e.outcome());
+        println!("{}  {}", plain(&e.run_id()), e.outcome());
         println!("    {}", plain(&e.trail.task));
         let checks: Vec<String> = f
             .check_outcomes
@@ -577,8 +577,8 @@ fn cmd_why(root: &Path, query: &str) -> Result<()> {
     println!();
     for m in &found {
         let e = &entries[m.entry_index];
-        println!("{}  {}", e.run_id(), e.outcome());
-        println!("    task: {}", e.trail.task);
+        println!("{}  {}", plain(&e.run_id()), e.outcome());
+        println!("    task: {}", plain(&e.trail.task));
 
         // The distinction is the whole value. A run that *edited* the file is
         // evidence about why the code looks like this; a run that merely named
@@ -592,7 +592,7 @@ fn cmd_why(root: &Path, query: &str) -> Result<()> {
         // CORRECTNESS_LEDGER.md rather than left looking like a test gap,
         // because the next run will surface it again.
         match &m.touched_file {
-            Some(f) => println!("    changed: {f}"),
+            Some(f) => println!("    changed: {}", plain(f)),
             None if m.task_mentions => {
                 println!("    named in the task; no file matching `{query}` was changed")
             }
@@ -600,11 +600,15 @@ fn cmd_why(root: &Path, query: &str) -> Result<()> {
         }
 
         if let Some(base) = &e.trail.base_commit {
-            println!("    from commit {base}");
+            println!("    from commit {}", plain(base));
         }
         if let Some(p) = &e.trail.provenance {
             let model = p.model.as_deref().unwrap_or("none");
-            println!("    by trellis {} driving {}", p.trellis_version, model);
+            println!(
+                "    by trellis {} driving {}",
+                plain(&p.trellis_version),
+                plain(model)
+            );
         }
         if e.integrity == trellis_trail::Integrity::Altered {
             println!("    ALTERED: this record no longer matches its digest");
@@ -1325,7 +1329,7 @@ fn cmd_resume(root: &Path) -> Result<()> {
     println!("resuming from {}", path.display());
     println!();
     for line in trail.context_lines() {
-        println!("  {line}");
+        println!("  {}", plain(&line));
     }
     println!();
     println!(concat!(

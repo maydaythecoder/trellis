@@ -464,6 +464,30 @@ silently pick one.
 Which is the product is a decision, not a measurement. Q-19 states the three
 ways out and does not pick one.
 
+### 14. The sanitiser was applied by hand and missed half the sites
+
+The previous iteration wrapped three prints of trail content in `plain()` and
+stopped there, which is the failure that makes a partial fix worse than none:
+it implies a coverage it does not have.
+
+Six more sites were reading from the same untrusted trail and printing it
+straight to a terminal — the task and run id in `trellis why`, the changed
+path, the base commit, the recorded `trellis_version` and model, and, most
+pointedly, `trellis resume`, which printed the previous run's context raw
+**directly above a notice explaining that this content is data and never
+instruction**. That notice is about the model. The human's terminal was
+getting the unescaped version.
+
+`provenance` is worth naming separately: `trellis_version` and `model` look
+like metadata this binary wrote, and are in fact whatever is in the file.
+
+**The rule is now a test, not a habit.** `crates/trellis-cli/tests/hygiene.rs`
+fails when a `println!` or `writeln!` naming a trail-derived expression does
+not also call `plain()`. Applying this rule by hand missed sites twice; a rule
+that depends on whoever is editing remembering it is not a rule. The guard
+carries a second test proving the predicate still recognises the shape it was
+written for, because a hygiene test that cannot fail is decoration.
+
 ### What is worth doing next
 
 **Confirm the empty-reply fix at n>1** when memory allows. One run is a
