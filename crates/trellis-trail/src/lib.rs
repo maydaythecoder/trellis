@@ -13,7 +13,7 @@ mod store;
 mod untrusted;
 
 pub use store::{iso_now, latest, now, slugify, timestamp_now, write};
-pub use untrusted::{Integrity, RecordedCheck, UntrustedTrail};
+pub use untrusted::{Integrity, RecordedCheck, UntrustedFactual, UntrustedTrail};
 
 use serde::{Deserialize, Serialize};
 use trellis_checks::{AuditMode, Verdict};
@@ -47,6 +47,53 @@ pub struct Factual {
     /// invented figure. Absent for a scripted run, which has no prompt.
     #[serde(default)]
     pub context: Option<ContextFill>,
+    /// What the agent did, in the order it did it.
+    ///
+    /// The trail recorded what a run *proposed* and what the checks *said*,
+    /// and nothing about what it **did**. So the first question a reader asks
+    /// — what happened, in order — could only be answered from a terminal
+    /// scrollback that no longer exists, and a run that ended having touched
+    /// nothing was indistinguishable from one that never started.
+    ///
+    /// `#[serde(default)]` so a trail written before this field reads back as
+    /// a run with no actions recorded, which is what it is. That is not the
+    /// same claim as "a run that took no actions", and `trellis log` says
+    /// which of the two it is looking at rather than printing "0 actions" for
+    /// both.
+    #[serde(default)]
+    pub actions: Vec<Action>,
+}
+
+/// One thing the agent did, and what came back.
+///
+/// **Not a verdict, and shaped so it cannot be read as one** (ADR 0004). There
+/// is no `passed` here: an edit that applied is not an edit that was correct,
+/// and the only field that carries a correctness claim is `check_outcomes`,
+/// which comes from a `Verdict` that only an executed process can make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Action {
+    /// 1-based, matching the turn numbering a run prints.
+    pub turn: u32,
+    /// The tool, as the model named it: `blast_radius`, `read_file`, `edit`,
+    /// `run_checks`.
+    pub tool: String,
+    /// What it was aimed at — a path, a symbol, the checks requested. Empty
+    /// when the call named nothing, which `run_checks` with no paths does.
+    pub target: String,
+    /// What came back, in one line.
+    ///
+    /// A rendering for a reader, not the observation the model saw: that runs
+    /// to thousands of lines for a check and is truncated before it ever
+    /// reaches the model. A trail that stored it would be mostly type-checker
+    /// output.
+    pub outcome: String,
+    /// Whether the working tree changed.
+    ///
+    /// The one bit a reader most wants and cannot infer: `proposed` says which
+    /// files a run ended up touching, not which of its actions did the
+    /// touching. A run whose every edit was refused has an empty `proposed`
+    /// and a full list of actions, and those are different stories.
+    pub wrote: bool,
 }
 
 /// How much prompt a run consumed, and how fast it grew.
@@ -325,6 +372,29 @@ mod tests {
                     peak_prompt_bytes: 9_400,
                     turns_measured: 6,
                 }),
+                actions: vec![
+                    Action {
+                        turn: 1,
+                        tool: "blast_radius".into(),
+                        target: "Installer.run".into(),
+                        outcome: "47 resolved, 3 candidates, 2 unresolved".into(),
+                        wrote: false,
+                    },
+                    Action {
+                        turn: 2,
+                        tool: "edit".into(),
+                        target: "src/poetry/installation/installer.py".into(),
+                        outcome: "applied".into(),
+                        wrote: true,
+                    },
+                    Action {
+                        turn: 3,
+                        tool: "run_checks".into(),
+                        target: "Tests".into(),
+                        outcome: "Tests: passed".into(),
+                        wrote: false,
+                    },
+                ],
             },
             factual_sha256: String::new(),
             judgment: Judgment {

@@ -380,6 +380,7 @@ mod tests {
             approved_by: crate::Approval::Human,
             mode_counts: crate::ModeCounts::default(),
             context: None,
+            actions: Vec::new(),
         };
         let digest = crate::Trail::compute_factual_sha256(&factual);
         let factual_json = serde_json::to_string(&factual).unwrap();

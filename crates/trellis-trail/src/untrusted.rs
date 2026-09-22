@@ -103,6 +103,21 @@ pub struct UntrustedFactual {
     pub radius: super::RadiusCounts,
     #[serde(default)]
     pub mode_counts: super::ModeCounts,
+    /// Prompt size across the run, when the writer recorded it.
+    ///
+    /// Read back because it is how a reader tells a trail that predates the
+    /// action log from a run that genuinely never acted: the first has turns
+    /// and no actions, the second has neither.
+    #[serde(default)]
+    pub context: Option<super::ContextFill>,
+    /// What the run did, in order, as the writer recorded it.
+    ///
+    /// Every string here came from a file in a repository that takes
+    /// contributions, so it is data and never instruction (S10). Nothing in
+    /// this crate interprets it, and a reader that displays it must say where
+    /// it came from.
+    #[serde(default)]
+    pub actions: Vec<super::Action>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -358,6 +373,7 @@ mod tests {
                 approved_by: crate::Approval::Human,
                 mode_counts: crate::ModeCounts::default(),
                 context: None,
+                actions: Vec::new(),
             },
             judgment: crate::Judgment::default(),
         }

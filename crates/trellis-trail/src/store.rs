@@ -213,6 +213,7 @@ mod tests {
                 approved_by: Approval::None,
                 mode_counts: ModeCounts::default(),
                 context: None,
+                actions: Vec::new(),
             },
             factual_sha256: String::new(),
             judgment: Judgment::default(),

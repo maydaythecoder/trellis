@@ -167,6 +167,9 @@ enum Command {
         /// How many to show, newest first.
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Also list what each run did, action by action, in order.
+        #[arg(long)]
+        actions: bool,
     },
 
     /// What past runs did to a symbol or file, from the committed trail.
@@ -319,7 +322,7 @@ fn main() -> Result<()> {
             tui_run::run(&root, task, spec)
         }
         Command::Resume => cmd_resume(&root),
-        Command::Log { limit } => cmd_log(&root, limit),
+        Command::Log { limit, actions } => cmd_log(&root, limit, actions),
         Command::Why { symbol } => cmd_why(&root, &symbol),
         // Takes no root at all: models are user state, not repository state.
         // The exemption that makes this reachable outside a repository is in
@@ -383,7 +386,7 @@ fn root_from(start: &Path) -> Option<PathBuf> {
 }
 
 /// One line per run: what was asked, what came of it, whether it is intact.
-fn cmd_log(root: &Path, limit: usize) -> Result<()> {
+fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
     let entries = trellis_trail::query::all(root);
     if entries.is_empty() {
         println!("no trails under .trellis/runs. `trellis run` writes one.");
@@ -423,12 +426,57 @@ fn cmd_log(root: &Path, limit: usize) -> Result<()> {
             }
             trellis_trail::Integrity::Intact => {}
         }
+        if actions {
+            print_actions(f);
+        }
         println!();
     }
     if entries.len() > limit {
         println!("... {} older, use --limit", entries.len() - limit);
     }
     Ok(())
+}
+
+/// The action log for one run: what it did, in order, and what came back.
+///
+/// **A trail with no actions and a run that took none are different things**,
+/// and printing "0 actions" for both would make the older trails lie. Trails
+/// written before the field existed say so; a run that genuinely did nothing
+/// says that instead.
+///
+/// Read back as data, never as instruction (S10). These strings come from a
+/// file in a repository that takes contributions, so they are rendered inside
+/// a marked block and nothing here interprets them.
+fn print_actions(f: &trellis_trail::UntrustedFactual) {
+    if f.actions.is_empty() {
+        // The turn count is the tell. A run that reached turns but recorded
+        // no actions was written by a version that had nowhere to put them.
+        let recorded_turns = f.context.as_ref().map_or(0, |c| c.turns_measured);
+        println!(
+            "    actions: {}",
+            if recorded_turns > 0 {
+                format!(
+                    "not recorded — this trail predates the action log ({recorded_turns} turns)"
+                )
+            } else {
+                "none; the run ended before it acted".to_string()
+            }
+        );
+        return;
+    }
+    println!("    actions ({}), as recorded:", f.actions.len());
+    for a in &f.actions {
+        // The marker sits where a reader's eye already is, and says the one
+        // thing the rest of the line cannot: whether the tree changed.
+        let wrote = if a.wrote { "*" } else { " " };
+        println!("    {wrote} {:>2}. {} {}", a.turn, a.tool, a.target);
+        if !a.outcome.is_empty() {
+            println!("          {}", a.outcome);
+        }
+    }
+    if f.actions.iter().any(|a| a.wrote) {
+        println!("    * wrote to the working tree");
+    }
 }
 
 /// What past runs did to a symbol or file, and what they were asked to do.
@@ -1405,6 +1453,67 @@ pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::Mod
     counts
 }
 
+/// One turn, as a line in the action log.
+///
+/// The observation is summarised rather than stored. A check's output runs to
+/// thousands of lines and is truncated before the model ever sees it, so a
+/// trail that kept it would be mostly type-checker output — and the question
+/// this log answers is "what did it do", not "what did the compiler say".
+///
+/// `wrote` is the one bit that cannot be recovered from anywhere else.
+/// `proposed` names the files a run ended up touching, not which action did
+/// the touching; a run whose every edit was refused has an empty `proposed`
+/// and a full list of actions, and those are different stories.
+fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
+    use trellis_loop::ToolCall;
+
+    let (tool, target) = match &t.call {
+        ToolCall::BlastRadius { symbol } => ("blast_radius", symbol.clone()),
+        ToolCall::ReadFile { path } => ("read_file", path.clone()),
+        ToolCall::Edit { path, .. } => ("edit", path.clone()),
+        ToolCall::RunChecks { paths, kinds } => {
+            let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+            // The checks requested, then what they were pointed at. An empty
+            // `paths` is the whole repository and says so, rather than
+            // rendering as a blank the reader has to interpret.
+            let where_ = if paths.is_empty() {
+                "whole repository".to_string()
+            } else {
+                paths.join(", ")
+            };
+            ("run_checks", format!("{} on {where_}", kinds.join("+")))
+        }
+    };
+
+    trellis_trail::Action {
+        turn: index as u32 + 1,
+        tool: tool.to_string(),
+        target,
+        outcome: summarise(&t.observation),
+        // Only an applied edit changes the tree. A refused one is an action
+        // that happened and wrote nothing, which is exactly what this
+        // distinguishes.
+        wrote: matches!(t.call, ToolCall::Edit { .. }) && t.observation.contains("applied: true"),
+    }
+}
+
+/// An observation reduced to one line a person can read in a list.
+fn summarise(observation: &str) -> String {
+    const MAX: usize = 120;
+    let first = observation
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first.chars().count() <= MAX {
+        return first.to_string();
+    }
+    // Cut on a character boundary, and say it was cut — a silently truncated
+    // line reads as the whole outcome.
+    let head: String = first.chars().take(MAX - 1).collect();
+    format!("{head}…")
+}
+
 /// What a trail records about a run beyond its turns.
 ///
 /// Grouped because they travel together and always have: the tree the run
@@ -1473,6 +1582,13 @@ fn record_trail(
         })
         .collect();
 
+    let actions: Vec<trellis_trail::Action> = turns
+        .turns
+        .iter()
+        .enumerate()
+        .map(|(i, t)| action_from(i, t))
+        .collect();
+
     let (timestamp, started_at) = trellis_trail::now();
 
     let factual = Factual {
@@ -1485,6 +1601,7 @@ fn record_trail(
         approved_by: approved,
         mode_counts: audit_modes(root, touched),
         context,
+        actions,
     };
 
     let slug = trellis_trail::slugify(task);
@@ -2752,5 +2869,109 @@ mod init_tests {
         let rules = trellis_checks::governance::load(&d).expect("the scaffold must not break it");
         assert!(rules.is_empty(), "a scaffold must not install live rules");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A turn, for building action-log cases without a model.
+    fn turn(call: trellis_loop::ToolCall, observation: &str) -> trellis_loop::Turn {
+        trellis_loop::Turn {
+            call,
+            observation: observation.to_string(),
+            verdict_passed: None,
+            check_kind: None,
+            prompt_bytes: Some(1_000),
+            radius_counts: None,
+        }
+    }
+
+    #[test]
+    fn an_applied_edit_is_the_only_action_that_records_a_write() {
+        use trellis_loop::ToolCall;
+        // `proposed` names the files a run ended up touching, not which action
+        // did the touching. A run whose every edit was refused has an empty
+        // `proposed` and a full list of actions.
+        let refused = action_from(
+            0,
+            &turn(
+                ToolCall::Edit {
+                    path: "app/calc.py".into(),
+                    old: "a".into(),
+                    new: "b".into(),
+                },
+                "error: edit anchor not found in app/calc.py",
+            ),
+        );
+        assert_eq!(refused.turn, 1, "turns are 1-based, as a run prints them");
+        assert!(!refused.wrote, "a refused edit wrote nothing");
+
+        let applied = action_from(
+            1,
+            &turn(
+                ToolCall::Edit {
+                    path: "app/calc.py".into(),
+                    old: "a".into(),
+                    new: "b".into(),
+                },
+                "edited app/calc.py (applied: true, bytes 59..87)",
+            ),
+        );
+        assert!(applied.wrote, "an applied edit did");
+        assert_eq!(applied.target, "app/calc.py");
+    }
+
+    #[test]
+    fn reading_a_file_never_counts_as_a_write() {
+        use trellis_loop::ToolCall;
+        // The `applied: true` test is a substring match, so a read whose
+        // content happened to contain that phrase must still not count.
+        let a = action_from(
+            0,
+            &turn(
+                ToolCall::ReadFile {
+                    path: "app/calc.py".into(),
+                },
+                "applied: true",
+            ),
+        );
+        assert!(!a.wrote, "only an edit can write");
+        assert_eq!(a.tool, "read_file");
+    }
+
+    #[test]
+    fn checks_against_no_paths_say_so_rather_than_rendering_blank() {
+        use trellis_checks::CheckKind;
+        use trellis_loop::ToolCall;
+        let a = action_from(
+            0,
+            &turn(
+                ToolCall::RunChecks {
+                    paths: Vec::new(),
+                    kinds: vec![CheckKind::Tests],
+                },
+                "Tests: passed",
+            ),
+        );
+        assert_eq!(a.target, "Tests on whole repository", "{a:?}");
+    }
+
+    #[test]
+    fn an_outcome_is_one_line_and_says_when_it_was_cut() {
+        // A check's output runs to thousands of lines. A trail that stored it
+        // would be mostly type-checker output, and a silently truncated line
+        // reads as the whole outcome.
+        assert_eq!(summarise("first\nsecond\nthird"), "first");
+        assert_eq!(summarise("\n\n  indented  \nnext"), "indented");
+        assert_eq!(summarise(""), "");
+        let long = "x".repeat(400);
+        let cut = summarise(&long);
+        assert_eq!(cut.chars().count(), 120);
+        assert!(cut.ends_with('…'), "a cut line says it was cut: {cut}");
+    }
+
+    #[test]
+    fn a_multibyte_outcome_is_cut_on_a_character_boundary() {
+        // `…` and an em dash both appear in this repository's own messages,
+        // and slicing by bytes would panic on one.
+        let long = "é".repeat(400);
+        assert_eq!(summarise(&long).chars().count(), 120);
     }
 }
