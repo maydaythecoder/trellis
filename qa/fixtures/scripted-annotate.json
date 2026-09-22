@@ -1,0 +1,13 @@
+{
+  "_comment": "A fixed sequence of tool calls: the annotation fix, then the checks that establish it. Drives the real loop, real files, real checks and real rollback with the judgement removed, so the row it produces in the behaviour baseline cannot drift with a model. Results from a scripted run are never a model floor (S7).",
+  "steps": [
+    {
+      "tool": "edit",
+      "path": "app/calc.py",
+      "old": "def describe(n: int) -> int:",
+      "new": "def describe(n: int) -> str:"
+    },
+    { "tool": "run_checks", "paths": ["app/calc.py"], "kinds": ["typecheck"] },
+    { "tool": "done", "summary": "annotation corrected and typechecked" }
+  ]
+}

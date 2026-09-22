@@ -1,0 +1,28 @@
+[
+  {
+    "id": "scripted",
+    "match": true,
+    "checks": {
+      "converged": true,
+      "iterations": true
+    }
+  },
+  {
+    "id": "dirty_worktree",
+    "match": true,
+    "checks": {
+      "refused": true,
+      "says": true,
+      "left the work alone": true
+    }
+  },
+  {
+    "id": "dead_runtime",
+    "match": true,
+    "checks": {
+      "refused": true,
+      "says": true,
+      "wrote no trail": true
+    }
+  }
+]

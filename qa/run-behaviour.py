@@ -24,13 +24,60 @@ Usage:
 
 import argparse
 import json
+import hashlib
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
+
+
+class FixtureLock:
+    """One harness at a time against one fixture repository.
+
+    Both runners reset the fixture with `git reset --hard` between cases. Run
+    two at once and each silently pulls the ground from under the other: a
+    guard case that sets up a dirty worktree finds it clean, refuses for the
+    wrong reason, and reports a mismatch that says nothing about the harness
+    under test.
+
+    That happened, and it produced a false MISMATCH that looked exactly like a
+    real defect. A baseline whose rows can be corrupted by another process is
+    not a baseline, so this is a lock rather than a note.
+    """
+
+    def __init__(self, repo):
+        # Outside the fixture, deliberately. The first version put the lock in
+        # the repository's own `.trellis/`, where it was an untracked file —
+        # so the worktree was never clean and every run refused to start. The
+        # refusal cases still "passed", because they were being refused
+        # anyway, for the wrong reason. A measurement harness must not be
+        # visible to what it measures.
+        key = hashlib.sha256(str(pathlib.Path(repo).resolve()).encode()).hexdigest()[:16]
+        self.path = pathlib.Path(tempfile.gettempdir()) / f"trellis-qa-{key}.lock"
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Exclusive create: succeeds only if no one else holds it.
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            raise SystemExit(
+                f"another qa run holds {self.path}.\n"
+                "Two harnesses resetting one fixture corrupt each other's rows.\n"
+                "Wait for it, or delete the file if it was left by a killed run."
+            )
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return self
+
+    def __exit__(self, *_):
+        self.path.unlink(missing_ok=True)
+        return False
 
 
 def sh(args, cwd, timeout=600):
@@ -91,67 +138,68 @@ def main():
     print(f"cases     {len(cases)} x {args.repeat}")
     print()
 
-    rows = []
-    for case in cases:
-        for run_n in range(args.repeat):
-            reset(repo, commit)
-            t0 = time.monotonic()
-            try:
-                p = sh(["trellis", "run", case["task"]], repo)
-                out = p.stdout + p.stderr
-            except subprocess.TimeoutExpired:
-                out = "TIMEOUT"
-            elapsed = time.monotonic() - t0
+    with FixtureLock(repo):
+        rows = []
+        for case in cases:
+            for run_n in range(args.repeat):
+                reset(repo, commit)
+                t0 = time.monotonic()
+                try:
+                    p = sh(["trellis", "run", case["task"]], repo)
+                    out = p.stdout + p.stderr
+                except subprocess.TimeoutExpired:
+                    out = "TIMEOUT"
+                elapsed = time.monotonic() - t0
 
-            converged, iterations, writes, trail = parse_run(out)
-            actions, checks = parse_trail(trail) if trail else ([], [])
-            reset(repo, commit)
+                converged, iterations, writes, trail = parse_run(out)
+                actions, checks = parse_trail(trail) if trail else ([], [])
+                reset(repo, commit)
 
-            exp = case["expect"]
-            checks_pass = bool(checks) and all(c.get("passed") for c in checks)
-            match_conv = converged == exp["converges"]
-            # Expected writes are a subset check: a run that also touched a
-            # file the expectation did not name is reported, not failed, since
-            # "which files" is what this is measuring.
-            match_writes = set(exp["writes"]).issubset(set(writes))
-            rows.append(
-                {
-                    "id": case["id"],
-                    "run": run_n + 1,
-                    "converged": converged,
-                    "expected": exp["converges"],
-                    "match": match_conv and match_writes,
-                    "iterations": iterations,
-                    "writes": writes,
-                    "checks": [f"{c['kind']}{'+' if c['passed'] else '-'}" for c in checks],
-                    "checks_pass": checks_pass,
-                    "actions": len(actions),
-                    "refused": sum(
-                        1 for a in actions if a["tool"] == "edit" and not a["wrote"]
-                    ),
-                    "secs": round(elapsed, 1),
-                }
-            )
-            r = rows[-1]
-            mark = "match   " if r["match"] else "MISMATCH"
-            print(
-                f"  {mark} {r['id']:<12} conv={str(converged):<5} "
-                f"(expected {str(exp['converges']):<5}) iters={str(iterations):<4} "
-                f"actions={r['actions']:<2} refused={r['refused']:<2} "
-                f"writes={writes} checks={r['checks']} {r['secs']}s"
-            )
+                exp = case["expect"]
+                checks_pass = bool(checks) and all(c.get("passed") for c in checks)
+                match_conv = converged == exp["converges"]
+                # Expected writes are a subset check: a run that also touched a
+                # file the expectation did not name is reported, not failed, since
+                # "which files" is what this is measuring.
+                match_writes = set(exp["writes"]).issubset(set(writes))
+                rows.append(
+                    {
+                        "id": case["id"],
+                        "run": run_n + 1,
+                        "converged": converged,
+                        "expected": exp["converges"],
+                        "match": match_conv and match_writes,
+                        "iterations": iterations,
+                        "writes": writes,
+                        "checks": [f"{c['kind']}{'+' if c['passed'] else '-'}" for c in checks],
+                        "checks_pass": checks_pass,
+                        "actions": len(actions),
+                        "refused": sum(
+                            1 for a in actions if a["tool"] == "edit" and not a["wrote"]
+                        ),
+                        "secs": round(elapsed, 1),
+                    }
+                )
+                r = rows[-1]
+                mark = "match   " if r["match"] else "MISMATCH"
+                print(
+                    f"  {mark} {r['id']:<12} conv={str(converged):<5} "
+                    f"(expected {str(exp['converges']):<5}) iters={str(iterations):<4} "
+                    f"actions={r['actions']:<2} refused={r['refused']:<2} "
+                    f"writes={writes} checks={r['checks']} {r['secs']}s"
+                )
 
-    print()
-    matched = sum(1 for r in rows if r["match"])
-    print(f"{matched}/{len(rows)} matched their expectation")
-    print()
-    print("Mismatches are not failures of the harness or of the expectation")
-    print("until one of the two is shown wrong. Each is a row to explain.")
+        print()
+        matched = sum(1 for r in rows if r["match"])
+        print(f"{matched}/{len(rows)} matched their expectation")
+        print()
+        print("Mismatches are not failures of the harness or of the expectation")
+        print("until one of the two is shown wrong. Each is a row to explain.")
 
-    out_path = HERE / "behaviour-latest.json"
-    out_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    print(f"\nrows written to {out_path}")
-    return 0
+        out_path = HERE / "behaviour-latest.json"
+        out_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        print(f"\nrows written to {out_path}")
+        return 0
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "_comment": "Task cases with an expected outcome each, run against trellis-demo from a fixed commit. Expectations are written BEFORE the run and are not edited to match what happened — a case whose expectation was wrong is a finding about the expectation, and gets its own row in the report rather than a quiet correction. Run with qa/run-behaviour.py.",
+  "_comment": "Task cases with an expected outcome each, run against trellis-demo from a fixed commit. Expectations are written BEFORE the run and are not edited to match what happened \u2014 a case whose expectation was wrong is a finding about the expectation, and gets its own row in the report rather than a quiet correction. Run with qa/run-behaviour.py.",
   "_fixture": "trellis-demo",
   "_baseline_commit": "31daaaf",
   "_budget": "max_iterations = 6, max_wall_clock_s = 300",
@@ -10,7 +10,9 @@
       "why": "The single-file baseline. Measured at 4 actions over 11 runs before this suite existed.",
       "expect": {
         "converges": true,
-        "writes": ["app/calc.py"],
+        "writes": [
+          "app/calc.py"
+        ],
         "checks_pass": true
       }
     },
@@ -20,7 +22,9 @@
       "why": "A single-file edit that adds rather than corrects. No check can fail on it, so it isolates whether the loop can finish work the checks are indifferent to.",
       "expect": {
         "converges": true,
-        "writes": ["app/calc.py"],
+        "writes": [
+          "app/calc.py"
+        ],
         "checks_pass": true
       }
     },
@@ -30,7 +34,9 @@
       "why": "Multi-file. Known to need roughly 8 turns against a budget of 6, so a failure here is the budget and not the model. Recorded as an expected mismatch rather than quietly excluded.",
       "expect": {
         "converges": false,
-        "writes": ["app/calc.py"],
+        "writes": [
+          "app/calc.py"
+        ],
         "checks_pass": false
       }
     },
@@ -40,7 +46,9 @@
       "why": "Multi-file and vaguer than the rename: the model has to decide which names and find their callers itself.",
       "expect": {
         "converges": false,
-        "writes": ["app/calc.py"],
+        "writes": [
+          "app/calc.py"
+        ],
         "checks_pass": false
       }
     },
@@ -82,6 +90,44 @@
         "converges": false,
         "writes": [],
         "checks_pass": false
+      }
+    }
+  ],
+  "_guards_comment": "Cases that need no model, or a scripted one. They are deterministic, so these rows pin behaviour that cannot drift with a weight - the refusals the whole design rests on, and one full loop with the judgement removed.",
+  "guards": [
+    {
+      "id": "scripted",
+      "why": "The real loop, real files, real checks and real rollback with the judgement removed. A row that cannot drift. Never a model floor (S7).",
+      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-annotate.json",
+      "task": "fix the describe annotation",
+      "expect": {
+        "converges": true,
+        "writes": [
+          "app/calc.py"
+        ],
+        "iterations": 2
+      }
+    },
+    {
+      "id": "dirty_worktree",
+      "why": "ADR 0009. Rollback is a reset to a commit taken before the run, which cannot tell this run's edits from work already there - so a run must refuse to start on top of uncommitted changes, and must leave them exactly as they were.",
+      "setup": "dirty",
+      "task": "fix the describe annotation",
+      "expect": {
+        "refused": true,
+        "says": "clean git worktree",
+        "leaves_dirty": true
+      }
+    },
+    {
+      "id": "dead_runtime",
+      "why": "A refused connection is not a failed run. It is a run that could not start, and it should cost nothing: no snapshot, no rollback, no trail.",
+      "model": "vllm:http://127.0.0.1:1",
+      "task": "fix the describe annotation",
+      "expect": {
+        "refused": true,
+        "says": "did not start",
+        "writes_trail": false
       }
     }
   ]
