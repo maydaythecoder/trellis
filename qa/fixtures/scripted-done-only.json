@@ -1,0 +1,6 @@
+{
+  "_comment": "The model says it is finished, immediately, having done nothing and run no check. ADR 0004 says a model never issues a correctness verdict and `done` is not one — so this must NOT converge. The single most load-bearing claim in the project, and it can be tested without a model.",
+  "steps": [
+    { "tool": "done", "summary": "all good, the annotation is fine" }
+  ]
+}

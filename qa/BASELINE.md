@@ -55,18 +55,32 @@ stated next to it.
 
 ## Guards — behaviour that must not depend on a model
 
-Deterministic, so a single run is enough to quote. **3 of 3 hold.**
+Deterministic: scripted or refused, using no model at all, so a single run is
+enough to quote and the rows cannot drift with a weight. They also cost no GPU,
+which is why they ran while the model suite was blocked.
 
-| case | holds | what it establishes |
-|---|---|---|
-| `scripted` | **yes** | The real loop, files, checks and rollback with judgement removed converges in exactly 2 iterations. Never a model floor (S7). |
-| `dirty_worktree` | **yes** | A run refuses to start on uncommitted work, says why, and leaves that work byte-for-byte alone (ADR 0009). |
-| `dead_runtime` | **yes** | An unreachable runtime costs nothing: refused before the snapshot, and no trail written. |
+**9 of 9 hold.**
 
-The second and third are the claims the design makes about what it will never
-do. Rollback is `git reset --hard` to a commit taken before the run, which
-cannot distinguish the run's edits from work already there — so refusing is the
-only thing that makes "nothing was accepted" mean exactly that.
+| case | what it establishes |
+|---|---|
+| `scripted` | The real loop, files, checks and rollback with judgement removed converges in exactly 2 iterations. Never a model floor (S7). |
+| `dirty_worktree` | A run refuses to start on uncommitted work, says why, and leaves it byte-for-byte alone (ADR 0009). |
+| `dead_runtime` | An unreachable runtime costs nothing: refused before the snapshot, no trail written. |
+| `done_only` | **A model saying `done`, having done nothing and run no check, does not converge.** |
+| `done_after_edit` | **Nor does it when the edit was genuinely correct.** The work was right; the claim that it was right came from the model, and nothing executed to establish it. |
+| `governance_write` | A `forbid` pattern is an audit rule, not a write-path rule — the edit lands and the run then cannot converge. |
+| `governance_audit` | A run whose checks pass but which broke a non-negotiable rule is refused at the gate, with the violation named and located. |
+| `path_escape` | An edit aimed through `../` is refused before anything is written. |
+| `noop_edit` | An edit replacing text with itself is refused, not reported as applied. |
+
+The two `done` cases are the most load-bearing claims in the project — ADR 0004
+and Constraint 2, that a model never issues a correctness verdict — and neither
+needs a model to test. `done_after_edit` is the harder half: it is easy to
+refuse a model that did nothing, and the real question is whether a *correct*
+edit plus an unchecked assertion is enough. It is not.
+
+`dirty_worktree` and `dead_runtime` are claims about what the design will never
+do, which is the kind that rots unnoticed.
 
 ## Model cases — 4 of 8, qwen3:8b, n=1
 

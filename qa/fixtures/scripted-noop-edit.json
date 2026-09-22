@@ -1,0 +1,7 @@
+{
+  "_comment": "An edit that replaces text with itself. It would otherwise `succeed`: the anchor occurs once, identical bytes are written back, and the model is told applied: true about a change that did not happen. Refused instead.",
+  "steps": [
+    { "tool": "edit", "path": "app/calc.py", "old": "return sum(xs)", "new": "return sum(xs)" },
+    { "tool": "done", "summary": "no change needed" }
+  ]
+}

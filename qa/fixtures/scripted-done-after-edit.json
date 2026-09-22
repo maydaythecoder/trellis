@@ -1,0 +1,12 @@
+{
+  "_comment": "A real edit, then `done` with no check run. The edit is correct; the claim that it is correct is the model's, and nothing executed to establish it. Constraint 2: correctness verdicts come only from processes that execute. Must not converge.",
+  "steps": [
+    {
+      "tool": "edit",
+      "path": "app/calc.py",
+      "old": "def describe(n: int) -> int:",
+      "new": "def describe(n: int) -> str:"
+    },
+    { "tool": "done", "summary": "fixed it, looks right" }
+  ]
+}

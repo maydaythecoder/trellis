@@ -124,11 +124,20 @@ def main():
             checks = {}
             if exp.get("refused"):
                 checks["refused"] = p.returncode != 0
+            if "says" in exp:
                 checks["says"] = exp["says"].lower() in out.lower()
-            if exp.get("converges"):
-                checks["converged"] = "CONVERGED after" in out and "NOT CONVERGED" not in out
-                if "iterations" in exp:
+            # `in exp` rather than a truthiness test: `converges: false` is the
+            # expectation of half these cases, and a truthy check silently
+            # skipped it — a guard that asserts nothing passes every time.
+            if "converges" in exp:
+                converged = "CONVERGED after" in out and "NOT CONVERGED" not in out
+                checks["converged" if exp["converges"] else "did not converge"] = (
+                    converged == exp["converges"]
+                )
+                if exp["converges"] and "iterations" in exp:
                     checks["iterations"] = f"CONVERGED after {exp['iterations']} iterations" in out
+            if "writes" in exp and not exp["writes"]:
+                checks["wrote nothing"] = "files written: none" in out
             if exp.get("leaves_dirty"):
                 dirty = sh(["git", "status", "--porcelain"], repo).stdout
                 # The point is not merely that it is dirty but that the person's

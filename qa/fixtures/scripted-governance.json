@@ -1,0 +1,13 @@
+{
+  "_comment": "An edit that inserts `print(` into `app/`, which `no-print.toml` forbids as non-negotiable. The write path should refuse it — governance enforced where writes happen, not discovered by a check afterwards.",
+  "steps": [
+    {
+      "tool": "edit",
+      "path": "app/calc.py",
+      "old": "    return f\"count={n}\"",
+      "new": "    print(n)\n    return f\"count={n}\""
+    },
+    { "tool": "run_checks", "paths": ["app/calc.py"], "kinds": ["typecheck"] },
+    { "tool": "done", "summary": "added logging" }
+  ]
+}

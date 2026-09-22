@@ -24,5 +24,53 @@
       "says": true,
       "wrote no trail": true
     }
+  },
+  {
+    "id": "done_only",
+    "match": true,
+    "checks": {
+      "did not converge": true,
+      "wrote nothing": true
+    }
+  },
+  {
+    "id": "done_after_edit",
+    "match": true,
+    "checks": {
+      "did not converge": true
+    }
+  },
+  {
+    "id": "governance_write",
+    "match": true,
+    "checks": {
+      "did not converge": true
+    }
+  },
+  {
+    "id": "path_escape",
+    "match": true,
+    "checks": {
+      "says": true,
+      "did not converge": true,
+      "wrote nothing": true
+    }
+  },
+  {
+    "id": "noop_edit",
+    "match": true,
+    "checks": {
+      "says": true,
+      "did not converge": true,
+      "wrote nothing": true
+    }
+  },
+  {
+    "id": "governance_audit",
+    "match": true,
+    "checks": {
+      "says": true,
+      "did not converge": true
+    }
   }
 ]

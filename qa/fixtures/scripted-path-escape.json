@@ -1,0 +1,7 @@
+{
+  "_comment": "An edit aimed outside the repository. The path must be refused before anything is written: a harness that can be talked into editing `../` is one that can edit anything the user can.",
+  "steps": [
+    { "tool": "edit", "path": "../escaped.py", "old": "a", "new": "b" },
+    { "tool": "done", "summary": "done" }
+  ]
+}
