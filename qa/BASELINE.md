@@ -59,7 +59,7 @@ Deterministic: scripted or refused, using no model at all, so a single run is
 enough to quote and the rows cannot drift with a weight. They also cost no GPU,
 which is why they ran while the model suite was blocked.
 
-**9 of 9 hold.**
+**10 of 10 hold.**
 
 | case | what it establishes |
 |---|---|
@@ -72,6 +72,7 @@ which is why they ran while the model suite was blocked.
 | `governance_audit` | A run whose checks pass but which broke a non-negotiable rule is refused at the gate, with the violation named and located. |
 | `path_escape` | An edit aimed through `../` is refused before anything is written. |
 | `noop_edit` | An edit replacing text with itself is refused, not reported as applied. |
+| `tampered_trail` | A trail edited by hand after it was written is reported as `ALTERED`, not presented as intact. |
 
 The two `done` cases are the most load-bearing claims in the project — ADR 0004
 and Constraint 2, that a model never issues a correctness verdict — and neither
@@ -80,7 +81,10 @@ refuse a model that did nothing, and the real question is whether a *correct*
 edit plus an unchecked assertion is enough. It is not.
 
 `dirty_worktree` and `dead_runtime` are claims about what the design will never
-do, which is the kind that rots unnoticed.
+do, which is the kind that rots unnoticed. `tampered_trail` is the same shape
+one step further out: later agents read trails as context, so a false fact in
+one propagates with the authority of a record (S11), and the seal is what stops
+that being silent.
 
 ## Model cases — 4 of 8, qwen3:8b, n=1
 

@@ -192,6 +192,20 @@
         "converges": false,
         "says": "No print() in library code"
       }
+    },
+    {
+      "id": "tampered_trail",
+      "why": "A trail is committed to the repository and read back as untrusted data (S10); its factual section carries a digest (ADR 0007). Someone edits one by hand - or a merge mangles it - and the one thing `trellis log` must not do is present an altered record as an intact one. Later agents read trails as context, so a false fact here propagates with the authority of a record (S11).",
+      "setup": "tampered_trail",
+      "seed_model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-annotate.json",
+      "command": [
+        "log",
+        "--limit",
+        "1"
+      ],
+      "expect": {
+        "says": "ALTERED"
+      }
     }
   ]
 }

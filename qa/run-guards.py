@@ -112,11 +112,28 @@ def main():
                 p.write_text(p.read_text(encoding="utf-8") + "\n# a person's work\n",
                              encoding="utf-8")
 
+            # A trail that has been edited since it was written. The digest
+            # covers the factual section (ADR 0007), and a trail is read back
+            # as untrusted data (S10) — so the one thing `trellis log` must not
+            # do is present an altered record as an intact one.
+            if g.get("setup") == "tampered_trail":
+                sh(["trellis", "run", "--model", g["seed_model"], "seed a trail"], repo)
+                newest = max(
+                    (repo / ".trellis" / "runs").glob("*.json"),
+                    key=lambda f: f.stat().st_mtime,
+                )
+                d = json.loads(newest.read_text(encoding="utf-8"))
+                # Change a fact, leave the digest alone. This is what an edit
+                # by hand looks like, and what the seal exists to catch.
+                d["factual"]["proposed"] = ["something/else.py"]
+                newest.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
             before = trails(repo)
-            cmd = ["trellis", "run"]
+            cmd = ["trellis"] + g.get("command", ["run"])
             if g.get("model"):
                 cmd += ["--model", g["model"]]
-            cmd.append(g["task"])
+            if g.get("task"):
+                cmd.append(g["task"])
             p = sh(cmd, repo)
             out = p.stdout + p.stderr
             after = trails(repo)

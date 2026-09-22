@@ -72,5 +72,12 @@
       "says": true,
       "did not converge": true
     }
+  },
+  {
+    "id": "tampered_trail",
+    "match": true,
+    "checks": {
+      "says": true
+    }
   }
 ]
