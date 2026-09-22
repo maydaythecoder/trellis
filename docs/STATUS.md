@@ -488,6 +488,28 @@ that depends on whoever is editing remembering it is not a rule. The guard
 carries a second test proving the predicate still recognises the shape it was
 written for, because a hygiene test that cannot fail is decoration.
 
+### 15. The interface was already safe, and the reason is now pinned
+
+The command-line half escapes control characters before printing trail content.
+The interface displays the same untrusted material — check output, file paths,
+a previous run's context — so the obvious question was whether an escape
+sequence could reach the terminal through the render buffer.
+
+It cannot, and the reason is outside this repository: ratatui builds a buffer of
+graphemes and drops control characters on the way in. Measured with a throwaway
+probe rather than reasoned about, which took one test run and settled it.
+
+No fix was needed, so none was made. The probe became a test instead: the
+argument now rests on a dependency's behaviour, and if an upgrade changes it
+this fails rather than the property quietly disappearing. It also asserts the
+legible text still arrives, so it cannot pass by dropping everything.
+
+**This closes the non-inference thread.** Four iterations of reading found a
+byte-unbounded excerpt, an edge-unbounded graph, duplicated and stale help text,
+a filename that could close the prompt's file list, nine sites printing
+untrusted trail content to a terminal, and two undocumented structural
+divergences (Q-18, Q-19). What remains in this document needs a model.
+
 ### What is worth doing next
 
 **Confirm the empty-reply fix at n>1** when memory allows. One run is a

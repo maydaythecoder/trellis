@@ -672,6 +672,39 @@ mod tests {
     }
 
     #[test]
+    fn an_escape_sequence_in_a_transcript_never_reaches_the_terminal() {
+        // The command-line half of this program escapes control characters
+        // before printing trail content, because a terminal interprets what it
+        // is given and a repaint can make a failed run look like a passed one.
+        // The interface displays the same untrusted material — check output,
+        // file paths, a previous run's context.
+        //
+        // It is safe, and for a reason outside this repository: ratatui builds
+        // a cell buffer of graphemes and drops control characters on the way
+        // in, so nothing this code renders can emit one. That is a dependency
+        // behaviour the argument now rests on, so it is pinned here rather
+        // than assumed — if an upgrade changes it, this fails instead of the
+        // property silently disappearing.
+        let mut s = populated();
+        s.update(Message::AgentToken(
+            "checking\x1b[2K\x1b[Aconverged\r\n\x07 done\n".into(),
+        ));
+        let out = drawn(&s, 100, 40);
+        let escaped: Vec<u32> = out
+            .chars()
+            .filter(|c| c.is_control())
+            .map(u32::from)
+            .collect();
+        assert!(
+            escaped.is_empty(),
+            "control characters reached the render buffer: {escaped:?}"
+        );
+        // And the legible part still arrives, so this is not passing because
+        // the text was dropped wholesale.
+        assert!(out.contains("checking"), "{out}");
+    }
+
+    #[test]
     fn the_graph_survives_a_pane_too_narrow_to_draw_it() {
         let s = acted(&[("edit", "a.py", true)]);
         for w in [80u16, 81, 90, 120] {
