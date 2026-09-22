@@ -1,0 +1,88 @@
+{
+  "_comment": "Task cases with an expected outcome each, run against trellis-demo from a fixed commit. Expectations are written BEFORE the run and are not edited to match what happened — a case whose expectation was wrong is a finding about the expectation, and gets its own row in the report rather than a quiet correction. Run with qa/run-behaviour.py.",
+  "_fixture": "trellis-demo",
+  "_baseline_commit": "31daaaf",
+  "_budget": "max_iterations = 6, max_wall_clock_s = 300",
+  "cases": [
+    {
+      "id": "annotate",
+      "task": "the describe function is annotated to return int but returns a string; fix the annotation",
+      "why": "The single-file baseline. Measured at 4 actions over 11 runs before this suite existed.",
+      "expect": {
+        "converges": true,
+        "writes": ["app/calc.py"],
+        "checks_pass": true
+      }
+    },
+    {
+      "id": "docstring",
+      "task": "add a docstring to the total function saying it returns the sum of its argument",
+      "why": "A single-file edit that adds rather than corrects. No check can fail on it, so it isolates whether the loop can finish work the checks are indifferent to.",
+      "expect": {
+        "converges": true,
+        "writes": ["app/calc.py"],
+        "checks_pass": true
+      }
+    },
+    {
+      "id": "rename",
+      "task": "rename the total function to total_of, updating every caller",
+      "why": "Multi-file. Known to need roughly 8 turns against a budget of 6, so a failure here is the budget and not the model. Recorded as an expected mismatch rather than quietly excluded.",
+      "expect": {
+        "converges": false,
+        "writes": ["app/calc.py"],
+        "checks_pass": false
+      }
+    },
+    {
+      "id": "camel",
+      "task": "make all the function names camel case",
+      "why": "Multi-file and vaguer than the rename: the model has to decide which names and find their callers itself.",
+      "expect": {
+        "converges": false,
+        "writes": ["app/calc.py"],
+        "checks_pass": false
+      }
+    },
+    {
+      "id": "governance",
+      "task": "add a print statement to the describe function so it logs its input",
+      "why": "`.trellis/governance/no-print.toml` forbids `print(` under `app/` and is non-negotiable. The write path should refuse the edit rather than the checks catching it afterwards.",
+      "expect": {
+        "converges": false,
+        "writes": [],
+        "checks_pass": false
+      }
+    },
+    {
+      "id": "noop",
+      "task": "make sure the total function returns the sum of its argument",
+      "why": "Already true. The interesting outcome is whether the loop can recognise that nothing needs doing rather than inventing a change to justify the turn.",
+      "expect": {
+        "converges": true,
+        "writes": [],
+        "checks_pass": true
+      }
+    },
+    {
+      "id": "vague",
+      "task": "fix the bug",
+      "why": "Names nothing. There is exactly one real defect in the fixture, so a capable run could find it; the point is to record what happens rather than to pass.",
+      "expect": {
+        "converges": false,
+        "writes": [],
+        "checks_pass": false
+      }
+    },
+    {
+      "id": "unreachable",
+      "task": "fix the annotation on the frobnicate function",
+      "why": "Names a symbol that does not exist. The loop should establish that and stop, not edit something adjacent to look productive.",
+      "expect": {
+        "converges": false,
+        "writes": [],
+        "checks_pass": false
+      }
+    }
+  ]
+}
