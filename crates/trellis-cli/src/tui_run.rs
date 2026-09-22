@@ -17,6 +17,72 @@ use tokio::sync::mpsc::Sender;
 use tui_demo::tui;
 use tui_demo::tui::message::Message;
 
+/// `cmd_run`'s narration, routed into the transcript instead of the terminal.
+///
+/// `cmd_run` reports a run the way a command-line tool does, by writing lines.
+/// Under a full-screen interface those lines land on a terminal ratatui
+/// believes it owns, and the frame is destroyed: the rollback notice and the
+/// trail path were drawn straight through the panes, mid-border. Nothing was
+/// wrong with the run — only with where it spoke.
+///
+/// So the run writes here, and each completed line becomes a transcript
+/// message. Line-buffered because that is the unit the pane displays; a
+/// partial line is held until its newline arrives, and `flush_partial` emits
+/// whatever is left when the run ends without one.
+struct TranscriptSink {
+    tx: Sender<Message>,
+    partial: Vec<u8>,
+}
+
+impl TranscriptSink {
+    fn new(tx: Sender<Message>) -> Self {
+        Self {
+            tx,
+            partial: Vec::new(),
+        }
+    }
+
+    fn emit(&self, line: &str) {
+        // Blank lines are `cmd_run` spacing a terminal report. The pane does
+        // its own spacing, and forwarding them leaves gaps that read as the
+        // run having stalled.
+        if line.trim().is_empty() {
+            return;
+        }
+        let _ = self
+            .tx
+            .blocking_send(Message::AgentToken(format!("{line}\n")));
+    }
+
+    /// Emits a trailing line that never got its newline.
+    fn flush_partial(&mut self) {
+        if !self.partial.is_empty() {
+            let rest = String::from_utf8_lossy(&self.partial).into_owned();
+            self.emit(&rest);
+            self.partial.clear();
+        }
+    }
+}
+
+impl std::io::Write for TranscriptSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.partial.extend_from_slice(buf);
+        // `split` on the accumulated bytes rather than on `buf`: a write can
+        // end mid-line, and treating each write as a line would break one
+        // message into several.
+        while let Some(at) = self.partial.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.partial.drain(..=at).collect();
+            let line = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
+            self.emit(line.trim_end_matches('\r'));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// What the interface is told when a run ends, whatever way it ended.
 ///
 /// Separate from the driver so it can be exercised without a terminal. The
@@ -186,9 +252,11 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                         use tracing_subscriber::layer::SubscriberExt;
                         let layer = LoopLayer::new(run_tx.clone());
                         let subscriber = tracing_subscriber::registry().with(layer);
+                        let mut narration = TranscriptSink::new(run_tx.clone());
                         let outcome = tracing::subscriber::with_default(subscriber, || {
-                            crate::cmd_run(&root, &task, &spec, false, "1", false)
+                            crate::cmd_run(&root, &task, &spec, false, "1", false, &mut narration)
                         });
+                        narration.flush_partial();
                         report_outcome(&run_tx, outcome);
                     })
                     .await;
@@ -244,6 +312,68 @@ mod tests {
             state.update(m);
         }
         state
+    }
+
+    /// Everything a sink put on the wire, as the pane would show it.
+    fn narrated(write: impl FnOnce(&mut TranscriptSink)) -> Vec<String> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let mut sink = TranscriptSink::new(tx);
+        write(&mut sink);
+        sink.flush_partial();
+        drop(sink);
+        let mut out = Vec::new();
+        while let Ok(Message::AgentToken(t)) = rx.try_recv() {
+            out.push(t);
+        }
+        out
+    }
+
+    #[test]
+    fn a_line_split_across_writes_arrives_as_one_message() {
+        use std::io::Write;
+        // `writeln!` on a formatted line issues several writes. Treating each
+        // as a line would chop one sentence into pieces down the pane — the
+        // merged-and-split-line failure this interface has had once already.
+        let got = narrated(|s| {
+            let _ = s.write_all(b"CONVERGED after ");
+            let _ = s.write_all(b"4 iterations");
+            let _ = s.write_all(b", 2 checks passed.\n");
+        });
+        assert_eq!(
+            got,
+            vec!["CONVERGED after 4 iterations, 2 checks passed.\n"]
+        );
+    }
+
+    #[test]
+    fn several_lines_in_one_write_arrive_separately() {
+        use std::io::Write;
+        let got = narrated(|s| {
+            let _ = s.write_all(b"one\ntwo\r\nthree\n");
+        });
+        // The `\r` goes too: it is a terminal artefact, and left in place it
+        // makes the pane redraw the line from column zero.
+        assert_eq!(got, vec!["one\n", "two\n", "three\n"]);
+    }
+
+    #[test]
+    fn a_final_line_without_a_newline_is_not_swallowed() {
+        use std::io::Write;
+        let got = narrated(|s| {
+            let _ = s.write_all(b"trail written");
+        });
+        assert_eq!(got, vec!["trail written\n"], "the last line still counts");
+    }
+
+    #[test]
+    fn blank_spacing_lines_do_not_reach_the_pane() {
+        use std::io::Write;
+        // `cmd_run` spaces a terminal report with blank lines. The pane does
+        // its own spacing, and forwarding them reads as a stalled run.
+        let got = narrated(|s| {
+            let _ = s.write_all(b"\n\nsnapshot at abc123\n\n");
+        });
+        assert_eq!(got, vec!["snapshot at abc123\n"]);
     }
 
     #[test]

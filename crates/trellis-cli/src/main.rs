@@ -296,7 +296,15 @@ fn main() -> Result<()> {
                     "no model. Pass --model, or set [model] spec in \
                      .trellis/config.toml",
                 )?;
-            let exit = cmd_run(&root, &task, &model, unconstrained, &agents, resume)?;
+            let exit = cmd_run(
+                &root,
+                &task,
+                &model,
+                unconstrained,
+                &agents,
+                resume,
+                &mut std::io::stdout(),
+            )?;
             // The one place that decides the process ends, because this is
             // the one caller that *is* the process.
             if exit.code() != 0 {
@@ -803,6 +811,7 @@ fn cmd_run(
     unconstrained: bool,
     agents: &str,
     resume: bool,
+    out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
     if agents != "1" {
         anyhow::bail!(concat!(
@@ -855,15 +864,16 @@ fn cmd_run(
     // Printed after reachability, not before. Describing the tier of a
     // runtime that is not listening is noise ahead of the only line that
     // matters.
-    println!("model:    {}", driver.describe());
+    let _ = writeln!(out, "model:    {}", driver.describe());
 
     // Read before the snapshot, so a missing or corrupt trail fails the run
     // before anything has been written.
     let prior = if resume {
         match trellis_trail::latest(root)? {
             Some((path, trail)) => {
-                println!("resumed:  {}", path.display());
-                println!(
+                let _ = writeln!(out, "resumed:  {}", path.display());
+                let _ = writeln!(
+                    out,
                     "          {} lines of prior context, fenced as data",
                     trail.context_lines().len()
                 );
@@ -876,7 +886,7 @@ fn cmd_run(
                 // Not an error. A first run in a repository has nothing to
                 // resume from, and refusing to start would make `--resume`
                 // unusable as a habit.
-                println!("resumed:  nothing — no trail under .trellis/runs/");
+                let _ = writeln!(out, "resumed:  nothing — no trail under .trellis/runs/");
                 None
             }
         }
@@ -889,7 +899,7 @@ fn cmd_run(
     // (ADR 0009).
     let snapshot =
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
-    println!("snapshot at {}", snapshot.head);
+    let _ = writeln!(out, "snapshot at {}", snapshot.head);
 
     // Rule documents from `.trellis/governance/`, plus the older
     // `[governance] deny_write` in config.toml. Both feed the same write-path
@@ -907,7 +917,8 @@ fn cmd_run(
     let governance = trellis_loop::Governance::new(&deny);
     let notes = config::RepoConfig::notes(root)?;
     if !governance.is_empty() || notes.is_some() {
-        println!(
+        let _ = writeln!(
+            out,
             "repo:     {} write rule(s){}",
             governance.rules().len(),
             if notes.is_some() {
@@ -943,7 +954,8 @@ fn cmd_run(
     // not a parse: the paths are wanted, not the graph, and a run should not
     // pay for an index it may never query.
     let files = trellis_index::discover_relative(root);
-    println!(
+    let _ = writeln!(
+        out,
         "files:    {} first-party Python file(s) named to the model",
         files.len()
     );
@@ -995,17 +1007,17 @@ fn cmd_run(
     });
 
     let Some(outcome) = outcome else {
-        return interrupted_run(root, task, &transcript, &snapshot, model_spec);
+        return interrupted_run(root, task, &transcript, &snapshot, model_spec, out);
     };
     let (outcome, turns) = outcome;
-    println!();
+    let _ = writeln!(out);
     for (i, t) in turns.turns.iter().enumerate() {
         let mark = match t.verdict_passed {
             Some(true) => "check passed",
             Some(false) => "check FAILED",
             None => "",
         };
-        println!("  {:>2}. {:?} {}", i + 1, t.call, mark);
+        let _ = writeln!(out, "  {:>2}. {:?} {}", i + 1, t.call, mark);
     }
 
     // The list above says a check failed. This says why.
@@ -1026,22 +1038,24 @@ fn cmd_run(
         .find(|t| t.verdict_passed == Some(false))
     {
         const SHOWN: usize = 24;
-        println!();
-        println!("why the check failed:");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "why the check failed:");
         let lines: Vec<&str> = t.observation.lines().collect();
         for line in lines.iter().take(SHOWN) {
-            println!("  {line}");
+            let _ = writeln!(out, "  {line}");
         }
         if lines.len() > SHOWN {
-            println!(
+            let _ = writeln!(
+                out,
                 "  … {} more line(s); the full output is in the trail",
                 lines.len() - SHOWN
             );
         }
     }
 
-    println!();
-    println!(
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
         "files written: {}",
         if transcript.is_empty() {
             // "files written:" followed by nothing reads as truncated
@@ -1055,7 +1069,8 @@ fn cmd_run(
     // Context fill (v0.2 gate). Bytes, because TRELLIS does not tokenize.
     let measured: Vec<usize> = turns.turns.iter().filter_map(|t| t.prompt_bytes).collect();
     if let (Some(first), Some(peak)) = (measured.first(), measured.iter().max()) {
-        println!(
+        let _ = writeln!(
+            out,
             "context:  {} B first prompt, {} B peak over {} turns ({:.1}x)",
             first,
             peak,
@@ -1069,18 +1084,24 @@ fn cmd_run(
             iterations,
             checks_passed,
         } => {
-            println!();
-            println!("CONVERGED after {iterations} iterations, {checks_passed} checks passed.");
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "CONVERGED after {iterations} iterations, {checks_passed} checks passed."
+            );
             let trail = record_trail(
                 root,
                 task,
                 &turns,
                 &transcript,
-                trellis_trail::Approval::None,
-                &snapshot.head,
-                Some(model_spec),
+                TrailFacts {
+                    approved: trellis_trail::Approval::None,
+                    base_commit: &snapshot.head,
+                    model: Some(model_spec),
+                },
+                &mut *out,
             )?;
-            println!("trail:    {}", trail.display());
+            let _ = writeln!(out, "trail:    {}", trail.display());
 
             // S6: the coverage warning attaches to the approval, and for a
             // one-shot run this line *is* the approval moment — the session's
@@ -1097,8 +1118,9 @@ fn cmd_run(
                 let doubt =
                     trellis_index::doubt_in_files(&trellis_index::build_cached(root), &transcript);
                 if doubt.unbound > 0 {
-                    println!("coverage: {}", doubt.one_line());
-                    println!(
+                    let _ = writeln!(out, "coverage: {}", doubt.one_line());
+                    let _ = writeln!(
+                        out,
                         "{}",
                         concat!(
                             "          Any of them may call what changed. The ",
@@ -1107,7 +1129,8 @@ fn cmd_run(
                     );
                 }
             }
-            println!(
+            let _ = writeln!(
+                out,
                 "{}",
                 concat!(
                     "Changes are left in the working tree for you to review. ",
@@ -1119,15 +1142,15 @@ fn cmd_run(
             Ok(RunExit::Converged)
         }
         trellis_loop::Outcome::NotConverged { reason, iterations } => {
-            println!();
-            println!("NOT CONVERGED after {iterations} iterations.");
-            println!("  {}", reason.explain());
+            let _ = writeln!(out);
+            let _ = writeln!(out, "NOT CONVERGED after {iterations} iterations.");
+            let _ = writeln!(out, "  {}", reason.explain());
             // Deliberately not `?`. A failed rollback used to propagate here,
             // which meant the one run whose record matters most — the tree is
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_and_report(&snapshot);
+            let restored = rollback_and_report(&snapshot, &mut *out);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -1137,12 +1160,19 @@ fn cmd_run(
                 task,
                 &turns,
                 &transcript,
-                trellis_trail::Approval::None,
-                &snapshot.head,
-                Some(model_spec),
+                TrailFacts {
+                    approved: trellis_trail::Approval::None,
+                    base_commit: &snapshot.head,
+                    model: Some(model_spec),
+                },
+                &mut *out,
             ) {
-                Ok(p) => println!("trail:    {} (survives the rollback)", p.display()),
-                Err(e) => println!("could not write the trail: {e}"),
+                Ok(p) => {
+                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "could not write the trail: {e}");
+                }
             }
             Ok(RunExit::NotConverged { restored })
         }
@@ -1205,8 +1235,9 @@ fn interrupted_run(
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
     model_spec: &str,
+    out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    let restored = handle_interrupt(root, task, touched, snapshot, model_spec);
+    let restored = handle_interrupt(root, task, touched, snapshot, model_spec, out);
     Ok(RunExit::Interrupted { restored })
 }
 
@@ -1223,14 +1254,18 @@ fn handle_interrupt(
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
     model_spec: &str,
+    out: &mut dyn std::io::Write,
 ) -> bool {
-    println!();
-    println!("INTERRUPTED. Rolling back — nothing is accepted on an abort.");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "INTERRUPTED. Rolling back — nothing is accepted on an abort."
+    );
     if !touched.is_empty() {
-        println!("files this run had written: {}", touched.join(", "));
+        let _ = writeln!(out, "files this run had written: {}", touched.join(", "));
     }
 
-    let restored = rollback_and_report(snapshot);
+    let restored = rollback_and_report(snapshot, &mut *out);
 
     // The turn list cannot be recovered: it lives in the loop's future, which
     // was just cancelled. The factual half that matters survives, because the
@@ -1250,14 +1285,23 @@ fn handle_interrupt(
         task,
         &turns,
         touched,
-        trellis_trail::Approval::None,
-        &snapshot.head,
-        Some(model_spec),
+        TrailFacts {
+            approved: trellis_trail::Approval::None,
+            base_commit: &snapshot.head,
+            model: Some(model_spec),
+        },
+        &mut *out,
     ) {
         Ok(p) => {
-            println!("trail:    {} (interrupted; no turns recorded)", p.display());
+            let _ = writeln!(
+                out,
+                "trail:    {} (interrupted; no turns recorded)",
+                p.display()
+            );
         }
-        Err(e) => println!("could not write the trail: {e}"),
+        Err(e) => {
+            let _ = writeln!(out, "could not write the trail: {e}");
+        }
     }
 
     // 130 is the shell convention for a process terminated by SIGINT, so a
@@ -1276,18 +1320,20 @@ fn handle_interrupt(
 ///
 /// Returns whether the worktree was restored, so the caller can pick an exit
 /// code that says which.
-fn rollback_and_report(snapshot: &trellis_vcs::Snapshot) -> bool {
+fn rollback_and_report(snapshot: &trellis_vcs::Snapshot, out: &mut dyn std::io::Write) -> bool {
     match snapshot.rollback() {
         Ok(()) => {
             let restored = snapshot.is_restored().unwrap_or(false);
-            println!();
-            println!(
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
                 "Rolled back to {}. Worktree restored: {restored}.",
                 snapshot.head
             );
             if !restored {
-                eprintln!();
-                eprintln!(
+                let _ = writeln!(out);
+                let _ = writeln!(
+                    out,
                     "{}",
                     concat!(
                         "WARNING: git reported success but the worktree still ",
@@ -1300,8 +1346,8 @@ fn rollback_and_report(snapshot: &trellis_vcs::Snapshot) -> bool {
             restored
         }
         Err(e) => {
-            eprintln!();
-            eprintln!("{e}");
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{e}");
             false
         }
     }
@@ -1359,15 +1405,31 @@ pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::Mod
     counts
 }
 
+/// What a trail records about a run beyond its turns.
+///
+/// Grouped because they travel together and always have: the tree the run
+/// started from, what drove it, and whether a human has accepted it. Passing
+/// them singly pushed `record_trail` past the argument limit, and the limit
+/// was right — three loose values in a row is where a caller swaps two.
+struct TrailFacts<'a> {
+    approved: trellis_trail::Approval,
+    base_commit: &'a str,
+    model: Option<&'a str>,
+}
+
 fn record_trail(
     root: &Path,
     task: &str,
     turns: &trellis_loop::Transcript,
     touched: &[String],
-    approved: trellis_trail::Approval,
-    base_commit: &str,
-    model: Option<&str>,
+    facts: TrailFacts<'_>,
+    out: &mut dyn std::io::Write,
 ) -> Result<std::path::PathBuf> {
+    let TrailFacts {
+        approved,
+        base_commit,
+        model,
+    } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
     // Reach counts sum across queries; the unbound count does not.
@@ -1464,7 +1526,7 @@ fn record_trail(
     let rel = trellis_trail::Trail::path(&timestamp, &slug);
     if let Err(e) = trellis_vcs::commit_paths(root, &[&rel], &format!("trellis: trail for {task}"))
     {
-        println!("trail written but not committed: {e}");
+        let _ = writeln!(out, "trail written but not committed: {e}");
     }
     Ok(path)
 }
@@ -2371,15 +2433,22 @@ mod interrupt_tests {
         std::fs::write(dir.join("a.py"), "def f():\n    return 999\n").unwrap();
         std::fs::write(dir.join("scratch.py"), "x = 1\n").unwrap();
 
+        let mut said = Vec::new();
         let restored = handle_interrupt(
             &dir,
             "a task that was interrupted",
             &["a.py".to_string()],
             &snap,
             "scripted:none",
+            &mut said,
         );
 
         assert!(restored, "an abort must restore the tree");
+        // The narration goes to the sink the caller supplied, which is what
+        // lets a full-screen interface show it instead of being drawn over.
+        let said = String::from_utf8(said).unwrap();
+        assert!(said.contains("INTERRUPTED"), "{said}");
+        assert!(said.contains("a.py"), "the files it had written: {said}");
         assert_eq!(
             RunExit::Interrupted { restored }.code(),
             130,
@@ -2427,7 +2496,14 @@ mod interrupt_tests {
         std::fs::write(dir.join("a.py"), "def f():\n    return 999\n").unwrap();
         snap.head = "0".repeat(40);
 
-        let restored = handle_interrupt(&dir, "t", &["a.py".to_string()], &snap, "scripted:none");
+        let restored = handle_interrupt(
+            &dir,
+            "t",
+            &["a.py".to_string()],
+            &snap,
+            "scripted:none",
+            &mut Vec::new(),
+        );
         assert!(!restored);
         assert_eq!(
             RunExit::Interrupted { restored }.code(),
@@ -2445,7 +2521,7 @@ mod interrupt_tests {
         snap.head = "0".repeat(40);
 
         assert!(
-            !rollback_and_report(&snap),
+            !rollback_and_report(&snap, &mut Vec::new()),
             "the recovery path must never report a restoration it did not make"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2457,7 +2533,7 @@ mod interrupt_tests {
         let snap = trellis_vcs::snapshot(&dir).unwrap();
         std::fs::write(dir.join("a.py"), "def f():\n    return 5\n").unwrap();
 
-        assert!(rollback_and_report(&snap));
+        assert!(rollback_and_report(&snap, &mut Vec::new()));
         assert!(snap.is_restored().unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }

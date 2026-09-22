@@ -424,7 +424,15 @@ impl Session {
         };
 
         self.tasks_run += 1;
-        let outcome = crate::cmd_run(&self.root, task, &model, self.unconstrained, "1", false);
+        let outcome = crate::cmd_run(
+            &self.root,
+            task,
+            &model,
+            self.unconstrained,
+            "1",
+            false,
+            &mut std::io::stdout(),
+        );
 
         // A run writes to the tree, so the session's index is now behind it.
         // Rebuilding here rather than lazily means the next `/radius` answers
