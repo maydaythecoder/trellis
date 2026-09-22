@@ -156,3 +156,52 @@ landed. Instrumentation removed afterwards; 0 occurrences remain.
 **Still not established:** that a short question immediately after an interrupt
 gets answered on its own terms. llama3's topic-stickiness and its latency on
 this machine made it unreliable to observe either way.
+
+## F13 — the interface offered the model no tools  **FIXED, and goal 1 closed**
+
+`c.stream(&msgs, None, ...)`. No definitions ever reached the endpoint, so no
+model could answer with a `tool_calls` array, so the `Chunk::ToolCall` arm was
+unreachable against anything real. The tool counts and the graph pane could
+only ever have been filled by the mock, which synthesises a call it was never
+offered.
+
+Fixing it immediately broke every model that cannot take tools — ollama refuses
+the whole request ("llama3:latest does not support tools") and returns nothing.
+One retry without them, and the user is told:
+
+    > Say NOVEMBER and nothing else.
+      ! this model does not support tools; answering without them
+      November
+
+**Goal 1 is now closed.** Driven through a pty against `qwen2.5:3b`:
+
+    BEFORE   read_file    ○─┐          (ring, no count)
+    AFTER    read_file    ●─┐ 1        (filled, count 1)
+    turns 0 -> 1
+
+A real tool call travelled HTTP -> SSE parse -> `Chunk::ToolCall` ->
+`Message::ToolCalled` -> `AppState.tool_calls` -> the graph pane. The
+conversation shows the prompt echo and no assistant text, which is correct: the
+model answered with a call and no content.
+
+## F14 — two ollama daemons were fighting over one GPU  *(environment, not code)*
+
+Found by the ladder subagent, and it reframes the run's earlier conclusions.
+This machine has an **RTX 5060 Ti with 8 GB**, and the binding constraint is
+VRAM contention between the Windows daemon and the WSL one — not system RAM as
+the QA brief and my own report assumed. With the Windows daemon holding
+qwen3:8b, the WSL daemon was cut to 2.38 GB of VRAM and ran at a third speed.
+
+That is very likely why llama3 replies took 20–70 s during the §6 work, which
+is what made those observations unreliable and produced two wrong diagnoses.
+
+Operational rule: **pick one daemon for the TUI.** Both holding weights looks
+like a model problem and is a configuration problem.
+
+## F15 — `llama3` and every `gemma` refuse tools for a packaging reason
+
+Neither has a `.Tools` block in its ollama template. The refusal is missing
+metadata, not model inability — `llama3.1:8b`, same family and size, scores
+20/20/20/0. Recorded because "the model cannot do tools" and "this packaging of
+the model was not given the template" lead to different fixes, and only the
+second is worth routing around with llama.cpp.

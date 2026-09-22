@@ -1,0 +1,45 @@
+2383 MiB
+--- free -m before ---
+               total        used        free      shared  buff/cache   available
+Mem:            7514         714        2135           2        4835        6799
+Swap:           2048         235        1812
+endpoint  http://127.0.0.1:11434/v1
+model     llama3.1:8b
+cases     20
+max_tokens 2048
+
+  1  call        read_file                          {"path": "src/main.rs"}                            ok
+  2  call        read_file                          {"path": "Cargo.toml"}                             ok
+  3  call        read_file                          {"path": "src/lib.rs"}                             ok
+  4  call        read_file                          {"path": "README.md"}                              ok
+  5  call        read_file                          {"path": "src/tui/app.rs"}                         ok
+  6  call        read_file                          {"path": ".gitignore"}                             ok
+  7  call        read_file                          {"path": "docs/BRIEF.md"}                          ok
+  8  call        read_file                          {"path": "src/model/client.rs"}                    ok
+  9  call        read_file                          {"path": "build.rs"}                               ok
+ 10  call        read_file                          {"path": "src/commands/mod.rs"}                    ok
+ 11  call        run_tests                          {"filter": ""}                                     ok
+ 12  call        run_tests                          {"filter": ""}                                     ok
+ 13  call        run_tests                          {"filter": "parser"}                               ok
+ 14  call        run_tests                          {"filter": "scroll"}                               ok
+ 15  call        run_tests                          {"filter": ""}                                     ok
+ 16  call        run_tests                          {"filter": "context"}                              ok
+ 17  call        run_tests                          {"filter": ""}                                     ok
+ 18  call        run_tests                          {"filter": "loader"}                               ok
+ 19  call        run_tests                          {"filter": ""}                                     ok
+ 20  call        run_tests                          {"filter": "terminal"}                             ok
+
+valid tool_calls   20/20 (100%)
+correct tool       20/20 (100%)
+correct arguments  20/20 (100%)
+text / JSON-in-prose 0/20 (0%)
+wall clock         57.5s for 20 requests
+time to first token 0.28s
+EXIT=0
+--- free -m after ---
+               total        used        free      shared  buff/cache   available
+Mem:            7514        1593          86          96        6099        5920
+Swap:           2048         242        1805
+Sep 21 21:32:52 MuhyadinsPC ollama[166]: load_tensors: offloaded 8/33 layers to GPU
+Sep 21 21:33:46 MuhyadinsPC ollama[166]: load_tensors: offloading 7 repeating layers to GPU
+Sep 21 21:33:46 MuhyadinsPC ollama[166]: load_tensors: offloaded 7/33 layers to GPU
