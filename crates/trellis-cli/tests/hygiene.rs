@@ -62,6 +62,39 @@ fn nothing_read_from_a_trail_is_printed_to_a_terminal_unsanitised() {
     );
 }
 
+/// Surfaces where a person types prose and presses enter.
+///
+/// Not `run`: naming a task on the command line says it is one. These are the
+/// ones where the next thing typed might be a question.
+const CONVERSATIONAL: &[&str] = &["tui_run.rs", "session.rs"];
+
+#[test]
+fn every_conversational_surface_asks_whether_the_input_is_a_task() {
+    // Typing `hello` used to take a git snapshot, drive the loop, run the
+    // repository's checks, roll back and write a trail. `ask::classify` fixed
+    // that — in `trellis tui`, and nowhere else, because the fix was applied
+    // where the failure was noticed. `trellis session` kept the old behaviour
+    // for days with nothing to catch it.
+    //
+    // A third surface is the likely future mistake, so the rule is a test
+    // rather than a thing to remember.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut missing = Vec::new();
+    for name in CONVERSATIONAL {
+        let text = std::fs::read_to_string(dir.join(name))
+            .unwrap_or_else(|e| panic!("{name} is a surface this test names: {e}"));
+        if !text.contains("ask::classify") {
+            missing.push(*name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these take typed prose and never ask whether it is a task: {missing:?}\n\
+         Typing a question into one of them starts an agent run — a snapshot, \
+         the loop, the checks, a rollback and a trail — to answer it."
+    );
+}
+
 #[test]
 fn the_guard_would_actually_catch_something() {
     // A hygiene test that cannot fail is decoration. This exercises the same

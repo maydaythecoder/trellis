@@ -1,0 +1,21 @@
+[
+  {
+    "id": "annotate",
+    "run": 1,
+    "converged": true,
+    "expected": true,
+    "match": true,
+    "iterations": 3,
+    "writes": [
+      "app/calc.py"
+    ],
+    "checks": [
+      "Typecheck+",
+      "Governance+"
+    ],
+    "checks_pass": true,
+    "actions": 4,
+    "refused": 1,
+    "secs": 34.6
+  }
+]

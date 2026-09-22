@@ -423,6 +423,37 @@ impl Session {
             ));
         };
 
+        // Not everything typed here is work, and this surface had no way to
+        // tell.
+        //
+        // `trellis tui` asks the model whether an input is a question or a
+        // change, and answers questions as text. This session did not: its
+        // dispatch ended `_ => self.task(line)`, so `hello` took a git
+        // snapshot, drove the loop, ran the repository's checks, rolled back
+        // and wrote a trail. That is the exact failure `ask` was written to
+        // remove, left live in the other conversational surface because the
+        // fix was applied where it was noticed.
+        //
+        // A question costs one model call here and nothing else — no
+        // snapshot, so nothing to roll back, and `tasks_run` does not count it
+        // because it was not one.
+        if let Ok(spec) = model.parse::<trellis_model::ModelSpec>() {
+            let rt = tokio::runtime::Runtime::new()?;
+            match rt.block_on(crate::ask::classify(&spec, task)) {
+                Ok(crate::ask::Intent::Answer(text)) => {
+                    println!("{}", crate::plain(&text));
+                    println!();
+                    return Ok(());
+                }
+                Ok(crate::ask::Intent::Task) => {}
+                // A runtime that cannot be reached is the run's problem to
+                // report, with its own error and its own guidance. Falling
+                // through means the user gets that rather than a second,
+                // vaguer message about classification.
+                Err(_) => {}
+            }
+        }
+
         self.tasks_run += 1;
         let outcome = crate::cmd_run(
             &self.root,
