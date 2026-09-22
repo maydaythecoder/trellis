@@ -140,6 +140,13 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         // a run that tried four times and wrote once is the run the graph
         // exists to show, and one built only from successes would draw it as
         // a run that acted once.
+        // Only an applied edit changed the tree. The observation is the only
+        // place that says so.
+        let wrote = call.starts_with("edit ")
+            && f.observation
+                .as_deref()
+                .is_some_and(|o| o.contains("applied: true"));
+
         {
             let mut parts = call.splitn(2, ' ');
             let tool = parts.next().unwrap_or_default().to_string();
@@ -147,17 +154,19 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
             self.emit(Message::ActionTaken {
                 tool,
                 target,
-                // Only an applied edit changed the tree. The observation is
-                // the only place that says so.
-                wrote: call.starts_with("edit ")
-                    && f.observation
-                        .as_deref()
-                        .is_some_and(|o| o.contains("applied: true")),
+                wrote,
             });
         }
 
-        // An edit is a proposal until the checks and the user agree.
+        // An edit is a proposal until the checks and the user agree — but a
+        // *refused* edit is not a proposal at all, and listing one made the
+        // panes contradict each other: three `~ app/calc.py` rows and
+        // "3 edit(s) pending" in the status bar, beside an action graph
+        // correctly reporting that one write had happened, for a run that
+        // changed one line. The pane that counts is the one a user checks
+        // before accepting, so it is the one that has to be right.
         if call.starts_with("edit ")
+            && wrote
             && let Some(path) = call.split_whitespace().nth(1)
         {
             self.emit(Message::EditProposed {
@@ -277,6 +286,7 @@ mod tests {
                 turn = 2u64,
                 call = "edit src/index/resolve.rs",
                 verdict = ?None::<bool>,
+                observation = %"edited src/index/resolve.rs (applied: true, bytes 4..9)",
                 "turn"
             );
         });
@@ -290,6 +300,34 @@ mod tests {
             !got.iter()
                 .any(|m| matches!(m, Message::CheckFinished { .. })),
             "an edit is not a check: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_edit_is_not_listed_as_a_pending_change() {
+        // The panes used to contradict each other: three `~ app/calc.py` rows
+        // and "3 edit(s) pending" in the status bar, beside an action graph
+        // correctly reporting one write, for a run that changed one line. The
+        // edits pane is the one a user checks before accepting, so it is the
+        // one that has to be right.
+        let got = capture(|| {
+            tracing::info!(
+                turn = 1u64,
+                call = "edit app/calc.py",
+                verdict = ?None::<bool>,
+                observation = %"error: edit anchor not found in app/calc.py",
+                "turn"
+            );
+        });
+        assert!(
+            !got.iter()
+                .any(|m| matches!(m, Message::EditProposed { .. })),
+            "nothing is pending after an edit that was refused: {got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if !*wrote)),
+            "but it is still an action, and still on the graph: {got:?}"
         );
     }
 

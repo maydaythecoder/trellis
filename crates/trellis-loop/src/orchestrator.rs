@@ -416,10 +416,23 @@ impl Orchestrator {
             ));
         }
 
+        // The span is an offset into the file, not into the normalized copy
+        // this function matched against. On a CRLF checkout those differ by
+        // one byte per preceding line, and the difference is now durable: the
+        // trail's action log records this number, and a recorded figure that
+        // does not point where it says is worse than no figure.
+        let span = if crlf {
+            let start = at + src[..at].matches('\n').count();
+            let len = new.len() + new.matches('\n').count();
+            (start, start + len)
+        } else {
+            (at, at + new.len())
+        };
+
         ToolResult::Edit(EditOutcome {
             path: path.to_string(),
             applied: true,
-            span: (at, at + new.len()),
+            span,
         })
     }
 
@@ -677,6 +690,32 @@ mod tests {
             !after.contains("\n\n") && !after.replace("\r\n", "").contains('\n'),
             "no line ending may be left bare: {after:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_recorded_span_points_into_the_file_not_into_the_copy() {
+        // The trail's action log records this number. Matching happens on an
+        // LF-normalized copy, so on a CRLF checkout the offset drifts by one
+        // byte per preceding line — and a recorded figure that does not point
+        // where it says is worse than no figure at all.
+        let d = repo();
+        let p = d.path().join("app/main.py");
+        let text = "a = 1\r\nb = 2\r\nc = 3\r\ntarget = 4\r\n";
+        std::fs::write(&p, text).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+
+        let out = h.edit("app/main.py", "target = 4", "target = 5").await;
+        let ToolResult::Edit(e) = out else {
+            panic!("{out:?}")
+        };
+        let (start, end) = e.span;
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            &after[start..end],
+            "target = 5",
+            "the span has to select the text it claims, in the file as written"
+        );
+        assert_eq!(start, text.find("target").unwrap(), "{:?}", e.span);
     }
 
     #[tokio::test]

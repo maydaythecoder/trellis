@@ -205,3 +205,45 @@ metadata, not model inability — `llama3.1:8b`, same family and size, scores
 20/20/20/0. Recorded because "the model cannot do tools" and "this packaging of
 the model was not given the template" lead to different fixes, and only the
 second is worth routing around with llama.cpp.
+
+## F8 — `tier 2, schema enforced by the runtime` is false against ollama
+
+**Open. Evidence recorded; the fix belongs to `doctor`.**
+
+Every run prints, before its first turn:
+
+```
+model:    VllmOpenAi, tier 2, schema enforced by the runtime — degradation:
+          none for correctness; grammar compilation happens in the serving runtime
+```
+
+Against ollama this is not true. `RuntimeClient::body` sends the schema as
+`guided_json`, which is **vLLM's** parameter name. Ollama does not implement
+it: structured output there is `format` on the native API, or
+`response_format` on the OpenAI-compatible one. The field is accepted and
+ignored.
+
+Measured rather than argued. The same prompt to `qwen3:8b` at
+`http://127.0.0.1:11434/v1/completions`, temperature 0, three times each with
+and without `guided_json`:
+
+```
+temp=0.0 no schema     ctok=987  {"tool": "edit", "path": "app/calc.py", ...
+temp=0.0 guided_json   ctok=987  {"tool": "edit", "path": "app/calc.py", ...
+```
+
+Byte-identical text and an identical completion-token count. A schema that
+changed sampling could not produce that.
+
+**Why it matters beyond tidiness.** The line states a degradation profile — 
+"none for correctness" — that the harness has not established for this
+runtime. Malformed calls are then read as model weakness when they may be an
+unenforced grammar. It is also the claim CLAUDE.md's "state what is true and
+what is not known" exists to prevent.
+
+**Not fixed here, deliberately.** The honest fix is for `doctor` to *probe*
+whether the schema is honoured rather than infer it from the dialect name —
+send a request whose schema forbids the reply the model would otherwise give,
+and see which comes back. That is the same shape as the existing tier probe
+and belongs beside it. Changing the wording alone would replace a false claim
+with a vaguer one and leave the tier assignment wrong.
