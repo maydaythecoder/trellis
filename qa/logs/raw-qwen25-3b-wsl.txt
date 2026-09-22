@@ -1,0 +1,33 @@
+endpoint  http://127.0.0.1:11434/v1
+model     qwen2.5:3b
+cases     20
+max_tokens 2048
+
+  1  call        read_file                          {"path": "src/main.rs"}                            ok
+  2  call        read_file                          {"path": "Cargo.toml"}                             ok
+  3  call        read_file                          {"path": "src/lib.rs"}                             ok
+  4  call        read_file                          {"path": "README.md"}                              ok
+  5  call        read_file                          {"path": "src/tui/app.rs"}                         ok
+  6  call        read_file                          {"path": ".gitignore"}                             ok
+  7  call        read_file                          {"path": "docs/BRIEF.md"}                          ok
+  8  call        read_file                          {"path": "src/model/client.rs"}                    ok
+  9  call        read_file                          {"path": "build.rs"}                               ok
+ 10  call        read_file                          {"path": "src/commands/mod.rs"}                    ok
+ 11  call        run_tests                          {}                                                 ok
+ 12  call        run_tests                          {}                                                 ok
+ 13  call        run_tests                          {"filter": "parser"}                               ok
+ 14  call        run_tests                          {"filter": "scroll"}                               ok
+ 15  call        run_tests                          {}                                                 ok
+ 16  call        run_tests                          {"filter": "context"}                              ok
+ 17  call        run_tests                          {}                                                 ok
+ 18  call        run_tests                          {"filter": "loader"}                               ok
+ 19  call        run_tests                          {}                                                 ok
+ 20  call        run_tests                          {"filter": "terminal"}                             ok
+
+valid tool_calls   20/20 (100%)
+correct tool       20/20 (100%)
+correct arguments  20/20 (100%)
+text / JSON-in-prose 0/20 (0%)
+wall clock         45.5s for 20 requests
+time to first token 0.25s
+EXIT=0

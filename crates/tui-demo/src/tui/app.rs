@@ -305,6 +305,7 @@ impl AppState {
             "help" | "?" => vec![
                 "· this view runs one task at a time against the model in the status bar.".into(),
                 "  /model    what is driving runs".into(),
+                "  /graph    the blast radius, and what it does not claim".into(),
                 "  /clear    empty the transcript".into(),
                 "  /help     this".into(),
                 "  esc       clear the line; again to leave".into(),
@@ -318,6 +319,28 @@ impl AppState {
                 "  For the model catalogue, weights and config, leave and use".into(),
                 "  `trellis model` or `trellis session`.".into(),
             ],
+            "graph" | "radius" => {
+                let r = self.radius;
+                let known = r.resolved + r.candidates + r.unresolved;
+                let mut out = vec![
+                    format!(
+                        "· reach: {} resolved · {} candidates · {} unresolved",
+                        r.resolved, r.candidates, r.unresolved
+                    ),
+                    "  drawn in the radius pane on the right, as converging edges.".into(),
+                ];
+                if known == 0 {
+                    out.push("  nothing yet — a task that calls blast_radius fills it.".into());
+                }
+                // Never a ratio between the three: they are filled from
+                // different populations, and dividing them printed "3.7%
+                // resolved" for a resolver audited at 72% (ADR 0014).
+                out.push(
+                    "  three counts, never a ratio: they come from different populations.".into(),
+                );
+                out.push("  resolved is a floor on reach, not a boundary (Constraint 1).".into());
+                out
+            }
             "model" => vec![
                 format!("· model  {}", self.model),
                 format!("  tier   {}", self.tier),
@@ -417,6 +440,63 @@ mod tests {
         assert!(
             text.contains("/help"),
             "and it must say where to look: {text}"
+        );
+    }
+
+    #[test]
+    fn graph_is_a_command_and_reports_the_reach_without_a_run() {
+        // Typed at this prompt in a real session and answered "`/graph` is
+        // not a command here" — in the one interface that has a call graph
+        // behind it. The radius pane was three bare numbers.
+        let mut s = AppState {
+            radius: Radius {
+                resolved: 47,
+                candidates: 3,
+                unresolved: 2,
+            },
+            input: "/graph".into(),
+            ..Default::default()
+        };
+        s.update(key(KeyCode::Enter, KeyEventKind::Press));
+
+        assert!(s.submitted.is_none(), "answering must not cost a run");
+        let text = s.transcript.join(
+            "
+",
+        );
+        assert!(text.contains("47"), "{text}");
+        assert!(
+            text.contains("radius pane"),
+            "it must say where to look:
+{text}"
+        );
+        assert!(
+            text.contains("never a ratio"),
+            "the three counts come from different populations, and saying so              is the reason this pane exists:
+{text}"
+        );
+        assert!(
+            text.contains("floor"),
+            "Constraint 1: resolved is a floor on reach, not a boundary:
+{text}"
+        );
+    }
+
+    #[test]
+    fn graph_appears_in_help() {
+        // A command nobody can discover is not a command.
+        let mut s = AppState {
+            input: "/help".into(),
+            ..Default::default()
+        };
+        s.update(key(KeyCode::Enter, KeyEventKind::Press));
+        assert!(
+            s.transcript
+                .join(
+                    "
+"
+                )
+                .contains("/graph")
         );
     }
 

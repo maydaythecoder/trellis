@@ -40,9 +40,12 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Fill(1),   // edits
-            Constraint::Fill(1),   // checks
-            Constraint::Length(4), // radius
+            Constraint::Fill(1), // edits
+            Constraint::Fill(1), // checks
+            // Six: three node rows, the caption, and two borders. At four
+            // the graph was its title and one node, which reads as a broken
+            // pane rather than as a small one.
+            Constraint::Length(6), // radius graph
         ])
         .split(body[1]);
 
@@ -172,27 +175,70 @@ fn render_checks(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(list, area);
 }
 
+/// The blast radius, drawn as a graph rather than as three numbers.
+///
+/// Built against `ui_examples/preview.webp`: nodes on the left, edges
+/// converging on a focus node. Asked for on the side, which is where this
+/// pane already was.
+///
+/// The three counts stay three counts. They come from different populations
+/// and dividing them means nothing — doing so once printed "3.7% resolved"
+/// for a resolver that hand-audits at 72% (ADR 0014). So the glyphs are
+/// proportional *within* each row and never across them, and the caption
+/// says what the whole figure is a floor on.
 fn render_radius(state: &AppState, area: Rect, frame: &mut Frame) {
-    // One line, three counts, no ratio between them: they are filled from
-    // different populations and dividing them means nothing.
     let r = state.radius;
-    let line = Line::from(vec![
-        Span::styled(
-            r.resolved.to_string(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" resolved · "),
-        Span::styled(r.candidates.to_string(), Style::default().fg(Color::Yellow)),
-        Span::raw(" candidates · "),
-        Span::styled(r.unresolved.to_string(), Style::default().fg(Color::Red)),
-        Span::raw(" unresolved"),
-    ]);
-    let p = Paragraph::new(line)
-        .block(Block::default().borders(Borders::ALL).title(" radius "))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(p, area);
+    let block = Block::default().borders(Borders::ALL).title(" radius ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width < 24 {
+        return;
+    }
+
+    let rows: [(&str, usize, Color, char); 3] = [
+        ("resolved", r.resolved, Color::Green, '●'),
+        ("candidates", r.candidates, Color::Yellow, '◐'),
+        ("unresolved", r.unresolved, Color::Red, '○'),
+    ];
+    // The junction each row contributes to the bracket. The middle row
+    // carries it into the focus node.
+    let connectors = ['┐', '┤', '┘'];
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, count, colour, glyph)) in rows.iter().enumerate() {
+        let mut spans = vec![
+            Span::styled(
+                format!("  {label:<11}"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{count:>5} "),
+                Style::default().fg(*colour).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(glyph.to_string(), Style::default().fg(*colour)),
+            Span::styled(
+                format!("─{}", connectors[i]),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        if i == 1 {
+            spans.push(Span::styled("──◆ ", Style::default().fg(Color::Magenta)));
+            spans.push(Span::styled("reach", Style::default().fg(Color::Magenta)));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Constraint 1, on the pane that would otherwise imply completeness.
+    // Roughly three call edges in ten are statically invisible in Python, so
+    // the resolved list is a floor and never a boundary.
+    if inner.height as usize > lines.len() {
+        lines.push(Line::from(Span::styled(
+            "  a floor on reach, not a boundary",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
