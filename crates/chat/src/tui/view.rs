@@ -7,7 +7,7 @@
 
 use crate::tui::app::{AppState, Tab};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::{chat, input, stats};
+use crate::tui::widgets::{chat, graph, input, stats};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Tabs, Wrap};
 use tui_scrollview::ScrollViewState;
@@ -117,18 +117,22 @@ fn render_body(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, view:
         Tab::State => render_state_tab(f, cols[0], state, theme),
     }
 
+    // The graph takes the Fill and the tool counts fold into it: same
+    // information, drawn as nodes and edges rather than as a list, on the
+    // side as asked. Two panes showing the same counts would be density
+    // without information.
     let side = Layout::vertical([
         Constraint::Length(6), // session
         Constraint::Length(3), // token sparkline
         Constraint::Length(3), // context gauge
-        Constraint::Fill(1),   // tools
+        Constraint::Fill(1),   // graph
     ])
     .split(cols[1]);
 
     stats::render_session(f, side[0], state, theme);
     stats::render_tokens(f, side[1], state, theme);
     stats::render_context(f, side[2], state, theme);
-    stats::render_tools(f, side[3], state, theme);
+    graph::render(f, side[3], state, theme);
 }
 
 fn render_tools_tab(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
@@ -216,7 +220,13 @@ fn render_log(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
 }
 
 fn render_hints(f: &mut Frame, area: Rect, theme: &Theme) {
-    let hint = " q quit · / commands · ↑↓ scroll · tab switch · ←→ panes · ^c interrupt ";
+    // `q` is not a quit key and never could be: this interface has a text
+    // input, so `q` types a q. The footer said "q quit" - copied from a
+    // mock-up of a viewer with no input - and a QA run pressed it, got a
+    // `q` in the line, and the session stayed up. A footer advertising a
+    // key that does something else is worse than no footer: it is the
+    // first place someone looks for the way out.
+    let hint = " esc clear · esc esc quit · / commands · ↑↓ scroll · end follow · tab focus · ^c interrupt ";
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             hint,
@@ -328,7 +338,7 @@ mod tests {
             "S E S S I O N",
             "T O K E N S",
             "C O N T E X T",
-            "T O O L S",
+            "G R A P H",
             "L O G",
             "I N P U T",
         ] {
@@ -339,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tools_pane_has_room_for_content_at_the_minimum_size() {
+    fn the_graph_pane_has_room_for_content_at_the_minimum_size() {
         // A pane rendered as a single line is its top border and nothing
         // else, which reads as a layout fault rather than as a trade. The
         // log gives up rows first, and this is the size where that matters.
@@ -348,14 +358,14 @@ mod tests {
             name: "read_file".into(),
         });
         let out = draw(&s, 80, 24);
-        let after_tools: Vec<&str> = out
+        let after: Vec<&str> = out
             .lines()
-            .skip_while(|l| !l.contains("T O O L S"))
+            .skip_while(|l| !l.contains("G R A P H"))
             .skip(1)
             .collect();
         assert!(
-            after_tools.iter().any(|l| l.contains("read_file")),
-            "the tools pane is squeezed to its border:
+            after.iter().any(|l| l.contains("read_file")),
+            "the graph pane is squeezed to its border:
 {out}"
         );
     }

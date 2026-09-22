@@ -3,5 +3,6 @@
 //! `frame.area()` every frame.
 
 pub mod chat;
+pub mod graph;
 pub mod input;
 pub mod stats;
