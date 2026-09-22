@@ -1,0 +1,23 @@
+model     qwen3:8b
+cases     8 x 2, temperature 0.0, max_tokens 2048
+
+  match    greeting             expect=answer  got=answer  'Hello. Ask me about the code, or tell me what to change.'
+  match    greeting             expect=answer  got=answer  'Hello. Ask me about the code, or tell me what to change.'
+  match    question_behaviour   expect=answer  got=answer  'The total function aggregates all values from the input da'
+  match    question_behaviour   expect=answer  got=answer  'The total function aggregates all values from the input da'
+  match    question_location    expect=answer  got=answer  'The functions in app/calc.py include add, subtract, multip'
+  match    question_location    expect=answer  got=answer  "I don't have access to the codebase, so I can't provide th"
+  match    question_why         expect=answer  got=answer  "The `describe` function's annotation provides type hints t"
+  match    question_why         expect=answer  got=answer  "The `describe` function's annotation provides type hints t"
+  match    task_fix             expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_fix             expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_add             expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_add             expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_rename          expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_rename          expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_typo            expect=task    got=task    '<<TRELLIS_TASK>>'
+  match    task_typo            expect=task    got=task    '<<TRELLIS_TASK>>'
+
+16/16 matched
+
+rows written to C:\Users\mayda\Documents\dev\trellis\qa\classify-latest.json

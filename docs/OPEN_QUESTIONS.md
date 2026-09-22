@@ -172,6 +172,38 @@ either, the larger one unshipped — is the one that keeps costing. Owner's call
 
 Found while reviewing this session's own additions, 2026-09-22.
 
+**Q-20 — Should the answer path be able to see the code?**
+`ask::classify` sends the input and nothing else: no file list, no contents.
+That is right for a classifier and wrong for the thing whose reply the user
+reads as an answer. Measured: asked which functions `app/calc.py` contains, it
+replied "add, subtract, multiply" — none of which exist — and on a second run
+at the same temperature said it could not see the codebase.
+
+The prompt now says the code has not been shown and to say so rather than
+guess, which removes the fabrication. It also removes correct answers: "what
+does the total function do?" previously drew an accurate sentence, and now
+declines. That answer was a guess that happened to land, so declining is more
+honest and less useful.
+
+Grounding it is a real choice with a real cost. The run path already builds a
+file inventory; handing the answer path the same list, or the file being asked
+about, would let it answer correctly and honestly — but it turns one cheap call
+per input into a larger one, and on local weights the window is the scarce
+resource (S5).
+
+Three options, none obviously right:
+- leave it declining, and let `trellis radius` and `/codebase` answer questions
+  about the code;
+- give it the file inventory only, so it can answer about structure but not
+  contents;
+- give it the file under discussion, and accept the cost.
+
+The current behaviour is honest, which is the one property worth not losing
+while this is decided. Owner's call.
+
+Found by the classification suite, which was measuring something else,
+2026-09-22.
+
 ---
 
 ## Flagged as unverifiable from here

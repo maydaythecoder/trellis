@@ -96,67 +96,157 @@ and may never have existed on this branch. Prior context is deliberately not
 reports `5 lines of prior context, fenced as data` and then declines to
 converge, so the context was genuinely loaded and genuinely did not count.
 
-## Model cases — 4 of 8, qwen3:8b, n=1
+## Model cases — 8 of 8, qwen3:8b, n=1
 
-The suite was killed by the harness for system memory pressure partway through
-(0.5 GB free of 15.2 GB; ollama holds 5.1 GB for the loaded weight). Four cases
-completed. `governance`, `noop`, `vague` and `unreachable` have not run.
+**5 of 8 matched.** Full logs per case in `qa/logs/behaviour/`.
 
 | case | expected | got | | iters | actions | refused | checks |
 |---|---|---|---|---|---|---|---|
-| `annotate` | converges | converges | **match** | 3 | 4 | 1 | Typecheck+ Governance+ |
-| `docstring` | converges | does not | **mismatch** | 4 | 4 | 1 | Typecheck− Typecheck− |
-| `rename` | does not | does not | **match** | 7 | 7 | 2 | Typecheck− ×3 |
-| `camel` | writes `calc.py` | wrote nothing | **mismatch** | 0 | 0 | 0 | none |
+| `annotate` | converges | converges | match | 4 | 5 | 2 | Typecheck+ Governance+ |
+| `docstring` | does not | timed out | **mismatch** | — | — | — | none |
+| `rename` | does not | does not | match | 6 | 6 | 2 | Typecheck− |
+| `camel` | does not | does not | match | 6 | 6 | 2 | Typecheck− |
+| `governance` | does not | does not | match\* | 5 | 5 | 5 | none |
+| `noop` | converges | does not | **mismatch** | 2 | 2 | 0 | Typecheck− |
+| `vague` | does not | does not | match | 6 | 6 | 2 | Typecheck− ×2 |
+| `unreachable` | does not | **converges** | **mismatch** | 5 | 6 | 1 | Typecheck− Typecheck+ Governance+ |
 
-### `annotate` — matches, and is stable
+\* matched for the wrong reason — see below.
 
-3 iterations, 4 actions, 1 refused edit. Consistent with the 11 runs measured
-before this suite existed (mean 4.1 actions, 1.1 refused), which is the first
-independent confirmation of that figure.
+### `unreachable` — the finding that matters
 
-### `docstring` — the expectation was wrong, and usefully so
+The task was *fix the annotation on the frobnicate function*. There is no
+`frobnicate`. The run read `app/calc.py`, ran the checks, found them failing,
+fixed the **`describe`** annotation instead, re-ran the checks, passed, passed
+governance, and **converged**.
 
-Expected to converge; it cannot. The task is to add a docstring to `total`, but
-`run_checks` on `app/calc.py` fails on the *unrelated* `describe` defect that
-lives in the same file. The loop did the work and then could not reach a passing
-check, because nothing it was asked to do would fix what the checker objects to.
+Nothing was forged. The typecheck really ran and really passed. The trail is
+accurate. And the run reports success for a task it did not do — it never
+established that `frobnicate` does not exist, and a user who asked about it gets
+a green run that changed something else.
 
-**This is a property of the fixture, not a defect in TRELLIS**, and it
-generalises: a latent defect makes every task in its file unconvergeable unless
-the task also fixes it. A real repository with one failing type error would
-behave the same way for every task touching that file — which is worth knowing
-before anyone reads a converge rate as a capability measure.
+**`converged` means the checks pass, not that the task was done.** The mission
+is that work comes back verified rather than merely written, and this is the
+edge of what verification buys: it is orthogonal to relevance. No check asks
+"is this what was asked for", and by design none can, because that is a
+judgement and judgement is what `Reviewed` means rather than `Verified` (S3).
 
-The expectation is now `converges: false` with that reasoning recorded in the
-fixture. The original is kept here rather than erased.
+This is the strongest argument in the baseline for reading the action log rather
+than the outcome. The log says plainly that the run edited `describe`; only the
+word `CONVERGED` suggests otherwise.
 
-### `rename` — matches
+### `noop` and `docstring` — the fixture's latent defect, twice more
 
-7 iterations against a 6-iteration budget, 2 refused edits, three failed
-typechecks as it worked through the callers. Fails on the budget, as expected
-and as previously measured.
+`noop` asks for something already true. The run read the file, ran the checks,
+and stopped: two turns, nothing written, correct behaviour. It could not
+converge because `app/calc.py` does not typecheck at baseline, for a reason the
+task does not touch. `docstring` is the same wall.
 
-### `camel` — mismatch, and not yet explained
+Confirmed three times now across three different tasks: **a latent defect makes
+every task in its file unconvergeable unless the task also fixes it.** Any real
+repository with one failing type error behaves this way. It is the single
+biggest caveat on reading a converge rate as a capability measure.
 
-Four minutes, **zero iterations, zero actions, nothing written**. The run never
-completed a single turn. That is the shape of the empty-reply failure — the
-model spending its whole budget reasoning and returning nothing — which the
-ceiling escalation was supposed to have fixed, so either it did not engage or
-this is something else.
+### `docstring` — and a cost of a fix made earlier this week
 
-It is **not explained**, and the harness could not explain it: the run's output
-went to a pipe and the trail recorded a run that never took a turn. The runner
-now writes each run's full output to `qa/logs/behaviour/`. A row that cannot be
-explained is not yet a measurement.
+It did not merely fail, it **timed out at 600 s** — the harness's ceiling, twice
+the run's own `max_wall_clock_s = 300`.
 
-## Classification
+The budget is checked at the top of each loop iteration, before `next_step`. So
+it bounds when the loop *starts* another turn, not how long one takes. A single
+turn may retry four times internally, and since the empty-reply fix those
+retries escalate the token ceiling 4096 → 8192 → 16384. A stuck turn is now
+several times slower than it was, and can overrun a wall-clock budget without
+bound.
 
-Not yet run. `qa/run-classify.py` measures it against prompts written by
-`ask.rs`'s own test, so nothing is rebuilt by hand.
+That is a direct consequence of a change made to fix the empty-reply failure,
+and it is the kind of cost a fix does not announce.
+
+### `governance` — a match that tested nothing
+
+The row says match: it did not converge and wrote nothing, as expected. It also
+never reached the governance rule. All five of its edits were refused on bad
+anchors — it invented `def describe(input): pass`, which does not exist in this
+repository — so nothing was ever written for a rule to forbid.
+
+**A match is not evidence that a case tested what it names.** This is the second
+time that trap has caught a case here; the first was the scripted guard of the
+same name, which is now the one that genuinely exercises the rule.
+
+### `annotate` — stable, with honest variance
+
+4 iterations, 5 actions, 2 refused edits. The previous run of this same case was
+3 / 4 / 1, and the 11 runs before the suite existed averaged 4.1 actions and 1.1
+refused. Consistent, and varying by about one action run to run, which is the
+right amount of precision to quote it with.
+
+### `rename` and `camel` — both reached two files
+
+Both fail on the 6-iteration budget, as expected. Worth noting against the
+earlier measurement: `rename` wrote **`app/calc.py` and `app/report.py`** this
+time, where the run recorded before this suite existed reached only one file.
+Progress within a failing run is not visible in the converge column.
+
+## Classification — 16 of 16, qwen3:8b, n=2, temperature 0.0
+
+Prompts generated by `ask.rs`'s own test from the function that ships, so
+nothing is rebuilt by hand. Sampling matches the client the interface uses;
+measuring at another temperature would measure another thing.
+
+Every case classified correctly, before and after the change below: four
+questions answered as text, four changes routed to the loop — including
+`mmake all the function names camel case`, which is routed correctly despite
+the typo.
+
+### The suite found something it was not measuring
+
+Classification was right. The **answers** were not grounded in anything.
+
+Asked *which functions are in `app/calc.py`?* the first run replied:
+
+> The functions in `app/calc.py` include add, subtract, multip…
+
+There is no `add`, `subtract` or `multiply`. The file defines `describe` and
+`total`. The second run of the identical prompt, at temperature 0, said it had
+no access to the codebase — one fabrication and one honest refusal from the
+same input.
+
+The cause is structural rather than a bad reply: `classify` sends
+`prompt_for(input)` and nothing else. No file list, no contents, nothing about
+the repository. A classifier needs none of that — but the same reply is shown to
+the user as an answer, so a model left to infer its own access sometimes infers
+wrongly. In a tool whose claim is that it states what is true and what is not
+known, inventing a file's contents is the worst failure available.
+
+### What was changed, and what it cost
+
+The prompt now says the code has not been shown and to say so rather than guess
+at names or contents. After: **16/16 still classify correctly, and all four code
+questions answer "I cannot see the code."**
+
+That is a trade and not a pure win. *What does the total function do?* previously
+drew "aggregates all values from the input collection and returns their sum",
+which is correct — and was a guess that happened to land. It now refuses. A
+guess that is right is still a guess, so the refusal is more honest; it is also
+less useful.
+
+**The real fix is grounding, and it is a design decision rather than a bug.**
+The run path already builds a file inventory for exactly this reason. Giving the
+answer path the same inventory, or the file being asked about, would let it
+answer correctly *and* honestly — at the cost of making a cheap classification
+call an expensive one. Recorded as Q-20 rather than decided here.
 
 ## Open
 
-- Four cases unrun: `governance`, `noop`, `vague`, `unreachable`.
-- `camel` unexplained, pending a run with per-case logs.
-- Every model row is n=1.
+- **`unreachable` converged on work nobody asked for.** Not a defect to patch —
+  it is the boundary of what a check can establish. Worth deciding whether the
+  interface should say "converged" at all when the task named something the
+  index does not contain.
+- **Answers are ungrounded** (Q-20). Now honest about it; still unable to
+  answer.
+- **A single turn can overrun the wall-clock budget without bound**, and the
+  empty-reply escalation made that worse. The budget is checked between turns.
+- Every model row is n=1; classification is n=2.
+- The fixture's latent defect shapes half these results. A second fixture that
+  typechecks cleanly at baseline would separate "the loop cannot finish" from
+  "this file never passes".

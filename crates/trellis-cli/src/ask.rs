@@ -63,6 +63,23 @@ fn prompt_for(input: &str) -> String {
     p.push_str("If the message asks for ANY change to the code, reply with exactly:\n");
     p.push_str(TASK_MARKER);
     p.push_str("\n\nOtherwise reply with a direct answer, at most three sentences.\n\n");
+    // Measured: asked "which functions are in app/calc.py?", this path replied
+    // "The functions in app/calc.py include add, subtract, multiply..." — none
+    // of which exist; the file defines `describe` and `total`. The same prompt
+    // on a second run said it had no access to the codebase. One fabrication
+    // and one honest refusal, from identical input at temperature 0.
+    //
+    // Nothing about the repository is sent here. This call classifies, and a
+    // classifier needs no code — but the same reply is shown to the user as an
+    // answer, so a model left to infer its own access will sometimes infer
+    // wrongly. In a tool whose whole claim is that it states what is true and
+    // what is not known, inventing a file's contents is the worst available
+    // failure.
+    p.push_str(
+        "You have NOT been shown this repository's code. If answering would \
+         require reading it, say that you cannot see it rather than guessing \
+         at names or contents.\n\n",
+    );
     p.push_str("Do NOT describe a change. Do NOT say you will make a change. ");
     p.push_str("If a change is wanted, the marker is the whole reply.\n\n");
 
