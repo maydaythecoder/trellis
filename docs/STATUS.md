@@ -4,7 +4,7 @@ Part 8 of the brief is the *project's* definition of done, not any one
 session's. This maps each item to its actual state, so nothing is quietly
 assumed complete.
 
-Last updated 2026-09-20. Gate tables for v0.2, v0.3 and v1.0 are
+Last updated 2026-09-21. Gate tables for v0.2, v0.3 and v1.0 are
 below, each audited against the code rather than against the milestone prose.
 
 | # | Part 8 item | State | Where |
@@ -141,10 +141,86 @@ back saying the harness gave the model what it needed.
 *Rewritten wholesale each iteration rather than edited — editing is the
 operation that let it go stale three times in one session.*
 
-**The current work is a correctness campaign and a quality audit, both started
-at the owner's instruction, and they took priority over v1.1.** The campaign's
-record is `CORRECTNESS_LEDGER.md`; the audit's is `QUALITY_LEDGER.md`. The
-audit's own §0 requires a finished campaign, so they run in that order.
+**The owner reset the order on 2026-09-21: "i need it to work before its good,
+focus on working then improve."** Five items, in their words: text output for
+non-tasks, then actions for tasks, then an action log, then an action graph,
+then a codebase graph. The correctness campaign and the quality audit
+(`CORRECTNESS_LEDGER.md`, `QUALITY_LEDGER.md`) are paused behind them, not
+abandoned.
+
+### 1. Text output for non-tasks — **done**
+
+Typing `hello` used to take a git snapshot, run the loop, run the repository's
+checks, roll back and write a trail. `ask::classify` now puts the input to the
+model in one call; anything that is not a request to change code is answered as
+text, with no snapshot and nothing to roll back.
+
+The classification prompt is few-shot and was measured that way: prose alone
+scored 3 of 6 against qwen2.5:3b, because every request to change code came
+back as a polite description of the change. Five worked examples and a ban on
+describing the change scores 6 of 6. Verified through the interface against
+qwen3:8b — "what does the total function do?" returns two sentences and starts
+no run.
+
+### 2. Actions for tasks — **done**
+
+A run against qwen3:8b could not change one annotation in a five-file
+repository. Four defects, each of which alone ended the run, and all four the
+same mistake — the model made to guess something it could have been told:
+
+| | Was | Now |
+|---|---|---|
+| Which files exist | never stated; model edited `describe.py`, `src/describe.py` | listed before the task; 0/5 → 5/5 correct path |
+| A failed edit anchor | "occurs 0 times" | quotes the file back, bounded at 120 lines |
+| CRLF working tree | LF anchor never matched; the one correct edit refused 5× | matched on LF, written back as found |
+| `run_checks` kinds | named only in the error for guessing wrong | named in the prompt |
+
+Naming the files also took empty completions from 2/5 to 0/5: a model that
+cannot find the file reasons until its reply budget is gone and then returns
+nothing at all.
+
+The same task now converges in 3 iterations with a passing typecheck from a
+real mypy process, in the interface and on the command line, and the diff is
+the one line asked for. `run` and `doctor` take the model from
+`.trellis/config.toml` rather than demanding `--model` beside a config that
+names it.
+
+A run's narration goes to a `&mut dyn Write`. It used to `println!` onto the
+terminal ratatui owned, drawing the rollback notice and the trail path through
+the panes mid-border.
+
+### 3. An action log — **next**
+
+The trail records what a run *proposed* and what the checks *said*. It does not
+record what the agent **did**: `factual` has `proposed`, `checks` and
+`check_outcomes`, and no list of tool calls. So the one question a reader asks
+first — what did it actually do, in order — is answerable only from a terminal
+scrollback that no longer exists.
+
+Wanted: every action, in order, with its outcome, persisted in the trail and
+readable back. Constraints that already apply and do not relax here — the
+digest covers it (ADR 0007), it reads back as untrusted data (S10), and an
+action's outcome is not a verdict (ADR 0004).
+
+### 4. An action graph
+
+Item 3's list, drawn. The interface already has the shape in `radius` and in
+`tui-demo`'s converging-edge rendering; `ui_examples/preview.webp` is the
+reference, and the owner asked for it on the side rather than in the centre.
+
+### 5. A codebase graph
+
+The index already holds it. What is missing is a view of it that never claims
+completeness (Constraint 1) and never collapses reach and doubt into a ratio
+(ADR 0014).
+
+### Paused behind the five
+
+The correctness campaign and the quality audit, whose records are
+`CORRECTNESS_LEDGER.md` and `QUALITY_LEDGER.md`. The audit's §0 requires a
+finished campaign, so they resume in that order. What follows in this document
+is that work's state as of 2026-09-20, unchanged.
+
 
 ### Tier 6 — measured per crate, and the measurement needed correcting twice
 
