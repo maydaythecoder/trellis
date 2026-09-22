@@ -326,7 +326,66 @@ ignored (rebuild unconstrained, say so), or probe failed (tier left assumed,
 and say *that*). Behaviour is unchanged, because the loop was already
 validating and retrying. What changed is that the report is true.
 
+### 9. The 4-action result does not generalise — **and the reason was a defect**
+
+The obvious test: a second task in the same repository. `rename the total
+function to total_of, updating every caller` — multi-file, needs the callers
+found, verifiable because a missed one breaks the test suite.
+
+It failed **5 runs out of 5**, every one after a *single* iteration.
+
+The cause was not the rename. It was an empty completion, four times over: a
+reasoning model emits its thinking before its answer, ollama strips that
+thinking out of `text`, and a model that spends its whole budget thinking
+returns a successful response whose text is empty. The loop reported that as
+"no JSON object in output at all, which is what an ignored schema looks like" —
+a budget problem wearing a schema problem's clothes. Task 1 was simply easy
+enough never to hit it.
+
+Two structural faults behind it, both now fixed:
+
+- `next_step` built the prompt once and the retry loop re-sent it with
+  identical parameters, so four retries were four copies of one request.
+- The ceiling was 2,048. Replayed from the real captured prompt, the model
+  wanted **1,665 tokens** for that turn — 81% of budget, with ordinary variance
+  putting it over.
+
+An empty reply now doubles the ceiling for the next attempt, bounded at 16,384;
+the default is 4,096. Both are ceilings, so a model that stops early pays
+nothing.
+
+The prompt was captured through the adapter's `trace` event rather than
+reconstructed. The previous iteration named that as a habit not yet default; it
+is what turned this diagnosis from a guess into a measurement.
+
+**Verification is incomplete and the number below is n=1.** The five re-runs
+were killed by the harness for system memory pressure and were not restarted.
+The one that finished went from 1 iteration to **6, writing 2 of the 3 files**,
+and its action log shows the loop doing exactly the right thing:
+
+```
+*  1. edit app/calc.py                          applied
+   2. run_checks Typecheck+Tests                FAILED   (callers now broken)
+   3. edit tests/test_calc.py                   anchor ambiguous
+*  4. edit tests/test_calc.py                   applied
+   5. run_checks Typecheck+Tests                FAILED
+   6. edit app/report.py                        anchor ambiguous — budget gone
+```
+
+It did not converge because it ran out of iterations, not because it was lost.
+The demo's `max_iterations` is 6 and this task needs roughly 8. **That budget is
+deliberately not being raised to make the task pass**; what the run demonstrates
+is that a multi-file change is a different size of problem from a one-line
+annotation, and the 4-action figure describes the latter only.
+
+Two of the six turns still went to ambiguous anchors, because a rename's
+natural anchor is a bare identifier that occurs several times.
+
 ### What is worth doing next
+
+**Confirm the empty-reply fix at n>1** when memory allows. One run is a
+demonstration, not a measurement, and this document does not get to call it
+otherwise.
 
 **Four actions is the floor this design has, not the floor that exists.** The
 one remaining refused edit is turn 1, where the model has never seen the file —
