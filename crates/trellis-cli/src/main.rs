@@ -408,7 +408,7 @@ fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
     for e in entries.iter().take(limit) {
         let f = &e.trail.factual;
         println!("{}  {}", e.run_id(), e.outcome());
-        println!("    {}", e.trail.task);
+        println!("    {}", plain(&e.trail.task));
         let checks: Vec<String> = f
             .check_outcomes
             .iter()
@@ -447,6 +447,37 @@ fn cmd_log(root: &Path, limit: usize, actions: bool) -> Result<()> {
     Ok(())
 }
 
+/// A string from a trail, made safe to print to a terminal.
+///
+/// A trail is read back as untrusted data (S10) and then printed straight to a
+/// terminal, which interprets what it is given. An escape sequence in a task
+/// description or a file path can move the cursor, repaint a line, or clear
+/// the screen — so a run that did not converge can be made to *look* like one
+/// that did, in the one command a user reads to find out which.
+///
+/// That matters more here than in most tools. The claim this project makes is
+/// that work comes back verified rather than merely written, and a forged
+/// terminal defeats the reading of the evidence rather than the evidence
+/// itself.
+///
+/// Control characters become their escaped form rather than vanishing: a path
+/// that contains one is worth seeing, and silently dropping it would print a
+/// name that does not match the file.
+fn plain(s: &str) -> String {
+    if !s.chars().any(char::is_control) {
+        return s.to_string();
+    }
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 /// The action log for one run: what it did, in order, and what came back.
 ///
 /// **A trail with no actions and a run that took none are different things**,
@@ -479,9 +510,14 @@ fn print_actions(f: &trellis_trail::UntrustedFactual) {
         // The marker sits where a reader's eye already is, and says the one
         // thing the rest of the line cannot: whether the tree changed.
         let wrote = if a.wrote { "*" } else { " " };
-        println!("    {wrote} {:>2}. {} {}", a.turn, a.tool, a.target);
+        println!(
+            "    {wrote} {:>2}. {} {}",
+            a.turn,
+            plain(&a.tool),
+            plain(&a.target)
+        );
         if !a.outcome.is_empty() {
-            println!("          {}", a.outcome);
+            println!("          {}", plain(&a.outcome));
         }
     }
     if f.actions.iter().any(|a| a.wrote) {
@@ -3084,6 +3120,37 @@ mod init_tests {
             check_kind: None,
             prompt_bytes: Some(1_000),
             radius_counts: None,
+        }
+    }
+
+    #[test]
+    fn an_escape_sequence_from_a_trail_cannot_repaint_the_terminal() {
+        // A trail is untrusted on read-back (S10) and `trellis log` prints it
+        // to a terminal, which interprets what it is given. A run that did not
+        // converge could otherwise be made to look like one that did, in the
+        // command a user reads to find out which.
+        let forged = "fix the parser\x1b[2K\x1b[Aconverged, 2 checks passed";
+        let out = plain(forged);
+        assert!(!out.contains('\x1b'), "{out:?}");
+        assert!(
+            out.contains("fix the parser"),
+            "the real text survives: {out:?}"
+        );
+        assert!(
+            out.contains("\\u{1b}") || out.contains("\\x1b") || out.contains("\\e"),
+            "and the escape is shown rather than dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_text_passes_through_a_sanitiser_unchanged() {
+        // Including the em dashes and arrows this project's own messages use.
+        for s in [
+            "the describe function is annotated to return int",
+            "app/calc.py",
+            "2 rule(s) checked over 1 file(s); none broken — nothing to report",
+        ] {
+            assert_eq!(plain(s), s);
         }
     }
 

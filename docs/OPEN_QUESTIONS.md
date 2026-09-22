@@ -135,6 +135,43 @@ different surfaces is not, because the brief is what a reader is told to trust.
 
 Owner's call. Found by auditing `--help` against the brief, 2026-09-22.
 
+**Q-19 — Two interfaces exist. Which one is the product?**
+The workspace ships two Ratatui front-ends:
+
+| | `crates/tui-demo` | `crates/chat` |
+|---|---|---|
+| lines | ~2,000 | ~5,500 |
+| reached by | `trellis tui` | its own `chat` binary only |
+| mentioned in `docs/` | — | — |
+| tests | with the rest | 127, all passing |
+
+`chat` was commissioned in its own right and is not rotting: it builds, its
+tests pass, and nothing in it is broken. It is also unreachable from the
+`trellis` binary, depends on nothing else in the workspace, and is the larger
+of the two.
+
+**The divergence is already costing something, and this session paid it.** An
+action graph was built into `tui-demo` while `chat/src/tui/widgets/graph.rs`
+already implemented the same idea — nodes per tool, a ring for one never
+called, edges converging on a focus. Two implementations of one picture, in one
+repository, neither aware of the other. Everything else from this session — the
+answer-or-task classifier, the run-narration sink, `/codebase`, the action
+graph — went only to `tui-demo`, because that is what `trellis tui` runs.
+
+So the split is not stable. Every interface change from here has two possible
+homes and will silently pick one, and the gap widens each time.
+
+Three ways out, and the choice is not technical:
+- `chat` is the intended interface and `tui-demo` is scaffolding to retire;
+- `tui-demo` is the product and `chat` is a prototype to archive or delete;
+- both stay, and it gets written down which is which and what each is for,
+  because right now neither the docs nor the code says.
+
+Any of the three is fine. The current state — two interfaces, no record of
+either, the larger one unshipped — is the one that keeps costing. Owner's call.
+
+Found while reviewing this session's own additions, 2026-09-22.
+
 ---
 
 ## Flagged as unverifiable from here
