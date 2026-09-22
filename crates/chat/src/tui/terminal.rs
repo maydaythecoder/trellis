@@ -61,6 +61,43 @@ pub fn resume() {
     }
 }
 
+/// Leaves the screen, stops this process, and re-enters when resumed.
+///
+/// Ctrl-Z has to be done by the application in raw mode. The tty's own
+/// job-control characters are disabled there, so no SIGTSTP is ever
+/// generated — a QA run pressed Ctrl-Z and got a literal `z` in the input
+/// line, because the chord arrived as an ordinary key event.
+///
+/// Order matters both ways. Leaving the alternate screen *before* stopping
+/// means the shell the user lands in is their own, not our buffer; and
+/// re-entering *after* the continue means `fg` returns to a redrawn
+/// interface rather than to whatever the shell left behind.
+///
+/// Returns false when the platform has no job control, so the caller can
+/// say so rather than appearing to do nothing.
+pub fn suspend() -> bool {
+    #[cfg(unix)]
+    {
+        restore();
+        // `kill -STOP` on our own pid rather than a libc `raise`: this
+        // crate carries no libc dependency, and the shell notices either
+        // way. SIGSTOP cannot be caught, which is what is wanted here.
+        let stopped = std::process::Command::new("kill")
+            .args(["-STOP", &std::process::id().to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        // Execution resumes here on SIGCONT.
+        resume();
+        stopped
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no SIGTSTP. Saying so beats silently doing nothing.
+        false
+    }
+}
+
 /// Whether the interface currently owns the screen.
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::SeqCst)

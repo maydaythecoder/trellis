@@ -41,6 +41,7 @@ pub async fn run<B>(
     theme: &Theme,
     mut work_rx: mpsc::Receiver<Message>,
     effect_tx: mpsc::Sender<Effect>,
+    cancel: crate::commands::runner::CancelToken,
 ) -> Result<(), B::Error>
 where
     B: Backend,
@@ -85,6 +86,33 @@ where
         // effect rather than blocking the frame — `try_send` is deliberate,
         // and the runtime reports what it could not take.
         for effect in state.drain_effects() {
+            // Suspend is performed here, not forwarded: it restores the
+            // terminal and stops the process, and this loop is what owns
+            // the terminal. Handing it to the runtime would mean suspending
+            // from a thread that does not hold the screen.
+            // Cancelled here, not only forwarded. The runtime processes
+            // effects one at a time and a streaming turn holds that loop
+            // until it finishes, so a `/stop` sent mid-stream sat unread
+            // until the stream it was meant to interrupt had ended — which
+            // is to say it did nothing. Setting the flag from here reaches
+            // the receive loop immediately; the effect is still forwarded
+            // so the runtime can report it.
+            if matches!(effect, Effect::Run(crate::commands::Command::Stop)) {
+                cancel.cancel();
+            }
+            if matches!(effect, Effect::Suspend) {
+                if crate::tui::terminal::suspend() {
+                    // Back from `fg`. The next draw is unconditional
+                    // because the shell owned the screen while we were
+                    // stopped and nothing of ours survives on it.
+                    terminal.clear()?;
+                } else {
+                    state.update(Message::Error(
+                        "this platform has no job control; ctrl-z does nothing here".into(),
+                    ));
+                }
+                continue;
+            }
             if effect_tx.try_send(effect).is_err() {
                 state.update(Message::Error(
                     "the runtime is behind; that request was dropped".into(),
@@ -125,6 +153,7 @@ mod tests {
             &Theme::new(ColorDepth::None),
             rx,
             etx,
+            crate::commands::runner::CancelToken::new(),
         )
         .await
         .unwrap();
@@ -152,6 +181,7 @@ mod tests {
             &Theme::new(ColorDepth::None),
             rx,
             etx,
+            crate::commands::runner::CancelToken::new(),
         )
         .await
         .unwrap();
@@ -195,6 +225,7 @@ mod tests {
             &Theme::new(ColorDepth::None),
             rx,
             etx,
+            crate::commands::runner::CancelToken::new(),
         )
         .await
         .unwrap();
@@ -235,6 +266,7 @@ mod tests {
             &Theme::new(ColorDepth::None),
             rx,
             etx,
+            crate::commands::runner::CancelToken::new(),
         )
         .await
         .unwrap();

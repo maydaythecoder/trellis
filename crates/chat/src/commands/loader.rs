@@ -139,6 +139,26 @@ fn split_frontmatter(rest: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// The shell commands a generated loop runs to check its own work.
+///
+/// Read back out of the body `/eng` wrote — the lines it renders as
+/// ``   - `cargo test` ``. The file is the source of truth rather than a
+/// constant in this crate, so a loop someone edited runs what the file
+/// says and not what the generator happened to default to.
+///
+/// Empty when the file names none, and the caller must treat that as a
+/// loop that cannot verify itself rather than as one with nothing to do.
+pub fn verification_commands(body: &str) -> Vec<String> {
+    body.lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("- "))
+        .filter_map(|l| l.strip_prefix('`'))
+        .filter_map(|l| l.strip_suffix('`'))
+        .map(str::to_string)
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
 /// Every `.md` in `dir`, in filename order.
 ///
 /// Files that fail to parse are returned as errors beside the ones that
@@ -270,6 +290,34 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("broken.md"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_verification_commands_come_back_out_of_the_file() {
+        // `/eng` writes them in; the runner has to read them out, or the
+        // generated loop verifies whatever this crate defaulted to rather
+        // than what the file says.
+        let body = concat!(
+            "1. Read the layout\n",
+            "2. Run the check command:\n",
+            "   - `cargo fmt --all -- --check`\n",
+            "   - `cargo test --workspace`\n",
+            "3. Fix each error\n"
+        );
+        assert_eq!(
+            verification_commands(body),
+            vec![
+                "cargo fmt --all -- --check".to_string(),
+                "cargo test --workspace".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_body_that_names_no_commands_yields_none() {
+        // Distinct from "nothing to do": a loop that cannot verify itself
+        // must be refused, and the caller can only tell from an empty list.
+        assert!(verification_commands("1. do a thing\n2. do another\n").is_empty());
     }
 
     #[test]

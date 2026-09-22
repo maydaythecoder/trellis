@@ -31,6 +31,13 @@ pub enum Effect {
     Prompt(String),
     /// Carry out a command that needs the filesystem, git, or a process.
     Run(Command),
+    /// Leave the alternate screen and stop, as Ctrl-Z does everywhere else.
+    ///
+    /// An effect rather than something `update` does: suspending means
+    /// restoring the terminal and raising a signal, and `update` owns
+    /// neither. The event loop holds the terminal, so it performs this one
+    /// itself rather than passing it to the runtime.
+    Suspend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +135,27 @@ pub struct AppState {
     pub streaming: bool,
     /// Ticks since the stream opened, for the spinner.
     pub spinner: usize,
-    pub scroll: u16,
+    /// How many rows the view sits **above the newest line**.
+    ///
+    /// Counted from the bottom, not the top, and that is the whole point:
+    /// an absolute offset is meaningless while the content is growing, so
+    /// the first `Up` after following jumped to the very beginning — the
+    /// stored offset was still 0 and one decrement saturated there. From
+    /// the bottom, `Up` is always "one line further back" whatever the
+    /// transcript has done since.
+    pub scroll_back: u16,
+    /// Whether the conversation pane tracks the newest line.
+    ///
+    /// True by default, and the reason is what happens without it: the view
+    /// pinned to offset 0, so once the transcript grew past the pane every
+    /// new line arrived below the fold and the user watched the top of the
+    /// conversation while the model answered off-screen. It looked correct
+    /// for exactly as long as the content fitted.
+    ///
+    /// Scrolling up turns it off — someone reading back does not want the
+    /// floor moving under them — and `End`, or sending a turn, turns it
+    /// back on.
+    pub follow: bool,
     pub should_quit: bool,
     pub last_error: Option<String>,
 
@@ -156,7 +183,8 @@ impl Default for AppState {
             log: VecDeque::new(),
             streaming: false,
             spinner: 0,
-            scroll: 0,
+            scroll_back: 0,
+            follow: true,
             should_quit: false,
             last_error: None,
             effects: Vec::new(),
@@ -224,6 +252,29 @@ impl AppState {
     // -- keys ------------------------------------------------------------
 
     fn on_key(&mut self, k: KeyEvent) {
+        // Ctrl chords are commands, never text.
+        //
+        // Found through a pty: Ctrl-Z rendered as . In raw mode the tty
+        // does not generate SIGTSTP, so the chord arrives as an ordinary key
+        // event — and the `Char(ch)` arm below pushed the bare letter. Every
+        // Ctrl+letter typed its letter: ^W, ^U and ^A all inserted text where
+        // the user meant an editing command.
+        if k.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(c) = k.code
+        {
+            match c {
+                'c' => {}
+                'z' => {
+                    // The tty will not do this for us in raw mode, so the
+                    // app has to suspend itself.
+                    self.effects.push(Effect::Suspend);
+                    return;
+                }
+                // Swallowed rather than inserted. Doing nothing is the
+                // honest response to a chord this interface does not bind.
+                _ => return,
+            }
+        }
         // Ctrl-C is the interrupt, not a character. Checked first so no
         // other binding can shadow it.
         if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c')) {
@@ -298,15 +349,41 @@ impl AppState {
                 self.completion.open = false;
             }
             KeyCode::Esc => self.should_quit = true,
-            KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
+            // Reading back stops the pane following: the floor moving
+            // under you mid-sentence is worse than having to press End.
+            KeyCode::Up => self.scroll_up(1),
+            KeyCode::PageUp => self.scroll_up(10),
+            KeyCode::Down => self.scroll_down(1),
+            KeyCode::PageDown => self.scroll_down(10),
+            KeyCode::End => {
+                self.scroll_back = 0;
+                self.follow = true;
+            }
+            KeyCode::Home => {
+                self.follow = false;
+                // Clamped by the view, which is the only place the content
+                // height is known.
+                self.scroll_back = u16::MAX;
+            }
             KeyCode::Left => self.tab = Tab::ALL[self.tab.index().saturating_sub(1)],
             KeyCode::Right => {
                 self.tab = Tab::ALL[(self.tab.index() + 1).min(Tab::ALL.len() - 1)];
             }
             _ => {}
+        }
+    }
+
+    fn scroll_up(&mut self, n: u16) {
+        self.follow = false;
+        self.scroll_back = self.scroll_back.saturating_add(n);
+    }
+
+    /// Scrolling back to the bottom resumes following, so a user who
+    /// arrowed down to the newest line does not then watch it sit still.
+    fn scroll_down(&mut self, n: u16) {
+        self.scroll_back = self.scroll_back.saturating_sub(n);
+        if self.scroll_back == 0 {
+            self.follow = true;
         }
     }
 
@@ -377,6 +454,10 @@ impl AppState {
             return;
         }
 
+        // You want to see the turn you just sent, wherever you had
+        // scrolled to.
+        self.follow = true;
+        self.scroll_back = 0;
         self.push(Role::User, &line);
         self.turns += 1;
         self.streaming = true;
@@ -411,12 +492,18 @@ impl AppState {
     /// effect. Reached only after any confirmation has been given.
     fn perform(&mut self, cmd: Command) {
         match cmd {
-            // Pure state: no reason to leave this function.
             Command::Clear => {
                 self.conversation.clear();
                 self.turns = 0;
                 self.context_used = 0;
                 self.push(Role::System, "· history dropped");
+                // The *runtime* holds the history that is actually sent to
+                // the model, and it is not this one. Clearing only the
+                // display left every dropped turn still going out on the
+                // next request while the pane, the turn count and the
+                // context figure all said it was gone — a confirmation
+                // prompt that lied about what it had done.
+                self.effects.push(Effect::Run(Command::Clear));
             }
             // Everything else needs the filesystem, git, a process or the
             // model, and none of that happens here.
@@ -678,6 +765,31 @@ mod tests {
     }
 
     #[test]
+    fn clearing_the_display_also_tells_the_runtime_to_drop_its_history() {
+        // Found in a live run: after `/clear` the pane read `ctx 0, turns
+        // 0`, and the very next turn reported 166 tokens rather than the
+        // ~21 a fresh history costs. The display had been cleared and the
+        // model was still being sent every dropped turn.
+        //
+        // The confirmation makes it worse, not better: the user is asked
+        // to approve losing the history and it is not lost.
+        let mut s = AppState::default();
+        s.update(Message::Notice("something".into()));
+        s.turns = 3;
+        type_line(&mut s, "/clear");
+        s.update(key(KeyCode::Enter));
+        s.update(key(KeyCode::Char('y')));
+
+        assert!(s.conversation.iter().all(|l| !l.text.contains("something")));
+        assert_eq!(s.turns, 0);
+        assert_eq!(s.context_used, 0);
+        assert!(
+            s.drain_effects().contains(&Effect::Run(Command::Clear)),
+            "the runtime holds what is actually sent, and must be told"
+        );
+    }
+
+    #[test]
     fn confirmation_is_never_remembered() {
         // A `/clear` confirmed a minute ago says nothing about this one.
         let mut s = AppState::default();
@@ -702,6 +814,37 @@ mod tests {
                 .any(|l| l.text.contains("unknown command")),
             "and the user has to be told why nothing happened"
         );
+    }
+
+    #[test]
+    fn ctrl_chords_are_commands_and_never_text() {
+        // Found through a pty: Ctrl-Z rendered as `> z`. In raw mode the tty
+        // does not generate SIGTSTP, so the chord arrives as an ordinary key
+        // event and the `Char` arm inserted the bare letter — ^W, ^U and ^A
+        // all typed their letter where the user meant an editing command.
+        let mut s = AppState::default();
+        for c in ['z', 'w', 'u', 'a', 'd'] {
+            s.update(Message::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::CONTROL,
+            )));
+        }
+        assert_eq!(s.input, "", "a chord must never leave text behind");
+        assert!(!s.should_quit, "and none of those is a quit key");
+    }
+
+    #[test]
+    fn ctrl_z_asks_to_suspend_rather_than_doing_it() {
+        // Suspending restores the terminal and stops the process, and
+        // `update` owns neither. It records the intent; the event loop,
+        // which holds the terminal, performs it.
+        let mut s = AppState::default();
+        s.update(Message::Key(KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(s.drain_effects(), vec![Effect::Suspend]);
+        assert_eq!(s.input, "");
     }
 
     #[test]
@@ -757,13 +900,69 @@ mod tests {
     }
 
     #[test]
-    fn scrolling_does_not_run_off_the_bottom_of_a_u16() {
+    fn the_conversation_follows_the_newest_line_until_you_scroll_up() {
+        // Found through a pty: once the transcript grew past the pane, the
+        // view stayed pinned at offset 0 and every new line arrived below
+        // the fold. The model answered off-screen and the pane showed the
+        // top of the conversation. It looked correct for exactly as long as
+        // the content fitted.
+        let mut s = AppState::default();
+        assert!(s.follow, "following is the default");
+
+        s.update(key(KeyCode::Up));
+        assert!(!s.follow, "reading back must stop the floor moving");
+
+        s.update(key(KeyCode::End));
+        assert!(s.follow, "End returns to the tail");
+
+        // And sending a turn re-follows, wherever you had scrolled to.
+        s.update(key(KeyCode::Up));
+        assert!(!s.follow);
+        type_line(&mut s, "a question");
+        s.update(key(KeyCode::Enter));
+        assert!(s.follow, "you want to see the turn you just sent");
+    }
+
+    #[test]
+    fn scrolling_does_not_run_off_either_end_of_a_u16() {
+        let mut s = AppState::default();
+        s.update(key(KeyCode::Down));
+        assert_eq!(s.scroll_back, 0, "saturating at zero, not wrapping");
+        s.scroll_back = u16::MAX;
+        s.update(key(KeyCode::Up));
+        assert_eq!(s.scroll_back, u16::MAX, "and not wrapping at the top");
+    }
+
+    #[test]
+    fn the_first_up_scrolls_one_line_and_not_to_the_beginning() {
+        // Found through a pty: ten `Up`s from a following view landed on the
+        // very first line of the session. The offset was absolute and still
+        // 0 while the view followed the tail, so one decrement saturated at
+        // the top and every further press did nothing. Counting back from
+        // the newest line makes `Up` mean the same thing whatever the
+        // transcript has done since.
+        let mut s = AppState::default();
+        assert!(s.follow);
+        s.update(key(KeyCode::Up));
+        assert_eq!(s.scroll_back, 1, "one line back, not all of them");
+        s.update(key(KeyCode::Up));
+        assert_eq!(s.scroll_back, 2);
+        s.update(key(KeyCode::PageUp));
+        assert_eq!(s.scroll_back, 12);
+    }
+
+    #[test]
+    fn scrolling_back_down_to_the_newest_line_resumes_following() {
+        // Otherwise a user who arrowed down to the bottom watches it sit
+        // still while the model keeps answering below them.
         let mut s = AppState::default();
         s.update(key(KeyCode::Up));
-        assert_eq!(s.scroll, 0, "saturating at zero, not wrapping to 65535");
-        s.scroll = u16::MAX;
+        s.update(key(KeyCode::Up));
+        assert!(!s.follow);
         s.update(key(KeyCode::Down));
-        assert_eq!(s.scroll, u16::MAX);
+        assert!(!s.follow, "still one line back");
+        s.update(key(KeyCode::Down));
+        assert!(s.follow, "at the tail again");
     }
 
     #[test]

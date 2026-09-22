@@ -38,6 +38,22 @@ impl CancelToken {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Clears the flag, so the token can be reused for the next piece of
+    /// work.
+    ///
+    /// Without this a single `/stop` ends the session: the token stays
+    /// cancelled, every later stream breaks out of its receive loop on the
+    /// first chunk, and the user gets no reply and no error. Observed
+    /// against a real model — one Ctrl-C and every turn after it was
+    /// silently empty.
+    ///
+    /// Reset at the *start* of work rather than at the end of a stop, so
+    /// two stops in a row cannot race a reset into re-enabling something
+    /// that was meant to die.
+    pub fn reset(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -322,6 +338,25 @@ mod tests {
         });
         assert_eq!(halt, Halt::Converged { cycles: 3 });
         assert!(halt.converged());
+    }
+
+    #[test]
+    fn a_token_can_be_reused_after_a_stop() {
+        // A cancelled token that stays cancelled ends the session: every
+        // later stream breaks out on its first chunk and the user gets no
+        // reply and no error. Seen against a real model — one Ctrl-C and
+        // every turn after it was empty.
+        let t = CancelToken::new();
+        t.cancel();
+        assert!(t.is_cancelled());
+        t.reset();
+        assert!(!t.is_cancelled(), "the next turn has to be able to run");
+        // Clones share the flag, which is what makes one reset enough.
+        let c = t.clone();
+        t.cancel();
+        assert!(c.is_cancelled());
+        c.reset();
+        assert!(!t.is_cancelled());
     }
 
     #[test]

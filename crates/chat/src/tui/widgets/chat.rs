@@ -33,16 +33,59 @@ pub fn render(
     }
 
     let lines = wrap_into_lines(state, theme, inner.width);
-    // The scroll surface is as tall as the content, so the view can move
-    // over it. Capped at u16 because that is what a Rect holds.
-    let height = u16::try_from(lines.len().max(inner.height as usize)).unwrap_or(u16::MAX);
+    // The surface must be as tall as the content *after wrapping*, not as
+    // the number of logical lines.
+    //
+    // Sizing it by `lines.len()` looked right and clipped silently: eight
+    // turns are about seventeen logical lines, which fits a 28-row pane, so
+    // the offset stayed 0 while the `Paragraph` wrapped them into fifty
+    // rows and drew the first twenty-eight. The newest turns were rendered
+    // into a surface too short to hold them and simply vanished — with no
+    // scrollbar movement to suggest there was more.
+    let height = u16::try_from(wrapped_height(&lines, inner.width).max(inner.height as usize))
+        .unwrap_or(u16::MAX);
     let mut view = ScrollView::new(Size::new(inner.width, height));
 
     let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
     view.render_widget(para, Rect::new(0, 0, inner.width, height));
 
-    scroll.set_offset(Position::new(0, state.scroll.min(height.saturating_sub(1))));
+    // Following the tail is the default, and the offset that does it is a
+    // property of the render — only here are both the content height and
+    // the visible height known. `AppState` holds the *intent*; this turns
+    // it into a number.
+    let max_offset = height.saturating_sub(inner.height);
+    let offset = if state.follow {
+        max_offset
+    } else {
+        // `scroll_back` counts rows above the newest line, so the view is
+        // always anchored to the tail rather than to an absolute position
+        // that the next token invalidates.
+        max_offset.saturating_sub(state.scroll_back)
+    };
+    scroll.set_offset(Position::new(0, offset));
     f.render_stateful_widget(view, inner, scroll);
+}
+
+/// How many rows `lines` occupies once wrapped to `width`.
+///
+/// `Paragraph`'s own wrapping is not observable before it draws, so this
+/// mirrors it: character width per line, divided by the available columns,
+/// at least one row each. It counts characters rather than grapheme
+/// clusters, which over-counts for combining marks — wrong in the safe
+/// direction, since a surface one row too tall scrolls harmlessly and one
+/// row too short hides content.
+fn wrapped_height(lines: &[Line<'_>], width: u16) -> usize {
+    if width == 0 {
+        return lines.len();
+    }
+    let w = width as usize;
+    lines
+        .iter()
+        .map(|l| {
+            let chars: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+            chars.div_ceil(w).max(1)
+        })
+        .sum()
 }
 
 /// One `Line` per conversation line, prefixed by role and styled.
@@ -171,6 +214,23 @@ mod tests {
             "escapes reached the screen: {joined:?}"
         );
         assert!(!joined.contains("[31m"), "{joined:?}");
+    }
+
+    #[test]
+    fn the_surface_is_measured_after_wrapping_and_not_before() {
+        // The clip that hid the newest turns. Seventeen logical lines fit a
+        // 28-row pane; the same seventeen wrapped to 40 columns do not, and
+        // sizing the surface by the count rather than the wrap drew the
+        // first 28 rows and threw the rest away.
+        let long = Line::from(Span::raw("x".repeat(200)));
+        let short = Line::from(Span::raw("hi"));
+        assert_eq!(wrapped_height(std::slice::from_ref(&short), 40), 1);
+        assert_eq!(wrapped_height(std::slice::from_ref(&long), 40), 5);
+        assert_eq!(wrapped_height(&[long, short], 40), 6);
+        // An empty line still occupies a row.
+        assert_eq!(wrapped_height(&[Line::from("")], 40), 1);
+        // A zero-width pane must not divide by zero.
+        assert_eq!(wrapped_height(&[Line::from("abc")], 0), 1);
     }
 
     #[test]
