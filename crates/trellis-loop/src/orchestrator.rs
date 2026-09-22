@@ -330,6 +330,25 @@ impl Orchestrator {
         // Found in the S7 floor run, where a weak model emitted
         // `edit{old: "156", new: "156"}` repeatedly — the failure this refusal
         // makes legible rather than letting it read as progress.
+        // A model writes `\n`. A repository checked out on Windows under
+        // git's default `autocrlf` holds `\r\n`. So a multi-line anchor
+        // copied faithfully out of a file this tool printed still matched
+        // nothing, and the loop spent every iteration re-sending the one
+        // correct edit it had already found.
+        //
+        // Matching happens on LF throughout and the file is written back the
+        // way it was found, so a CRLF repository does not acquire a whole-file
+        // diff as the price of a one-line change.
+        let crlf = src.contains("\r\n");
+        let src_lf = if crlf {
+            src.replace("\r\n", "\n")
+        } else {
+            src.clone()
+        };
+        let old = &old.replace("\r\n", "\n");
+        let new = &new.replace("\r\n", "\n");
+        let src = &src_lf;
+
         if old == new {
             return ToolResult::Error(format!(
                 concat!(
@@ -341,15 +360,41 @@ impl Orchestrator {
             ));
         }
 
+        // Zero and many are different mistakes, and telling them apart is
+        // what makes the next turn productive rather than another guess.
+        //
+        // Asked to fix `describe`, a model anchored on `def describe() -> int:`
+        // — a plausible signature it had never read; the real one takes an
+        // argument. The old message said only that the anchor occurred zero
+        // times, so the model re-guessed, four turns running, until the budget
+        // was gone. Nothing in the observation said what the file held, and
+        // nothing suggested reading it.
+        //
+        // So a miss now shows the file. It is the cheapest thing that turns a
+        // wasted iteration into an anchor copied from real text.
         let hits = src.matches(old).count();
-        if hits != 1 {
+        if hits == 0 {
             return ToolResult::Error(format!(
-                "edit anchor occurs {hits} times in {path}; it must occur exactly once \
-                 so the edit is unambiguous"
+                "edit anchor not found in {path}. `old` must be text copied from the \
+                 file, not reconstructed from the task. Here is {path}:\n{}",
+                excerpt(src)
             ));
         }
-        let at = src.find(old).expect("occurrence counted");
+        if hits > 1 {
+            return ToolResult::Error(format!(
+                "edit anchor occurs {hits} times in {path}; it must occur exactly once \
+                 so the edit is unambiguous. Extend `old` with the lines around it \
+                 until only one place in the file matches."
+            ));
+        }
+        let at = src.find(old.as_str()).expect("occurrence counted");
         let updated = format!("{}{}{}", &src[..at], new, &src[at + old.len()..]);
+        // Written back in the file's own convention, not the model's.
+        let updated = if crlf {
+            updated.replace('\n', "\r\n")
+        } else {
+            updated
+        };
 
         if let Err(e) = std::fs::write(&full, &updated) {
             return ToolResult::Error(format!("cannot write {path}: {e}"));
@@ -445,6 +490,28 @@ impl Orchestrator {
     }
 }
 
+/// How many lines of a file a failed anchor is allowed to quote back.
+///
+/// The window is the scarce resource on local weights (S5), and the
+/// observation is truncated from the front further downstream, so an
+/// unbounded excerpt would push the rest of the transcript out rather than
+/// help. A file longer than this says so and names `read_file`.
+const EXCERPT_LINES: usize = 120;
+
+/// A file, as text to put in front of the model, bounded and honest about it.
+fn excerpt(src: &str) -> String {
+    let total = src.lines().count();
+    if total <= EXCERPT_LINES {
+        return src.to_string();
+    }
+    let head: Vec<&str> = src.lines().take(EXCERPT_LINES).collect();
+    format!(
+        "{}\n...{} more line(s) not shown. Use read_file for the rest.",
+        head.join("\n"),
+        total - EXCERPT_LINES
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +598,115 @@ mod tests {
         // And nothing was written.
         let after = std::fs::read_to_string(d.path().join("app/main.py")).unwrap();
         assert!(after.contains("def a():\n    return 1"));
+        // Ambiguity is fixed by a longer anchor, and the message has to say
+        // so — "occurs 2 times" alone leaves the model to work that out.
+        match h.edit("app/main.py", "    return 1", "    return 2").await {
+            ToolResult::Error(e) => assert!(e.contains("Extend `old`"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_anchor_that_is_not_there_gets_shown_the_file() {
+        // The failure that ate a whole run: asked to fix `describe`, the model
+        // anchored on a signature it had invented, was told only that it
+        // occurred zero times, and invented another. Four turns, no edit.
+        let d = repo();
+        std::fs::write(
+            d.path().join("app/main.py"),
+            "def describe(n: int) -> int:\n    return f\"count={n}\"\n",
+        )
+        .unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+
+        let out = h
+            .edit(
+                "app/main.py",
+                "def describe() -> int:",
+                "def describe() -> str:",
+            )
+            .await;
+        match out {
+            ToolResult::Error(e) => {
+                assert!(e.contains("not found"), "{e}");
+                assert!(
+                    e.contains("def describe(n: int) -> int:"),
+                    "the real text is what makes the next anchor copyable: {e}"
+                );
+            }
+            other => panic!("a missing anchor must not be applied: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_multi_line_anchor_matches_a_file_checked_out_with_crlf() {
+        // The bug that stopped the first real run converging. The model had
+        // already found the right edit; it was refused five times because it
+        // wrote `\n` and the file, checked out on Windows under git's default
+        // `autocrlf`, held `\r\n`. Nothing in the message said so.
+        let d = repo();
+        let p = d.path().join("app/main.py");
+        std::fs::write(
+            &p,
+            "def describe(n: int) -> int:\r\n    return f\"c={n}\"\r\n",
+        )
+        .unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+
+        let out = h
+            .edit(
+                "app/main.py",
+                "def describe(n: int) -> int:\n    return f\"c={n}\"",
+                "def describe(n: int) -> str:\n    return f\"c={n}\"",
+            )
+            .await;
+        assert!(
+            matches!(&out, ToolResult::Edit(e) if e.applied),
+            "an anchor written with LF must match a CRLF file: {out:?}"
+        );
+
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("-> str:"), "{after:?}");
+        // And the file keeps its own convention: rewriting every line ending
+        // would show up as a whole-file diff for a one-line change.
+        assert!(
+            after.contains("\r\n"),
+            "CRLF must survive the edit: {after:?}"
+        );
+        assert!(
+            !after.contains("\n\n") && !after.replace("\r\n", "").contains('\n'),
+            "no line ending may be left bare: {after:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_lf_file_is_not_given_carriage_returns_it_never_had() {
+        let d = repo();
+        let p = d.path().join("app/main.py");
+        std::fs::write(&p, "def a() -> int:\n    return 1\n").unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+
+        let out = h.edit("app/main.py", "-> int", "-> str").await;
+        assert!(matches!(&out, ToolResult::Edit(e) if e.applied), "{out:?}");
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(!after.contains('\r'), "an LF file stays LF: {after:?}");
+    }
+
+    #[test]
+    fn a_long_file_is_cut_and_says_how_much_it_cut() {
+        // Constraint 1's habit applied to an observation: a silent cut reads
+        // as the whole file, and an anchor chosen from it would miss again.
+        let src: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let e = excerpt(&src);
+        assert!(e.contains("line 0") && e.contains("line 119"), "{e}");
+        assert!(!e.contains("line 120"), "{e}");
+        assert!(e.contains("80 more line(s) not shown"), "{e}");
+    }
+
+    #[test]
+    fn a_short_file_is_quoted_whole_and_unannotated() {
+        let src = "a\nb\nc\n";
+        assert_eq!(excerpt(src), src, "nothing to say about an uncut file");
     }
 
     #[tokio::test]

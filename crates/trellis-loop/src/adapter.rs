@@ -33,6 +33,14 @@ pub(crate) const DEFAULT_MAX_REPLY_TOKENS: u32 = 2048;
 /// discover that slowly helps nobody (S7).
 const MAX_FORMAT_RETRIES: u32 = 4;
 
+/// How many file paths the prompt lists before it says how many it left out.
+///
+/// A ceiling on prompt bytes, which are the scarce resource on local weights
+/// (S5): a large repository would otherwise spend the whole window on a
+/// directory listing. The remainder is stated as a count rather than dropped
+/// silently, so the list is never mistaken for the whole repository.
+const MAX_FILES_LISTED: usize = 200;
+
 pub struct RuntimeModel {
     client: RuntimeClient,
     tier: AdapterTier,
@@ -124,8 +132,14 @@ impl RuntimeModel {
             "You are editing a Python repository. Reply with exactly one JSON tool call.\n\n\
              Tools: blast_radius{symbol}, read_file{path}, edit{path,old,new}, \
              run_checks{paths,kinds}, done{summary}.\n\n\
-             `edit` requires `old` to appear exactly once in the file. Only `run_checks` \
-             can establish that the code is correct; saying you are done does not.\n\n",
+             Arguments are flat, beside `tool` — never nested under `args`. \
+             For example: {\"tool\": \"run_checks\", \"paths\": [\"app/x.py\"], \
+             \"kinds\": [\"typecheck\"]}\n\n\
+             `kinds` are any of: typecheck, tests, import, governance. No other \
+             value is a check.\n\n\
+             `edit` requires `old` to appear exactly once in the file, copied from \
+             the file rather than reconstructed. Only `run_checks` can establish \
+             that the code is correct; saying you are done does not.\n\n",
         );
         // What the repository says about itself, before the task, because it
         // frames everything after it.
@@ -166,6 +180,31 @@ impl RuntimeModel {
                  without one. Only `run_checks` establishes that the code is \
                  correct.\n--- end ---\n\n",
             );
+        }
+
+        // What exists. Placed immediately before the task, which is where it
+        // was measured: a model choosing a path reads the nearest thing to
+        // the request.
+        //
+        // The heading says "as indexed" and the count is stated whenever the
+        // list is cut, because this must never read as *the* set of files in
+        // the repository. It is the set one walk found, and Constraint 1 says
+        // the graph never claims completeness — a prompt built from it does
+        // not get to claim it either.
+        if !t.repo.files.is_empty() {
+            p.push_str("--- first-party Python files in this repository, as indexed ---\n");
+            for f in t.repo.files.iter().take(MAX_FILES_LISTED) {
+                p.push_str(f);
+                p.push('\n');
+            }
+            if t.repo.files.len() > MAX_FILES_LISTED {
+                p.push_str(&format!(
+                    "...and {} more, not listed. Use blast_radius to locate a \
+                     symbol whose file is not above.\n",
+                    t.repo.files.len() - MAX_FILES_LISTED
+                ));
+            }
+            p.push_str("--- end of file list ---\n\n");
         }
 
         p.push_str("Task: ");
@@ -232,6 +271,12 @@ impl RuntimeModel {
             );
         }
         p.push_str("\nNext tool call (JSON only):\n");
+        // The exact bytes sent, behind `trace` so an ordinary run never pays
+        // for them. `prompt_bytes` alone says a prompt was 1262 bytes and
+        // nothing about why the model answered it with silence; reconstructing
+        // it by hand produced a prompt that behaved differently from the real
+        // one, which is how an afternoon goes missing.
+        tracing::trace!(prompt = %p, "prompt as sent");
         p
     }
 }
