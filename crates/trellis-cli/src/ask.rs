@@ -63,6 +63,15 @@ const MAX_FILES_LISTED: usize = 60;
 /// With five worked examples and an explicit ban on describing the change,
 /// the same six cases score **6 of 6**. The examples are what carry it; the
 /// prose instruction alone did not.
+///
+/// **Adding prose here has a measured cost, three times now.** A reasoning
+/// model spends its reply budget before answering, and every sentence added to
+/// this prompt buys more reasoning: a two-sentence addition took the
+/// classification suite from 18/18 to 15/18, the three failures being *empty
+/// replies* rather than misclassifications. The same addition cut to one
+/// sentence scored 18/18 again. So changes here are measured with
+/// `qa/run-classify.py` before they ship, and shorter is not a style
+/// preference — it is the difference between an answer and a blank pane.
 fn prompt_for(input: &str, files: &[String]) -> String {
     // Built line by line rather than as one indented literal: a multi-line
     // string literal carries its own source indentation into the prompt, and
@@ -130,7 +139,8 @@ fn prompt_for(input: &str, files: &[String]) -> String {
         "The file list above is complete for what was indexed. You have NOT been \
          shown the contents of any file. Answer about which files exist from the \
          list; if answering would require reading code, say that you cannot see \
-         it rather than guessing at names or contents.\n\n"
+         it rather than guessing at names or contents. When you decline, \
+         suggest asking for a change rather than asking about another file.\n\n"
     });
     p.push_str("Do NOT describe a change. Do NOT say you will make a change. ");
     p.push_str("If a change is wanted, the marker is the whole reply.\n\n");
