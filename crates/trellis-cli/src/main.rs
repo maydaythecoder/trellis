@@ -207,12 +207,42 @@ enum ModelAction {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "trellis=info".into()),
-        )
-        .with_target(false)
+    // `Targets` rather than `EnvFilter`.
+    //
+    // `EnvFilter` parses field and span predicates, which needs `matchers` and
+    // therefore the whole regex engine. Measured two ways, because they answer
+    // different questions and were confused for each other once already:
+    // `cargo bloat --release --crates` attributed 184 KiB of `regex_syntax`
+    // plus 146 KiB of `regex_automata` to the `.text` section, and the release
+    // binary on disk fell 5,855,232 -> 4,810,240 bytes, the larger figure
+    // being the Unicode tables in `.rdata` that `.text` does not count.
+    //
+    // This project only ever filters as `target=level`, and `Targets` matches
+    // targets by prefix exactly as `EnvFilter` did, so `trellis_loop=trace`
+    // and `trellis_loop::adapter=trace` behave identically.
+    //
+    // Two forms behave differently and neither is used here: a span-field
+    // predicate (`[span{field=x}]`) fails to parse and falls back to the
+    // default below, and a target with a field predicate (`trellis[{turn}]=…`)
+    // parses but matches nothing, silently. Named because "the trade is
+    // recorded" is only true if the record is accurate.
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let default = || {
+        tracing_subscriber::filter::Targets::new().with_target("trellis", tracing::Level::INFO)
+    };
+    let filter = match std::env::var("RUST_LOG") {
+        // Set but empty means "say nothing", which is what `EnvFilter` did
+        // with it. Parsing it as a directive instead yields one empty
+        // directive, which `Targets` reads as ERROR for every target in the
+        // process — turning silence into global error logging.
+        Ok(s) if s.trim().is_empty() => tracing_subscriber::filter::Targets::new(),
+        Ok(s) => s.parse().unwrap_or_else(|_| default()),
+        Err(_) => default(),
+    };
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(filter)
         .init();
 
     let cli = Cli::parse();
@@ -932,7 +962,7 @@ fn cmd_run(
     //
     // A refused connection is not a failed run. It is a run that could not
     // start, and it should cost nothing.
-    let probe_rt = tokio::runtime::Runtime::new()?;
+    let probe_rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     if let Driver::Runtime(m) = &driver
         && let Err(e) = probe_rt.block_on(m.client().reachable())
     {
@@ -1103,7 +1133,7 @@ fn cmd_run(
         },
     };
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let (outcome, transcript) = rt.block_on(async {
         let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
@@ -2258,7 +2288,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
             None => "whatever the runtime has loaded".into(),
         };
 
-        let rt = tokio::runtime::Runtime::new()?;
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         rt.block_on(async {
             match client.probe_constraint().await {
                 Ok(true) => {
@@ -2718,7 +2748,7 @@ fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
     } else {
         paths
     };
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 
     let verdicts = rt.block_on(async {
         let tc = trellis_checks::typecheck(root, &cfg, &paths).await;

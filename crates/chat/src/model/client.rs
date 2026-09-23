@@ -10,7 +10,7 @@
 //! `data: [DONE]`. Parsed incrementally, because the whole reason to stream
 //! is to show the first token before the last one exists.
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -213,6 +213,26 @@ impl Client {
         Ok(Client { http, config })
     }
 
+    /// Why a request did not go out, naming the cause a user cannot guess.
+    ///
+    /// This crate builds `reqwest` with `default-features = false`, so no TLS
+    /// backend is linked: it talks to a serving runtime over plain HTTP. But
+    /// `base_url` comes from `OPENAI_BASE_URL`, so a hosted endpoint is one
+    /// environment variable away — and without this the failure reads exactly
+    /// like a refused connection. A person debugs their network, their
+    /// firewall and their API key before they think of a Cargo feature.
+    fn unreachable(&self, e: &reqwest::Error) -> String {
+        let base = &self.config.base_url;
+        if base.starts_with("https://") {
+            return format!(
+                "cannot reach {base}: this build has no TLS backend, so https \
+                 endpoints are unreachable. Use an http:// endpoint, or build \
+                 with reqwest's `default-tls` feature. ({e})"
+            );
+        }
+        format!("cannot reach {base}: {e}")
+    }
+
     pub fn model(&self) -> &str {
         &self.config.model
     }
@@ -249,7 +269,7 @@ impl Client {
             .post(&body)
             .send()
             .await
-            .map_err(|e| format!("cannot reach {}: {e}", self.config.base_url))?;
+            .map_err(|e| self.unreachable(&e))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -301,7 +321,7 @@ impl Client {
             .post(&body)
             .send()
             .await
-            .map_err(|e| format!("cannot reach {}: {e}", self.config.base_url))?;
+            .map_err(|e| self.unreachable(&e))?;
         let status = resp.status();
         let text = resp.text().await.map_err(|e| e.to_string())?;
         if !status.is_success() {

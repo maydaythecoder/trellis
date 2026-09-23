@@ -19,13 +19,26 @@ publish = false
 # `ratatui::crossterm::...` so the types are guaranteed identical.
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
+# The workspace decides the feature set. Declaring `features = ["full"]`
+# here silently gave the whole shipped binary every tokio feature -
+# fs, io-std, net, signal, rt-multi-thread - because feature unification
+# applies across the graph, and `trellis-cli` depends on this crate.
+tokio.workspace = true
+# `futures-util` rather than the `futures` facade. The only thing used is
+# `StreamExt`, and the facade additionally pulls futures-executor,
+# -channel, -io and -sink for nothing.
+futures-util = { version = "0.3", default-features = false }
 color-eyre = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-tracing = "0.1"
+# Default features off. They drag a whole TLS stack - hyper-tls, native-tls,
+# tokio-native-tls, schannel - and this client talks to a serving runtime on
+# 127.0.0.1 over plain HTTP. There is no https anywhere in this crate.
+#
+# The consequence is recorded rather than hidden: an https endpoint will not
+# work until `default-tls` (or `rustls-tls`) is added back. That is one word
+# in this file for whoever needs it.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Versions resolved against ratatui 0.30 rather than taken from the brief:

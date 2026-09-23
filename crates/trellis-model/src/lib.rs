@@ -9,12 +9,14 @@
 //! settled the question S17 left open.
 
 pub mod catalog;
+#[cfg(feature = "grammar")]
 mod grammar;
 mod runtime;
 mod spec;
 mod tier;
 
 pub use catalog::{CATALOG, CatalogEntry, DEFAULT};
+#[cfg(feature = "grammar")]
 pub use grammar::{GrammarError, ToolGrammar};
 pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use spec::{ModelSpec, SpecError};

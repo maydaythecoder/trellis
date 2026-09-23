@@ -16,7 +16,7 @@ use crate::tui::app::{AppState, Effect};
 use crate::tui::message::Message;
 use crate::tui::theme::Theme;
 use crate::tui::view::{self, ViewState};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use ratatui::crossterm::event::{Event, EventStream, KeyEventKind};
 use ratatui::prelude::*;
 use std::time::Duration;

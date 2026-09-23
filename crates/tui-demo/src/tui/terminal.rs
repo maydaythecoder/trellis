@@ -18,8 +18,10 @@ pub fn restore() {
 
 /// Restores the terminal *before* the original hook prints.
 ///
-/// Wrapping rather than replacing: `color_eyre`'s report is still printed,
-/// and printed onto a terminal that echoes. Without this a panic leaves the
+/// Wrapping rather than replacing: whatever hook was already installed still
+/// prints its report, onto a terminal that echoes. In `trellis tui` that is
+/// the std default — `color-eyre` is behind this crate's `demo` feature and is
+/// not compiled into the shipped binary. Without this a panic leaves the
 /// user with no echo, no line editing and a stuck alternate screen — the
 /// state where the only way out is `reset` typed blind.
 fn install_panic_hook() {

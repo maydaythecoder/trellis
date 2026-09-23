@@ -3,7 +3,7 @@
 use crate::tui::app::AppState;
 use crate::tui::message::Message;
 use crate::tui::view;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -26,11 +26,11 @@ pub async fn run<B>(
     state: &mut AppState,
     mut work_rx: mpsc::Receiver<Message>,
     task_tx: mpsc::Sender<String>,
-) -> color_eyre::Result<()>
+) -> anyhow::Result<()>
 where
     B: ratatui::backend::Backend,
     // `?` on `terminal.draw` needs the backend's error to cross into
-    // `color_eyre`, which the concrete crossterm backend satisfies and a
+    // `anyhow`, which the concrete crossterm backend satisfies and a
     // bare `Backend` does not state.
     B::Error: std::error::Error + Send + Sync + 'static,
 {

@@ -217,7 +217,7 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         _ => "probing…".to_string(),
     };
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async move {
         // Bounded. The loop can outrun a redraw during a turn burst, and an
         // unbounded channel turns that into memory growth.
@@ -382,7 +382,7 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         // Aborted after the terminal is handed back, so a panic inside a run
         // surfaces onto a readable screen.
         driver.abort();
-        result.map_err(|e| anyhow::anyhow!("{e}"))
+        result
     })
 }
 

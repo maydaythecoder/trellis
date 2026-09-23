@@ -11,9 +11,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-trellis-core.workspace = true
-llguidance.workspace = true
-schemars.workspace = true
+llguidance = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -21,7 +20,36 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# This crate, on itself, to turn its own `grammar` feature on for its own
+# tests. Without it `cargo test -p trellis-model` compiles 43 tests and
+# `--features grammar` compiles 45: the two that exercise the schemars ->
+# JSON Schema -> llguidance path are `#[cfg]`-ed out and the run still
+# reports green. Coverage that depends on which other crate happens to be in
+# the same cargo invocation is not coverage.
+trellis-model = { path = ".", features = ["grammar"] }
 tokio.workspace = true
 
 [lints]
 workspace = true
+
+# Grammar compilation, off by default.
+#
+# `ToolGrammar` compiles the tool-call JSON schema with llguidance, and every
+# call to it in this workspace is inside a `#[test]`: the capability belongs to
+# adapter tier 3, which ADR 0013 descoped, and what remains is the build-time
+# assertion that the schema *can* be compiled. That assertion is worth keeping
+# and is not worth shipping.
+#
+# Off by default, so the release binary loses llguidance's subtree.
+#
+# It does NOT fix the duplicate versions. An earlier version of this comment
+# said it removed the `syn` 2/3 and `hashbrown` 0.16/0.17 pairs; measuring
+# before and after showed the count unchanged, because `syn 3` also comes from
+# `clap_derive` and from `ratatui`'s `instability`, and `hashbrown 0.17` from
+# `lru` inside `ratatui-core`. `cargo tree -i` shows the first path only, which
+# is how the wrong conclusion was reached.
+#
+# The dev-dependency below turns this back on for this crate's own tests, and
+# `trellis-loop` turns it on for the one caller outside them.
+[features]
+grammar = ["dep:llguidance", "dep:schemars"]

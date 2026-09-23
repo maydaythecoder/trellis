@@ -2,9 +2,13 @@
 
 use tui_demo::tui;
 
-#[tokio::main]
-async fn main() -> color_eyre::Result<()> {
-    color_eyre::install()?;
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    // `install` returns an eyre report, which is not a std error, so it is
+    // bridged rather than propagated with `?`. The library returns
+    // `anyhow::Result` so that it does not drag color-eyre into every
+    // consumer - `trellis-cli` was inheriting 37 crates for one return type.
+    color_eyre::install().map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut terminal = tui::terminal::init();
     // Bounded: an unbounded channel lets the producer outrun the draw loop
     // and grow without limit.

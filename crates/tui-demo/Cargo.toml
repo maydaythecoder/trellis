@@ -16,9 +16,31 @@ publish = false
 # guaranteed identical. Never `use crossterm::...` directly.
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
-color-eyre = "0.6"
+# The workspace decides the feature set. Declaring `features = ["full"]`
+# here silently gave the whole shipped binary every tokio feature -
+# fs, io-std, net, signal, rt-multi-thread - because feature unification
+# applies across the graph, and `trellis-cli` depends on this crate.
+tokio.workspace = true
+# `futures-util` rather than the `futures` facade. The only thing used is
+# `StreamExt`, and the facade additionally pulls futures-executor,
+# -channel, -io and -sink for nothing.
+futures-util = { version = "0.3", default-features = false }
+# Optional, and default-on only for this crate's own demo binary.
+# `trellis-cli` takes this crate with `default-features = false`, so the
+# shipped binary does not inherit color-eyre and the 37 crates behind it -
+# backtrace, regex, tracing-error, color-spantrace. The library itself never
+# needed it: the only use was one return type.
+color-eyre = { version = "0.6", optional = true }
+anyhow.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = ["demo"]
+demo = ["dep:color-eyre"]
+
+[[bin]]
+name = "tui_demo"
+path = "src/bin/tui_demo.rs"
+required-features = ["demo"]

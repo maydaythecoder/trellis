@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 

@@ -28,7 +28,7 @@ use chat::model::client::{ChatMessage, Client, Config, Tool};
 
 const RUNS: usize = 20;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     let config = Config::default();
