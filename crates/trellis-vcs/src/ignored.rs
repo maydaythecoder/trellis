@@ -170,15 +170,15 @@ pub fn remove_created(root: &Path, created: &[String]) -> Vec<String> {
     let mut failed = Vec::new();
     for rel in created {
         let p = root.join(rel);
-        let is_dir_link =
-            std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink() && p.is_dir());
-        // A Windows directory link is removed with `remove_dir`; on Unix a
-        // link of any kind with `remove_file`.
-        let r = if is_dir_link && cfg!(windows) {
-            std::fs::remove_dir(&p)
-        } else {
-            std::fs::remove_file(&p)
-        };
+        // `remove_file` removes a file, or a link of any kind on Unix. A
+        // Windows directory link takes `remove_dir`, which removes the link
+        // itself; tried second, so a dangling one (which `is_dir` reads as
+        // not a directory) goes too, and a real directory stays unless it
+        // is empty.
+        let r = std::fs::remove_file(&p).or_else(|e| match std::fs::remove_dir(&p) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(e),
+        });
         match r {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -204,13 +204,24 @@ pub fn remove_created(root: &Path, created: &[String]) -> Vec<String> {
 /// before the snapshot's own rollback, which then removes the directories
 /// git tracks that the removal emptied.
 ///
-/// Returns whether the ignored files are as they were: false when a
-/// created file could not be removed, and false when any pre-existing one
-/// was changed or deleted. A rollback that leaves a changed file behind
-/// has not restored the tree, whatever git says about the files it sees
-/// (review round 8; before it, this returned true and the run exited as
-/// restored).
-pub fn undo(root: &Path, changes: &IgnoredChanges, out: &mut dyn Write) -> bool {
+/// Returns whether the rollback may call the tree restored. False when a
+/// created file could not be removed, when a pre-existing one was deleted
+/// (a loss the user has to be told of, not a cache rewritten), and when a
+/// pre-existing one was changed that `protected` names: an ignored path
+/// under `.trellis/` or one `deny_write` covers, a write the run was
+/// refused anyway.
+///
+/// Any other pre-existing file that was changed is named and left as it
+/// is, and does not count (review round 9). The tracked tree is restored,
+/// which is what ADR 0009 promises; and every writer that runs pytest or
+/// mypy rewrites their caches, so counting it (round 8) ended nearly every
+/// failed run as not restored and stopped `work`.
+pub fn undo(
+    root: &Path,
+    changes: &IgnoredChanges,
+    protected: &dyn Fn(&str) -> bool,
+    out: &mut dyn Write,
+) -> bool {
     let failed = remove_created(root, &changes.created);
     if !changes.created.is_empty() {
         let _ = writeln!(
@@ -222,12 +233,17 @@ pub fn undo(root: &Path, changes: &IgnoredChanges, out: &mut dyn Write) -> bool 
     for f in &failed {
         let _ = writeln!(out, "ignored:  could NOT be removed: {f}");
     }
-    let lost: Vec<String> = changes
-        .modified
-        .iter()
-        .chain(&changes.deleted)
-        .cloned()
-        .collect();
+    let (lost, left): (Vec<String>, Vec<String>) =
+        changes.modified.iter().cloned().partition(|p| protected(p));
+    let lost: Vec<String> = lost.into_iter().chain(changes.deleted.clone()).collect();
+    if !left.is_empty() {
+        let _ = writeln!(
+            out,
+            "ignored:  changed by the run and left as it is (trellis keeps no copy of \
+             ignored files; the tracked tree is restored): {}",
+            shown(&left)
+        );
+    }
     if !lost.is_empty() {
         let _ = writeln!(
             out,
@@ -245,110 +261,6 @@ pub fn undo(root: &Path, changes: &IgnoredChanges, out: &mut dyn Write) -> bool 
 /// strength.
 pub fn changes_since(root: &Path, before: &IgnoredSnapshot) -> Result<IgnoredChanges, String> {
     IgnoredSnapshot::take(root).map(|after| before.diff(&after))
-}
-
-/// A model run's ignored files, judged by who changed them.
-///
-/// The writers this guards (`bash`, custom tools, hooks) share the run with
-/// the checks, which run the repository's own tools, and those rewrite
-/// their caches (`.mypy_cache`, `__pycache__`, `.pytest_cache`) on every
-/// run. One before-and-after over the whole run held the checks' rewrites
-/// against the run, and since a changed pre-existing ignored file makes a
-/// rollback not restored ([`undo`]), nearly every failed run that ran a
-/// check would have exited as unrestored. So the orchestrator brackets each
-/// check: [`before_unguarded`](Self::before_unguarded) holds what changed
-/// since the last mark against the run, and
-/// [`after_unguarded`](Self::after_unguarded) moves the mark past what the
-/// check changed. Files created during the run are all removed on rollback,
-/// whoever created them, as before.
-///
-/// What this gives up, stated: a check runs repository code, and a model
-/// run can edit that code, so a test the run rewrote can change a
-/// pre-existing ignored file and not be held against the run. A run with
-/// none of the guarded writers keeps no ledger at all and was already
-/// exposed to exactly that. Costs two more listings per check.
-pub struct IgnoredLedger {
-    original: IgnoredSnapshot,
-    mark: IgnoredSnapshot,
-    modified: std::collections::BTreeSet<String>,
-    deleted: std::collections::BTreeSet<String>,
-    /// A listing failed at a bracket: what happened across it is unknown,
-    /// so the run's changes cannot be read.
-    unread: Option<String>,
-}
-
-impl IgnoredLedger {
-    pub fn take(root: &Path) -> Result<IgnoredLedger, String> {
-        let s = IgnoredSnapshot::take(root)?;
-        Ok(IgnoredLedger {
-            original: s.clone(),
-            mark: s,
-            modified: Default::default(),
-            deleted: Default::default(),
-            unread: None,
-        })
-    }
-
-    /// What changed between the mark and `now`, held against the run: only
-    /// files that existed before it, since one it created is removed anyway.
-    /// A pre-existing file that reappears since the mark (a check deleted
-    /// it, a guarded writer wrote it back) is a change too: the rollback
-    /// does not remove it, since it existed at the start.
-    fn attribute(&mut self, now: &IgnoredSnapshot) {
-        let d = self.mark.diff(now);
-        for p in d.modified.into_iter().chain(d.created) {
-            if self.original.files.contains_key(&p) {
-                self.modified.insert(p);
-            }
-        }
-        for p in d.deleted {
-            if self.original.files.contains_key(&p) {
-                self.deleted.insert(p);
-            }
-        }
-    }
-
-    /// Before something whose ignored writes are not the run's (a check).
-    pub fn before_unguarded(&mut self, root: &Path) {
-        match IgnoredSnapshot::take(root) {
-            Ok(now) => {
-                self.attribute(&now);
-                self.mark = now;
-            }
-            Err(e) => self.unread = Some(e),
-        }
-    }
-
-    /// After it. A listing that fails keeps the old mark, so the check's
-    /// changes are held against the run: the conservative reading.
-    pub fn after_unguarded(&mut self, root: &Path) {
-        if let Ok(now) = IgnoredSnapshot::take(root) {
-            self.mark = now;
-        }
-    }
-
-    /// What the run did to ignored files: every file created since it
-    /// started, and every pre-existing one a guarded writer changed or
-    /// deleted.
-    pub fn changes(&mut self, root: &Path) -> Result<IgnoredChanges, String> {
-        if let Some(e) = &self.unread {
-            return Err(e.clone());
-        }
-        let now = IgnoredSnapshot::take(root)?;
-        self.attribute(&now);
-        let created = self.original.diff(&now).created;
-        self.mark = now;
-        Ok(IgnoredChanges {
-            created,
-            modified: self
-                .modified
-                .iter()
-                .filter(|p| !self.deleted.contains(*p))
-                .cloned()
-                .collect(),
-            deleted: self.deleted.iter().cloned().collect(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -389,8 +301,8 @@ mod tests {
 
         let mut out = Vec::new();
         assert!(
-            !undo(root, &c, &mut out),
-            "a changed file left behind is not a restored tree"
+            undo(root, &c, &|_| false, &mut out),
+            "an unprotected changed file is named, and the tree is restored"
         );
         assert!(
             !root.join(".venv/lib/site").exists(),
@@ -402,7 +314,7 @@ mod tests {
         );
         let out = String::from_utf8(out).unwrap();
         assert!(
-            out.contains("NOT put back") && out.contains("old.py"),
+            out.contains("left as it is") && out.contains("old.py"),
             "{out}"
         );
     }
@@ -417,48 +329,36 @@ mod tests {
         std::fs::write(root.join("new.log"), "x").unwrap();
         let c = changes_since(root, &before).unwrap();
         let mut out = Vec::new();
-        assert!(undo(root, &c, &mut out));
+        assert!(undo(root, &c, &|_| false, &mut out));
         assert!(!root.join("new.log").exists());
     }
 
-    /// Sets a file's modification time well away from now, so a rewrite
-    /// within the same second is still a different stamp.
-    fn touch_back(p: &Path) {
-        let f = std::fs::File::options().write(true).open(p).unwrap();
-        f.set_modified(
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
-        )
-        .unwrap();
-    }
-
     #[test]
-    fn the_ledger_holds_a_guarded_writer_s_change_against_the_run_and_not_a_check_s() {
-        // The risk: a check rewrites its own cache on every run, and one
-        // before-and-after over the whole run read that as the run changing
-        // a pre-existing ignored file, which is an unrestored rollback.
+    fn a_deleted_file_or_a_changed_protected_one_is_not_restored() {
+        // Loss is still loss: a pre-existing ignored file deleted, or one
+        // the rules protect changed, cannot be put back and says so.
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         git(root, &["init", "-q"]);
-        std::fs::write(root.join(".gitignore"), "*.cache\n*.env\n").unwrap();
-        std::fs::write(root.join("mypy.cache"), "a").unwrap();
-        std::fs::write(root.join("site.env"), "a").unwrap();
+        std::fs::write(root.join(".gitignore"), "*.env\n").unwrap();
         std::fs::write(root.join("gone.env"), "a").unwrap();
-        let mut l = IgnoredLedger::take(root).unwrap();
-
-        // A guarded writer, before the check.
-        std::fs::write(root.join("site.env"), "bb").unwrap();
-        l.before_unguarded(root);
-        // The check.
-        std::fs::write(root.join("mypy.cache"), "bbb").unwrap();
-        touch_back(&root.join("mypy.cache"));
-        std::fs::write(root.join("made.cache"), "c").unwrap();
-        l.after_unguarded(root);
-        // A guarded writer, after it.
+        std::fs::write(root.join("kept.env"), "a").unwrap();
+        let before = IgnoredSnapshot::take(root).unwrap();
         std::fs::remove_file(root.join("gone.env")).unwrap();
+        std::fs::write(root.join("kept.env"), "bb").unwrap();
+        let c = changes_since(root, &before).unwrap();
 
-        let c = l.changes(root).unwrap();
-        assert_eq!(c.modified, ["site.env"]);
-        assert_eq!(c.deleted, ["gone.env"]);
-        assert_eq!(c.created, ["made.cache"], "whoever made it, it goes");
+        let mut out = Vec::new();
+        let deleted_only = IgnoredChanges {
+            deleted: c.deleted.clone(),
+            ..IgnoredChanges::default()
+        };
+        assert!(!undo(root, &deleted_only, &|_| false, &mut out));
+        let changed_only = IgnoredChanges {
+            modified: c.modified.clone(),
+            ..IgnoredChanges::default()
+        };
+        assert!(undo(root, &changed_only, &|_| false, &mut out));
+        assert!(!undo(root, &changed_only, &|p| p == "kept.env", &mut out));
     }
 }
