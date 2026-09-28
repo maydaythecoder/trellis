@@ -44,6 +44,14 @@ rustyline.workspace = true
 jiff = "0.2.37"
 tui-demo = { path = "../tui-demo", default-features = false }
 
+# HTTPS to hosted providers (ADR 0024). On by default: the release binary
+# is built with default features, so this is what ships. `--no-default-features`
+# builds the local-only binary, which refuses an https endpoint with a message
+# naming this feature. Measured cost in ADR 0024, "Measurements".
+[features]
+default = ["hosted"]
+hosted = ["trellis-model/hosted"]
+
 [lints]
 workspace = true
 

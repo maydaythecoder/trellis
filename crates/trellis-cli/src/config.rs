@@ -40,6 +40,9 @@ pub(crate) struct RepoConfig {
     /// Executable hooks, loaded only when trusted (ADR 0023).
     #[serde(default)]
     pub hooks: Option<trellis_loop::HookConfig>,
+    /// Hosted endpoints a `provider:<name>#<model>` spec names (ADR 0024).
+    #[serde(default)]
+    pub providers: Option<Vec<ProviderSection>>,
 }
 
 /// Where a run sits between hands-off and asking about each step (ADR 0018).
@@ -120,6 +123,12 @@ pub(crate) struct ModelSection {
     /// Send no schema and validate the reply instead (tier 4). Opt-in, since
     /// a run can then fail on format alone.
     pub unconstrained: Option<bool>,
+    /// `off`, `low`, `medium` or `high` (ADR 0024 §4). Mapped where the
+    /// protocol carries it; ignored with a notice elsewhere.
+    pub thinking: Option<String>,
+    /// A ceiling on one request's size in bytes; over it, the oldest
+    /// observations are elided (ADR 0024 §5). Unset means no ceiling.
+    pub context_bytes: Option<u64>,
 }
 
 /// Rules the loop obeys, read from the repository rather than configured per
@@ -819,5 +828,98 @@ impl RepoConfig {
     /// `[hooks]`, or none.
     pub(crate) fn hook_config(&self) -> trellis_loop::HookConfig {
         self.hooks.clone().unwrap_or_default()
+    }
+}
+
+/// `[[providers]]` (ADR 0024 §2): a hosted endpoint by name.
+///
+/// Names the variable a key is read from, never the key: the file is in the
+/// repository, and ADR 0024 keeps keys out of every file trellis reads.
+/// Unknown fields are refused, so `api_key = "..."` fails to load rather
+/// than being quietly ignored in a committed file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderSection {
+    pub name: String,
+    /// `openai` or `anthropic`.
+    pub protocol: String,
+    pub base_url: String,
+    /// The environment variable holding the key.
+    pub key_env: String,
+}
+
+impl RepoConfig {
+    /// `[model] thinking`, validated. Absent is `off`.
+    pub(crate) fn thinking(&self) -> Result<trellis_model::Thinking> {
+        match self.model.as_ref().and_then(|m| m.thinking.as_deref()) {
+            None => Ok(trellis_model::Thinking::Off),
+            Some(s) => trellis_model::Thinking::parse(s).ok_or_else(|| {
+                anyhow::anyhow!("[model] thinking = \"{s}\" is not one of off, low, medium, high")
+            }),
+        }
+    }
+
+    /// `[model] context_bytes`, when set.
+    pub(crate) fn context_bytes(&self) -> Option<usize> {
+        self.model
+            .as_ref()
+            .and_then(|m| m.context_bytes)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+    }
+
+    /// The `[[providers]]` entry called `name`.
+    pub(crate) fn provider(&self, name: &str) -> Result<&ProviderSection> {
+        let all = self.providers.as_deref().unwrap_or(&[]);
+        all.iter().find(|p| p.name == name).ok_or_else(|| {
+            let names: Vec<&str> = all.iter().map(|p| p.name.as_str()).collect();
+            anyhow::anyhow!(
+                "no [[providers]] entry is named `{name}`; {}",
+                if names.is_empty() {
+                    "none are configured in .trellis/config.toml".to_string()
+                } else {
+                    format!("the configured ones are {}", names.join(", "))
+                }
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+
+    #[test]
+    fn a_provider_names_its_key_variable_and_a_key_field_is_refused() {
+        // A key in this file is a key committed to version control
+        // (ADR 0010); refusing the field beats ignoring it.
+        let ok: RepoConfig = toml::from_str(
+            "[[providers]]\nname = \"groq\"\nprotocol = \"openai\"\n\
+             base_url = \"https://api.groq.com/openai/v1\"\nkey_env = \"GROQ_API_KEY\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.provider("groq").unwrap().key_env, "GROQ_API_KEY");
+        assert!(
+            ok.provider("nope")
+                .unwrap_err()
+                .to_string()
+                .contains("groq")
+        );
+
+        let bad = toml::from_str::<RepoConfig>(
+            "[[providers]]\nname = \"x\"\nprotocol = \"openai\"\nbase_url = \"https://x\"\n\
+             key_env = \"K\"\napi_key = \"sk-123\"\n",
+        );
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn thinking_and_the_context_budget_are_read_and_a_typo_is_an_error() {
+        let c: RepoConfig =
+            toml::from_str("[model]\nthinking = \"high\"\ncontext_bytes = 200000\n").unwrap();
+        assert_eq!(c.thinking().unwrap(), trellis_model::Thinking::High);
+        assert_eq!(c.context_bytes(), Some(200_000));
+        let c: RepoConfig = toml::from_str("[model]\nthinking = \"max\"\n").unwrap();
+        assert!(c.thinking().is_err());
+        assert_eq!(RepoConfig::default().context_bytes(), None);
     }
 }

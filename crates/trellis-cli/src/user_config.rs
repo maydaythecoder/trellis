@@ -118,7 +118,26 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
         model: either(repo.model, user.model, |r, u| ModelSection {
             spec: r.spec.or(u.spec),
             unconstrained: r.unconstrained.or(u.unconstrained),
+            thinking: r.thinking.or(u.thinking),
+            context_bytes: r.context_bytes.or(u.context_bytes),
         }),
+        // Hosted providers (ADR 0024) are as much the user's as the
+        // repository's: the endpoints someone has keys for belong in their
+        // own file. Both lists apply; on a name both define, the repository's
+        // wins, like every other field here. Neither file may hold a key
+        // (ADR 0010), only the name of the variable that does.
+        providers: match (repo.providers, user.providers) {
+            (None, u) => u,
+            (r, None) => r,
+            (Some(mut r), Some(u)) => {
+                for p in u {
+                    if !r.iter().any(|x| x.name == p.name) {
+                        r.push(p);
+                    }
+                }
+                Some(r)
+            }
+        },
         context: either(repo.context, user.context, |r, u| ContextSection {
             vault: r.vault.or(u.vault),
             focus: r.focus.or(u.focus),
