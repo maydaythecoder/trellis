@@ -173,36 +173,66 @@ impl GitGuard {
     }
 }
 
-/// Governance as a model run meets it (ADR 0026 §11): `[governance]
-/// deny_write` and `deny-write` documents over every path the command
-/// changed, then the `forbid` audit over those files. The first is a list
-/// of breaches; the second is a `Verdict` from `trellis-checks`, present
-/// only when the repository has rule documents, as the loop audits only
-/// then.
-fn governance(
-    root: &Path,
-    touched: &[String],
-) -> Result<(Vec<String>, Option<trellis_checks::Verdict>), String> {
-    let rules = trellis_checks::governance::load(root).map_err(|e| e.to_string())?;
-    let cfg = crate::config::RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
-    let mut deny: Vec<String> = cfg
-        .governance()
-        .rules()
-        .iter()
-        .map(|r| r.as_written())
-        .collect();
-    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
-    let g = trellis_loop::Governance::new(&deny);
-    let denied = touched
-        .iter()
-        .filter_map(|p| {
-            g.denies_write(p)
-                .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
+/// What judges the run, read from the worktree **before** the command runs:
+/// the `[checks]` commands, `[governance] deny_write`, and the rule
+/// documents under `.trellis/governance/`. Read after, they were the
+/// command's to choose: it could rewrite `typecheck` to `true` or drop a
+/// `deny_write` line and be judged by its own rules (ADR 0026 §11).
+struct Judge {
+    checks: trellis_checks::CheckConfig,
+    rules: Vec<trellis_checks::governance::Rule>,
+    deny: Vec<String>,
+}
+
+impl Judge {
+    fn load(root: &Path) -> Result<Judge, String> {
+        let rules = trellis_checks::governance::load(root).map_err(|e| e.to_string())?;
+        let cfg = crate::config::RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
+        let mut deny: Vec<String> = cfg
+            .governance()
+            .rules()
+            .iter()
+            .map(|r| r.as_written())
+            .collect();
+        deny.extend(trellis_checks::governance::deny_write_paths(&rules));
+        Ok(Judge {
+            checks: cfg.checks(),
+            rules,
+            deny,
         })
-        .collect();
-    let audit =
-        (!rules.is_empty()).then(|| trellis_checks::governance_audit(root, &rules, touched));
-    Ok((denied, audit))
+    }
+
+    /// Governance as a model run meets it: `deny_write` over every path the
+    /// command changed, then the `forbid` audit over those files. The first
+    /// is a list of breaches; the second is a `Verdict` from
+    /// `trellis-checks`, present only when the repository has rule
+    /// documents, as the loop audits only then.
+    ///
+    /// Any path under `.trellis/` is a breach whatever the rules say: that
+    /// directory holds the checks, the rules and the trust inputs that judge
+    /// this run, and a change there is the command editing its own judge.
+    fn governance(
+        &self,
+        root: &Path,
+        touched: &[String],
+    ) -> (Vec<String>, Option<trellis_checks::Verdict>) {
+        let g = trellis_loop::Governance::new(&self.deny);
+        let denied = touched
+            .iter()
+            .filter_map(|p| {
+                if p == ".trellis" || p.starts_with(".trellis/") {
+                    return Some(format!(
+                        "{p} (under .trellis/, which holds what judges this run)"
+                    ));
+                }
+                g.denies_write(p)
+                    .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
+            })
+            .collect();
+        let audit = (!self.rules.is_empty())
+            .then(|| trellis_checks::governance_audit(root, &self.rules, touched));
+        (denied, audit)
+    }
 }
 
 pub(crate) struct ProcessRun<'a> {
@@ -255,6 +285,18 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         argv.join(" ")
     );
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
+    // Before the command, for the reason the git guard below is: what is
+    // read after it is whatever it left there.
+    let judge = match Judge::load(root) {
+        Ok(j) => j,
+        Err(e) => {
+            // Nothing ran, so nothing changed; the snapshot needs no rollback.
+            return RunEnd::Error {
+                run_id: None,
+                error: format!("the checks and governance rules could not be read: {e}"),
+            };
+        }
+    };
     // Before the command, since nothing can be put back that was not read.
     let git_guard = match GitGuard::capture(root) {
         Ok(g) => g,
@@ -368,34 +410,17 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let mut verdicts = Vec::new();
     let mut denied = Vec::new();
     let mut checked = false;
+    let judge_touched = touched
+        .iter()
+        .any(|p| p == ".trellis" || p.starts_with(".trellis/"));
     if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
-        match governance(root, &touched) {
-            Ok((d, audit)) => {
-                denied = d;
-                verdicts.extend(audit);
-            }
-            Err(e) => {
-                // A rule that would not load is not a rule that passed.
-                denied.push(format!("governance could not be read: {e}"));
-            }
-        }
+        let (d, audit) = judge.governance(root, &touched);
+        denied = d;
+        verdicts.extend(audit);
         for d in &denied {
             let _ = writeln!(out, "governance: refused: {d}");
         }
-        let checks = match crate::config::RepoConfig::load(root) {
-            Ok(c) => c.checks(),
-            Err(e) => {
-                let restored = rollback(&snapshot, out);
-                return if restored {
-                    RunEnd::Error {
-                        run_id: None,
-                        error: format!("{e:#}"),
-                    }
-                } else {
-                    RunEnd::NotRestored { run_id: None }
-                };
-            }
-        };
+        let checks = &judge.checks;
         let paths = vec![PathBuf::from(".")];
         match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -404,8 +429,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Ok(rt) => {
                 verdicts.extend(rt.block_on(async {
                     vec![
-                        trellis_checks::typecheck(root, &checks, &paths).await,
-                        trellis_checks::run_tests(root, &checks, &paths).await,
+                        trellis_checks::typecheck(root, checks, &paths).await,
+                        trellis_checks::run_tests(root, checks, &paths).await,
                     ]
                 }));
                 checked = true;
@@ -450,6 +475,10 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             }
             _ if touched.is_empty() => {
                 "not converged: the command changed nothing, so there was nothing to verify"
+            }
+            _ if judge_touched => {
+                "not converged: the command changed .trellis/, which holds the checks and \
+                 rules that judge it"
             }
             _ if !denied.is_empty() => {
                 "not converged: the command wrote where [governance] deny_write refuses"
