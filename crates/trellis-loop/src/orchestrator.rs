@@ -449,26 +449,30 @@ impl Orchestrator {
         self.wrote = false;
         // `pre_tool` and `post_tool` are repository code that runs around
         // every call, the passing check included, and nothing stops either
-        // writing. The worktree is compared across both, so a hook that
-        // writes marks the turn as one that may have changed the tree and
-        // the pass before it stops counting (ADR 0023, "after a pass").
-        // Only when such a hook is declared: two git calls per turn is a
-        // cost only a repository with hooks pays.
-        let watched = self.hooks.as_ref().is_some_and(|h| {
+        // writing. The worktree is compared across each hook on its own,
+        // so a hook that writes marks the turn as one that may have changed
+        // the tree and the pass before it stops counting (ADR 0023, "after
+        // a pass"). Across the hooks and not the whole dispatch: the tool
+        // in between is classified by its kind (`may_change_tree`), and a
+        // bracket that included it made a checker's own `.coverage` or
+        // `__pycache__` void the pass it had just produced. Only when such
+        // a hook is declared: git calls per turn are a cost only a
+        // repository with hooks pays.
+        let (pre, post) = self.hooks.as_ref().map_or((false, false), |h| {
             let c = h.config();
-            c.pre_tool.is_some() || c.post_tool.is_some()
+            (c.pre_tool.is_some(), c.post_tool.is_some())
         });
-        let before = watched.then(|| trellis_vcs::worktree_fingerprint(&self.root).ok());
         let root = self.root.clone();
+        let fingerprint = move || trellis_vcs::worktree_fingerprint(&root).ok();
         // An unreadable fingerprint on either side counts as a change: the
         // guard fails closed, because "could not tell" is not "unchanged".
-        let changed_since = move |before: &Option<Option<String>>| match before {
-            None => false,
-            Some(None) => true,
-            Some(Some(b)) => trellis_vcs::worktree_fingerprint(&root)
-                .ok()
-                .is_none_or(|a| a != *b),
+        let differs = |before: Option<String>, after: Option<String>| match (before, after) {
+            (Some(b), Some(a)) => a != b,
+            _ => true,
         };
+        // The gate loop holds `pre_tool`; the other gates (governance, the
+        // bash policy, a person's approval) do not write.
+        let before_gates = pre.then(&fingerprint);
         for i in 0..=self.gates.len() {
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
@@ -495,10 +499,11 @@ impl Orchestrator {
                 return Dispatched {
                     result: ToolResult::Error(reason),
                     human,
-                    may_have_changed_tree: changed_since(&before),
+                    may_have_changed_tree: before_gates.is_some_and(|b| differs(b, fingerprint())),
                 };
             }
         }
+        let gates_changed = before_gates.is_some_and(|b| differs(b, fingerprint()));
         let result = match &call {
             ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
             ToolCall::ReadFile { path } => self.read_file(path),
@@ -545,14 +550,19 @@ impl Orchestrator {
         };
         // Observe only. The result is already decided and is what the model
         // receives, whatever the hook prints or returns.
+        let mut post_changed = false;
         if let Some(h) = &self.hooks {
+            let before_post = post.then(&fingerprint);
             let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
             h.post_tool(&call, as_json).await;
+            post_changed = before_post.is_some_and(|b| differs(b, fingerprint()));
         }
         Dispatched {
             result,
             human,
-            may_have_changed_tree: may_change_tree(&call, self.wrote) || changed_since(&before),
+            may_have_changed_tree: may_change_tree(&call, self.wrote)
+                || gates_changed
+                || post_changed,
         }
     }
 

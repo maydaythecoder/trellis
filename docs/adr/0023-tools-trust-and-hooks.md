@@ -279,14 +279,20 @@ this amendment a hook that wrote at any of those points left bytes in a
   would not, since a rewritten untracked file keeps its `??` line.
   **Ignored files are not covered**, as they are not part of any change
   trellis proposes, and a hook that writes one is not detected.
-- **`pre_tool` and `post_tool`.** When either is declared, the orchestrator
-  fingerprints the worktree before the gates and after `post_tool`. A
-  difference, or a fingerprint that could not be taken, marks the turn as
-  one that may have changed the tree, and `last_check_passed` stops there
-  (ADR 0004). One flag cannot say which side of a check a hook wrote on, so
-  a hook that writes on a check's own turn voids that check. Cost: two git
-  invocations per call, paid only by a repository that declares one of
-  these hooks.
+- **`pre_tool` and `post_tool`.** Each declared hook is bracketed on its
+  own: the worktree is fingerprinted before and after the gates (which
+  hold `pre_tool`; the other gates do not write), and before and after
+  `post_tool`. A difference, or a fingerprint that could not be taken,
+  marks the turn as one that may have changed the tree, and
+  `last_check_passed` stops there (ADR 0004). One flag cannot say which
+  side of a check a hook wrote on, so a hook that writes on a check's own
+  turn voids that check. The tool itself is not bracketed: whether it may
+  have changed the tree is decided by its kind (`edit` and `write_file`
+  when they wrote, `bash` and custom tools always). *Amended after the
+  second review of PR #1:* the first version bracketed the whole dispatch,
+  so a checker that left an untracked, non-ignored file (`.coverage`,
+  junit XML, `__pycache__`) voided its own pass whenever any hook was
+  declared. Cost: two git invocations per declared hook per call.
 - **`after_run`.** The binary fingerprints the worktree around the hook on
   a converged run. A difference, or a fingerprint that could not be taken,
   demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,
