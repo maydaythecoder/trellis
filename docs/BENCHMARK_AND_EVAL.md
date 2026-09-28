@@ -480,7 +480,10 @@ Pyright's costs are real and accepted: a Node process, multi-GB memory on large
 repos, and no batch call-graph dump, so it is driven query by query. That last
 property is what makes it viable as a *backstop* rather than a replacement — it
 is invoked only for call sites the primary resolver left `Unresolved` or
-`Candidates`, which by construction is a minority of sites.
+`Candidates`, which by construction is a minority of sites. How far that
+trigger, and cross-file type propagation, could move recall on the two audited
+samples is bounded in [`bench/backstop-ceiling.md`](bench/backstop-ceiling.md)
+(ceilings, not recall figures).
 
 **Cheaper intermediate, to try first.** If the `Reason` distribution shows
 `DecoratorIndirection` dominating — the prediction, supported by the 20–41%

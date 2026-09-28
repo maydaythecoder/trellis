@@ -23,12 +23,64 @@ use serde::{Deserialize, Serialize};
 /// code. Nothing in the workspace accepts this where a `Verdict` is
 /// required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "RawCheck")]
 pub struct RecordedCheck {
     pub kind: String,
     pub command: String,
     pub exit_code: Option<i32>,
     /// What the trail claims. Not a verdict.
     pub passed: bool,
+}
+
+/// The two shapes a check has on disk: flat, as this type writes it, and
+/// nested, as a serialized `Verdict` is (`{passed, detail: {kind, ..}}`),
+/// which is what a process agent's trail carries (ADR 0026 §11).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawCheck {
+    Flat {
+        kind: String,
+        command: String,
+        #[serde(default)]
+        exit_code: Option<i32>,
+        passed: bool,
+    },
+    Nested {
+        passed: bool,
+        detail: RawDetail,
+    },
+}
+
+#[derive(Deserialize)]
+struct RawDetail {
+    kind: String,
+    command: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+}
+
+impl From<RawCheck> for RecordedCheck {
+    fn from(r: RawCheck) -> Self {
+        match r {
+            RawCheck::Flat {
+                kind,
+                command,
+                exit_code,
+                passed,
+            } => RecordedCheck {
+                kind,
+                command,
+                exit_code,
+                passed,
+            },
+            RawCheck::Nested { passed, detail } => RecordedCheck {
+                kind: detail.kind,
+                command: detail.command,
+                exit_code: detail.exit_code,
+                passed,
+            },
+        }
+    }
 }
 
 /// A trail as read back from disk.
@@ -121,6 +173,19 @@ pub struct UntrustedFactual {
     /// Where the control dial stood (ADR 0018), when the writer recorded it.
     #[serde(default)]
     pub control: Option<String>,
+    /// Completion tokens, when the writer recorded them (ADR 0026 §8).
+    /// Written by whoever last edited the file, so a budget read from it is
+    /// a cost guard over untrusted data, never a correctness claim.
+    #[serde(default)]
+    pub tokens: Option<u64>,
+    /// The agent profile the run executed as, when recorded.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Context files, system files and forced skills the run was given, by
+    /// name and size (ADR 0025), as the writer recorded them. Names only;
+    /// data, never instruction.
+    #[serde(default)]
+    pub inputs: Vec<super::Input>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -259,6 +324,28 @@ mod tests {
     }
 
     #[test]
+    fn a_check_written_as_a_serialized_verdict_reads_back() {
+        // A process agent's trail carries real `Verdict`s, which serialize
+        // as `{passed, detail: {kind, command, exit_code, ..}}`. Read with
+        // the flat shape only, every such trail failed to parse and was
+        // skipped by the ledger and by `trail` queries.
+        let raw = r#"{
+          "task": "make a file",
+          "factual": {
+            "checks": [{ "passed": false, "detail": {
+              "kind": "Governance", "command": "governance audit", "exit_code": 1,
+              "failure_count": 1, "stdout": "", "stderr": "", "duration_ms": 3 } }]
+          }
+        }"#;
+        let t = UntrustedTrail::from_json(raw).unwrap();
+        let c = &t.factual.checks[0];
+        assert_eq!(
+            (c.kind.as_str(), c.command.as_str(), c.exit_code, c.passed),
+            ("Governance", "governance audit", Some(1), false)
+        );
+    }
+
+    #[test]
     fn judgment_is_fenced_when_fed_back_as_context() {
         let t = UntrustedTrail::from_json(TRAIL).unwrap();
         let lines = t.context_lines();
@@ -378,6 +465,9 @@ mod tests {
                 context: None,
                 actions: Vec::new(),
                 control: None,
+                tokens: None,
+                agent: None,
+                inputs: Vec::new(),
             },
             judgment: crate::Judgment::default(),
         }
@@ -457,6 +547,77 @@ mod tests {
             read.integrity("{}"),
             Integrity::Altered,
             "valid JSON with no factual section is not intact either"
+        );
+    }
+
+    #[test]
+    fn a_trail_without_spend_serialises_exactly_as_before_the_fields_existed() {
+        // The risk: adding `tokens`/`agent` changes the bytes of every trail
+        // that has none, and with them the digest of every trail already
+        // committed. Omitted-when-absent keeps the old shape.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        assert!(
+            !json.contains("tokens") && !json.contains("\"agent\""),
+            "{json}"
+        );
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+    }
+
+    #[test]
+    fn a_trail_without_inputs_keeps_its_bytes_and_recorded_inputs_are_under_the_digest() {
+        // The risk on one side: the new field changes the bytes, and so the
+        // digest, of every trail already committed. On the other: a record
+        // of what the run saw that can be edited without the digest noticing.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        assert!(!json.contains("inputs"), "{json}");
+
+        let mut t = a_trail("app/core.py");
+        t.factual.inputs = vec![
+            crate::Input {
+                kind: "context_file".into(),
+                name: "<user>/AGENTS.md".into(),
+                bytes: 4321,
+            },
+            crate::Input {
+                kind: "forced_skill".into(),
+                name: "refactor".into(),
+                bytes: 88,
+            },
+        ];
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.factual.inputs, t.factual.inputs);
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        let edited = json.replace("4321", "1");
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
+        );
+    }
+
+    #[test]
+    fn recorded_spend_reads_back_and_is_covered_by_the_digest() {
+        // The budget ledger (ADR 0026) reads these two fields; an edit to
+        // either must be as visible as an edit to anything else factual.
+        let mut t = a_trail("app/core.py");
+        t.factual.tokens = Some(1234);
+        t.factual.agent = Some("reviewer".into());
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.factual.tokens, Some(1234));
+        assert_eq!(read.factual.agent.as_deref(), Some("reviewer"));
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        let edited = json.replace("1234", "12");
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
         );
     }
 }

@@ -15,7 +15,9 @@
 //! call chain.
 
 use crate::agent::ToolCall;
-use crate::gate::{GateDecision, GovernanceGate, ToolGate};
+use crate::gate::{GateDecision, GovernanceGate, ToolGate, tool_name};
+use crate::hooks::Hooks;
+use crate::registry::ToolSet;
 use crate::tools::{EditOutcome, ToolResult};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -66,6 +68,26 @@ pub enum Request {
     /// nothing is not evidence of anything and must not inflate the count a
     /// user reads at the end of a run.
     HasRules { reply: oneshot::Sender<bool> },
+    /// Denials by named gates, for the trail (ADR 0023 §7).
+    GateLog {
+        reply: oneshot::Sender<Vec<GateDenial>>,
+    },
+}
+
+/// A call a named gate refused: the pre_tool hook or the bash policy.
+///
+/// Kept here rather than on the loop's `Turn` because the gate decided it
+/// here. `call` is the model call's position in the run, counted from 1 over
+/// `Request::Call` only; the loop makes exactly one of those per turn and the
+/// convergence audit goes by another door, so it is the turn number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateDenial {
+    pub call: u32,
+    /// The gate's name: `pre_tool` or `bash_policy`.
+    pub gate: String,
+    /// The tool and what it was aimed at, e.g. `bash rm -rf build`.
+    pub target: String,
+    pub reason: String,
 }
 
 /// A tool result, and the human decision that let it run or stopped it.
@@ -74,6 +96,44 @@ pub struct Dispatched {
     pub result: ToolResult,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
+    /// Whether this call may have changed the working tree. See
+    /// [`may_change_tree`] for the tool's part; a `pre_tool` or `post_tool`
+    /// hook that changed the worktree (or whose effect could not be
+    /// compared) also sets it, because a hook runs around every call — the
+    /// passing check included — and would otherwise leave bytes behind that
+    /// no check saw (ADR 0023, "after a pass").
+    pub may_have_changed_tree: bool,
+    /// Why trusted code no longer matches what was trusted, once the trust
+    /// guard has found it so (ADR 0023 §5). Latched: every call after the
+    /// first carries it too. The loop ends the run on it.
+    pub trust_breach: Option<String>,
+}
+
+/// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
+/// that ran. `wrote` is whether `edit` or `write_file` reached the point of
+/// writing bytes, which is not the same as succeeding: a write that failed
+/// half way, or an edit written and then refused by the index, still
+/// changed the file.
+///
+/// Exhaustive on purpose, like `tool_result_variants_are_accounted_for`: a
+/// new tool does not compile until someone decides here whether it writes,
+/// and the answer for "not sure" is yes.
+pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
+    match call {
+        ToolCall::Edit { .. } | ToolCall::WriteFile { .. } => wrote,
+        // A process that ran may have written anything, whatever it
+        // printed and however it exited.
+        ToolCall::Bash { .. } | ToolCall::Custom { .. } => true,
+        ToolCall::BlastRadius { .. }
+        | ToolCall::ReadFile { .. }
+        | ToolCall::RunChecks { .. }
+        | ToolCall::ReadSkill { .. }
+        | ToolCall::Grep { .. }
+        | ToolCall::Find { .. }
+        | ToolCall::Ls { .. }
+        | ToolCall::SearchNotes { .. }
+        | ToolCall::ReadNote { .. } => false,
+    }
 }
 
 /// What a person said about one call, and how long they took to say it.
@@ -157,6 +217,9 @@ impl Handle {
             || Dispatched {
                 result: ToolResult::Error("orchestrator stopped".into()),
                 human: None,
+                // A stopped actor owns the only write path and wrote nothing.
+                may_have_changed_tree: false,
+                trust_breach: None,
             },
         )
         .await
@@ -189,6 +252,11 @@ impl Handle {
         self.ask(|reply| Request::HasRules { reply }, || false)
             .await
     }
+
+    /// Every call a named gate refused this run, in order.
+    pub async fn gate_log(&self) -> Vec<GateDenial> {
+        self.ask(|reply| Request::GateLog { reply }, Vec::new).await
+    }
 }
 
 /// The owner. Holds the index and the only write path to the working tree.
@@ -208,6 +276,28 @@ pub struct Orchestrator {
     gates: Vec<Box<dyn ToolGate>>,
     /// The repository's rule documents, for the governance audit.
     rules: Vec<trellis_checks::governance::Rule>,
+    /// The tools this run offers. A call outside it is refused before any
+    /// gate is asked: a person should not be asked about a tool the run does
+    /// not have (ADR 0023).
+    tools: ToolSet,
+    /// `TRELLIS_RUN_ID` and `TRELLIS_MODEL`, for `bash` and custom tools.
+    env: Vec<(String, String)>,
+    /// Trusted hooks, for `post_tool`. `pre_tool` is a gate in `gates`.
+    hooks: Option<Hooks>,
+    /// Model calls served, for `GateDenial::call`.
+    calls: u32,
+    gate_log: Vec<GateDenial>,
+    /// Where `read_skill` looks beyond the repository, and a profile's
+    /// `[skills]` lists, enforced here because this is where the body is
+    /// served (ADR 0026 §4).
+    skills: crate::skills::SkillAccess,
+    /// Whether the call being served reached a write, for
+    /// [`may_change_tree`]. Reset at the start of every gated call.
+    wrote: bool,
+    /// Re-checks trust before a custom tool starts and after any call that
+    /// may have changed the tree (ADR 0023 §5). The same latch the hooks
+    /// hold, so a breach found by either ends the run.
+    guard: Option<crate::trust::TrustGuard>,
 }
 
 impl Orchestrator {
@@ -215,12 +305,63 @@ impl Orchestrator {
         Self {
             root: root.to_path_buf(),
             session: Session::open(root),
-            checks,
+            // Once per run, not per check spawn (review round 11).
+            checks: checks.for_run(root),
             touched: Vec::new(),
-            governance: GovernanceGate(crate::governance::Governance::default()),
+            governance: GovernanceGate::new(crate::governance::Governance::default(), root),
             gates: Vec::new(),
             rules: Vec::new(),
+            tools: ToolSet::default(),
+            env: Vec::new(),
+            hooks: None,
+            calls: 0,
+            gate_log: Vec::new(),
+            skills: crate::skills::SkillAccess::default(),
+            wrote: false,
+            guard: None,
         }
+    }
+
+    /// The trust guard for this run's trusted code: custom tools refuse to
+    /// start once it fails, and a call that may have changed the tree is
+    /// followed by a check, so a `bash` command that rewrote a hook ends the
+    /// run whether or not a hook runs after it.
+    #[must_use]
+    pub fn with_trust_guard(mut self, guard: crate::trust::TrustGuard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    /// User-level skill directories and an agent profile's skill lists, for
+    /// `read_skill`. The default reads the repository's skills only, with
+    /// no filter, which is what every run did before.
+    #[must_use]
+    pub fn with_skills(mut self, access: crate::skills::SkillAccess) -> Self {
+        self.skills = access;
+        self
+    }
+
+    /// The tool set this run offers; the same value the prompt was given.
+    #[must_use]
+    pub fn with_tools(mut self, tools: ToolSet) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Variables added to the environment of `bash` and custom tools.
+    #[must_use]
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Trusted hooks, whose `post_tool` observes every dispatched call. The
+    /// `pre_tool` gate is added with [`with_gate`](Self::with_gate), so its
+    /// place in the order is the caller's to see.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Hooks) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// Supplies the rule documents a governance audit evaluates.
@@ -233,7 +374,7 @@ impl Orchestrator {
     /// Applies the repository's rules to this run.
     #[must_use]
     pub fn with_governance(mut self, g: crate::governance::Governance) -> Self {
-        self.governance = GovernanceGate(g);
+        self.governance = GovernanceGate::new(g, &self.root);
         self
     }
 
@@ -290,7 +431,11 @@ impl Orchestrator {
                     let _ = reply.send(self.gated(call).await.result);
                 }
                 Request::Call { call, reply } => {
+                    self.calls += 1;
                     let _ = reply.send(self.gated(call).await);
+                }
+                Request::GateLog { reply } => {
+                    let _ = reply.send(self.gate_log.clone());
                 }
                 Request::Audit { reply } => {
                     let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance]).await);
@@ -306,11 +451,62 @@ impl Orchestrator {
         self
     }
 
+    /// [`gated_inner`](Self::gated_inner), with the trust guard read on the
+    /// way out, whichever way the call ended: a `pre_tool` hook refused by
+    /// the guard returns early as a denial, and that is a breach as much as
+    /// a `bash` command that rewrote a hook.
+    async fn gated(&mut self, call: ToolCall) -> Dispatched {
+        let mut d = self.gated_inner(call).await;
+        if let Some(g) = &self.guard {
+            if d.may_have_changed_tree {
+                // Latches on failure; the reason is read below.
+                let _ = g.check_async().await;
+            }
+            d.trust_breach = g.breach();
+        }
+        d
+    }
+
     /// Consults the gates in order, then dispatches. The first `Deny` wins
     /// and nothing after it is asked — a human should not be asked about a
     /// call a rule has already refused.
-    async fn gated(&mut self, call: ToolCall) -> Dispatched {
+    async fn gated_inner(&mut self, call: ToolCall) -> Dispatched {
         let mut human = None;
+        let name = tool_name(&call);
+        if !self.tools.enabled(name) {
+            return Dispatched {
+                result: ToolResult::Error(format!(
+                    "`{name}` is not a tool in this run; the tools are {}",
+                    self.tools.names().join(", ")
+                )),
+                human,
+                may_have_changed_tree: false,
+                trust_breach: None,
+            };
+        }
+        self.wrote = false;
+        // `pre_tool` and `post_tool` are repository code that runs around
+        // every call, the passing check included, and nothing stops either
+        // writing. The worktree is compared across each hook on its own,
+        // so a hook that writes marks the turn as one that may have changed
+        // the tree and the pass before it stops counting (ADR 0023, "after
+        // a pass"). Across the hooks and not the whole dispatch: the tool
+        // in between is classified by its kind (`may_change_tree`), and a
+        // bracket that included it made a checker's own `.coverage` or
+        // `__pycache__` void the pass it had just produced. Only when such
+        // a hook is declared: git calls per turn are a cost only a
+        // repository with hooks pays.
+        let (pre, post) = self.hooks.as_ref().map_or((false, false), |h| {
+            let c = h.config();
+            (c.pre_tool.is_some(), c.post_tool.is_some())
+        });
+        // The gate loop holds `pre_tool`; the other gates (governance, the
+        // bash policy, a person's approval) do not write.
+        let before_gates = if pre {
+            Some(worktree_digest(&self.root).await)
+        } else {
+            None
+        };
         for i in 0..=self.gates.len() {
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
@@ -326,23 +522,228 @@ impl Orchestrator {
                 });
             }
             if let GateDecision::Deny { reason } = decision {
+                if let Some(gate) = gate.name() {
+                    self.gate_log.push(GateDenial {
+                        call: self.calls,
+                        gate: gate.to_string(),
+                        target: crate::gate::label(&call),
+                        reason: reason.clone(),
+                    });
+                }
                 return Dispatched {
                     result: ToolResult::Error(reason),
                     human,
+                    may_have_changed_tree: changed_since(&self.root, before_gates).await,
+                    trust_breach: None,
                 };
             }
         }
+        let gates_changed = changed_since(&self.root, before_gates).await;
         let result = match &call {
             ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
             ToolCall::ReadFile { path } => self.read_file(path),
             ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
             ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
-            ToolCall::ReadSkill { name } => match crate::skills::read_body(&self.root, name) {
+            ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
                 Ok(body) => ToolResult::FileContent(body),
-                Err(e) => ToolResult::Error(e),
+                Err(e) => ToolResult::Error(e.to_string()),
             },
+            ToolCall::WriteFile { path, content } => self.write_file(path, content).await,
+            ToolCall::Grep { pattern, path } => match path.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => match read_refusal(&self.root, p) {
+                    Some(e) => ToolResult::Error(format!("grep refused: {e}")),
+                    None => crate::listing::grep(&self.root, pattern, Some(p)).await,
+                },
+                None => crate::listing::grep(&self.root, pattern, None).await,
+            },
+            ToolCall::Find { glob } => {
+                // The same predicate as every path: a `:` also rules out
+                // git's pathspec magic (`:/`, `:(top)`).
+                if unsafe_repo_path(glob).is_some() {
+                    ToolResult::Error(format!(
+                        "glob `{glob}` must be relative to the repository root, with no \
+                         leading `/` or `\\`, no drive letter or `:`, and no `..`"
+                    ))
+                } else {
+                    crate::listing::find(&self.root, glob).await
+                }
+            }
+            ToolCall::Ls { path } => match read_refusal(&self.root, path) {
+                Some(e) => ToolResult::Error(format!("ls refused: {e}")),
+                None => crate::listing::ls(&self.root.join(path), path),
+            },
+            ToolCall::Bash { command } => self.bash(command).await,
+            ToolCall::SearchNotes { query, limit } => match self.tools.notes() {
+                Some(n) => crate::notes::search(n, query, *limit),
+                None => ToolResult::Error("no note vault is configured for this run".into()),
+            },
+            ToolCall::ReadNote { note } => match self.tools.notes() {
+                Some(n) => crate::notes::read(n, note),
+                None => ToolResult::Error("no note vault is configured for this run".into()),
+            },
+            ToolCall::Custom { name, args } => self.custom(name, args).await,
         };
-        Dispatched { result, human }
+        // Observe only. The result is already decided and is what the model
+        // receives, whatever the hook prints or returns.
+        let mut post_changed = false;
+        if let Some(h) = &self.hooks {
+            let before_post = if post {
+                Some(worktree_digest(&self.root).await)
+            } else {
+                None
+            };
+            let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+            h.post_tool(&call, as_json).await;
+            post_changed = changed_since(&self.root, before_post).await;
+        }
+        Dispatched {
+            result,
+            human,
+            may_have_changed_tree: may_change_tree(&call, self.wrote)
+                || gates_changed
+                || post_changed,
+            trust_breach: None,
+        }
+    }
+
+    /// Creates a file that does not exist (ADR 0023 §2).
+    ///
+    /// Governance has already been consulted as a gate. What is checked here
+    /// is what makes "rollback removes it" true: the path must be new, must
+    /// not be inside `.git`, and must not be ignored by git, because
+    /// rollback's `git clean -fd` leaves ignored files where they are.
+    async fn write_file(&mut self, path: &str, content: &str) -> ToolResult {
+        if let Some(why) = write_refusal(&self.root, path) {
+            return ToolResult::Error(format!("write_file refused: {why}"));
+        }
+        let full = self.root.join(path);
+        if full.exists() {
+            return ToolResult::Error(format!(
+                "{path} already exists. write_file creates new files only; use edit to \
+                 change an existing one."
+            ));
+        }
+        if let Some(why) = ignored_refusal(&self.root, path).await {
+            return ToolResult::Error(format!("write_file refused: {why}"));
+        }
+        if let Some(dir) = full.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            return ToolResult::Error(format!("cannot create the directory for {path}: {e}"));
+        }
+        // `create_new`, not `write`: a file that appeared since the check
+        // above is not overwritten. `wrote` is set first, because a write
+        // that fails part way still leaves a file.
+        self.wrote = true;
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&full)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()));
+        if let Err(e) = written {
+            return ToolResult::Error(format!("cannot write {path}: {e}"));
+        }
+        if !self.touched.iter().any(|p| p == path) {
+            self.touched.push(path.to_string());
+        }
+        // A new Python file changes the module map, which `try_update`
+        // cannot do, so the session is reopened: a full rebuild, paid so the
+        // next blast radius describes the tree as it now is.
+        if path.ends_with(".py") {
+            self.session = Session::open(&self.root);
+        }
+        ToolResult::Output(format!(
+            "created {path} ({} bytes, {} lines)",
+            content.len(),
+            content.lines().count()
+        ))
+    }
+
+    async fn bash(&self, command: &str) -> ToolResult {
+        let Some(b) = self.tools.bash() else {
+            return ToolResult::Error("bash is not enabled in this run".into());
+        };
+        let mut argv = b.shell.clone();
+        argv.push(command.to_string());
+        let r = crate::exec::run(crate::exec::Spec {
+            argv: &argv,
+            cwd: &self.root,
+            env: &self.env,
+            stdin: None,
+            timeout: b.timeout,
+            cap: crate::exec::OUTPUT_CAP,
+            head: false,
+            whole: false,
+        })
+        .await;
+        match r {
+            Err(e) => ToolResult::Error(e.to_string()),
+            Ok(c) => {
+                let status = if c.timed_out {
+                    format!("timed out after {}s and was killed", b.timeout.as_secs())
+                } else {
+                    match c.code {
+                        Some(code) => format!("exit {code}"),
+                        None => "ended without an exit code".to_string(),
+                    }
+                };
+                let mut s = format!("{status}\n");
+                if !c.stdout.is_empty() {
+                    s.push_str(&c.stdout.render());
+                }
+                if !c.stderr.is_empty() {
+                    s.push_str("\nstderr:\n");
+                    s.push_str(&c.stderr.render());
+                }
+                // Not a verdict, and said where the model reads it: a
+                // command printing "tests passed" has passed nothing.
+                s.push_str("\n(bash output is an observation, not a check)");
+                ToolResult::Output(s)
+            }
+        }
+    }
+
+    async fn custom(&self, name: &str, args: &serde_json::Value) -> ToolResult {
+        let Some(tool) = self.tools.custom(name) else {
+            return ToolResult::Error(format!("`{name}` is not a tool in this run"));
+        };
+        // Its command is trusted code, and a script it names may have been
+        // rewritten since (ADR 0023 §5).
+        if let Some(g) = &self.guard
+            && let Err(why) = g.check_async().await
+        {
+            return ToolResult::Error(format!("`{name}` was not started, because {why}"));
+        }
+        let r = crate::exec::run(crate::exec::Spec {
+            argv: &tool.command,
+            cwd: &self.root,
+            env: &self.env,
+            stdin: Some(args.to_string().into_bytes()),
+            timeout: CUSTOM_TIMEOUT,
+            cap: crate::exec::OUTPUT_CAP,
+            head: false,
+            whole: false,
+        })
+        .await;
+        match r {
+            Err(e) => ToolResult::Error(e.to_string()),
+            Ok(c) if c.timed_out => ToolResult::Error(format!(
+                "`{name}` did not finish within {}s and was killed",
+                CUSTOM_TIMEOUT.as_secs()
+            )),
+            Ok(c) if c.code == Some(0) => ToolResult::Output(c.stdout.render()),
+            Ok(c) => ToolResult::Error(format!(
+                "`{name}` exited with {}: {}{}",
+                c.code
+                    .map_or_else(|| "no exit code".to_string(), |c| c.to_string()),
+                c.stdout.render(),
+                if c.stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nstderr:\n{}", c.stderr.render())
+                }
+            )),
+        }
     }
 
     pub fn index(&self) -> &trellis_index::Index {
@@ -385,8 +786,8 @@ impl Orchestrator {
 
     fn read_file(&self, path: &str) -> ToolResult {
         match self.resolve_in_repo(path) {
-            Err(e) => ToolResult::Error(e),
-            Ok(full) => match std::fs::read_to_string(&full) {
+            Err(e) => ToolResult::Error(format!("read_file refused: {e}")),
+            Ok(full) => match std::fs::read_to_string(full) {
                 Ok(s) => ToolResult::FileContent(s),
                 Err(e) => ToolResult::Error(format!("cannot read {path}: {e}")),
             },
@@ -405,10 +806,14 @@ impl Orchestrator {
     /// refused identically whether or not it exists — otherwise the refusal
     /// would leak which denied files are present.
     fn apply_edit(&mut self, path: &str, old: &str, new: &str) -> ToolResult {
-        let full = match self.resolve_in_repo(path) {
-            Ok(f) => f,
-            Err(e) => return ToolResult::Error(e),
-        };
+        // `.git/config` exists, so without this an edit could set
+        // `core.hooksPath` or rewrite a hook, and rollback — git's own
+        // reset — does not restore git's own directory. `.trellis/` holds
+        // the hooks, rules and checks that judge this run.
+        if let Some(why) = write_refusal(&self.root, path) {
+            return ToolResult::Error(format!("edit refused: {why}"));
+        }
+        let full = self.root.join(path);
         let src = match std::fs::read_to_string(&full) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -528,6 +933,9 @@ impl Orchestrator {
             updated
         };
 
+        // Set before the write, not after it succeeds: a write that fails
+        // part way has still changed the file.
+        self.wrote = true;
         if let Err(e) = std::fs::write(&full, &updated) {
             return ToolResult::Error(format!("cannot write {path}: {e}"));
         }
@@ -618,22 +1026,172 @@ impl Orchestrator {
         ToolResult::Error("no check kinds requested".into())
     }
 
-    /// Rejects anything that escapes the repository root.
-    ///
-    /// The model proposes these paths and the grammar guarantees only that
-    /// they are well-formed strings (S7 metric 3). `..` is the cheap way a
-    /// well-formed path becomes a write outside the tree the rollback covers.
+    /// `rel` under the root, for reading, or why it may not be read
+    /// ([`read_refusal`]).
     fn resolve_in_repo(&self, rel: &str) -> Result<PathBuf, String> {
-        let p = Path::new(rel);
-        if p.is_absolute() || p.components().any(|c| c.as_os_str() == "..") {
-            return Err(format!(
-                "path `{rel}` must be relative to the repository root and must not \
-                 contain `..`"
-            ));
+        match read_refusal(&self.root, rel) {
+            Some(why) => Err(why),
+            None => Ok(self.root.join(rel)),
         }
-        Ok(self.root.join(p))
     }
 }
+
+/// Why `write_file` may not create `rel` because git ignores it, or
+/// `None`. Rollback's `git clean -fd` leaves ignored files, so a file
+/// created there would outlive a run that did not converge.
+///
+/// `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on a
+/// fatal error. Only a 1 lets the write go ahead: a check that could not be
+/// made is not a "no", and reading it as one wrote files a rollback's `git
+/// clean` might never remove. Fail closed. The approval gate's prediction
+/// of `write_file` asks this same function, so a write the orchestrator
+/// refuses is not first put to a person.
+pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
+    // Overrides and key scrub come with the constructor.
+    let mut git = tokio::process::Command::from(trellis_vcs::command());
+    git.args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(rel)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let status = git.status().await;
+    match status.as_ref().map(|s| s.code()) {
+        Ok(Some(1)) => None,
+        Ok(Some(0)) => Some(format!(
+            "`{rel}` is ignored by git, so a rollback could not remove it. Choose a path \
+             git tracks."
+        )),
+        other => {
+            let why = match other {
+                Err(e) => format!("git could not be started: {e}"),
+                Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
+                Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
+            };
+            Some(format!(
+                "could not ask git whether `{rel}` is ignored ({why}), and a file git \
+                 ignores would survive a rollback. Nothing was written."
+            ))
+        }
+    }
+}
+
+/// Defined in `trellis-core`, where the binary's prompt-input reader uses
+/// the same predicate.
+pub(crate) use trellis_core::paths::names_git_dir;
+
+/// Whether `rel` names trellis's own directory, `.trellis/` at the root,
+/// by any spelling that resolves to it: its first component (after any
+/// `.`) compared case-insensitively, after the trailing dots and spaces
+/// Windows strips, and including the 8.3 short name `TRELLI~n` Windows
+/// gives a dot-leading name. Only the first component: a nested
+/// `app/.trellis/` is not the one trellis reads.
+///
+/// The one predicate for "under `.trellis/`" (ADR 0023 §5): the model's
+/// `edit` and `write_file`, the approval gate's prediction of them, and a
+/// process agent's breach test all use it.
+pub fn names_trellis_dir(rel: &str) -> bool {
+    let Some(first) = rel
+        .split(['/', '\\'])
+        .find(|seg| !seg.is_empty() && *seg != ".")
+    else {
+        return false;
+    };
+    let s = first.trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    s == ".trellis"
+        || s.strip_prefix("trelli~")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `rel` as it really lands, through any link on the way: the canonical
+/// form of its nearest existing ancestor, relative to the canonical root,
+/// with the part that does not exist yet appended as written. `Err` when
+/// that ancestor is outside the repository: a committed link to `/etc` or
+/// to `~` is a path the string rules cannot see.
+pub(crate) fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
+    let Ok(real_root) = std::fs::canonicalize(root) else {
+        return Ok(rel.to_string());
+    };
+    let mut at = root.join(rel);
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&at) {
+            let Ok(inside) = real.strip_prefix(&real_root) else {
+                return Err(format!(
+                    "`{rel}` leads outside the repository, through a link"
+                ));
+            };
+            let mut p = inside.to_path_buf();
+            for t in tail.iter().rev() {
+                p.push(t);
+            }
+            return Ok(p.to_string_lossy().replace('\\', "/"));
+        }
+        match (at.file_name().map(|n| n.to_os_string()), at.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                at = parent.to_path_buf();
+            }
+            _ => return Ok(rel.to_string()),
+        }
+    }
+}
+
+/// Why the model may not read or list `rel`, or `None`: a path outside the
+/// repository, or git's own directory by any spelling or through any link.
+///
+/// The model proposes these paths and the grammar guarantees only that
+/// they are well-formed strings (S7 metric 3). `..` is the cheap way a
+/// well-formed path becomes a write outside the tree the rollback covers,
+/// and a committed link the less cheap one.
+/// `.git/config` can hold a remote URL with a credential in it, and an
+/// observation goes into a hosted request body and the committed trail.
+pub(crate) fn read_refusal(root: &Path, rel: &str) -> Option<String> {
+    if let Some(why) = unsafe_repo_path(rel) {
+        return Some(why);
+    }
+    match real_rel(root, rel) {
+        Err(why) => Some(why),
+        Ok(real) if names_git_dir(rel) || names_git_dir(&real) => {
+            Some(format!("`{rel}` is inside .git"))
+        }
+        Ok(_) => None,
+    }
+}
+
+/// Why the model may not write at `rel`, or `None`. The one predicate
+/// `edit`, `write_file` and the approval gate's prediction of them share,
+/// so a call the gate lets through unasked is one the orchestrator
+/// refuses: outside the repository, inside `.git` (rollback is git's own
+/// reset and does not restore git's directory), or under `.trellis/`,
+/// which holds the hooks, rules and checks that judge the run — by any
+/// spelling, and through any link.
+pub(crate) fn write_refusal(root: &Path, rel: &str) -> Option<String> {
+    if let Some(why) = read_refusal(root, rel) {
+        return Some(why);
+    }
+    let real = real_rel(root, rel).unwrap_or_else(|_| rel.to_string());
+    if names_trellis_dir(rel) || names_trellis_dir(&real) {
+        return Some(format!(
+            "`{rel}` is under .trellis/, which holds the hooks, rules and checks that judge \
+             this run. Nothing a run does may change them."
+        ));
+    }
+    None
+}
+
+/// Why `rel` cannot be used as a path inside the repository, or `None`.
+///
+/// Shared with the approval gate, which lets through (unasked) any call it
+/// predicts the orchestrator will refuse: a gate and an orchestrator that
+/// disagreed would skip the person on a call that then ran. Defined in
+/// `trellis-core`, where the binary's prompt-template names obey it too;
+/// the rules it applies are documented there.
+pub(crate) use trellis_core::paths::unsafe_repo_path;
+
+/// How long a custom tool may run. The same default as `bash`: a custom
+/// tool is a command the repository wrote, and it is bounded like one.
+const CUSTOM_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How many lines of a file a failed anchor is allowed to quote back.
 ///
@@ -679,6 +1237,32 @@ fn excerpt(src: &str) -> String {
         out.push_str("\n...cut here; the rest of this file is too large to show.");
     }
     out
+}
+
+/// The worktree digest around a hook (ADR 0023, "after a pass"), off the
+/// async runtime: it is two blocking git processes, and on the runtime's
+/// own thread it stalled every other task for their duration. `None` when
+/// it could not be taken, a panicked blocking task included.
+async fn worktree_digest(root: &Path) -> Option<String> {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || trellis_vcs::worktree_digest(&root).ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Whether the worktree changed since `before`, which is `None` when no
+/// hook was bracketed. A digest that could not be taken on either side
+/// counts as a change: the guard fails closed, because "could not tell" is
+/// not "unchanged".
+async fn changed_since(root: &Path, before: Option<Option<String>>) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    match (before, worktree_digest(root).await) {
+        (Some(b), Some(a)) => a != b,
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -1272,5 +1856,46 @@ scope = [\"{scope}\"]
 
         // A `.` component is not an escape.
         assert!(o.resolve_in_repo("./app/util.py").is_ok());
+    }
+
+    #[test]
+    fn rooted_and_drive_relative_paths_are_refused_on_every_platform() {
+        // The risk: on Windows `/x`, `\x` and `C:x` are not `is_absolute()`,
+        // and `root.join` of any of them leaves the repository — `/x` and
+        // `\x` to the root of the drive, `C:x` to drive C's current
+        // directory. Asserted on every platform, because the rule is on the
+        // string, not on how this host happens to read it.
+        let d = repo();
+        let o = Orchestrator::new(d.path(), CheckConfig::default());
+        for bad in [
+            "/x",
+            r"\x",
+            "C:x",
+            r"C:\x",
+            "c:/x",
+            r"\\server\share\x",
+            r"\\?\C:\x",
+            "app\\..\\..\\x",
+            "app/.. /x",
+            "app/../x",
+            "a.py:stream",
+        ] {
+            assert!(
+                o.resolve_in_repo(bad).is_err(),
+                "`{bad}` must be refused as a repository path"
+            );
+            assert!(
+                unsafe_repo_path(bad).is_some(),
+                "`{bad}`: the predicate the approval gate shares must agree"
+            );
+        }
+        for ok in [
+            "app/util.py",
+            "./app/util.py",
+            "a/b.c/d.py",
+            "..hidden/x.py",
+        ] {
+            assert!(unsafe_repo_path(ok).is_none(), "`{ok}` is ordinary");
+        }
     }
 }

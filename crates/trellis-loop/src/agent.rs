@@ -53,6 +53,47 @@ pub enum ToolCall {
     ReadSkill {
         name: String,
     },
+    /// Create a file that does not exist yet (ADR 0023). Refused for an
+    /// existing path, which is `Edit`'s job.
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    /// `git grep -n -e <pattern> -- <path>`. Read-only.
+    Grep {
+        pattern: String,
+        path: Option<String>,
+    },
+    /// Repository files matching a glob. Read-only.
+    Find {
+        glob: String,
+    },
+    /// One directory's entries. Read-only.
+    Ls {
+        path: String,
+    },
+    /// A shell command. Off unless `[tools] bash = true`, and never a
+    /// verdict whatever it prints or returns.
+    Bash {
+        command: String,
+    },
+    /// BM25 search over the repository's note vault (ADR 0024 §6).
+    /// Read-only; offered only when `[context] vault` is configured.
+    SearchNotes {
+        query: String,
+        limit: Option<u32>,
+    },
+    /// One vault note's text, by stem, path or title. Reference material,
+    /// like `ReadSkill`.
+    ReadNote {
+        note: String,
+    },
+    /// A repository's own tool (`[[tools.custom]]`), loaded only when
+    /// trusted. `args` is the flat object the model sent, less `tool`.
+    Custom {
+        name: String,
+        args: serde_json::Value,
+    },
 }
 
 /// The model's move.
@@ -98,6 +139,14 @@ pub struct Turn {
     /// the same reason as `radius_counts`: the trail records it as a fact,
     /// and a fact re-parsed from text rendered for a model is not one.
     pub human: Option<bool>,
+    /// Whether this turn may have changed the working tree: an applied
+    /// edit, a created file, any `bash` or custom tool that ran, or a hook
+    /// around the call that changed the worktree. A pass earlier than such a
+    /// turn describes a tree that no longer exists, so
+    /// [`Transcript::last_check_passed`] stops at it. Decided by the
+    /// orchestrator ([`crate::orchestrator::may_change_tree`]), which is
+    /// conservative: anything not known to be read-only counts.
+    pub may_have_changed_tree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +176,53 @@ pub enum NotConverged {
     GovernanceViolation {
         detail: String,
     },
+    /// A check passed, and then something that may have changed the tree
+    /// ran: an edit, a created file, `bash`, a custom tool, or a hook. The
+    /// pass describes a tree that no longer exists. Separate from
+    /// `StoppedWithoutPassingChecks` because the next move differs: run the
+    /// check again, rather than make it pass.
+    ChangedAfterLastCheck {
+        summary: String,
+    },
+    /// The run converged, and the `after_run` hook then changed the
+    /// worktree. The hook's bytes were never checked, so the change as a
+    /// whole is not a converged one (ADR 0023, "after a pass"). Constructed
+    /// by the binary, which is what runs `after_run`.
+    ///
+    /// `detail` names what the guard saw: the paths that differ, or why the
+    /// worktree could not be fingerprinted. The two call for different
+    /// fixes, and a demotion that cannot say which is one nobody can act on.
+    AfterRunChangedTree {
+        detail: String,
+    },
+    /// Trusted code — a hook's script, a custom tool's, anything under
+    /// `.trellis/`, the configuration naming them — no longer matched what
+    /// the person trusted, found before a spawn or after a call that may
+    /// have changed the tree (ADR 0023 §5). The spawn was refused and the
+    /// run ends: a `pre_tool` gate rewritten mid-run is not the gate that
+    /// was trusted, and the change is rolled back with the rest.
+    TrustChanged {
+        detail: String,
+    },
+    /// The run converged, and a file under `.git/` that can run code at
+    /// the next git command had changed: the config (`core.fsmonitor`,
+    /// `core.hooksPath`), a file it includes, a hook, or `info/`. `git
+    /// status` does not show it and a review of the diff would not see it,
+    /// so it is never part of a converged change; it was put back and the
+    /// run rolled back. Constructed by the binary, which holds the guard.
+    GitDirChanged {
+        detail: String,
+    },
+    /// The run converged, and `HEAD` was no longer the commit and branch
+    /// recorded before it: `bash`, a custom tool or a hook committed,
+    /// reset or checked out. Committed work is invisible to `git status`,
+    /// so the change left for review would not hold it, and the write
+    /// rules never judged it (review round 10). Rolled back, which puts
+    /// `HEAD` back on the recorded branch. Constructed by the binary, which
+    /// holds the snapshot.
+    HeadMoved {
+        detail: String,
+    },
 }
 
 impl NotConverged {
@@ -147,6 +243,50 @@ impl NotConverged {
                 "orchestrator that is gone has written nothing."
             )
             .to_string(),
+            NotConverged::ChangedAfterLastCheck { summary } => format!(
+                concat!(
+                    "a check passed, and then the tree changed (an edit, a new file, ",
+                    "a command or a hook) with no check after it. Its own summary was: ",
+                    "{}. Nothing was accepted: a pass describes the tree it ran ",
+                    "against, and that tree no longer exists."
+                ),
+                summary
+            ),
+            NotConverged::AfterRunChangedTree { detail } => format!(
+                concat!(
+                    "the run converged, and then the working tree could not be shown ",
+                    "to be unchanged by the after_run hook ({}). No check saw those ",
+                    "bytes, so nothing was accepted and the whole change was rolled ",
+                    "back. An after_run hook observes; it must not write in the worktree."
+                ),
+                detail
+            ),
+            NotConverged::TrustChanged { detail } => format!(
+                concat!(
+                    "{}. Trusted code was changed during the run, so no further hook ",
+                    "or custom tool was started and nothing was accepted. A run may ",
+                    "not change what judges it; if the change was meant, make it ",
+                    "yourself and run `trellis trust` again."
+                ),
+                detail
+            ),
+            NotConverged::GitDirChanged { detail } => format!(
+                concat!(
+                    "the checks passed, and the run changed {}, under .git/, where ",
+                    "git runs code from at its next command and a diff does not show. ",
+                    "A run may not; it was put back and nothing was accepted."
+                ),
+                detail
+            ),
+            NotConverged::HeadMoved { detail } => format!(
+                concat!(
+                    "the checks passed, and {} during the run (a commit, reset or ",
+                    "checkout). A run may not move HEAD: a committed change is not in ",
+                    "the diff left for review, and the write rules never saw it. ",
+                    "HEAD was put back and nothing was accepted."
+                ),
+                detail
+            ),
             NotConverged::GovernanceViolation { detail } => format!(
                 concat!(
                     "the checks passed and a project rule was broken, so the ",
@@ -248,6 +388,15 @@ pub struct RepoContext {
     pub skills: Vec<crate::skills::Skill>,
     /// Valid skills left off the list by the cap, stated in the prompt.
     pub skills_omitted: usize,
+    /// The tools this run offers (ADR 0023). Not self-description, so not
+    /// part of `is_empty`: it is carried here because the prompt, the
+    /// schema and the parser all read the transcript, and one value handed
+    /// to all three cannot disagree with itself. The orchestrator holds the
+    /// same set and is what refuses a call outside it.
+    pub tools: crate::registry::ToolSet,
+    /// Context files, system prompt files and forced skills (ADR 0025).
+    /// Informs; never a turn, so it cannot satisfy the convergence test.
+    pub extra: crate::extra_context::ExtraContext,
 }
 
 impl RepoContext {
@@ -263,6 +412,7 @@ impl RepoContext {
             && self.rules.is_empty()
             && self.skills.is_empty()
             && self.skills_omitted == 0
+            && self.extra.fence_is_empty()
     }
 }
 
@@ -308,16 +458,48 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    /// Whether the most recent executed check passed.
+    /// Whether the most recent executed check passed **and nothing that may
+    /// have changed the tree happened after it**.
     ///
     /// Deliberately "most recent" rather than "any": a check that passed
     /// before the last edit says nothing about the tree as it stands now.
+    /// Walking back from the end, a verdict answers; a turn that may have
+    /// changed the tree before any verdict is reached answers `false`. The
+    /// first version skipped every verdict-less turn, so pass, edit, done
+    /// converged on bytes no check had seen.
     pub fn last_check_passed(&self) -> bool {
-        self.turns
-            .iter()
-            .rev()
-            .find_map(|t| t.verdict_passed)
-            .unwrap_or(false)
+        for t in self.turns.iter().rev() {
+            // Before the verdict, on purpose. A check is not a tree-changing
+            // kind, and the worktree is fingerprinted around each hook
+            // alone, never around the check itself, so on a check's own
+            // turn the flag comes only from `pre_tool` or `post_tool`
+            // having changed the tree; what the checker itself leaves
+            // (`.coverage`, `__pycache__`) does not set it. `post_tool` runs
+            // after the check, and one flag cannot say which side of the
+            // verdict a hook wrote on, so a hook that writes on a check's
+            // turn voids that check. Hooks observe and gate; they do not
+            // write.
+            if t.may_have_changed_tree {
+                return false;
+            }
+            if let Some(v) = t.verdict_passed {
+                return v;
+            }
+        }
+        false
+    }
+
+    /// Whether a pass exists that a later tree-changing turn invalidated.
+    /// Only for the explanation: the user's next move is "run the check
+    /// again", not "make it pass".
+    fn pass_went_stale(&self) -> bool {
+        let Some(last_verdict) = self.turns.iter().rposition(|t| t.verdict_passed.is_some()) else {
+            return false;
+        };
+        self.turns[last_verdict].verdict_passed == Some(true)
+            && self.turns[last_verdict..]
+                .iter()
+                .any(|t| t.may_have_changed_tree)
     }
 }
 
@@ -340,6 +522,7 @@ fn call_label(call: &ToolCall) -> String {
             format!("run_checks {kinds:?} {what}")
         }
         ToolCall::ReadSkill { name } => format!("read_skill {name}"),
+        other => crate::gate::label(other),
     }
 }
 
@@ -378,6 +561,13 @@ pub trait Model {
     /// measurements.
     fn prompt_bytes(&self) -> Option<usize> {
         None
+    }
+
+    /// Every compaction so far (ADR 0024 §5), for the trail and the run's
+    /// output. Empty for a driver that never elides, which is every driver
+    /// with no `[model] context_bytes` and every scripted one.
+    fn compactions(&self) -> &[crate::adapter::Compacted] {
+        &[]
     }
 }
 
@@ -525,6 +715,7 @@ pub async fn run_seeded<M: Model>(
                             radius_counts: None,
                             prompt_bytes: None,
                             human: None,
+                            may_have_changed_tree: false,
                         });
                         if !v.passed() {
                             return (
@@ -547,13 +738,12 @@ pub async fn run_seeded<M: Model>(
                         t,
                     )
                 } else {
-                    (
-                        Outcome::NotConverged {
-                            reason: NotConverged::StoppedWithoutPassingChecks { summary },
-                            iterations,
-                        },
-                        t,
-                    )
+                    let reason = if t.pass_went_stale() {
+                        NotConverged::ChangedAfterLastCheck { summary }
+                    } else {
+                        NotConverged::StoppedWithoutPassingChecks { summary }
+                    };
+                    (Outcome::NotConverged { reason, iterations }, t)
                 };
             }
             Step::Call(call) => {
@@ -561,7 +751,12 @@ pub async fn run_seeded<M: Model>(
                 // Read before dispatch: it describes the prompt that produced
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
-                let crate::orchestrator::Dispatched { result, human } = orch.call(&call).await;
+                let crate::orchestrator::Dispatched {
+                    result,
+                    human,
+                    may_have_changed_tree,
+                    trust_breach,
+                } = orch.call(&call).await;
                 if let Some(h) = human {
                     waited_on_human += h.waited;
                 }
@@ -663,7 +858,21 @@ pub async fn run_seeded<M: Model>(
                     radius_counts,
                     prompt_bytes,
                     human,
+                    may_have_changed_tree,
                 });
+
+                // After the turn is recorded, so the trail shows the call
+                // on which trust broke and what it was told.
+                if let Some(detail) = trust_breach {
+                    tracing::warn!(%detail, "trusted code changed mid-run; stopping");
+                    return (
+                        Outcome::NotConverged {
+                            reason: NotConverged::TrustChanged { detail },
+                            iterations,
+                        },
+                        t,
+                    );
+                }
 
                 if repeats >= NO_PROGRESS_REPEATS {
                     // `repeated_call` rather than `call`: a field named `call` is what
@@ -760,6 +969,7 @@ fn render(call: &ToolCall, r: &ToolResult) -> String {
             "edited {} (applied: {}, bytes {}..{})",
             e.path, e.applied, e.span.0, e.span.1
         ),
+        ToolResult::Output(s) => s.clone(),
         ToolResult::Error(e) => format!("error: {e}"),
     }
 }
@@ -1976,6 +2186,7 @@ rank = \"non-negotiable\"
                     radius_counts: None,
                     prompt_bytes: None,
                     human: None,
+                    may_have_changed_tree: false,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -1985,6 +2196,7 @@ rank = \"non-negotiable\"
                     radius_counts: None,
                     prompt_bytes: None,
                     human: None,
+                    may_have_changed_tree: false,
                 },
             ],
             final_notice: false,

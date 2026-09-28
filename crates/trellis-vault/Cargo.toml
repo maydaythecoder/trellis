@@ -16,9 +16,20 @@ publish = false
 # serde_json is here for two things the TypeScript twin gets from
 # `JSON.parse`: the manifest array, and unescaping a quoted title. Parsing
 # JSON string escapes by hand would be a second JSON parser to keep in step.
+#
+# serde (derive) reads `dates.json` with unknown fields rejected at every
+# level, as Apex's `#[serde(deny_unknown_fields)]` does (ADR 0022 §5).
+#
+# unicode-normalization: Apex's `slugify` and search fold text through
+# `normalize("NFKD")` before stripping combining marks. Without it `Café`
+# slugs to `caf` here and `cafe` there, and an alias resolves in one tool and
+# not the other (ADR 0022). Declared here rather than in the workspace table
+# because nothing else uses it.
 [dependencies]
 thiserror.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 tempfile.workspace = true

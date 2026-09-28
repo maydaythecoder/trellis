@@ -14,15 +14,31 @@
 
 mod ask;
 mod config;
+mod hosted;
+mod orchestrate;
+mod process_agent;
 mod session;
 #[cfg(test)]
 mod testutil;
+mod tooling;
+mod trust_cmd;
 mod tui_bridge;
 mod tui_run;
+mod vault_cmd;
 mod work;
+// ADR 0025 (W-D).
+mod context_files;
+mod output;
+mod rpc;
+mod session_extra;
+mod templates;
+mod user_config;
+// Integration across waves (doctor's report of the inputs above).
+mod doctor_extra;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -45,6 +61,15 @@ struct Cli {
     /// adding a field to either.
     #[arg(long, global = true, value_name = "PATH")]
     log_json: Option<PathBuf>,
+
+    /// Write JSONL to stdout: the same events `--log-json` writes, between
+    /// a `run_start` and a `run_end` record. Human text goes to stderr.
+    /// For `run`, `work` and `log` (ADR 0025 §4).
+    ///
+    /// Global for the reason `--log-json` is: it reaches `work` without a
+    /// field in its arguments. Refused by name on any other command.
+    #[arg(long, global = true)]
+    json: bool,
 
     /// Omit to enter an interactive session.
     #[command(subcommand)]
@@ -122,6 +147,17 @@ enum Command {
         /// standing instruction with a specific ask after it.
         #[arg(long)]
         prompt: Option<String>,
+        /// Arguments for the `--prompt` template, as one string split
+        /// shell-style: `--args '"app/x.py" strict'` gives `$1` and `$2`.
+        ///
+        /// One string rather than a repeated flag so the session and `rpc`,
+        /// which also receive one string, split it the same way (ADR 0025).
+        #[arg(long, requires = "prompt", value_name = "STRING")]
+        args: Option<String>,
+        /// Load this skill's body into the run's context, rather than waiting
+        /// for the model to ask for it. Repeatable. Informs; never binds.
+        #[arg(long, value_name = "NAME")]
+        skill: Vec<String>,
         /// Compile this note from the `[context] vault` and show it to the
         /// model, overriding `[context] focus`.
         ///
@@ -223,7 +259,8 @@ enum Command {
         action: Option<ModelAction>,
     },
 
-    /// Add, list or requeue tasks for `trellis work` (ADR 0020).
+    /// Add, list, change, approve and export tasks for `trellis work`
+    /// (ADR 0020, ADR 0026).
     ///
     /// The queue lives in the git directory, so it never dirties the
     /// worktree and survives a rollback.
@@ -237,6 +274,46 @@ enum Command {
     /// Stops at the first converged change, which waits for review; never
     /// claims a task while the worktree is dirty.
     Work(work::WorkArgs),
+
+    /// Check, search, inspect and edit an Apex-format note vault (ADR 0022).
+    ///
+    /// Prints Apex's report line; writes notes with exactly two frontmatter
+    /// keys and keeps manifest.json, layout.json and dates.json in step.
+    Vault(vault_cmd::VaultArgs),
+
+    /// Show what this repository's hooks, custom tools and bash settings
+    /// would execute, and trust them (ADR 0023).
+    ///
+    /// Trust is kept outside the repository and covers a digest of every
+    /// definition and every file they name; any change undoes it.
+    Trust {
+        /// Show what would run and whether it is trusted; record nothing.
+        #[arg(long, conflicts_with = "revoke")]
+        show: bool,
+        /// Forget this repository's trust.
+        #[arg(long)]
+        revoke: bool,
+    },
+
+    /// Agent profiles in .trellis/agents/: list, show, pause, resume
+    /// (ADR 0026).
+    Agents {
+        #[command(subcommand)]
+        action: orchestrate::AgentsAction,
+    },
+
+    /// Scheduled tasks in .trellis/routines/: list, or fire one now
+    /// (ADR 0026). `work` fires them when due.
+    Routines {
+        #[command(subcommand)]
+        action: orchestrate::RoutinesAction,
+    },
+
+    /// JSONL commands on stdin, responses and events on stdout (ADR 0025 §5).
+    ///
+    /// `prompt` runs a task exactly as `trellis run` does. One run at a
+    /// time; the clean-worktree rule is unchanged. Human text goes to stderr.
+    Rpc,
 }
 
 #[derive(Subcommand)]
@@ -298,10 +375,43 @@ fn main() -> Result<()> {
         }
         None => None,
     };
+    // ADR 0025 §4: `--json` and `rpc` make stdout the JSON channel. Checked
+    // before anything prints, and refused by name where it would do nothing.
+    let is_rpc = matches!(cli.command, Some(Command::Rpc));
+    if cli.json
+        && !matches!(
+            cli.command,
+            Some(Command::Run { .. } | Command::Work(_) | Command::Log { .. })
+        )
+    {
+        anyhow::bail!("--json applies to `run`, `work` and `log`; `rpc` always writes JSON");
+    }
+    output::set_json(cli.json || is_rpc);
+    // Per-layer filters rather than one global one: the stdout event layer
+    // has a fixed `trellis=info` so a `RUST_LOG` meant for debugging cannot
+    // change what a machine reader receives. `RUST_LOG` still governs the
+    // human stream and `--log-json`, exactly as before.
+    use tracing_subscriber::Layer;
+    let stdout_json = output::json().then(|| {
+        tracing_subscriber::fmt::layer()
+            .json()
+            .with_ansi(false)
+            .with_writer(std::io::stdout)
+            .with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("trellis", tracing::Level::INFO),
+            )
+    });
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_target(false))
-        .with(json)
-        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_writer(output::human)
+                .with_filter(filter.clone()),
+        )
+        .with(json.map(|l| l.with_filter(filter)))
+        .with(stdout_json)
+        .with(is_rpc.then(rpc::TurnCapture::default))
         .init();
 
     let explicit = cli.root.is_some();
@@ -315,7 +425,12 @@ fn main() -> Result<()> {
     // Every other command refusing is deliberate. `trellis index` in a home
     // folder once walked 25,147 files before anyone could tell it had not
     // found a repository.
-    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }));
+    //
+    // `vault init` joins them for the same reason (ADR 0022 §3, integrated):
+    // it creates a vault, possibly before there is a repository to hold it.
+    // Every other `vault` action still reads one.
+    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }))
+        && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -324,6 +439,16 @@ fn main() -> Result<()> {
             Err(e) => return Err(e.context("cannot determine the repository root")),
         },
     };
+    // ADR 0024 §3: every `key_env` in the effective configuration, the
+    // user's file included, is removed from each child process trellis
+    // starts. Before any command runs, so no spawn precedes it. A config that
+    // does not load registers nothing here; the command reports that itself,
+    // and the two built-in key variables are removed regardless.
+    if let Ok(cfg) = config::RepoConfig::load(&root) {
+        trellis_core::secrets::register_key_vars(
+            cfg.providers.iter().flatten().map(|p| p.key_env.as_str()),
+        );
+    }
     // Say which tree is about to be read whenever it was inferred.
     //
     // Both directions are surprises worth naming. Acting on a directory
@@ -332,7 +457,12 @@ fn main() -> Result<()> {
     // be a home folder — `trellis index` there walked 1,295 files before
     // anyone could tell it had not found a repository.
     if !explicit && root != std::env::current_dir().unwrap_or_default() {
-        println!("root:     {} (repository root)", root.display());
+        // To the human stream: under `--json` stdout is JSONL only.
+        let _ = writeln!(
+            output::human(),
+            "root:     {} (repository root)",
+            root.display()
+        );
     }
 
     let Some(command) = cli.command else {
@@ -347,7 +477,7 @@ fn main() -> Result<()> {
         let spec = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            return tui_run::run(&root, None, spec);
+            return tui_run::run(&root, None, spec, false);
         }
         return session::Session::open(&root, None)?.run();
     };
@@ -364,7 +494,7 @@ fn main() -> Result<()> {
             // that did not look.
             let configured = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
             let spec = model.as_deref().map(str::to_string).or(configured);
-            cmd_doctor(&root, spec.as_deref())
+            cmd_doctor(&root, spec.as_deref(), model.is_some())
         }
         Command::Check { paths } => cmd_check(&root, paths),
         Command::Radius { symbol } => cmd_radius(&root, &symbol),
@@ -375,6 +505,8 @@ fn main() -> Result<()> {
             agents,
             resume,
             prompt,
+            args,
+            skill,
             focus,
             approve,
             auto,
@@ -390,7 +522,8 @@ fn main() -> Result<()> {
             }
             let task = match &prompt {
                 Some(name) => {
-                    let template = config::RepoConfig::prompt(&root, name)?;
+                    // ADR 0025 §3: frontmatter stripped, `--args` substituted.
+                    let template = templates::render(&root, name, args.as_deref())?;
                     if task.trim().is_empty() {
                         template
                     } else {
@@ -403,18 +536,22 @@ fn main() -> Result<()> {
                 }
                 None => task,
             };
-            let model = model
-                .or_else(|| config::RepoConfig::load(&root).ok()?.model())
-                .context(
+            let model_from_user = model.is_some();
+            // A config that fails to load says why, rather than reading as
+            // "no model": the refusal may be the point (ADR 0024 §3).
+            let model = match model {
+                Some(m) => m,
+                None => config::RepoConfig::load(&root)?.model().context(
                     "no model. Pass --model, or set [model] spec in \
                      .trellis/config.toml",
-                )?;
+                )?,
+            };
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
                 (_, true) => Some(config::ControlMode::Auto),
                 _ => None,
             };
-            let exit = cmd_run(
+            let exit = cmd_run_with(
                 &root,
                 &task,
                 &model,
@@ -422,12 +559,18 @@ fn main() -> Result<()> {
                 RunSeeding {
                     resume,
                     focus: focus.as_deref(),
+                    profile: None,
+                    model_from_user,
                 },
                 RunControl {
                     flag,
                     human: Human::terminal(),
                 },
-                &mut std::io::stdout(),
+                output::RunExtras {
+                    skills: skill,
+                    ..output::RunExtras::default()
+                },
+                &mut output::human(),
             )?;
             // The one place that decides the process ends, because this is
             // the one caller that *is* the process.
@@ -439,10 +582,14 @@ fn main() -> Result<()> {
         Command::Session => session::Session::open(&root, None)?.run(),
         Command::Init => cmd_init(&root),
         Command::Tui { task, model } => {
+            let from_user = model.is_some();
             let spec = model.or_else(|| config::RepoConfig::load(&root).ok()?.model());
-            tui_run::run(&root, task, spec)
+            tui_run::run(&root, task, spec, from_user)
         }
         Command::Resume => cmd_resume(&root),
+        Command::Log { limit, .. } if output::json() => {
+            output::log_json(&root, limit, &mut std::io::stdout())
+        }
         Command::Log { limit, actions } => cmd_log(&root, limit, actions),
         Command::Why { symbol } => cmd_why(&root, &symbol),
         // Takes no root at all: models are user state, not repository state.
@@ -451,13 +598,41 @@ fn main() -> Result<()> {
         Command::Model { action } => cmd_models(action),
         Command::Partitions { symbols } => cmd_partitions(&root, &symbols),
         Command::Queue { action } => work::queue(&root, action),
+        Command::Agents { action } => orchestrate::agents(&root, action),
+        Command::Routines { action } => orchestrate::routines(&root, action),
         Command::Work(args) => {
-            let code = work::work(&root, args)?;
+            // ADR 0025 §4: each task's run brackets itself; these bracket
+            // the invocation, so a reader knows when `work` itself is done.
+            let frames = output::json().then(output::stdout_sink);
+            if let Some(s) = &frames {
+                output::frame(s, &serde_json::json!({"type": "work_start", "version": 1}));
+            }
+            let result = work::work(&root, args);
+            if let Some(s) = &frames {
+                output::frame(
+                    s,
+                    &match &result {
+                        Ok(code) => serde_json::json!({"type": "work_end", "exit": code}),
+                        Err(e) => serde_json::json!({
+                            "type": "work_end", "exit": 1, "error": format!("{e:#}")
+                        }),
+                    },
+                );
+            }
+            let code = result?;
             if code != 0 {
                 std::process::exit(code);
             }
             Ok(())
         }
+        Command::Vault(args) => vault_cmd::run(&root, args),
+        Command::Trust { show, revoke } => trust_cmd::run(&root, show, revoke),
+        Command::Rpc => rpc::serve(
+            &root,
+            std::io::stdin().lock(),
+            output::stdout_sink(),
+            rpc::Mode::Process,
+        ),
     }
 }
 
@@ -871,7 +1046,7 @@ fn pull_model(name: Option<&str>) -> Result<()> {
     // connection that drops is the normal case, and a range-resuming fetch
     // that survives a hundred attempts is worth more here than avoiding a
     // dependency on a binary every platform already ships.
-    let status = std::process::Command::new("curl")
+    let status = trellis_core::secrets::scrub(&mut std::process::Command::new("curl"))
         .args([
             "-L",
             "-C",
@@ -955,6 +1130,11 @@ impl RunExit {
 enum Driver {
     Scripted(trellis_loop::ScriptedModel),
     Runtime(trellis_loop::RuntimeModel),
+    /// Tier 1: a hosted provider's own tool calling (ADR 0024).
+    ///
+    /// Boxed: it carries the conversation's replayed provider messages, and
+    /// the other variants should not pay for its size.
+    Hosted(Box<trellis_loop::HostedModel>),
 }
 
 impl Driver {
@@ -963,7 +1143,22 @@ impl Driver {
     /// Takes a [`ModelSpec`] rather than a string: the string form was parsed
     /// here, in `cmd_doctor` and in the session, each deciding for itself what
     /// was valid. Construction is now the only thing this does.
-    fn build(spec: &trellis_model::ModelSpec, unconstrained: bool) -> Result<Self> {
+    fn build(
+        spec: &trellis_model::ModelSpec,
+        unconstrained: bool,
+        tools: &trellis_loop::ToolSet,
+        cfg: &config::RepoConfig,
+        from_user: bool,
+    ) -> Result<Self> {
+        if let Some(r) = hosted::resolve(spec, cfg, from_user)? {
+            if unconstrained {
+                anyhow::bail!(
+                    "--unconstrained is meaningless for a hosted model: it calls tools \
+                     through the provider's own API (tier 1)"
+                );
+            }
+            return Ok(Driver::Hosted(Box::new(hosted::build(&r, cfg)?)));
+        }
         match spec {
             trellis_model::ModelSpec::Scripted(path) => {
                 if unconstrained {
@@ -971,7 +1166,9 @@ impl Driver {
                 }
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("cannot read script {}", path.display()))?;
-                let m = trellis_loop::ScriptedModel::from_json(&text)
+                // Against the run's own tool set: a step calling a tool this
+                // run does not offer fails here, before the snapshot.
+                let m = trellis_loop::ScriptedModel::from_json_with(&text, tools)
                     .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
                 Ok(Driver::Scripted(m))
             }
@@ -984,12 +1181,28 @@ impl Driver {
                 // Named rather than `new(client, !unconstrained)`: the flag is
                 // called --unconstrained, so a negated bool at the call site
                 // meant reading two negations to learn which tier runs.
-                Ok(Driver::Runtime(if unconstrained {
-                    trellis_loop::RuntimeModel::unconstrained(client)
-                } else {
-                    trellis_loop::RuntimeModel::constrained(client)
-                }))
+                Ok(Driver::Runtime(
+                    if unconstrained {
+                        trellis_loop::RuntimeModel::unconstrained(client)
+                    } else {
+                        trellis_loop::RuntimeModel::constrained(client)
+                    }
+                    .with_context_bytes(cfg.context_bytes()),
+                ))
             }
+            trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. } => {
+                unreachable!("resolved above")
+            }
+        }
+    }
+
+    /// Every compaction the driver made (ADR 0024 §5).
+    fn compactions(&self) -> Vec<trellis_loop::Compacted> {
+        use trellis_loop::Model;
+        match self {
+            Driver::Scripted(m) => m.compactions().to_vec(),
+            Driver::Runtime(m) => m.compactions().to_vec(),
+            Driver::Hosted(m) => m.compactions().to_vec(),
         }
     }
 
@@ -1017,6 +1230,7 @@ impl Driver {
                 },
                 m.tier().degradation()
             ),
+            Driver::Hosted(m) => hosted::describe(m),
         }
     }
 }
@@ -1033,6 +1247,16 @@ struct RunSeeding<'a> {
     resume: bool,
     /// `--focus`: overrides `[context] focus` for this run only.
     focus: Option<&'a str>,
+    /// The agent profile a queued task runs as (ADR 0026 §4): its approve
+    /// list and skill filter apply to this run, and the trail records its
+    /// name. `None` for every caller but `work`.
+    profile: Option<&'a trellis_queue::profile::Profile>,
+    /// Whether a person chose the model spec for this run (`--model`,
+    /// `/model`, an RPC request) rather than the repository (`[model] spec`,
+    /// an agent profile). A hosted endpoint the repository chose must be on
+    /// the user's allowlist before a key is sent to it (ADR 0024 §3).
+    /// `false` by default, which is the stricter reading.
+    model_from_user: bool,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -1161,16 +1385,107 @@ fn cmd_run(
     control: RunControl,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    let RunSeeding { resume, focus } = seeding;
+    cmd_run_with(
+        root,
+        task,
+        model_spec,
+        unconstrained,
+        seeding,
+        control,
+        output::RunExtras::default(),
+        out,
+    )
+}
+
+/// `cmd_run` with what ADR 0025 adds: forced skills and JSON framing.
+///
+/// A second entry point rather than a new parameter, so every existing
+/// caller (`work`, `session`, `tui`) keeps calling `cmd_run` unchanged.
+#[allow(clippy::too_many_arguments)]
+fn cmd_run_with(
+    root: &Path,
+    task: &str,
+    model_spec: &str,
+    unconstrained: bool,
+    seeding: RunSeeding<'_>,
+    control: RunControl,
+    extras: output::RunExtras,
+    out: &mut dyn std::io::Write,
+) -> Result<RunExit> {
+    output::framed(root, task, model_spec, &extras, || {
+        run_body(
+            root,
+            task,
+            model_spec,
+            unconstrained,
+            seeding,
+            control,
+            &extras,
+            out,
+        )
+    })
+}
+
+/// The body of a run; see `cmd_run`.
+#[allow(clippy::too_many_arguments)]
+fn run_body(
+    root: &Path,
+    task: &str,
+    model_spec: &str,
+    unconstrained: bool,
+    seeding: RunSeeding<'_>,
+    control: RunControl,
+    extras: &output::RunExtras,
+    out: &mut dyn std::io::Write,
+) -> Result<RunExit> {
+    let RunSeeding {
+        resume,
+        focus,
+        profile,
+        model_from_user,
+    } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
     // First, because it costs nothing and needs nothing: a run in approve
     // mode with nobody to ask would deny every listed call and end looking
     // like a run that tried (ADR 0018). Before the model, before the
     // snapshot, before any file is read.
-    let dial = cfg.control(control.flag)?;
+    let mut dial = cfg.control(control.flag)?;
+    // A profile's approve list adds to the layered one for its runs; the
+    // mode itself arrives as the flag (ADR 0026 §4).
+    if let Some(list) = profile
+        .and_then(|p| p.file.control.as_ref())
+        .and_then(|c| c.approve.as_ref())
+    {
+        dial.add_profile_approvals(list);
+    }
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);
+    }
+
+    // Tools, hooks and trust (ADR 0023), decided before the model is built
+    // so a script is parsed against the tools this run actually offers, and
+    // before the snapshot so a bad `[tools]` section costs nothing. The id is
+    // stamped now and given to the trail, so `TRELLIS_RUN_ID` names the trail
+    // file this run writes.
+    let stamp = trellis_trail::now();
+    let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
+    let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    // Integrated (ADR 0026 × 0023): a profile's `tools` list narrows the
+    // set here, before the driver parses a script against it and before
+    // bash joins the approve list, so every consumer gets the narrowed set.
+    if let Some(p) = profile
+        && let Some(list) = &p.file.tools
+    {
+        tooling::check_profile_tools(&p.name, list, &cfg)?;
+        tooling.narrow_for_profile(&p.name, list);
+    }
+    if tooling.tools.bash().is_some()
+        && dial.mode == config::ControlMode::Approve
+        && !dial.approve.iter().any(|t| t == "bash")
+    {
+        // In approve mode every command is put to the person.
+        dial.approve.push("bash".to_string());
     }
 
     // The vault is compiled here, in memory, before the model is contacted
@@ -1179,25 +1494,40 @@ fn cmd_run(
     // invalid vault or an over-cap note is a run that cannot start as
     // configured, which should cost nothing (ADR 0017).
     let vault_setting = cfg.vault(root, focus)?;
+    // The note tools read the configured vault (ADR 0024 §6). Attached
+    // before the driver is built, so a script is parsed against the same set,
+    // and before the snapshot, so a note tool enabled with no vault costs
+    // nothing.
+    tooling.tools = tooling
+        .tools
+        .clone()
+        .with_notes(vault_setting.as_ref().map(|v| trellis_loop::NotesSource {
+            dir: v.dir.clone(),
+            source: v.source.clone(),
+        }))
+        .map_err(|e| anyhow::anyhow!(e))?;
     let vault = match &vault_setting {
         Some(config::VaultSetting {
             dir,
             source,
             focus: Some(stem),
         }) => {
-            let compiled = trellis_vault::compile(dir, stem, trellis_vault::DEFAULT_CAP)
+            // Integrated (ADR 0022 §7): `[context] dates` annotates headings;
+            // off, this is `trellis_vault::compile` byte for byte.
+            let dates_on = cfg.context.as_ref().and_then(|c| c.dates).unwrap_or(false);
+            let (compiled, dates_note) = vault_cmd::compile_for_run(dir, stem, dates_on)
                 .with_context(|| {
                     format!(
                         "the vault at {source} would not compile for focus `{stem}`; \
                          the run did not start and nothing was snapshotted"
                     )
                 })?;
-            Some((stem.clone(), source.clone(), compiled))
+            Some((stem.clone(), source.clone(), compiled, dates_note))
         }
         _ => None,
     };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
-    let mut driver = Driver::build(&spec, unconstrained)?;
+    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools, &cfg, model_from_user)?;
 
     // Reachability before the snapshot, and the ordering is the whole point.
     //
@@ -1267,16 +1597,30 @@ fn cmd_run(
             // Not a warning and not a failure. The loop already validates and
             // retries; what was wrong was the claim, so the fix is to report
             // the tier that is actually running.
-            driver = Driver::build(&spec, true)?;
+            driver = Driver::build(&spec, true, &tooling.tools, &cfg, model_from_user)?;
         }
         schema_note = Some(note);
+    }
+    // A budgeted profile's ledger counts only measured spend, so a hosted
+    // reply with no usage figure ends its run instead of spending what
+    // nothing can count (ADR 0026 §5).
+    if let Driver::Hosted(m) = &mut driver {
+        m.require_usage(profile.is_some_and(|p| p.file.budget.is_some()));
     }
 
     // Printed after reachability, not before. Describing the tier of a
     // runtime that is not listening is noise ahead of the only line that
     // matters.
     let _ = writeln!(out, "model:    {}", driver.describe());
+    if let Driver::Runtime(m) = &driver
+        && let Some(n) = hosted::thinking_ignored(&cfg, &format!("{:?}", m.dialect()))
+    {
+        let _ = writeln!(out, "{n}");
+    }
     let _ = writeln!(out, "control:  {}", dial.describe());
+    if let Some(line) = tooling.line(dial.mode) {
+        let _ = writeln!(out, "tools:    {line}");
+    }
     if let Some(note) = schema_note {
         let _ = writeln!(out, "{note}");
     }
@@ -1309,17 +1653,46 @@ fn cmd_run(
         None
     };
 
+    // ADR 0025: context files, system prompt files and forced skills. Read
+    // before the snapshot, so an unreadable or over-cap file costs nothing.
+    // User-level skill directories (ADR 0025, integrated), for the listing,
+    // `read_skill` and forced skills alike, so all three agree on a name.
+    let skill_dirs = user_config::skill_dirs();
+    let added = context_files::load(
+        root,
+        user_config::dir().as_deref(),
+        cfg.context.as_ref().and_then(|c| c.files).unwrap_or(true),
+        &extras.skills,
+        &skill_dirs,
+    )?;
+
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
     // (ADR 0009).
     let snapshot =
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
-
+    // `git status` does not see ignored files and the rollback's `git clean
+    // -fd` does not remove them, so a writer that can reach any path could
+    // leave `.venv/.../sitecustomize.py` behind a rollback for a later check
+    // to execute. The orchestrator's own writes refuse ignored paths; the
+    // writers that can reach them are `bash`, custom tools and hooks, so the
+    // ignored files are listed with their stat around a run that loads any
+    // of them, as a process agent's are (ADR 0023 §5, ADR 0026 §11). Taken
+    // after the snapshot and before `before_run`, which is one of them.
+    //
+    // The same writers can reach `.git/`, which neither `git status` nor the
+    // rollback sees: a `core.fsmonitor` or a planted hook would run at
+    // trellis's next git call. So `.git/config`, what it includes, the hooks
+    // and `info/` are read too, and put back before any git command runs
+    // once the loop has ended (review round 8).
+    //
     // Rule documents from `.trellis/governance/`, plus the older
     // `[governance] deny_write` in config.toml. Both feed the same write-path
     // refusal; the documents additionally carry rank and prose, which the
-    // audit and the prompt need and a config list cannot express.
+    // audit and the prompt need and a config list cannot express. Read
+    // before the writers are guarded, which judge a changed ignored file by
+    // the same rules.
     let rules = trellis_checks::governance::load(root)
         .context("a governance rule would not load; runs would silently ignore it")?;
     let mut deny: Vec<String> = cfg
@@ -1330,20 +1703,62 @@ fn cmd_run(
         .collect();
     deny.extend(trellis_checks::governance::deny_write_paths(&rules));
     let governance = trellis_loop::Governance::new(&deny);
+    let writers = if tooling.tools.bash().is_some()
+        || !tooling.tools.customs().is_empty()
+        || tooling.hooks.is_some()
+    {
+        let git = trellis_vcs::git_guard::GitGuard::capture(root).map_err(|e| {
+            anyhow::anyhow!(
+                "could not read .git/config and the hooks before the run, which a run \
+                 with bash, custom tools or hooks needs to put back their writes: {e}"
+            )
+        })?;
+        let ignored = trellis_vcs::ignored::IgnoredSnapshot::take(root).map_err(|e| {
+            anyhow::anyhow!(
+                "could not list the files git ignores before the run, which a run \
+                 with bash, custom tools or hooks needs to undo their writes: {e}"
+            )
+        })?;
+        Some(WriterGuards {
+            git,
+            ignored,
+            protected: governance.clone(),
+        })
+    } else {
+        None
+    };
+    // From here until the outcome is dispatched, a panic anywhere (inside
+    // `block_on` or after it) rolls back on its way out.
+    let mut on_panic = RollbackOnPanic {
+        root,
+        snapshot: &snapshot,
+        writers: writers.as_ref(),
+        armed: true,
+    };
+
     let notes = config::RepoConfig::notes(root)?;
     // Skills (ADR 0019): names and descriptions to the prompt, capped. Read
     // before the snapshot like everything else the run is seeded with.
-    let skills = trellis_loop::SkillCatalog::discover(root);
+    let mut skills = trellis_loop::SkillCatalog::discover_with(root, &skill_dirs);
+    // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4),
+    // and the same policy goes to the orchestrator, which refuses `read_skill`
+    // for the rest (integrated).
+    let skill_policy = profile.and_then(context_files::skill_policy);
+    if let Some(pol) = &skill_policy {
+        skills.valid.retain(|s| pol.check(&s.name).is_ok());
+    }
     let disclosed = skills.disclosed();
     if !governance.is_empty()
         || notes.is_some()
         || vault.is_some()
         || !skills.valid.is_empty()
         || !skills.invalid.is_empty()
+        || tooling.untrusted.is_some()
+        || !added.report.is_empty()
     {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}{}",
+            "repo:     {} write rule(s){}{}{}{}{}",
             governance.rules().len(),
             if notes.is_some() {
                 ", .trellis/context.md loaded"
@@ -1354,13 +1769,14 @@ fn cmd_run(
                 // The byte count is what the prompt pays on every turn, and
                 // the drop count is said aloud because a reference heading
                 // with no body under it is easy to read past.
-                Some((stem, source, c)) => format!(
-                    ", vault note `{stem}` from {source} loaded ({} B{})",
+                Some((stem, source, c, dates)) => format!(
+                    ", vault note `{stem}` from {source} loaded ({} B{}{})",
                     c.bytes,
                     match c.dropped_reference_bodies {
                         0 => String::new(),
                         n => format!(", {n} reference bod(ies) dropped to fit the cap"),
-                    }
+                    },
+                    dates.as_ref().map(|d| format!(", {d}")).unwrap_or_default()
                 ),
                 None => String::new(),
             },
@@ -1371,15 +1787,29 @@ fn cmd_run(
                 String::new()
             } else {
                 format!(
-                    ", skills: {} listed, {} omitted (cap){}",
+                    ", skills: {} listed, {} omitted (cap){}{}",
                     disclosed.listed.len(),
                     disclosed.omitted,
                     match skills.invalid.len() {
                         0 => String::new(),
                         n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
-                    }
+                    },
+                    // Integrated (ADR 0025): says these were not trust-gated.
+                    context_files::user_skills_note(&skills)
+                        .map(|n| format!(", {n}"))
+                        .unwrap_or_default()
                 )
             },
+            match &tooling.untrusted {
+                Some(u) => format!(", {u}"),
+                None => String::new(),
+            },
+            // ADR 0025: what was loaded and what was left out, by name.
+            added
+                .report
+                .iter()
+                .map(|r| format!(", {r}"))
+                .collect::<String>(),
         );
     }
 
@@ -1427,11 +1857,11 @@ fn cmd_run(
         files.len()
     );
 
-    let seed = trellis_loop::Seed {
+    let mut seed = trellis_loop::Seed {
         prior,
         repo: trellis_loop::RepoContext {
             notes,
-            vault: vault.map(|(focus, source, c)| trellis_loop::VaultContext {
+            vault: vault.map(|(focus, source, c, _)| trellis_loop::VaultContext {
                 focus,
                 source,
                 text: c.text,
@@ -1440,12 +1870,37 @@ fn cmd_run(
             files,
             skills: disclosed.listed,
             skills_omitted: disclosed.omitted,
+            tools: tooling.tools.clone(),
+            extra: added.extra,
         },
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    // After the snapshot, because a hook can write to the tree and the
+    // rollback has to cover it. Its output joins the notes inside the
+    // repository fence (ADR 0023 §5).
+    if let Some(h) = &tooling.hooks {
+        match rt.block_on(h.before_run()) {
+            Some(Ok(text)) if !text.trim().is_empty() => {
+                let block = trellis_loop::fence_before_run(&text);
+                seed.repo.notes = Some(match seed.repo.notes.take() {
+                    Some(n) => format!("{}\n{block}", n.trim_end()),
+                    None => block,
+                });
+                let _ = writeln!(
+                    out,
+                    "hook:     before_run added {} B of context",
+                    text.len()
+                );
+            }
+            Some(Err(e)) => {
+                let _ = writeln!(out, "hook:     before_run added nothing: {e}");
+            }
+            _ => {}
+        }
+    }
     // The approval gate and whoever answers it. In auto mode there is no
     // gate at all, rather than a gate that allows everything: which gates
     // are installed is the whole difference between the two ends of the
@@ -1472,10 +1927,31 @@ fn cmd_run(
             )
         }
     };
-    let (outcome, transcript) = rt.block_on(async {
+    let (outcome, transcript, gate_log) = rt.block_on(async {
         let mut orchestrator = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
-            .with_rules(rules);
+            .with_rules(rules)
+            .with_tools(tooling.tools.clone())
+            .with_env(tooling.env.clone())
+            // Integrated: `read_skill` looks where the listing looked, and
+            // refuses what the profile excludes (ADR 0026 §4).
+            .with_skills(trellis_loop::SkillAccess {
+                user_dirs: skill_dirs.clone(),
+                policy: skill_policy.clone(),
+            });
+        if let Some(h) = &tooling.hooks {
+            orchestrator = orchestrator.with_hooks(h.clone());
+        }
+        // The hooks' guard and this one are one latch (ADR 0023 §5).
+        if let Some(g) = &tooling.guard {
+            orchestrator = orchestrator.with_trust_guard(g.clone());
+        }
+        // Governance first by construction, then the bash policy and the
+        // pre_tool hook, then the person: nobody is asked about a call a
+        // rule or a hook has already refused.
+        for g in tooling.gates(dial.mode) {
+            orchestrator = orchestrator.with_gate(g);
+        }
         if let Some(g) = gate {
             orchestrator = orchestrator.with_gate(Box::new(g));
         }
@@ -1511,34 +1987,151 @@ fn cmd_run(
                     Driver::Runtime(m) => {
                         trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
                     }
+                    Driver::Hosted(m) => {
+                        trellis_loop::run_seeded(task, &mut **m, &handle, &cfg.budget(), seed)
+                            .await
+                    }
                 }
             } => Some(out),
             _ = answer => None,
             _ = tokio::signal::ctrl_c() => None,
+            // `rpc`'s `abort` (ADR 0025 §5): the same path as Ctrl-C.
+            _ = output::aborted(extras.abort.clone()) => None,
         };
+        // Test-only injection point: a panic with the run's edits in the
+        // tree, where a real one (a provider value that overflows, an index
+        // bug) would unwind out of `block_on`.
+        #[cfg(test)]
+        if PANIC_IN_RUN.with(std::cell::Cell::get) {
+            panic!("injected: a panic inside the run");
+        }
         // Asked after the race either way: the orchestrator is still alive
         // and still knows what this run wrote, which is what the rollback and
         // the trail both need.
         let touched = handle.touched().await;
-        (out, touched)
+        let gate_log = handle.gate_log().await;
+        // Before the rollback, so on a run that did not converge the
+        // rollback also undoes what the hook wrote in the worktree. Not on
+        // an interrupt: Ctrl-C means stop.
+        //
+        // On a converged run the hook runs after the last check, so any byte
+        // it writes is one no check saw. The worktree is fingerprinted
+        // around it, and a difference (or a fingerprint that could not be
+        // taken) demotes the run: it is reported, and the rollback below
+        // removes the hook's bytes together with the run's (ADR 0023,
+        // "after a pass").
+        let mut out = out;
+        // A run may not change what judges it (ADR 0023 §5). The guard runs
+        // after every call that may change the tree, and a check is not one,
+        // though a checker can write under `.trellis/` (a coverage file
+        // configured there). So a converged run is checked once more, before
+        // `after_run` would spawn, and in full: the guard's earlier checks
+        // reuse the digest of a file whose stat is unchanged, and a rewrite
+        // that keeps length and mtime is only certain to be seen here.
+        if let (Some(g), Some((o, _))) = (&tooling.guard, &mut out)
+            && o.converged()
+            && let Err(detail) = g.check_full_async().await
+        {
+            let iterations = match o {
+                trellis_loop::Outcome::Converged { iterations, .. }
+                | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
+            };
+            *o = trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::TrustChanged {
+                    detail: detail.to_string(),
+                },
+                iterations,
+            };
+        }
+        if let (Some(h), Some((o, _))) = (&tooling.hooks, &out)
+            && h.config().after_run.is_some()
+        {
+            // One retry: a fingerprint is two git commands against a copy of
+            // the index, and a transient failure there says nothing about
+            // the hook. A second failure still demotes the run, and says so.
+            let fingerprint = || {
+                trellis_vcs::worktree_fingerprint(root)
+                    .or_else(|_| trellis_vcs::worktree_fingerprint(root))
+            };
+            let guard = o.converged().then(fingerprint);
+            if let Some(Err(e)) = h
+                .after_run(&tooling::outcome_json(o, &touched, &run_id))
+                .await
+            {
+                tracing::warn!(error = %e, "after_run hook failed; it only observes");
+            }
+            // What the guard saw, named: the paths that differ, or which
+            // fingerprint could not be taken and why. The two call for
+            // different fixes.
+            let detail = match guard {
+                None => None,
+                Some(Err(e)) => Some(format!("the worktree could not be fingerprinted before the hook: {e}")),
+                Some(Ok(before)) => match fingerprint() {
+                    Err(e) => Some(format!("the worktree could not be fingerprinted after the hook: {e}")),
+                    Ok(after) if after == before => None,
+                    Ok(after) => Some(match trellis_vcs::tree_diff(root, &before, &after) {
+                        Ok(paths) if !paths.is_empty() => format!("changed: {}", paths.join(", ")),
+                        Ok(_) => "the trees differ but git names no path".to_string(),
+                        Err(e) => format!("the trees differ; the paths could not be listed: {e}"),
+                    }),
+                },
+            };
+            if let Some(detail) = detail
+                && let Some((o, _)) = &mut out
+            {
+                let iterations = match o {
+                    trellis_loop::Outcome::Converged { iterations, .. }
+                    | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
+                };
+                tracing::warn!(%detail, "after_run changed the worktree of a converged run; rolling back");
+                *o = trellis_loop::Outcome::NotConverged {
+                    reason: trellis_loop::NotConverged::AfterRunChangedTree { detail },
+                    iterations,
+                };
+            }
+        }
+        (out, touched, gate_log)
     });
     // Not a plain drop. A line reader blocked on stdin when Ctrl-C arrived
     // is still on the blocking pool, and dropping a runtime waits for that
     // pool — so an interrupted run would hang until someone pressed Enter.
     rt.shutdown_background();
 
+    // Completion tokens as the adapter counted them (ADR 0026 §8). A
+    // scripted driver has no count, which is `None`, not a free run.
+    let tokens = match &driver {
+        Driver::Scripted(_) => None,
+        Driver::Runtime(m) => Some(trellis_loop::Model::tokens_used(m)),
+        // Hosted runs count against a profile's budget too; the provider
+        // reports output tokens and the adapter sums them (ADR 0024). Not
+        // `tokens_used`, which charges an unreported reply its upper bound
+        // for the in-run ceiling: the trail takes only a measured count,
+        // and `None` once any reply went unreported.
+        Driver::Hosted(m) => m.tokens_measured(),
+    };
+    let compactions = driver.compactions();
     let facts = |approved| TrailFacts {
         approved,
         base_commit: &snapshot.head,
         model: Some(model_spec),
         control: Some(dial.describe()),
+        gates: &gate_log,
+        stamp: Some(&stamp),
+        tokens,
+        agent: profile.map(|p| p.name.clone()),
+        inputs: added.inputs.clone(),
+        compactions: &compactions,
     };
     let Some(outcome) = outcome else {
+        // The interrupt path rolls back itself and then commits a trail; a
+        // second rollback on a later panic would remove that commit.
+        on_panic.armed = false;
         return interrupted_run(
             root,
             task,
             &transcript,
             &snapshot,
+            writers.as_ref(),
             facts(trellis_trail::Approval::None),
             out,
         );
@@ -1617,7 +2210,67 @@ fn cmd_run(
             *peak as f64 / *first as f64
         );
     }
+    if let Some(line) = hosted::compaction_line(&compactions) {
+        let _ = writeln!(out, "{line}");
+    }
 
+    // Before any git command below (the ignored listing, the rollback's
+    // reset, the trail's commit): `.git/` goes back to what it was, since a
+    // `core.fsmonitor` runs at the next `git status` and a hook at the next
+    // commit. On a converged run a change there is never part of the
+    // change left for review, so the run is demoted; on any other the
+    // rollback puts it back first.
+    let outcome = match (outcome, &writers) {
+        (
+            trellis_loop::Outcome::Converged {
+                iterations,
+                checks_passed,
+            },
+            Some(w),
+        ) => match put_git_back(&w.git, &mut *out) {
+            Some(detail) => trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::GitDirChanged { detail },
+                iterations,
+            },
+            None => trellis_loop::Outcome::Converged {
+                iterations,
+                checks_passed,
+            },
+        },
+        (o, _) => o,
+    };
+    // After `.git/` is back. `bash`, a custom tool or a hook can commit,
+    // reset or check out, and committed work is invisible to everything
+    // that judged the run and to the review that follows (review round
+    // 10). Checked for every run: one without those writers cannot move
+    // HEAD, so the check costs it one `rev-parse`. A HEAD that cannot be
+    // read counts as moved.
+    let outcome = match outcome {
+        trellis_loop::Outcome::Converged {
+            iterations,
+            checks_passed,
+        } => match snapshot.head_moved() {
+            Ok(None) => trellis_loop::Outcome::Converged {
+                iterations,
+                checks_passed,
+            },
+            moved => trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::HeadMoved {
+                    detail: match moved {
+                        Ok(m) => m.unwrap_or_default(),
+                        Err(e) => format!("HEAD could not be read after the run ({e})"),
+                    },
+                },
+                iterations,
+            },
+        },
+        o => o,
+    };
+
+    // Each branch below disposes of the tree itself: a converged run leaves
+    // it for review, a non-converged one rolls back and then commits a
+    // trail, which a rollback on a later panic would remove.
+    on_panic.armed = false;
     match outcome {
         trellis_loop::Outcome::Converged {
             iterations,
@@ -1628,6 +2281,28 @@ fn cmd_run(
                 out,
                 "CONVERGED after {iterations} iterations, {checks_passed} checks passed."
             );
+            // Left in place with the run's changes, but said: `git status`
+            // and `/diff` do not show them, and reverting the change later
+            // does not remove them.
+            if let Some(w) = &writers {
+                match trellis_vcs::ignored::changes_since(root, &w.ignored) {
+                    Ok(c) if c.is_empty() => {}
+                    Ok(c) => {
+                        let _ = writeln!(
+                            out,
+                            "ignored:  the run changed files git ignores, which git status \
+                             does not show and a revert does not undo: {}",
+                            c.summary()
+                        );
+                    }
+                    Err(e) => {
+                        let _ = writeln!(
+                            out,
+                            "ignored:  could not list the files git ignores after the run: {e}"
+                        );
+                    }
+                }
+            }
             let trail = record_trail(
                 root,
                 task,
@@ -1685,7 +2360,7 @@ fn cmd_run(
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_and_report(&snapshot, &mut *out);
+            let restored = rollback_run(root, &snapshot, writers.as_ref(), &mut *out);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -1760,15 +2435,57 @@ make the run converge — only a check executed in that session ",
 ///
 /// Exits 130, the shell convention for a process terminated by SIGINT, so a
 /// script wrapping TRELLIS can tell an abort from a failed run.
+/// Rolls the worktree back when a run unwinds past it.
+///
+/// A panic inside the run's `block_on` (a provider value that overflows, a
+/// bug anywhere in the loop) propagated straight out of `cmd_run`, past the
+/// rollback on the non-converged path, and left the agent's edits in the
+/// tree. `Drop` runs during unwinding, which is why the release profile
+/// keeps `panic = "unwind"`. It reports on stderr, since `out` is borrowed
+/// by the frame being unwound, and lets the panic continue: the process
+/// still fails, now with the tree restored. No trail is written; the turn
+/// list died with the loop's future.
+struct RollbackOnPanic<'a> {
+    root: &'a Path,
+    snapshot: &'a trellis_vcs::Snapshot,
+    writers: Option<&'a WriterGuards>,
+    armed: bool,
+}
+
+impl Drop for RollbackOnPanic<'_> {
+    fn drop(&mut self) {
+        if !(self.armed && std::thread::panicking()) {
+            return;
+        }
+        let mut err = std::io::stderr();
+        let _ = writeln!(err);
+        let _ = writeln!(
+            err,
+            "PANICKED mid-run. Rolling back — nothing is accepted from a run that did not finish."
+        );
+        rollback_run(self.root, self.snapshot, self.writers, &mut err);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test to panic inside the run's `block_on`, after the loop
+    /// has written. Per thread, because `cmd_run` drives the loop on the
+    /// calling thread and tests run in parallel.
+    pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[allow(clippy::too_many_arguments)]
 fn interrupted_run(
     root: &Path,
     task: &str,
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
+    writers: Option<&WriterGuards>,
     facts: TrailFacts<'_>,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    let restored = handle_interrupt(root, task, touched, snapshot, facts, out);
+    let restored = handle_interrupt(root, task, touched, snapshot, writers, facts, out);
     Ok(RunExit::Interrupted { restored })
 }
 
@@ -1784,6 +2501,7 @@ fn handle_interrupt(
     task: &str,
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
+    writers: Option<&WriterGuards>,
     facts: TrailFacts<'_>,
     out: &mut dyn std::io::Write,
 ) -> bool {
@@ -1796,7 +2514,7 @@ fn handle_interrupt(
         let _ = writeln!(out, "files this run had written: {}", touched.join(", "));
     }
 
-    let restored = rollback_and_report(snapshot, &mut *out);
+    let restored = rollback_run(root, snapshot, writers, &mut *out);
 
     // The turn list cannot be recovered: it lives in the loop's future, which
     // was just cancelled. The factual half that matters survives, because the
@@ -1831,6 +2549,87 @@ fn handle_interrupt(
     restored
 }
 
+/// What a run with `bash`, custom tools or hooks is watched with, since
+/// those writers reach what neither `git status` nor the rollback sees:
+/// `.git/` (config, includes, hooks, `info/`) and files git ignores.
+struct WriterGuards {
+    git: trellis_vcs::git_guard::GitGuard,
+    /// Every ignored file with its stat, before the run.
+    ignored: trellis_vcs::ignored::IgnoredSnapshot,
+    /// The run's `deny_write`: a changed pre-existing ignored file it names
+    /// is not a restored tree.
+    protected: trellis_loop::Governance,
+}
+
+/// Puts `.git/` back and says what differed; `Some` naming it when
+/// anything did. What could not be put back is said too, and the
+/// rollback that follows tries again and counts it.
+fn put_git_back(
+    git: &trellis_vcs::git_guard::GitGuard,
+    out: &mut dyn std::io::Write,
+) -> Option<String> {
+    let (differed, failed) = git.restore();
+    if differed.is_empty() {
+        return None;
+    }
+    let names = differed.join(", ");
+    let _ = writeln!(out, "git:      the run changed {names}; put back");
+    for f in &failed {
+        let _ = writeln!(out, "git:      could NOT be put back: {f}");
+    }
+    Some(names)
+}
+
+/// A run's whole rollback: `.git/` is put back first, before any git
+/// command can run what the run planted there; then the ignored files the
+/// run created are removed (the snapshot's `git clean -fd` leaves them,
+/// then removes the directories their removal emptied); then the worktree
+/// goes back to the snapshot. `writers` is `None` for a run that loaded no
+/// writer able to reach either. Restored means all three: a `.git/` file
+/// that could not be put back, a created ignored file that could not be
+/// removed, a pre-existing ignored file the run deleted or changed where
+/// `.trellis/` or `deny_write` protects it (no copy is kept), or an ignored
+/// listing that could not be read after the run, is not a restored tree. A
+/// changed pre-existing ignored file nothing protects is named and does
+/// not count (`trellis_vcs::ignored::undo`).
+fn rollback_run(
+    root: &Path,
+    snapshot: &trellis_vcs::Snapshot,
+    writers: Option<&WriterGuards>,
+    out: &mut dyn std::io::Write,
+) -> bool {
+    let git_ok = match writers {
+        None => true,
+        Some(w) => {
+            put_git_back(&w.git, out);
+            // Asked again: the answer is what is still not put back.
+            w.git.restore().1.is_empty()
+        }
+    };
+    let ignored_ok = match writers {
+        None => true,
+        Some(w) => match trellis_vcs::ignored::changes_since(root, &w.ignored) {
+            Ok(c) => {
+                let protected = |p: &str| {
+                    trellis_loop::names_trellis_dir(p)
+                        || w.protected.denies_write_at(root, p).is_some()
+                };
+                trellis_vcs::ignored::undo(root, &c, &protected, out)
+            }
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "ignored:  could not list the files git ignores after the run ({e}); \
+                     nothing git ignores was removed, and whatever the run wrote there is \
+                     still there"
+                );
+                false
+            }
+        },
+    };
+    rollback_and_report(snapshot, out) && ignored_ok && git_ok
+}
+
 /// Rolls back, and if that fails says so at the top of its voice.
 ///
 /// `04-v1.0-harness.md`, task item 3: "Never fail silently on the recovery
@@ -1841,6 +2640,12 @@ fn handle_interrupt(
 /// Returns whether the worktree was restored, so the caller can pick an exit
 /// code that says which.
 fn rollback_and_report(snapshot: &trellis_vcs::Snapshot, out: &mut dyn std::io::Write) -> bool {
+    // Said before it is undone: the rollback puts HEAD back on the
+    // recorded branch, and a user whose branch was switched under them
+    // should read that it happened.
+    if let Ok(Some(m)) = snapshot.head_moved() {
+        let _ = writeln!(out, "git:      {m}; putting it back");
+    }
     match snapshot.rollback() {
         Ok(()) => {
             let restored = snapshot.is_restored().unwrap_or(false);
@@ -1956,6 +2761,22 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
             ("run_checks", format!("{} on {where_}", kinds.join("+")))
         }
         ToolCall::ReadSkill { name } => ("read_skill", name.clone()),
+        // ADR 0023's tools. A repository's own tool is recorded under its
+        // own name, with the arguments it was sent.
+        ToolCall::WriteFile { path, .. } => ("write_file", path.clone()),
+        ToolCall::Grep { pattern, path } => (
+            "grep",
+            match path {
+                Some(p) => format!("{pattern} in {p}"),
+                None => pattern.clone(),
+            },
+        ),
+        ToolCall::Find { glob } => ("find", glob.clone()),
+        ToolCall::Ls { path } => ("ls", path.clone()),
+        ToolCall::Bash { command } => ("bash", summarise(command)),
+        ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
+        ToolCall::ReadNote { note } => ("read_note", note.clone()),
+        ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
     };
 
     trellis_trail::Action {
@@ -1963,10 +2784,18 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         tool: tool.to_string(),
         target,
         outcome: summarise(&t.observation),
-        // Only an applied edit changes the tree. A refused one is an action
-        // that happened and wrote nothing, which is exactly what this
-        // distinguishes.
-        wrote: matches!(t.call, ToolCall::Edit { .. }) && t.observation.contains("applied: true"),
+        // Only an applied edit or a created file changes the tree through
+        // the orchestrator. A refused one is an action that happened and
+        // wrote nothing, which is exactly what this distinguishes. What bash
+        // or a custom tool wrote is not known here and not claimed
+        // (ADR 0023 §3).
+        wrote: match &t.call {
+            ToolCall::Edit { .. } => t.observation.contains("applied: true"),
+            ToolCall::WriteFile { path, .. } => {
+                t.observation.starts_with(&format!("created {path} "))
+            }
+            _ => false,
+        },
     }
 }
 
@@ -2001,6 +2830,24 @@ struct TrailFacts<'a> {
     /// Hands-off and fine-grained runs go through one loop, so this is the
     /// only field that says which one the reader is looking at.
     control: Option<String>,
+    /// Calls a named gate refused (ADR 0023 §7), each recorded as an action
+    /// just before the call it refused.
+    gates: &'a [trellis_loop::GateDenial],
+    /// `(timestamp, started_at)` taken when the run began, so the trail's
+    /// run id is the `TRELLIS_RUN_ID` bash and hooks were given. `None`
+    /// stamps it now.
+    stamp: Option<&'a (String, String)>,
+    /// Completion tokens and the agent profile, for the budget ledger
+    /// (ADR 0026 §8).
+    tokens: Option<u64>,
+    agent: Option<String>,
+    /// Context files, system files and forced skills, by name and size
+    /// (ADR 0025, integrated).
+    inputs: Vec<trellis_trail::Input>,
+    /// Compactions (ADR 0024 §5), each an action under the turn whose
+    /// request was compacted. Empty on a run that never compacted, so older
+    /// trails keep their shape.
+    compactions: &'a [trellis_loop::Compacted],
 }
 
 fn record_trail(
@@ -2016,6 +2863,12 @@ fn record_trail(
         base_commit,
         model,
         control,
+        gates,
+        stamp,
+        tokens,
+        agent,
+        inputs,
+        compactions,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2077,11 +2930,44 @@ fn record_trail(
                 outcome: if approved { "approved" } else { "declined" }.to_string(),
                 wrote: false,
             });
-            decision.into_iter().chain(std::iter::once(act))
+            // A named gate's refusal, the same way: its own action, under
+            // the turn and before the call it refused. None on a run where
+            // no such gate refused anything, so older trails keep their shape.
+            let denied: Vec<trellis_trail::Action> = gates
+                .iter()
+                .filter(|g| g.call == act.turn)
+                .map(|g| trellis_trail::Action {
+                    turn: act.turn,
+                    tool: g.gate.clone(),
+                    target: summarise(&g.target),
+                    outcome: summarise(&format!("denied: {}", g.reason)),
+                    wrote: false,
+                })
+                .collect();
+            let at = act.turn;
+            let compacted: Vec<trellis_trail::Action> = compactions
+                .iter()
+                .filter(|c| c.turn == at)
+                .map(hosted::compaction_action)
+                .collect();
+            compacted
+                .into_iter()
+                .chain(decision)
+                .chain(denied)
+                .chain(std::iter::once(act))
         })
         .collect();
+    // A compaction for the request that produced `done` has no turn of its
+    // own to sit under; it goes last, where it happened.
+    let mut actions = actions;
+    actions.extend(
+        compactions
+            .iter()
+            .filter(|c| c.turn as usize > turns.turns.len())
+            .map(hosted::compaction_action),
+    );
 
-    let (timestamp, started_at) = trellis_trail::now();
+    let (timestamp, started_at) = stamp.cloned().unwrap_or_else(trellis_trail::now);
 
     let factual = Factual {
         proposed: touched.to_vec(),
@@ -2095,6 +2981,9 @@ fn record_trail(
         context,
         actions,
         control,
+        tokens,
+        agent,
+        inputs,
     };
 
     let slug = trellis_trail::slugify(task);
@@ -2621,7 +3510,7 @@ fn truncate_module(m: &str, width: usize) -> String {
         .collect()
 }
 
-fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
+fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
     let repo_cfg = config::RepoConfig::load(root)?;
@@ -2638,52 +3527,61 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
 
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
-        let trellis_model::ModelSpec::Runtime {
-            dialect,
-            base,
-            model,
-        } = &spec
-        else {
-            anyhow::bail!(
-                concat!(
-                    "`{}` is a scripted model, which has no runtime to probe. ",
-                    "Pass a serving runtime, e.g. llamacpp:http://127.0.0.1:8080."
-                ),
-                spec
-            );
-        };
-        let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-            .with_timeout(std::time::Duration::from_secs(30));
-        runtime = format!("{dialect:?} at {base}");
-        // True of llama.cpp, which serves what it was started with and is
-        // never told. Not true once the spec names a weight — saying it
-        // anyway would report ignorance the harness does not have, on the
-        // one line a reader checks to confirm they are about to drive what
-        // they think they are.
-        model_id = match model {
-            Some(m) => format!("{m} (named in the spec)"),
-            None => "whatever the runtime has loaded".into(),
-        };
+        // Tier 1 is the protocol, not a probe finding (ADR 0024 §2).
+        if let Some(h) = hosted::resolve(&spec, &repo_cfg, from_user)? {
+            let (m, r, n) = hosted::doctor(&h);
+            model_id = m;
+            runtime = r;
+            notes.extend(n);
+            tier = Some(AdapterTier::Native);
+            batching = BatchingCapability::ContinuousUnmeasured;
+        } else {
+            let trellis_model::ModelSpec::Runtime {
+                dialect,
+                base,
+                model,
+            } = &spec
+            else {
+                anyhow::bail!(
+                    concat!(
+                        "`{}` is a scripted model, which has no runtime to probe. ",
+                        "Pass a serving runtime, e.g. llamacpp:http://127.0.0.1:8080."
+                    ),
+                    spec
+                );
+            };
+            let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
+                .with_timeout(std::time::Duration::from_secs(30));
+            runtime = format!("{dialect:?} at {base}");
+            // True of llama.cpp, which serves what it was started with and is
+            // never told. Not true once the spec names a weight — saying it
+            // anyway would report ignorance the harness does not have, on the
+            // one line a reader checks to confirm they are about to drive what
+            // they think they are.
+            model_id = match model {
+                Some(m) => format!("{m} (named in the spec)"),
+                None => "whatever the runtime has loaded".into(),
+            };
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async {
-            match client.probe_constraint().await {
-                Ok(true) => {
-                    tier = Some(AdapterTier::RuntimeConstrained);
-                    notes.push(
-                        concat!(
-                            "The runtime returned the key the probe schema demanded, so it ",
-                            "appears to honour guided decoding. This is evidence, not proof: ",
-                            "a capable model can produce conforming JSON unprompted."
-                        )
-                        .into(),
-                    );
-                }
-                Ok(false) => {
-                    tier = Some(AdapterTier::ValidateAndRetry);
-                    notes.push(
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async {
+                match client.probe_constraint().await {
+                    Ok(true) => {
+                        tier = Some(AdapterTier::RuntimeConstrained);
+                        notes.push(
+                            concat!(
+                                "The runtime returned the key the probe schema demanded, so it ",
+                                "appears to honour guided decoding. This is evidence, not proof: ",
+                                "a capable model can produce conforming JSON unprompted."
+                            )
+                            .into(),
+                        );
+                    }
+                    Ok(false) => {
+                        tier = Some(AdapterTier::ValidateAndRetry);
+                        notes.push(
                         concat!(
                             "The runtime ignored the schema, so output is NOT constrained. Runs ",
                             "will retry on malformed tool calls and can fail on format alone. ",
@@ -2691,32 +3589,32 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                         )
                         .into(),
                     );
+                    }
+                    Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
                 }
-                Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
-            }
 
-            match client.probe_slots().await {
-                Ok(Some(n)) if n > 1 => {
-                    batching = BatchingCapability::Continuous {
-                        measured_concurrency: n,
-                    };
-                }
-                Ok(Some(_)) => {
-                    batching = BatchingCapability::SingleStream;
-                    notes.push(
+                match client.probe_slots().await {
+                    Ok(Some(n)) if n > 1 => {
+                        batching = BatchingCapability::Continuous {
+                            measured_concurrency: n,
+                        };
+                    }
+                    Ok(Some(_)) => {
+                        batching = BatchingCapability::SingleStream;
+                        notes.push(
                         concat!(
                             "llama.cpp reports a single slot. Multi-agent mode would serialize; ",
                             "start it with --parallel N for real concurrency (S18). "
                         )
                         .into(),
                     );
-                }
-                Ok(None) => {
-                    // Continuous batching is inherent here, but the concurrency
-                    // its scheduler will actually grant is not a number to
-                    // invent, so `--agents auto` stays conservative.
-                    batching = BatchingCapability::ContinuousUnmeasured;
-                    notes.push(
+                    }
+                    Ok(None) => {
+                        // Continuous batching is inherent here, but the concurrency
+                        // its scheduler will actually grant is not a number to
+                        // invent, so `--agents auto` stays conservative.
+                        batching = BatchingCapability::ContinuousUnmeasured;
+                        notes.push(
                         concat!(
                             "This runtime batches continuously, so multi-agent mode is supported ",
                             "in principle. The concurrency it will grant is its scheduler's ",
@@ -2725,10 +3623,11 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                         )
                         .into(),
                     );
+                    }
+                    Err(e) => notes.push(format!("Could not read slot count: {e}")),
                 }
-                Err(e) => notes.push(format!("Could not read slot count: {e}")),
-            }
-        });
+            });
+        }
     }
 
     let probe = Probe {
@@ -2993,6 +3892,7 @@ fn version_of(cmd: &[String]) -> Option<String> {
     // to follow the module, not the interpreter.
     let mut c = std::process::Command::new(program);
     c.args(pre).arg("--version");
+    trellis_core::secrets::scrub(&mut c);
     let out = c.output().ok()?;
     if !out.status.success() {
         return None;
@@ -3018,6 +3918,7 @@ fn coverage_available(tests: &[String]) -> bool {
     };
     let mut c = std::process::Command::new(program);
     c.args(pre).arg("--help");
+    trellis_core::secrets::scrub(&mut c);
     c.output()
         .ok()
         .filter(|o| o.status.success())
@@ -3137,6 +4038,10 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
         b.max_tokens
     ));
 
+    // Integrated (ADR 0021 wave I): the user config, context files, user
+    // skills, trust, profiles and routines, and the vault.
+    out.extend(doctor_extra::lines(root, cfg));
+
     out
 }
 
@@ -3167,7 +4072,8 @@ fn floor_line(model_configured: bool) -> String {
 }
 
 fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
-    let cfg = config::RepoConfig::load(root)?.checks();
+    // `for_run`: two checks, one walk of `.trellis/` between them.
+    let cfg = config::RepoConfig::load(root)?.checks().for_run(root);
     // An empty path list would invoke the checker with no arguments, which
     // most tools treat as an error rather than as "everything". Make the
     // documented default real.
@@ -3233,6 +4139,12 @@ mod interrupt_tests {
             base_commit: &snap.head,
             model: Some("scripted:none"),
             control: None,
+            gates: &[],
+            stamp: None,
+            tokens: None,
+            agent: None,
+            inputs: Vec::new(),
+            compactions: &[],
         }
     }
 
@@ -3269,6 +4181,7 @@ mod interrupt_tests {
             "a task that was interrupted",
             &["a.py".to_string()],
             &snap,
+            None,
             facts_for(&snap),
             &mut said,
         );
@@ -3331,6 +4244,7 @@ mod interrupt_tests {
             "t",
             &["a.py".to_string()],
             &snap,
+            None,
             facts_for(&snap),
             &mut Vec::new(),
         );
@@ -3594,6 +4508,7 @@ mod init_tests {
             prompt_bytes: Some(1_000),
             radius_counts: None,
             human: None,
+            may_have_changed_tree: false,
         }
     }
 

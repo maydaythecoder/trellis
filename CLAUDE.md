@@ -28,6 +28,16 @@ cargo run -p trellis-cli -- run "<task>" --focus <stem>    # vault note as conte
 cargo run -p trellis-cli -- run "<task>" --approve|--auto  # the control dial (ADR 0018)
 cargo run -p trellis-cli -- queue add "<task>" [--focus <stem>]   # (ADR 0020)
 cargo run -p trellis-cli -- work [--once | --every <s>] [--max-tasks N]
+cargo run -p trellis-cli -- vault check|search|graph|new|reparent|link|retitle|rm|init|dates   # (ADR 0022)
+cargo run -p trellis-cli -- trust [--show | --revoke]      # hooks, custom tools, bash (ADR 0023)
+cargo run -p trellis-cli -- run "<task>" --model anthropic:https://api.anthropic.com#<model>  # hosted (ADR 0024)
+cargo run -p trellis-cli -- run "<task>" --json            # JSONL on stdout (ADR 0025)
+cargo run -p trellis-cli -- rpc                            # JSONL commands on stdin (ADR 0025)
+cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
+cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
+
+# ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
+# it is built, deferred, or excluded (and by which clause).
 
 # qa/run-guards.py runs whichever `trellis` is on PATH, and dirty_worktree
 # needs the demo's runtime up: put target/debug first and start the runtime,
@@ -35,10 +45,15 @@ cargo run -p trellis-cli -- work [--once | --every <s>] [--max-tasks N]
 
 # v0.1 measurement tooling (examples, not CLI surface — the surface is fixed
 # by brief 4.12 and does not grow to suit us; growth the owner directs is
-# recorded in an ADR, as 0017, 0018 and 0020 do)
+# recorded in an ADR, as 0017, 0018, 0020 and 0021-0026 do)
 cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed> <dir>
 cargo run --release -p trellis-index --example audit_score  -- <dir>
 ```
+
+Agent-driven work goes through the gates in `scripts/gates/`
+(`scripts/gates/run-all.sh [<issue>]`) and the orchestrator
+(`claude --agent orchestrator`); see `docs/BUILD_SYSTEM.md`. A ticket is done
+when every gate exits 0, not when an agent says so.
 
 `trellis run`, `resume` and `partitions` are implemented. They were stubs
 until the agent loop landed in v0.2, and the rule that kept them stubs still
@@ -103,6 +118,38 @@ Two of these are not stylistic:
   committed goldens (ADR 0017).
 - **`trellis-checks` owns `Verdict`.** That is what makes the grounding contract
   structural rather than advisory.
+
+## Invariants the PR #1 review rounds put in place
+
+Each one is held by a test that names it. Read the ADR before loosening any
+of them.
+
+- **Every `git` spawn goes through `trellis_vcs` (`command()`/`git_argv`)**,
+  so a `core.fsmonitor` or hooks path planted in `.git/config` never runs
+  under trellis. `tests/hygiene.rs` fails on a bare spawn. `chat` keeps a
+  copy of the overrides, and a test ties that copy to `trellis_vcs`.
+  (ADR 0023)
+- **Every child process drops the provider-key variables**
+  (`trellis_core::secrets::scrub`). `tests/child_env.rs` fails on an
+  unscrubbed spawn. A process agent gets back only the variables its profile
+  names in `pass_env`. (ADR 0024 §3, 0026)
+- **Repository-supplied prompt inputs are read through
+  `trellis_core::paths::resolve_repo_input`.** Nothing that resolves outside
+  the repository or into `.git` reaches a prompt. (ADR 0025)
+- **Only the user decides where a key is sent.** A repository may not name a
+  `key_env`, and a hosted or loopback endpoint the repository chose is not
+  given a key unless the user's own config or `--model` names it.
+  (ADR 0024 §3)
+- **Model writes never land in `.trellis/` or `.git/`, and trusted code
+  lives under `.trellis/`.** A hook or custom tool that names repository code
+  elsewhere is refused at `trellis trust`. (ADR 0023)
+- **A pass stops counting once the tree changes.** So does a run whose HEAD
+  moved, or whose trusted code or `.git/` changed during the run.
+  (ADR 0004, 0009, 0023)
+- **Rollback is complete only for trellis's own writes.** With `bash`,
+  hooks, custom tools or process agents enabled, it is best-effort, and the
+  ADRs list the known ways around it. Do not add another post-hoc git check
+  to close one more of those; the fix is a sandbox (ADR 0021, row 13.3).
 
 ## Rules that need an ADR to change
 

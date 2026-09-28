@@ -8,6 +8,8 @@
 //! lineage.
 
 use crate::VaultError;
+use crate::dates::Document;
+use crate::graph::Resolved;
 use crate::js;
 use crate::validate::{Note, parse};
 use std::path::Path;
@@ -78,12 +80,33 @@ fn match_link(s: &str) -> Option<(&str, usize)> {
     Some((capture, len))
 }
 
-fn section(note: &Note, marker: &str) -> String {
+/// A note's heading line, without its newline.
+///
+/// With `dates`, a note whose `dates.json` entry has a created day carries
+/// it inside the parentheses, and `estimated` when Apex marked it so. A note
+/// with no entry, or a null day, gets the plain heading: nothing is guessed.
+/// Without `dates` this is the ADR 0017 heading, byte for byte.
+fn heading(note: &Note, marker: &str, dates: Option<&Document>) -> String {
+    let created = dates
+        .and_then(|d| d.notes.get(&note.path))
+        .and_then(|e| e.created.day.as_deref().map(|d| (d, e.created.estimated)));
+    match created {
+        None => format!("### {} ({}){marker}", note.title, note.path),
+        Some((day, estimated)) => format!(
+            "### {} ({}, created {day}{}){marker}",
+            note.title,
+            note.path,
+            if estimated { ", estimated" } else { "" }
+        ),
+    }
+}
+
+fn section(note: &Note, marker: &str, dates: Option<&Document>) -> String {
     let body = note
         .body
         .trim_start_matches('\n')
         .trim_end_matches(js::is_ws);
-    format!("### {} ({}){marker}\n\n{body}\n", note.title, note.path)
+    format!("{}\n\n{body}\n", heading(note, marker, dates))
 }
 
 /// Compiles the context block for the note whose stem is `stem`.
@@ -93,6 +116,22 @@ fn section(note: &Note, marker: &str) -> String {
 /// visible reason. Nothing is written anywhere; the caller decides what to do
 /// with the text.
 pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultError> {
+    compile_with_dates(root, stem, cap, None)
+}
+
+/// [`compile`], with each lineage and reference heading annotated with the
+/// note's created day from `dates` (`[context] dates = true`, ADR 0022 §7).
+///
+/// `None` is exactly [`compile`], which is how the goldens stay the
+/// specification of the selection rule: the annotation adds bytes to
+/// headings and changes nothing about which notes are selected. It does
+/// count toward the cap, since it is sent.
+pub fn compile_with_dates(
+    root: &Path,
+    stem: &str,
+    cap: usize,
+    dates: Option<&Document>,
+) -> Result<Compiled, VaultError> {
     let v = parse(root)?;
     if !v.violations.is_empty() {
         return Err(VaultError::Invalid {
@@ -116,29 +155,37 @@ pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultErr
     // that there are no cycles, so this terminates.
     let mut lineage = vec![target];
     let mut cur = target;
-    while let Some(parent) = &notes[cur].parent {
-        cur = v.lookup(parent)[0];
+    while let Some(p) = v.parents[cur] {
+        cur = p;
         lineage.insert(0, cur);
     }
-    let in_lineage = |s: &str| lineage.iter().any(|&i| notes[i].stem == s);
 
-    let mut children: Vec<&Note> = notes
-        .iter()
-        .filter(|n| n.parent.as_deref() == Some(notes[target].stem.as_str()))
+    // Children and references resolve as Apex resolves them, so a parent or
+    // a link written as `[[Title]]` counts (ADR 0022 §1). Membership is by
+    // index, not by stem: `[[Root]]` must not add a second copy of a note
+    // already in the lineage.
+    let mut children: Vec<&Note> = (0..notes.len())
+        .filter(|&i| v.parents[i] == Some(target))
+        .map(|i| &notes[i])
         .collect();
     children.sort_by(|a, b| js::cmp(&a.stem, &b.stem).then_with(|| js::cmp(&a.path, &b.path)));
 
     let mut references: Vec<&Note> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
     let mut unresolved: Vec<String> = Vec::new();
     for s in link_stems(&notes[target].body) {
-        // Already present with its body.
-        if in_lineage(&s) {
-            continue;
-        }
-        match v.lookup(&s) {
-            [one] => references.push(&notes[*one]),
-            [] => unresolved.push(format!("- [[{s}]]")),
-            many => unresolved.push(format!(
+        match v.resolver.resolve(&s) {
+            Resolved::Note(one) => {
+                // Already present with its body, or already referenced under
+                // another spelling.
+                if lineage.contains(&one) || seen.contains(&one) {
+                    continue;
+                }
+                seen.push(one);
+                references.push(&notes[one]);
+            }
+            Resolved::Missing => unresolved.push(format!("- [[{s}]]")),
+            Resolved::Ambiguous(many) => unresolved.push(format!(
                 "- [[{s}]] (ambiguous: {})",
                 many.iter()
                     .map(|&i| notes[i].path.as_str())
@@ -153,7 +200,7 @@ pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultErr
         notes[target].title,
         lineage
             .iter()
-            .map(|&i| section(&notes[i], if i == target { " [target]" } else { "" }))
+            .map(|&i| section(&notes[i], if i == target { " [target]" } else { "" }, dates))
             .collect::<Vec<_>>()
             .join("\n")
     );
@@ -188,9 +235,9 @@ pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultErr
                 .enumerate()
                 .map(|(i, n)| {
                     if i < keep_bodies {
-                        section(n, "")
+                        section(n, "", dates)
                     } else {
-                        format!("### {} ({})\n", n.title, n.path)
+                        format!("{}\n", heading(n, "", dates))
                     }
                 })
                 .collect();

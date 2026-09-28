@@ -30,6 +30,10 @@ allow = [
     "MIT-0",
     # Boost. Permissive, and does not require attribution in binaries.
     "BSL-1.0",
+    # Community Data License Agreement, permissive: `webpki-roots` (ADR 0024),
+    # Mozilla's root certificates as data. Permits use and redistribution
+    # with no copyleft condition.
+    "CDLA-Permissive-2.0",
 ]
 
 # `Apache-2.0 WITH LLVM-exception` appears on the compiler-builtins family.
