@@ -138,9 +138,25 @@ Every rewrite goes through one of three paths. None of them renames a file.
 - **A task in `done/`, `failed/` or `cancelled/`, and the queue's other
   state files, take an exclusive lock.** The lock is
   `<git-dir>/trellis/locks/<name>.lock`, published by hard link, and the hard
-  link fails if a lock already exists. The holder removes the old file,
-  publishes the new one, and then removes the lock. Profile overlays and
-  routine state use the same path. Approval requests are never rewritten in
+  link fails if a lock already exists. Profile overlays and routine state
+  use the same path.
+
+  *Amended after the third review of PR #1.* The holder first removed the
+  old file and then published the new one, so a failure or a crash between
+  the two lost the file: a finished task vanished from every directory. Now
+  the holder publishes the new content at the fixed side name
+  `.<name>.next`, removes the old file, links the side copy into place and
+  removes the side copy. A complete copy exists at every instant. Readers
+  that find the name missing read the side copy, `queue list` shows it, and
+  the next holder of the lock finishes the swap. If the side copy exists
+  while the old file is still there, the edit never took effect and the
+  side copy is discarded. The lock is taken by every mutation of a finished
+  task: `queue set`, `queue note`, `queue requeue`, and the removal done by
+  `import --on-conflict replace`. Before this, only `edit` took the lock, so a requeue
+  that ran during an edit moved the task to `pending/`, and the edit then
+  wrote it back to `failed/`. That left one task in two states.
+  `a_requeue_during_an_edit_of_a_failed_task_leaves_it_in_one_state` and
+  `an_edit_of_a_finished_task_that_fails_midway_never_loses_it` hold both. Approval requests are never rewritten in
   place: they only move between `pending/`, `approved/` and `rejected/` by
   publish-then-remove, like a task, so a second decision on the same request
   fails at the publish. A crash while the lock is held leaves

@@ -121,6 +121,14 @@ removing the old one, the task exists complete in both places, and
 So the task is never run twice, but it stays stuck until someone removes one
 copy.
 
+A task changed where it stands (a note on a finished task, ADR 0026 §2)
+cannot be moved to a new name. It is replaced in three steps, and a complete
+copy exists after each one. First the new content is published at the side
+name `.<id>.json.next`. Then the old file is removed. Then the side copy is
+linked into place. If the process dies before the old file is removed, the
+old record stands. If it dies after, the side copy is the record: readers and
+`queue list` see it, and the next locked mutation links it into place.
+
 ### 4. Execution is serial
 
 A heartbeat runs one task at a time. ADR 0009 allows one run per worktree, and
