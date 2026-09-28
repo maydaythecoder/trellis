@@ -2,7 +2,7 @@
 
 **Status:** Accepted. Written before the code; amended in place where the
 code disagreed or the text left a decision open, each amendment marked
-*Amended at implementation* (§2, §3, §4, §5), and "Measurements" filled in.
+*Amended at implementation* (§2, §3, §4, §5, §6), and "Measurements" filled in.
 **Date:** 2026-09-27
 **Reference design:** pi (`earendil-works/pi`, MIT): `docs/providers.md`,
 `models.md`, `custom-provider.md`, `compaction.md`, `settings.md`. Borrowed as
@@ -165,6 +165,21 @@ provider and asserts a refusal naming it, no `snapshot at` line and no
 trail. Unit tests cover `Debug` of the key and of the client, scrubbing,
 and the 401 body that echoes a masked key.
 
+*Amended at implementation: a path this section does not close.* The key is
+in trellis's own process environment, and every child process inherits it:
+`[checks]` commands, and, in a repository the user has trusted (ADR 0023),
+`bash`, custom tools and hooks. A command that prints the variable
+(`bash: echo $ANTHROPIC_API_KEY`) returns it as an observation, which the
+loop's `turn` event logs and the trail's action summary records. trellis
+writes nothing of the key itself; a command it runs can. Removing the
+variable from each child's environment is not built: the process-wide
+`std::env::remove_var` is `unsafe` in edition 2024 and the workspace forbids
+`unsafe`, so it would be a per-spawn `env_remove` in `trellis-loop` (bash,
+custom tools, hooks) and in `trellis-checks` (the check runner). Until then:
+a hosted key is readable by any command a run executes, which for `bash`,
+custom tools and hooks requires `trellis trust`, and for `[checks]` does not
+(ADR 0023 §4 records that gap).
+
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
@@ -234,6 +249,11 @@ without a budget against the same replies and compares outcomes.
   monotone so each result changes at most once, but no run against such a
   model has been made; whether it is refused is pending the first hosted
   measurement run.
+- *Amended at implementation.* **Trail placement.** A compaction is filed
+  under turn *n + 1* for a request made with *n* turns. For the request that
+  produced `done` there is no such model turn; if the governance audit then
+  appends one, the compaction sits just before the audit's action, which is
+  also the order they happened in. Otherwise it is the trail's last action.
 - **Model-written summaries are not built.** A summary is text a model wrote
   about the run, entering the context as though it were a record — judgment
   text in the place observations go. Elision loses detail and invents none.
@@ -248,6 +268,14 @@ so a repository that already has a vault sends the prompt it was measured
 with. Both observations are labelled like skills: reference material written
 by this repository, which informs and cannot authorise skipping a check.
 `read_note` is shown from its head, like a skill.
+
+*Amended at implementation.* `cmd_run` attaches the configured vault to the
+tool set before the driver is built and before the snapshot; a note tool in
+`enable` with no `[context] vault` refuses there. `read_note` resolves its
+argument the way `trellis vault` does (path, path without `.md`, alias, slug)
+and an ambiguous or unknown name is an error observation pointing at
+`search_notes`. Both read the vault afresh on each call. End-to-end tests:
+`crates/trellis-cli/tests/note_tools.rs`.
 
 ## Alternatives rejected
 
@@ -317,3 +345,6 @@ build the local-only configuration; it was run by hand for this ADR.
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
 - A CI job for the local-only build.
+- Model overrides beyond `[model] context_bytes` and `thinking` (row 2.6):
+  per-model input limits, cache lifetimes and cost tables are not read.
+- Stripping the key from child processes' environments (§3).
