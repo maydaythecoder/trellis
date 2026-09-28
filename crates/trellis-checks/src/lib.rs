@@ -194,26 +194,52 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
 }
 
 /// Whether any `*.py` file sits under `<root>/.trellis/`, links followed
-/// as the trust digest follows them, to a bounded depth so a link cycle
-/// ends.
+/// as the trust digest follows them.
+///
+/// Each real directory is walked once, by its canonical path, as the trust
+/// walker does: a depth bound alone let two links back to `.trellis/`
+/// branch at every level, 2^32 reads before it gave up. A directory whose
+/// real path is outside the repository is not walked at all (`.trellis/x
+/// -> /` would read the disk) and answers `true`: the cautious answer costs
+/// a suite its bytecode cache, the other one could cost the repository its
+/// trust (ADR 0023 §4). The trust digest refuses such a link anyway.
 fn dot_trellis_holds_python(root: &Path) -> bool {
-    fn any_py(dir: &Path, depth: u32) -> bool {
-        if depth > 32 {
+    fn any_py(dir: &Path, real_root: &Path, seen: &mut std::collections::HashSet<PathBuf>) -> bool {
+        let Ok(real) = std::fs::canonicalize(dir) else {
+            return false;
+        };
+        // Outside, or the root itself (`.trellis/up -> ..`), which would
+        // walk the whole repository, `.git/` and `.venv/` included.
+        if !real.starts_with(real_root) || real_root.starts_with(&real) {
+            return true;
+        }
+        if !seen.insert(real) {
             return false;
         }
         let Ok(rd) = std::fs::read_dir(dir) else {
             return false;
         };
-        rd.filter_map(Result::ok).any(|e| {
+        for e in rd.filter_map(Result::ok) {
             let p = e.path();
-            match std::fs::metadata(&p) {
-                Ok(m) if m.is_dir() => any_py(&p, depth + 1),
+            let found = match std::fs::metadata(&p) {
+                Ok(m) if m.is_dir() => any_py(&p, real_root, seen),
                 Ok(_) => p.extension().is_some_and(|x| x.eq_ignore_ascii_case("py")),
                 Err(_) => false,
+            };
+            if found {
+                return true;
             }
-        })
+        }
+        false
     }
-    any_py(&root.join(".trellis"), 0)
+    let Ok(real_root) = std::fs::canonicalize(root) else {
+        return true;
+    };
+    let dot = root.join(".trellis");
+    if !dot.exists() {
+        return false;
+    }
+    any_py(&dot, &real_root, &mut Default::default())
 }
 
 async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
@@ -585,6 +611,66 @@ mod bytecode_tests {
         };
         let v = run_tests(d.path(), &cfg, &[]).await;
         assert!(v.detail().stdout.contains("[1]"), "{}", v.detail().stdout);
+    }
+
+    /// `dot_trellis_holds_python(root)` on another thread, or `None` if it
+    /// has not answered within `secs`: a walk that never ends must fail the
+    /// test, not hang the suite.
+    fn within(root: &Path, secs: u64) -> Option<bool> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(dot_trellis_holds_python(&root));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(secs)).ok()
+    }
+
+    fn link(target: &Path, at: &Path) -> bool {
+        match trellis_core::paths::symlink_for_test(target, at) {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("{why}");
+                false
+            }
+        }
+    }
+
+    /// The risk: two links back to `.trellis/` itself made the walk branch
+    /// twice at every level to the depth bound, 2^32 directory reads, and
+    /// every check spawn stalled on it. Each real directory is walked once.
+    #[test]
+    fn self_referencing_links_under_dot_trellis_end_the_walk_quickly() {
+        let d = tempfile::tempdir().unwrap();
+        let dot = d.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        std::fs::write(dot.join("config.toml"), "").unwrap();
+        if !link(Path::new("."), &dot.join("a")) || !link(Path::new("."), &dot.join("b")) {
+            return;
+        }
+        assert_eq!(within(d.path(), 10), Some(false), "no Python, and it ends");
+        std::fs::write(dot.join("gate.py"), "").unwrap();
+        assert_eq!(within(d.path(), 10), Some(true));
+    }
+
+    /// A link out of the repository is not walked (`.trellis/x -> /` would
+    /// walk the disk once, cycle or not), and the answer is the cautious
+    /// one: bytecode writes off costs a slower suite, never a broken trust.
+    #[test]
+    fn a_link_out_of_the_repository_is_not_walked_and_answers_yes() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let dot = d.path().join(".trellis");
+        std::fs::create_dir_all(&dot).unwrap();
+        if !link(outside.path(), &dot.join("lib")) {
+            return;
+        }
+        assert_eq!(within(d.path(), 10), Some(true));
+
+        // Nor a link to the repository root, which would walk all of it.
+        std::fs::remove_dir_all(&dot).unwrap();
+        std::fs::create_dir_all(&dot).unwrap();
+        assert!(link(Path::new(".."), &dot.join("up")));
+        assert_eq!(within(d.path(), 10), Some(true));
     }
 
     /// The cost is paid only where it buys something: a repository with no
