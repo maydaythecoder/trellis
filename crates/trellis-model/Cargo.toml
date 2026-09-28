@@ -37,8 +37,10 @@ webpki-roots = { version = "1.0.9", optional = true }
 # `--features grammar` compiles 45: the two that exercise the schemars ->
 # JSON Schema -> llguidance path are `#[cfg]`-ed out and the run still
 # reports green. Coverage that depends on which other crate happens to be in
-# the same cargo invocation is not coverage.
-trellis-model = { path = ".", features = ["grammar"] }
+# the same cargo invocation is not coverage. `hosted` for the same reason:
+# its TLS configuration test is otherwise compiled only when another crate
+# in the invocation happens to turn it on.
+trellis-model = { path = ".", features = ["grammar", "hosted"] }
 tokio.workspace = true
 
 [lints]

@@ -1244,7 +1244,7 @@ fn cmd_run(
     // file this run writes.
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
-    let tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
     if tooling.tools.bash().is_some()
         && dial.mode == config::ControlMode::Approve
         && !dial.approve.iter().any(|t| t == "bash")
@@ -1259,6 +1259,18 @@ fn cmd_run(
     // invalid vault or an over-cap note is a run that cannot start as
     // configured, which should cost nothing (ADR 0017).
     let vault_setting = cfg.vault(root, focus)?;
+    // The note tools read the configured vault (ADR 0024 §6). Attached
+    // before the driver is built, so a script is parsed against the same set,
+    // and before the snapshot, so a note tool enabled with no vault costs
+    // nothing.
+    tooling.tools = tooling
+        .tools
+        .clone()
+        .with_notes(vault_setting.as_ref().map(|v| trellis_loop::NotesSource {
+            dir: v.dir.clone(),
+            source: v.source.clone(),
+        }))
+        .map_err(|e| anyhow::anyhow!(e))?;
     let vault = match &vault_setting {
         Some(config::VaultSetting {
             dir,
