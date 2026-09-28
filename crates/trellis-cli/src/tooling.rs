@@ -26,32 +26,62 @@ pub(crate) struct Tooling {
     pub untrusted: Option<String>,
     /// For the `tools:` line when an agent profile narrowed the set.
     pub narrowed_by: Option<String>,
+    /// `Some` exactly when trusted: re-checks the fingerprint before each
+    /// hook and custom tool spawn, and after each call that may have changed
+    /// the tree (ADR 0023 §5). The hooks hold a clone; the orchestrator
+    /// must be given this one, so both see one latch.
+    pub guard: Option<trellis_loop::TrustGuard>,
 }
 
 /// Everything in `[tools]` and `[hooks]` that would execute, as the trust
 /// store fingerprints it. Empty when the repository declares none of it, in
 /// which case the store is never opened.
 pub(crate) fn fingerprint(root: &Path, cfg: &RepoConfig) -> Fingerprint {
-    let bash = cfg.bash_requested().then(|| {
-        let t = cfg.tools.as_ref();
-        let shell = t.and_then(|t| t.shell.clone()).unwrap_or_default();
-        let settings = format!(
-            "bash = true\nshell = {:?}\nbash_allow = {:?}\nbash_unattended = {:?}\n\
+    Inputs::of(cfg).fingerprint(root)
+}
+
+/// What [`fingerprint`] reads from the configuration, held apart so the
+/// trust guard recomputes the fingerprint from the configuration the run
+/// loaded, with every file re-hashed: the same inputs as the trusted
+/// fingerprint, so an unchanged repository cannot read as changed.
+#[derive(Clone)]
+struct Inputs {
+    hooks: trellis_loop::HookConfig,
+    custom: Vec<trellis_loop::CustomTool>,
+    bash: Option<(Vec<String>, String)>,
+}
+
+impl Inputs {
+    fn fingerprint(&self, root: &Path) -> Fingerprint {
+        Fingerprint::of_with(
+            root,
+            &self.hooks,
+            &self.custom,
+            self.bash.clone(),
+            process_agents(root),
+        )
+    }
+
+    fn of(cfg: &RepoConfig) -> Self {
+        let bash = cfg.bash_requested().then(|| {
+            let t = cfg.tools.as_ref();
+            let shell = t.and_then(|t| t.shell.clone()).unwrap_or_default();
+            let settings = format!(
+                "bash = true\nshell = {:?}\nbash_allow = {:?}\nbash_unattended = {:?}\n\
              bash_timeout_s = {:?}",
-            shell,
-            t.and_then(|t| t.bash_allow.clone()).unwrap_or_default(),
-            t.and_then(|t| t.bash_unattended).unwrap_or(false),
-            t.and_then(|t| t.bash_timeout_s),
-        );
-        (shell, settings)
-    });
-    Fingerprint::of_with(
-        root,
-        &cfg.hook_config(),
-        cfg.custom_tools(),
-        bash,
-        process_agents(root),
-    )
+                shell,
+                t.and_then(|t| t.bash_allow.clone()).unwrap_or_default(),
+                t.and_then(|t| t.bash_unattended).unwrap_or(false),
+                t.and_then(|t| t.bash_timeout_s),
+            );
+            (shell, settings)
+        });
+        Self {
+            hooks: cfg.hook_config(),
+            custom: cfg.custom_tools().to_vec(),
+            bash,
+        }
+    }
 }
 
 /// Each process agent's `command` (ADR 0026 §11), as a trust item: an argv
@@ -173,8 +203,21 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
         ("TRELLIS_RUN_ID".to_string(), run_id.to_string()),
         ("TRELLIS_MODEL".to_string(), model.to_string()),
     ];
-    let hooks =
-        (trusted && hook_cfg.count() > 0).then(|| Hooks::new(root, hook_cfg.clone(), env.clone()));
+    // Trust was decided above, once; what it covers can be rewritten
+    // during the run by `bash`, a custom tool or a hook, so it is checked
+    // again before each of them starts (ADR 0023 §5).
+    let guard = trusted.then(|| {
+        let inputs = Inputs::of(cfg);
+        let root = root.to_path_buf();
+        trellis_loop::TrustGuard::over(fp.clone(), move || inputs.fingerprint(&root))
+    });
+    let hooks = (trusted && hook_cfg.count() > 0).then(|| {
+        let h = Hooks::new(root, hook_cfg.clone(), env.clone());
+        match &guard {
+            Some(g) => h.with_guard(g.clone()),
+            None => h,
+        }
+    });
 
     let untrusted = (!fp.is_empty() && !trusted).then(|| {
         let mut parts = Vec::new();
@@ -210,6 +253,7 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
         env,
         untrusted,
         narrowed_by: None,
+        guard,
     })
 }
 
@@ -524,6 +568,58 @@ mod run_tests {
         crate::testutil::git_commit_all(&dir, "change the hook");
         let said = run(&dir, &spec);
         assert!(said.contains("hooks: 1 present, not trusted"), "{said}");
+    }
+
+    #[test]
+    fn a_hook_rewritten_mid_run_is_not_run_and_the_run_is_rolled_back() {
+        // The risk, through `cmd_run`: trust was decided once before the
+        // snapshot, and a `bash` command then rewrote a file under
+        // `.trellis/hooks/`, which every later hook spawn would have run
+        // under the person's trust. `prepare` must hand the one guard to
+        // both the hooks and the orchestrator.
+        let rewrite = if cfg!(windows) {
+            "echo exit 0> .trellis\\\\hooks\\\\gate.txt"
+        } else {
+            "echo exit 0 > .trellis/hooks/gate.txt"
+        };
+        let script = format!(
+            r#"{{"steps":[
+                {{"tool":"bash","command":"{rewrite}"}},
+                {{"tool":"edit","path":"a.py","old":"return 1","new":"return 2"}},
+                {{"tool":"done","summary":"changed it"}}
+            ]}}"#
+        );
+        let shell = if cfg!(windows) {
+            "['cmd', '/C']"
+        } else {
+            "['sh', '-c']"
+        };
+        let (dir, spec) = fixture(
+            "rewritten",
+            &format!(
+                "[tools]\nbash = true\nbash_unattended = true\nshell = {shell}\n\
+                 [hooks]\npre_tool = {}\n",
+                sh("exit 0")
+            ),
+            &script,
+        );
+        std::fs::create_dir_all(dir.join(".trellis/hooks")).unwrap();
+        std::fs::write(dir.join(".trellis/hooks/gate.txt"), "exit 2\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "a hook file");
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("NOT CONVERGED"), "{said}");
+        assert!(said.contains("Trusted code was changed"), "{said}");
+        assert!(said.contains(".trellis/hooks/gate.txt"), "{said}");
+        // Rolled back: the hook file is as trusted, and the edit never ran.
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".trellis/hooks/gate.txt")).unwrap(),
+            "exit 2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
     }
 
     #[test]

@@ -220,7 +220,7 @@ impl Judge {
         let denied = touched
             .iter()
             .filter_map(|p| {
-                if p == ".trellis" || p.starts_with(".trellis/") {
+                if trellis_loop::names_trellis_dir(p) {
                     return Some(format!(
                         "{p} (under .trellis/, which holds what judges this run)"
                     ));
@@ -413,9 +413,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let mut verdicts = Vec::new();
     let mut denied = Vec::new();
     let mut checked = false;
-    let judge_touched = touched
-        .iter()
-        .any(|p| p == ".trellis" || p.starts_with(".trellis/"));
+    let judge_touched = touched.iter().any(|p| trellis_loop::names_trellis_dir(p));
     if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
         let (d, audit) = judge.governance(root, &touched);
         denied = d;

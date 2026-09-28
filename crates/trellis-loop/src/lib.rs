@@ -44,7 +44,9 @@ pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookGate, Hooks,
     fence_before_run,
 };
-pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request};
+pub use orchestrator::{
+    Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request, names_trellis_dir,
+};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use registry::{
     BUILTIN_TOOLS, BashSettings, CustomTool, NotesSource, ToolSelection, ToolSet, call_json,
@@ -55,5 +57,5 @@ pub use skills::{
     SkillPolicy, read_body, read_body_in,
 };
 pub use tools::{EditOutcome, ToolResult};
-pub use trust::{Fingerprint, TrustItem, TrustState, TrustStore};
+pub use trust::{Fingerprint, TrustGuard, TrustItem, TrustState, TrustStore};
 pub use wire::ToolCallWire;

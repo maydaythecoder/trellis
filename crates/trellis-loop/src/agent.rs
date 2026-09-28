@@ -195,6 +195,15 @@ pub enum NotConverged {
     AfterRunChangedTree {
         detail: String,
     },
+    /// Trusted code — a hook's script, a custom tool's, anything under
+    /// `.trellis/`, the configuration naming them — no longer matched what
+    /// the person trusted, found before a spawn or after a call that may
+    /// have changed the tree (ADR 0023 §5). The spawn was refused and the
+    /// run ends: a `pre_tool` gate rewritten mid-run is not the gate that
+    /// was trusted, and the change is rolled back with the rest.
+    TrustChanged {
+        detail: String,
+    },
 }
 
 impl NotConverged {
@@ -230,6 +239,15 @@ impl NotConverged {
                     "to be unchanged by the after_run hook ({}). No check saw those ",
                     "bytes, so nothing was accepted and the whole change was rolled ",
                     "back. An after_run hook observes; it must not write in the worktree."
+                ),
+                detail
+            ),
+            NotConverged::TrustChanged { detail } => format!(
+                concat!(
+                    "{}. Trusted code was changed during the run, so no further hook ",
+                    "or custom tool was started and nothing was accepted. A run may ",
+                    "not change what judges it; if the change was meant, make it ",
+                    "yourself and run `trellis trust` again."
                 ),
                 detail
             ),
@@ -701,6 +719,7 @@ pub async fn run_seeded<M: Model>(
                     result,
                     human,
                     may_have_changed_tree,
+                    trust_breach,
                 } = orch.call(&call).await;
                 if let Some(h) = human {
                     waited_on_human += h.waited;
@@ -805,6 +824,19 @@ pub async fn run_seeded<M: Model>(
                     human,
                     may_have_changed_tree,
                 });
+
+                // After the turn is recorded, so the trail shows the call
+                // on which trust broke and what it was told.
+                if let Some(detail) = trust_breach {
+                    tracing::warn!(%detail, "trusted code changed mid-run; stopping");
+                    return (
+                        Outcome::NotConverged {
+                            reason: NotConverged::TrustChanged { detail },
+                            iterations,
+                        },
+                        t,
+                    );
+                }
 
                 if repeats >= NO_PROGRESS_REPEATS {
                     // `repeated_call` rather than `call`: a field named `call` is what

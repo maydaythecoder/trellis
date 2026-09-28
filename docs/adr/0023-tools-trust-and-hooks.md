@@ -121,6 +121,23 @@ which read outside the repository on Windows before.
   failure to start git, an exit of 128, or a signal refuses it with the
   reason, where it used to be read as "not ignored".
 
+  *Amended after the fifth review of PR #1: reads, and `.trellis/`.*
+  `read_file` and `ls` refused only paths leaving the root, so
+  `read_file .git/config` put a remote URL, credential and all, into an
+  observation, and from there into a hosted request body and the committed
+  trail. `read_file`, `ls` and `grep`'s path now refuse `.git` by the same
+  spellings as writes (`read_refusal`), and all of them also resolve the
+  path through links: a committed link into `.git`, or out of the
+  repository altogether, is refused. `ls` drops a `.git` entry by any
+  spelling; `find` drops any listed path with a `.git` component; `grep`
+  drops any output line whose path has one. git lists and searches neither
+  its own directory nor a nested repository's, so those three filters are
+  a second line, not the first. `edit` and `write_file` refuse `.trellis/`
+  as well (§5, "Trusted code cannot be rewritten mid-run"). Evidence:
+  `reads_and_listings_do_not_reach_git_s_own_directory` and
+  `a_link_out_of_the_repository_is_neither_read_nor_written`, which failed
+  with the fix's behaviour removed.
+
 Output from `grep`, `bash` and custom tools is capped at the tail (8 KiB,
 with a line saying how much was cut) before it becomes an observation;
 `find` and `ls` name at most 500 paths and say how many they left out. The adapter's own tail window then applies as it does to every
@@ -457,6 +474,74 @@ this amendment a hook that wrote at any of those points left bytes in a
 
 Hooks observe, gate, and add context. They do not write in the worktree,
 and a repository whose hooks do cannot converge.
+
+#### Trusted code cannot be rewritten mid-run (amended after the fifth review of PR #1)
+
+Trust was decided once, before the snapshot, and hooks re-read their
+scripts on every spawn. So `edit .trellis/hooks/gate.py` could switch off
+the `pre_tool` gate or run model-written code under the person's trust for
+the rest of the run, and `bash`, a custom tool or a hook could do the same
+by any route. **The rule, one for every kind of agent: a run may not change
+what judges it.** `.trellis/` holds the hooks, the tools, the rules, the
+check configuration and the process-agent profiles.
+
+- **`edit` and `write_file` refuse any path under `.trellis/`**, before the
+  file is read, with a message that names why. "Under `.trellis/`" is
+  `names_trellis_dir`: the first component (after any `.`) compared
+  case-insensitively, after the trailing dots and spaces Windows strips,
+  and including the 8.3 short name `TRELLI~n` Windows gives a dot-leading
+  name — the `.git` rule's spellings, on the root's directory only, since a
+  nested `app/.trellis/` is not the one trellis reads. The path is also
+  resolved through links: the nearest existing ancestor is canonicalized,
+  so `alias -> .trellis` does not get through, and the same check refuses
+  `.git` through a link. The approval gate's prediction of these refusals
+  (`preview_edit`, and its `write_file` branch) calls the same function,
+  `write_refusal`, so a call it lets through unasked is one the
+  orchestrator refuses.
+- **What cannot be path-checked is re-checked by fingerprint.** When the
+  repository is trusted, `tooling::prepare` builds one `TrustGuard` over the
+  fingerprint it trusted, from the same configuration inputs, and hands it
+  to the hooks and to the orchestrator. It recomputes the fingerprint
+  (every file under `.trellis/`, every file an argv names, the settings):
+  - before every hook spawn (`pre_tool`, `post_tool`, `before_run`,
+    `after_run`) and every custom-tool spawn; a difference refuses the
+    spawn;
+  - after every call that may have changed the tree (an applied edit, a
+    created file, `bash`, a custom tool, a hook that wrote), so a `bash`
+    command that changes `.trellis/` ends the run even with no hook
+    declared.
+  The first failure is latched, shared by every clone, and the run ends on
+  that call with `NotConverged::TrustChanged`, whose explanation names the
+  files whose hashes changed. The run is rolled back like any other that
+  did not converge. Restoring the file does not clear the latch: a hook
+  that ran rewritten, or was refused, is already part of this run.
+- **A hook script outside `.trellis/`** (`["python", "scripts/gate.py"]`)
+  is not refused up front: `edit scripts/gate.py` is an ordinary edit. The
+  guard sees it at the next spawn — the `post_tool` hook of that same call,
+  or the check after it — and ends the run there. Keeping hook code under
+  `.trellis/` (§4) turns that into a refusal the model can read.
+- **Process agents** (ADR 0026 §11) cannot be refused up front, since their
+  command writes directly. Their run already failed to converge when git
+  reported any changed path under `.trellis/`; that test now uses
+  `names_trellis_dir` too, so both kinds of run share one predicate.
+- **Cost.** One fingerprint per hook spawn, per custom-tool spawn, and per
+  tree-changing call: a hash of every file under `.trellis/` and every
+  argv-named file. Only in a trusted run.
+- **Untrusted runs** load no hook, custom tool or `bash`, so `edit` and
+  `write_file` are their only writers, and those refuse `.trellis/`.
+
+A grounded check that imports `.trellis/` code must not break this by
+writing bytecode there; see §4's amendment on `[checks]` commands.
+
+Evidence, in `crates/trellis-loop/src/extension_tests.rs`:
+`neither_edit_nor_write_file_can_reach_dot_trellis_by_any_spelling`,
+`a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run`,
+`a_bash_command_that_changes_dot_trellis_ends_the_run_with_no_hook_declared`
+and `a_custom_tool_does_not_start_once_trusted_code_has_changed`; and in
+`crates/trellis-cli/src/tooling.rs`,
+`a_hook_rewritten_mid_run_is_not_run_and_the_run_is_rolled_back`, which
+drives `cmd_run` and fails when the orchestrator is not given the guard.
+Each failed with its fix's behaviour removed.
 
 ### 6. Custom command tools
 

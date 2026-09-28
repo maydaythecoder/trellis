@@ -103,6 +103,10 @@ pub struct Dispatched {
     /// passing check included — and would otherwise leave bytes behind that
     /// no check saw (ADR 0023, "after a pass").
     pub may_have_changed_tree: bool,
+    /// Why trusted code no longer matches what was trusted, once the trust
+    /// guard has found it so (ADR 0023 §5). Latched: every call after the
+    /// first carries it too. The loop ends the run on it.
+    pub trust_breach: Option<String>,
 }
 
 /// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
@@ -215,6 +219,7 @@ impl Handle {
                 human: None,
                 // A stopped actor owns the only write path and wrote nothing.
                 may_have_changed_tree: false,
+                trust_breach: None,
             },
         )
         .await
@@ -289,6 +294,10 @@ pub struct Orchestrator {
     /// Whether the call being served reached a write, for
     /// [`may_change_tree`]. Reset at the start of every gated call.
     wrote: bool,
+    /// Re-checks trust before a custom tool starts and after any call that
+    /// may have changed the tree (ADR 0023 §5). The same latch the hooks
+    /// hold, so a breach found by either ends the run.
+    guard: Option<crate::trust::TrustGuard>,
 }
 
 impl Orchestrator {
@@ -308,7 +317,18 @@ impl Orchestrator {
             gate_log: Vec::new(),
             skills: crate::skills::SkillAccess::default(),
             wrote: false,
+            guard: None,
         }
+    }
+
+    /// The trust guard for this run's trusted code: custom tools refuse to
+    /// start once it fails, and a call that may have changed the tree is
+    /// followed by a check, so a `bash` command that rewrote a hook ends the
+    /// run whether or not a hook runs after it.
+    #[must_use]
+    pub fn with_trust_guard(mut self, guard: crate::trust::TrustGuard) -> Self {
+        self.guard = Some(guard);
+        self
     }
 
     /// User-level skill directories and an agent profile's skill lists, for
@@ -430,10 +450,26 @@ impl Orchestrator {
         self
     }
 
+    /// [`gated_inner`](Self::gated_inner), with the trust guard read on the
+    /// way out, whichever way the call ended: a `pre_tool` hook refused by
+    /// the guard returns early as a denial, and that is a breach as much as
+    /// a `bash` command that rewrote a hook.
+    async fn gated(&mut self, call: ToolCall) -> Dispatched {
+        let mut d = self.gated_inner(call).await;
+        if let Some(g) = &self.guard {
+            if d.may_have_changed_tree {
+                // Latches on failure; the reason is read below.
+                let _ = g.check();
+            }
+            d.trust_breach = g.breach();
+        }
+        d
+    }
+
     /// Consults the gates in order, then dispatches. The first `Deny` wins
     /// and nothing after it is asked — a human should not be asked about a
     /// call a rule has already refused.
-    async fn gated(&mut self, call: ToolCall) -> Dispatched {
+    async fn gated_inner(&mut self, call: ToolCall) -> Dispatched {
         let mut human = None;
         let name = tool_name(&call);
         if !self.tools.enabled(name) {
@@ -444,6 +480,7 @@ impl Orchestrator {
                 )),
                 human,
                 may_have_changed_tree: false,
+                trust_breach: None,
             };
         }
         self.wrote = false;
@@ -496,6 +533,7 @@ impl Orchestrator {
                     result: ToolResult::Error(reason),
                     human,
                     may_have_changed_tree: changed_since(&self.root, before_gates).await,
+                    trust_breach: None,
                 };
             }
         }
@@ -511,9 +549,9 @@ impl Orchestrator {
             },
             ToolCall::WriteFile { path, content } => self.write_file(path, content).await,
             ToolCall::Grep { pattern, path } => match path.as_deref().filter(|p| !p.is_empty()) {
-                Some(p) => match self.resolve_in_repo(p) {
-                    Err(e) => ToolResult::Error(e),
-                    Ok(_) => crate::listing::grep(&self.root, pattern, Some(p)).await,
+                Some(p) => match read_refusal(&self.root, p) {
+                    Some(e) => ToolResult::Error(format!("grep refused: {e}")),
+                    None => crate::listing::grep(&self.root, pattern, Some(p)).await,
                 },
                 None => crate::listing::grep(&self.root, pattern, None).await,
             },
@@ -529,9 +567,9 @@ impl Orchestrator {
                     crate::listing::find(&self.root, glob).await
                 }
             }
-            ToolCall::Ls { path } => match self.resolve_in_repo(path) {
-                Err(e) => ToolResult::Error(e),
-                Ok(full) => crate::listing::ls(&full, path),
+            ToolCall::Ls { path } => match read_refusal(&self.root, path) {
+                Some(e) => ToolResult::Error(format!("ls refused: {e}")),
+                None => crate::listing::ls(&self.root.join(path), path),
             },
             ToolCall::Bash { command } => self.bash(command).await,
             ToolCall::SearchNotes { query, limit } => match self.tools.notes() {
@@ -563,6 +601,7 @@ impl Orchestrator {
             may_have_changed_tree: may_change_tree(&call, self.wrote)
                 || gates_changed
                 || post_changed,
+            trust_breach: None,
         }
     }
 
@@ -573,13 +612,10 @@ impl Orchestrator {
     /// not be inside `.git`, and must not be ignored by git, because
     /// rollback's `git clean -fd` leaves ignored files where they are.
     async fn write_file(&mut self, path: &str, content: &str) -> ToolResult {
-        let full = match self.resolve_in_repo(path) {
-            Ok(f) => f,
-            Err(e) => return ToolResult::Error(e),
-        };
-        if names_git_dir(path) {
-            return ToolResult::Error(format!("write_file refused: `{path}` is inside .git"));
+        if let Some(why) = write_refusal(&self.root, path) {
+            return ToolResult::Error(format!("write_file refused: {why}"));
         }
+        let full = self.root.join(path);
         if full.exists() {
             return ToolResult::Error(format!(
                 "{path} already exists. write_file creates new files only; use edit to \
@@ -700,6 +736,13 @@ impl Orchestrator {
         let Some(tool) = self.tools.custom(name) else {
             return ToolResult::Error(format!("`{name}` is not a tool in this run"));
         };
+        // Its command is trusted code, and a script it names may have been
+        // rewritten since (ADR 0023 §5).
+        if let Some(g) = &self.guard
+            && let Err(why) = g.check()
+        {
+            return ToolResult::Error(format!("`{name}` was not started, because {why}"));
+        }
         let r = crate::exec::run(crate::exec::Spec {
             argv: &tool.command,
             cwd: &self.root,
@@ -771,8 +814,8 @@ impl Orchestrator {
 
     fn read_file(&self, path: &str) -> ToolResult {
         match self.resolve_in_repo(path) {
-            Err(e) => ToolResult::Error(e),
-            Ok(full) => match std::fs::read_to_string(&full) {
+            Err(e) => ToolResult::Error(format!("read_file refused: {e}")),
+            Ok(full) => match std::fs::read_to_string(full) {
                 Ok(s) => ToolResult::FileContent(s),
                 Err(e) => ToolResult::Error(format!("cannot read {path}: {e}")),
             },
@@ -791,16 +834,14 @@ impl Orchestrator {
     /// refused identically whether or not it exists — otherwise the refusal
     /// would leak which denied files are present.
     fn apply_edit(&mut self, path: &str, old: &str, new: &str) -> ToolResult {
-        let full = match self.resolve_in_repo(path) {
-            Ok(f) => f,
-            Err(e) => return ToolResult::Error(e),
-        };
         // `.git/config` exists, so without this an edit could set
         // `core.hooksPath` or rewrite a hook, and rollback — git's own
-        // reset — does not restore git's own directory.
-        if names_git_dir(path) {
-            return ToolResult::Error(format!("edit refused: `{path}` is inside .git"));
+        // reset — does not restore git's own directory. `.trellis/` holds
+        // the hooks, rules and checks that judge this run.
+        if let Some(why) = write_refusal(&self.root, path) {
+            return ToolResult::Error(format!("edit refused: {why}"));
         }
+        let full = self.root.join(path);
         let src = match std::fs::read_to_string(&full) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1013,16 +1054,13 @@ impl Orchestrator {
         ToolResult::Error("no check kinds requested".into())
     }
 
-    /// Rejects anything that escapes the repository root.
-    ///
-    /// The model proposes these paths and the grammar guarantees only that
-    /// they are well-formed strings (S7 metric 3). `..` is the cheap way a
-    /// well-formed path becomes a write outside the tree the rollback covers.
+    /// `rel` under the root, for reading, or why it may not be read
+    /// ([`read_refusal`]).
     fn resolve_in_repo(&self, rel: &str) -> Result<PathBuf, String> {
-        if let Some(why) = unsafe_repo_path(rel) {
-            return Err(why);
+        match read_refusal(&self.root, rel) {
+            Some(why) => Err(why),
+            None => Ok(self.root.join(rel)),
         }
-        Ok(self.root.join(rel))
     }
 }
 
@@ -1038,6 +1076,106 @@ pub(crate) fn names_git_dir(rel: &str) -> bool {
         let s = seg.trim_end_matches(['.', ' ']).to_ascii_lowercase();
         s == ".git" || s == "git~1"
     })
+}
+
+/// Whether `rel` names trellis's own directory, `.trellis/` at the root,
+/// by any spelling that resolves to it: its first component (after any
+/// `.`) compared case-insensitively, after the trailing dots and spaces
+/// Windows strips, and including the 8.3 short name `TRELLI~n` Windows
+/// gives a dot-leading name. Only the first component: a nested
+/// `app/.trellis/` is not the one trellis reads.
+///
+/// The one predicate for "under `.trellis/`" (ADR 0023 §5): the model's
+/// `edit` and `write_file`, the approval gate's prediction of them, and a
+/// process agent's breach test all use it.
+pub fn names_trellis_dir(rel: &str) -> bool {
+    let Some(first) = rel
+        .split(['/', '\\'])
+        .find(|seg| !seg.is_empty() && *seg != ".")
+    else {
+        return false;
+    };
+    let s = first.trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    s == ".trellis"
+        || s.strip_prefix("trelli~")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `rel` as it really lands, through any link on the way: the canonical
+/// form of its nearest existing ancestor, relative to the canonical root,
+/// with the part that does not exist yet appended as written. `Err` when
+/// that ancestor is outside the repository: a committed link to `/etc` or
+/// to `~` is a path the string rules cannot see.
+fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
+    let Ok(real_root) = std::fs::canonicalize(root) else {
+        return Ok(rel.to_string());
+    };
+    let mut at = root.join(rel);
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&at) {
+            let Ok(inside) = real.strip_prefix(&real_root) else {
+                return Err(format!(
+                    "`{rel}` leads outside the repository, through a link"
+                ));
+            };
+            let mut p = inside.to_path_buf();
+            for t in tail.iter().rev() {
+                p.push(t);
+            }
+            return Ok(p.to_string_lossy().replace('\\', "/"));
+        }
+        match (at.file_name().map(|n| n.to_os_string()), at.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                at = parent.to_path_buf();
+            }
+            _ => return Ok(rel.to_string()),
+        }
+    }
+}
+
+/// Why the model may not read or list `rel`, or `None`: a path outside the
+/// repository, or git's own directory by any spelling or through any link.
+///
+/// The model proposes these paths and the grammar guarantees only that
+/// they are well-formed strings (S7 metric 3). `..` is the cheap way a
+/// well-formed path becomes a write outside the tree the rollback covers,
+/// and a committed link the less cheap one.
+/// `.git/config` can hold a remote URL with a credential in it, and an
+/// observation goes into a hosted request body and the committed trail.
+pub(crate) fn read_refusal(root: &Path, rel: &str) -> Option<String> {
+    if let Some(why) = unsafe_repo_path(rel) {
+        return Some(why);
+    }
+    match real_rel(root, rel) {
+        Err(why) => Some(why),
+        Ok(real) if names_git_dir(rel) || names_git_dir(&real) => {
+            Some(format!("`{rel}` is inside .git"))
+        }
+        Ok(_) => None,
+    }
+}
+
+/// Why the model may not write at `rel`, or `None`. The one predicate
+/// `edit`, `write_file` and the approval gate's prediction of them share,
+/// so a call the gate lets through unasked is one the orchestrator
+/// refuses: outside the repository, inside `.git` (rollback is git's own
+/// reset and does not restore git's directory), or under `.trellis/`,
+/// which holds the hooks, rules and checks that judge the run — by any
+/// spelling, and through any link.
+pub(crate) fn write_refusal(root: &Path, rel: &str) -> Option<String> {
+    if let Some(why) = read_refusal(root, rel) {
+        return Some(why);
+    }
+    let real = real_rel(root, rel).unwrap_or_else(|_| rel.to_string());
+    if names_trellis_dir(rel) || names_trellis_dir(&real) {
+        return Some(format!(
+            "`{rel}` is under .trellis/, which holds the hooks, rules and checks that judge \
+             this run. Nothing a run does may change them."
+        ));
+    }
+    None
 }
 
 /// Why `rel` cannot be used as a path inside the repository, or `None`.

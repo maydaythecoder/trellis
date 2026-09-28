@@ -46,7 +46,24 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         Err(e) => ToolResult::Error(format!("grep could not run git: {e}")),
         Ok(c) if c.timed_out => ToolResult::Error("grep timed out".into()),
         // git grep: 0 found, 1 found nothing, anything else is a failure.
-        Ok(c) if c.code == Some(0) => ToolResult::Output(c.stdout.render()),
+        Ok(c) if c.code == Some(0) => {
+            // git does not search its own directory, and a line from one
+            // would be a credential's way into the trail; belt and braces
+            // for a nested `.GIT` on a case-insensitive filesystem. The path
+            // ends at the first `:`, which a Windows path cannot contain.
+            let out = c.stdout.render();
+            let kept: Vec<&str> = out
+                .lines()
+                .filter(|l| {
+                    !crate::orchestrator::names_git_dir(l.split_once(':').map_or(*l, |(p, _)| p))
+                })
+                .collect();
+            if kept.is_empty() {
+                ToolResult::Output(format!("no match for `{pattern}`"))
+            } else {
+                ToolResult::Output(kept.join("\n"))
+            }
+        }
         Ok(c) if c.code == Some(1) && c.stderr.is_empty() => {
             ToolResult::Output(format!("no match for `{pattern}`"))
         }
@@ -97,7 +114,7 @@ pub(crate) async fn find(root: &Path, glob: &str) -> ToolResult {
     let pat = pat.trim_start_matches("./");
     let mut hits: Vec<&str> = listed
         .split('\0')
-        .filter(|p| !p.is_empty() && glob_match(pat, p))
+        .filter(|p| !p.is_empty() && glob_match(pat, p) && !crate::orchestrator::names_git_dir(p))
         .collect();
     hits.sort_unstable();
     hits.dedup();
@@ -111,7 +128,8 @@ pub(crate) fn ls(full: &Path, rel: &str) -> ToolResult {
     };
     let mut names: Vec<String> = rd
         .filter_map(Result::ok)
-        .filter(|e| e.file_name() != ".git")
+        // By any spelling: `.GIT` on a case-insensitive filesystem is it.
+        .filter(|e| !crate::orchestrator::names_git_dir(&e.file_name().to_string_lossy()))
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             if e.file_type().is_ok_and(|t| t.is_dir()) {
