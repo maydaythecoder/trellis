@@ -196,9 +196,9 @@ pub enum Blocked {
 impl Blocked {
     pub fn describe(&self) -> String {
         match self {
-            Blocked::Blockers => "waiting on blockers".into(),
-            Blocked::Children => "waiting on its sub-tasks".into(),
-            Blocked::Manual { detail } => format!("waiting: {}", plain(detail)),
+            Blocked::Blockers => "blocked until its blockers are done".into(),
+            Blocked::Children => "blocked until its sub-tasks finish".into(),
+            Blocked::Manual { detail } => format!("blocked: {}", plain(detail)),
         }
     }
 }
@@ -709,7 +709,7 @@ impl Queue {
         }
         let open = ix.unresolved(t);
         if !open.is_empty() {
-            return Some(format!("waiting on {}", open.join(", ")));
+            return Some(format!("blockers not done: {}", open.join(", ")));
         }
         if t.awaiting_approval() {
             return Some("needs approval: `trellis queue approve <id>`".into());
@@ -1082,8 +1082,11 @@ pub trait Runner {
 /// Why [`work`] returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stop {
-    /// Nothing claimable, and no `every` to wait for more.
+    /// Nothing pending, and no `every` to wait for more.
     Empty,
+    /// Tasks are pending but none is claimable — blocked, awaiting
+    /// approval, or held by its agent's gate — and no `every`.
+    Waiting(usize),
     /// `max_tasks` runs happened.
     MaxTasks,
     /// A run converged; its change awaits review.
@@ -1104,7 +1107,7 @@ impl Stop {
     /// not restored, 130 for Ctrl-C.
     pub fn code(&self) -> i32 {
         match self {
-            Stop::Empty | Stop::MaxTasks | Stop::Converged { .. } => 0,
+            Stop::Empty | Stop::Waiting(_) | Stop::MaxTasks | Stop::Converged { .. } => 0,
             Stop::Blocked(_) | Stop::Error { .. } => 1,
             Stop::NotRestored { .. } => 2,
             Stop::Interrupted => 130,
@@ -1116,6 +1119,7 @@ impl std::fmt::Display for Stop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Stop::Empty => write!(f, "queue empty"),
+            Stop::Waiting(n) => write!(f, "nothing claimable; {n} pending task(s) waiting"),
             Stop::MaxTasks => write!(f, "task limit for this invocation reached"),
             Stop::Converged { id } => write!(f, "{id} converged; its change awaits review"),
             Stop::Blocked(_) => write!(f, "worktree not clean; nothing claimed"),
@@ -1227,10 +1231,11 @@ pub fn work(
                         }
                         continue;
                     }
-                    None => {
+                    None if waiting.is_empty() => {
                         let _ = writeln!(out, "work:     queue empty");
                         return Ok((ran, Stop::Empty));
                     }
+                    None => return Ok((ran, Stop::Waiting(waiting.len()))),
                 }
             }
             Err(QueueError::Unreadable { path, error }) => {

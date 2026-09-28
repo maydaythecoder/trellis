@@ -197,7 +197,8 @@ fn the_task_model_commands_change_tasks_and_every_change_is_logged() {
     );
     assert!(list.contains("waiting: needs approval"), "{list}");
     assert!(
-        list.contains("blocked medium") && list.contains("waiting on blockers"),
+        list.contains("blocked medium")
+            && list.contains("waiting: blocked until its blockers are done"),
         "{list}"
     );
     let filtered = ok(&d, &["queue", "list", "--label", "api"]);
