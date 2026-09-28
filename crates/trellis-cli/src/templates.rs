@@ -119,14 +119,10 @@ pub(crate) fn render(root: &Path, name: &str, args: Option<&str>) -> Result<Stri
     Ok(render_text(&raw, split.as_deref()))
 }
 
-/// The file as written, after `RepoConfig::prompt`'s name check.
+/// The file as written, through `RepoConfig::prompt_raw`'s name check and
+/// real-path check: one reader, so a link refused there is refused here.
 fn raw(root: &Path, name: &str) -> Result<String> {
-    crate::config::RepoConfig::prompt(root, name)?;
-    Ok(std::fs::read_to_string(
-        root.join(".trellis")
-            .join("prompts")
-            .join(format!("{name}.md")),
-    )?)
+    crate::config::RepoConfig::prompt_raw(root, name)
 }
 
 /// Every template in `.trellis/prompts/`, by name.
@@ -142,7 +138,19 @@ pub(crate) fn list(root: &Path) -> Vec<Listed> {
                 return None;
             }
             let name = path.file_stem()?.to_str()?.to_string();
-            let text = std::fs::read_to_string(&path).ok()?;
+            // Listed with why it cannot be used rather than with the
+            // description of whatever a link points at, outside the
+            // repository: this is printed, and a run would refuse it.
+            let text = match crate::context_files::read_repo_text(root, &path) {
+                Ok(t) => t?,
+                Err(e) => {
+                    return Some(Listed {
+                        name,
+                        description: crate::plain(&format!("refused: {e:#}")),
+                        argument_hint: None,
+                    });
+                }
+            };
             let p = parse(&text);
             // As in pi: no description falls back to the first non-empty
             // line. Control characters are dropped because this is printed

@@ -47,7 +47,7 @@ fn context_line(root: &Path, cfg: &RepoConfig) -> String {
     }
     let names = found
         .iter()
-        .map(|(n, b)| format!("{} ({b} B)", crate::plain(n)))
+        .map(|(n, said)| format!("{} ({})", crate::plain(n), crate::plain(said)))
         .collect::<Vec<_>>()
         .join(", ");
     if on {

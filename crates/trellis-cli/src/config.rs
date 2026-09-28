@@ -298,11 +298,16 @@ impl RepoConfig {
                  check, so two runs from one commit could see different notes"
             );
         }
-        Ok(Some(VaultSetting {
-            dir: root.join(rel),
-            source,
-            focus,
-        }))
+        // The string rule above cannot see a committed link: `vault -> ~`
+        // passes it and puts the home directory's notes in the prompt. The
+        // real path is checked as every other prompt input's is. The path
+        // kept is the one written, not the canonical one (`\\?\` on
+        // Windows), because the vault commands name files relative to it;
+        // the walk inside the vault skips links (`trellis_vault`).
+        let dir = root.join(rel);
+        trellis_core::paths::resolve_repo_input(root, &dir)
+            .map_err(|why| anyhow::anyhow!("[context] vault = \"{source}\": {why}"))?;
+        Ok(Some(VaultSetting { dir, source, focus }))
     }
 
     /// A named task template from `.trellis/prompts/<name>.md`.
@@ -317,20 +322,38 @@ impl RepoConfig {
     /// path, or change a budget. Everything that binds a run stays in
     /// `config.toml` and `governance/`, where a reviewer looks for it.
     pub(crate) fn prompt(root: &Path, name: &str) -> Result<String> {
+        // Frontmatter stripped and defaults applied (ADR 0025 §3). A
+        // template without frontmatter comes back exactly as before.
+        Self::prompt_raw(root, name).map(|s| crate::templates::render_text(&s, None))
+    }
+
+    /// `.trellis/prompts/<name>.md` as written: the one reader `prompt` and
+    /// `templates::render` share, so there is one name check and one
+    /// real-path check.
+    pub(crate) fn prompt_raw(root: &Path, name: &str) -> Result<String> {
         // No path separators: `--prompt ../../etc/passwd` must not read
-        // outside the prompts directory, and a name is a name.
-        if name.contains('/') || name.contains('\\') || name.contains("..") {
+        // outside the prompts directory, and a name is a name. Nor anything
+        // the repository-path rule refuses: `C:x` is relative to drive C's
+        // current directory on Windows, so `join` leaves the repository.
+        if name.is_empty()
+            || name.contains('/')
+            || name.contains('\\')
+            || name.contains("..")
+            || trellis_core::paths::unsafe_repo_path(name).is_some()
+        {
             anyhow::bail!("`{name}` is not a prompt name; use the file stem only");
         }
         let path = root
             .join(".trellis")
             .join("prompts")
             .join(format!("{name}.md"));
-        std::fs::read_to_string(&path)
-            // Frontmatter stripped and defaults applied (ADR 0025 §3). A
-            // template without frontmatter comes back exactly as before.
-            .map(|s| crate::templates::render_text(&s, None))
-            .with_context(|| {
+        // A committed link out of the repository is refused by name rather
+        // than read into the task (`read_repo_text`).
+        match crate::context_files::read_repo_text(root, &path)
+            .with_context(|| format!("prompt `{name}` could not be loaded"))?
+        {
+            Some(text) => Ok(text),
+            None => {
                 let dir = root.join(".trellis").join("prompts");
                 let known: Vec<String> = std::fs::read_dir(&dir)
                     .map(|rd| {
@@ -345,11 +368,12 @@ impl RepoConfig {
                     })
                     .unwrap_or_default();
                 if known.is_empty() {
-                    format!("no prompt `{name}`; {} holds none", dir.display())
+                    anyhow::bail!("no prompt `{name}`; {} holds none", dir.display())
                 } else {
-                    format!("no prompt `{name}`. Known: {}", known.join(", "))
+                    anyhow::bail!("no prompt `{name}`. Known: {}", known.join(", "))
                 }
-            })
+            }
+        }
     }
 
     /// `.trellis/context.md`, if the repository wrote one.
@@ -359,13 +383,11 @@ impl RepoConfig {
     /// silently did not get it is worse off than one that never wrote one.
     pub(crate) fn notes(root: &Path) -> Result<Option<String>> {
         let path = root.join(".trellis").join("context.md");
-        match std::fs::read_to_string(&path) {
-            Ok(s) if s.trim().is_empty() => Ok(None),
-            Ok(s) => Ok(Some(s)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(anyhow::Error::from(e))
-                .with_context(|| format!("{} exists but could not be read", path.display())),
-        }
+        // Through the one prompt-input reader: a committed link to a file
+        // outside the repository or into `.git` is refused by name.
+        let text = crate::context_files::read_repo_text(root, &path)
+            .context(".trellis/context.md could not be loaded")?;
+        Ok(text.filter(|s| !s.trim().is_empty()))
     }
 
     pub(crate) fn budget(&self) -> Budget {
@@ -511,6 +533,82 @@ mod tests {
                 "{bad} must be refused: {e}"
             );
         }
+    }
+
+    #[test]
+    fn a_prompt_name_with_a_colon_is_refused() {
+        // `C:x` is relative to drive C's current directory on Windows, and
+        // `a:b` an NTFS stream: `root.join` of the first leaves the
+        // repository. The name obeys the repository-path rule the loop uses.
+        let d = tempfile::tempdir().unwrap();
+        for bad in ["C:x", "a:b", ":x", "...", ".. "] {
+            let e = RepoConfig::prompt(d.path(), bad).unwrap_err();
+            assert!(
+                format!("{e}").contains("not a prompt name"),
+                "{bad} must be refused: {e}"
+            );
+        }
+    }
+
+    /// A link at `link` to `target`, or `false` with the reason printed.
+    fn link(target: &Path, link: &Path) -> bool {
+        match trellis_core::paths::symlink_for_test(target, link) {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("{why}");
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn a_prompt_or_context_md_linked_outside_the_repository_is_refused() {
+        // The risk: a committed `.trellis/prompts/p.md -> ~/.ssh/id_rsa`
+        // became the task text of a hosted run.
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("id_rsa");
+        std::fs::write(&secret, "PRIVATE").unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis/prompts")).unwrap();
+        if !link(&secret, &d.path().join(".trellis/prompts/p.md")) {
+            return;
+        }
+        let e = format!("{:#}", RepoConfig::prompt(d.path(), "p").unwrap_err());
+        assert!(e.contains("outside the repository"), "{e}");
+        assert!(!e.contains("PRIVATE"), "{e}");
+        let e = format!(
+            "{:#}",
+            crate::templates::render(d.path(), "p", None).unwrap_err()
+        );
+        assert!(e.contains("outside the repository"), "{e}");
+
+        assert!(link(&secret, &d.path().join(".trellis/context.md")));
+        let e = format!("{:#}", RepoConfig::notes(d.path()).unwrap_err());
+        assert!(
+            e.contains(".trellis/context.md") && e.contains("outside the repository"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_vault_linked_outside_the_repository_or_into_git_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("n.md"), "# n\n").unwrap();
+        write(d.path(), "[context]\nvault = \"vault\"\n");
+        if !link(outside.path(), &d.path().join("vault")) {
+            return;
+        }
+        let c = RepoConfig::load(d.path()).unwrap();
+        let e = format!("{:#}", c.vault(d.path(), None).unwrap_err());
+        assert!(e.contains("outside the repository"), "{e}");
+
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".git")).unwrap();
+        write(d.path(), "[context]\nvault = \".git\"\n");
+        let c = RepoConfig::load(d.path()).unwrap();
+        let e = format!("{:#}", c.vault(d.path(), None).unwrap_err());
+        assert!(e.contains(".git"), "{e}");
     }
 
     #[test]

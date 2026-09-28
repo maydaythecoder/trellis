@@ -1064,19 +1064,9 @@ impl Orchestrator {
     }
 }
 
-/// Whether any component of `rel` names git's own directory, by any
-/// spelling a filesystem this runs on would resolve to it: compared
-/// case-insensitively (NTFS, APFS), after the trailing dots and spaces
-/// Windows strips (`.git.`, `.git `), and including the 8.3 short name
-/// `git~1` — the list git itself checks since CVE-2014-9390. Every
-/// component, so `app/.GIT/x` is caught as well: a nested `.git` is a
-/// repository git would honour.
-pub(crate) fn names_git_dir(rel: &str) -> bool {
-    rel.split(['/', '\\']).any(|seg| {
-        let s = seg.trim_end_matches(['.', ' ']).to_ascii_lowercase();
-        s == ".git" || s == "git~1"
-    })
-}
+/// Defined in `trellis-core`, where the binary's prompt-input reader uses
+/// the same predicate.
+pub(crate) use trellis_core::paths::names_git_dir;
 
 /// Whether `rel` names trellis's own directory, `.trellis/` at the root,
 /// by any spelling that resolves to it: its first component (after any
@@ -1182,55 +1172,10 @@ pub(crate) fn write_refusal(root: &Path, rel: &str) -> Option<String> {
 ///
 /// Shared with the approval gate, which lets through (unasked) any call it
 /// predicts the orchestrator will refuse: a gate and an orchestrator that
-/// disagreed would skip the person on a call that then ran.
-///
-/// `is_absolute()` alone is not the rule: on Windows `/x` and `\x` are
-/// rooted but not absolute, `C:x` is relative to drive C's current
-/// directory, and `root.join` of any of them leaves the repository. So the
-/// rule is on the string, the same on every platform:
-///
-/// - no leading `/` or `\` (rooted, UNC, `\\?\`), and no drive prefix `X:`;
-/// - no `:` anywhere: on NTFS `a.py:s` is an alternate data stream, a write
-///   git cannot see and a rollback cannot remove;
-/// - no component that is only dots and spaces other than `.`, compared
-///   after the trailing dots and spaces Windows strips, so `..`, `.. ` and
-///   `...` are all parent references here;
-/// - and, belt and braces, no `RootDir` or `Prefix` component as this host
-///   parses it.
-///
-/// Components are split on both `/` and `\`, since Windows accepts either.
-pub(crate) fn unsafe_repo_path(rel: &str) -> Option<String> {
-    let refuse = || {
-        Some(format!(
-            "path `{rel}` must be relative to the repository root, with no leading \
-             `/` or `\\`, no drive letter or `:`, and no `..`"
-        ))
-    };
-    if rel.starts_with(['/', '\\']) || rel.contains(':') {
-        return refuse();
-    }
-    let parentish = |seg: &str| {
-        let t = seg.trim_end_matches(['.', ' ']);
-        t.is_empty() && seg != "." && !seg.is_empty()
-    };
-    if rel.split(['/', '\\']).any(parentish) {
-        return refuse();
-    }
-    let p = Path::new(rel);
-    if p.is_absolute()
-        || p.components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::RootDir
-                    | std::path::Component::Prefix(_)
-                    | std::path::Component::ParentDir
-            )
-        })
-    {
-        return refuse();
-    }
-    None
-}
+/// disagreed would skip the person on a call that then ran. Defined in
+/// `trellis-core`, where the binary's prompt-template names obey it too;
+/// the rules it applies are documented there.
+pub(crate) use trellis_core::paths::unsafe_repo_path;
 
 /// How long a custom tool may run. The same default as `bash`: a custom
 /// tool is a command the repository wrote, and it is bounded like one.
