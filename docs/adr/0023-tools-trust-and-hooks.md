@@ -204,8 +204,17 @@ signals the group; on Windows `taskkill /T /F` walks the tree from it. A
 process that left the group (`setsid`, a daemon) or, on Windows, whose
 parent had already exited is not reached, and outlives the run. Killing
 more than that would need `unsafe` platform calls, which this crate does
-not make. A command that exits normally is not reaped of what it left
-running. Leading its own group has a cost on Unix: the child is no longer
+not make. A command that exits normally has its group killed the same
+way on Unix, before its pipes are drained, so a backgrounded
+`(sleep 1; touch x) &` cannot write after the call returns — after a
+convergence judged the tree or a rollback restored it (amended after the
+eighth review; before it, what a finished command left running was not
+reaped, and a model-run `bash` could write after rollback). On Windows it
+is not: `taskkill /T` walks the tree from a live process, and after a
+normal exit the command is gone, so what it started keeps running until it
+ends on its own; a Job Object would hold the tree, and that needs `unsafe`
+Win32 calls or a dependency. A server a command starts with `&` for a later
+call to use is ended too, on Unix. Leading its own group has a cost on Unix: the child is no longer
 in the terminal's foreground group, so Ctrl-C does not deliver SIGINT to a
 running `bash` command, custom tool, hook or listing. It ends when trellis
 drops it (`kill_on_drop`, SIGKILL) during the interrupt's shutdown, with no

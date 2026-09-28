@@ -676,6 +676,17 @@ This is Paperclip's `process` adapter. A profile with
    - `Child::kill` terminates the direct child only. On Windows, and on Unix
      for a process that ignores its group, a grandchild can outlive it. That
      is recorded here, not solved.
+     *Amended after the eighth review of PR #1:* on Unix the command leads
+     its own process group, and however it ends — exit, timeout or Ctrl-C
+     — `kill -KILL -- -<pgid>` ends every member before anything is
+     judged or rolled back, so a backgrounded writer cannot land after
+     either. On Windows `taskkill /T /F` walks the tree on a timeout or an
+     interrupt, while the command is alive; after a normal exit it is gone
+     and the tree cannot be walked from it, so what it started keeps
+     running. A process that left its group (`setsid`) is not reached on
+     Unix. Unix-only test, which this Windows development host cannot run:
+     `exec::tests::what_a_command_backgrounded_cannot_write_after_the_call_returns`
+     covers the same group kill for `bash`.
    - Ctrl-C kills the child and rolls back.
 
    *Amended (wave K): the environment has no keys unless the profile
