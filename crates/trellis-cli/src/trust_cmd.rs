@@ -43,7 +43,7 @@ pub(crate) fn run_with(
         writeln!(
             out,
             "nothing to trust: .trellis/config.toml declares no hooks, no custom tools and \
-             no bash"
+             no bash, and no .trellis/agents profile names a command"
         )?;
         return Ok(());
     }

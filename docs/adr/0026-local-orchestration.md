@@ -527,6 +527,15 @@ would create an invalid set is refused as a whole.
 This is Paperclip's `process` adapter. A profile with
 `command = ["prog", "arg", …]` instead of `model` runs its tasks like this:
 
+0. **Trust** (*amended 2026-09-27*, ADR 0023 §4). The command is
+   repository code, and before this amendment `work` ran it in a cloned
+   repository with no trust decision, where a hook or a custom tool would
+   not have loaded. Each process agent's argv, and the files it names, is
+   now an item in the trust fingerprint (`process agent <name>`, shown by
+   `trellis trust`). A task assigned to an untrusted process agent is not
+   claimed: it stays pending with the reason `agent <name> runs a
+   repository command; not trusted: run trellis trust`, and the runner
+   checks again before it spawns.
 1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
    model run.
 2. **Run** the command in the worktree root. Its stdin is the task text,

@@ -182,6 +182,11 @@ loaded only if the user has trusted it.
   trusted (run trellis trust)` (with custom tools and bash counted the same
   way). A run is not refused for being untrusted; it runs without what it
   was not trusted to run.
+- **Process agents** (*amended 2026-09-27*). A `.trellis/agents/*.toml`
+  profile with a `command` (ADR 0026 §11) is an argv `trellis work` runs in
+  the worktree. It is in the fingerprint as `process agent <name>`, with the
+  files its argv names, and an untrusted one is not run: its task waits
+  with `not trusted: run trellis trust`.
 - **A repository with none of these never opens the store.**
 
 Not covered, and stated so it is not assumed: `[checks] typecheck` and
