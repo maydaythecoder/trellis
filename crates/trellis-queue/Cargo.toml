@@ -15,10 +15,9 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# Default features off: they are the HTTPS and SSH transports, which pull
-# OpenSSL and libssh2 to answer a question that needs neither — where this
-# repository's git directory is.
-git2.workspace = true
+# For the git directory, by shelling out to `git` as trellis-vcs does for
+# everything else. git2 was cut from the build deliberately (6b5db2a).
+trellis-vcs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

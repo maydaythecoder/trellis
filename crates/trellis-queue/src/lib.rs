@@ -129,15 +129,15 @@ pub struct Queue {
 impl Queue {
     /// The queue for the repository containing `root`.
     ///
-    /// `Repository::path()` rather than `root/.git`: in a linked worktree
-    /// `.git` is a file naming `<main>/.git/worktrees/<name>/`, and that
-    /// per-worktree directory is what this returns. Each worktree therefore
-    /// has its own queue, which is what ADR 0009's one-run-per-worktree
-    /// requires of a serial heartbeat.
+    /// `git rev-parse --absolute-git-dir` rather than `root/.git`: in a
+    /// linked worktree `.git` is a file naming `<main>/.git/worktrees/<name>/`,
+    /// and that per-worktree directory is what this returns. Each worktree
+    /// therefore has its own queue, which is what ADR 0009's
+    /// one-run-per-worktree requires of a serial heartbeat.
     pub fn for_repo(root: &Path) -> Result<Self, QueueError> {
-        let repo = git2::Repository::open(root)
-            .map_err(|e| QueueError::NotARepo(root.to_path_buf(), e.message().to_string()))?;
-        Ok(Queue::at(repo.path().join("trellis").join("queue")))
+        let dir = trellis_vcs::git_dir(root)
+            .map_err(|e| QueueError::NotARepo(root.to_path_buf(), e.to_string()))?;
+        Ok(Queue::at(dir.join("trellis").join("queue")))
     }
 
     /// A queue at an explicit directory. Nothing is created until written.
