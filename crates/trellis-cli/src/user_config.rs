@@ -234,6 +234,11 @@ fn union(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> 
 ///
 /// Returns the path, never the value: the refusal names where to look, and a
 /// message that quoted the key would put it in a terminal's scrollback.
+///
+/// The name test is off inside a custom tool's JSON schema, exactly
+/// `tools.custom[i].schema`: its names describe the tool's arguments (a
+/// pagination `token`), and no key lives in one. The value test still
+/// applies there.
 pub(crate) fn key_in(v: &toml::Value) -> Option<String> {
     fn keyish(name: &str) -> bool {
         let n = name.to_ascii_lowercase();
@@ -244,7 +249,13 @@ pub(crate) fn key_in(v: &toml::Value) -> Option<String> {
             .iter()
             .any(|s| n.ends_with(s))
     }
-    fn walk(v: &toml::Value, at: &str) -> Option<String> {
+    /// `tools.custom[<digits>]`, the table a custom tool's `schema` is in.
+    fn a_custom_tool(at: &str) -> bool {
+        at.strip_prefix("tools.custom[")
+            .and_then(|r| r.strip_suffix(']'))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
+    fn walk(v: &toml::Value, at: &str, names: bool) -> Option<String> {
         match v {
             toml::Value::String(s) if s.trim_start().starts_with("sk-") => Some(at.to_string()),
             toml::Value::Table(t) => t.iter().find_map(|(k, x)| {
@@ -253,20 +264,21 @@ pub(crate) fn key_in(v: &toml::Value) -> Option<String> {
                 } else {
                     format!("{at}.{k}")
                 };
-                if keyish(k) {
+                let schema = names && k == "schema" && a_custom_tool(at);
+                if names && !schema && keyish(k) {
                     Some(here)
                 } else {
-                    walk(x, &here)
+                    walk(x, &here, names && !schema)
                 }
             }),
             toml::Value::Array(xs) => xs
                 .iter()
                 .enumerate()
-                .find_map(|(i, x)| walk(x, &format!("{at}[{i}]"))),
+                .find_map(|(i, x)| walk(x, &format!("{at}[{i}]"), names)),
             _ => None,
         }
     }
-    walk(v, "")
+    walk(v, "", true)
 }
 
 // Here rather than in `config.rs`, so that file changes by three lines and
@@ -363,6 +375,46 @@ mod tests {
     fn load(repo: &str, user: &str) -> RepoConfig {
         let (d, u) = files(repo, user);
         RepoConfig::load_with_user(d.path(), Some(&u)).unwrap()
+    }
+
+    #[test]
+    fn a_custom_tool_s_schema_property_named_token_is_not_a_key() {
+        // The risk: `[[tools.custom]]` with a schema property `token` (a
+        // tool that takes a pagination token) was refused as a file holding
+        // a key. A JSON schema's names describe arguments; no key lives in
+        // one. A key-shaped value is still refused wherever it sits.
+        let key_at = |t: &str| key_in(&toml::from_str::<toml::Value>(t).unwrap());
+        let tool = "[[tools.custom]]\nname = \"page\"\ndescription = \"d\"\n\
+                    command = [\"python\", \".trellis/tools/page.py\"]\n";
+        assert_eq!(
+            key_at(&format!(
+                "{tool}schema = {{ type = \"object\", properties = {{ token = {{ type = \
+                 \"string\" }}, api_key = {{ type = \"string\" }} }}, required = [\"token\"] }}\n"
+            )),
+            None
+        );
+        // A key as a value inside the schema is still a key.
+        assert_eq!(
+            key_at(&format!(
+                "{tool}schema = {{ type = \"object\", properties = {{ token = {{ type = \
+                 \"string\", default = \"sk-live-abc\" }} }} }}\n"
+            ))
+            .as_deref(),
+            Some("tools.custom[0].schema.properties.token.default")
+        );
+        // Only that subtree: a `schema` table anywhere else, and a key name
+        // next to the schema in the same tool, are still refused.
+        assert_eq!(
+            key_at("[[providers]]\nname = \"x\"\nschema = { token = \"x\" }\n").as_deref(),
+            Some("providers[0].schema.token")
+        );
+        assert_eq!(
+            key_at(&format!(
+                "{tool}token = \"x\"\nschema = {{ type = \"object\" }}\n"
+            ))
+            .as_deref(),
+            Some("tools.custom[0].token")
+        );
     }
 
     #[test]

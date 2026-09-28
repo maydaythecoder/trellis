@@ -292,6 +292,15 @@ on stderr.
   the letter of ADR 0010 §1, which allows a key in `.trellis/config.toml`.
   It matches `config.rs`'s own statement that a key never goes in a file
   trellis reads, and ADR 0021 row 2.5.
+
+  *Amended after the fifth review of PR #1:* the name test does not apply
+  inside a custom tool's JSON schema, exactly `tools.custom[i].schema`
+  (ADR 0023 §6). Its names describe the tool's arguments, and a tool that
+  takes a pagination `token` was refused as a file holding a key. The
+  `sk-` value test still applies there, and a `schema` table anywhere else
+  is scanned as before. Evidence:
+  `a_custom_tool_s_schema_property_named_token_is_not_a_key` in
+  `crates/trellis-cli/src/user_config.rs`, which failed before the change.
 - **`[[providers]]` is the user's where it matters** (*amended
   2026-09-27*, ADR 0024 §3). Both lists apply, but on a name both files
   define the **user's** entry wins, and only the user's file may set
