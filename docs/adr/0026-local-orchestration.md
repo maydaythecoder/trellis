@@ -518,6 +518,21 @@ scheduled instant) and the id of the last task the routine created.
   before claiming" to definitions as well as to tasks. Once `work` is
   running, a definition that breaks mid-session is reported once, and the
   last good set is kept.
+- *Amended after the seventh review of PR #1:* **each scheduled instant is
+  enqueued at most once.** The state was saved once, after every due fire
+  of a tick, so a failure on the second fire left the first fire's task
+  created with `last_fired` unsaved, and every later tick enqueued it
+  again. Now the state is saved after each fire, under the routine's lock
+  held for the whole tick; and a scheduled fire's task records the instant
+  as `routine_at`, so a failure between a task and its save is found on
+  the next tick (a task of this routine for this instant, in any state, is
+  that fire) instead of being enqueued twice. The check runs before the
+  concurrency policy, so `coalesce` does not note the instant as a second
+  fire. A test fails each write of a three-fire tick in turn and checks
+  each instant is queued exactly once. `routines run` is not a scheduled
+  instant: its task has no `routine_at`, and two in one second are two
+  tasks. The check reads every task file, as `add_task`'s index already
+  does, so a fire costs two reads of the queue rather than one.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.

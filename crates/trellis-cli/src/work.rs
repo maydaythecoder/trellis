@@ -242,6 +242,7 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                     needs_approval,
                     backlog,
                     routine: None,
+                    routine_at: None,
                 },
                 Actor::Human,
             )?;
