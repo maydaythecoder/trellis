@@ -355,6 +355,32 @@ pub fn retitle(dir: &Path, note: &str, title: &str) -> Result<Outcome, VaultErro
         return Ok(out);
     }
     let key = normalize_key(title);
+    let new_keys = refs::alias_keys(&s.vault.notes[i].path, title);
+    let collides = s
+        .vault
+        .notes
+        .iter()
+        .enumerate()
+        .any(|(j, n)| j != i && refs::alias_keys(&n.path, &n.title).contains(&key));
+    // A child whose `parent` reached this note only through the old title
+    // (or its slug) would be orphaned by the new one. Rewritten as
+    // `[[New Title]]`, as body links are, unless that title is also another
+    // note's key; then by the key `link_to` would write. A reference by
+    // path or basename still resolves and is left as written.
+    let reparent = |j: usize| -> Option<String> {
+        if s.graph.parents[j] != Some(i) {
+            return None;
+        }
+        let t = s.vault.notes[j].parent_target()?;
+        if new_keys.contains(&normalize_key(&t)) {
+            return None;
+        }
+        Some(if collides {
+            s.link_to(i)
+        } else {
+            format!("[[{title}]]")
+        })
+    };
     if let Some(other) = s
         .vault
         .notes
@@ -367,24 +393,27 @@ pub fn retitle(dir: &Path, note: &str, title: &str) -> Result<Outcome, VaultErro
             other.1.path
         ));
     }
-    let mut links = 0;
+    let (mut links, mut parents) = (0, 0);
     for (j, n) in s.vault.notes.iter().enumerate() {
         let (body, count) = rewrite_links(&n.body, |l| {
             (s.graph.resolver.resolve(&l.parsed.target) == Resolved::Note(i))
                 .then(|| link_markup(title, alias_from_inner(l.inner)))
         });
-        if j != i && count == 0 {
+        let new_parent = reparent(j);
+        if j != i && count == 0 && new_parent.is_none() {
             continue;
         }
         links += count;
+        parents += usize::from(new_parent.is_some());
         let t = if j == i { title } else { n.title.as_str() };
-        let raw = compose_raw(t, s.parent_of(j).as_deref(), &body);
+        let parent = new_parent.or_else(|| s.parent_of(j));
+        let raw = compose_raw(t, parent.as_deref(), &body);
         if write_note(s.root(), &n.path, &raw)? {
             out.touched.modified.push(n.path.clone());
         }
     }
     out.messages.push(format!(
-        "{}: retitled \"{title}\"; {links} link(s) rewritten",
+        "{}: retitled \"{title}\"; {links} link(s) and {parents} parent reference(s) rewritten",
         s.vault.notes[i].path
     ));
     Ok(out)
