@@ -68,7 +68,11 @@ trellis/
     ├── trellis-loop/          # agent loop, tools, budgets, orchestrator
     ├── trellis-trail/         # decision trail
     ├── trellis-vcs/           # git snapshot and rollback
-    └── trellis-cli/           # binary
+    ├── trellis-vault/         # Apex vault → one note's context; must not depend on trellis-model
+    ├── trellis-queue/         # local task queue + heartbeat loop, file-backed in the git dir
+    ├── trellis-cli/           # binary
+    ├── tui-demo/              # what `trellis tui` runs
+    └── chat/                  # standalone chat TUI with its own binary; depends on no workspace crate (Q-19)
 ```
 
 Crate boundaries are load-bearing. `trellis-index` must not depend on `trellis-model` — the graph has to be testable with no model anywhere near it. `trellis-checks` owning `Verdict` is what makes Constraint 2 structural.

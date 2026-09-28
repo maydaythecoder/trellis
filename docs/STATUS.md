@@ -22,7 +22,7 @@ below, each audited against the code rather than against the milestone prose.
 | 11 | Multi-agent parallelizes work only, ADR says why | **Done in design and rules; no concurrent execution yet** | ADR 0005, `trellis-loop/src/partition.rs` |
 | 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and property-tested over 400 seeds, now against a real resolver rather than synthetic graphs. Rule 2 documented; enforced when integration is built** | `partition::plan`, `tests/partition_invariants.rs` |
 | 13 | `trellis doctor` reports batching capability and multi-agent tier | **Done.** Probes the runtime rather than reporting a default; verified reporting `RuntimeConstrained` against a live server | `trellis-model/src/tier.rs`, `trellis-model/src/runtime.rs` |
-| 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite. No CI configured yet** | `trellis-vcs/src/lib.rs` tests |
+| 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite, run by CI** | `trellis-vcs/src/lib.rs` tests; `.github/workflows/ci.yml` runs `cargo test --workspace` (line 46) and the named `trellis-vcs` rollback tests as their own `rollback-gate` job (line 64) |
 | 15 | Bidirectionality verified by property test | **Done** — 199 random graphs | `trellis-index/tests/bidirectional.rs` |
 | 16 | v1.0 gate verbatim in `ROADMAP.md`, all five conditions | **Done** | `ROADMAP.md` |
 | 17 | v1.0 non-goals explicit and substantial | **Done** — 10 entries | `ROADMAP.md` |
