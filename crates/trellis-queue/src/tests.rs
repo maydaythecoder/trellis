@@ -859,7 +859,7 @@ fn a_gated_assignee_is_skipped_and_work_says_what_it_waits_for() {
     add(&q, "mine", |_| {});
     let mut g = Gated(Fake::default());
     let (n, stop, out) = drain(&q, &mut g, WorkOptions::default());
-    assert_eq!((n, stop), (1, Stop::Empty));
+    assert_eq!((n, stop), (1, Stop::Waiting(1)));
     assert_eq!(g.0.ran, vec!["mine"]);
     assert!(out.contains(&skipped) && out.contains("is paused"), "{out}");
     assert_eq!(q.ids(State::Pending).unwrap(), vec![skipped]);

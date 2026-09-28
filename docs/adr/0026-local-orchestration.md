@@ -1,6 +1,7 @@
 # ADR 0026 — Local orchestration: task model, agent profiles, routines, budgets
 
-**Status:** Accepted.
+**Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
+§10. Each amendment is marked in place.
 **Date:** 2026-09-27
 **Extends:** ADR 0020 (the local work queue). Every rule there still holds:
 the queue lives in the git directory, files are published by hard link and
@@ -107,6 +108,14 @@ the activity log (§9).
 Adding blockers that are not yet `done` sets the task to `blocked` for reason
 `blockers`. A task set to `todo` while it still has unresolved blockers stays
 unclaimable, and `queue list` says why.
+
+*Amended in implementation: a heartbeat that finds tasks but none it may
+claim now says so.* `work` without `--every` used to return "queue empty"
+whenever nothing was claimed. With gated tasks, that line is false. The loop
+prints each waiting task and its reason once, and it stops with
+`Stop::Waiting(n)`: "nothing claimable; n pending task(s) waiting". This
+exits 0, like an empty queue, because nothing is wrong: the tasks are waiting
+as designed. "Queue empty" is printed only when nothing is pending.
 
 ### 2. Changing a file that already exists
 
@@ -222,6 +231,23 @@ The first four settings reach `cmd_run` through one new field on
 `RunSeeding`. It is an optional reference to the profile, and every caller
 except `work` passes `None`.
 
+*Amended in implementation:*
+- **The skill filter narrows the list the model is shown, and nothing
+  more.** The `read_skill` tool reads any skill by exact name through
+  `skills::read_body` in the orchestrator, and that path is owned by W-B. So
+  a denied skill is left off the list, but a model that already knows the
+  name can still read it. `agents show` says so. Enforcing the filter at the
+  tool belongs with the tool registry (ADR 0023).
+- **`work --model` is optional.** A queue whose tasks all name a profile
+  with its own model, or a process command, needs no default model. A task
+  that does need one, when none is configured, is left pending with that
+  reason instead of failing.
+- **The profile's approve list travels on `RunSeeding`, not `RunControl`.**
+  `RunControl` is built with a struct literal at six call sites across the
+  modules that W-D is editing. `RunSeeding` has two such sites, `run` and
+  `work`; every other caller uses `default()`. The approve list is applied
+  to the dial just after `cfg.control(flag)`.
+
 **Pause state is not written into the profile file.** The TOML is tracked,
 and writing to it would dirty the worktree that every run needs clean
 (ADR 0009). `agents pause`, the budget hard stop and budget raises write an
@@ -256,8 +282,10 @@ are read as untrusted data (ADR 0007). A trail whose factual digest does not
 match is still counted, because it is the only record available, and
 `agents show` reports how many such trails there are.
 
-**Thresholds.** They are checked when a profile's task is about to be
-claimed, and again after each of its runs:
+**Thresholds.** *Amended in implementation: every profile with a budget is
+checked at the top of every `work` tick, before anything is claimed.* The
+next tick after a run is the "after each run" check. The gate then reads the
+pause from the overlay.
 - **At `warn_at` of either window:** `work` prints a warning naming the
   window, the spend and the limit.
 - **At 100% (hard stop):** the profile is paused by the budget in its
@@ -360,6 +388,22 @@ scheduled instant) and the id of the last task the routine created.
   An unknown `{{name}}` is an error when the routine is loaded, not when it
   fires, and a var may not shadow a built-in.
 
+*Amended in implementation:*
+- **A `paused = true` routine is not evaluated at all**, so its state does
+  not move. When it is unpaused, the fires it missed while paused are
+  handled by its catch-up policy, as any other missed fires are.
+- **The look-back is clamped to 400 days** so that a routine left
+  unevaluated for years cannot stall a tick. The enumeration is one
+  `next_after` per due instant, and a year of every-minute fires is about
+  526,000 of them.
+- **A template's assignee must name an existing profile.** This is checked
+  when routines are loaded, like the template variables.
+- **A routine is loaded, and fails, as a set.** `work` refuses to start while
+  any routine or profile is invalid. That applies the ADR 0020 rule "refuse
+  before claiming" to definitions as well as to tasks. Once `work` is
+  running, a definition that breaks mid-session is reported once, and the
+  last good set is kept.
+
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
 
@@ -385,6 +429,17 @@ same shape `control` uses, so an older trail keeps its shape and its digest:
 
 These are edits to `main.rs` outside the "mod lines, variants and dispatch"
 rule for this wave, and they are listed as such.
+
+*As implemented, the complete list of `main.rs` edits outside mod lines,
+variants and dispatch:*
+- the `RunSeeding` field, and `profile: None` in the `run` arm's literal
+- the destructure in `cmd_run`
+- the approve-list override after `cfg.control`
+- the skill `retain`
+- the `tokens` read
+- the two `TrailFacts` fields, and their use in `record_trail` and in one
+  test helper
+- the `Queue` variant's doc comment, which now names ADR 0026
 
 ### 9. The activity log
 
@@ -437,6 +492,20 @@ The profiles are validated after the import is planned, including cycles
 across old and new profiles, and before anything is written. An import that
 would create an invalid set is refused as a whole.
 
+*Amended in implementation:*
+- **Claimed tasks are not exported**, and the export says how many it left
+  out. A task in `claimed/` belongs to a run in progress. A `claimed/`
+  folder in an import is refused.
+- **Export refuses a folder that is not empty.** An export mixed into
+  another folder's contents would bring those contents along when it is
+  imported.
+- **An instructions file is shared by path, not owned by one profile.** An
+  import that creates or renames a profile whose instructions path already
+  exists locally with different content is refused as a whole. Only
+  `--on-conflict replace` overwrites it.
+- **Task ids from an import folder must be lowercase ASCII letters, digits
+  and dashes.** Each id becomes a file name in the git directory.
+
 ### 11. Process agents
 
 This is Paperclip's `process` adapter. A profile with
@@ -483,6 +552,8 @@ two `Verdict`s that `trellis-checks` constructs from processes it ran itself.
 - **IANA timezone names** (§7).
 - **The per-profile `tools` list takes no effect** until W-B's registry
   reads it (§4).
+- **A profile's skill deny list does not stop `read_skill` by exact name**
+  (§4). It only narrows the list the model is shown.
 - **`@profile` mentions in notes do not wake anything.** ADR 0021 defers
   them.
 - **No prompt-token or dollar accounting** (§5).
