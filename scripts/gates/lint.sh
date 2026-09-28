@@ -5,7 +5,7 @@
 source "$(dirname "$0")/lib.sh"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-added=$(git diff -U0 "$GATE_BASE"...HEAD -- '*.rs' | grep -E '^\+[^+].*#!?\[allow\(' || true)
+added=$(git diff -U0 "$GATE_BASE"...HEAD -- '*.rs' | grep -vE '^\+\+\+' | grep -E '^\+.*#!?\[allow\(' || true)
 if [ -n "$added" ]; then
   echo "FAIL: this change adds lint suppressions (against $GATE_BASE):"
   printf '%s\n' "$added"

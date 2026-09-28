@@ -54,8 +54,12 @@ failure, printing `GATE / COMMAND / EXIT / OUTPUT`. `--only <id>` runs one.
 
 Every gate unsets provider keys before it runs anything (ADR 0024 §3).
 G6 runs text from an issue body, so each line must start with `cargo`, `git`,
-`scripts/`, `py -3 qa/` or `python3 qa/`, and may not use `$(`, backticks,
-pipes, `;`, `&` or redirection. Anything more belongs in a script under
+`scripts/`, `py -3 qa/` or `python3 qa/`, and may not contain `..`, `$(`,
+backticks, pipes, `;`, `&` or redirection. `python3` and `py -3` both run as
+whichever Python the machine has.
+
+A `blocked_by` entry that is not an issue number blocks the ticket (G0 and
+`next.sh`): a dependency the scripts cannot look up is not a satisfied one. Anything more belongs in a script under
 `scripts/`, where it is reviewed as code.
 
 A gate that cannot run fails. There is no skip variable and no `--force`; a
@@ -67,8 +71,9 @@ Run on `inherit` (so against PR #1's whole diff) at the commit that added
 this file; the output is in the commit message.
 
 - G1, G2, G2b (11/11 guards), G4, G5 pass.
-- G3 fails on three `#[allow]` lines PR #1 added (issue #13). Ticket branches
-  are measured against `inherit`, so this does not block them.
+- G3 fails on the seven `#[allow]` lines PR #1 added (issue #13). The gate's
+  first version matched three: its pattern missed a suppression at column 0.
+  Ticket branches are measured against `inherit`, so this does not block them.
 - G5 first failed on a key-shaped test canary in
   `crates/trellis-cli/tests/hosted_keys.rs`; that commit builds it at run time.
 - G0 fails on every existing ticket until the architect adds `## Done when`

@@ -14,7 +14,7 @@ gh issue list --state open --label ready --limit 200 --json number,title,labels,
   def prio: ([.labels[].name] | if index("P0") then 0 elif index("P1") then 1 else 2 end);
   sort_by(prio, .number)[] |
   [(.number | tostring), (prio | tostring), ([.labels[].name] | join(" ")),
-   ([.body | scan("blocked_by: \\[([0-9, ]*)\\]") | .[0]] | join(" ")),
+   ([.body | scan("blocked_by: \\[([^\\]]*)\\]") | .[0]] | join(" ")),
    .title] | join("\u001f")' |
 while IFS=$'\x1f' read -r n p labels blocked title; do
   reason=""
@@ -25,7 +25,9 @@ while IFS=$'\x1f' read -r n p labels blocked title; do
     *" type:story "*) reason="a story, not a ticket" ;;
   esac
   if [ -z "$reason" ]; then
-    for b in $(echo "$blocked" | tr ',' ' '); do
+    # A dependency that is not an issue number cannot be looked up, so it blocks.
+    for b in $(echo "$blocked" | tr ',"' '  '); do
+      case "$b" in *[!0-9]*) reason="blocked_by '$b' is not an issue number"; break ;; esac
       s=$(gh issue view "$b" --json state -q .state 2>/dev/null || echo UNKNOWN)
       [ "$s" = "CLOSED" ] || { reason="blocked by #$b ($s)"; break; }
     done

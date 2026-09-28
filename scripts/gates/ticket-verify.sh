@@ -23,7 +23,16 @@ while IFS= read -r line; do
   case "$l" in *'$('*|*'`'*|*'|'*|*';'*|*'&'*|*'>'*|*'<'*)
     fail "#$n Verify line uses shell composition; put it in a script under scripts/: $l" ;;
   esac
+  # `scripts/../x` matches the scripts/ prefix and runs anything.
+  case "$l" in *..*) fail "#$n Verify line contains '..': $l" ;; esac
 done <<< "$cmd"
+
+# A ticket may say `python3 qa/` or `py -3 qa/`; which one exists depends on
+# the machine (python3 is a Store stub on Windows), so both run as $PY.
+if printf '%s\n' "$cmd" | grep -qE '^[[:space:]]*(python3|py -3) '; then
+  [ -n "$PY" ] || fail "#$n Verify needs Python and none is on PATH"
+  cmd=$(printf '%s\n' "$cmd" | sed -E "s/^([[:space:]]*)(python3|py -3) /\\1$PY /")
+fi
 
 echo "running #$n Verify:"
 printf '%s\n' "$cmd" | sed 's/^/  /'
