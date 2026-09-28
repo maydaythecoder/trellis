@@ -139,7 +139,10 @@ pub struct Snapshot {
 /// in the workspace manifest for the worktree management that multi-agent
 /// mode needs (4.13), where the library genuinely helps.
 fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
-    let out = Command::new("git").args(args).current_dir(root).output()?;
+    // Scrubbed: `git commit` runs the repository's own hooks, and they
+    // inherit this environment.
+    let out =
+        trellis_core::secrets::scrub(Command::new("git").args(args).current_dir(root)).output()?;
     if !out.status.success() {
         return Err(VcsError::GitFailed {
             command: format!("git {}", args.join(" ")),

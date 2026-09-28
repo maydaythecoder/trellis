@@ -82,7 +82,7 @@ pub fn suspend() -> bool {
         // `kill -STOP` on our own pid rather than a libc `raise`: this
         // crate carries no libc dependency, and the shell notices either
         // way. SIGSTOP cannot be caught, which is what is wanted here.
-        let stopped = std::process::Command::new("kill")
+        let stopped = crate::scrub_keys(&mut std::process::Command::new("kill"))
             .args(["-STOP", &std::process::id().to_string()])
             .status()
             .map(|s| s.success())
@@ -146,7 +146,7 @@ pub fn install_signal_handlers(tx: tokio::sync::mpsc::Sender<crate::tui::message
                     // stop back to the default disposition. Nothing here is
                     // `unsafe` in Rust terms because we go through the
                     // process-wide signal API rather than libc directly.
-                    let _ = std::process::Command::new("kill")
+                    let _ = crate::scrub_keys(&mut std::process::Command::new("kill"))
                         .args(["-STOP", &std::process::id().to_string()])
                         .status();
                 }

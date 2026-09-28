@@ -439,6 +439,16 @@ fn main() -> Result<()> {
             Err(e) => return Err(e.context("cannot determine the repository root")),
         },
     };
+    // ADR 0024 §3: every `key_env` in the effective configuration, the
+    // user's file included, is removed from each child process trellis
+    // starts. Before any command runs, so no spawn precedes it. A config that
+    // does not load registers nothing here; the command reports that itself,
+    // and the two built-in key variables are removed regardless.
+    if let Ok(cfg) = config::RepoConfig::load(&root) {
+        trellis_core::secrets::register_key_vars(
+            cfg.providers.iter().flatten().map(|p| p.key_env.as_str()),
+        );
+    }
     // Say which tree is about to be read whenever it was inferred.
     //
     // Both directions are surprises worth naming. Acting on a directory
@@ -1030,7 +1040,7 @@ fn pull_model(name: Option<&str>) -> Result<()> {
     // connection that drops is the normal case, and a range-resuming fetch
     // that survives a hundred attempts is worth more here than avoiding a
     // dependency on a binary every platform already ships.
-    let status = std::process::Command::new("curl")
+    let status = trellis_core::secrets::scrub(&mut std::process::Command::new("curl"))
         .args([
             "-L",
             "-C",
@@ -3516,6 +3526,7 @@ fn version_of(cmd: &[String]) -> Option<String> {
     // to follow the module, not the interpreter.
     let mut c = std::process::Command::new(program);
     c.args(pre).arg("--version");
+    trellis_core::secrets::scrub(&mut c);
     let out = c.output().ok()?;
     if !out.status.success() {
         return None;
@@ -3541,6 +3552,7 @@ fn coverage_available(tests: &[String]) -> bool {
     };
     let mut c = std::process::Command::new(program);
     c.args(pre).arg("--help");
+    trellis_core::secrets::scrub(&mut c);
     c.output()
         .ok()
         .filter(|o| o.status.success())

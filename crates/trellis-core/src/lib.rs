@@ -1,11 +1,15 @@
 //! Shared identifiers, interning, and error types.
 //!
 //! This crate is deliberately dependency-light and knows nothing about
-//! parsing, models, or processes. Everything else in the workspace may
-//! depend on it; it depends on nothing in the workspace.
+//! parsing or models. Of processes it knows one thing: which environment
+//! variables a child must not inherit (`secrets`), because every crate that
+//! spawns one needs that list and all of them may depend on this crate.
+//! Everything else in the workspace may depend on it; it depends on nothing
+//! in the workspace.
 
 mod ids;
 pub mod interner;
+pub mod secrets;
 
 pub use ids::{CallSiteId, FileId, PartitionId, RunId, SymbolId};
 pub use interner::Interner;

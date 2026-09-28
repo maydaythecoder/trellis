@@ -1,7 +1,8 @@
 # ADR 0026 — Local orchestration: task model, agent profiles, routines, budgets
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
-§10. Each amendment is marked in place. §4's `tools` list and skill deny
+§10. §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
+was closed. Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -184,6 +185,7 @@ instructions = "agents/reviewer.md"   # under .trellis/, prepended to the task
 model = "llamacpp:http://127.0.0.1:8080"
 # command = ["python", "tools/agent.py"]   # a process agent (§11); excludes model
 # timeout_s = 1800
+# pass_env = ["ANTHROPIC_API_KEY"]         # process agents only; default none (§11)
 reports_to = "lead"
 paused = false
 tools = ["read_file", "edit"]           # carried for W-B's registry; see below
@@ -215,6 +217,10 @@ that reads them:
 - A process profile may not set a budget, because trellis cannot see the
   process's tokens (§8). A budget it could never enforce would read as a
   limit that exists.
+- *Amended (wave K):* `pass_env` is refused on a profile without `command`.
+  A model profile starts no process to pass a variable to, and accepting
+  the field would read as a pass-through that happened. An entry that is
+  blank or contains `=` is refused as not a variable name.
 
 **What a profile changes about a run of its tasks:**
 - **`instructions`**: the file's text goes ahead of the task, the same way
@@ -539,6 +545,27 @@ This is Paperclip's `process` adapter. A profile with
      for a process that ignores its group, a grandchild can outlive it. That
      is recorded here, not solved.
    - Ctrl-C kills the child and rolls back.
+
+   *Amended (wave K): the environment has no keys unless the profile
+   passes them.* The command's environment is trellis's own less every
+   hosted key variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and every
+   `[[providers]] key_env`), removed as for every other child (ADR 0024
+   §3). An external agent may legitimately need a key of its own, so the
+   profile field `pass_env = ["NAME", …]` puts back exactly the named
+   variables, each only if it is set in trellis's environment. The default
+   is none.
+
+   Passing a key is the profile owner's explicit choice, and it is made
+   knowing this: **whatever a process agent prints is recorded.** Its
+   stdout and stderr are not captured or scrubbed by trellis; they go
+   straight to `work`'s terminal, and from there into whatever keeps that
+   output (scrollback, a CI log, a file `work` was redirected to). What it
+   writes into the worktree is left for review if the run converges. A
+   process agent given a key and told to print its environment will print
+   the key. `agents list` and `agents show` name the passed variables,
+   never their values. Evidence:
+   `a_process_agent_inherits_no_key_unless_its_profile_passes_that_one` in
+   `crates/trellis-cli/tests/child_env.rs`.
 3. **Check** with the grounded checks, the same pair `trellis check` runs:
    typecheck and tests over `.`.
 4. **Decide.** The run converged if and only if the command changed at least

@@ -146,6 +146,13 @@ fn state_text(p: &Profile, o: &profile::Overlay) -> String {
 
 fn runs_with(p: &Profile) -> String {
     match (&p.file.command, &p.file.model) {
+        // Names, never values: which keys the process is given is part of
+        // what it runs with, and says why it could print one.
+        (Some(c), _) if !p.file.pass_env.is_empty() => format!(
+            "process `{}`, passed {}",
+            plain(&c.join(" ")),
+            plain(&p.file.pass_env.join(", "))
+        ),
         (Some(c), _) => format!("process `{}`", plain(&c.join(" "))),
         (None, Some(m)) => format!("model {}", plain(m)),
         (None, None) => "the `work` model".into(),

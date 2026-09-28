@@ -85,14 +85,24 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
 
     let started = Instant::now();
-    let child = Command::new(&argv[0])
-        .args(&argv[1..])
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .current_dir(root)
         .stdin(Stdio::piped())
         .env("TRELLIS_TASK", text)
         .env("TRELLIS_TASK_ID", task_id)
-        .env("TRELLIS_AGENT", &profile.name)
-        .spawn();
+        .env("TRELLIS_AGENT", &profile.name);
+    trellis_core::secrets::scrub(&mut cmd);
+    // After the scrub, so exactly the names the profile lists come back. An
+    // external agent may need a key of its own; whatever it then prints goes
+    // to the terminal, so passing one is the profile owner's choice, made in
+    // a committed file (ADR 0026 §11).
+    for name in &profile.file.pass_env {
+        if let Some(v) = std::env::var_os(name) {
+            cmd.env(name, v);
+        }
+    }
+    let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
