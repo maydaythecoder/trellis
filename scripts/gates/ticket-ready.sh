@@ -14,7 +14,12 @@ problems=()
 printf '%s' "$body" | grep -qE '^## Done when' || problems+=("no '## Done when' section")
 printf '%s' "$body" | awk '/^## Verify/{v=1; next} v && /^```/{print "fence"; exit}' | grep -q fence \
   || problems+=("no fenced command under '## Verify'")
-case " $labels " in *" triage:blocked "*) problems+=("labelled triage:blocked") ;; esac
+# triage:blocked waits on its blocked_by (checked below), so it clears when
+# they close; with no blocked_by there is nothing to wait for that a gate can see.
+case " $labels " in *" triage:blocked "*)
+  printf '%s' "$body" | grep -qE '^blocked_by: \[[^]]' || problems+=("labelled triage:blocked with no blocked_by") ;;
+esac
+case " $labels " in *" parked "*) problems+=("parked: waits on the owner's answer") ;; esac
 case " $labels " in *" triage:needs-human "*) problems+=("labelled triage:needs-human: a person routes this one") ;; esac
 case " $labels " in *" split "*) problems+=("split: work happens in its child tickets") ;; esac
 
