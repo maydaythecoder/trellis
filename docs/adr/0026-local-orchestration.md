@@ -1,7 +1,9 @@
 # ADR 0026 — Local orchestration: task model, agent profiles, routines, budgets
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
-§10. Each amendment is marked in place.
+§10. Each amendment is marked in place. §4's `tools` list and skill deny
+list were integrated with ADR 0023 and ADR 0019 afterwards; see
+"Integrated" at the end.
 **Date:** 2026-09-27
 **Extends:** ADR 0020 (the local work queue). Every rule there still holds:
 the queue lives in the git directory, files are published by hard link and
@@ -229,7 +231,8 @@ that reads them:
 - **`tools`**: stored and validated only as a list of strings. W-B is
   building the tool registry at the same time (ADR 0023), and this field is
   what it will read. Until then, **it has no effect on the run**, and
-  `agents show` says so.
+  `agents show` says so. *Integrated: it now narrows the run's tool set;
+  see "Integrated".*
 
 The first four settings reach `cmd_run` through one new field on
 `RunSeeding`. It is an optional reference to the profile, and every caller
@@ -241,7 +244,8 @@ except `work` passes `None`.
   `skills::read_body` in the orchestrator, and that path is owned by W-B. So
   a denied skill is left off the list, but a model that already knows the
   name can still read it. `agents show` says so. Enforcing the filter at the
-  tool belongs with the tool registry (ADR 0023).
+  tool belongs with the tool registry (ADR 0023). *Integrated: enforced at
+  `read_skill`; see "Integrated".*
 - **`work --model` is optional.** A queue whose tasks all name a profile
   with its own model, or a process command, needs no default model. A task
   that does need one, when none is configured, is left pending with that
@@ -562,10 +566,11 @@ two `Verdict`s that `trellis-checks` constructs from processes it ran itself.
 ## What is not built
 
 - **IANA timezone names** (§7).
-- **The per-profile `tools` list takes no effect** until W-B's registry
-  reads it (§4).
-- **A profile's skill deny list does not stop `read_skill` by exact name**
-  (§4). It only narrows the list the model is shown.
+- ~~**The per-profile `tools` list takes no effect** until W-B's registry
+  reads it (§4).~~ Integrated; see below.
+- ~~**A profile's skill deny list does not stop `read_skill` by exact name**
+  (§4). It only narrows the list the model is shown.~~ Integrated; see
+  below.
 - **`@profile` mentions in notes do not wake anything.** ADR 0021 defers
   them.
 - **No prompt-token or dollar accounting** (§5).
@@ -599,3 +604,49 @@ two `Verdict`s that `trellis-checks` constructs from processes it ran itself.
 - `work` does more on each tick: it evaluates routines, runs
   `reconcile`, checks budgets and reads every pending file. Each is a
   directory listing and small file reads.
+
+## Integrated
+
+The two §4 items this wave left inert, closed after ADR 0023's registry
+landed. Tested unless stated.
+
+- **`tools` narrows the run's tool set.** `ToolSet::narrowed` intersects the
+  set `[tools]` built, after trust, with the profile's list. It is called in
+  `cmd_run` right after `tooling::prepare` and before the driver is built,
+  so the prompt, the schema, the script parser and the orchestrator all get
+  the narrowed set, and bash joins the approve list only if it survived.
+  - **Only narrows.** A listed tool the repository did not enable, or did
+    not trust (bash, a custom tool), is not added. The run's `tools:` line
+    names it: `narrowed by agent profile `x`; not added, because this
+    repository does not offer them: grep`
+    (`a_profile_cannot_widen_the_repository_s_tools_and_the_line_says_so`,
+    `a_profile_tool_list_can_never_widen_the_repositorys_set`).
+  - **`run_checks` is always kept,** listed or not, for the reason ADR 0023
+    §1 refuses to disable it. §4's own example, `tools = ["read_file",
+    "edit"]`, omits it, and refusing that list would have made the example
+    invalid; the `tools:` line says it was kept.
+  - **An unknown name is an error**, not a no-op, as in `[tools]`: checked
+    against every built-in and every custom tool the repository declares,
+    trusted or not, when profiles are loaded (`agents list`, `work`,
+    `doctor`) and again at run start.
+  - **The orchestrator refuses the rest** with the same "not a tool in this
+    run" as any call outside the set
+    (`a_profile_tool_list_narrows_the_run_and_the_orchestrator_refuses_the_rest`).
+    A script that calls a removed tool fails before the snapshot
+    (`a_profile_without_edit_cannot_edit_and_the_run_costs_nothing`).
+  - **A process profile may not have a `tools` list.** Refused at
+    validation, for the budget's reason: it does not call trellis's tools,
+    so the list could never be enforced, and an unenforceable restriction
+    reads as one that holds.
+- **The skill filter is enforced at `read_skill`.** The profile's
+  `[skills]` becomes a `SkillPolicy` in `trellis-loop`, used both to filter
+  the listing and by the orchestrator, which serves `read_skill`; one
+  predicate, so the two cannot drift. A denied name is an error observation
+  naming the profile and the list: `skill `refactor` is denied to agent
+  profile `reviewer`: its [skills] deny = ["refactor"]`, and a name outside
+  an allow list says `allow = [...]` instead
+  (`read_skill_by_exact_name_is_refused_when_the_profile_denies_it`,
+  `a_profile_s_denied_skill_is_refused_at_read_skill_in_a_real_run`).
+  `--skill` forcing is not filtered: it is a person at the terminal, not
+  the profile, and `work` never forces a skill.
+- `agents show` no longer says either field is inert.
