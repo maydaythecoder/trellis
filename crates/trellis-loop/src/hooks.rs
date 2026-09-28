@@ -127,7 +127,8 @@ impl Hooks {
         head: bool,
     ) -> Result<exec::Captured, String> {
         if let Some(g) = &self.guard {
-            g.check()
+            g.check_async()
+                .await
                 .map_err(|why| format!("not started, because {why}"))?;
         }
         exec::run(Spec {

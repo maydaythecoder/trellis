@@ -57,5 +57,5 @@ pub use skills::{
     SkillPolicy, read_body, read_body_in,
 };
 pub use tools::{EditOutcome, ToolResult};
-pub use trust::{Fingerprint, TrustGuard, TrustItem, TrustState, TrustStore};
+pub use trust::{Fingerprint, HashCache, TrustGuard, TrustItem, TrustState, TrustStore};
 pub use wire::ToolCallWire;

@@ -1228,8 +1228,10 @@ fn guard_for(root: &Path, cfg: &HookConfig, tools: &ToolSet) -> crate::trust::Tr
         .map(|b| (b.shell.clone(), "bash = true".to_string()));
     let (root, cfg) = (root.to_path_buf(), cfg.clone());
     let custom = tools.customs().to_vec();
-    let now = move || crate::trust::Fingerprint::of(&root, &cfg, &custom, bash.clone());
-    crate::trust::TrustGuard::over(now(), now)
+    let now = move |cache: &crate::trust::HashCache| {
+        crate::trust::Fingerprint::of_cached(&root, &cfg, &custom, bash.clone(), Vec::new(), cache)
+    };
+    crate::trust::TrustGuard::over(now(&crate::trust::HashCache::default()), now)
 }
 
 fn log_line(log: &Path, word: &str) -> Option<Vec<String>> {
