@@ -1,0 +1,27 @@
+[package]
+name = "trellis-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Internal to this workspace: the deliverable is the `trellis` binary, not
+# a set of library crates. Saying so prevents an accidental `cargo publish`.
+publish = false
+
+# NOTE: trellis-vault must never depend on trellis-model, for the reason
+# trellis-index does not: what the model is shown has to be a pure function
+# of files on disk, testable byte-for-byte against the golden outputs with no
+# model anywhere near it. See docs/adr/0017-vault-context.md.
+#
+# serde_json is here for two things the TypeScript twin gets from
+# `JSON.parse`: the manifest array, and unescaping a quoted title. Parsing
+# JSON string escapes by hand would be a second JSON parser to keep in step.
+[dependencies]
+thiserror.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
