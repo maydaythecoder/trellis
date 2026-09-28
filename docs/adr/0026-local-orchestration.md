@@ -364,7 +364,11 @@ area = "parser"
 - month names `jan`–`dec` and day names `sun`–`sat`
 - day-of-week 0–7, where both 0 and 7 are Sunday
 - the usual rule that when day-of-month and day-of-week are both restricted,
-  a day matches if either one does
+  a day matches if either one does. *Amended 2026-09-27:* "restricted" is
+  Vixie cron's test, a field whose first character is not `*`. A field
+  starting with `*` (including `*/2`) makes the two AND, so
+  `0 9 */2 * mon` is odd-numbered Mondays; it had been read as restricted
+  and ORed, firing every Monday and every odd day.
 
 It does not support `L`, `W`, `#`, `?` or `@daily`-style names.
 

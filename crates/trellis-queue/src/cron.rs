@@ -51,7 +51,9 @@ fn value(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<u32
 /// A field as a bit set over `lo..=hi`, and whether it was `*`.
 fn field(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<(u64, bool), String> {
     let mut bits = 0u64;
-    let star = s == "*";
+    // Vixie cron's test: the field's first character, so `*/2` counts as a
+    // star for the day-of-month / day-of-week rule, not only `*`.
+    let star = s.starts_with('*');
     for part in s.split(',') {
         if part.is_empty() {
             return Err(format!("empty list item in `{s}`"));
@@ -159,11 +161,14 @@ impl Cron {
         let dow = (days + 4).rem_euclid(7) as u32;
         let dom_ok = self.doms & (1 << dom) != 0;
         let dow_ok = self.dows & (1 << dow) != 0;
-        match (self.dom_star, self.dow_star) {
-            (true, true) => true,
-            (false, true) => dom_ok,
-            (true, false) => dow_ok,
-            (false, false) => dom_ok || dow_ok,
+        // Vixie cron: if either day field starts with `*`, both must match;
+        // only when both are restricted does either suffice. For a plain
+        // `*` the set is full, so "both" is the other field alone, as
+        // before; for `*/2` the step still applies.
+        if self.dom_star || self.dow_star {
+            dom_ok && dow_ok
+        } else {
+            dom_ok || dow_ok
         }
     }
 
@@ -285,6 +290,35 @@ mod tests {
             c.next_after(parse_iso(after).unwrap(), Tz::parse(tz).unwrap())
                 .unwrap(),
         )
+    }
+
+    #[test]
+    fn a_stepped_star_day_field_ands_with_the_other_as_vixie_cron_does() {
+        // Vixie cron treats a day field as `*` for the OR-vs-AND rule when
+        // its first character is `*`, so `*/2` in day-of-month ANDs with a
+        // weekday: odd-numbered Mondays only. Read as a restriction instead,
+        // it ORed, and fired every Monday and every odd day.
+        // 2026-09-27 is a Sunday; Monday the 28th is even, the 5th is odd.
+        assert_eq!(
+            next("0 9 */2 * mon", "2026-09-27T12:00:00Z", "UTC"),
+            "2026-10-05T09:00:00Z",
+            "not Monday the 28th (even), not Tuesday the 29th (odd)"
+        );
+        assert_eq!(
+            next("0 9 */2 * mon", "2026-10-05T12:00:00Z", "UTC"),
+            "2026-10-19T09:00:00Z"
+        );
+        // The same in the other field: `*/2` weekdays AND the 13th.
+        assert_eq!(
+            next("0 9 13 * */2", "2026-09-27T12:00:00Z", "UTC"),
+            "2026-10-13T09:00:00Z",
+            "Tuesday the 13th; Tuesday is 2, which */2 includes"
+        );
+        // Two restricted fields still OR: Friday the 2nd comes first.
+        assert_eq!(
+            next("0 9 13 * fri", "2026-09-27T12:00:00Z", "UTC"),
+            "2026-10-02T09:00:00Z"
+        );
     }
 
     #[test]
