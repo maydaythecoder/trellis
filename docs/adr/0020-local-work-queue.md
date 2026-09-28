@@ -62,9 +62,9 @@ Each task is one JSON file, `<ulid-or-timestamp>-<slug>.json`:
 - The name is `YYYYMMDD-HHMMSS-<9-digit nanoseconds>-<slug>.json`, in UTC.
   The width is fixed, so sorting by name sorts by age, and oldest-first
   ordering is deterministic. The id is the file stem.
-- The file is written under a dot-name and then hard-linked into `pending/`.
-  A claimer therefore never reads half a file, and a name collision fails
-  instead of overwriting.
+- The file is written under a dot-name and then hard-linked into `pending/`
+  (`publish`, §3). A claimer therefore never reads half a file, and a name
+  collision fails instead of overwriting.
 - As the task moves, the queue appends three things:
   - `claimed_at` and `claimed_by_pid` while the task is in `claimed/`.
   - `outcome: { run_id, exit, finished_at }` when it leaves.
@@ -77,19 +77,51 @@ Moving `pending/x.json` to `claimed/x.json` is one `rename` within one
 filesystem. It either succeeds or fails, and whoever loses the race gets an
 error and moves on. This is Paperclip's atomic checkout without a database.
 
-*Amended in implementation: the checkout is a hard link, not a rename.* On
-Windows, `std::fs::rename` opens the source and renames it through that
-handle. If two claimers both open the file before either moves it, both
-renames succeed, because the second one moves the file to where it already
-is. The race test (`two_claimers_one_file_exactly_one_wins`) produced
-`[true, true]`. The claim is now `hard_link(pending/x, claimed/x)`, which
-fails when the target exists, followed by removing `pending/x`. Exactly one
-claimer creates the claimed name. Every other claimer gets `AlreadyExists`, or
-`NotFound` if the winner has already unlinked the source. Losing is `Ok(None)`
-to the caller, not an error. Every later move is made by the one process
-holding the claim, so it stays a `rename`. Windows can briefly refuse to
-replace a file that another process is touching (`PermissionDenied`), so file
-operations retry for up to half a second before reporting an error.
+*Amended in implementation: the checkout is a hard link, and the queue
+contains no `rename` at all.* Two Windows findings forced this. Both came
+from this crate's tests.
+
+1. **A rename-based claim let both claimers win.** On Windows,
+   `std::fs::rename` opens the source and renames it through that handle. If
+   two claimers both open the file before either moves it, both renames
+   succeed, because the second one moves the file to where it already is.
+   `two_claimers_one_file_exactly_one_wins` produced `[true, true]`.
+2. **Renaming over an existing file was refused.** Renaming a freshly
+   written temp file over an existing task file failed with "Access is
+   denied" in about one run in five of the crate's unit tests. Some of those
+   tests had no concurrency at all, and a retry that waited five seconds did
+   not clear the error.
+
+So the queue writes a file in only one way, `publish`:
+- write the whole file under a unique dot-name
+- `hard_link` it to the final name, which fails when that name exists
+- remove the temp name
+
+A reader never sees half a file, and nothing is ever overwritten.
+
+A **claim** reads `pending/x` and then publishes `claimed/x`. Exactly one
+claimer creates that name, and every other claimer gets `AlreadyExists`.
+Losing is `Ok(None)` to the caller, not an error. There is one more check. A
+claimer whose read of `pending/` is stale could create `claimed/x` after the
+real winner has finished and moved on. The winner removes `pending/x`
+immediately after claiming, so a claimer that finds `pending/x` gone
+withdraws its claim. Nobody else can remove `pending/x` while this claimer
+holds `claimed/x`.
+
+A **move** (finish, release, requeue) publishes the task at its new name and
+then removes the old one. Every file operation also retries with backoff for
+about five seconds on `PermissionDenied`, in case a virus scanner is holding a
+new file. After the change: 30 of 30 runs of the crate's tests passed, and 12
+of 12 runs of the CLI queue suite.
+
+One crash window remains. If a process dies between publishing a new name and
+removing the old one, the task exists complete in both places, and
+`queue list` shows both. A claim cannot happen in that state:
+- if both are in `pending/` and `claimed/`, a new claimer gets `AlreadyExists`
+- if both are in `claimed/` and `done/`, `pending/x` is already gone
+
+So the task is never run twice, but it stays stuck until someone removes one
+copy.
 
 ### 4. Execution is serial
 

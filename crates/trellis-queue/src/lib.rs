@@ -2,10 +2,11 @@
 //!
 //! One task is one JSON file. Its state is the directory it sits in:
 //! `pending/`, `claimed/`, `done/` or `failed/`, all under
-//! `<git-dir>/trellis/queue/`. A claim is a hard link that fails if the
-//! claimed name exists; every other move is a `rename` by the one process
-//! holding the claim. A state change either happened or did not, and there
-//! is no database to keep consistent with the files.
+//! `<git-dir>/trellis/queue/`. Every file is written whole under a temporary
+//! name and hard-linked into place, which fails if the name exists; a claim
+//! is exactly that link into `claimed/`, so one claimer wins. A move is a
+//! publish at the new name and then a removal of the old. There is no
+//! database to keep consistent with the files.
 //!
 //! The queue lives in the git directory because anything in the worktree
 //! makes it dirty, which blocks every run (ADR 0009), and rollback's
@@ -187,23 +188,14 @@ impl Queue {
         };
         let slug = slugify(task);
         // The stamp has nanosecond digits, but a coarse clock can repeat
-        // one. A hard link fails rather than overwrites when the name
-        // exists, and makes the complete file appear under its final name in
-        // one step — a `rename` would silently replace a same-named task.
+        // one; `publish` refuses an existing name, so a collision is a retry
+        // rather than an overwrite.
         loop {
             let id = format!("{}-{slug}", stamp::sortable_now());
-            let dest = self.path(State::Pending, &id);
-            let tmp = self.state_dir(State::Pending).join(format!(".{id}.tmp"));
-            write_json(&tmp, &t)?;
-            let linked = std::fs::hard_link(&tmp, &dest);
-            let _ = std::fs::remove_file(&tmp);
-            match linked {
-                Ok(()) => return Ok(id),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => return Err(io(&dest)(e)),
+            if publish(&self.path(State::Pending, &id), &t)? {
+                return Ok(id);
             }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -258,46 +250,45 @@ impl Queue {
     pub fn claim(&self, id: &str) -> Result<Option<Claim>, QueueError> {
         let from = self.path(State::Pending, id);
         let to = self.path(State::Claimed, id);
-        // The atomic checkout: a hard link that fails when the name exists,
-        // then removing the pending name. Exactly one claimer creates
-        // `claimed/<id>.json`; every other one gets AlreadyExists, or
-        // NotFound if the winner has already unlinked the source.
+        let mut task = match read_task(&from) {
+            Ok(t) => t,
+            // Someone else claimed it between the listing and now.
+            Err(QueueError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(e @ QueueError::Unreadable { .. }) => {
+                // Not runnable and not retryable. Moved to failed/ so it
+                // stops blocking the head of the queue, and reported.
+                let _ = std::fs::hard_link(&from, self.path(State::Failed, id));
+                remove(&from)?;
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
+        task.claimed_at = Some(iso_now());
+        task.claimed_by_pid = Some(std::process::id());
+
+        // The atomic checkout: `claimed/<id>.json` is created by a hard link
+        // that fails when the name exists, so exactly one claimer creates it.
         //
         // Not `rename`, which ADR 0020 first specified. On Windows
         // `std::fs::rename` opens the source and renames *by handle*, so two
         // claimers that both opened the file before either moved it both
         // succeed — the second "renames" the file to where it already is.
         // `two_claimers_one_file_exactly_one_wins` found it: [true, true].
-        match patiently(|| std::fs::hard_link(&from, &to)) {
-            Ok(()) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists
-                ) =>
-            {
-                return Ok(None);
-            }
-            Err(e) => return Err(io(&from)(e)),
+        if !publish(&to, &task)? {
+            return Ok(None);
         }
-        match patiently(|| std::fs::remove_file(&from)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io(&from)(e)),
+        // A claimer that read `pending/` long ago can create the claimed
+        // name after the real winner has finished and moved on. The winner
+        // removed the pending file first, so its absence means this claim is
+        // stale. Nobody else can remove it while this process holds the
+        // claimed name.
+        if !from.exists() {
+            remove(&to)?;
+            return Ok(None);
         }
-        let mut task = match read_task(&to) {
-            Ok(t) => t,
-            Err(e) => {
-                // Not runnable and not retryable. Moved to failed/ so it
-                // stops blocking the head of the queue, and reported.
-                let dead = self.path(State::Failed, id);
-                let _ = std::fs::rename(&to, &dead);
-                return Err(e);
-            }
-        };
-        task.claimed_at = Some(iso_now());
-        task.claimed_by_pid = Some(std::process::id());
-        rewrite(&to, &task)?;
+        remove(&from)?;
         Ok(Some(Claim {
             queue: self.clone(),
             id: id.to_string(),
@@ -331,9 +322,10 @@ impl Queue {
             let mut task = read_task(&from)?;
             task.claimed_at = None;
             task.claimed_by_pid = None;
-            rewrite(&from, &task)?;
-            let to = self.path(State::Pending, id);
-            rename(&from, &to)?;
+            // A pending task has not ended; an old outcome on it would be
+            // read as this attempt's.
+            task.outcome = None;
+            move_to(&from, &self.path(State::Pending, id), &task)?;
             return Ok(s);
         }
         Err(QueueError::NoSuchTask(id.to_string()))
@@ -351,17 +343,13 @@ pub struct Claim {
 
 impl Claim {
     /// Records the outcome and moves the task to `done/` or `failed/`.
-    ///
-    /// Rewritten in `claimed/` first and then renamed, so a crash between
-    /// the two leaves one complete file in one place.
     pub fn finish(mut self, to: State, outcome: Outcome) -> Result<PathBuf, QueueError> {
         debug_assert!(matches!(to, State::Done | State::Failed));
         self.task.attempts += 1;
         self.task.outcome = Some(outcome);
         let from = self.queue.path(State::Claimed, &self.id);
-        rewrite(&from, &self.task)?;
         let dest = self.queue.path(to, &self.id);
-        rename(&from, &dest)?;
+        move_to(&from, &dest, &self.task)?;
         Ok(dest)
     }
 
@@ -375,9 +363,11 @@ impl Claim {
         self.task.claimed_at = None;
         self.task.claimed_by_pid = None;
         let from = self.queue.path(State::Claimed, &self.id);
-        rewrite(&from, &self.task)?;
-        let dest = self.queue.path(State::Pending, &self.id);
-        rename(&from, &dest)
+        move_to(
+            &from,
+            &self.queue.path(State::Pending, &self.id),
+            &self.task,
+        )
     }
 }
 
@@ -398,33 +388,77 @@ fn write_json(path: &Path, t: &Task) -> Result<(), QueueError> {
     std::fs::write(path, json).map_err(io(path))
 }
 
-/// Replaces a file's contents by writing beside it and renaming over it.
-fn rewrite(path: &Path, t: &Task) -> Result<(), QueueError> {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("task");
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
+/// Makes `dest` appear with `t` as its complete contents, or returns false
+/// if `dest` already exists. Never overwrites.
+///
+/// Written under a unique dot-name, then hard-linked to `dest`: a hard link
+/// fails when the name exists, and the file appears whole in one step, so a
+/// reader never sees half of it. This is the queue's only way of writing a
+/// task file, and there is deliberately no `rename` anywhere. Renaming a
+/// freshly written file over an existing one failed on Windows with "Access
+/// is denied" in about one run in five of this crate's tests, and waiting
+/// five seconds did not clear it.
+fn publish(dest: &Path, t: &Task) -> Result<bool, QueueError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("task");
+    // Unique per writer: two claimers racing for one id must not share a
+    // temp file.
+    let tmp = dest.with_file_name(format!(
+        ".{name}.{}-{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     write_json(&tmp, t)?;
-    rename(&tmp, path)
+    let linked = patiently(|| std::fs::hard_link(&tmp, dest));
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(io(dest)(e)),
+    }
 }
 
-fn rename(from: &Path, to: &Path) -> Result<(), QueueError> {
-    patiently(|| std::fs::rename(from, to)).map_err(io(from))
+/// Removes a file; one already gone is not an error.
+fn remove(path: &Path) -> Result<(), QueueError> {
+    match patiently(|| std::fs::remove_file(path)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io(path)(e)),
+    }
 }
 
-/// A file operation, retried for up to half a second on PermissionDenied.
+/// Moves a task this process holds: publish at `to`, then remove `from`.
+///
+/// A crash between the two leaves the task complete in both places, which
+/// `queue list` shows; it never leaves it in neither.
+fn move_to(from: &Path, to: &Path, t: &Task) -> Result<(), QueueError> {
+    if !publish(to, t)? {
+        return Err(io(to)(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "a task with this id is already there",
+        )));
+    }
+    remove(from)
+}
+
+/// A file operation, retried for about five seconds on PermissionDenied.
 ///
 /// On Windows a file another process has open without delete sharing cannot
-/// be replaced, moved or removed, and "open" includes a losing claimer's
-/// `hard_link` touching the same file for a moment, or a virus scanner. Seen
-/// in `two_claimers_one_file_exactly_one_wins` as "Access is denied" on the
-/// winner's rewrite. Transient, so it is waited out; anything longer is a
-/// real error and reported as one.
+/// be linked to, moved or removed for as long as it is open, and "open"
+/// includes a virus scanner inspecting a file just written. Transient, so it
+/// is waited out; anything longer is a real error and reported as one.
 fn patiently<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
-    let mut tries = 0;
+    let mut waited = Duration::ZERO;
+    let mut step = Duration::from_millis(10);
     loop {
         match op() {
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 50 => {
-                tries += 1;
-                std::thread::sleep(Duration::from_millis(10));
+            Err(e)
+                if e.kind() == std::io::ErrorKind::PermissionDenied
+                    && waited < Duration::from_secs(5) =>
+            {
+                std::thread::sleep(step);
+                waited += step;
+                step = (step * 2).min(Duration::from_millis(200));
             }
             r => return r,
         }

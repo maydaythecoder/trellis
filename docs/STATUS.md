@@ -1721,8 +1721,10 @@ name the test that would fail if it were reverted.
     line; the JSONL log holds the per-turn events.
   - **Linked worktree:** git-dir resolution is tested. Each worktree gets its
     own queue.
-  - **The race test found a real defect.** A rename-based claim let two
-    claimers both win on Windows. The claim is now a hard link (ADR 0020 §3).
+  - **The tests found two Windows defects.** A rename-based claim let two
+    claimers both win. Renaming over an existing task file was intermittently
+    refused with "Access is denied". The queue now writes only by temp file
+    plus exclusive hard link, and contains no `rename` (ADR 0020 §3).
   - **Not tested automatically:** Ctrl-C during `work`. Not enforced: two
     `work` processes in one worktree at once.
   - **Not measured:** anything about unattended runs against a real model.
