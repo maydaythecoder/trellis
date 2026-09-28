@@ -150,8 +150,10 @@ fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
 /// since a `bash` call, custom tool, hook or process agent can write
 /// `.git/config` and the git guard puts it back only once the writer is
 /// done (ADR 0023 §5):
-/// - `core.fsmonitor=false`: the command `git status` and `git add` would
-///   run to ask what changed;
+/// - `core.fsmonitor=`: the command `git status` and `git add` would run
+///   to ask what changed. Empty rather than `false`: git before 2.36 took
+///   the setting as a hook path only, and would run a command named
+///   `false`; an empty value is off in every version;
 /// - `core.hooksPath` at a path that cannot hold a hook (`/dev/null`, or
 ///   `NUL` on Windows): a hook runs on any index write
 ///   (`post-index-change`), `git add` into a copied index included.
@@ -159,7 +161,7 @@ fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
 /// Clean filters are neutralised separately ([`filters_off`]) and only
 /// where a digest is taken, since a filter is named per driver and a
 /// rollback's checkout needs the user's own (Git LFS's smudge).
-pub const OVERRIDES: [&str; 4] = ["-c", "core.fsmonitor=false", "-c", NO_HOOKS];
+pub const OVERRIDES: [&str; 4] = ["-c", "core.fsmonitor=", "-c", NO_HOOKS];
 
 #[cfg(windows)]
 const NO_HOOKS: &str = "core.hooksPath=NUL";
@@ -180,7 +182,7 @@ pub fn command() -> Command {
 /// hooks directory.
 pub(crate) fn command_with_hooks() -> Command {
     let mut c = Command::new("git");
-    c.args(["-c", "core.fsmonitor=false"]);
+    c.args(["-c", "core.fsmonitor="]);
     trellis_core::secrets::scrub(&mut c);
     c
 }

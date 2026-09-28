@@ -518,7 +518,7 @@ this amendment a hook that wrote at any of those points left bytes in a
     nothing planted.* "No reach" was wrong in one respect: what trellis
     runs, it runs at a time the writer did not choose, with trellis's
     judgement waiting on the answer. Every `git` trellis runs now carries
-    `-c core.fsmonitor=false -c core.hooksPath=/dev/null` (`NUL` on
+    `-c core.fsmonitor= -c core.hooksPath=/dev/null` (`NUL` on
     Windows) on its command line (`trellis_vcs::command`), which outranks
     every config file, include and worktree config. The hooks override is
     load-bearing: `git add -A` into the fingerprint's copied index writes
