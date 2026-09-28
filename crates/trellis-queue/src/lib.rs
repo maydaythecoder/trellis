@@ -568,8 +568,7 @@ impl Queue {
             for id in self.ids(s)? {
                 let path = self.path(s, &id);
                 let task = read_json::<Task>(&path).map_err(|e| e.to_string());
-                let age = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
+                let age = files::read_settled(&path, |p| std::fs::metadata(p)?.modified())
                     .ok()
                     .and_then(|m| SystemTime::now().duration_since(m).ok());
                 all.push(Entry {
@@ -614,7 +613,13 @@ impl Queue {
 
     /// The per-task lock every mutation of a task outside `pending/` and
     /// `claimed/` takes, with any replacement of it that was cut short
-    /// finished first (`files::replace`).
+    /// finished first.
+    ///
+    /// That settle is for the mutations that move or remove the name
+    /// (`requeue`, `remove_task`, an `edit` that changes state): each works
+    /// on the canonical file, and a side copy left beside it would bring
+    /// the task back in its old state. An edit in place goes through
+    /// `files::replace`, which settles for itself.
     ///
     /// `edit`, `requeue` and `remove_task` all take it: one that did not
     /// could move the task while an edit held it between its read and its
