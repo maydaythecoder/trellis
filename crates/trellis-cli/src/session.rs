@@ -518,8 +518,10 @@ impl Session {
         let outcome = crate::cmd_run_with(
             &self.root,
             task,
-            &model,
-            self.unconstrained,
+            crate::ModelChoice {
+                spec: &model,
+                unconstrained: self.unconstrained,
+            },
             // No resume, and no focus override: `[context] focus` applies.
             crate::RunSeeding {
                 model_from_user: self.model_from_user,

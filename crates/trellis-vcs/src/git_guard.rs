@@ -563,7 +563,11 @@ mod tests {
         git(root, &["init", "-q"]);
         let hook = root.join(".git/hooks/pre-commit");
         std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut ro = std::fs::metadata(&hook).unwrap().permissions();
+        // Kept to make the file writable again below. Putting back the mode
+        // it was created with, rather than clearing the read-only flag, is
+        // what keeps a Unix run from making the file world-writable.
+        let writable = std::fs::metadata(&hook).unwrap().permissions();
+        let mut ro = writable.clone();
         ro.set_readonly(true);
         std::fs::set_permissions(&hook, ro).unwrap();
         #[cfg(unix)]
@@ -574,20 +578,14 @@ mod tests {
         let before = std::fs::metadata(&hook).unwrap().permissions();
         let g = GitGuard::capture(root).unwrap();
 
-        let mut rw = before.clone();
-        #[allow(clippy::permissions_set_readonly_false)]
-        rw.set_readonly(false);
-        std::fs::set_permissions(&hook, rw).unwrap();
+        std::fs::set_permissions(&hook, writable.clone()).unwrap();
         std::fs::remove_file(&hook).unwrap();
         let (differed, failed) = g.restore();
         assert!(failed.is_empty(), "{failed:?}");
         assert_eq!(differed, [".git/hooks/pre-commit"]);
         assert_eq!(std::fs::metadata(&hook).unwrap().permissions(), before);
         // Writable again, so the temporary directory can be removed.
-        let mut rw = before;
-        #[allow(clippy::permissions_set_readonly_false)]
-        rw.set_readonly(false);
-        std::fs::set_permissions(&hook, rw).unwrap();
+        std::fs::set_permissions(&hook, writable).unwrap();
     }
 
     #[test]
