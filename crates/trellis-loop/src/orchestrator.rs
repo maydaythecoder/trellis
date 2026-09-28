@@ -246,6 +246,10 @@ pub struct Orchestrator {
     /// Model calls served, for `GateDenial::call`.
     calls: u32,
     gate_log: Vec<GateDenial>,
+    /// Where `read_skill` looks beyond the repository, and a profile's
+    /// `[skills]` lists, enforced here because this is where the body is
+    /// served (ADR 0026 §4).
+    skills: crate::skills::SkillAccess,
 }
 
 impl Orchestrator {
@@ -263,7 +267,17 @@ impl Orchestrator {
             hooks: None,
             calls: 0,
             gate_log: Vec::new(),
+            skills: crate::skills::SkillAccess::default(),
         }
+    }
+
+    /// User-level skill directories and an agent profile's skill lists, for
+    /// `read_skill`. The default reads the repository's skills only, with
+    /// no filter, which is what every run did before.
+    #[must_use]
+    pub fn with_skills(mut self, access: crate::skills::SkillAccess) -> Self {
+        self.skills = access;
+        self
     }
 
     /// The tool set this run offers; the same value the prompt was given.
@@ -425,7 +439,7 @@ impl Orchestrator {
             ToolCall::ReadFile { path } => self.read_file(path),
             ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
             ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
-            ToolCall::ReadSkill { name } => match crate::skills::read_body(&self.root, name) {
+            ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
                 Ok(body) => ToolResult::FileContent(body),
                 Err(e) => ToolResult::Error(e),
             },
