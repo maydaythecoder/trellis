@@ -121,6 +121,14 @@ pub struct UntrustedFactual {
     /// Where the control dial stood (ADR 0018), when the writer recorded it.
     #[serde(default)]
     pub control: Option<String>,
+    /// Completion tokens, when the writer recorded them (ADR 0026 §8).
+    /// Written by whoever last edited the file, so a budget read from it is
+    /// a cost guard over untrusted data, never a correctness claim.
+    #[serde(default)]
+    pub tokens: Option<u64>,
+    /// The agent profile the run executed as, when recorded.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -378,6 +386,8 @@ mod tests {
                 context: None,
                 actions: Vec::new(),
                 control: None,
+                tokens: None,
+                agent: None,
             },
             judgment: crate::Judgment::default(),
         }
@@ -457,6 +467,42 @@ mod tests {
             read.integrity("{}"),
             Integrity::Altered,
             "valid JSON with no factual section is not intact either"
+        );
+    }
+
+    #[test]
+    fn a_trail_without_spend_serialises_exactly_as_before_the_fields_existed() {
+        // The risk: adding `tokens`/`agent` changes the bytes of every trail
+        // that has none, and with them the digest of every trail already
+        // committed. Omitted-when-absent keeps the old shape.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        assert!(
+            !json.contains("tokens") && !json.contains("\"agent\""),
+            "{json}"
+        );
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+    }
+
+    #[test]
+    fn recorded_spend_reads_back_and_is_covered_by_the_digest() {
+        // The budget ledger (ADR 0026) reads these two fields; an edit to
+        // either must be as visible as an edit to anything else factual.
+        let mut t = a_trail("app/core.py");
+        t.factual.tokens = Some(1234);
+        t.factual.agent = Some("reviewer".into());
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.factual.tokens, Some(1234));
+        assert_eq!(read.factual.agent.as_deref(), Some("reviewer"));
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        let edited = json.replace("1234", "12");
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
         );
     }
 }
