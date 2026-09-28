@@ -91,17 +91,9 @@ impl Profile {
             .as_ref()
             .map(|p| root.join(".trellis").join(p))
     }
-
-    /// Whether a skill may be disclosed to this profile's runs.
-    pub fn allows_skill(&self, name: &str) -> bool {
-        let Some(s) = &self.file.skills else {
-            return true;
-        };
-        if s.deny.iter().any(|d| d == name) {
-            return false;
-        }
-        s.allow.as_ref().is_none_or(|a| a.iter().any(|x| x == name))
-    }
+    // Whether a skill is allowed is `trellis_loop::SkillPolicy::check`, the
+    // one predicate both the listing and `read_skill` use. A second copy
+    // here is how the two would drift.
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -439,7 +431,12 @@ warn_at = 0.5
         .unwrap();
         let r = &s["reviewer"];
         assert_eq!(r.warn_at(), 0.5);
-        assert!(r.allows_skill("a") && !r.allows_skill("b") && !r.allows_skill("c"));
+        let sk = r.file.skills.as_ref().unwrap();
+        assert_eq!(
+            sk.allow.as_deref(),
+            Some(&["a".to_string(), "b".to_string()][..])
+        );
+        assert_eq!(sk.deny, ["b"]);
         assert_eq!(s["lead"].warn_at(), DEFAULT_WARN_AT);
     }
 
