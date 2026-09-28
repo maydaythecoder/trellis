@@ -62,6 +62,14 @@ pub enum ToolCallWire {
     },
     /// Run a shell command in the repository root. Its output is not a check.
     Bash { command: String },
+    /// Search the repository's note vault. Reference material.
+    SearchNotes {
+        query: String,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Read one vault note by stem, path or title. Reference material.
+    ReadNote { note: String },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
@@ -112,6 +120,10 @@ impl ToolCallWire {
             ToolCallWire::Find { glob } => Step::Call(ToolCall::Find { glob }),
             ToolCallWire::Ls { path } => Step::Call(ToolCall::Ls { path }),
             ToolCallWire::Bash { command } => Step::Call(ToolCall::Bash { command }),
+            ToolCallWire::SearchNotes { query, limit } => {
+                Step::Call(ToolCall::SearchNotes { query, limit })
+            }
+            ToolCallWire::ReadNote { note } => Step::Call(ToolCall::ReadNote { note }),
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }

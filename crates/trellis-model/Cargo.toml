@@ -18,6 +18,18 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# TLS for hosted providers (ADR 0024), behind the `hosted` feature so the
+# local-only build links none of it. Each is the minimum that does the job:
+# rustls: the TLS implementation, `ring` provider instead of the default
+#   `aws-lc-rs`, which needs cmake and nasm to build (ADR 0013's clean-machine
+#   rule).
+# tokio-rustls: runs rustls over the existing `tokio::net::TcpStream`, so the
+#   TLS path has the same timeout and cancellation as the plain one.
+# webpki-roots: Mozilla's root set compiled in, so trust does not depend on
+#   which certificate store a machine happens to have.
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"], optional = true }
+webpki-roots = { version = "1.0.9", optional = true }
 
 [dev-dependencies]
 # This crate, on itself, to turn its own `grammar` feature on for its own
@@ -53,3 +65,6 @@ workspace = true
 # `trellis-loop` turns it on for the one caller outside them.
 [features]
 grammar = ["dep:llguidance", "dep:schemars"]
+# HTTPS to hosted providers (ADR 0024). Without it an `https://` base is
+# refused with a message naming the feature, and nothing else changes.
+hosted = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]

@@ -14,6 +14,7 @@ mod gate;
 mod governance;
 mod hooks;
 mod listing;
+mod notes;
 mod orchestrator;
 pub mod partition;
 mod registry;
@@ -23,7 +24,7 @@ mod tools;
 mod trust;
 mod wire;
 
-pub use adapter::RuntimeModel;
+pub use adapter::{Compacted, HostedModel, RuntimeModel};
 pub use agent::{
     Model, NotConverged, Outcome, PriorContext, RepoContext, Seed, Step, ToolCall, Transcript,
     Turn, VaultContext, run, run_seeded,
@@ -41,7 +42,9 @@ pub use hooks::{
 };
 pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
-pub use registry::{BUILTIN_TOOLS, BashSettings, CustomTool, ToolSelection, ToolSet, call_json};
+pub use registry::{
+    BUILTIN_TOOLS, BashSettings, CustomTool, NotesSource, ToolSelection, ToolSet, call_json,
+};
 pub use scripted::ScriptedModel;
 pub use skills::{
     DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillCatalog, read_body,

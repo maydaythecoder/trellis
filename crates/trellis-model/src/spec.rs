@@ -12,6 +12,7 @@
 //! downstream: a [`ModelSpec::Runtime`] cannot exist without a [`Dialect`]
 //! that parsed, so no consumer needs to re-check.
 
+use crate::hosted::Protocol;
 use crate::runtime::Dialect;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -36,13 +37,26 @@ pub enum ModelSpec {
         /// because the base already contains colons.
         model: Option<String>,
     },
+    /// A hosted provider's own tool-calling API (tier 1, ADR 0024):
+    /// `openai-chat:<base>#<model>` or `anthropic:<base>#<model>`. The key
+    /// comes from the protocol's default variable.
+    Hosted {
+        protocol: Protocol,
+        base: String,
+        model: String,
+    },
+    /// `provider:<name>#<model>`: a `[[providers]]` entry in the repository's
+    /// config, resolved by the binary, which is what reads the config.
+    Provider { name: String, model: String },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SpecError {
     #[error(
-        "`{0}` is not a model spec. Expected `scripted:<path>`, or \
-         `<runtime>:http://host:port` where <runtime> is llamacpp, vllm or sglang."
+        "`{0}` is not a model spec. Expected `scripted:<path>`, \
+         `<runtime>:http://host:port` where <runtime> is llamacpp, vllm or sglang, \
+         `openai-chat:<base>#<model>`, `anthropic:<base>#<model>`, or \
+         `provider:<name>#<model>`."
     )]
     NoScheme(String),
 
@@ -57,6 +71,12 @@ pub enum SpecError {
 
     #[error("`{0}` has a `#` but names no weight after it")]
     EmptyModel(String),
+
+    #[error(
+        "`{0}` names no model. A hosted spec needs one after `#`, e.g. \
+         `anthropic:https://api.anthropic.com#claude-opus-5`"
+    )]
+    HostedNeedsModel(String),
 }
 
 impl FromStr for ModelSpec {
@@ -72,6 +92,34 @@ impl FromStr for ModelSpec {
                 return Err(SpecError::EmptyScript(s.to_string()));
             }
             return Ok(ModelSpec::Scripted(PathBuf::from(rest)));
+        }
+
+        // Hosted schemes before the dialects: `openai:` is a dialect alias
+        // (vLLM completions) and must keep meaning that (ADR 0024).
+        let hosted = match kind.to_ascii_lowercase().as_str() {
+            "openai-chat" => Some(Protocol::OpenAiChat),
+            "anthropic" => Some(Protocol::Anthropic),
+            _ => None,
+        };
+        if hosted.is_some() || kind.eq_ignore_ascii_case("provider") {
+            let (head, model) = match rest.split_once('#') {
+                Some((h, m)) if !m.trim().is_empty() => (h, m.to_string()),
+                _ => return Err(SpecError::HostedNeedsModel(s.to_string())),
+            };
+            if head.trim().is_empty() {
+                return Err(SpecError::EmptyBase(s.to_string()));
+            }
+            return Ok(match hosted {
+                Some(protocol) => ModelSpec::Hosted {
+                    protocol,
+                    base: head.to_string(),
+                    model,
+                },
+                None => ModelSpec::Provider {
+                    name: head.to_string(),
+                    model,
+                },
+            });
         }
 
         // A URL carries its own `http:` scheme, so the split above took that
@@ -116,6 +164,12 @@ impl std::fmt::Display for ModelSpec {
                 base,
                 model: Some(m),
             } => write!(f, "{}:{base}#{m}", dialect.name()),
+            ModelSpec::Hosted {
+                protocol,
+                base,
+                model,
+            } => write!(f, "{}:{base}#{model}", protocol.scheme()),
+            ModelSpec::Provider { name, model } => write!(f, "provider:{name}#{model}"),
         }
     }
 }
@@ -178,6 +232,9 @@ mod tests {
             // The weight name has to survive the round trip too, or the
             // trail records a spec that reproduces a different run.
             "vllm:http://127.0.0.1:11434#qwen3:8b",
+            "openai-chat:https://api.openai.com/v1#gpt-5",
+            "anthropic:https://api.anthropic.com#claude-opus-5",
+            "provider:groq#llama-3.3-70b",
         ] {
             let parsed: ModelSpec = s.parse().unwrap();
             let again: ModelSpec = parsed.to_string().parse().unwrap();
@@ -212,6 +269,49 @@ mod tests {
         let e = "nonsense".parse::<ModelSpec>().unwrap_err().to_string();
         assert!(e.contains("scripted:"), "{e}");
         assert!(e.contains("llamacpp"), "{e}");
+    }
+
+    #[test]
+    fn hosted_schemes_do_not_take_over_the_openai_dialect_alias() {
+        // `openai:` has meant vLLM completions since before ADR 0024; a spec
+        // that silently switched protocol would be a different run.
+        assert!(matches!(
+            "openai:http://x".parse::<ModelSpec>().unwrap(),
+            ModelSpec::Runtime {
+                dialect: Dialect::VllmOpenAi,
+                ..
+            }
+        ));
+        assert_eq!(
+            "anthropic:https://api.anthropic.com#claude-opus-5"
+                .parse::<ModelSpec>()
+                .unwrap(),
+            ModelSpec::Hosted {
+                protocol: Protocol::Anthropic,
+                base: "https://api.anthropic.com".into(),
+                model: "claude-opus-5".into(),
+            }
+        );
+        assert_eq!(
+            "provider:groq#m".parse::<ModelSpec>().unwrap(),
+            ModelSpec::Provider {
+                name: "groq".into(),
+                model: "m".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_hosted_spec_without_a_model_is_refused_at_the_spec() {
+        // A hosted API needs the model named; finding out at the first turn
+        // costs a snapshot.
+        for s in [
+            "anthropic:https://api.anthropic.com",
+            "provider:groq#",
+            "openai-chat:#m",
+        ] {
+            assert!(s.parse::<ModelSpec>().is_err(), "{s}");
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@
 
 mod ask;
 mod config;
+mod hosted;
 mod session;
 #[cfg(test)]
 mod testutil;
@@ -980,6 +981,11 @@ impl RunExit {
 enum Driver {
     Scripted(trellis_loop::ScriptedModel),
     Runtime(trellis_loop::RuntimeModel),
+    /// Tier 1: a hosted provider's own tool calling (ADR 0024).
+    ///
+    /// Boxed: it carries the conversation's replayed provider messages, and
+    /// the other variants should not pay for its size.
+    Hosted(Box<trellis_loop::HostedModel>),
 }
 
 impl Driver {
@@ -992,7 +998,17 @@ impl Driver {
         spec: &trellis_model::ModelSpec,
         unconstrained: bool,
         tools: &trellis_loop::ToolSet,
+        cfg: &config::RepoConfig,
     ) -> Result<Self> {
+        if let Some(r) = hosted::resolve(spec, cfg)? {
+            if unconstrained {
+                anyhow::bail!(
+                    "--unconstrained is meaningless for a hosted model: it calls tools \
+                     through the provider's own API (tier 1)"
+                );
+            }
+            return Ok(Driver::Hosted(Box::new(hosted::build(&r, cfg)?)));
+        }
         match spec {
             trellis_model::ModelSpec::Scripted(path) => {
                 if unconstrained {
@@ -1015,12 +1031,28 @@ impl Driver {
                 // Named rather than `new(client, !unconstrained)`: the flag is
                 // called --unconstrained, so a negated bool at the call site
                 // meant reading two negations to learn which tier runs.
-                Ok(Driver::Runtime(if unconstrained {
-                    trellis_loop::RuntimeModel::unconstrained(client)
-                } else {
-                    trellis_loop::RuntimeModel::constrained(client)
-                }))
+                Ok(Driver::Runtime(
+                    if unconstrained {
+                        trellis_loop::RuntimeModel::unconstrained(client)
+                    } else {
+                        trellis_loop::RuntimeModel::constrained(client)
+                    }
+                    .with_context_bytes(cfg.context_bytes()),
+                ))
             }
+            trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. } => {
+                unreachable!("resolved above")
+            }
+        }
+    }
+
+    /// Every compaction the driver made (ADR 0024 §5).
+    fn compactions(&self) -> Vec<trellis_loop::Compacted> {
+        use trellis_loop::Model;
+        match self {
+            Driver::Scripted(m) => m.compactions().to_vec(),
+            Driver::Runtime(m) => m.compactions().to_vec(),
+            Driver::Hosted(m) => m.compactions().to_vec(),
         }
     }
 
@@ -1048,6 +1080,7 @@ impl Driver {
                 },
                 m.tier().degradation()
             ),
+            Driver::Hosted(m) => hosted::describe(m),
         }
     }
 }
@@ -1244,7 +1277,7 @@ fn cmd_run(
         _ => None,
     };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
-    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools)?;
+    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools, &cfg)?;
 
     // Reachability before the snapshot, and the ordering is the whole point.
     //
@@ -1314,7 +1347,7 @@ fn cmd_run(
             // Not a warning and not a failure. The loop already validates and
             // retries; what was wrong was the claim, so the fix is to report
             // the tier that is actually running.
-            driver = Driver::build(&spec, true, &tooling.tools)?;
+            driver = Driver::build(&spec, true, &tooling.tools, &cfg)?;
         }
         schema_note = Some(note);
     }
@@ -1323,6 +1356,11 @@ fn cmd_run(
     // runtime that is not listening is noise ahead of the only line that
     // matters.
     let _ = writeln!(out, "model:    {}", driver.describe());
+    if let Driver::Runtime(m) = &driver
+        && let Some(n) = hosted::thinking_ignored(&cfg, &format!("{:?}", m.dialect()))
+    {
+        let _ = writeln!(out, "{n}");
+    }
     let _ = writeln!(out, "control:  {}", dial.describe());
     if let Some(line) = tooling.line(dial.mode) {
         let _ = writeln!(out, "tools:    {line}");
@@ -1601,6 +1639,10 @@ fn cmd_run(
                     Driver::Runtime(m) => {
                         trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
                     }
+                    Driver::Hosted(m) => {
+                        trellis_loop::run_seeded(task, &mut **m, &handle, &cfg.budget(), seed)
+                            .await
+                    }
                 }
             } => Some(out),
             _ = answer => None,
@@ -1628,6 +1670,7 @@ fn cmd_run(
     // pool — so an interrupted run would hang until someone pressed Enter.
     rt.shutdown_background();
 
+    let compactions = driver.compactions();
     let facts = |approved| TrailFacts {
         approved,
         base_commit: &snapshot.head,
@@ -1635,6 +1678,7 @@ fn cmd_run(
         control: Some(dial.describe()),
         gates: &gate_log,
         stamp: Some(&stamp),
+        compactions: &compactions,
     };
     let Some(outcome) = outcome else {
         return interrupted_run(
@@ -1719,6 +1763,9 @@ fn cmd_run(
             measured.len(),
             *peak as f64 / *first as f64
         );
+    }
+    if let Some(line) = hosted::compaction_line(&compactions) {
+        let _ = writeln!(out, "{line}");
     }
 
     match outcome {
@@ -2072,6 +2119,8 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         ToolCall::Find { glob } => ("find", glob.clone()),
         ToolCall::Ls { path } => ("ls", path.clone()),
         ToolCall::Bash { command } => ("bash", summarise(command)),
+        ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
+        ToolCall::ReadNote { note } => ("read_note", note.clone()),
         ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
     };
 
@@ -2133,6 +2182,10 @@ struct TrailFacts<'a> {
     /// run id is the `TRELLIS_RUN_ID` bash and hooks were given. `None`
     /// stamps it now.
     stamp: Option<&'a (String, String)>,
+    /// Compactions (ADR 0024 §5), each an action under the turn whose
+    /// request was compacted. Empty on a run that never compacted, so older
+    /// trails keep their shape.
+    compactions: &'a [trellis_loop::Compacted],
 }
 
 fn record_trail(
@@ -2150,6 +2203,7 @@ fn record_trail(
         control,
         gates,
         stamp,
+        compactions,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2225,12 +2279,28 @@ fn record_trail(
                     wrote: false,
                 })
                 .collect();
-            decision
+            let at = act.turn;
+            let compacted: Vec<trellis_trail::Action> = compactions
+                .iter()
+                .filter(|c| c.turn == at)
+                .map(hosted::compaction_action)
+                .collect();
+            compacted
                 .into_iter()
+                .chain(decision)
                 .chain(denied)
                 .chain(std::iter::once(act))
         })
         .collect();
+    // A compaction for the request that produced `done` has no turn of its
+    // own to sit under; it goes last, where it happened.
+    let mut actions = actions;
+    actions.extend(
+        compactions
+            .iter()
+            .filter(|c| c.turn as usize > turns.turns.len())
+            .map(hosted::compaction_action),
+    );
 
     let (timestamp, started_at) = stamp.cloned().unwrap_or_else(trellis_trail::now);
 
@@ -2789,52 +2859,61 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
 
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
-        let trellis_model::ModelSpec::Runtime {
-            dialect,
-            base,
-            model,
-        } = &spec
-        else {
-            anyhow::bail!(
-                concat!(
-                    "`{}` is a scripted model, which has no runtime to probe. ",
-                    "Pass a serving runtime, e.g. llamacpp:http://127.0.0.1:8080."
-                ),
-                spec
-            );
-        };
-        let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
-            .with_timeout(std::time::Duration::from_secs(30));
-        runtime = format!("{dialect:?} at {base}");
-        // True of llama.cpp, which serves what it was started with and is
-        // never told. Not true once the spec names a weight — saying it
-        // anyway would report ignorance the harness does not have, on the
-        // one line a reader checks to confirm they are about to drive what
-        // they think they are.
-        model_id = match model {
-            Some(m) => format!("{m} (named in the spec)"),
-            None => "whatever the runtime has loaded".into(),
-        };
+        // Tier 1 is the protocol, not a probe finding (ADR 0024 §2).
+        if let Some(h) = hosted::resolve(&spec, &repo_cfg)? {
+            let (m, r, n) = hosted::doctor(&h);
+            model_id = m;
+            runtime = r;
+            notes.extend(n);
+            tier = Some(AdapterTier::Native);
+            batching = BatchingCapability::ContinuousUnmeasured;
+        } else {
+            let trellis_model::ModelSpec::Runtime {
+                dialect,
+                base,
+                model,
+            } = &spec
+            else {
+                anyhow::bail!(
+                    concat!(
+                        "`{}` is a scripted model, which has no runtime to probe. ",
+                        "Pass a serving runtime, e.g. llamacpp:http://127.0.0.1:8080."
+                    ),
+                    spec
+                );
+            };
+            let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
+                .with_timeout(std::time::Duration::from_secs(30));
+            runtime = format!("{dialect:?} at {base}");
+            // True of llama.cpp, which serves what it was started with and is
+            // never told. Not true once the spec names a weight — saying it
+            // anyway would report ignorance the harness does not have, on the
+            // one line a reader checks to confirm they are about to drive what
+            // they think they are.
+            model_id = match model {
+                Some(m) => format!("{m} (named in the spec)"),
+                None => "whatever the runtime has loaded".into(),
+            };
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async {
-            match client.probe_constraint().await {
-                Ok(true) => {
-                    tier = Some(AdapterTier::RuntimeConstrained);
-                    notes.push(
-                        concat!(
-                            "The runtime returned the key the probe schema demanded, so it ",
-                            "appears to honour guided decoding. This is evidence, not proof: ",
-                            "a capable model can produce conforming JSON unprompted."
-                        )
-                        .into(),
-                    );
-                }
-                Ok(false) => {
-                    tier = Some(AdapterTier::ValidateAndRetry);
-                    notes.push(
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async {
+                match client.probe_constraint().await {
+                    Ok(true) => {
+                        tier = Some(AdapterTier::RuntimeConstrained);
+                        notes.push(
+                            concat!(
+                                "The runtime returned the key the probe schema demanded, so it ",
+                                "appears to honour guided decoding. This is evidence, not proof: ",
+                                "a capable model can produce conforming JSON unprompted."
+                            )
+                            .into(),
+                        );
+                    }
+                    Ok(false) => {
+                        tier = Some(AdapterTier::ValidateAndRetry);
+                        notes.push(
                         concat!(
                             "The runtime ignored the schema, so output is NOT constrained. Runs ",
                             "will retry on malformed tool calls and can fail on format alone. ",
@@ -2842,32 +2921,32 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                         )
                         .into(),
                     );
+                    }
+                    Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
                 }
-                Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
-            }
 
-            match client.probe_slots().await {
-                Ok(Some(n)) if n > 1 => {
-                    batching = BatchingCapability::Continuous {
-                        measured_concurrency: n,
-                    };
-                }
-                Ok(Some(_)) => {
-                    batching = BatchingCapability::SingleStream;
-                    notes.push(
+                match client.probe_slots().await {
+                    Ok(Some(n)) if n > 1 => {
+                        batching = BatchingCapability::Continuous {
+                            measured_concurrency: n,
+                        };
+                    }
+                    Ok(Some(_)) => {
+                        batching = BatchingCapability::SingleStream;
+                        notes.push(
                         concat!(
                             "llama.cpp reports a single slot. Multi-agent mode would serialize; ",
                             "start it with --parallel N for real concurrency (S18). "
                         )
                         .into(),
                     );
-                }
-                Ok(None) => {
-                    // Continuous batching is inherent here, but the concurrency
-                    // its scheduler will actually grant is not a number to
-                    // invent, so `--agents auto` stays conservative.
-                    batching = BatchingCapability::ContinuousUnmeasured;
-                    notes.push(
+                    }
+                    Ok(None) => {
+                        // Continuous batching is inherent here, but the concurrency
+                        // its scheduler will actually grant is not a number to
+                        // invent, so `--agents auto` stays conservative.
+                        batching = BatchingCapability::ContinuousUnmeasured;
+                        notes.push(
                         concat!(
                             "This runtime batches continuously, so multi-agent mode is supported ",
                             "in principle. The concurrency it will grant is its scheduler's ",
@@ -2876,10 +2955,11 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
                         )
                         .into(),
                     );
+                    }
+                    Err(e) => notes.push(format!("Could not read slot count: {e}")),
                 }
-                Err(e) => notes.push(format!("Could not read slot count: {e}")),
-            }
-        });
+            });
+        }
     }
 
     let probe = Probe {
@@ -3386,6 +3466,7 @@ mod interrupt_tests {
             control: None,
             gates: &[],
             stamp: None,
+            compactions: &[],
         }
     }
 
