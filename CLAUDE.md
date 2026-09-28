@@ -50,6 +50,11 @@ cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed>
 cargo run --release -p trellis-index --example audit_score  -- <dir>
 ```
 
+Agent-driven work goes through the gates in `scripts/gates/`
+(`scripts/gates/run-all.sh [<issue>]`) and the orchestrator
+(`claude --agent orchestrator`); see `docs/BUILD_SYSTEM.md`. A ticket is done
+when every gate exits 0, not when an agent says so.
+
 `trellis run`, `resume` and `partitions` are implemented. They were stubs
 until the agent loop landed in v0.2, and the rule that kept them stubs still
 holds for anything added next: a command that appears to work without doing

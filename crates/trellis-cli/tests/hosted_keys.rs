@@ -15,7 +15,12 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CANARY: &str = "sk-trellis-leak-canary-9f3b2c71e4";
+/// Built at run time, not written as a literal: a key-shaped string in the
+/// source trips secret scanners on every push (scripts/gates/security.sh).
+fn canary() -> &'static str {
+    static C: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    C.get_or_init(|| format!("sk-{}-leak-canary-{}", "trellis", std::process::id()))
+}
 const KEY_ENV: &str = "TRELLIS_TEST_PROVIDER_KEY";
 
 fn scratch(name: &str) -> PathBuf {
@@ -168,7 +173,7 @@ fn run_and_check(protocol: &str, replies: Vec<String>, header: &str) {
         .args(["run", "make helper return 2", "--model", "provider:stub#m"])
         .env("TRELLIS_CONFIG_DIR", user_dir(&d))
         .env("RUST_LOG", "trace")
-        .env(KEY_ENV, CANARY)
+        .env(KEY_ENV, canary())
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -180,7 +185,7 @@ fn run_and_check(protocol: &str, replies: Vec<String>, header: &str) {
     assert!(
         requests
             .first()
-            .is_some_and(|r| r.contains(&format!("{header}{CANARY}"))),
+            .is_some_and(|r| r.contains(&format!("{header}{}", canary()))),
         "the stub never received the key, so the rest proves nothing.\n\
          stdout: {stdout}\nstderr: {stderr}\nrequests: {requests:?}"
     );
@@ -219,7 +224,7 @@ fn run_and_check(protocol: &str, replies: Vec<String>, header: &str) {
             .any(|(n, _)| n == &trail.display().to_string())
     );
     for (name, text) in &places {
-        assert!(!text.contains(CANARY), "{name} contains the key");
+        assert!(!text.contains(canary()), "{name} contains the key");
         assert!(
             !text.contains(&format!("{header}sk-")),
             "{name} contains the auth header"
@@ -306,8 +311,8 @@ fn plain_run(d: &Path) -> (bool, String) {
         .arg(d)
         .args(["run", "anything"])
         .env("TRELLIS_CONFIG_DIR", user_dir(d))
-        .env("OPENAI_API_KEY", CANARY)
-        .env("AWS_SECRET_ACCESS_KEY", CANARY)
+        .env("OPENAI_API_KEY", canary())
+        .env("AWS_SECRET_ACCESS_KEY", canary())
         .output()
         .unwrap();
     (
@@ -337,7 +342,7 @@ fn a_plain_run_refuses_a_hosted_endpoint_the_repository_chose() {
         !all.contains("snapshot at"),
         "refused before the snapshot: {all}"
     );
-    assert!(!all.contains(CANARY), "{all}");
+    assert!(!all.contains(canary()), "{all}");
 }
 
 #[test]
@@ -356,7 +361,7 @@ fn a_plain_run_sends_no_key_to_a_loopback_port_the_repository_chose() {
     assert!(!ok, "{all}");
     assert!(all.contains("OPENAI_API_KEY"), "{all}");
     assert!(!all.contains("snapshot at"), "{all}");
-    assert!(!all.contains(CANARY), "{all}");
+    assert!(!all.contains(canary()), "{all}");
     assert!(
         matches!(l.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
         "nothing connected to the repository's port"
@@ -377,5 +382,5 @@ fn a_repository_that_names_the_key_variable_is_refused_at_load() {
     assert!(!ok, "{all}");
     assert!(all.contains("key_env"), "{all}");
     assert!(!all.contains("snapshot at"), "{all}");
-    assert!(!all.contains(CANARY), "{all}");
+    assert!(!all.contains(canary()), "{all}");
 }
