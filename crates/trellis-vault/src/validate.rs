@@ -1,10 +1,18 @@
-//! The format rules, checked all at once.
+//! The run gate: the format rules of ADR 0017, checked all at once.
+//!
+//! Strict about the schema — two keys, a canonical parent form, a correct
+//! manifest — and lenient about everything ADR 0022 §1 made additive: the
+//! `notes/` root, dotfiles, the null forms, and resolution through Apex's
+//! aliases. Every message is the one ADR 0017 shipped.
 
 use crate::VaultError;
+use crate::graph::{Resolved, Resolver};
 use crate::js;
+use crate::reader::{file_of, is_null_parent, note_paths, notes_root, read_text, unquote};
+use crate::refs::{has_md_ext, strip_md};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// One note, parsed.
 #[derive(Debug)]
@@ -14,6 +22,7 @@ pub(crate) struct Note {
     pub(crate) path: String,
     pub(crate) stem: String,
     pub(crate) title: String,
+    /// The parent's reference, e.g. `root` for `"[[root]]"`.
     pub(crate) parent: Option<String>,
     /// LF-normalised.
     pub(crate) body: String,
@@ -46,8 +55,13 @@ impl fmt::Display for Stats {
 pub(crate) struct Parsed {
     /// Sorted by path.
     pub(crate) notes: Vec<Note>,
-    /// Stem to indices into `notes`, in path order.
+    /// Stem to indices into `notes`, in path order. The focus of a run
+    /// resolves here and only here (ADR 0022 §1).
     pub(crate) by_stem: BTreeMap<String, Vec<usize>>,
+    /// Parents and body links resolve here, as Apex resolves them.
+    pub(crate) resolver: Resolver,
+    /// Resolved parent per note; `None` for a root or an unresolved parent.
+    pub(crate) parents: Vec<Option<usize>>,
     pub(crate) violations: Vec<String>,
     pub(crate) stats: Stats,
 }
@@ -75,50 +89,12 @@ pub fn validate(root: &Path) -> Result<Stats, VaultError> {
     }
 }
 
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> VaultError + '_ {
-    move |source| VaultError::Io {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
-/// Reads as UTF-8 with replacement, as Node's `readFileSync(_, "utf8")` does.
-fn read_text(path: &Path) -> Result<String, VaultError> {
-    let bytes = std::fs::read(path).map_err(io(path))?;
-    Ok(js::normalize(&String::from_utf8_lossy(&bytes)))
-}
-
-/// Every `.md` file under `dir`, relative and `/`-separated.
-///
-/// `file_type()` does not follow symlinks, which matches Node's
-/// `readdir(withFileTypes)`: a symlinked note or directory is not walked. A
-/// link out of the vault would otherwise put a file in front of the model
-/// that no manifest entry could name.
-fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), VaultError> {
-    for entry in std::fs::read_dir(dir).map_err(io(dir))? {
-        let entry = entry.map_err(io(dir))?;
-        let ft = entry.file_type().map_err(io(&entry.path()))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let child = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        if ft.is_dir() {
-            walk(&entry.path(), &child, out)?;
-        } else if ft.is_file() && name.ends_with(".md") {
-            out.push(child);
-        }
-    }
-    Ok(())
-}
-
 /// Node's `path.basename(p, ".md")`: the suffix is kept when it is the whole
-/// name.
+/// name. Case-insensitive, as the walk is.
 fn stem_of(rel: &str) -> String {
     let name = rel.rsplit('/').next().unwrap_or(rel);
-    match name.strip_suffix(".md") {
-        Some(s) if !s.is_empty() => s.to_string(),
+    match strip_md(name) {
+        s if !s.is_empty() => s.to_string(),
         _ => name.to_string(),
     }
 }
@@ -146,7 +122,10 @@ fn parent_link(raw: &str) -> Option<&str> {
     Some(inner)
 }
 
-fn parse_note(rel: &str, text: &str, violations: &mut Vec<String>) -> Option<Note> {
+/// The per-note schema check. `None` means the note fails it, with every
+/// reason pushed to `violations`. `check --fix` rewrites exactly the notes
+/// this rejects.
+pub(crate) fn parse_note(rel: &str, text: &str, violations: &mut Vec<String>) -> Option<Note> {
     let lines: Vec<&str> = text.split('\n').collect();
     if lines[0] != "---" {
         violations.push(format!("{rel}: missing opening frontmatter delimiter"));
@@ -200,16 +179,17 @@ fn parse_note(rel: &str, text: &str, violations: &mut Vec<String>) -> Option<Not
     if !ok {
         return None;
     }
-    let (mut title, raw_parent) = (title?, parent?);
-
+    let (title, raw_parent) = (title?, parent?);
     // A quoted title is a JSON string, so `"A \"B\""` means what it says. One
     // that does not parse keeps its inner text rather than failing the vault.
-    if title.len() >= 2 && title.starts_with('"') && title.ends_with('"') {
-        title = serde_json::from_str::<String>(&title)
-            .unwrap_or_else(|_| title[1..title.len() - 1].to_string());
-    }
+    let title = if title.len() >= 2 && title.starts_with('"') && title.ends_with('"') {
+        unquote(&title)
+    } else {
+        title
+    };
 
-    let parent = if raw_parent == "null" {
+    // Apex's null forms are values, not keys, so the gate accepts them all.
+    let parent = if is_null_parent(&unquote(&raw_parent)) {
         None
     } else {
         match parent_link(&raw_parent) {
@@ -238,28 +218,28 @@ fn has_drive(e: &str) -> bool {
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
-pub(crate) fn parse(root: &Path) -> Result<Parsed, VaultError> {
+pub(crate) fn parse(dir: &Path) -> Result<Parsed, VaultError> {
     let mut violations = Vec::new();
-    if !root.is_dir() {
-        violations.push(format!("{}: not a directory", root.display()));
+    if !dir.is_dir() {
+        violations.push(format!("{}: not a directory", dir.display()));
         return Ok(Parsed {
             notes: Vec::new(),
             by_stem: BTreeMap::new(),
+            resolver: Resolver::new([]),
+            parents: Vec::new(),
             violations,
             stats: Stats::default(),
         });
     }
+    let root = notes_root(dir);
 
-    let mut rel_paths = Vec::new();
-    walk(root, "", &mut rel_paths)?;
     // Sorted before parsing, not only after, so violations are reported in an
     // order that does not depend on the filesystem's directory order.
-    rel_paths.sort_by(|a, b| js::cmp(a, b));
+    let rel_paths = note_paths(&root)?;
 
     let mut notes = Vec::new();
     for rel in &rel_paths {
-        let file: PathBuf = rel.split('/').fold(root.to_path_buf(), |p, s| p.join(s));
-        let text = read_text(&file)?;
+        let text = read_text(&file_of(&root, rel))?;
         if let Some(n) = parse_note(rel, &text, &mut violations) {
             notes.push(n);
         }
@@ -269,21 +249,23 @@ pub(crate) fn parse(root: &Path) -> Result<Parsed, VaultError> {
     for (i, n) in notes.iter().enumerate() {
         by_stem.entry(n.stem.clone()).or_default().push(i);
     }
-    let lookup = |stem: &str| by_stem.get(stem).map(Vec::as_slice).unwrap_or(&[]);
+    let resolver = Resolver::new(notes.iter().map(|n| (n.path.as_str(), n.title.as_str())));
 
     // Every parent resolves to exactly one note.
+    let mut parents = vec![None; notes.len()];
     let mut has_child: HashSet<usize> = HashSet::new();
-    for n in &notes {
+    for (i, n) in notes.iter().enumerate() {
         let Some(parent) = &n.parent else { continue };
-        match lookup(parent) {
-            [] => violations.push(format!(
+        match resolver.resolve(parent) {
+            Resolved::Missing => violations.push(format!(
                 "{}: parent [[{parent}]] does not resolve to any note",
                 n.path
             )),
-            [one] => {
-                has_child.insert(*one);
+            Resolved::Note(one) => {
+                parents[i] = Some(one);
+                has_child.insert(one);
             }
-            many => violations.push(format!(
+            Resolved::Ambiguous(many) => violations.push(format!(
                 "{}: parent [[{parent}]] is ambiguous: {}",
                 n.path,
                 many.iter()
@@ -294,16 +276,16 @@ pub(crate) fn parse(root: &Path) -> Result<Parsed, VaultError> {
         }
     }
 
-    // Cycles: follow unique parents, and report each cycle once, keyed by its
-    // sorted member set — every note on a cycle would otherwise report it.
+    // Cycles: follow resolved parents, and report each cycle once, keyed by
+    // its sorted member set — every note on a cycle would otherwise report it.
     let mut reported: HashSet<String> = HashSet::new();
     for start in 0..notes.len() {
         let mut seen: Vec<usize> = Vec::new();
         let mut cur = Some(start);
         while let Some(c) = cur {
-            let Some(parent) = &notes[c].parent else {
+            if notes[c].parent.is_none() {
                 break;
-            };
+            }
             if let Some(idx) = seen.iter().position(|&s| s == c) {
                 let mut members: Vec<&str> = seen[idx..]
                     .iter()
@@ -316,14 +298,11 @@ pub(crate) fn parse(root: &Path) -> Result<Parsed, VaultError> {
                 break;
             }
             seen.push(c);
-            cur = match lookup(parent) {
-                [one] => Some(*one),
-                _ => None,
-            };
+            cur = parents[c];
         }
     }
 
-    let (manifest_missing, manifest_extra) = check_manifest(root, &rel_paths, &mut violations)?;
+    let (manifest_missing, manifest_extra) = check_manifest(&root, &rel_paths, &mut violations)?;
 
     let stats = Stats {
         notes: notes.len(),
@@ -337,9 +316,20 @@ pub(crate) fn parse(root: &Path) -> Result<Parsed, VaultError> {
     Ok(Parsed {
         notes,
         by_stem,
+        resolver,
+        parents,
         violations,
         stats,
     })
+}
+
+/// What the manifest says, compared with the files on disk.
+pub(crate) struct ManifestState {
+    pub(crate) missing: usize,
+    pub(crate) extra: usize,
+    /// Anything wrong at all: absent, unparseable, unsorted, a duplicate, a
+    /// bad entry, or a set that differs from disk. `--fix` rewrites it then.
+    pub(crate) wrong: bool,
 }
 
 /// The manifest must be the sorted set of `.md` paths on disk.
@@ -352,17 +342,35 @@ fn check_manifest(
     rel_paths: &[String],
     violations: &mut Vec<String>,
 ) -> Result<(usize, usize), VaultError> {
+    let s = manifest_state(root, rel_paths, violations)?;
+    Ok((s.missing, s.extra))
+}
+
+pub(crate) fn manifest_state(
+    root: &Path,
+    rel_paths: &[String],
+    violations: &mut Vec<String>,
+) -> Result<ManifestState, VaultError> {
+    let before = violations.len();
     let path = root.join("manifest.json");
     if !path.exists() {
         violations.push("manifest.json: missing".to_string());
-        return Ok((rel_paths.len(), 0));
+        return Ok(ManifestState {
+            missing: rel_paths.len(),
+            extra: 0,
+            wrong: true,
+        });
     }
     let text = read_text(&path)?;
     let value: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
             violations.push(format!("manifest.json: invalid JSON ({e})"));
-            return Ok((0, 0));
+            return Ok(ManifestState {
+                missing: 0,
+                extra: 0,
+                wrong: true,
+            });
         }
     };
     let entries: Option<Vec<&str>> = value
@@ -370,7 +378,11 @@ fn check_manifest(
         .and_then(|a| a.iter().map(serde_json::Value::as_str).collect());
     let Some(entries) = entries else {
         violations.push("manifest.json: must be an array of strings".to_string());
-        return Ok((0, 0));
+        return Ok(ManifestState {
+            missing: 0,
+            extra: 0,
+            wrong: true,
+        });
     };
 
     let mut sorted = entries.clone();
@@ -388,7 +400,7 @@ fn check_manifest(
         } else {
             seen.push(e);
         }
-        if !e.ends_with(".md") {
+        if !has_md_ext(e) {
             violations.push(format!("manifest.json: entry is not a .md path: {e}"));
         }
         if e.contains('\\') {
@@ -415,5 +427,9 @@ fn check_manifest(
             violations.push(format!("manifest.json: lists {e}, which does not exist"));
         }
     }
-    Ok((missing, extra))
+    Ok(ManifestState {
+        missing,
+        extra,
+        wrong: violations.len() > before,
+    })
 }
