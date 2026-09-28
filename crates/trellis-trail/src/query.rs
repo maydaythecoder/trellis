@@ -167,6 +167,77 @@ pub fn mentions_any(entries: &[Entry], queries: &[String]) -> Vec<Mention> {
         .collect()
 }
 
+/// A trail whose record names one file, and where it names it.
+pub struct Touch<'a> {
+    pub entry: &'a Entry,
+    /// The run's `factual.proposed` lists the file: it ended up changing it.
+    pub proposed: bool,
+    /// Actions whose target names the file, in trail order. Includes reads
+    /// and declined edits: the caller decides which of those count.
+    pub actions: Vec<&'a crate::Action>,
+}
+
+/// The entries whose `factual.proposed` or action targets name `path`.
+///
+/// Unlike [`mentions`], this is equality of paths, not a substring search:
+/// pairing a changed file with the runs that touched it must not pair
+/// `a.py` with a run on `ba.py` or `src/a.py`. Case is kept, because two
+/// paths that differ only in case are two files on most filesystems. What
+/// is normalised is spelling that names the same repository path: `\`
+/// separators and a leading `./`.
+///
+/// An action target is a label (`edit a.py`, `run_checks Tests on a.py,
+/// b.py`, `grep pat in a.py`), so it names the path when any of its words,
+/// split on whitespace and commas, does.
+pub fn touching<'a>(entries: &'a [Entry], path: &str) -> Vec<Touch<'a>> {
+    let want = normalize_path(path);
+    // An empty path (or `.`) names no file; matched literally it would pair
+    // every target word that is itself `.`.
+    if want.is_empty() || want == "/" {
+        return Vec::new();
+    }
+    let names = |s: &str| normalize_path(s) == want;
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let f = &entry.trail.factual;
+            let proposed = f.proposed.iter().any(|p| names(p));
+            let actions: Vec<&crate::Action> = f
+                .actions
+                .iter()
+                .filter(|a| {
+                    a.target
+                        .split(|c: char| c.is_whitespace() || c == ',')
+                        .any(|w| !w.is_empty() && names(w))
+                })
+                .collect();
+            (proposed || !actions.is_empty()).then_some(Touch {
+                entry,
+                proposed,
+                actions,
+            })
+        })
+        .collect()
+}
+
+/// `a\b.py`, `./a/b.py` and `a//b.py` all name `a/b.py`.
+///
+/// A leading `/` is kept: `/a.py` is an absolute path, not the repository's
+/// `a.py`, and a trail that named one did not touch the other.
+fn normalize_path(p: &str) -> String {
+    let p = p.replace('\\', "/");
+    let rel = p
+        .split('/')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if p.starts_with('/') {
+        format!("/{rel}")
+    } else {
+        rel
+    }
+}
+
 pub fn mentions(entries: &[Entry], query: &str) -> Vec<Mention> {
     let needle = query.to_ascii_lowercase();
     entries
@@ -463,5 +534,108 @@ mod tests {
             found[0].decisions,
             vec![("edit app/calc.py".to_string(), "declined".to_string())]
         );
+    }
+
+    fn with_actions(proposed: &str, actions: &[(&str, &str)]) -> String {
+        let acts: Vec<String> = actions
+            .iter()
+            .map(|(tool, target)| {
+                format!(
+                    r#"{{"turn":1,"tool":"{tool}","target":"{target}","outcome":"ok","wrote":false}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"task":"t","factual":{{"proposed":[{proposed}],"actions":[{}]}}}}"#,
+            acts.join(",")
+        )
+    }
+
+    #[test]
+    fn touching_finds_a_run_that_proposed_the_path_or_aimed_an_action_at_it() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260101-000000-000-proposed.json",
+            &with_actions(r#""app/a.py""#, &[]),
+        );
+        write(
+            d.path(),
+            "20260102-000000-000-checked.json",
+            &with_actions(
+                "",
+                &[("run_checks", "run_checks Tests on app/b.py, app/a.py")],
+            ),
+        );
+        let entries = all(d.path());
+        let t = touching(&entries, "app/a.py");
+        assert_eq!(t.len(), 2, "both runs name app/a.py");
+
+        let proposed = t.iter().find(|x| x.proposed).unwrap();
+        assert_eq!(proposed.entry.run_id(), "20260101-000000-000-proposed");
+        assert!(proposed.actions.is_empty());
+
+        let checked = t.iter().find(|x| !x.proposed).unwrap();
+        assert_eq!(
+            checked.actions.len(),
+            1,
+            "a path in a comma-separated target list is named by it"
+        );
+    }
+
+    /// Pairing a changed file with the runs that touched it is exact. The
+    /// substring match `mentions` uses would pair `a.py` with every run on
+    /// `ba.py` or `src/a.py`, and the delta would cite history that is not
+    /// about the file at all.
+    #[test]
+    fn touching_does_not_match_a_different_path_that_contains_this_one() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260101-000000-000-other.json",
+            &with_actions(
+                r#""ba.py","src/a.py","a.pyc","/a.py""#,
+                &[
+                    ("edit", "edit src/a.py"),
+                    ("read_file", "read_file a.py.bak"),
+                ],
+            ),
+        );
+        let entries = all(d.path());
+        assert!(touching(&entries, "a.py").is_empty());
+        assert!(
+            touching(&entries, "A.py").is_empty(),
+            "case is kept: A.py and a.py are two files on most filesystems"
+        );
+        assert!(
+            touching(&entries, "").is_empty() && touching(&entries, "./").is_empty(),
+            "an empty path names no file"
+        );
+    }
+
+    /// A path recorded as `./app/a.py`, or with Windows separators, is the
+    /// same repository path as `app/a.py`. A run written on Windows must
+    /// pair with a delta computed anywhere.
+    #[test]
+    fn touching_treats_a_dot_slash_prefix_and_backslashes_as_the_same_path() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260101-000000-000-dot.json",
+            &with_actions(r#""./app/a.py""#, &[]),
+        );
+        write(
+            d.path(),
+            "20260102-000000-000-win.json",
+            &with_actions("", &[("edit", r"edit app\\a.py")]),
+        );
+        let entries = all(d.path());
+        assert_eq!(touching(&entries, "app/a.py").len(), 2);
+        assert_eq!(
+            touching(&entries, r"app\a.py").len(),
+            2,
+            "the query is normalised as well as the record"
+        );
+        assert_eq!(touching(&entries, "./app//a.py").len(), 2);
     }
 }
