@@ -634,6 +634,23 @@ This is Paperclip's `process` adapter. A profile with
      the loop runs at convergence produces a `Verdict` over those files,
      recorded with the other two.
 
+   *Amended after the third review of PR #1: the judge is read before the
+   command.* The `[checks]` commands, `deny_write` and the rule documents
+   were read from the worktree after the command ran. A command could
+   therefore rewrite what verifies it, for example by setting `typecheck`
+   to a command that always passes or by deleting a `deny_write` line, and
+   then converge. All three are now loaded before the command is spawned,
+   as the `.git/` bytes below are, and a profile whose rules do not load is
+   refused before anything runs. Any changed path under `.trellis/` is a
+   breach, whatever the rules say, because that directory holds the checks,
+   the rules and the trust inputs that judge the run. The run does not
+   converge and is rolled back
+   (`a_process_agent_that_rewrites_its_own_checks_does_not_converge`). What
+   is not covered, stated: the repository's own test and typecheck
+   configuration outside `.trellis/` (`pyproject.toml`, `conftest.py`, the
+   tests themselves). A command can change those, just as a model run can,
+   and the diff that is left for review is where that shows.
+
    **`.git/` is outside the worktree the rollback restores**, and `git
    status` does not see it, so a command could plant a hook or set
    `core.hooksPath` and survive any rollback. The bytes of `.git/config`
@@ -648,8 +665,8 @@ This is Paperclip's `process` adapter. A profile with
    step 2) can still write after the comparison.
 4. **Decide.** The run converged if and only if the command changed at least
    one file, both checks pass, the governance audit (when there is one)
-   passes, no changed path is denied, and nothing under `.git/config` or
-   the hooks changed.
+   passes, no changed path is denied or under `.trellis/`, and nothing
+   under `.git/config` or the hooks changed.
    - A command that changed nothing has nothing to verify, and ends `failed`
      with that reason.
    - On anything other than convergence, the tree is rolled back exactly as

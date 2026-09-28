@@ -628,6 +628,51 @@ fn a_process_agent_that_writes_a_denied_path_is_rolled_back_though_the_checks_pa
 }
 
 #[test]
+fn a_process_agent_that_rewrites_its_own_checks_does_not_converge() {
+    // The risk: `[checks]`, `deny_write` and the governance documents were
+    // read from the worktree after the command ran, so a command could
+    // rewrite what verifies it — here, swap a failing typecheck for one that
+    // passes — and converge on checks it chose. What judges the run is read
+    // before it, and `.trellis/` is not the command's to change.
+    let copy = if cfg!(windows) {
+        r"['cmd', '/C', 'copy /Y passing.toml .trellis\config.toml']"
+    } else {
+        "['sh', '-c', 'cp passing.toml .trellis/config.toml']"
+    };
+    let d = process_fixture(
+        "proc-rewrite-checks",
+        copy,
+        r#"["git", "no-such-subcommand"]"#,
+    );
+    std::fs::write(
+        d.join("passing.toml"),
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "the file the command copies"]);
+    ok(&d, &["trust"]);
+    let before = std::fs::read(d.join(".trellis/config.toml")).unwrap();
+    let id = queued_id(&ok(
+        &d,
+        &["queue", "add", "rewrite checks", "--assignee", "maker"],
+    ));
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("NOT CONVERGED"), "{s}");
+    assert!(
+        s.contains(".trellis/config.toml"),
+        "the report names it:\n{s}"
+    );
+    assert_eq!(ids(&d, "failed"), vec![id], "{s}");
+    assert_eq!(
+        std::fs::read(d.join(".trellis/config.toml")).unwrap(),
+        before,
+        "rolled back:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_process_agent_that_writes_git_config_or_a_hook_has_it_restored() {
     // `.git/` is invisible to `git status` and untouched by the rollback, so
     // a command could plant a hook or rewrite `core.hooksPath` and the run
