@@ -424,7 +424,14 @@ area = "parser"
 ```
 
 **Cron.** The parser is written by hand. It supports:
-- `*`, lists, ranges and steps (`*/15`, `1-5/2`, `10/5`)
+- `*`, lists, ranges and steps (`*/15`, `1-5/2`, `10/5`). *Amended after
+  the fifth review of PR #1:* a step of 0, or one larger than the field's
+  maximum (60 for minutes, 24 for hours, 32 for day-of-month), is refused.
+  `1/4294967295 * * * *` overflowed the step loop, a panic in a debug build
+  and a wrapped value in release; the loop's addition is now checked as
+  well. Evidence: `a_step_larger_than_the_field_is_refused_not_overflowed`
+  in `crates/trellis-queue/src/cron.rs`, which panicked with "attempt to
+  add with overflow" before the change.
 - month names `jan`–`dec` and day names `sun`–`sat`
 - day-of-week 0–7, where both 0 and 7 are Sunday
 - the usual rule that when day-of-month and day-of-week are both restricted,
