@@ -441,6 +441,33 @@ this amendment a hook that wrote at any of those points left bytes in a
   would not, since a rewritten untracked file keeps its `??` line.
   **Ignored files are not covered**, as they are not part of any change
   trellis proposes, and a hook that writes one is not detected.
+
+  *Amended after the seventh review of PR #1: ignored files and the
+  rollback.* A model run whose tool set includes `bash` or a custom tool,
+  or that has hooks, lists every ignored file with its stat right after
+  the snapshot (before `before_run`), the same listing a process agent
+  gets (ADR 0026 §11; the code moved to `trellis_vcs::ignored` so both
+  share it). Those are the only writers in a model run that can reach an
+  ignored path: `edit` and `write_file` go through the orchestrator,
+  which refuses one. On every rollback (not converged, interrupted, a
+  panic) the ignored files the run created are removed first, then any
+  directory that left empty, then the snapshot's own rollback runs; one
+  that existed before and was changed or deleted is named as not put back,
+  since no copy is kept. A created file that cannot be removed, or a
+  listing that fails after the run, makes the tree not restored: the
+  rollback cannot say what it left. A converged run keeps them and says
+  so, since `git status` does not show them and a later revert does not
+  undo them. Before this, `bash` could leave `.venv/.../sitecustomize.py`
+  behind a rollback (`git clean -fd` leaves ignored files) for the next
+  check that starts the repository's Python. A run with none of these
+  writers is not listed, and pays nothing. Evidence:
+  `tests/cli.rs::a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`,
+  which failed before the change with the file still in place after
+  "NOT CONVERGED". What is still not covered: a converged run's ignored
+  writes are reported, not judged — the breach test and `deny_write` a
+  process agent applies to them are not applied to a model run's — and
+  the checks' own ignored writes (a `.pytest_cache`) are reported and
+  removed with the run's.
 - **`pre_tool` and `post_tool`.** Each declared hook is bracketed on its
   own: the worktree is fingerprinted before and after the gates (which
   hold `pre_tool`; the other gates do not write), and before and after

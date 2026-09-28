@@ -1,0 +1,294 @@
+//! Files git ignores, watched around something that can write them.
+//!
+//! `git status` does not list ignored files, and the rollback's
+//! `git clean -fd` does not remove them, so a writer that can reach any
+//! path (a process agent's command; in a model run `bash`, a custom tool or
+//! a hook) could leave `.venv/.../sitecustomize.py`, or an ignored path
+//! under `.trellis/`, behind a rollback, where a later check that runs the
+//! repository's Python would execute it (ADR 0026 §11, ADR 0023 §5). A
+//! snapshot of every ignored file with its stat, taken before and compared
+//! after, finds what was created, changed or deleted, and what was created
+//! can be removed. Moved here from the process-agent code so model runs use
+//! the same one.
+
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+/// What `stat` says about one file, enough to tell that it changed without
+/// reading it: length and modification time, and on Unix the inode and the
+/// change time, which a process cannot set back the way it can `mtime`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime: (i64, i64),
+}
+
+impl Stamp {
+    fn of(p: &Path) -> Option<Stamp> {
+        // Not followed: a link is recorded as the link, and removing one
+        // the command created removes the link, not what it points at.
+        let m = std::fs::symlink_metadata(p).ok()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Some(Stamp {
+            len: m.len(),
+            mtime: m.modified().ok(),
+            #[cfg(unix)]
+            ino: m.ino(),
+            #[cfg(unix)]
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+/// Every untracked file git ignores, with its [`Stamp`], taken just before
+/// the command starts and again just after it ends.
+///
+/// `git status` does not list ignored files, so without this a command
+/// could write `.venv/.../sitecustomize.py`, an ignored path under
+/// `.trellis/`, or an ignored path `deny_write` names, and neither the
+/// breach test nor governance nor the rollback (`git clean -fd` leaves
+/// ignored files) would see it (ADR 0026 §11). Compared by stat rather than
+/// by content, so a large `.venv` costs one `stat` per file, not a hash;
+/// what that misses is stated in the ADR.
+pub struct IgnoredSnapshot {
+    files: std::collections::BTreeMap<String, Stamp>,
+}
+
+/// What the command did to ignored files.
+#[derive(Debug, Default)]
+pub struct IgnoredChanges {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub deleted: Vec<String>,
+}
+
+impl IgnoredChanges {
+    pub fn all(&self) -> impl Iterator<Item = &String> {
+        self.created
+            .iter()
+            .chain(&self.modified)
+            .chain(&self.deleted)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.created.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
+    }
+
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        for (word, list) in [
+            ("created", &self.created),
+            ("modified", &self.modified),
+            ("deleted", &self.deleted),
+        ] {
+            if !list.is_empty() {
+                parts.push(format!("{word} {}", shown(list)));
+            }
+        }
+        parts.join("; ")
+    }
+}
+
+/// Up to ten names, then a count: a `pip install` into `.venv` is
+/// thousands of files, and the report is read by a person.
+pub fn shown(list: &[String]) -> String {
+    const MAX: usize = 10;
+    let mut s = list
+        .iter()
+        .take(MAX)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if list.len() > MAX {
+        s.push_str(&format!(" and {} more", list.len() - MAX));
+    }
+    s
+}
+
+impl IgnoredSnapshot {
+    pub fn take(root: &Path) -> Result<IgnoredSnapshot, String> {
+        let mut git = Command::new("git");
+        git.args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::null());
+        trellis_core::secrets::scrub(&mut git);
+        let o = git
+            .output()
+            .map_err(|e| format!("git ls-files could not run: {e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git ls-files --ignored failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        let text = String::from_utf8_lossy(&o.stdout);
+        let files = text
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .filter_map(|p| Some((p.to_string(), Stamp::of(&root.join(p))?)))
+            .collect();
+        Ok(IgnoredSnapshot { files })
+    }
+
+    pub fn diff(&self, after: &IgnoredSnapshot) -> IgnoredChanges {
+        let mut c = IgnoredChanges::default();
+        for (p, s) in &after.files {
+            match self.files.get(p) {
+                None => c.created.push(p.clone()),
+                Some(was) if was != s => c.modified.push(p.clone()),
+                Some(_) => {}
+            }
+        }
+        for p in self.files.keys() {
+            if !after.files.contains_key(p) {
+                c.deleted.push(p.clone());
+            }
+        }
+        c
+    }
+}
+
+/// Removes the ignored files the command created, then any directory that
+/// removal left empty, up to (not including) the root. Returns what could
+/// not be removed. A directory is removed only when empty, so one that held
+/// anything else stays; one that was empty before the command and held only
+/// what it created goes too, which git would not notice either way.
+pub fn remove_created(root: &Path, created: &[String]) -> Vec<String> {
+    let mut failed = Vec::new();
+    for rel in created {
+        let p = root.join(rel);
+        let is_dir_link =
+            std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink() && p.is_dir());
+        // A Windows directory link is removed with `remove_dir`; on Unix a
+        // link of any kind with `remove_file`.
+        let r = if is_dir_link && cfg!(windows) {
+            std::fs::remove_dir(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+        match r {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                failed.push(format!("{rel}: {e}"));
+                continue;
+            }
+        }
+        let mut dir = p.parent();
+        while let Some(d) = dir {
+            if d == root || !d.starts_with(root) || std::fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+    failed
+}
+
+/// The ignored-file half of a rollback: removes what `changes` says was
+/// created, and names what cannot be undone, since no copy of an ignored
+/// file is kept: one that existed before and was changed or deleted. Run
+/// before the snapshot's own rollback, which then removes the directories
+/// git tracks that the removal emptied. Returns false when a created file
+/// could not be removed.
+pub fn undo_created(root: &Path, changes: &IgnoredChanges, out: &mut dyn Write) -> bool {
+    let failed = remove_created(root, &changes.created);
+    if !changes.created.is_empty() {
+        let _ = writeln!(
+            out,
+            "ignored:  removed what the run created: {}",
+            shown(&changes.created)
+        );
+    }
+    for f in &failed {
+        let _ = writeln!(out, "ignored:  could NOT be removed: {f}");
+    }
+    let lost: Vec<String> = changes
+        .modified
+        .iter()
+        .chain(&changes.deleted)
+        .cloned()
+        .collect();
+    if !lost.is_empty() {
+        let _ = writeln!(
+            out,
+            "ignored:  NOT put back (trellis keeps no copy of ignored files): {}",
+            shown(&lost)
+        );
+    }
+    failed.is_empty()
+}
+
+/// A snapshot taken before a run, compared now: what the run did to
+/// ignored files, or why that could not be read. A listing that fails is
+/// not read as "every ignored file deleted", and nothing is removed on its
+/// strength.
+pub fn changes_since(root: &Path, before: &IgnoredSnapshot) -> Result<IgnoredChanges, String> {
+    IgnoredSnapshot::take(root).map(|after| before.diff(&after))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn a_created_ignored_file_is_found_and_removed_and_a_changed_one_is_named() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        std::fs::write(
+            root.join(".gitignore"),
+            ".venv/
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".venv/lib")).unwrap();
+        std::fs::write(root.join(".venv/lib/old.py"), "x = 1\n").unwrap();
+        let before = IgnoredSnapshot::take(root).unwrap();
+
+        std::fs::create_dir_all(root.join(".venv/lib/site")).unwrap();
+        std::fs::write(root.join(".venv/lib/site/sitecustomize.py"), "import os\n").unwrap();
+        std::fs::write(root.join(".venv/lib/old.py"), "x = 22\n").unwrap();
+        let c = changes_since(root, &before).unwrap();
+        assert_eq!(c.created, [".venv/lib/site/sitecustomize.py"]);
+        assert_eq!(c.modified, [".venv/lib/old.py"]);
+
+        let mut out = Vec::new();
+        assert!(undo_created(root, &c, &mut out));
+        assert!(
+            !root.join(".venv/lib/site").exists(),
+            "emptied directory removed"
+        );
+        assert!(
+            root.join(".venv/lib/old.py").exists(),
+            "pre-existing file stays"
+        );
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("NOT put back") && out.contains("old.py"),
+            "{out}"
+        );
+    }
+}

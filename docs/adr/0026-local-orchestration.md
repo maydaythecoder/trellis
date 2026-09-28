@@ -792,6 +792,10 @@ This is Paperclip's `process` adapter. A profile with
      modification time back is not seen; on Unix the change time, which a
      process cannot set, catches it. A listing that fails after the
      command makes the run not converged and removes nothing.
+   - *Amended after the seventh review of PR #1:* the listing, the diff
+     and the removal moved to `trellis_vcs::ignored`, and a model run with
+     `bash`, a custom tool or hooks uses them too (ADR 0023, "after a
+     pass").
 4. **Decide.** The run converged if and only if the command changed at least
    one file, both checks pass, the governance audit (when there is one)
    passes, no changed path (ignored ones included) is denied or under

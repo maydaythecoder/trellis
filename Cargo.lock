@@ -3138,6 +3138,7 @@ dependencies = [
 name = "trellis-vcs"
 version = "0.0.1"
 dependencies = [
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
  "trellis-core",
