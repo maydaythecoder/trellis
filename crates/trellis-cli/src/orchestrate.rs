@@ -456,3 +456,19 @@ pub(crate) fn routines(root: &Path, action: RoutinesAction) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_trail_started_at_is_a_form_the_ledger_can_bucket_by_month() {
+        // The ledger buckets by `month_of(started_at)`. A trail writer that
+        // added fractional seconds would make monthly spend silently zero
+        // while lifetime spend still counted.
+        let iso = trellis_trail::iso_now();
+        assert!(trellis_queue::month_of(&iso).is_some(), "{iso}");
+        assert_eq!(
+            trellis_queue::month_of(&iso),
+            trellis_queue::month_of(&trellis_queue::iso_now())
+        );
+    }
+}

@@ -421,9 +421,12 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                     }
                     t.status = Some(st);
                     t.blocked = blocked.clone();
-                    if st.home() != State::Pending {
-                        t.claimed_at = None;
-                        t.claimed_by_pid = None;
+                    t.claimed_at = None;
+                    t.claimed_by_pid = None;
+                    if st.home() == State::Pending && s != State::Pending {
+                        // Back to waiting: an old outcome on it would be
+                        // read as this attempt's, as `requeue` says.
+                        t.outcome = None;
                     }
                     target = Some(st.home());
                     changes.push(format!("status {}", st.as_str()));
@@ -739,6 +742,7 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
         unconstrained: cfg.unconstrained(),
         stop,
         profiles,
+        queue: q.clone(),
         routines: BTreeMap::new(),
         current: None,
         said: BTreeSet::new(),
@@ -784,6 +788,9 @@ struct CliRunner<'a> {
     /// Re-read every tick: a profile edited while `work --every` runs takes
     /// effect at the next claim.
     profiles: BTreeMap<String, Profile>,
+    /// Held rather than re-resolved: the gate runs per pending task per
+    /// tick, and finding the queue spawns `git rev-parse`.
+    queue: Queue,
     routines: BTreeMap<String, Routine>,
     /// The id of the task being run, for `TRELLIS_TASK_ID`.
     current: Option<String>,
@@ -938,8 +945,12 @@ impl Runner for CliRunner<'_> {
         let Some(p) = self.profiles.get(name) else {
             return Some(format!("no agent profile `{name}` in .trellis/agents/"));
         };
-        let q = Queue::for_repo(self.root).ok()?;
-        let o = trellis_queue::profile::overlay(&q, name).ok()?;
+        let o = match trellis_queue::profile::overlay(&self.queue, name) {
+            Ok(o) => o,
+            // An overlay that cannot be read may hold a pause; running the
+            // task anyway would ignore it.
+            Err(e) => return Some(format!("agent `{name}`: overlay unreadable: {e}")),
+        };
         if let Some(why) = trellis_queue::profile::paused_reason(p, &o) {
             return Some(why);
         }

@@ -1056,8 +1056,8 @@ pub trait Runner {
     /// Why a run cannot start right now, or `None`. Asked before claiming,
     /// because a task claimed and then not started is a task stranded.
     fn blocker(&mut self) -> Option<String>;
-    /// Runs one task to its end. `id` is the task's id, which a process
-    /// agent receives as `TRELLIS_TASK_ID`.
+    /// Runs one task to its end. Its id arrives first through
+    /// [`Runner::starting`].
     fn run(&mut self, task: &Task) -> RunEnd;
     /// Whether the person has asked the heartbeat to stop.
     fn stop_requested(&self) -> bool;
@@ -1075,7 +1075,8 @@ pub trait Runner {
     fn next_due(&self) -> Option<Duration> {
         None
     }
-    /// The id of the task about to run, before `run`.
+    /// The id of the task about to run, before `run`: what a process agent
+    /// receives as `TRELLIS_TASK_ID`.
     fn starting(&mut self, _id: &str) {}
 }
 

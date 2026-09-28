@@ -123,7 +123,8 @@ Every rewrite goes through one of three paths. None of them renames a file.
 
 - **A pending task is edited by claiming it.** `claim(id)` gives this process
   the task under the same atomic checkout `work` uses. The edit is applied,
-  and `Claim::put_back` publishes the changed task to `pending/`. While the
+  and the changed task is published back to `pending/` (or to its new
+  directory) before the claim is removed. While the
   edit is in progress, `work` does not see the task. If `work` holds the
   task, the edit fails with "claimed by pid N". The window ADR 0020 §3
   already accepts also applies here. A claimer that read the old file a few
@@ -133,10 +134,13 @@ Every rewrite goes through one of three paths. None of them renames a file.
   `queue note` on a claimed task refuse and say why.
 - **A task in `done/`, `failed/` or `cancelled/`, and the queue's other
   state files, take an exclusive lock.** The lock is
-  `<git-dir>/trellis/locks/<name>`, published by hard link, and the hard link
-  fails if a lock already exists. The holder removes the old file, publishes
-  the new one, and then removes the lock. Profile overlays, routine state and
-  approval requests use the same path. A crash while the lock is held leaves
+  `<git-dir>/trellis/locks/<name>.lock`, published by hard link, and the hard
+  link fails if a lock already exists. The holder removes the old file,
+  publishes the new one, and then removes the lock. Profile overlays and
+  routine state use the same path. Approval requests are never rewritten in
+  place: they only move between `pending/`, `approved/` and `rejected/` by
+  publish-then-remove, like a task, so a second decision on the same request
+  fails at the publish. A crash while the lock is held leaves
   the lock behind, and the next writer gets an error that names the lock
   file. Removing it by hand is the recovery. This is the same kind of
   visible, stuck-but-never-lost state as the two-copies window in ADR 0020
@@ -295,9 +299,17 @@ pause from the overlay.
     that tripped and resumes the profile. A monthly raise applies only to
     the month it was granted in.
   - `trellis queue reject <request>` keeps the profile paused.
-- **When the month rolls over**, a profile paused by the monthly window is
-  resumed if its new month is under the limit. The resume is logged. A pause
-  by a person is never lifted automatically.
+- *Amended in implementation:* **one request per pause, not per tick.** A
+  request is opened only on the transition into a budget pause. A profile
+  that stays over its limit keeps its pause and opens nothing more, so a
+  rejection stands until something changes. The first version reopened a
+  request on the next tick after every rejection; a unit test now covers
+  it.
+- **A budget pause lifts when the profile is under every limit again.** That
+  happens when the month rolls over, or when someone raises `[budget]` in
+  the profile file, which is the way out after a rejection. The resume is
+  logged. A pause by a person is never lifted automatically, and a profile
+  a person paused opens no request while it is over its limit.
 
 The budget is a cost guard, not a correctness claim. Nothing about it
 touches `Verdict`.
