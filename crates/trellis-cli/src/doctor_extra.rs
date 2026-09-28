@@ -1,0 +1,233 @@
+//! What `trellis doctor` says about the inputs waves B, D and E added: the
+//! user config in effect, context files, trust, profiles and routines, and
+//! the vault.
+//!
+//! Each line reports what a run would find, without reading anything a run
+//! would refuse on. A problem is printed on its line rather than failing the
+//! command: `doctor` is where a person goes to find out what is wrong, so it
+//! must get to the end.
+
+use crate::config::RepoConfig;
+use crate::{context_files, orchestrate, tooling, user_config};
+use std::path::Path;
+
+/// The lines, in the order `doctor` prints them.
+pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
+    vec![
+        user_config_line(),
+        context_line(root, cfg),
+        user_skills_line(),
+        trust_line(root, cfg),
+        agents_line(root),
+        vault_line(root, cfg),
+    ]
+}
+
+fn user_config_line() -> String {
+    match user_config::file() {
+        None => {
+            "user cfg:   none (no TRELLIS_CONFIG_DIR, APPDATA, XDG_CONFIG_HOME or HOME)".to_string()
+        }
+        Some(f) if f.is_file() => format!(
+            "user cfg:   {} — layered under the repository's (ADR 0025 §7)",
+            crate::plain(&f.display().to_string())
+        ),
+        Some(f) => format!(
+            "user cfg:   {} — not present; the repository's config alone",
+            crate::plain(&f.display().to_string())
+        ),
+    }
+}
+
+fn context_line(root: &Path, cfg: &RepoConfig) -> String {
+    let on = cfg.context.as_ref().and_then(|c| c.files).unwrap_or(true);
+    let found = context_files::present(root, user_config::dir().as_deref());
+    if found.is_empty() {
+        return "context:    no context files and no system files".to_string();
+    }
+    let names = found
+        .iter()
+        .map(|(n, b)| format!("{} ({b} B)", crate::plain(n)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if on {
+        format!("context:    {names}; the run's repo: line says which fit the cap")
+    } else {
+        format!(
+            "context:    {names}; context files off ([context] files = false), system \
+             files still apply"
+        )
+    }
+}
+
+fn user_skills_line() -> String {
+    let dirs = user_config::skill_dirs();
+    let present: Vec<String> = dirs
+        .iter()
+        .filter(|d| d.is_dir())
+        .map(|d| crate::plain(&d.display().to_string()))
+        .collect();
+    if present.is_empty() {
+        "user skills: none (the user's own; loaded without repository trust)".to_string()
+    } else {
+        let c = trellis_loop::SkillCatalog::discover_with(Path::new(""), &dirs);
+        format!(
+            "user skills: {} valid, {} invalid, from {} (the user's own; loaded without \
+             repository trust)",
+            c.valid.len(),
+            c.invalid.len(),
+            present.join(", ")
+        )
+    }
+}
+
+fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
+    let fp = tooling::fingerprint(root, cfg);
+    if fp.is_empty() {
+        return "trust:      nothing declared needs trust (no hooks, custom tools or bash)"
+            .to_string();
+    }
+    let mut what = Vec::new();
+    let hooks = cfg.hook_config().count();
+    if hooks > 0 {
+        what.push(format!("{hooks} hook(s)"));
+    }
+    if !cfg.custom_tools().is_empty() {
+        what.push(format!("{} custom tool(s)", cfg.custom_tools().len()));
+    }
+    if cfg.bash_requested() {
+        what.push("bash".to_string());
+    }
+    let state = match trellis_loop::TrustStore::user().and_then(|s| s.state(root, &fp)) {
+        Ok(trellis_loop::TrustState::Trusted) => "trusted; they load".to_string(),
+        Ok(trellis_loop::TrustState::Changed) => {
+            "NOT trusted: changed since trusted; they do not load until `trellis trust`".to_string()
+        }
+        Ok(trellis_loop::TrustState::Unknown) => {
+            "NOT trusted; they do not load until `trellis trust`".to_string()
+        }
+        Err(e) => format!("trust store unreadable ({e}); treated as not trusted"),
+    };
+    format!("trust:      {}: {state}", what.join(", "))
+}
+
+fn agents_line(root: &Path) -> String {
+    match orchestrate::load_profiles(root) {
+        Err(e) => format!("agents:     INVALID — {}", crate::plain(&format!("{e:#}"))),
+        Ok(profiles) => {
+            let routines = match orchestrate::load_routines(root, &profiles) {
+                Ok(r) => format!("{} routine(s)", r.len()),
+                Err(e) => format!("routines INVALID — {}", crate::plain(&format!("{e:#}"))),
+            };
+            format!("agents:     {} profile(s), {routines}", profiles.len())
+        }
+    }
+}
+
+fn vault_line(root: &Path, cfg: &RepoConfig) -> String {
+    let dates = cfg.context.as_ref().and_then(|c| c.dates).unwrap_or(false);
+    match cfg.vault(root, None) {
+        Err(e) => format!("vault:      INVALID configuration — {e:#}"),
+        Ok(None) => "vault:      not configured".to_string(),
+        Ok(Some(v)) => match trellis_vault::validate(&v.dir) {
+            Ok(stats) => format!(
+                "vault:      {} valid ({} notes){}{}",
+                crate::plain(&v.source),
+                stats.notes,
+                match &v.focus {
+                    Some(f) => format!(", focus `{}`", crate::plain(f)),
+                    None => ", no focus set".to_string(),
+                },
+                if dates { ", dates on" } else { "" }
+            ),
+            Err(trellis_vault::VaultError::Invalid { violations, .. }) => format!(
+                "vault:      {} INVALID — {} violation(s); `trellis vault check` lists them",
+                crate::plain(&v.source),
+                violations.len()
+            ),
+            Err(e) => format!(
+                "vault:      {} INVALID — {}",
+                crate::plain(&v.source),
+                crate::plain(&e.to_string())
+            ),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        for (p, t) in files {
+            let path = d.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, t).unwrap();
+        }
+        d
+    }
+
+    fn all(d: &Path) -> String {
+        let cfg = RepoConfig::load(d).unwrap();
+        lines(d, &cfg).join("\n")
+    }
+
+    #[test]
+    fn doctor_names_each_input_a_run_would_find() {
+        // The risk: a run's inputs that are visible only on its repo: line,
+        // after the snapshot, so a person has no way to ask beforehand.
+        let d = repo(&[
+            ("CLAUDE.md", "12345"),
+            (".trellis/system.md", "role"),
+            (
+                ".trellis/agents/reviewer.toml",
+                "role = \"reviewer\"\ntools = [\"read_file\"]\n",
+            ),
+        ]);
+        let s = all(d.path());
+        assert!(s.contains("user cfg:   none"), "{s}");
+        assert!(s.contains("CLAUDE.md (5 B)"), "{s}");
+        assert!(s.contains(".trellis/system.md (4 B)"), "{s}");
+        assert!(
+            s.contains("trust:      nothing declared needs trust"),
+            "{s}"
+        );
+        assert!(s.contains("agents:     1 profile(s), 0 routine(s)"), "{s}");
+        assert!(s.contains("vault:      not configured"), "{s}");
+    }
+
+    #[test]
+    fn declared_hooks_are_reported_untrusted_and_a_bad_profile_does_not_stop_doctor() {
+        let d = repo(&[
+            (".trellis/config.toml", "[tools]\nbash = true\n"),
+            (".trellis/agents/bad.toml", "tools = [\"nope\"]\n"),
+        ]);
+        let s = all(d.path());
+        // "NOT trusted", or, on a machine with no user directory at all,
+        // "treated as not trusted": never "trusted; they load".
+        assert!(s.contains("trust:      bash: "), "{s}");
+        assert!(!s.contains("trusted; they load"), "{s}");
+        assert!(s.contains("agents:     INVALID"), "{s}");
+        assert!(s.contains("`nope`, which is not a tool"), "{s}");
+    }
+
+    #[test]
+    fn an_invalid_vault_is_counted_and_a_valid_one_names_its_notes() {
+        let d = repo(&[
+            (
+                ".trellis/config.toml",
+                "[context]\nvault = \"notes\"\ndates = true\n",
+            ),
+            ("notes/a.md", "---\ntitle: \"A\"\nparent: null\n---\nbody\n"),
+        ]);
+        let s = all(d.path());
+        assert!(s.contains("vault:      notes INVALID — 1 violation"), "{s}");
+        std::fs::write(d.path().join("notes/manifest.json"), "[\n  \"a.md\"\n]\n").unwrap();
+        let s = all(d.path());
+        assert!(
+            s.contains("vault:      notes valid (1 notes), no focus set, dates on"),
+            "{s}"
+        );
+    }
+}

@@ -52,6 +52,46 @@ pub(crate) fn resolve(env: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> 
     get("HOME").map(|h| h.join(".config").join("trellis"))
 }
 
+/// User-level skill directories, in precedence order: `<user dir>/skills`,
+/// then `~/.agents/skills` (ADR 0025, integrated). Each is read after the
+/// repository's `.trellis/skills`, which always wins a name.
+///
+/// Empty in this crate's unit tests, for the reason [`dir`] is `None`.
+pub(crate) fn skill_dirs() -> Vec<PathBuf> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    resolve_skill_dirs(&|k| std::env::var_os(k), cfg!(windows))
+}
+
+/// When `TRELLIS_CONFIG_DIR` is set it is the whole of the user level, and
+/// `~/.agents/skills` is not read. That variable is how the test suites say
+/// "this directory and nothing else"; without this rule every integration
+/// test of `run` would list whatever skills the developer running it has
+/// installed. The home directory is `USERPROFILE` on Windows, else `HOME`.
+pub(crate) fn resolve_skill_dirs(
+    env: &dyn Fn(&str) -> Option<OsString>,
+    windows: bool,
+) -> Vec<PathBuf> {
+    let get = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let mut out: Vec<PathBuf> = resolve(env, windows)
+        .map(|d| d.join("skills"))
+        .into_iter()
+        .collect();
+    if get("TRELLIS_CONFIG_DIR").is_some() {
+        return out;
+    }
+    let home = if windows {
+        get("USERPROFILE").or_else(|| get("HOME"))
+    } else {
+        get("HOME")
+    };
+    if let Some(h) = home {
+        out.push(h.join(".agents").join("skills"));
+    }
+    out
+}
+
 /// The repository's configuration over the user's.
 ///
 /// Struct-update syntax at the end on purpose: a section added later (W-B's
@@ -83,6 +123,7 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             vault: r.vault.or(u.vault),
             focus: r.focus.or(u.focus),
             files: r.files.or(u.files),
+            dates: r.dates.or(u.dates),
         }),
         governance: either(repo.governance, user.governance, |r, u| GovernanceSection {
             deny_write: union(r.deny_write, u.deny_write),
@@ -257,6 +298,39 @@ mod tests {
     fn load(repo: &str, user: &str) -> RepoConfig {
         let (d, u) = files(repo, user);
         RepoConfig::load_with_user(d.path(), Some(&u)).unwrap()
+    }
+
+    #[test]
+    fn user_skill_dirs_are_the_config_dir_then_agents_and_the_override_is_hermetic() {
+        // The risk: the test suites set TRELLIS_CONFIG_DIR to be hermetic,
+        // and `~/.agents/skills` read anyway would put the developer's own
+        // skills into every integration test's `repo:` line.
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| OsString::from(*v))
+            }
+        };
+        let e = env(&[("HOME", "/h")]);
+        assert_eq!(
+            resolve_skill_dirs(&e, false),
+            [
+                PathBuf::from("/h/.config/trellis/skills"),
+                PathBuf::from("/h/.agents/skills")
+            ]
+        );
+        let e = env(&[("APPDATA", "A"), ("USERPROFILE", "U"), ("HOME", "H")]);
+        assert_eq!(
+            resolve_skill_dirs(&e, true),
+            [
+                PathBuf::from("A").join("trellis").join("skills"),
+                PathBuf::from("U").join(".agents").join("skills")
+            ]
+        );
+        let e = env(&[("TRELLIS_CONFIG_DIR", "/t"), ("HOME", "/h")]);
+        assert_eq!(resolve_skill_dirs(&e, false), [PathBuf::from("/t/skills")]);
     }
 
     #[test]
