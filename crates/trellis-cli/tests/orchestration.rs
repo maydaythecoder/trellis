@@ -343,11 +343,51 @@ fn a_budget_hard_stop_pauses_the_agent_and_an_approved_raise_resumes_it() {
 
     let o = trellis(&d, &["queue", "approve", &req]);
     assert!(!o.status.success() && combined(&o).contains("--raise"));
-    ok(&d, &["queue", "approve", &req, "--raise", "1000"]);
+    // A raise too small to cover the spend: resumed, then paused again on
+    // the next tick, which is a new pause and so a new request.
+    ok(&d, &["queue", "approve", &req, "--raise", "10"]);
     assert!(ok(&d, &["agents", "show", "rev"]).contains("raised"));
     let s = ok(&d, &["work"]);
-    assert!(s.contains("NOT CONVERGED"), "it ran:\n{s}");
-    assert!(ok(&d, &["queue", "log"]).contains("approval.request"));
+    assert!(s.contains("reached its monthly limit (150 of 110"), "{s}");
+    let list = ok(&d, &["queue", "list"]);
+    let req2 = list
+        .split_whitespace()
+        .find(|w| w.starts_with("budget-rev-"))
+        .unwrap_or_else(|| panic!("a new pause, a new request:\n{list}"))
+        .to_string();
+    assert_ne!(req, req2);
+
+    // A rejection stands: the next tick opens nothing new.
+    ok(&d, &["queue", "reject", &req2]);
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("stays paused: its override was rejected"), "{s}");
+    assert!(!ok(&d, &["queue", "list"]).contains("budget-rev-"));
+    assert_eq!(ids(&d, "pending").len(), 1);
+
+    // Raising the limit in the profile file lifts the budget pause.
+    std::fs::write(
+        d.join(".trellis/agents/rev.toml"),
+        format!(
+            "model = \"scripted:{}/stop.json\"\n[budget]\nmonthly_tokens = 1000\n",
+            d.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "raise the budget"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("resumed") && s.contains("NOT CONVERGED"),
+        "it ran:\n{s}"
+    );
+    let log = ok(&d, &["queue", "log", "--limit", "100"]);
+    for a in [
+        "approval.request",
+        "approval.approve",
+        "approval.reject",
+        "agent.resume",
+    ] {
+        assert!(log.contains(a), "{a}:\n{log}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 

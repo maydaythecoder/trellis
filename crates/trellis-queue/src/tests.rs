@@ -969,6 +969,17 @@ fn approving_with_a_raise_resumes_and_rejecting_keeps_the_pause() {
     approval::reject_budget(&q, &req2, None, Actor::Human).unwrap();
     let o = profile::overlay(&q, "rev").unwrap();
     assert!(profile::paused_reason(&p, &o).is_some());
+
+    // The risk: the next tick sees the profile still over its limit and
+    // opens a fresh request, so a rejection lasts one tick.
+    let after = ledger::enforce(&q, &p, &spent(150), "2026-09", Actor::Work).unwrap();
+    assert!(after.paused && after.request.is_none());
+    assert!(after.message.unwrap().contains("rejected"));
+    assert!(approval::list(&q, "pending").unwrap().is_empty());
+    // Raising the limit in the profile file lifts a budget pause.
+    let raised = budgeted(1000);
+    let r = ledger::enforce(&q, &raised, &spent(150), "2026-09", Actor::Work).unwrap();
+    assert!(r.resumed && !r.paused);
 }
 
 #[test]

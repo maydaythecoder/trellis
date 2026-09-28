@@ -122,7 +122,7 @@ pub struct Enforced {
     pub message: Option<String>,
     /// The profile is paused by its budget as of now.
     pub paused: bool,
-    /// A budget pause from last month was lifted.
+    /// A budget pause was lifted: the month rolled over or the limit rose.
     pub resumed: bool,
     /// The pending override request, if one was created or already open.
     pub request: Option<String>,
@@ -132,10 +132,13 @@ pub struct Enforced {
 ///
 /// - Under the warning line: nothing.
 /// - At `warn_at`: a message.
-/// - At 100%: the profile is paused by its budget and a `budget_override`
-///   request is opened, unless one is already pending.
-/// - A monthly budget pause from an earlier month is lifted once the new
-///   month is under its limit. A pause by a person is never lifted here.
+/// - On crossing 100%: the profile is paused by its budget and one
+///   `budget_override` request is opened. One per pause, not per tick: a
+///   profile that stays over its limit keeps its pause and opens nothing
+///   more, so a rejected request stays rejected.
+/// - A budget pause is lifted once the profile is under every limit again:
+///   the month rolled over, or someone raised the limit in its file. A pause
+///   by a person is never lifted here.
 pub fn enforce(
     q: &Queue,
     p: &Profile,
@@ -146,42 +149,32 @@ pub fn enforce(
     let mut o = profile::overlay(q, &p.name)?;
     let mut done = Enforced::default();
     let entity = format!("agent:{}", p.name);
+    let unpaused = Overlay {
+        paused: None,
+        ..o.clone()
+    };
+    let over = matches!(assess(p, &unpaused, s, month), Assessment::Exceeded { .. });
 
     if let Some(Pause {
         by: PausedBy::Budget,
-        window: Some(Window::Monthly),
-        month: Some(m),
+        month: paused_in,
         ..
     }) = &o.paused
-        && m != month
-        && !matches!(
-            assess(
-                p,
-                &Overlay {
-                    paused: None,
-                    ..o.clone()
-                },
-                s,
-                month
-            ),
-            Assessment::Exceeded { .. }
-        )
+        && !over
     {
+        let why = match paused_in {
+            Some(m) if m != month => format!("monthly budget window rolled over to {month}"),
+            _ => "no longer over its token limit".to_string(),
+        };
         let lifted = profile::update_overlay(q, &p.name, |ov| {
-            let still = matches!(
-                &ov.paused,
-                Some(Pause { by: PausedBy::Budget, month: Some(pm), .. }) if pm != month
-            );
+            let still = matches!(&ov.paused, Some(x) if x.by == PausedBy::Budget);
             if still {
                 ov.paused = None;
             }
             still
         })?;
         if lifted {
-            q.log(
-                Event::new(actor, "agent.resume", entity.clone())
-                    .detail(format!("monthly budget window rolled over to {month}")),
-            )?;
+            q.log(Event::new(actor, "agent.resume", entity.clone()).detail(why))?;
             done.resumed = true;
             o = profile::overlay(q, &p.name)?;
         }
@@ -207,45 +200,71 @@ pub fn enforce(
             window,
             spent,
             limit,
-        } => {
-            let already = matches!(
-                &o.paused,
-                Some(Pause {
-                    by: PausedBy::Budget,
-                    ..
-                })
-            );
-            if !already && o.paused.is_none() {
-                profile::update_overlay(q, &p.name, |ov| {
-                    if ov.paused.is_none() {
-                        ov.paused = Some(Pause {
-                            by: PausedBy::Budget,
-                            at: crate::iso_now(),
-                            reason: Some(format!("{spent} of {limit} {} tokens", window.as_str())),
-                            window: Some(window),
-                            month: (window == Window::Monthly).then(|| month.to_string()),
-                        });
+        } => match o.paused.as_ref().map(|x| x.by) {
+            // The transition into a budget pause: pause, and ask once.
+            None => {
+                let paused_now = profile::update_overlay(q, &p.name, |ov| {
+                    if ov.paused.is_some() {
+                        return false;
                     }
+                    ov.paused = Some(Pause {
+                        by: PausedBy::Budget,
+                        at: crate::iso_now(),
+                        reason: Some(format!("{spent} of {limit} {} tokens", window.as_str())),
+                        window: Some(window),
+                        month: (window == Window::Monthly).then(|| month.to_string()),
+                    });
+                    true
                 })?;
-                q.log(
-                    Event::new(actor, "agent.pause", entity.clone()).detail(format!(
-                        "budget: {spent} of {limit} {} completion tokens",
+                done.paused = true;
+                if paused_now {
+                    q.log(
+                        Event::new(actor, "agent.pause", entity.clone()).detail(format!(
+                            "budget: {spent} of {limit} {} completion tokens",
+                            window.as_str()
+                        )),
+                    )?;
+                    let req = approval::open_budget_request(
+                        q, &p.name, window, month, spent, limit, actor,
+                    )?;
+                    done.message = Some(format!(
+                        "agent `{}` reached its {} limit ({spent} of {limit} completion \
+                         tokens) and is paused; its tasks are skipped. `trellis queue \
+                         approve {req} --raise <tokens>` resumes it, `trellis queue reject \
+                         {req}` keeps it paused",
+                        p.name,
                         window.as_str()
-                    )),
-                )?;
+                    ));
+                    done.request = Some(req);
+                }
             }
-            let req =
-                approval::open_budget_request(q, &p.name, window, month, spent, limit, actor)?;
-            done.paused = true;
-            done.message = Some(format!(
-                "agent `{}` reached its {} limit ({spent} of {limit} completion tokens) and \
-                 is paused; its tasks are skipped. `trellis queue approve {req} --raise \
-                 <tokens>` resumes it, `trellis queue reject {req}` keeps it paused",
-                p.name,
-                window.as_str()
-            ));
-            done.request = Some(req);
-        }
+            // Already paused by its budget: nothing new to ask.
+            Some(PausedBy::Budget) => {
+                done.paused = true;
+                done.request = approval::list(q, "pending")?
+                    .into_iter()
+                    .find(|r| r.agent == p.name)
+                    .map(|r| r.id);
+                done.message = Some(match &done.request {
+                    Some(req) => format!(
+                        "agent `{}` is over its {} limit ({spent} of {limit}) and paused; \
+                         `trellis queue approve {req} --raise <tokens>` resumes it",
+                        p.name,
+                        window.as_str()
+                    ),
+                    None => format!(
+                        "agent `{}` is over its {} limit ({spent} of {limit}) and stays \
+                         paused: its override was rejected. Raising [budget] in \
+                         .trellis/agents/{}.toml lifts the pause",
+                        p.name,
+                        window.as_str(),
+                        p.name
+                    ),
+                });
+            }
+            // A person paused it; their pause stands and nothing is asked.
+            Some(PausedBy::Human) => {}
+        },
     }
     Ok(done)
 }
