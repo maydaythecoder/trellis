@@ -197,3 +197,14 @@ tested; the test names are in `docs/STATUS.md`.
   `gate::tests::deny_write_holds_for_the_path_a_write_really_lands_on`
   (a junction on Windows) each failed before the change; the last wrote
   `lnk/new.py` into `vendor/`.
+- **A profile's approve list accepts what the repository's does** (review
+  round 8). `[control] approve` in `config.toml` accepted a
+  `[[tools.custom]]` name (ADR 0023); the same list in an agent profile
+  (ADR 0026 §4) was checked against the built-ins alone and refused it, so
+  a profile could not ask for approval of the tool its repository
+  declares. Both now ask `RepoConfig::check_approvable`, and the refusal
+  names the declared tools as well as the built-ins. A profile with an
+  approve list now reads `config.toml` at load, as one with a `tools` list
+  already did. Evidence:
+  `orchestrate::tests::a_profile_may_list_a_repository_tool_for_approval_by_its_name`,
+  which failed before with "`lint`, which is not a tool".
