@@ -814,6 +814,129 @@ fn a_finished_task_is_edited_under_a_lock_and_a_stale_lock_is_named() {
     assert!(e.to_string().contains("remove the file"), "{e}");
 }
 
+fn failed_task(q: &Queue) -> String {
+    let a = q.add("x", None, None).unwrap();
+    q.claim(&a)
+        .unwrap()
+        .unwrap()
+        .finish(
+            State::Failed,
+            Outcome {
+                run_id: None,
+                exit: "x".into(),
+                finished_at: iso_now(),
+            },
+        )
+        .unwrap();
+    a
+}
+
+#[test]
+fn an_edit_of_a_finished_task_that_fails_midway_never_loses_it() {
+    // The risk: a finished task was edited by removing its file and then
+    // publishing the new content, so a failure or a crash between the two
+    // lost the task outright. Every link the edit makes is failed in turn
+    // (the lock, the new copy, the swap); after each, the task is still
+    // there exactly once, and the next edit goes through.
+    for n in 1..=3 {
+        let (_d, q) = queue();
+        let a = failed_task(&q);
+        files::fail::nth_link(n);
+        let r = q.edit(&a, |t, _| {
+            t.labels.push("flaky".into());
+            Ok(None)
+        });
+        files::fail::nth_link(0);
+        let (s, t) = q
+            .find(&a)
+            .unwrap_or_else(|e| panic!("link {n} failed ({r:?}) and the task is gone: {e}"));
+        assert_eq!(s, State::Failed, "link {n}");
+        if r.is_ok() {
+            assert_eq!(t.labels, vec!["flaky"], "link {n}");
+        }
+        let l = q.list().unwrap();
+        assert_eq!(l.iter().filter(|e| e.id == a).count(), 1, "link {n}: {l:?}");
+        assert!(l.iter().all(|e| e.task.is_ok()), "link {n}: {l:?}");
+        q.edit(&a, |t, _| {
+            t.labels.push("again".into());
+            Ok(None)
+        })
+        .unwrap_or_else(|e| panic!("link {n}: the next edit: {e}"));
+        let (s, t) = q.find(&a).unwrap();
+        assert_eq!(s, State::Failed);
+        assert_eq!(t.labels.last().map(String::as_str), Some("again"));
+        assert_eq!(q.ids(State::Failed).unwrap(), vec![a.clone()]);
+        let stray: Vec<_> = std::fs::read_dir(q.dir().join("failed"))
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with('.'))
+            .collect();
+        assert!(stray.is_empty(), "link {n}: left behind {stray:?}");
+    }
+}
+
+#[test]
+fn a_requeue_during_an_edit_of_a_failed_task_leaves_it_in_one_state() {
+    // The risk: `edit` locked a finished task but `requeue` did not, so a
+    // requeue that ran while an edit was between its read and its write
+    // moved the task to pending/, and the edit then wrote it back to
+    // failed/: one task, two states, and a heartbeat that would run it.
+    let (_d, q) = queue();
+    let a = failed_task(&q);
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
+    let editor = {
+        let q = q.clone();
+        let a = a.clone();
+        std::thread::spawn(move || {
+            q.edit(&a, |t, _| {
+                read_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                t.labels.push("edited".into());
+                Ok(None)
+            })
+        })
+    };
+    read_rx.recv().unwrap();
+    let requeued = q.requeue(&a);
+    editor.join().unwrap().unwrap();
+    requeued.unwrap();
+    let states: Vec<State> = q
+        .list()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.id == a)
+        .map(|e| e.state)
+        .collect();
+    assert_eq!(states, vec![State::Pending]);
+    // The edit landed first and the requeue carried it along.
+    assert_eq!(q.find(&a).unwrap().1.labels, vec!["edited"]);
+}
+
+#[test]
+fn a_removal_during_an_edit_of_a_finished_task_is_not_undone() {
+    // Same race, with `remove_task`: the edit wrote back a task a person
+    // had just removed.
+    let (_d, q) = queue();
+    let a = failed_task(&q);
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
+    let editor = {
+        let q = q.clone();
+        let a = a.clone();
+        std::thread::spawn(move || {
+            q.edit(&a, |_, _| {
+                read_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(None)
+            })
+        })
+    };
+    read_rx.recv().unwrap();
+    let removed = q.remove_task(&a);
+    editor.join().unwrap().unwrap();
+    removed.unwrap();
+    assert!(q.list().unwrap().iter().all(|e| e.id != a));
+}
+
 #[test]
 fn add_refuses_a_parent_or_blocker_that_does_not_exist() {
     let (_d, q) = queue();
