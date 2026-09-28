@@ -3079,6 +3079,7 @@ dependencies = [
  "trellis-index",
  "trellis-model",
  "trellis-vault",
+ "trellis-vcs",
 ]
 
 [[package]]

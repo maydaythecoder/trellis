@@ -32,6 +32,9 @@ pub(crate) struct Session {
     /// re-parsed it and disagreed about what was valid.
     model: Option<trellis_model::ModelSpec>,
     unconstrained: bool,
+    /// Whether `model` was given or typed rather than read from the
+    /// repository's config (ADR 0024 §3).
+    model_from_user: bool,
     /// Tasks run this session, for `/status`.
     tasks_run: u32,
 }
@@ -91,6 +94,7 @@ impl Session {
         // host and port they already wrote down. An explicit argument still
         // wins: it is the more specific statement of intent.
         let cfg = crate::config::RepoConfig::load(root)?;
+        let model_from_user = model.is_some();
         let model = match model.or_else(|| cfg.model()) {
             Some(spec) => Some(spec.parse().with_context(|| {
                 format!("`{spec}` was given as the model but is not a usable spec")
@@ -103,6 +107,7 @@ impl Session {
             index,
             model,
             unconstrained: cfg.unconstrained(),
+            model_from_user,
             tasks_run: 0,
         };
         s.banner(elapsed);
@@ -256,7 +261,7 @@ impl Session {
             }
             "/doctor" => {
                 let spec = self.model.as_ref().map(ToString::to_string);
-                crate::cmd_doctor(&self.root, spec.as_deref())
+                crate::cmd_doctor(&self.root, spec.as_deref(), self.model_from_user)
             }
             "/resume" => crate::cmd_resume(&self.root),
             "/diff" => self.show_pending(),
@@ -289,6 +294,8 @@ impl Session {
                 println!("model    {spec}");
                 self.probe_model(&spec);
                 self.model = Some(spec);
+                // Typed by the person at this prompt: their choice (ADR 0024 §3).
+                self.model_from_user = true;
                 Ok(())
             }
             "/unconstrained" => {
@@ -514,7 +521,10 @@ impl Session {
             &model,
             self.unconstrained,
             // No resume, and no focus override: `[context] focus` applies.
-            crate::RunSeeding::default(),
+            crate::RunSeeding {
+                model_from_user: self.model_from_user,
+                ..crate::RunSeeding::default()
+            },
             // `[control] mode` applies. In approve mode each listed call is
             // asked about here, on the line, with the diff shown first.
             crate::RunControl {

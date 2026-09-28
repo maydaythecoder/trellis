@@ -397,6 +397,9 @@ impl Server {
             }
             None => task,
         };
+        // The operator's program chose it (the request or `set_model`), or the
+        // repository did (`[model] spec`); ADR 0024 §3 treats them differently.
+        let model_from_user = text("model").is_some() || self.model.is_some();
         let model = self.model(text("model").as_deref())?;
         check_spec(&model)?;
         let flag = match text("control").as_deref() {
@@ -486,6 +489,7 @@ impl Server {
                     resume: false,
                     focus: focus.as_deref(),
                     profile: None,
+                    model_from_user,
                 },
                 RunControl {
                     flag,
