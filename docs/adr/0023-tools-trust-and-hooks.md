@@ -532,7 +532,13 @@ check configuration and the process-agent profiles.
   - after every call that may have changed the tree (an applied edit, a
     created file, `bash`, a custom tool, a hook that wrote), so a `bash`
     command that changes `.trellis/` ends the run even with no hook
-    declared.
+    declared;
+  - and once more when a run converges, before `after_run`: a check is not
+    a tree-changing call, and a checker can still write under `.trellis/`
+    (a coverage file configured there). A difference demotes the run to
+    `TrustChanged` and it is rolled back. Evidence:
+    `a_check_that_writes_under_dot_trellis_does_not_converge` in
+    `crates/trellis-cli/src/tooling.rs`, which converged before.
   The first failure is latched, shared by every clone, and the run ends on
   that call with `NotConverged::TrustChanged`, whose explanation names the
   files whose hashes changed. The run is rolled back like any other that

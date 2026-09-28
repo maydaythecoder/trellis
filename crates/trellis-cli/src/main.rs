@@ -1978,6 +1978,24 @@ fn run_body(
         // removes the hook's bytes together with the run's (ADR 0023,
         // "after a pass").
         let mut out = out;
+        // A run may not change what judges it (ADR 0023 §5). The guard runs
+        // after every call that may change the tree, and a check is not one,
+        // though a checker can write under `.trellis/` (a coverage file
+        // configured there). So a converged run is checked once more, before
+        // `after_run` would spawn.
+        if let (Some(g), Some((o, _))) = (&tooling.guard, &mut out)
+            && o.converged()
+            && let Err(detail) = g.check()
+        {
+            let iterations = match o {
+                trellis_loop::Outcome::Converged { iterations, .. }
+                | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
+            };
+            *o = trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::TrustChanged { detail },
+                iterations,
+            };
+        }
         if let (Some(h), Some((o, _))) = (&tooling.hooks, &out)
             && h.config().after_run.is_some()
         {
