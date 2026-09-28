@@ -783,7 +783,13 @@ This is Paperclip's `process` adapter. A profile with
    config edit that re-points it is a change to `config`. Not covered,
    stated: an include target outside the git directory (a tracked one is
    the rollback's; one elsewhere on disk is not the repository's), and a
-   submodule's own git directory under `.git/modules/`.
+   submodule's own git directory under `.git/modules/`. A hook written back
+   gets the permissions it had at capture: written with the default mode it
+   was not executable on Unix, so a deleted hook was "put back" and no
+   longer ran (`a_deleted_hook_comes_back_with_its_permissions`, which
+   failed before on the read-only bit; the Unix mode bits it also checks
+   are not exercised on Windows). A hook whose mode alone changed is not
+   detected: the comparison is by bytes.
 
    *Amended after the sixth review of PR #1: files git ignores.* `git
    status` does not list them, so a command could write

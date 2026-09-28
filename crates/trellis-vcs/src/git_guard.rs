@@ -36,6 +36,9 @@ pub struct GitGuard {
     fixed: Vec<(PathBuf, Option<Vec<u8>>)>,
     /// The hooks directory's files at capture.
     hook_files: Vec<(PathBuf, Vec<u8>)>,
+    /// Their permissions at capture: a hook written back with the default
+    /// mode is not executable on Unix, and would be put back only in name.
+    hook_modes: Vec<(PathBuf, std::fs::Permissions)>,
 }
 
 impl GitGuard {
@@ -94,11 +97,16 @@ impl GitGuard {
             fixed.push((p, bytes));
         }
         let hook_files = read_tree(&hooks)?;
+        let hook_modes = hook_files
+            .iter()
+            .filter_map(|(p, _)| Some((p.clone(), std::fs::metadata(p).ok()?.permissions())))
+            .collect();
         Ok(GitGuard {
             root: root.to_path_buf(),
             hooks,
             fixed,
             hook_files,
+            hook_modes,
         })
     }
 
@@ -152,7 +160,12 @@ impl GitGuard {
                 if let Some(parent) = p.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Err(e) = std::fs::write(p, bytes) {
+                let mode = self.hook_modes.iter().find(|(q, _)| q == p);
+                let put = std::fs::write(p, bytes).and_then(|()| match mode {
+                    Some((_, m)) => std::fs::set_permissions(p, m.clone()),
+                    None => Ok(()),
+                });
+                if let Err(e) = put {
                     failed.push(format!("{}: {e}", self.label(p)));
                 }
             }
@@ -352,6 +365,45 @@ mod tests {
         assert!(!root.join(".git/hooks/post-checkout").exists());
         assert!(!root.join(".git/config.worktree").exists());
         assert_eq!(g.restore(), (vec![], vec![]), "nothing left to put back");
+    }
+
+    #[test]
+    fn a_deleted_hook_comes_back_with_its_permissions() {
+        // The risk: a hook the writer deleted was written back with the
+        // default mode, so on Unix it was no longer executable and the
+        // user's hook stopped running while the report said "put back".
+        // Read-only stands in for the mode here, since it is the one
+        // permission both platforms keep.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        let hook = root.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut ro = std::fs::metadata(&hook).unwrap().permissions();
+        ro.set_readonly(true);
+        std::fs::set_permissions(&hook, ro).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let before = std::fs::metadata(&hook).unwrap().permissions();
+        let g = GitGuard::capture(root).unwrap();
+
+        let mut rw = before.clone();
+        #[allow(clippy::permissions_set_readonly_false)]
+        rw.set_readonly(false);
+        std::fs::set_permissions(&hook, rw).unwrap();
+        std::fs::remove_file(&hook).unwrap();
+        let (differed, failed) = g.restore();
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(differed, [".git/hooks/pre-commit"]);
+        assert_eq!(std::fs::metadata(&hook).unwrap().permissions(), before);
+        // Writable again, so the temporary directory can be removed.
+        let mut rw = before;
+        #[allow(clippy::permissions_set_readonly_false)]
+        rw.set_readonly(false);
+        std::fs::set_permissions(&hook, rw).unwrap();
     }
 
     #[test]
