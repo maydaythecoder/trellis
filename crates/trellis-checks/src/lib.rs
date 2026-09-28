@@ -193,6 +193,29 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
     })
 }
 
+/// Whether any `*.py` file sits under `<root>/.trellis/`, links followed
+/// as the trust digest follows them, to a bounded depth so a link cycle
+/// ends.
+fn dot_trellis_holds_python(root: &Path) -> bool {
+    fn any_py(dir: &Path, depth: u32) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        rd.filter_map(Result::ok).any(|e| {
+            let p = e.path();
+            match std::fs::metadata(&p) {
+                Ok(m) if m.is_dir() => any_py(&p, depth + 1),
+                Ok(_) => p.extension().is_some_and(|x| x.eq_ignore_ascii_case("py")),
+                Err(_) => false,
+            }
+        })
+    }
+    any_py(&root.join(".trellis"), 0)
+}
+
 async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
     let started = Instant::now();
     let command = argv.join(" ");
@@ -215,6 +238,15 @@ async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
     // A check's output becomes a verdict's detail, and from there a trail:
     // a checker that prints its environment must find no key in it.
     trellis_core::secrets::scrub(cmd.as_std_mut());
+    // A suite that imports code under `.trellis/` would write
+    // `__pycache__` there, which the trust digest covers, and untrust the
+    // repository mid-run (ADR 0023 §4). Only then: with no Python under
+    // `.trellis/` nothing a check imports can write there, and a large
+    // suite keeps the bytecode cache that saves it recompiling every file
+    // on every check.
+    if dot_trellis_holds_python(root) {
+        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+    }
     let result = cmd.output().await;
 
     match result {
@@ -518,5 +550,55 @@ rank = \"non-negotiable\"
         let v = governance_audit(d.path(), &[], &[]);
         assert!(v.passed());
         assert!(v.detail().stdout.contains("0 rule(s)"));
+    }
+}
+
+#[cfg(test)]
+mod bytecode_tests {
+    use super::*;
+
+    fn echo_flag() -> Vec<String> {
+        if cfg!(windows) {
+            ["cmd", "/C", "echo [%PYTHONDONTWRITEBYTECODE%]"]
+        } else {
+            ["sh", "-c", "echo [$PYTHONDONTWRITEBYTECODE]"]
+        }
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    /// The risk: a test suite that imports code under `.trellis/` wrote
+    /// `__pycache__/*.pyc` there. The trust digest covers bytecode (a
+    /// sourceless pyc is importable), so a grounded check untrusted the
+    /// repository, and with the per-spawn trust recheck (ADR 0023 §4) it
+    /// would void the run at the next hook: trellis's own checker, not the
+    /// model, breaking trust.
+    #[tokio::test]
+    async fn a_check_runs_without_bytecode_writes_when_dot_trellis_holds_python() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(d.path().join(".trellis/hooks/gate.py"), "x = 1\n").unwrap();
+        let cfg = CheckConfig {
+            tests: echo_flag(),
+            ..CheckConfig::default()
+        };
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(v.detail().stdout.contains("[1]"), "{}", v.detail().stdout);
+    }
+
+    /// The cost is paid only where it buys something: a repository with no
+    /// Python under `.trellis/` keeps its test suite's bytecode cache.
+    #[tokio::test]
+    async fn a_check_keeps_bytecode_caching_when_dot_trellis_holds_no_python() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(d.path().join(".trellis/config.toml"), "").unwrap();
+        let cfg = CheckConfig {
+            tests: echo_flag(),
+            ..CheckConfig::default()
+        };
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(!v.detail().stdout.contains("[1]"), "{}", v.detail().stdout);
     }
 }
