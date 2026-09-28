@@ -813,6 +813,8 @@ pub struct HostedModel {
     /// The call returned by the last `next_step`, waiting to be matched to
     /// the turn the loop appends for it.
     pending: Option<(usize, Issued)>,
+    /// Set, and said once, when thinking was withheld from a request.
+    thinking_withheld: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -834,6 +836,7 @@ impl HostedModel {
             compaction: Compaction::default(),
             issued: Vec::new(),
             pending: None,
+            thinking_withheld: false,
         }
     }
 
@@ -866,6 +869,12 @@ impl HostedModel {
 
     pub fn client(&self) -> &HostedClient {
         &self.client
+    }
+
+    /// Whether a request of this run went without the configured thinking
+    /// because a turn in it had no recorded reply (ADR 0024 §4).
+    pub fn thinking_withheld(&self) -> bool {
+        self.thinking_withheld
     }
 
     pub fn tier(&self) -> AdapterTier {
@@ -1013,6 +1022,30 @@ impl Model for HostedModel {
         let mut last = String::new();
         let mut overflows = 0;
         let mut attempt = 0;
+        // The body the provider last refused as too long. Eliding can run
+        // out of observations to elide; resending the same bytes then buys
+        // the same refusal.
+        let mut refused: Option<serde_json::Value> = None;
+        let configured = self.client.thinking();
+        let replayed = t.turns.iter().enumerate().all(|(i, turn)| {
+            self.issued
+                .get(i)
+                .and_then(Option::as_ref)
+                .is_some_and(|x| x.call == turn.call)
+        });
+        if !self.thinking_withheld
+            && configured != trellis_model::Thinking::Off
+            && trellis_model::thinking_sent(protocol, configured, replayed)
+                == trellis_model::Thinking::Off
+        {
+            self.thinking_withheld = true;
+            tracing::warn!(
+                "thinking: withheld for the rest of this run: a turn in the history has no \
+                 recorded reply to send back with its thinking block, and {} refuses a \
+                 tool call without one",
+                protocol.describe()
+            );
+        }
         while attempt < MAX_FORMAT_RETRIES {
             let (client, issued, max) = (&self.client, &self.issued, self.max_tokens);
             // Each observation is one JSON string in the body, so its cost
@@ -1024,6 +1057,14 @@ impl Model for HostedModel {
                 |b| b.to_string().len(),
                 |s| serde_json::to_string(s).map_or(s.len(), |j| j.len()),
             );
+            if refused.as_ref() == Some(&body) {
+                return Err(format!(
+                    "hosted call failed: the prompt without any elidable observation still \
+                     exceeds the provider's window ({} bytes; the newest observation, the \
+                     system prompt and the tool list are never elided). Last refusal: {last}",
+                    body.to_string().len()
+                ));
+            }
             let bytes = self
                 .compaction
                 .last_size
@@ -1038,6 +1079,8 @@ impl Model for HostedModel {
                     // The provider's refusal is the only measurement of its
                     // window trellis has in bytes (ADR 0024 §5).
                     overflows += 1;
+                    last = why.clone();
+                    refused = Some(body);
                     let shrunk = bytes * 3 / 4;
                     self.compaction.budget =
                         Some(self.compaction.budget.map_or(shrunk, |b| b.min(shrunk)));
@@ -1926,11 +1969,22 @@ mod compaction_and_hosted_tests {
 
     /// Answers each request in order and returns the request bodies.
     async fn stub(replies: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let mut replies = replies.into_iter();
+        let n = replies.len();
+        stub_with(n, move |_| (200, replies.next().unwrap_or_default())).await
+    }
+
+    /// Answers up to `n` requests with whatever `respond` makes of each
+    /// body, as `(status, body)`, and returns the request bodies.
+    async fn stub_with(
+        n: usize,
+        mut respond: impl FnMut(&Value) -> (u16, String) + Send + 'static,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let h = tokio::spawn(async move {
-            let mut bodies = Vec::new();
-            for r in replies {
+            let mut bodies: Vec<Value> = Vec::new();
+            for _ in 0..n {
                 let Ok(Ok((mut s, _))) =
                     tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
                         .await
@@ -1959,8 +2013,9 @@ mod compaction_and_hosted_tests {
                         break;
                     }
                 }
+                let (status, r) = respond(bodies.last().unwrap_or(&Value::Null));
                 let out = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
                     r.len()
                 );
                 s.write_all(out.as_bytes()).await.unwrap();
@@ -2107,6 +2162,125 @@ mod compaction_and_hosted_tests {
         m.require_usage(true);
         m.next_step(&transcript(Vec::new())).await.unwrap();
         assert_eq!((m.tokens_used(), m.tokens_measured()), (7, Some(7)));
+    }
+
+    /// Anthropic's rule, as its 400 states it: with thinking enabled, an
+    /// assistant message that carries a `tool_use` must start with a
+    /// `thinking` (or `redacted_thinking`) block. Applied here to every
+    /// assistant message, which is at least as strict as the provider.
+    fn anthropic_would_refuse(body: &Value) -> Option<String> {
+        body.get("thinking")?;
+        let msgs = body["messages"].as_array()?;
+        msgs.iter().enumerate().find_map(|(i, m)| {
+            let c = m["content"].as_array()?;
+            let first = c.first()?["type"].as_str()?;
+            (m["role"] == "assistant"
+                && c.iter().any(|b| b["type"] == "tool_use")
+                && first != "thinking"
+                && first != "redacted_thinking")
+                .then(|| {
+                    format!(
+                        "messages.{i}.content.0.type: Expected `thinking` or \
+                         `redacted_thinking`, but found `{first}`"
+                    )
+                })
+        })
+    }
+
+    fn anthropic_done() -> String {
+        json!({"content":[{"type":"tool_use","id":"toolu_1","name":"done",
+            "input":{"summary":"x"}}],"usage":{"output_tokens":5}})
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn with_thinking_on_a_turn_with_no_recorded_reply_does_not_draw_a_400() {
+        // The risk: a turn the provider never produced (a resumed or seeded
+        // history, the governance audit's turn) is rebuilt as a bare
+        // `tool_use`. With thinking on, Anthropic refuses that request with
+        // a 400 and the run ends on a request trellis built wrong. Thinking
+        // is withheld for such a request instead, and said once.
+        let (base, h) = stub_with(1, |body| match anthropic_would_refuse(body) {
+            Some(why) => (
+                400,
+                json!({"type":"error","error":{"type":"invalid_request_error","message": why}})
+                    .to_string(),
+            ),
+            None => (200, anthropic_done()),
+        })
+        .await;
+        let client = HostedClient::with_key(Protocol::Anthropic, &base, "m", "K", None)
+            .unwrap()
+            .with_thinking(trellis_model::Thinking::High);
+        let mut m = HostedModel::new(client);
+        let t = transcript(vec![turn(read("app/util.py"), "x = 1", None)]);
+        let step = m.next_step(&t).await;
+        let bodies = h.await.unwrap();
+        assert!(matches!(step, Ok(Step::Done { .. })), "{step:?}");
+        assert!(bodies[0].get("thinking").is_none(), "{}", bodies[0]);
+        assert!(bodies[0].get("output_config").is_none(), "{}", bodies[0]);
+        assert!(
+            m.thinking_withheld(),
+            "the withholding is visible to the caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_thinking_on_a_history_the_provider_produced_keeps_thinking() {
+        // The other side: a turn the provider produced goes back with its
+        // thinking block, so the next request keeps thinking and passes the
+        // same check. If the reply were ever not matched to its turn, every
+        // Anthropic run would lose thinking silently; this is what fails.
+        let thought = json!({"content":[
+            {"type":"thinking","thinking":"","signature":"sig"},
+            {"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"app/util.py"}}
+        ],"usage":{"output_tokens":5}})
+        .to_string();
+        let mut replies = vec![thought, anthropic_done()].into_iter();
+        let (base, h) = stub_with(2, move |body| match anthropic_would_refuse(body) {
+            Some(why) => (
+                400,
+                json!({"type":"error","error":{"message": why}}).to_string(),
+            ),
+            None => (200, replies.next().unwrap_or_default()),
+        })
+        .await;
+        let client = HostedClient::with_key(Protocol::Anthropic, &base, "m", "K", None)
+            .unwrap()
+            .with_thinking(trellis_model::Thinking::High);
+        let mut m = HostedModel::new(client);
+        let first = m.next_step(&transcript(Vec::new())).await.unwrap();
+        let Step::Call(call) = first else {
+            panic!("{first:?}")
+        };
+        let t = transcript(vec![turn(call, "def helper():\n    return 1\n", None)]);
+        let second = m.next_step(&t).await;
+        let bodies = h.await.unwrap();
+        assert!(matches!(second, Ok(Step::Done { .. })), "{second:?}");
+        assert_eq!(bodies[1]["thinking"]["type"], "adaptive", "{}", bodies[1]);
+        assert_eq!(bodies[1]["messages"][1]["content"][0]["type"], "thinking");
+        assert!(!m.thinking_withheld());
+    }
+
+    #[tokio::test]
+    async fn an_overflow_that_elision_cannot_shrink_is_not_resent_unchanged() {
+        // The risk: once nothing is left to elide, the overflow retry sent
+        // the same body again, paying for a refusal it already had.
+        let too_long = json!({"type":"error","error":{"type":"invalid_request_error",
+            "message":"prompt is too long: 210000 tokens > 200000 maximum"}})
+        .to_string();
+        let (base, h) = stub_with(3, move |_| (400, too_long.clone())).await;
+        let client = HostedClient::with_key(Protocol::Anthropic, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        // One turn: the newest is never elided, so nothing can shrink.
+        let t = transcript(vec![turn(read("app/util.py"), &"x".repeat(4000), None)]);
+        let e = m.next_step(&t).await.unwrap_err();
+        let bodies = h.await.unwrap();
+        assert_eq!(bodies.len(), 1, "sent again unchanged: {e}");
+        assert!(
+            e.contains("without any elidable observation still exceeds the provider's window"),
+            "{e}"
+        );
     }
 
     #[tokio::test]

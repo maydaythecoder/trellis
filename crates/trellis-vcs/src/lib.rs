@@ -217,6 +217,197 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
     Ok(tree?.trim().to_string())
 }
 
+/// What [`worktree_fingerprint`] detects, computed without writing a single
+/// object: for the bracket around every hooked tool call, which runs up to
+/// four times per call, where the tree form wrote a loose blob for every
+/// untracked file and a tree each time. Compared for equality only; it is
+/// not a tree id, so [`tree_diff`] cannot take it.
+///
+/// A manifest: `HEAD`'s commit id, then one line per path whose worktree
+/// content differs from `HEAD` — worktree mode and blob id from
+/// `git hash-object` **without `-w`** — or `deleted`. The paths come from
+/// one `git status --porcelain=v2 --untracked-files=all`, run with
+/// `--no-optional-locks` so the user's index is not refreshed behind their
+/// back. The index columns are ignored and a path whose worktree bytes and
+/// mode equal `HEAD`'s is dropped, so staging or unstaging alone changes
+/// nothing, as with the tree form.
+///
+/// Differences from the tree form, stated:
+/// - it moves with `HEAD`: a commit with an unchanged worktree changes it
+///   (the tree form would not). That errs toward "changed".
+/// - an untracked file's mode is read from the filesystem (executable bit
+///   on Unix, a symlink as `120000`); on Windows every untracked file reads
+///   `100644`, so a mode-only change to one is not seen.
+/// - a symlink is hashed by what `git hash-object` reads through it, not
+///   by its link text.
+/// - a submodule entry is recorded as its status line, not hashed.
+/// - a path containing a newline cannot go through `--stdin-paths`; the
+///   digest then falls back to the tree form, objects and all.
+pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
+    let status = git(
+        root,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--branch",
+            "--untracked-files=all",
+        ],
+    )?;
+    let mut head = String::from("(unknown)");
+    // path -> (HEAD mode, HEAD blob), for tracked paths git names.
+    let mut in_head: std::collections::BTreeMap<String, (String, String)> = Default::default();
+    // path -> worktree mode, for every path to hash.
+    let mut worktree: std::collections::BTreeMap<String, String> = Default::default();
+    // Lines kept verbatim: submodules and conflicts.
+    let mut verbatim: Vec<String> = Vec::new();
+    let mut fields = status.split('\0').filter(|f| !f.is_empty());
+    while let Some(f) = fields.next() {
+        let cols: Vec<&str> = f.splitn(9, ' ').collect();
+        match cols.first().copied() {
+            Some("#") => {
+                if let Some(oid) = f.strip_prefix("# branch.oid ") {
+                    head = oid.to_string();
+                }
+            }
+            Some("?") => {
+                let path = f[2..].to_string();
+                let mode = untracked_mode(&root.join(&path));
+                worktree.insert(path, mode.to_string());
+            }
+            Some("1") | Some("2") if cols.len() >= 8 && cols[2].starts_with('N') => {
+                // 1 XY sub mH mI mW hH hI path
+                // 2 XY sub mH mI mW hH hI Xscore path \0 origPath
+                let path = if cols[0] == "2" {
+                    cols.get(8)
+                        .and_then(|rest| rest.split_once(' '))
+                        .map(|(_, p)| p.to_string())
+                        .unwrap_or_default()
+                } else {
+                    cols.get(8).map(|p| (*p).to_string()).unwrap_or_default()
+                };
+                // For a rename, `mH`/`hH` describe the source in HEAD. The
+                // source is gone from where it was unless the worktree still
+                // has it, in which case a `?` line names it too.
+                let head_path = if cols[0] == "2" {
+                    let orig = fields.next().unwrap_or_default().to_string();
+                    worktree
+                        .entry(orig.clone())
+                        .or_insert_with(|| "000000".into());
+                    orig
+                } else {
+                    path.clone()
+                };
+                in_head.insert(head_path, (cols[3].to_string(), cols[6].to_string()));
+                worktree.insert(path, cols[5].to_string());
+            }
+            _ => verbatim.push(f.to_string()),
+        }
+    }
+    let present: Vec<(&String, &String, bool)> = worktree
+        .iter()
+        .map(|(p, mode)| {
+            let exists = mode.as_str() != "000000" && root.join(p).symlink_metadata().is_ok();
+            (p, mode, exists)
+        })
+        .collect();
+    let to_hash: Vec<&String> = present.iter().filter(|x| x.2).map(|x| x.0).collect();
+    if to_hash.iter().any(|p| p.contains('\n')) {
+        return worktree_fingerprint(root).map(|t| format!("tree {t}"));
+    }
+    let mut hashed = hash_without_writing(root, &to_hash)?.into_iter();
+    let mut manifest = format!("head {head}\n");
+    for (path, mode, exists) in present {
+        let head_entry = in_head.get(path).filter(|(m, _)| m.as_str() != "000000");
+        if exists {
+            let blob = hashed.next().unwrap_or_default();
+            // The same bytes and mode as HEAD: whatever the index says,
+            // the worktree does not differ here.
+            if head_entry.is_some_and(|(m, h)| m == mode && *h == blob) {
+                continue;
+            }
+            manifest.push_str(&format!("{mode} {blob} {path}\n"));
+        } else if head_entry.is_some() {
+            manifest.push_str(&format!("deleted {path}\n"));
+        }
+        // Neither in HEAD nor in the worktree: added in the index and
+        // removed from disk, which changes no worktree byte.
+    }
+    for v in verbatim {
+        manifest.push_str(&v);
+        manifest.push('\n');
+    }
+    Ok(manifest)
+}
+
+/// `100644`, `100755` or `120000` for a file git does not track, as it
+/// would stage it. Executable bits exist on Unix only.
+fn untracked_mode(p: &Path) -> &'static str {
+    match p.symlink_metadata() {
+        Ok(m) if m.file_type().is_symlink() => "120000",
+        #[cfg(unix)]
+        Ok(m) => {
+            use std::os::unix::fs::PermissionsExt;
+            if m.permissions().mode() & 0o111 != 0 {
+                "100755"
+            } else {
+                "100644"
+            }
+        }
+        #[cfg(not(unix))]
+        Ok(_) => "100644",
+        Err(_) => "000000",
+    }
+}
+
+/// Blob ids for `paths`, as `git hash-object --stdin-paths` computes them
+/// (the repository's clean filters applied), with no `-w`: nothing is
+/// written to the object store.
+fn hash_without_writing(root: &Path, paths: &[&String]) -> Result<Vec<String>, VcsError> {
+    use std::io::Write;
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["hash-object", "--stdin-paths"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Clean filters are repository-supplied commands (ADR 0024 §3).
+    trellis_core::secrets::scrub(&mut cmd);
+    let mut child = cmd.spawn()?;
+    let mut input = String::new();
+    for p in paths {
+        input.push_str(p);
+        input.push('\n');
+    }
+    let mut stdin = child.stdin.take().expect("piped");
+    // Written on its own thread: git writes one id per path as it reads, and
+    // a large list would otherwise fill both pipes and stall.
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let out = child.wait_with_output()?;
+    let _ = writer.join();
+    if !out.status.success() {
+        return Err(VcsError::GitFailed {
+            command: "git hash-object --stdin-paths".into(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    if ids.len() != paths.len() {
+        return Err(VcsError::GitFailed {
+            command: "git hash-object --stdin-paths".into(),
+            stderr: format!("{} ids for {} paths", ids.len(), paths.len()),
+        });
+    }
+    Ok(ids)
+}
+
 /// The paths that differ between two trees from [`worktree_fingerprint`].
 ///
 /// Both trees' objects are in the store, because computing a fingerprint
@@ -496,6 +687,65 @@ mod tests {
             worktree_fingerprint(&dir).unwrap(),
             "ignored files are outside it, as documented"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn loose_objects(dir: &Path) -> u64 {
+        git(dir, &["count-objects", "-v"])
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("count: "))
+            .and_then(|n| n.trim().parse().ok())
+            .expect("count-objects prints `count:`")
+    }
+
+    #[test]
+    fn the_per_call_digest_writes_no_objects_and_sees_every_worktree_change() {
+        // The risk: the digest taken around every hooked tool call wrote a
+        // loose blob for every untracked file, and a tree, each time: up to
+        // four times per call, for the whole run.
+        let dir = temp_repo("digest");
+        std::fs::write(dir.join("new.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        let objects = loose_objects(&dir);
+        let first = worktree_digest(&dir).unwrap();
+        assert_eq!(loose_objects(&dir), objects, "the digest wrote objects");
+        assert_eq!(first, worktree_digest(&dir).unwrap(), "stable");
+
+        // Content-complete, as the tree form is: an untracked file rewritten
+        // keeps its `??` line in `status --porcelain`, and is still seen.
+        std::fs::write(dir.join("new.py"), "x = 2\n").unwrap();
+        let rewritten = worktree_digest(&dir).unwrap();
+        assert_ne!(first, rewritten, "an untracked rewrite");
+        std::fs::write(dir.join("a.py"), "def f():\n    return 3\n").unwrap();
+        let tracked = worktree_digest(&dir).unwrap();
+        assert_ne!(rewritten, tracked, "a tracked file rewritten again");
+        std::fs::remove_file(dir.join("a.py")).unwrap();
+        let deleted = worktree_digest(&dir).unwrap();
+        assert_ne!(tracked, deleted, "a tracked file deleted");
+        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+        assert_ne!(
+            deleted,
+            worktree_digest(&dir).unwrap(),
+            "put back as committed"
+        );
+
+        // Independent of the index, as the tree form is: staging changes no
+        // byte in the worktree, and neither does unstaging.
+        let before = worktree_digest(&dir).unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        assert_eq!(before, worktree_digest(&dir).unwrap(), "staging alone");
+        git(&dir, &["rm", "-q", "--cached", "a.py"]).unwrap();
+        assert_eq!(before, worktree_digest(&dir).unwrap(), "unstaging alone");
+        git(&dir, &["reset", "-q"]).unwrap();
+        assert_eq!(before, worktree_digest(&dir).unwrap(), "reset alone");
+
+        // Ignored files are outside it, as documented.
+        std::fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        let ignored_before = worktree_digest(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/x"), "y").unwrap();
+        assert_eq!(ignored_before, worktree_digest(&dir).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -52,6 +52,13 @@ pub(crate) fn run_with(
     writeln!(out)?;
     writeln!(out, "digest:  {}", fp.sha256)?;
     writeln!(out, "store:   {}", store.path().display())?;
+    if let Some(why) = &fp.refused {
+        writeln!(out, "state:   cannot be trusted: {why}")?;
+        if show {
+            return Ok(());
+        }
+        return Err(anyhow!("cannot trust this repository: {why}"));
+    }
     if show {
         writeln!(
             out,
@@ -82,6 +89,14 @@ fn describe(fp: &Fingerprint, out: &mut dyn Write) -> Result<()> {
         writeln!(out, "  {}", item.label)?;
         if !item.argv.is_empty() {
             writeln!(out, "    argv:  {:?}", item.argv)?;
+        }
+        if !item.receives.is_empty() {
+            writeln!(
+                out,
+                "    receives: {}  (from your environment; this command can read, \
+                 print or send them)",
+                item.receives.join(", ")
+            )?;
         }
         for (path, sha) in &item.files {
             writeln!(out, "    file:  {path}  sha256 {sha}")?;
@@ -142,6 +157,36 @@ mod tests {
         let mut out = Vec::new();
         run_with(d.path(), &store, false, true, &mut out).unwrap();
         assert!(String::from_utf8(out).unwrap().contains("trust revoked"));
+    }
+
+    #[test]
+    fn trust_names_the_keys_a_process_agent_receives() {
+        // The risk: `pass_env` hands a key from the user's environment to
+        // repository code, and `trellis trust` showed the argv and the
+        // timeout but not that. Consent to run a command is not consent to
+        // give it a key, so the key is shown by name and is in the item.
+        let d = repo_with("[control]\nmode = \"auto\"\n");
+        std::fs::create_dir_all(d.path().join(".trellis/agents")).unwrap();
+        std::fs::write(
+            d.path().join(".trellis/agents/ext.toml"),
+            "command = [\"python\", \"agent.py\"]\npass_env = [\"ANTHROPIC_API_KEY\"]\n",
+        )
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        let mut out = Vec::new();
+        run_with(d.path(), &store, true, false, &mut out).unwrap();
+        let shown = String::from_utf8(out).unwrap();
+        assert!(shown.contains("receives: ANTHROPIC_API_KEY"), "{shown}");
+
+        let cfg = RepoConfig::load(d.path()).unwrap();
+        let fp = crate::tooling::fingerprint(d.path(), &cfg);
+        let item = fp
+            .items
+            .iter()
+            .find(|i| i.label == "process agent ext")
+            .expect("the agent is an item");
+        assert_eq!(item.receives, ["ANTHROPIC_API_KEY"]);
     }
 
     #[test]

@@ -150,6 +150,28 @@ pub struct Reply {
     pub replay: Value,
 }
 
+/// The thinking a request is sent with, given whether every assistant turn
+/// in it is the provider's own recorded reply (ADR 0024 §4).
+///
+/// Anthropic refuses, with a 400, a thinking-enabled request whose history
+/// has an assistant `tool_use` that does not start with a thinking block,
+/// and a turn with no recorded reply can only be rebuilt as a bare
+/// `tool_use`. So on Anthropic such a request goes without thinking. The
+/// reply to it then has no thinking block either, and the unreplayed turn
+/// is still in the history, so once withheld it stays withheld for that
+/// transcript: turning it back on would draw the same 400. OpenAI's
+/// `reasoning_effort` has no such rule and is left as configured.
+pub fn thinking_sent(
+    protocol: Protocol,
+    thinking: Thinking,
+    every_turn_replayed: bool,
+) -> Thinking {
+    match protocol {
+        Protocol::Anthropic if !every_turn_replayed => Thinking::Off,
+        _ => thinking,
+    }
+}
+
 /// Builds the request body. Pure: no key, no transport.
 pub fn request_body(
     protocol: Protocol,
@@ -159,6 +181,8 @@ pub fn request_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
+    let replayed = conv.exchanges.iter().all(|x| x.replay.is_some());
+    let thinking = thinking_sent(protocol, thinking, replayed);
     match protocol {
         Protocol::OpenAiChat => openai_body(model, conv, tools, max_tokens, thinking),
         Protocol::Anthropic => anthropic_body(model, conv, tools, max_tokens, thinking),
@@ -716,6 +740,25 @@ mod tests {
 
     #[test]
     fn thinking_maps_to_each_protocol_s_own_field() {
+        // Every Anthropic turn replayed as the provider sent it: a rebuilt
+        // bare `tool_use` would make it refuse thinking (see below).
+        let mut replayed = conv();
+        replayed.exchanges[0].replay = Some(json!({"role":"assistant","content":[
+            {"type":"thinking","thinking":"","signature":"sig"},
+            {"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.py"}}]}));
+        let b = request_body(
+            Protocol::Anthropic,
+            "m",
+            &replayed,
+            &tools(),
+            100,
+            Thinking::High,
+        );
+        assert_eq!(b["thinking"]["type"], "adaptive");
+        assert_eq!(b["output_config"]["effort"], "high");
+        // A turn with no recorded reply: Anthropic answers a thinking
+        // request whose tool_use has no thinking block with a 400, so the
+        // request goes without thinking (ADR 0024 §4).
         let b = request_body(
             Protocol::Anthropic,
             "m",
@@ -724,8 +767,7 @@ mod tests {
             100,
             Thinking::High,
         );
-        assert_eq!(b["thinking"]["type"], "adaptive");
-        assert_eq!(b["output_config"]["effort"], "high");
+        assert!(b.get("thinking").is_none() && b.get("output_config").is_none());
         let b = request_body(
             Protocol::OpenAiChat,
             "m",

@@ -8,8 +8,8 @@
 //! "Access is denied" in about one run in five).
 //!
 //! A file that must change in place — a finished task gaining a note, a
-//! profile's pause overlay, a routine's last-fired time — is replaced under
-//! an exclusive [`Lock`], itself a published file (ADR 0026 §2).
+//! profile's pause overlay, a routine's last-fired time — is [`replace`]d
+//! under an exclusive [`Lock`], itself a published file (ADR 0026 §2).
 
 use crate::QueueError;
 use serde::Serialize;
@@ -24,12 +24,45 @@ pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> QueueError + '_ 
     }
 }
 
+/// Reads `path`, or — while a [`replace`] of it is between removing the old
+/// copy and linking the new one, or was cut short there — the complete new
+/// copy beside it. Canonical, then the side copy, then canonical again: the
+/// replacer may link and remove the side copy between the first two reads.
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, QueueError> {
-    let text = std::fs::read_to_string(path).map_err(io(path))?;
+    let text = match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::read_to_string(side(path)) {
+                Ok(t) => Ok(t),
+                Err(_) => std::fs::read_to_string(path),
+            }
+        }
+        r => r,
+    }
+    .map_err(io(path))?;
     serde_json::from_str(&text).map_err(|e| QueueError::Unreadable {
         path: path.to_path_buf(),
         error: e.to_string(),
     })
+}
+
+/// Whether a reader of `path` finds a record there: the file itself or a
+/// replacement cut short (see [`read_json`]).
+pub(crate) fn present(path: &Path) -> bool {
+    path.exists() || side(path).exists()
+}
+
+/// `dir/.name.next`: where [`replace`] puts the new content before the swap.
+/// A fixed name, not a unique one, so a replacement cut short is found again
+/// by whoever looks next.
+pub(crate) fn side(path: &Path) -> PathBuf {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    path.with_file_name(format!(".{name}.next"))
+}
+
+/// The name `side` was derived from, for a directory listing: `x.json` for
+/// `.x.json.next`.
+pub(crate) fn unside(name: &str) -> Option<&str> {
+    name.strip_prefix('.')?.strip_suffix(".next")
 }
 
 /// `Ok(None)` when the file does not exist; any other failure is an error.
@@ -68,12 +101,45 @@ pub(crate) fn publish<T: Serialize>(dest: &Path, t: &T) -> Result<bool, QueueErr
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     write_json(&tmp, t)?;
-    let linked = patiently(|| std::fs::hard_link(&tmp, dest));
+    let linked = patiently(|| link(&tmp, dest));
     let _ = std::fs::remove_file(&tmp);
     match linked {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(io(dest)(e)),
+    }
+}
+
+/// `hard_link`: the one call in this crate that makes a name appear.
+///
+/// Tests can make the Nth call on their own thread fail, which is how a
+/// failure or a crash between two steps of a multi-step write is reached.
+fn link(src: &Path, dst: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if fail::tick() {
+        return Err(std::io::Error::other("injected failure"));
+    }
+    std::fs::hard_link(src, dst)
+}
+
+#[cfg(test)]
+pub(crate) mod fail {
+    use std::cell::Cell;
+    thread_local!(static AT: Cell<u32> = const { Cell::new(0) });
+
+    /// Makes the `n`th link from now on this thread fail; 0 disarms.
+    pub(crate) fn nth_link(n: u32) {
+        AT.with(|c| c.set(n));
+    }
+
+    pub(super) fn tick() -> bool {
+        AT.with(|c| match c.get() {
+            0 => false,
+            v => {
+                c.set(v - 1);
+                v == 1
+            }
+        })
     }
 }
 
@@ -98,6 +164,67 @@ pub(crate) fn move_to<T: Serialize>(from: &Path, to: &Path, t: &T) -> Result<(),
         )));
     }
     remove(from)
+}
+
+/// Replaces the file at `path` with `t`. The caller holds the lock that
+/// covers `path`.
+///
+/// There is no overwrite and no `rename` (ADR 0020 §3), so the name is
+/// necessarily absent for a moment. The order keeps a complete copy on disk
+/// at every instant:
+/// 1. publish the new content at [`side`]`(path)` — the old copy is intact
+/// 2. remove `path` — the new copy is intact beside it, and [`read_json`]
+///    reads it
+/// 3. link the side copy to `path`, then remove the side copy
+///
+/// A failure or a crash after 1 and before 2 leaves the old record in place,
+/// and the edit did not happen. One after 2 leaves the new record beside the
+/// name: readers see it, and [`settle`] — run by the next holder of the
+/// lock — links it into place. Either way the record is never in neither.
+pub(crate) fn replace<T: Serialize>(path: &Path, t: &T) -> Result<(), QueueError> {
+    settle(path)?;
+    let next = side(path);
+    if !publish(&next, t)? {
+        return Err(io(&next)(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "written by another process while this one held the lock",
+        )));
+    }
+    remove(path)?;
+    // The one step after which the caller's error and the disk disagree:
+    // the new content is the record already, so the error says so.
+    patiently(|| link(&next, path)).map_err(|e| {
+        io(path)(std::io::Error::new(
+            e.kind(),
+            format!(
+                "{e}; the new content is complete at {}, readers see it, and the next \
+                 change to this file puts it in place",
+                next.display()
+            ),
+        ))
+    })?;
+    remove(&next)
+}
+
+/// Finishes or discards a [`replace`] of `path` that was cut short. The
+/// caller holds the lock that covers `path`.
+///
+/// With `path` present the side copy never took effect (or already has),
+/// and it goes. With `path` absent the side copy is the record, and it is
+/// linked into place.
+pub(crate) fn settle(path: &Path) -> Result<(), QueueError> {
+    let next = side(path);
+    if !next.exists() {
+        return Ok(());
+    }
+    if !path.exists() {
+        match patiently(|| link(&next, path)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(path)(e)),
+        }
+    }
+    remove(&next)
 }
 
 /// A file operation, retried for about five seconds on PermissionDenied.
@@ -167,11 +294,8 @@ impl Drop for Lock {
     }
 }
 
-/// Replaces the JSON at `path` with `f(current)` under the lock for `name`.
-///
-/// Remove-then-publish, because publish never overwrites. Under the lock no
-/// other writer can interleave; a reader between the two steps sees no file,
-/// which every reader of these files treats as "not written yet".
+/// Replaces the JSON at `path` with `f(current)` under the lock for `name`,
+/// through [`replace`], so no step leaves the file in neither place.
 pub(crate) fn replace_locked<T, R>(
     locks: &Path,
     name: &str,
@@ -182,14 +306,9 @@ where
     T: Serialize + DeserializeOwned,
 {
     let _lock = Lock::take(locks, name)?;
+    settle(path)?;
     let current = read_json_opt::<T>(path)?;
     let (next, r) = f(current)?;
-    remove(path)?;
-    if !publish(path, &next)? {
-        return Err(io(path)(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "written by another process while this one held the lock",
-        )));
-    }
+    replace(path, &next)?;
     Ok(r)
 }
