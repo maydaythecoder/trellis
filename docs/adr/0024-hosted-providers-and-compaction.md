@@ -151,6 +151,21 @@ trail, never logged.
 - Plain `http://` to a hosted protocol is accepted only for a loopback host
   (a local server speaking the same API, and the tests' stub). A key over
   plain HTTP to anything else would be a key in the clear.
+
+  *Amended after the fourth review of PR #1: IPv6 and the `Host` header.*
+  The base URL's authority was split at its last `:`. That split `[::1]`
+  itself, so `http://[::1]/v1` was refused with "`1]` is not a port
+  number". A bracketed host is now split at `]`, and the host is kept
+  without its brackets, which is the form a TLS server name and an IP
+  parse both take. `Host:` carried the name alone. Under RFC 9110 §7.2 a
+  missing port means the scheme's default, so a server on `:8080` was
+  named as if it were on `:80`. The header now adds the port when it is
+  not the default, and brackets an IPv6 literal. The local runtime client
+  (`RuntimeClient`, tier 2) had the same parser and the same header, and
+  now shares both. Evidence, in `crates/trellis-model/src/transport.rs`:
+  `a_bracketed_ipv6_host_parses_with_and_without_a_port` and
+  `the_host_header_names_a_port_that_is_not_the_scheme_default`, both of
+  which failed before the change.
 - Evidence is a test that runs the binary with `RUST_LOG=trace` and
   `--log-json` against a loopback stub, asserts the stub received the key,
   and asserts the key and the header value appear nowhere in the JSONL log,
@@ -321,6 +336,15 @@ repository may no longer name `key_env`.
   `with_thinking_on_a_turn_with_no_recorded_reply_does_not_draw_a_400` and
   `with_thinking_on_a_history_the_provider_produced_keeps_thinking` in
   `crates/trellis-loop/src/adapter.rs`.
+
+  *Amended after the fourth review of PR #1.* The rule's input, "every turn
+  replayed", was computed twice. The adapter matched issued calls to turns
+  for the warning, and `request_body` checked each exchange for a replay.
+  The two agreed, but only because they were written the same way. Both now
+  call `trellis_model::every_turn_replayed` on the same `Conversation`, so
+  the warning and `thinking_withheld()` cannot disagree with the body that
+  is sent. The two tests above are unchanged and still pass. They guard
+  this change and did not fail before it.
 
   Neither protocol is sent `temperature`: reasoning models on both reject a
   non-default one.

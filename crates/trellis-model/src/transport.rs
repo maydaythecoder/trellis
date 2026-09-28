@@ -41,18 +41,7 @@ impl Endpoint {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, ""),
         };
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((h, p)) => (
-                h.to_string(),
-                p.parse::<u16>().map_err(|_| {
-                    RuntimeError::Config(format!("{base}: `{p}` is not a port number"))
-                })?,
-            ),
-            None => (authority.to_string(), if tls { 443 } else { 80 }),
-        };
-        if host.is_empty() {
-            return Err(RuntimeError::Config(format!("{base} has no host")));
-        }
+        let (host, port) = split_authority(base, authority, if tls { 443 } else { 80 })?;
         if !tls && !is_loopback(&host) {
             return Err(RuntimeError::Config(format!(
                 "{base} is plain http to a host that is not this machine. A hosted \
@@ -65,6 +54,72 @@ impl Endpoint {
             port,
             prefix: path.trim_end_matches('/').to_string(),
         })
+    }
+
+    /// The `Host:` header's value.
+    fn authority(&self) -> String {
+        host_header(&self.host, self.port, if self.tls { 443 } else { 80 })
+    }
+}
+
+/// `(host, port)` from a URL's authority: `name`, `name:port`, `[v6]` or
+/// `[v6]:port`. The host is returned without brackets, as a TLS server name
+/// and an IP parse both want it. Shared with the local runtime client.
+pub(crate) fn split_authority(
+    base: &str,
+    authority: &str,
+    default_port: u16,
+) -> Result<(String, u16), RuntimeError> {
+    let port = |p: &str| {
+        p.parse::<u16>()
+            .map_err(|_| RuntimeError::Config(format!("{base}: `{p}` is not a port number")))
+    };
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        // Split at the bracket, not the last colon: `[::1]` has three.
+        let (h, after) = rest
+            .split_once(']')
+            .ok_or_else(|| RuntimeError::Config(format!("{base}: `[` without `]`")))?;
+        let p = match after {
+            "" => default_port,
+            _ => port(after.strip_prefix(':').ok_or_else(|| {
+                RuntimeError::Config(format!("{base}: `{after}` after `]` is not `:port`"))
+            })?)?,
+        };
+        (h.to_string(), p)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), port(p)?),
+            None => (authority.to_string(), default_port),
+        }
+    };
+    if host.is_empty() {
+        return Err(RuntimeError::Config(format!("{base} has no host")));
+    }
+    Ok((host, port))
+}
+
+/// A `Host:` value: brackets around an IPv6 literal, and the port when it
+/// is not the scheme's default (RFC 9110 §7.2: a missing port means the
+/// default, so leaving `:8080` off names another server).
+pub(crate) fn host_header(host: &str, port: u16, default_port: u16) -> String {
+    let h = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    if port == default_port {
+        h
+    } else {
+        format!("{h}:{port}")
+    }
+}
+
+/// An address `TcpStream::connect` accepts: an IPv6 literal in brackets.
+pub(crate) fn socket_addr(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
     }
 }
 
@@ -113,6 +168,16 @@ pub(crate) enum SendError {
     Config(String),
 }
 
+/// The request line and the fixed headers, without the key.
+fn request_head(ep: &Endpoint, path: &str, body_len: usize) -> String {
+    format!(
+        "POST {}{path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+         Accept: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n",
+        ep.prefix,
+        ep.authority(),
+    )
+}
+
 /// Sends one POST and reads the whole response.
 ///
 /// The key is written into the request buffer here and nowhere else, and
@@ -125,13 +190,7 @@ pub(crate) async fn post(
     body: &str,
     timeout: Duration,
 ) -> Result<Response, SendError> {
-    let mut req = format!(
-        "POST {}{path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
-         Accept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        ep.prefix,
-        ep.host,
-        body.len()
-    );
+    let mut req = request_head(ep, path, body.len());
     for (k, v) in extra_headers {
         req.push_str(k);
         req.push_str(": ");
@@ -155,7 +214,7 @@ pub(crate) async fn post(
     let bytes = req.into_bytes();
 
     let fut = async {
-        let addr = format!("{}:{}", ep.host, ep.port);
+        let addr = socket_addr(&ep.host, ep.port);
         let tcp = TcpStream::connect(&addr)
             .await
             .map_err(|e| SendError::Connect(format!("cannot reach {addr}: {e}")))?;
@@ -362,6 +421,50 @@ mod tests {
         );
         let ep = Endpoint::parse("https://api.anthropic.com").unwrap();
         assert_eq!(ep.prefix, "");
+    }
+
+    #[test]
+    fn a_bracketed_ipv6_host_parses_with_and_without_a_port() {
+        // The risk: `rsplit_once(':')` split `[::1]` itself, so
+        // `http://[::1]/v1` was refused as having port `1]`.
+        let ep = Endpoint::parse("http://[::1]/v1").expect("no port");
+        assert_eq!((ep.host.as_str(), ep.port), ("::1", 80));
+        let ep = Endpoint::parse("http://[::1]:9/v1").expect("a port");
+        assert_eq!(
+            (ep.host.as_str(), ep.port, ep.prefix.as_str()),
+            ("::1", 9, "/v1")
+        );
+        let ep = Endpoint::parse("https://[2001:db8::1]").expect("https");
+        assert_eq!((ep.host.as_str(), ep.port), ("2001:db8::1", 443));
+        for bad in [
+            "http://[::1",
+            "http://[::1]x/v1",
+            "http://[]:9",
+            "http://[::1]:x",
+        ] {
+            assert!(Endpoint::parse(bad).is_err(), "{bad}");
+        }
+        // Still only loopback over plain http.
+        assert!(Endpoint::parse("http://[2001:db8::1]/v1").is_err());
+    }
+
+    #[test]
+    fn the_host_header_names_a_port_that_is_not_the_scheme_default() {
+        // The risk: `Host:` carried the name alone, so a server on
+        // `127.0.0.1:8080` behind a name-based proxy was sent `Host:
+        // 127.0.0.1`, which RFC 9110 §7.2 says names port 80.
+        let host = |base: &str| {
+            let head = request_head(&Endpoint::parse(base).unwrap(), "/x", 0);
+            head.lines()
+                .find_map(|l| l.strip_prefix("Host: ").map(str::to_string))
+                .unwrap()
+        };
+        assert_eq!(host("http://127.0.0.1:8080/v1"), "127.0.0.1:8080");
+        assert_eq!(host("http://localhost/v1"), "localhost");
+        assert_eq!(host("https://api.openai.com/v1"), "api.openai.com");
+        assert_eq!(host("https://api.example.com:8443"), "api.example.com:8443");
+        assert_eq!(host("http://[::1]/v1"), "[::1]");
+        assert_eq!(host("http://[::1]:9/v1"), "[::1]:9");
     }
 
     #[test]

@@ -315,7 +315,10 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         .stdin(Stdio::piped())
         .env("TRELLIS_TASK", text)
         .env("TRELLIS_TASK_ID", task_id)
-        .env("TRELLIS_AGENT", &profile.name);
+        .env("TRELLIS_AGENT", &profile.name)
+        // As for hooks and tools (`exec::run`): bytecode it wrote under
+        // `.trellis/` would untrust the repository it was trusted in.
+        .env("PYTHONDONTWRITEBYTECODE", "1");
     trellis_core::secrets::scrub(&mut cmd);
     // After the scrub, so exactly the names the profile lists come back. An
     // external agent may need a key of its own; whatever it then prints goes

@@ -126,18 +126,8 @@ impl RuntimeClient {
             .strip_prefix("http://")
             .ok_or_else(|| RuntimeError::Config(format!("{base} must start with http://")))?;
         let rest = rest.trim_end_matches('/');
-        let (host, port) = match rest.rsplit_once(':') {
-            Some((h, p)) => (
-                h.to_string(),
-                p.parse().map_err(|_| {
-                    RuntimeError::Config(format!("{base}: `{p}` is not a port number"))
-                })?,
-            ),
-            None => (rest.to_string(), 80),
-        };
-        if host.is_empty() {
-            return Err(RuntimeError::Config(format!("{base} has no host")));
-        }
+        // The hosted transport's parser, so `[::1]` works here too.
+        let (host, port) = crate::transport::split_authority(base, rest, 80)?;
         Ok(Self {
             host,
             port,
@@ -164,7 +154,7 @@ impl RuntimeClient {
     /// or tier 4 and does not come through here.
     pub async fn reachable(&self) -> Result<(), RuntimeError> {
         const WINDOW: Duration = Duration::from_secs(5);
-        let addr = format!("{}:{}", self.host, self.port);
+        let addr = crate::transport::socket_addr(&self.host, self.port);
         match tokio::time::timeout(WINDOW, TcpStream::connect(&addr)).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(source)) => Err(RuntimeError::Connect { base: addr, source }),
@@ -334,7 +324,7 @@ impl RuntimeClient {
     async fn get(&self, path: &str) -> Result<String, RuntimeError> {
         self.request(&format!(
             "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            self.host
+            self.host_header()
         ))
         .await
     }
@@ -344,10 +334,14 @@ impl RuntimeClient {
         self.request(&format!(
             "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            self.host,
+            self.host_header(),
             body.len()
         ))
         .await
+    }
+
+    fn host_header(&self) -> String {
+        crate::transport::host_header(&self.host, self.port, 80)
     }
 
     /// Sends one request and reads the whole response.
@@ -355,7 +349,7 @@ impl RuntimeClient {
     /// `Connection: close` means the body runs to EOF, which avoids
     /// implementing chunked transfer decoding for a localhost call.
     async fn request(&self, req: &str) -> Result<String, RuntimeError> {
-        let addr = format!("{}:{}", self.host, self.port);
+        let addr = crate::transport::socket_addr(&self.host, self.port);
         let mut stream =
             TcpStream::connect(&addr)
                 .await
@@ -500,6 +494,14 @@ mod tests {
         assert!(RuntimeClient::new("http://localhost:1234", Dialect::LlamaCpp, None).is_ok());
         assert!(RuntimeClient::new("localhost:1234", Dialect::LlamaCpp, None).is_err());
         assert!(RuntimeClient::new("http://localhost:notaport", Dialect::LlamaCpp, None).is_err());
+        // Bracketed IPv6, with and without a port: the shared parser.
+        let c = RuntimeClient::new("http://[::1]", Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(
+            (c.host.as_str(), c.port, c.host_header()),
+            ("::1", 80, "[::1]".into())
+        );
+        let c = RuntimeClient::new("http://[::1]:8080/", Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(c.host_header(), "[::1]:8080");
     }
 
     /// A stub runtime, so the request shape and response parsing are tested

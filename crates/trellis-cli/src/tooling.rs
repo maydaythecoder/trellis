@@ -90,6 +90,8 @@ pub(crate) fn require_trusted(root: &Path) -> std::result::Result<(), String> {
         Ok(TrustState::Trusted) => Ok(()),
         Ok(TrustState::Changed) => Err(format!("{WHY} (changed since it was trusted)")),
         Ok(TrustState::Unknown) => Err(WHY.to_string()),
+        // Not "run trellis trust": it would refuse. The reason names the fix.
+        Ok(TrustState::Refused { reason }) => Err(format!("cannot be trusted: {reason}")),
         Err(e) => Err(format!("{WHY} (the trust store could not be read: {e})")),
     }
 }
@@ -103,11 +105,16 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
     let hook_cfg = cfg.hook_config();
     hook_cfg.validate().map_err(|e| anyhow!(e))?;
     let fp = fingerprint(root, cfg);
+    let mut refused: Option<String> = None;
     let trusted = if fp.is_empty() {
         false
     } else {
         match TrustStore::user().and_then(|s| s.state(root, &fp)) {
             Ok(TrustState::Trusted) => true,
+            Ok(TrustState::Refused { reason }) => {
+                refused = Some(reason);
+                false
+            }
             Ok(_) => false,
             // An unreadable store is not a trusted one.
             Err(e) => {
@@ -191,7 +198,10 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
         if agents > 0 {
             parts.push(format!("process agents: {agents} present"));
         }
-        format!("{}, not trusted (run trellis trust)", parts.join(", "))
+        match &refused {
+            Some(reason) => format!("{}, cannot be trusted: {reason}", parts.join(", ")),
+            None => format!("{}, not trusted (run trellis trust)", parts.join(", ")),
+        }
     });
 
     Ok(Tooling {
@@ -458,6 +468,44 @@ mod run_tests {
         assert!(a[0].2.contains("frozen until release"), "{a:?}");
         assert_eq!(a[1].0, "edit");
         assert!(!a[1].3, "a denied edit wrote nothing: {a:?}");
+    }
+
+    #[test]
+    fn a_refused_repository_names_the_link_at_every_refusal_site_not_trellis_trust() {
+        // The risk: once trusted, a repository with a link under `.trellis/`
+        // that leaves it read "changed since it was trusted", and the
+        // `repo:` line, `work`'s waiting reason and doctor all sent the
+        // person to `trellis trust`, which then refused.
+        let (dir, _) = fixture(
+            "refused",
+            &format!("[hooks]\npre_tool = {}\n", sh("exit 0")),
+            EDIT_THEN_STOP,
+        );
+        trust(&dir);
+        let outside = crate::testutil::scratch("ext-refused-outside");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, dir.join(".trellis/lib"));
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, dir.join(".trellis/lib"));
+        if let Err(e) = made {
+            eprintln!("skipped: cannot create a symlink here: {e}");
+            return;
+        }
+        let why = super::require_trusted(&dir).unwrap_err();
+        assert!(why.contains(".trellis/lib"), "{why}");
+        assert!(!why.contains("run trellis trust"), "{why}");
+        let cfg = crate::config::RepoConfig::load(&dir).unwrap();
+        let line = super::prepare(&dir, &cfg, "r", "m")
+            .unwrap()
+            .untrusted
+            .unwrap();
+        assert!(line.contains(".trellis/lib"), "{line}");
+        assert!(!line.contains("run trellis trust"), "{line}");
+        let doctor = crate::doctor_extra::trust_line(&dir, &cfg);
+        assert!(
+            doctor.contains(".trellis/lib") && doctor.contains("would refuse"),
+            "{doctor}"
+        );
     }
 
     #[test]

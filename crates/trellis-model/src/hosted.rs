@@ -172,6 +172,13 @@ pub fn thinking_sent(
     }
 }
 
+/// Whether every exchange in `conv` goes back as the provider's own reply:
+/// the one fact [`thinking_sent`] needs, decided here and nowhere else, so
+/// a caller that reports withheld thinking agrees with the body sent.
+pub fn every_turn_replayed(conv: &Conversation) -> bool {
+    conv.exchanges.iter().all(|x| x.replay.is_some())
+}
+
 /// Builds the request body. Pure: no key, no transport.
 pub fn request_body(
     protocol: Protocol,
@@ -181,8 +188,7 @@ pub fn request_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
-    let replayed = conv.exchanges.iter().all(|x| x.replay.is_some());
-    let thinking = thinking_sent(protocol, thinking, replayed);
+    let thinking = thinking_sent(protocol, thinking, every_turn_replayed(conv));
     match protocol {
         Protocol::OpenAiChat => openai_body(model, conv, tools, max_tokens, thinking),
         Protocol::Anthropic => anthropic_body(model, conv, tools, max_tokens, thinking),

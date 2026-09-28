@@ -67,6 +67,8 @@ pub(crate) fn run_with(
                 TrustState::Trusted => "trusted",
                 TrustState::Unknown => "not trusted",
                 TrustState::Changed => "not trusted: changed since it was trusted",
+                // Returned above, from the fingerprint, before `state`.
+                TrustState::Refused { .. } => "cannot be trusted",
             }
         )?;
         return Ok(());
