@@ -242,10 +242,11 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             cmd.env(name, v);
         }
     }
-    // Its own process group, so what it starts can be ended with it
-    // (`end_group`), as `bash` is.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    // In trellis's own process group, the terminal's foreground group: it
+    // is the user's command on the user's terminal. In a group of its own
+    // (round 8) it was a background job, stopped by SIGTTOU or SIGTTIN the
+    // moment it touched the terminal (review round 9). What that costs is
+    // in `end_command`.
     let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
@@ -272,23 +273,15 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Err(_) => break Ended::Exited(None),
         }
         if stop.load(Ordering::SeqCst) {
-            end_tree(child.id(), true);
-            let _ = child.kill();
-            let _ = child.wait();
+            end_command(&mut child);
             break Ended::Interrupted;
         }
         if started.elapsed() >= timeout {
-            end_tree(child.id(), true);
-            let _ = child.kill();
-            let _ = child.wait();
+            end_command(&mut child);
             break Ended::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    // However it ended, what it left running is ended too, before anything
-    // is judged or rolled back: a backgrounded writer would otherwise land
-    // after both.
-    end_tree(child.id(), false);
     let secs = started.elapsed().as_secs();
     let exit_text = match &ended {
         Ended::Exited(Some(c)) => format!("exited {c} after {secs}s"),
@@ -508,30 +501,26 @@ fn undo(
     rollback(snapshot, out) && removed
 }
 
-/// Ends what the command started. On Unix the command leads its own
-/// group, and `kill -KILL -- -<pgid>` reaches every member that did not
-/// leave it (`setsid`), whether or not the command itself is still alive.
-/// On Windows `taskkill /T` walks the tree from a live process, so only
-/// while the command is `alive`: after a normal exit what it started keeps
-/// running (ADR 0026 §11).
-fn end_tree(pid: u32, alive: bool) {
-    let mut k = if cfg!(windows) {
-        if !alive {
-            return;
-        }
-        let mut c = Command::new("taskkill");
-        c.args(["/T", "/F", "/PID", &pid.to_string()]);
-        c
-    } else {
-        let mut c = Command::new("kill");
-        c.args(["-KILL", "--", &format!("-{pid}")]);
-        c
-    };
-    k.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    trellis_core::secrets::scrub(&mut k);
-    let _ = k.status();
+/// Ends the command on a timeout or an interrupt, while it is still alive
+/// and unreaped. On Windows `taskkill /T` walks the tree from it. On Unix
+/// the command shares trellis's process group, so there is no group of its
+/// own to signal, and signalling trellis's would end trellis: the command
+/// itself is killed, and what it started may outlive it and write after
+/// the comparison (ADR 0026 §11). Ctrl-C at the terminal reaches the whole
+/// foreground group, the command's children included, as it reaches
+/// trellis. After a normal exit nothing is signalled on either platform.
+fn end_command(child: &mut std::process::Child) {
+    if cfg!(windows) {
+        let mut k = Command::new("taskkill");
+        k.args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        trellis_core::secrets::scrub(&mut k);
+        let _ = k.status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {
