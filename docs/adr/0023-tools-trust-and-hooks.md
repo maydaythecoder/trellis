@@ -143,6 +143,17 @@ with a line saying how much was cut) before it becomes an observation;
 `find` and `ls` name at most 500 paths and say how many they left out. The adapter's own tail window then applies as it does to every
 observation.
 
+*Amended after the fifth review of PR #1:* `find` reads git's file list
+into a 64 MiB capture that keeps the tail. Past the cap it returned an
+arbitrary subset whose first path was cut mid-name. It now refuses with
+the list's size and no paths, and tells the model to start the glob with a
+directory; the glob's leading literal directories are passed to `git
+--literal-pathspecs ls-files` as a pathspec, so that advice shrinks what
+git lists and not only what is shown. Evidence:
+`a_file_list_larger_than_the_cap_is_refused_not_cut` in
+`crates/trellis-loop/src/listing.rs` (with a small cap through
+`find_capped`), which returned the cut subset before the change.
+
 ### 3. `bash`, off by default
 
 `[tools] bash = true` enables `bash {command}`. It runs with the repository
