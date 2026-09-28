@@ -172,3 +172,39 @@ tested; the test names are in `docs/STATUS.md`.
 - **`trellis doctor`** prints the configured mode, or the configuration error.
 - **`read_skill` is approvable too.** ADR 0019 added the tool after this ADR
   listed the four above; it is read-only, like `read_file`.
+- **`deny_write` binds the path a write lands on, not the string the model
+  wrote** (review round 8). A rule was matched against the raw argument, so
+  `.//setup.py`, `vendor//x.py`, `lnk/x.py` through a committed link or
+  junction to `vendor/`, and on Windows `setup.py.` or `Setup.py`, each
+  wrote the protected file unrefused. Both sides are now folded the same
+  way before comparison: `/` separators, empty and `.` components dropped,
+  and on Windows the trailing dots and spaces Win32 strips removed; case is
+  folded on Windows and macOS, whose default filesystems ignore it (on a
+  case-sensitive macOS volume that denies a file the rule did not name,
+  the direction a deny list may err in). Then the path is resolved through
+  any link to its repository-relative real path, the one `write_refusal`
+  computes, and the rule is asked again. `Governance::denies_write_at(root,
+  rel)` does both, and every place `deny_write` is consulted asks it: the
+  governance gate (so it now holds the root) for `edit` and `write_file`,
+  and a process agent's audit of what its command wrote. The approval
+  gate's prediction needs no copy: governance is first by construction, so
+  a denied write never reaches it. What this does not cover: `bash`,
+  custom tools and hooks in a model run write without passing any gate,
+  and `deny_write` is not audited over their writes (ADR 0023 §5 states
+  this for a model run's ignored writes; it holds for tracked ones too).
+  Evidence: `governance::tests::a_spelling_that_lands_on_a_protected_path_is_denied`,
+  `on_windows_a_case_or_trailing_dot_spelling_is_the_same_file` and
+  `gate::tests::deny_write_holds_for_the_path_a_write_really_lands_on`
+  (a junction on Windows) each failed before the change; the last wrote
+  `lnk/new.py` into `vendor/`.
+- **A profile's approve list accepts what the repository's does** (review
+  round 8). `[control] approve` in `config.toml` accepted a
+  `[[tools.custom]]` name (ADR 0023); the same list in an agent profile
+  (ADR 0026 §4) was checked against the built-ins alone and refused it, so
+  a profile could not ask for approval of the tool its repository
+  declares. Both now ask `RepoConfig::check_approvable`, and the refusal
+  names the declared tools as well as the built-ins. A profile with an
+  approve list now reads `config.toml` at load, as one with a `tools` list
+  already did. Evidence:
+  `orchestrate::tests::a_profile_may_list_a_repository_tool_for_approval_by_its_name`,
+  which failed before with "`lint`, which is not a tool".

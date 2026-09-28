@@ -533,6 +533,16 @@ scheduled instant) and the id of the last task the routine created.
   instant: its task has no `routine_at`, and two in one second are two
   tasks. The check reads every task file, as `add_task`'s index already
   does, so a fire costs two reads of the queue rather than one.
+  *Amended after the eighth review:* that read was made once per due
+  instant, so a catch-up of `n` instants read every task file `n` times
+  under the routine's lock. It is now made once per tick of a routine
+  with anything due, into a map of this routine's `routine_at` instants,
+  still under the lock and after the state is settled, so the
+  idempotence above holds (its test passes unchanged). Not one read
+  across all routines: each routine's read must be under its own lock,
+  or a concurrent `work` could fire an instant between the read and the
+  lock. Evidence: `a_tick_scans_the_queue_once_however_many_instants_are_due`,
+  which counted five scans for five instants before the change.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
@@ -676,6 +686,17 @@ This is Paperclip's `process` adapter. A profile with
    - `Child::kill` terminates the direct child only. On Windows, and on Unix
      for a process that ignores its group, a grandchild can outlive it. That
      is recorded here, not solved.
+     *Amended after the eighth review of PR #1:* on Unix the command leads
+     its own process group, and however it ends — exit, timeout or Ctrl-C
+     — `kill -KILL -- -<pgid>` ends every member before anything is
+     judged or rolled back, so a backgrounded writer cannot land after
+     either. On Windows `taskkill /T /F` walks the tree on a timeout or an
+     interrupt, while the command is alive; after a normal exit it is gone
+     and the tree cannot be walked from it, so what it started keeps
+     running. A process that left its group (`setsid`) is not reached on
+     Unix. Unix-only test, which this Windows development host cannot run:
+     `exec::tests::what_a_command_backgrounded_cannot_write_after_the_call_returns`
+     covers the same group kill for `bash`.
    - Ctrl-C kills the child and rolls back.
 
    *Amended (wave K): the environment has no keys unless the profile
@@ -751,6 +772,24 @@ This is Paperclip's `process` adapter. A profile with
    file that cannot be written back, which is reported as not put back. A
    process that outlives the command (see step 2) can still write after
    the comparison.
+   *Amended after the eighth review of PR #1:* the guard moved to
+   `trellis_vcs::git_guard`, and a model run with `bash`, custom tools or
+   hooks uses the same one (ADR 0023 §5). It now also covers
+   `config.worktree` (created or changed), every file a config
+   `include.path` or `includeIf.*.path` names that lives under the git
+   directory (followed through includes of includes, to git's depth of
+   10), and `info/attributes`, which can bind paths to a filter the config
+   defines. `--git-path hooks` already follows `core.hooksPath`, and a
+   config edit that re-points it is a change to `config`. Not covered,
+   stated: an include target outside the git directory (a tracked one is
+   the rollback's; one elsewhere on disk is not the repository's), and a
+   submodule's own git directory under `.git/modules/`. A hook written back
+   gets the permissions it had at capture: written with the default mode it
+   was not executable on Unix, so a deleted hook was "put back" and no
+   longer ran (`a_deleted_hook_comes_back_with_its_permissions`, which
+   failed before on the read-only bit; the Unix mode bits it also checks
+   are not exercised on Windows). A hook whose mode alone changed is not
+   detected: the comparison is by bytes.
 
    *Amended after the sixth review of PR #1: files git ignores.* `git
    status` does not list them, so a command could write
@@ -779,9 +818,22 @@ This is Paperclip's `process` adapter. A profile with
    - **What cannot be put back, stated.** An ignored file that existed
      before and was changed or deleted: trellis keeps no copy of ignored
      files (a `.venv` can be gigabytes), so it is named as not put back.
-     The run's restored status is still git's, so one such file does not
-     stop `work`. A directory that was empty before the command and held
-     only what it created is removed with it.
+     A directory that was empty before the command and held only what it
+     created is removed with it.
+     *Amended after the eighth review of PR #1:* such a rollback is not a
+     restored tree, and says so: the run ends `NotRestored`, `work` stops
+     with exit 2 and names the files
+     (`a_process_agent_that_changed_a_pre_existing_ignored_file_leaves_the_tree_not_restored`,
+     which failed before with the run reported rolled back). Before, the
+     restored status was git's alone and `work` went on over a file it
+     had just said it could not put back. The cost, stated: a process
+     agent that runs the repository's tests itself rewrites their caches
+     (`.pytest_cache`, `__pycache__`) when they already exist, so a failed
+     run of such an agent stops `work` as not restored. Unlike a model
+     run (ADR 0023 §5), the command and the tools it runs are one process
+     tree and cannot be told apart. A `.git/` file that could not be put
+     back makes the rollback not restored too; before, it was only
+     printed.
    - **What a converged run keeps.** Ignored files the command created,
      such as a `.pytest_cache`, stay. That includes a `sitecustomize.py` or
      a `.pth` file written into an ignored `.venv`, which Python runs at

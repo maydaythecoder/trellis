@@ -300,31 +300,55 @@ fn active(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
     Ok(None)
 }
 
-/// A task this routine already created for instant `at`, in any state.
-fn fired_for(q: &Queue, name: &str, at: i64) -> Result<Option<String>, QueueError> {
-    Ok(q.list()?.into_iter().find_map(|e| {
-        let t = e.task.ok()?;
-        (t.routine.as_deref() == Some(name) && t.routine_at == Some(at)).then_some(e.id)
-    }))
+#[cfg(test)]
+thread_local! {
+    /// Whole-queue scans made for `fired_instants`, for the test that holds
+    /// a tick to one.
+    static SCANS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Every task this routine already created for a scheduled instant, in any
+/// state, by that instant. One read of the queue per tick, taken under the
+/// routine's lock like the fires it guards: it listed the whole queue once
+/// per due instant before, so a long catch-up read every task file once
+/// per instant. The instants this tick fires are distinct, so a task it
+/// creates never needs to be found by a later fire of the same tick.
+fn fired_instants(
+    q: &Queue,
+    name: &str,
+) -> Result<std::collections::BTreeMap<i64, String>, QueueError> {
+    #[cfg(test)]
+    SCANS.with(|c| c.set(c.get() + 1));
+    let mut by_at = std::collections::BTreeMap::new();
+    for e in q.list()? {
+        if let Ok(t) = e.task
+            && t.routine.as_deref() == Some(name)
+            && let Some(at) = t.routine_at
+        {
+            by_at.entry(at).or_insert(e.id);
+        }
+    }
+    Ok(by_at)
 }
 
 /// `scheduled`: `at` is an instant of the schedule, recorded on the task
-/// and fired at most once. A manual `run_now` is not one, and two of them
-/// in one second are two tasks.
+/// and fired at most once, and the map is [`fired_instants`] for this tick.
+/// A manual `run_now` is not one, and two of them in one second are two
+/// tasks.
 fn fire(
     q: &Queue,
     r: &Routine,
     at: i64,
     actor: Actor,
-    scheduled: bool,
+    scheduled: Option<&std::collections::BTreeMap<i64, String>>,
 ) -> Result<Fired, QueueError> {
     let entity = format!("routine:{}", r.name);
     let when = crate::secs_to_iso(at);
     // Before the concurrency policy: a task for this very instant is this
     // fire, already done by a tick that failed before it could record it.
     // Under `coalesce` it would otherwise be noted as a second fire.
-    if scheduled && let Some(id) = fired_for(q, &r.name, at)? {
-        return Ok(Fired::Enqueued(id));
+    if let Some(id) = scheduled.and_then(|m| m.get(&at)) {
+        return Ok(Fired::Enqueued(id.clone()));
     }
     if r.concurrency != Concurrency::Always
         && let Some(open) = active(q, &r.name)?
@@ -352,7 +376,7 @@ fn fire(
         return Ok(Fired::Skipped(open));
     }
     let mut new = r.new_task(at);
-    new.routine_at = scheduled.then_some(at);
+    new.routine_at = scheduled.is_some().then_some(at);
     let id = q.add_task(new, actor)?;
     q.log(Event::new(actor, "routine.fire", entity).detail(format!("{when} -> task:{id}")))?;
     Ok(Fired::Enqueued(id))
@@ -429,8 +453,9 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
             )),
         )?;
     }
+    let already = fired_instants(q, &r.name)?;
     for at in due {
-        let f = fire(q, r, at, Actor::Routine, true)?;
+        let f = fire(q, r, at, Actor::Routine, Some(&already))?;
         if let Fired::Enqueued(id) = &f {
             st.last_task = Some(id.clone());
         }
@@ -445,7 +470,7 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
 /// manual run does; catch-up does not, and the schedule's state is left
 /// alone so the next scheduled fire is unaffected.
 pub fn run_now(q: &Queue, r: &Routine, now: i64) -> Result<Fired, QueueError> {
-    fire(q, r, now, Actor::Human, false)
+    fire(q, r, now, Actor::Human, None)
 }
 
 /// The next scheduled instant after `now` across every unpaused routine.
@@ -601,6 +626,31 @@ mod tests {
             ];
             assert_eq!(texts, want, "failing link {k} (first tick: {first:?})");
         }
+    }
+
+    #[test]
+    fn a_tick_scans_the_queue_once_however_many_instants_are_due() {
+        // The risk: the "already fired for this instant?" test listed the
+        // whole queue, every task file read, once per due instant, under
+        // the routine's lock (review round 8, finding 9). A catch-up of a
+        // year of minutes was a year of whole-queue reads.
+        let (_d, q) = queue();
+        let r = routine("concurrency = \"always\"\ncatch_up = \"enqueue\"\ncatch_up_max = 5");
+        for i in 0..20 {
+            q.add_task(
+                crate::NewTask {
+                    task: format!("unrelated {i}"),
+                    ..Default::default()
+                },
+                Actor::Human,
+            )
+            .unwrap();
+        }
+        evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
+        SCANS.with(|c| c.set(0));
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        assert_eq!(t.fired.len(), 5);
+        assert_eq!(SCANS.with(|c| c.get()), 1, "one scan for five instants");
     }
 
     #[test]

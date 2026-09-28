@@ -156,8 +156,25 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         next_approval: Arc::default(),
         input_closed: Arc::default(),
     };
+    // A read error is the end of input, not a return: `?` here left `serve`
+    // with a run in flight, and the process exited with no rollback and no
+    // trail. It is handled as end of input is, and reported after the run
+    // has ended.
+    let mut broke: Option<std::io::Error> = None;
     for line in input.lines() {
-        let line = line?;
+        let line = match line {
+            Ok(l) => l,
+            // A line that is not UTF-8 was read whole and is gone from the
+            // stream: bad input, answered as bad JSON is.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                s.respond(None, "parse", Err(format!("not UTF-8: {e}")));
+                continue;
+            }
+            Err(e) => {
+                broke = Some(e);
+                break;
+            }
+        };
         let line = line.trim_end_matches('\r');
         if line.trim().is_empty() {
             continue;
@@ -192,7 +209,10 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
     if let Some(r) = s.running.take() {
         let _ = r.thread.join();
     }
-    Ok(())
+    match broke {
+        Some(e) => Err(anyhow::Error::new(e).context("reading commands from stdin failed")),
+        None => Ok(()),
+    }
 }
 
 impl Server {
@@ -570,9 +590,16 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    /// What a test feeds the server: a line's bytes (a newline is added),
+    /// or a read that fails.
+    enum Chunk {
+        Line(Vec<u8>),
+        Fail,
+    }
+
     /// A reader fed line by line, so a test can answer what the run asks.
     struct Feed {
-        rx: mpsc::Receiver<String>,
+        rx: mpsc::Receiver<Chunk>,
         buf: Vec<u8>,
         pos: usize,
     }
@@ -581,9 +608,13 @@ mod tests {
         fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
             if self.pos >= self.buf.len() {
                 match self.rx.recv() {
-                    Ok(line) => {
-                        self.buf = format!("{line}\n").into_bytes();
+                    Ok(Chunk::Line(mut line)) => {
+                        line.push(b'\n');
+                        self.buf = line;
                         self.pos = 0;
+                    }
+                    Ok(Chunk::Fail) => {
+                        return Err(std::io::Error::other("the client's pipe broke"));
                     }
                     Err(_) => return Ok(0),
                 }
@@ -596,7 +627,7 @@ mod tests {
     }
 
     struct Client {
-        tx: Option<mpsc::Sender<String>>,
+        tx: Option<mpsc::Sender<Chunk>>,
         out: Arc<Mutex<Vec<u8>>>,
         server: Option<std::thread::JoinHandle<Result<()>>>,
     }
@@ -623,7 +654,11 @@ mod tests {
         }
 
         fn send(&self, v: Value) {
-            self.tx.as_ref().unwrap().send(v.to_string()).unwrap();
+            self.raw(v.to_string().into_bytes());
+        }
+
+        fn raw(&self, line: Vec<u8>) {
+            self.tx.as_ref().unwrap().send(Chunk::Line(line)).unwrap();
         }
 
         fn records(&self) -> Vec<Value> {
@@ -811,6 +846,60 @@ mod tests {
     }
 
     #[test]
+    fn a_line_that_is_not_utf8_mid_run_is_a_parse_error_and_the_run_goes_on() {
+        // The risk: `line?` returned from `serve` with a run in flight, and
+        // the process exited with no rollback and no trail (review round 8,
+        // finding 4). A line that is not UTF-8 is bad input, answered as
+        // bad JSON is; the question is still open and still answerable.
+        let (dir, spec) = fixture("not-utf8", "[control]\nmode = \"approve\"\n");
+        let c = Client::start(&dir);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        c.raw(vec![b'{', 0xff, 0xfe, b'}']);
+        let parse = c.wait_for(|r| r["command"] == "parse");
+        assert_eq!(parse["success"], false);
+        c.send(json!({"id": "approval-1", "type": "approve", "yes": false}));
+        let rs = c.finish();
+        let end = of_type(&rs, "run_end")[0];
+        assert_eq!(end["outcome"], "not_converged", "{rs:?}");
+        assert!(end["run_id"].is_string(), "a trail was written: {rs:?}");
+    }
+
+    #[test]
+    fn a_read_error_mid_run_ends_input_and_the_run_still_ends_and_rolls_back() {
+        // Any other read error is the end of input, handled as end of input
+        // is: open questions declined, the run joined, then the error.
+        let (dir, spec) = fixture("read-error", "[control]\nmode = \"approve\"\n");
+        let mut c = Client::start(&dir);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        c.tx.as_ref().unwrap().send(Chunk::Fail).unwrap();
+        let server = c.server.take().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(server.join());
+        });
+        let r = done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the server returns once the run has ended")
+            .unwrap();
+        let rs = c.records();
+        let ends = of_type(&rs, "run_end");
+        assert!(
+            !ends.is_empty(),
+            "the server returned with the run still in flight: {rs:?}"
+        );
+        assert_eq!(ends[0]["outcome"], "not_converged", "{rs:?}");
+        assert!(ends[0]["run_id"].is_string(), "a trail was written");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        let e = r.expect_err("the read error is still reported");
+        assert!(format!("{e:#}").contains("pipe broke"), "{e:#}");
+    }
+
+    #[test]
     fn a_dirty_worktree_is_refused_as_trellis_run_refuses_it() {
         let (dir, spec) = fixture("dirty", "");
         std::fs::write(dir.join("a.py"), "def f():\n    return 9\n").unwrap();
@@ -832,7 +921,7 @@ mod tests {
     fn bad_input_gets_a_response_and_the_server_keeps_going() {
         let d = tempfile::tempdir().unwrap();
         let c = Client::start(d.path());
-        c.tx.as_ref().unwrap().send("{not json".into()).unwrap();
+        c.raw(b"{not json".to_vec());
         c.send(json!({"id": "a", "type": "steer"}));
         c.send(json!({"id": "b", "type": "compact"}));
         c.send(json!({"id": "c", "type": "approve", "yes": true}));

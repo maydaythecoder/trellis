@@ -45,9 +45,13 @@ pub(crate) enum RoutinesAction {
 /// by `agents list` rather than by an unattended `work`.
 pub(crate) fn load_profiles(root: &Path) -> Result<BTreeMap<String, Profile>> {
     let set = profile::load_all(root)?;
-    // Only read when a profile names tools, so a broken config.toml is
-    // reported by the command that needs it rather than by `agents list`.
-    let cfg = if set.values().any(|p| p.file.tools.is_some()) {
+    // Only read when a profile names tools or approvals, so a broken
+    // config.toml is reported by the command that needs it rather than by
+    // `agents list`. An approve list is checked against the repository's
+    // own tools too, as `[control] approve` in config.toml is.
+    let cfg = if set.values().any(|p| {
+        p.file.tools.is_some() || p.file.control.as_ref().is_some_and(|c| c.approve.is_some())
+    }) {
         Some(crate::config::RepoConfig::load(root)?)
     } else {
         None
@@ -58,15 +62,11 @@ pub(crate) fn load_profiles(root: &Path) -> Result<BTreeMap<String, Profile>> {
         }
         if let Some(c) = &p.file.control
             && let Some(list) = &c.approve
+            && let Some(cfg) = &cfg
         {
             for t in list {
-                if !trellis_loop::APPROVABLE_TOOLS.contains(&t.as_str()) {
-                    anyhow::bail!(
-                        "agent `{n}`: [control] approve lists `{t}`, which is not a tool; \
-                         the tools are {}",
-                        trellis_loop::APPROVABLE_TOOLS.join(", ")
-                    );
-                }
+                cfg.check_approvable(t)
+                    .map_err(|e| anyhow::anyhow!("agent `{n}`: [control] {e}"))?;
             }
         }
         if let Some(m) = &p.file.model {
@@ -477,6 +477,46 @@ pub(crate) fn routines(root: &Path, action: RoutinesAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_profile_may_list_a_repository_tool_for_approval_by_its_name() {
+        // The risk: `[control] approve` in the repository config accepted
+        // a `[[tools.custom]]` name and the same list in a profile was
+        // refused, so a profile could not ask for approval of the tool the
+        // repository declares (review round 8, finding 7). A typo is still
+        // refused.
+        let d = tempfile::tempdir().unwrap();
+        let t = d.path().join(".trellis");
+        std::fs::create_dir_all(t.join("agents")).unwrap();
+        std::fs::write(
+            t.join("config.toml"),
+            concat!(
+                "[[tools.custom]]\nname = \"lint\"\ndescription = \"Lint.\"\n",
+                "command = [\"python\", \"lint.py\"]\n",
+                "schema = { type = \"object\", properties = {} }\n",
+            ),
+        )
+        .unwrap();
+        let profile = |approve: &str| {
+            std::fs::write(
+                t.join("agents/rev.toml"),
+                format!("role = \"reviews\"\n[control]\napprove = [{approve}]\n"),
+            )
+            .unwrap();
+        };
+        profile("\"lint\", \"edit\"");
+        super::load_profiles(d.path()).expect("a declared tool is approvable");
+        profile("\"lnit\"");
+        let e = super::load_profiles(d.path()).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("`lnit`, which is not a tool"),
+            "{e:#}"
+        );
+        assert!(
+            format!("{e:#}").contains("lint"),
+            "the declared tools are named: {e:#}"
+        );
+    }
+
     #[test]
     fn a_trail_started_at_is_a_form_the_ledger_can_bucket_by_month() {
         // The ledger buckets by `month_of(started_at)`. A trail writer that

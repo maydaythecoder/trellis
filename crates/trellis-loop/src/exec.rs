@@ -156,6 +156,9 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start `{program}`: {e}"))?;
+    // Taken now: tokio's `id()` is `None` once the child has been reaped,
+    // and the group is killed after that (`kill_group`).
+    let pid = child.id();
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -197,6 +200,13 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
             }
         })
         .await;
+        // A normal exit ends what the command left running too: a
+        // backgrounded `sleep 1; touch x` would otherwise write after this
+        // call returns, after a convergence judged the tree or a rollback
+        // restored it. Before the drain, so the pipes it held close.
+        if let Ok(Ok(_)) = &exited {
+            Box::pin(kill_group(pid)).await;
+        }
         // Then what is left in the pipes, for a short grace. Dropping the
         // readers keeps every byte they already stored.
         let drained = match &exited {
@@ -221,7 +231,7 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
             // The timeout is the report; "still held after exit" is not.
             out.stdout.unfinished = false;
             out.stderr.unfinished = false;
-            kill_tree(&mut child).await;
+            Box::pin(kill_tree(&mut child)).await;
         }
     }
     Ok(out)
@@ -235,27 +245,61 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
 /// not reached. Then the child itself, directly, whatever that did.
 async fn kill_tree(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
-        let mut k = if cfg!(windows) {
-            let mut c = tokio::process::Command::new("taskkill");
-            c.args(["/T", "/F", "/PID", &pid.to_string()]);
-            c
+        if cfg!(windows) {
+            quietly(kill_command(
+                "taskkill",
+                &["/T", "/F", "/PID", &pid.to_string()],
+            ))
+            .await;
         } else {
-            let mut c = tokio::process::Command::new("kill");
-            c.args(["-KILL", "--", &format!("-{pid}")]);
-            c
-        };
-        k.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
-        // `taskkill` and `kill` need no key, and are given none.
-        trellis_core::secrets::scrub(k.as_std_mut());
-        if let Ok(mut k) = k.spawn() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), k.wait()).await;
+            Box::pin(kill_group(Some(pid))).await;
         }
     }
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+}
+
+/// Kills the process group the child led, after the child has exited: on
+/// Unix the group outlives its leader while any member lives, and
+/// `kill -KILL -- -<pgid>` reaches every member that did not leave it. A
+/// group with no members left is an error `kill` reports and nothing more.
+///
+/// Nothing on Windows. `taskkill /T` walks the tree from a live process,
+/// and after a normal exit the child is gone, so it would reach nothing;
+/// what the command started keeps running (a Job Object would hold the
+/// tree, which needs `unsafe` Win32 calls or a dependency this crate does
+/// not take). ADR 0023 §3 states it.
+///
+/// Awaited boxed, as `kill_tree` is: inline, their state made `run`'s
+/// future larger, and a debug build's deepest call path (a `pre_tool` hook
+/// before a custom tool, `child_env.rs`) overflowed the main thread's 1 MiB
+/// stack on Windows.
+async fn kill_group(pid: Option<u32>) {
+    if cfg!(windows) {
+        return;
+    }
+    let Some(pid) = pid else { return };
+    quietly(kill_command("kill", &["-KILL", "--", &format!("-{pid}")])).await;
+}
+
+/// A kill command with no input, output or key.
+fn kill_command(program: &str, args: &[&str]) -> tokio::process::Command {
+    let mut k = tokio::process::Command::new(program);
+    // `taskkill` and `kill` need no key, and are given none.
+    trellis_core::secrets::scrub(k.as_std_mut());
+    k.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    k
+}
+
+/// Runs a kill command for two seconds at most.
+async fn quietly(mut k: tokio::process::Command) {
+    if let Ok(mut k) = k.spawn() {
+        let _ = tokio::time::timeout(Duration::from_secs(2), k.wait()).await;
+    }
 }
 
 /// Reads `stream` to EOF into `into`: the last `cap` bytes, the total, and
@@ -533,6 +577,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(!alive, "background sleep {pid} survived the timeout");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn what_a_command_backgrounded_cannot_write_after_the_call_returns() {
+        // The risk: a command that exited normally left its group running,
+        // so `(sleep 1; touch marker) &` wrote after the call returned —
+        // after a convergence judged the tree, or after a rollback restored
+        // it (review round 8, finding 3).
+        let d = tempfile::tempdir().unwrap();
+        let argv = shell_argv("(sleep 1; touch marker) > /dev/null 2>&1 & exit 0");
+        let c = run(spec(&argv, d.path(), Duration::from_secs(20), 1024))
+            .await
+            .unwrap();
+        assert_eq!(c.code, Some(0));
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            !d.path().join("marker").exists(),
+            "the backgrounded write landed after the call returned"
+        );
     }
 
     #[tokio::test]

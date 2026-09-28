@@ -2744,23 +2744,36 @@ fn doctor_names_each_skipped_skill_and_why() {
 /// file already, with `bash` enabled and trusted in its own trust store.
 /// Returns the repository and a function running the binary against it.
 fn ignored_model_fixture(name: &str) -> (PathBuf, impl Fn(&[&str]) -> Output) {
+    ignored_model_fixture_with(name, "exit 0", "exit 0")
+}
+
+/// [`ignored_model_fixture`] with the two check commands given, each run
+/// by the platform shell.
+fn ignored_model_fixture_with(
+    name: &str,
+    typecheck: &str,
+    tests: &str,
+) -> (PathBuf, impl Fn(&[&str]) -> Output) {
     let d = scratch(name);
     let home = scratch(&format!("{name}-home"));
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
     git(&d, &["config", "user.name", "t"]);
     git(&d, &["config", "core.autocrlf", "false"]);
-    let (shell, flag, ok) = if cfg!(windows) {
-        ("cmd", "/C", r#"["cmd", "/C", "exit 0"]"#)
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
     } else {
-        ("sh", "-c", r#"["sh", "-c", "exit 0"]"#)
+        ("sh", "-c")
     };
+    let check = |c: &str| format!("['{shell}', '{flag}', '{c}']");
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     std::fs::write(
         d.join(".trellis/config.toml"),
         format!(
-            "[checks]\ntypecheck = {ok}\ntests = {ok}\n\n\
-             [tools]\nbash = true\nbash_unattended = true\nshell = ['{shell}', '{flag}']\n"
+            "[checks]\ntypecheck = {}\ntests = {}\n\n\
+             [tools]\nbash = true\nbash_unattended = true\nshell = ['{shell}', '{flag}']\n",
+            check(typecheck),
+            check(tests)
         ),
     )
     .unwrap();
@@ -2831,4 +2844,109 @@ fn a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback() {
         said.contains("NOT put back") && said.contains(".venv/old.py"),
         "a changed pre-existing ignored file is named:\n{said}"
     );
+    // A rollback that left a changed file behind did not restore the tree,
+    // and exit 1 said it had (review round 8, finding 5).
+    assert_eq!(out.status.code(), Some(2), "{said}");
+}
+
+/// A scripted model's steps, written beside the repository; the `--model`
+/// spec that runs them.
+fn script_beside(d: &Path, name: &str, steps: serde_json::Value) -> String {
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("{name}-script-{}.json", std::process::id()));
+    std::fs::write(&script, serde_json::json!({ "steps": steps }).to_string()).unwrap();
+    format!("scripted:{}", script.display())
+}
+
+/// `core.fsmonitor` as the repository's config has it, if set.
+fn fsmonitor(d: &Path) -> Option<String> {
+    let o = Command::new("git")
+        .args(["config", "--get", "core.fsmonitor"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+#[test]
+fn a_model_run_s_bash_writes_to_git_config_and_hooks_are_put_back_on_rollback() {
+    // The risk: `bash` sets `core.fsmonitor` or plants a hook. `git status`
+    // does not show `.git/`, the rollback's reset does not restore it, and
+    // trellis's next git call runs the command (review round 8, finding 2).
+    let (d, run) = ignored_model_fixture("model-git-guard-rb");
+    let cmd = if cfg!(windows) {
+        r"git config core.fsmonitor ./evil.sh && echo x> .git\hooks\post-checkout"
+    } else {
+        "git config core.fsmonitor ./evil.sh && echo x > .git/hooks/post-checkout"
+    };
+    let spec = script_beside(
+        &d,
+        "model-git-guard-rb",
+        serde_json::json!([
+            {"tool": "bash", "command": cmd},
+            {"tool": "done", "summary": "planted"},
+        ]),
+    );
+    let out = run(&["run", "plant", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+    assert!(
+        !d.join(".git/hooks/post-checkout").exists(),
+        "a planted hook survived:\n{said}"
+    );
+}
+
+#[test]
+fn a_model_run_that_changed_git_config_does_not_converge() {
+    // Convergence leaves the tree for review, so a `core.fsmonitor` the run
+    // set would run at the reviewer's next `git status`. A change there is
+    // never part of a converged run: it fails the run and is put back.
+    let (d, run) = ignored_model_fixture("model-git-guard-cv");
+    let spec = script_beside(
+        &d,
+        "model-git-guard-cv",
+        serde_json::json!([
+            {"tool": "bash", "command": "git config core.fsmonitor ./evil.sh"},
+            {"tool": "run_checks", "paths": [], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "set it"},
+        ]),
+    );
+    let out = run(&["run", "set fsmonitor", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(!out.status.success(), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+}
+
+#[test]
+fn a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored() {
+    // The checks run the repository's tools, which rewrite their caches
+    // (`.mypy_cache`, `__pycache__`) on every run. Judged by the same
+    // before-and-after as `bash`, every failed run that ran a check would
+    // exit 2; only what the guarded writers did is held against the tree.
+    let append = if cfg!(windows) {
+        r"echo z>> .venv\old.py"
+    } else {
+        "echo z >> .venv/old.py"
+    };
+    let (d, run) = ignored_model_fixture_with("model-ignored-check", append, "exit 1");
+    let spec = script_beside(
+        &d,
+        "model-ignored-check",
+        serde_json::json!([
+            {"tool": "bash", "command": "echo hi"},
+            {"tool": "run_checks", "paths": [], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "tried"},
+        ]),
+    );
+    let out = run(&["run", "try", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(!said.contains("NOT put back"), "{said}");
+    assert_eq!(out.status.code(), Some(1), "{said}");
 }

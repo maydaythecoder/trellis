@@ -227,6 +227,19 @@ on stderr.
     `printf … | trellis rpc` never exited. After an `abort` the abort path
     drops the questions instead, once the run has taken it, so an aborted
     run still ends as interrupted.
+  - *Amended after the eighth review of PR #1:* **a read error is end of
+    input, not an exit.** `serve` returned on the first read error with a
+    run in flight, and the process exited with neither rollback nor trail.
+    Now a line that is not UTF-8 is answered with a `parse` error, as a
+    line that is not JSON is, and reading goes on (the bytes were consumed,
+    so this cannot repeat on them); any other read error takes the
+    end-of-input path above — questions declined, the run joined — and is
+    then returned, so the process still exits non-zero and says why.
+    Evidence: `rpc::tests::a_line_that_is_not_utf8_mid_run_is_a_parse_error_and_the_run_goes_on`
+    and `a_read_error_mid_run_ends_input_and_the_run_still_ends_and_rolls_back`,
+    both of which failed before (the first timed out waiting for the
+    answer the dead server never gave; the second returned with no
+    `run_end`).
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation

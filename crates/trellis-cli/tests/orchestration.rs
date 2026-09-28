@@ -767,6 +767,24 @@ fn a_process_agent_s_ignored_writes_are_removed_on_rollback() {
 }
 
 #[test]
+fn a_process_agent_that_changed_a_pre_existing_ignored_file_leaves_the_tree_not_restored() {
+    // trellis keeps no copy of ignored files, so one the command changed
+    // cannot be put back. The rollback said so and still reported the tree
+    // restored, and `work` carried on over it (review round 8, finding 5).
+    let cmd = r#"["git", "config", "--file", "app/old.cfg", "a.b", "c"]"#;
+    let d = ignored_fixture("proc-ignored-old", cmd, PASSING_CHECKS);
+    std::fs::write(d.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
+    ok(&d, &["trust"]);
+    ok(&d, &["queue", "add", "change it", "--assignee", "maker"]);
+    let o = trellis(&d, &["work"]);
+    let s = combined(&o);
+    assert!(s.contains("NOT put back"), "{s}");
+    assert!(s.contains("left the tree NOT restored"), "{s}");
+    assert_eq!(o.status.code(), Some(2), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() {
     // An ignored path is still a path: `.trellis/` holds what judges the
     // run, and `deny_write` binds wherever git looks or not. The command
@@ -784,7 +802,7 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
             )
         }
     };
-    for (name, target, config) in [
+    let mut cases = vec![
         (
             "proc-ignored-trellis",
             ".trellis/evil.cfg",
@@ -795,7 +813,17 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
             "app/made.cfg",
             format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"app/made.cfg\"]\n"),
         ),
-    ] {
+    ];
+    // NTFS ignores case, so a rule spelt differently still names the file
+    // (finding r8-1): the audit folds as the write gate does.
+    if cfg!(windows) {
+        cases.push((
+            "proc-ignored-deny-case",
+            "app/made.cfg",
+            format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"./App//Made.cfg\"]\n"),
+        ));
+    }
+    for (name, target, config) in cases {
         let d = ignored_fixture(name, &both(target), &config);
         ok(&d, &["queue", "add", "write", "--assignee", "maker"]);
         let s = ok(&d, &["work"]);

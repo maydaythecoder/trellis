@@ -1680,18 +1680,32 @@ fn run_body(
     // ignored files are listed with their stat around a run that loads any
     // of them, as a process agent's are (ADR 0023 §5, ADR 0026 §11). Taken
     // after the snapshot and before `before_run`, which is one of them.
-    let ignored = if tooling.tools.bash().is_some()
+    //
+    // The same writers can reach `.git/`, which neither `git status` nor the
+    // rollback sees: a `core.fsmonitor` or a planted hook would run at
+    // trellis's next git call. So `.git/config`, what it includes, the hooks
+    // and `info/` are read too, and put back before any git command runs
+    // once the loop has ended (review round 8).
+    let writers = if tooling.tools.bash().is_some()
         || !tooling.tools.customs().is_empty()
         || tooling.hooks.is_some()
     {
-        Some(
-            trellis_vcs::ignored::IgnoredSnapshot::take(root).map_err(|e| {
-                anyhow::anyhow!(
-                    "could not list the files git ignores before the run, which a run \
-                     with bash, custom tools or hooks needs to undo their writes: {e}"
-                )
-            })?,
-        )
+        let git = trellis_vcs::git_guard::GitGuard::capture(root).map_err(|e| {
+            anyhow::anyhow!(
+                "could not read .git/config and the hooks before the run, which a run \
+                 with bash, custom tools or hooks needs to put back their writes: {e}"
+            )
+        })?;
+        let ignored = trellis_vcs::ignored::IgnoredLedger::take(root).map_err(|e| {
+            anyhow::anyhow!(
+                "could not list the files git ignores before the run, which a run \
+                 with bash, custom tools or hooks needs to undo their writes: {e}"
+            )
+        })?;
+        Some(WriterGuards {
+            git,
+            ignored: std::sync::Arc::new(std::sync::Mutex::new(ignored)),
+        })
     } else {
         None
     };
@@ -1700,7 +1714,7 @@ fn run_body(
     let mut on_panic = RollbackOnPanic {
         root,
         snapshot: &snapshot,
-        ignored: ignored.as_ref(),
+        writers: writers.as_ref(),
         armed: true,
     };
 
@@ -1924,6 +1938,9 @@ fn run_body(
         if let Some(h) = &tooling.hooks {
             orchestrator = orchestrator.with_hooks(h.clone());
         }
+        if let Some(w) = &writers {
+            orchestrator = orchestrator.with_ignored_ledger(w.ignored.clone());
+        }
         // The hooks' guard and this one are one latch (ADR 0023 §5).
         if let Some(g) = &tooling.guard {
             orchestrator = orchestrator.with_trust_guard(g.clone());
@@ -2111,7 +2128,7 @@ fn run_body(
             task,
             &transcript,
             &snapshot,
-            ignored.as_ref(),
+            writers.as_ref(),
             facts(trellis_trail::Approval::None),
             out,
         );
@@ -2194,6 +2211,32 @@ fn run_body(
         let _ = writeln!(out, "{line}");
     }
 
+    // Before any git command below (the ignored listing, the rollback's
+    // reset, the trail's commit): `.git/` goes back to what it was, since a
+    // `core.fsmonitor` runs at the next `git status` and a hook at the next
+    // commit. On a converged run a change there is never part of the
+    // change left for review, so the run is demoted; on any other the
+    // rollback puts it back first.
+    let outcome = match (outcome, &writers) {
+        (
+            trellis_loop::Outcome::Converged {
+                iterations,
+                checks_passed,
+            },
+            Some(w),
+        ) => match put_git_back(&w.git, &mut *out) {
+            Some(detail) => trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::GitDirChanged { detail },
+                iterations,
+            },
+            None => trellis_loop::Outcome::Converged {
+                iterations,
+                checks_passed,
+            },
+        },
+        (o, _) => o,
+    };
+
     // Each branch below disposes of the tree itself: a converged run leaves
     // it for review, a non-converged one rolls back and then commits a
     // trail, which a rollback on a later panic would remove.
@@ -2211,8 +2254,13 @@ fn run_body(
             // Left in place with the run's changes, but said: `git status`
             // and `/diff` do not show them, and reverting the change later
             // does not remove them.
-            if let Some(before) = &ignored {
-                match trellis_vcs::ignored::changes_since(root, before) {
+            if let Some(w) = &writers {
+                match w
+                    .ignored
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .changes(root)
+                {
                     Ok(c) if c.is_empty() => {}
                     Ok(c) => {
                         let _ = writeln!(
@@ -2287,7 +2335,7 @@ fn run_body(
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_run(root, &snapshot, ignored.as_ref(), &mut *out);
+            let restored = rollback_run(root, &snapshot, writers.as_ref(), &mut *out);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -2375,7 +2423,7 @@ make the run converge — only a check executed in that session ",
 struct RollbackOnPanic<'a> {
     root: &'a Path,
     snapshot: &'a trellis_vcs::Snapshot,
-    ignored: Option<&'a trellis_vcs::ignored::IgnoredSnapshot>,
+    writers: Option<&'a WriterGuards>,
     armed: bool,
 }
 
@@ -2390,7 +2438,7 @@ impl Drop for RollbackOnPanic<'_> {
             err,
             "PANICKED mid-run. Rolling back — nothing is accepted from a run that did not finish."
         );
-        rollback_run(self.root, self.snapshot, self.ignored, &mut err);
+        rollback_run(self.root, self.snapshot, self.writers, &mut err);
     }
 }
 
@@ -2408,11 +2456,11 @@ fn interrupted_run(
     task: &str,
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
-    ignored: Option<&trellis_vcs::ignored::IgnoredSnapshot>,
+    writers: Option<&WriterGuards>,
     facts: TrailFacts<'_>,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    let restored = handle_interrupt(root, task, touched, snapshot, ignored, facts, out);
+    let restored = handle_interrupt(root, task, touched, snapshot, writers, facts, out);
     Ok(RunExit::Interrupted { restored })
 }
 
@@ -2428,7 +2476,7 @@ fn handle_interrupt(
     task: &str,
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
-    ignored: Option<&trellis_vcs::ignored::IgnoredSnapshot>,
+    writers: Option<&WriterGuards>,
     facts: TrailFacts<'_>,
     out: &mut dyn std::io::Write,
 ) -> bool {
@@ -2441,7 +2489,7 @@ fn handle_interrupt(
         let _ = writeln!(out, "files this run had written: {}", touched.join(", "));
     }
 
-    let restored = rollback_run(root, snapshot, ignored, &mut *out);
+    let restored = rollback_run(root, snapshot, writers, &mut *out);
 
     // The turn list cannot be recovered: it lives in the loop's future, which
     // was just cancelled. The factual half that matters survives, because the
@@ -2476,23 +2524,67 @@ fn handle_interrupt(
     restored
 }
 
-/// A run's whole rollback: the ignored files the run created are removed
-/// first (the snapshot's `git clean -fd` leaves them, then removes the
-/// directories their removal emptied), then the worktree goes back to the
-/// snapshot. `ignored` is `None` for a run that loaded no writer able to
-/// reach an ignored path. Restored means both: a created ignored file that
-/// could not be removed, or an ignored listing that could not be read after
-/// the run, is not a restored tree.
+/// What a run with `bash`, custom tools or hooks is watched with, since
+/// those writers reach what neither `git status` nor the rollback sees:
+/// `.git/` (config, includes, hooks, `info/`) and files git ignores.
+struct WriterGuards {
+    git: trellis_vcs::git_guard::GitGuard,
+    /// Shared with the orchestrator, which brackets each check in it.
+    ignored: std::sync::Arc<std::sync::Mutex<trellis_vcs::ignored::IgnoredLedger>>,
+}
+
+/// Puts `.git/` back and says what differed; `Some` naming it when
+/// anything did. What could not be put back is said too, and the
+/// rollback that follows tries again and counts it.
+fn put_git_back(
+    git: &trellis_vcs::git_guard::GitGuard,
+    out: &mut dyn std::io::Write,
+) -> Option<String> {
+    let (differed, failed) = git.restore();
+    if differed.is_empty() {
+        return None;
+    }
+    let names = differed.join(", ");
+    let _ = writeln!(out, "git:      the run changed {names}; put back");
+    for f in &failed {
+        let _ = writeln!(out, "git:      could NOT be put back: {f}");
+    }
+    Some(names)
+}
+
+/// A run's whole rollback: `.git/` is put back first, before any git
+/// command can run what the run planted there; then the ignored files the
+/// run created are removed (the snapshot's `git clean -fd` leaves them,
+/// then removes the directories their removal emptied); then the worktree
+/// goes back to the snapshot. `writers` is `None` for a run that loaded no
+/// writer able to reach either. Restored means all three: a `.git/` file
+/// that could not be put back, a created ignored file that could not be
+/// removed, a pre-existing ignored file a writer changed or deleted (no
+/// copy is kept), or an ignored listing that could not be read after the
+/// run, is not a restored tree.
 fn rollback_run(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
-    ignored: Option<&trellis_vcs::ignored::IgnoredSnapshot>,
+    writers: Option<&WriterGuards>,
     out: &mut dyn std::io::Write,
 ) -> bool {
-    let ignored_ok = match ignored {
+    let git_ok = match writers {
         None => true,
-        Some(before) => match trellis_vcs::ignored::changes_since(root, before) {
-            Ok(c) => trellis_vcs::ignored::undo_created(root, &c, out),
+        Some(w) => {
+            put_git_back(&w.git, out);
+            // Asked again: the answer is what is still not put back.
+            w.git.restore().1.is_empty()
+        }
+    };
+    let ignored_ok = match writers {
+        None => true,
+        Some(w) => match w
+            .ignored
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .changes(root)
+        {
+            Ok(c) => trellis_vcs::ignored::undo(root, &c, out),
             Err(e) => {
                 let _ = writeln!(
                     out,
@@ -2504,7 +2596,7 @@ fn rollback_run(
             }
         },
     };
-    rollback_and_report(snapshot, out) && ignored_ok
+    rollback_and_report(snapshot, out) && ignored_ok && git_ok
 }
 
 /// Rolls back, and if that fails says so at the top of its voice.

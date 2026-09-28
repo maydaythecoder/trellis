@@ -298,6 +298,10 @@ pub struct Orchestrator {
     /// may have changed the tree (ADR 0023 §5). The same latch the hooks
     /// hold, so a breach found by either ends the run.
     guard: Option<crate::trust::TrustGuard>,
+    /// The run's ignored-file ledger, when it loads a writer that can reach
+    /// an ignored path: each check is bracketed, so the caches it rewrites
+    /// are not held against the run (`IgnoredLedger`).
+    ignored: Option<std::sync::Arc<std::sync::Mutex<trellis_vcs::ignored::IgnoredLedger>>>,
 }
 
 impl Orchestrator {
@@ -307,7 +311,7 @@ impl Orchestrator {
             session: Session::open(root),
             checks,
             touched: Vec::new(),
-            governance: GovernanceGate(crate::governance::Governance::default()),
+            governance: GovernanceGate::new(crate::governance::Governance::default(), root),
             gates: Vec::new(),
             rules: Vec::new(),
             tools: ToolSet::default(),
@@ -318,6 +322,27 @@ impl Orchestrator {
             skills: crate::skills::SkillAccess::default(),
             wrote: false,
             guard: None,
+            ignored: None,
+        }
+    }
+
+    /// The ignored-file ledger the caller rolls back from; every check this
+    /// orchestrator runs is bracketed in it.
+    #[must_use]
+    pub fn with_ignored_ledger(
+        mut self,
+        ledger: std::sync::Arc<std::sync::Mutex<trellis_vcs::ignored::IgnoredLedger>>,
+    ) -> Self {
+        self.ignored = Some(ledger);
+        self
+    }
+
+    /// Runs `f` on the ledger, if there is one. A poisoned lock still holds
+    /// a valid ledger; refusing it would drop the record.
+    fn with_ledger(&self, f: impl FnOnce(&mut trellis_vcs::ignored::IgnoredLedger, &Path)) {
+        if let Some(l) = &self.ignored {
+            let mut g = l.lock().unwrap_or_else(|e| e.into_inner());
+            f(&mut g, &self.root);
         }
     }
 
@@ -373,7 +398,7 @@ impl Orchestrator {
     /// Applies the repository's rules to this run.
     #[must_use]
     pub fn with_governance(mut self, g: crate::governance::Governance) -> Self {
-        self.governance = GovernanceGate(g);
+        self.governance = GovernanceGate::new(g, &self.root);
         self
     }
 
@@ -991,6 +1016,12 @@ impl Orchestrator {
         // fails, because a type error makes the test result uninformative
         // rather than additionally informative.
         for kind in kinds {
+            // The three that run the repository's tools, which rewrite
+            // their own caches, are bracketed in the ignored-file ledger.
+            let runs_code = !matches!(kind, CheckKind::Governance);
+            if runs_code {
+                self.with_ledger(|l, root| l.before_unguarded(root));
+            }
             let v = match kind {
                 CheckKind::Typecheck => {
                     trellis_checks::typecheck(&self.root, &self.checks, &paths).await
@@ -1015,6 +1046,9 @@ impl Orchestrator {
                     trellis_checks::governance_audit(&self.root, &self.rules, &scope)
                 }
             };
+            if runs_code {
+                self.with_ledger(|l, root| l.after_unguarded(root));
+            }
             if !v.passed() {
                 return ToolResult::Checks(v);
             }
@@ -1107,7 +1141,7 @@ pub fn names_trellis_dir(rel: &str) -> bool {
 /// with the part that does not exist yet appended as written. `Err` when
 /// that ancestor is outside the repository: a committed link to `/etc` or
 /// to `~` is a path the string rules cannot see.
-fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
+pub(crate) fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
     let Ok(real_root) = std::fs::canonicalize(root) else {
         return Ok(rel.to_string());
     };

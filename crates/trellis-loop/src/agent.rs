@@ -204,6 +204,15 @@ pub enum NotConverged {
     TrustChanged {
         detail: String,
     },
+    /// The run converged, and a file under `.git/` that can run code at
+    /// the next git command had changed: the config (`core.fsmonitor`,
+    /// `core.hooksPath`), a file it includes, a hook, or `info/`. `git
+    /// status` does not show it and a review of the diff would not see it,
+    /// so it is never part of a converged change; it was put back and the
+    /// run rolled back. Constructed by the binary, which holds the guard.
+    GitDirChanged {
+        detail: String,
+    },
 }
 
 impl NotConverged {
@@ -248,6 +257,14 @@ impl NotConverged {
                     "or custom tool was started and nothing was accepted. A run may ",
                     "not change what judges it; if the change was meant, make it ",
                     "yourself and run `trellis trust` again."
+                ),
+                detail
+            ),
+            NotConverged::GitDirChanged { detail } => format!(
+                concat!(
+                    "the checks passed, and the run changed {}, under .git/, where ",
+                    "git runs code from at its next command and a diff does not show. ",
+                    "A run may not; it was put back and nothing was accepted."
                 ),
                 detail
             ),
