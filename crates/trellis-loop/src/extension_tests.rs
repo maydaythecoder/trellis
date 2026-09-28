@@ -560,3 +560,136 @@ async fn grep_find_and_ls_read_the_repository_and_stay_inside_it() {
         );
     }
 }
+
+// ---- ADR 0026 × 0023/0019: what an agent profile narrows ----
+
+fn refused(r: ToolResult) -> String {
+    match r {
+        ToolResult::Error(e) => e,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_profile_tool_list_narrows_the_run_and_the_orchestrator_refuses_the_rest() {
+    // The risk: a profile's `tools` list shapes the prompt while the
+    // orchestrator, the one refusal that binds, still serves everything.
+    let d = repo();
+    let (set, not_offered) = ToolSet::default().narrowed(&["read_file".to_string()]);
+    assert!(not_offered.is_empty());
+    assert_eq!(set.names(), ["read_file", "run_checks"]);
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(set)
+        .spawn();
+    let e = refused(
+        orch.call(&ToolCall::Edit {
+            path: "app/util.py".into(),
+            old: "1".into(),
+            new: "2".into(),
+        })
+        .await
+        .result,
+    );
+    assert!(e.contains("`edit` is not a tool in this run"), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("app/util.py")).unwrap(),
+        "def helper():\n    return 1\n",
+        "a refused edit wrote nothing"
+    );
+    let r = orch
+        .call(&ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })
+        .await
+        .result;
+    assert!(matches!(r, ToolResult::FileContent(_)), "{r:?}");
+}
+
+#[tokio::test]
+async fn a_profile_tool_list_can_never_widen_the_repositorys_set() {
+    // The risk: a committed profile turns on what the repository left off,
+    // including bash, which needs the user's trust (ADR 0023 §4).
+    let d = repo();
+    let keep: Vec<String> = ["read_file", "grep", "bash", "lint"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let (set, not_offered) = ToolSet::default().narrowed(&keep);
+    assert_eq!(not_offered, ["grep", "bash", "lint"]);
+    assert!(!set.enabled("grep") && !set.enabled("bash") && set.bash().is_none());
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(set)
+        .spawn();
+    let e = refused(
+        orch.call(&ToolCall::Grep {
+            pattern: "x".into(),
+            path: None,
+        })
+        .await
+        .result,
+    );
+    assert!(e.contains("not a tool in this run"), "{e}");
+    let e = refused(
+        orch.call(&ToolCall::Bash {
+            command: "echo x".into(),
+        })
+        .await
+        .result,
+    );
+    assert!(e.contains("not a tool in this run"), "{e}");
+
+    // And from a set that does offer bash, a list without it removes it.
+    let with = with_bash(&["echo"], false, Duration::from_secs(5));
+    let (set, _) = with.narrowed(&["read_file".to_string()]);
+    assert!(set.bash().is_none() && !set.enabled("bash"));
+}
+
+#[tokio::test]
+async fn read_skill_by_exact_name_is_refused_when_the_profile_denies_it() {
+    // ADR 0026 §4 recorded this as open: the listing hid a denied skill, but
+    // `read_skill` with its exact name still returned the body.
+    let d = repo();
+    let sd = d.path().join(crate::skills::SKILLS_DIR).join("refactor");
+    std::fs::create_dir_all(&sd).unwrap();
+    std::fs::write(
+        sd.join("SKILL.md"),
+        "---\nname: refactor\ndescription: R.\n---\nSECRET-BODY\n",
+    )
+    .unwrap();
+    let access = crate::skills::SkillAccess {
+        user_dirs: Vec::new(),
+        policy: Some(crate::skills::SkillPolicy {
+            profile: "reviewer".into(),
+            allow: None,
+            deny: vec!["refactor".into()],
+        }),
+    };
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_skills(access)
+        .spawn();
+    let e = refused(
+        orch.call(&ToolCall::ReadSkill {
+            name: "refactor".into(),
+        })
+        .await
+        .result,
+    );
+    assert!(
+        e.contains("agent profile `reviewer`") && e.contains(r#"[skills] deny = ["refactor"]"#),
+        "{e}"
+    );
+    assert!(!e.contains("SECRET-BODY"));
+
+    // Without a profile the same call reads it, as before.
+    let (plain, _j2) = Orchestrator::new(d.path(), CheckConfig::default()).spawn();
+    let r = plain
+        .call(&ToolCall::ReadSkill {
+            name: "refactor".into(),
+        })
+        .await
+        .result;
+    assert!(
+        matches!(r, ToolResult::FileContent(ref b) if b.contains("SECRET-BODY")),
+        "{r:?}"
+    );
+}
