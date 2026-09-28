@@ -567,10 +567,7 @@ impl Orchestrator {
             Ok(f) => f,
             Err(e) => return ToolResult::Error(e),
         };
-        if Path::new(path)
-            .components()
-            .any(|c| c.as_os_str() == ".git")
-        {
+        if names_git_dir(path) {
             return ToolResult::Error(format!("write_file refused: `{path}` is inside .git"));
         }
         if full.exists() {
@@ -768,6 +765,12 @@ impl Orchestrator {
             Ok(f) => f,
             Err(e) => return ToolResult::Error(e),
         };
+        // `.git/config` exists, so without this an edit could set
+        // `core.hooksPath` or rewrite a hook, and rollback — git's own
+        // reset — does not restore git's own directory.
+        if names_git_dir(path) {
+            return ToolResult::Error(format!("edit refused: `{path}` is inside .git"));
+        }
         let src = match std::fs::read_to_string(&full) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -991,6 +994,20 @@ impl Orchestrator {
         }
         Ok(self.root.join(rel))
     }
+}
+
+/// Whether any component of `rel` names git's own directory, by any
+/// spelling a filesystem this runs on would resolve to it: compared
+/// case-insensitively (NTFS, APFS), after the trailing dots and spaces
+/// Windows strips (`.git.`, `.git `), and including the 8.3 short name
+/// `git~1` — the list git itself checks since CVE-2014-9390. Every
+/// component, so `app/.GIT/x` is caught as well: a nested `.git` is a
+/// repository git would honour.
+pub(crate) fn names_git_dir(rel: &str) -> bool {
+    rel.split(['/', '\\']).any(|seg| {
+        let s = seg.trim_end_matches(['.', ' ']).to_ascii_lowercase();
+        s == ".git" || s == "git~1"
+    })
 }
 
 /// Why `rel` cannot be used as a path inside the repository, or `None`.

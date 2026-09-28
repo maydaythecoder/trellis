@@ -213,6 +213,7 @@ impl ToolGate for ApprovalGate {
                     // The orchestrator's own predicate, so the two cannot
                     // disagree about which calls go unasked.
                     let refused = crate::orchestrator::unsafe_repo_path(path).is_some()
+                        || crate::orchestrator::names_git_dir(path)
                         || self.root.join(path).exists();
                     if refused {
                         return GateDecision::Allow;
@@ -393,7 +394,9 @@ pub struct EditPreview {
 pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<EditPreview> {
     // The orchestrator's predicate: `/x` on Windows is not `is_absolute()`,
     // and a preview must not read outside the repository either.
-    if crate::orchestrator::unsafe_repo_path(path).is_some() {
+    if crate::orchestrator::unsafe_repo_path(path).is_some()
+        || crate::orchestrator::names_git_dir(path)
+    {
         return None;
     }
     let src = std::fs::read_to_string(root.join(path))

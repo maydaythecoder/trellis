@@ -103,7 +103,14 @@ which read outside the repository on Windows before.
   the trail's `proposed` list and in the governance audit's scope. Rollback's
   `git clean -fd` removes it, which is only true for a path git does not
   ignore; so a path `git check-ignore` reports as ignored is refused, as is
-  any path with a `.git` component. Creating a `.py` file reopens the index
+  any path with a `.git` component. *Amended 2026-09-27:* "a `.git`
+  component" is compared case-insensitively, after trailing dots and spaces
+  are trimmed, and includes the 8.3 name `git~1`, on every component and
+  for `edit` as well as `write_file` (`names_git_dir`). The exact-match
+  check let `.GIT/hooks/pre-commit` create a git hook on a case-insensitive
+  filesystem (observed on Windows), and `edit` had no check, so
+  `.git/config` could be edited. Both survive a rollback, which is git's
+  own reset. Creating a `.py` file reopens the index
   session (a full rebuild), because `Session::try_update` only knows files
   present at open, and a graph that disagrees with the tree is the failure
   the refusal in `apply_edit` exists to prevent.
