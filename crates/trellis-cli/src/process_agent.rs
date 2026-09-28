@@ -77,7 +77,10 @@ fn changed(root: &Path, base: &str) -> Result<Vec<String>, String> {
 struct Judge {
     checks: trellis_checks::CheckConfig,
     rules: Vec<trellis_checks::governance::Rule>,
-    deny: Vec<String>,
+    /// Built once: `denied` runs per modified ignored file in undo's
+    /// protected closure, and parsing and folding every rule each time
+    /// was repeated work (review round 12).
+    deny: trellis_loop::Governance,
 }
 
 impl Judge {
@@ -95,7 +98,7 @@ impl Judge {
             // Once per run, not per check spawn (review round 11).
             checks: cfg.checks().for_run(root),
             rules,
-            deny,
+            deny: trellis_loop::Governance::new(&deny),
         })
     }
 
@@ -123,7 +126,7 @@ impl Judge {
     /// shows them or ignores them: an ignored path is still a write, and a
     /// rule that says "not here" does not ask git first.
     fn denied<'p>(&self, root: &Path, paths: impl Iterator<Item = &'p String>) -> Vec<String> {
-        let g = trellis_loop::Governance::new(&self.deny);
+        let g = &self.deny;
         paths
             .filter_map(|p| {
                 if trellis_loop::names_trellis_dir(p) {
