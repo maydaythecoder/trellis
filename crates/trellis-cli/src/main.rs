@@ -32,6 +32,8 @@ mod rpc;
 mod session_extra;
 mod templates;
 mod user_config;
+// Integration across waves (doctor's report of the inputs above).
+mod doctor_extra;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -422,7 +424,12 @@ fn main() -> Result<()> {
     // Every other command refusing is deliberate. `trellis index` in a home
     // folder once walked 25,147 files before anyone could tell it had not
     // found a repository.
-    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }));
+    //
+    // `vault init` joins them for the same reason (ADR 0022 §3, integrated):
+    // it creates a vault, possibly before there is a repository to hold it.
+    // Every other `vault` action still reads one.
+    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }))
+        && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -1406,7 +1413,16 @@ fn run_body(
     // file this run writes.
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
-    let tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    // Integrated (ADR 0026 × 0023): a profile's `tools` list narrows the
+    // set here, before the driver parses a script against it and before
+    // bash joins the approve list, so every consumer gets the narrowed set.
+    if let Some(p) = profile
+        && let Some(list) = &p.file.tools
+    {
+        tooling::check_profile_tools(&p.name, list, &cfg)?;
+        tooling.narrow_for_profile(&p.name, list);
+    }
     if tooling.tools.bash().is_some()
         && dial.mode == config::ControlMode::Approve
         && !dial.approve.iter().any(|t| t == "bash")
@@ -1427,14 +1443,17 @@ fn run_body(
             source,
             focus: Some(stem),
         }) => {
-            let compiled = trellis_vault::compile(dir, stem, trellis_vault::DEFAULT_CAP)
+            // Integrated (ADR 0022 §7): `[context] dates` annotates headings;
+            // off, this is `trellis_vault::compile` byte for byte.
+            let dates_on = cfg.context.as_ref().and_then(|c| c.dates).unwrap_or(false);
+            let (compiled, dates_note) = vault_cmd::compile_for_run(dir, stem, dates_on)
                 .with_context(|| {
                     format!(
                         "the vault at {source} would not compile for focus `{stem}`; \
                          the run did not start and nothing was snapshotted"
                     )
                 })?;
-            Some((stem.clone(), source.clone(), compiled))
+            Some((stem.clone(), source.clone(), compiled, dates_note))
         }
         _ => None,
     };
@@ -1556,11 +1575,15 @@ fn run_body(
 
     // ADR 0025: context files, system prompt files and forced skills. Read
     // before the snapshot, so an unreadable or over-cap file costs nothing.
+    // User-level skill directories (ADR 0025, integrated), for the listing,
+    // `read_skill` and forced skills alike, so all three agree on a name.
+    let skill_dirs = user_config::skill_dirs();
     let added = context_files::load(
         root,
         user_config::dir().as_deref(),
         cfg.context.as_ref().and_then(|c| c.files).unwrap_or(true),
         &extras.skills,
+        &skill_dirs,
     )?;
 
     // A clean worktree is required so rollback is `git reset --hard` rather
@@ -1587,10 +1610,13 @@ fn run_body(
     let notes = config::RepoConfig::notes(root)?;
     // Skills (ADR 0019): names and descriptions to the prompt, capped. Read
     // before the snapshot like everything else the run is seeded with.
-    let mut skills = trellis_loop::SkillCatalog::discover(root);
-    // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4).
-    if let Some(p) = profile {
-        skills.valid.retain(|s| p.allows_skill(&s.name));
+    let mut skills = trellis_loop::SkillCatalog::discover_with(root, &skill_dirs);
+    // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4),
+    // and the same policy goes to the orchestrator, which refuses `read_skill`
+    // for the rest (integrated).
+    let skill_policy = profile.and_then(context_files::skill_policy);
+    if let Some(pol) = &skill_policy {
+        skills.valid.retain(|s| pol.check(&s.name).is_ok());
     }
     let disclosed = skills.disclosed();
     if !governance.is_empty()
@@ -1614,13 +1640,14 @@ fn run_body(
                 // The byte count is what the prompt pays on every turn, and
                 // the drop count is said aloud because a reference heading
                 // with no body under it is easy to read past.
-                Some((stem, source, c)) => format!(
-                    ", vault note `{stem}` from {source} loaded ({} B{})",
+                Some((stem, source, c, dates)) => format!(
+                    ", vault note `{stem}` from {source} loaded ({} B{}{})",
                     c.bytes,
                     match c.dropped_reference_bodies {
                         0 => String::new(),
                         n => format!(", {n} reference bod(ies) dropped to fit the cap"),
-                    }
+                    },
+                    dates.as_ref().map(|d| format!(", {d}")).unwrap_or_default()
                 ),
                 None => String::new(),
             },
@@ -1631,13 +1658,17 @@ fn run_body(
                 String::new()
             } else {
                 format!(
-                    ", skills: {} listed, {} omitted (cap){}",
+                    ", skills: {} listed, {} omitted (cap){}{}",
                     disclosed.listed.len(),
                     disclosed.omitted,
                     match skills.invalid.len() {
                         0 => String::new(),
                         n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
-                    }
+                    },
+                    // Integrated (ADR 0025): says these were not trust-gated.
+                    context_files::user_skills_note(&skills)
+                        .map(|n| format!(", {n}"))
+                        .unwrap_or_default()
                 )
             },
             match &tooling.untrusted {
@@ -1701,7 +1732,7 @@ fn run_body(
         prior,
         repo: trellis_loop::RepoContext {
             notes,
-            vault: vault.map(|(focus, source, c)| trellis_loop::VaultContext {
+            vault: vault.map(|(focus, source, c, _)| trellis_loop::VaultContext {
                 focus,
                 source,
                 text: c.text,
@@ -1772,7 +1803,13 @@ fn run_body(
             .with_governance(governance)
             .with_rules(rules)
             .with_tools(tooling.tools.clone())
-            .with_env(tooling.env.clone());
+            .with_env(tooling.env.clone())
+            // Integrated: `read_skill` looks where the listing looked, and
+            // refuses what the profile excludes (ADR 0026 §4).
+            .with_skills(trellis_loop::SkillAccess {
+                user_dirs: skill_dirs.clone(),
+                policy: skill_policy.clone(),
+            });
         if let Some(h) = &tooling.hooks {
             orchestrator = orchestrator.with_hooks(h.clone());
         }
@@ -1861,6 +1898,7 @@ fn run_body(
         stamp: Some(&stamp),
         tokens,
         agent: profile.map(|p| p.name.clone()),
+        inputs: added.inputs.clone(),
     };
     let Some(outcome) = outcome else {
         return interrupted_run(
@@ -2363,6 +2401,9 @@ struct TrailFacts<'a> {
     /// (ADR 0026 §8).
     tokens: Option<u64>,
     agent: Option<String>,
+    /// Context files, system files and forced skills, by name and size
+    /// (ADR 0025, integrated).
+    inputs: Vec<trellis_trail::Input>,
 }
 
 fn record_trail(
@@ -2382,6 +2423,7 @@ fn record_trail(
         stamp,
         tokens,
         agent,
+        inputs,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2480,6 +2522,7 @@ fn record_trail(
         control,
         tokens,
         agent,
+        inputs,
     };
 
     let slug = trellis_trail::slugify(task);
@@ -3522,6 +3565,10 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
         b.max_tokens
     ));
 
+    // Integrated (ADR 0021 wave I): the user config, context files, user
+    // skills, trust, profiles and routines, and the vault.
+    out.extend(doctor_extra::lines(root, cfg));
+
     out
 }
 
@@ -3622,6 +3669,7 @@ mod interrupt_tests {
             stamp: None,
             tokens: None,
             agent: None,
+            inputs: Vec::new(),
         }
     }
 

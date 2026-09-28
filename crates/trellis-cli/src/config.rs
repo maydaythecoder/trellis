@@ -89,6 +89,10 @@ pub(crate) struct ContextSection {
     /// `false` turns off `AGENTS.md`, `CLAUDE.md` and `AGENTS.override.md`
     /// (ADR 0025 §1). Absent means on.
     pub files: Option<bool>,
+    /// `true` annotates each compiled note header with its created day from
+    /// the vault's `dates.json` (ADR 0022 §7, integrated). Absent means off,
+    /// so the compiled bytes are what the goldens hold.
+    pub dates: Option<bool>,
 }
 
 /// Where the vault is and which note to compile, after validation of the

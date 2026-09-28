@@ -315,6 +315,50 @@ fn mentions(i: &Issue, path: &str) -> bool {
     }
 }
 
+impl VaultArgs {
+    /// `vault init`, the one action that makes sense outside a repository:
+    /// it creates a vault, which a person may do before there is anything
+    /// to put it in (ADR 0022 §3, integrated).
+    pub(crate) fn is_init(&self) -> bool {
+        matches!(self.action, VaultAction::Init { .. })
+    }
+}
+
+/// The vault note a run is given, and what `[context] dates` did to it.
+///
+/// With `dates` off this is `trellis_vault::compile`, byte for byte. With it
+/// on, `dates.json` at the notes root annotates the headings. Absent is not
+/// an error: the note compiles plain and the second value says why. Present
+/// and invalid stops the run before the snapshot, like an invalid vault: a
+/// file the project configured and the model silently did not get is the
+/// failure ADR 0025 §1 names.
+pub(crate) fn compile_for_run(
+    dir: &Path,
+    stem: &str,
+    dates_on: bool,
+) -> Result<(trellis_vault::Compiled, Option<String>)> {
+    if !dates_on {
+        return Ok((
+            trellis_vault::compile(dir, stem, trellis_vault::DEFAULT_CAP)?,
+            None,
+        ));
+    }
+    match dates::load(&trellis_vault::notes_root(dir)) {
+        State::Absent => Ok((
+            trellis_vault::compile(dir, stem, trellis_vault::DEFAULT_CAP)?,
+            Some("dates on, but no dates.json; headings not dated".to_string()),
+        )),
+        State::Invalid(e) => anyhow::bail!(
+            "[context] dates = true and dates.json does not validate: {e}. Fix it with \
+             `trellis vault dates`, or turn dates off"
+        ),
+        State::Valid(f) => Ok((
+            trellis_vault::compile_with_dates(dir, stem, trellis_vault::DEFAULT_CAP, Some(&f.doc))?,
+            Some("headings dated from dates.json".to_string()),
+        )),
+    }
+}
+
 fn dates_cmd(dir: &Path, seed: bool) -> Result<()> {
     let v = Vault::open(dir)?;
     let file = match dates::load(&v.root) {
@@ -422,6 +466,62 @@ mod tests {
             e.contains("--vault") && e.contains("[context] vault"),
             "{e}"
         );
+    }
+
+    fn fixture_vault() -> tempfile::TempDir {
+        let src =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trellis-vault/tests/fixtures/vault");
+        let d = tempfile::tempdir().unwrap();
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), d.path().join(e.file_name())).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn dates_off_or_absent_compiles_the_golden_and_on_with_a_file_dates_the_heading() {
+        // The risk: `[context] dates` changing what the model is shown when
+        // it is off, or when there is nothing to date from. The golden is
+        // the specification of the selection rule (ADR 0017).
+        let golden = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../trellis-vault/tests/fixtures/expected-task-a.md"),
+        )
+        .unwrap();
+        let d = fixture_vault();
+        let (c, note) = compile_for_run(d.path(), "task-a", true).unwrap();
+        assert_eq!(c.text, golden);
+        assert!(note.unwrap().contains("no dates.json"));
+
+        let mut doc = dates::Document::default();
+        doc.notes.insert(
+            "task-a.md".into(),
+            dates::NoteDates {
+                created: dates::Stamp {
+                    day: Some("2026-03-01".into()),
+                    estimated: false,
+                },
+                lines: Vec::new(),
+            },
+        );
+        std::fs::write(d.path().join("dates.json"), dates::to_bytes(&doc)).unwrap();
+        let (c, _) = compile_for_run(d.path(), "task-a", false).unwrap();
+        assert_eq!(c.text, golden, "off ignores a dates.json that is present");
+        let (c, note) = compile_for_run(d.path(), "task-a", true).unwrap();
+        assert!(
+            c.text
+                .contains("### Task A (task-a.md, created 2026-03-01) [target]"),
+            "{}",
+            c.text
+        );
+        assert!(note.unwrap().contains("dated from dates.json"));
+
+        // Configured and invalid stops the run rather than sending plain
+        // headings the configuration said would be dated.
+        std::fs::write(d.path().join("dates.json"), "{\"version\":2}").unwrap();
+        let e = compile_for_run(d.path(), "task-a", true).unwrap_err();
+        assert!(e.to_string().contains("does not validate"), "{e}");
     }
 
     #[test]

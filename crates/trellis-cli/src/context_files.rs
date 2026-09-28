@@ -31,6 +31,57 @@ pub(crate) struct Loaded {
     /// For the `repo:` line, e.g. `context files: CLAUDE.md loaded (7936 B)`.
     /// Empty when there was nothing to say.
     pub report: Vec<String>,
+    /// What the trail records: each file sent, by the name the `repo:` line
+    /// uses and its size, never its contents.
+    pub inputs: Vec<trellis_trail::Input>,
+}
+
+/// An agent profile's `[skills]`, as the policy the loop enforces at both
+/// the listing and `read_skill` (ADR 0026 §4). `None` when the profile has
+/// no `[skills]`, which is every skill.
+pub(crate) fn skill_policy(
+    p: &trellis_queue::profile::Profile,
+) -> Option<trellis_loop::SkillPolicy> {
+    p.file.skills.as_ref().map(|s| trellis_loop::SkillPolicy {
+        profile: p.name.clone(),
+        allow: s.allow.clone(),
+        deny: s.deny.clone(),
+    })
+}
+
+/// The `repo:` fragment for user-level skills, when there are any.
+///
+/// Says that they were not gated on repository trust, so a reader never
+/// assumes `trellis trust` vouched for them. It does not: they are the
+/// user's own files (ADR 0025, integrated).
+pub(crate) fn user_skills_note(c: &trellis_loop::SkillCatalog) -> Option<String> {
+    let listed = c
+        .user
+        .iter()
+        .filter(|n| c.valid.iter().any(|s| &s.name == *n))
+        .count();
+    if listed == 0 && c.shadowed.is_empty() {
+        return None;
+    }
+    let mut s = format!(
+        "user skills: {listed} from the user's own directories (not gated on repository trust)"
+    );
+    if !c.shadowed.is_empty() {
+        s.push_str(&format!(
+            ", {} shadowed by a skill of the same name found first ({})",
+            c.shadowed.len(),
+            c.shadowed.join(", ")
+        ));
+    }
+    Some(s)
+}
+
+fn input(kind: &str, name: &str, bytes: usize) -> trellis_trail::Input {
+    trellis_trail::Input {
+        kind: kind.to_string(),
+        name: name.to_string(),
+        bytes: bytes as u64,
+    }
 }
 
 /// One candidate file: where it is, how it is named in the prompt, and how
@@ -62,6 +113,32 @@ fn in_dir(dir: &Path, place: &str, short_prefix: &str) -> Vec<Candidate> {
             short: format!("{short_prefix}{n}"),
         })
         .collect()
+}
+
+/// The context files and system files a run would consider, with their
+/// sizes on disk, for `trellis doctor`. Nothing is read, so an unreadable
+/// file is listed here and refused by the run, which reads it.
+pub(crate) fn present(root: &Path, user_dir: Option<&Path>) -> Vec<(String, u64)> {
+    let mut c = in_dir(root, "", "");
+    if let Some(u) = user_dir {
+        c.extend(in_dir(u, "", "<user>/"));
+    }
+    let mut out: Vec<(String, u64)> = c
+        .into_iter()
+        .map(|c| {
+            let len = std::fs::metadata(&c.path).map(|m| m.len()).unwrap_or(0);
+            (c.short, len)
+        })
+        .collect();
+    for name in ["system.md", "append_system.md"] {
+        let p = root.join(".trellis").join(name);
+        if let Ok(m) = std::fs::metadata(&p)
+            && m.is_file()
+        {
+            out.push((format!(".trellis/{name}"), m.len()));
+        }
+    }
+    out
 }
 
 /// Reads a file that exists, as UTF-8. Unreadable is an error, not an
@@ -114,6 +191,7 @@ fn context_files(root: &Path, user_dir: Option<&Path>, out: &mut Loaded) -> Resu
             continue;
         }
         used += text.len();
+        out.inputs.push(input("context_file", &c.short, text.len()));
         loaded.push(c.short);
         out.extra.files.push(ContextFile {
             label: c.label,
@@ -160,12 +238,14 @@ fn system_file(root: &Path, name: &str) -> Result<Option<String>> {
 /// Everything ADR 0025 adds to a run.
 ///
 /// `files_enabled` is `[context] files`; `skills` are the names forced with
-/// `--skill` or `/skill`.
+/// `--skill` or `/skill`, looked up in the repository and then in
+/// `skill_dirs`, the user-level skill directories, as `read_skill` does.
 pub(crate) fn load(
     root: &Path,
     user_dir: Option<&Path>,
     files_enabled: bool,
     skills: &[String],
+    skill_dirs: &[PathBuf],
 ) -> Result<Loaded> {
     let mut out = Loaded::default();
     if files_enabled {
@@ -189,12 +269,20 @@ pub(crate) fn load(
         (None, Some(_)) => out.report.push(".trellis/append_system.md loaded".into()),
         (None, None) => {}
     }
+    for (name, text) in [
+        (".trellis/system.md", &out.extra.system),
+        (".trellis/append_system.md", &out.extra.append_system),
+    ] {
+        if let Some(t) = text {
+            out.inputs.push(input("system_file", name, t.len()));
+        }
+    }
 
     for name in skills {
         if out.extra.forced_skills.iter().any(|s| &s.name == name) {
             continue;
         }
-        let body = trellis_loop::read_body(root, name)
+        let body = trellis_loop::read_body_in(root, skill_dirs, name)
             .map_err(|e| anyhow::anyhow!("--skill {name}: {e}. The run did not start"))?;
         out.report.push(format!(
             "skill `{name}` loaded by request ({} B{})",
@@ -208,6 +296,13 @@ pub(crate) fn load(
                 String::new()
             }
         ));
+        // The bytes of the head that is sent, the unit of the other inputs.
+        let sent: usize = body
+            .chars()
+            .take(trellis_loop::FORCED_SKILL_HEAD)
+            .map(char::len_utf8)
+            .sum();
+        out.inputs.push(input("forced_skill", name, sent));
         out.extra.forced_skills.push(ForcedSkill {
             name: name.clone(),
             body,
@@ -231,7 +326,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join("CLAUDE.md"), "Use make check.").unwrap();
         std::fs::write(d.path().join("AGENTS.md"), "Prefer small diffs.").unwrap();
-        let l = load(d.path(), None, true, &[]).unwrap();
+        let l = load(d.path(), None, true, &[], &[]).unwrap();
         let labels: Vec<&str> = l.extra.files.iter().map(|f| f.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -253,7 +348,7 @@ mod tests {
         std::fs::write(d.path().join("CLAUDE.md"), "repo claude").unwrap();
         std::fs::write(d.path().join("AGENTS.override.md"), "repo override").unwrap();
         std::fs::write(user.path().join("AGENTS.md"), "user agents").unwrap();
-        let l = load(d.path(), Some(user.path()), true, &[]).unwrap();
+        let l = load(d.path(), Some(user.path()), true, &[], &[]).unwrap();
         let texts: Vec<&str> = l.extra.files.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(texts, ["repo override", "user agents"]);
         assert!(l.extra.files[1].label.contains("outside the repository"));
@@ -272,7 +367,7 @@ mod tests {
         .unwrap();
         std::fs::write(d.path().join("CLAUDE.md"), "b".repeat(100)).unwrap();
         std::fs::write(user.path().join("CLAUDE.md"), "small").unwrap();
-        let l = load(d.path(), Some(user.path()), true, &[]).unwrap();
+        let l = load(d.path(), Some(user.path()), true, &[], &[]).unwrap();
         assert_eq!(l.extra.files.len(), 2);
         assert!(l.extra.files.iter().all(|f| !f.text.starts_with('b')));
         let r = l.report.join(" | ");
@@ -285,7 +380,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join("AGENTS.md"), "same").unwrap();
         std::fs::write(d.path().join("CLAUDE.md"), "same").unwrap();
-        let l = load(d.path(), None, true, &[]).unwrap();
+        let l = load(d.path(), None, true, &[], &[]).unwrap();
         assert_eq!(l.extra.files.len(), 1);
         assert!(l.report[0].contains("same as"), "{:?}", l.report);
     }
@@ -294,7 +389,7 @@ mod tests {
     fn files_false_loads_none_and_says_they_are_off() {
         let d = dir();
         std::fs::write(d.path().join("CLAUDE.md"), "x").unwrap();
-        let l = load(d.path(), None, false, &[]).unwrap();
+        let l = load(d.path(), None, false, &[], &[]).unwrap();
         assert!(l.extra.files.is_empty());
         assert_eq!(l.report, ["context files: off ([context] files = false)"]);
     }
@@ -307,16 +402,16 @@ mod tests {
             "x".repeat(SYSTEM_FILE_CAP + 1),
         )
         .unwrap();
-        let e = load(d.path(), None, true, &[]).unwrap_err();
+        let e = load(d.path(), None, true, &[], &[]).unwrap_err();
         assert!(e.to_string().contains("cap"), "{e}");
     }
 
     #[test]
     fn an_unknown_forced_skill_stops_the_run_before_it_starts() {
         let d = dir();
-        let e = load(d.path(), None, true, &["nope".into()]).unwrap_err();
+        let e = load(d.path(), None, true, &["nope".into()], &[]).unwrap_err();
         assert!(e.to_string().contains("--skill nope"), "{e}");
-        let e = load(d.path(), None, true, &["../x".into()]).unwrap_err();
+        let e = load(d.path(), None, true, &["../x".into()], &[]).unwrap_err();
         assert!(e.to_string().contains("not a skill name"), "{e}");
     }
 
@@ -324,7 +419,7 @@ mod tests {
     fn a_non_utf8_context_file_is_an_error_not_an_omission() {
         let d = dir();
         std::fs::write(d.path().join("AGENTS.md"), [0xff, 0xfe, 0x00]).unwrap();
-        assert!(load(d.path(), None, true, &[]).is_err());
+        assert!(load(d.path(), None, true, &[], &[]).is_err());
     }
 
     /// A committed repository with a context file, a system file and a
@@ -388,6 +483,50 @@ mod tests {
         assert!(repo.contains("context files: CLAUDE.md loaded ("), "{repo}");
         assert!(repo.contains(".trellis/system.md loaded"), "{repo}");
         assert!(repo.contains("skill `release` loaded by request"), "{repo}");
+
+        // ADR 0025, integrated: the trail records the same three by name and
+        // size. The risk is a run whose prompt differed from another's at
+        // the same commit, with nothing committed to say so.
+        let (_, trail) = trellis_trail::latest(&dir).unwrap().expect("a trail");
+        let got: Vec<(String, String, u64)> = trail
+            .factual
+            .inputs
+            .iter()
+            .map(|i| (i.kind.clone(), i.name.clone(), i.bytes))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("context_file".into(), "CLAUDE.md".into(), 36),
+                ("system_file".into(), ".trellis/system.md".into(), 24),
+                ("forced_skill".into(), "release".into(), 10),
+            ]
+        );
+        let raw = std::fs::read_to_string(trellis_trail::latest(&dir).unwrap().unwrap().0).unwrap();
+        assert!(!raw.contains("Just say it worked"), "names, never contents");
+    }
+
+    #[test]
+    fn a_forced_skill_is_found_in_a_user_skill_directory() {
+        let d = dir();
+        let user = tempfile::tempdir().unwrap();
+        let s = user.path().join("mine");
+        std::fs::create_dir_all(&s).unwrap();
+        std::fs::write(
+            s.join("SKILL.md"),
+            "---\nname: mine\ndescription: m\n---\nUSER-BODY\n",
+        )
+        .unwrap();
+        let l = load(
+            d.path(),
+            None,
+            true,
+            &["mine".into()],
+            &[user.path().to_path_buf()],
+        )
+        .unwrap();
+        assert!(l.extra.forced_skills[0].body.contains("USER-BODY"));
+        assert_eq!(l.inputs[0].name, "mine");
     }
 
     #[test]
