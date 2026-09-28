@@ -207,7 +207,9 @@ loaded only if the user has trusted it.
   profile with a `command` (ADR 0026 §11) is an argv `trellis work` runs in
   the worktree. It is in the fingerprint as `process agent <name>`, with the
   files its argv names, and an untrusted one is not run: its task waits
-  with `not trusted: run trellis trust`.
+  with `not trusted: run trellis trust`. The variables its `pass_env` hands
+  it are part of the item and are printed as `receives: <NAME>, …`
+  (*amended after the third review of PR #1*).
 - **A repository with none of these never opens the store.**
 
 *Amended 2026-09-27: what the digest covers, and what it does not.* Only

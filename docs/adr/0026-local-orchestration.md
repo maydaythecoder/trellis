@@ -611,7 +611,12 @@ This is Paperclip's `process` adapter. A profile with
    writes into the worktree is left for review if the run converges. A
    process agent given a key and told to print its environment will print
    the key. `agents list` and `agents show` name the passed variables,
-   never their values. Evidence:
+   never their values. *Amended after the third review of PR #1:* so does
+   `trellis trust`. The process agent's trust item carries `pass_env`, and
+   the item prints `receives: ANTHROPIC_API_KEY` on its own line. Before
+   this, the key was in the digest only because the profile file was, and
+   nobody trusting the repository was told a key would be handed to it
+   (`trust_names_the_keys_a_process_agent_receives`). Evidence:
    `a_process_agent_inherits_no_key_unless_its_profile_passes_that_one` in
    `crates/trellis-cli/tests/child_env.rs`.
 3. **Check** with the grounded checks, the same pair `trellis check` runs:
