@@ -23,8 +23,19 @@ cargo run -p trellis-cli -- radius <sym>   # blast radius with confidence breakd
 cargo run -p trellis-cli -- check          # run the grounded checks
 cargo run -p trellis-cli -- doctor         # probe tier, batching, tooling
 
+# owner-directed growth beyond brief 4.12, each recorded in its ADR
+cargo run -p trellis-cli -- run "<task>" --focus <stem>    # vault note as context (ADR 0017)
+cargo run -p trellis-cli -- run "<task>" --approve|--auto  # the control dial (ADR 0018)
+cargo run -p trellis-cli -- queue add "<task>" [--focus <stem>]   # (ADR 0020)
+cargo run -p trellis-cli -- work [--once | --every <s>] [--max-tasks N]
+
+# qa/run-guards.py runs whichever `trellis` is on PATH, and dirty_worktree
+# needs the demo's runtime up: put target/debug first and start the runtime,
+# or the guards test an old binary and one refuses for the wrong reason.
+
 # v0.1 measurement tooling (examples, not CLI surface — the surface is fixed
-# by brief 4.12 and does not grow to suit us)
+# by brief 4.12 and does not grow to suit us; growth the owner directs is
+# recorded in an ADR, as 0017, 0018 and 0020 do)
 cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed> <dir>
 cargo run --release -p trellis-index --example audit_score  -- <dir>
 ```

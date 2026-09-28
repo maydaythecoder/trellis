@@ -4,7 +4,7 @@ Part 8 of the brief is the *project's* definition of done, not any one
 session's. This maps each item to its actual state, so nothing is quietly
 assumed complete.
 
-Last updated 2026-09-21. Gate tables for v0.2, v0.3 and v1.0 are
+Last updated 2026-09-27. Gate tables for v0.2, v0.3 and v1.0 are
 below, each audited against the code rather than against the milestone prose.
 
 | # | Part 8 item | State | Where |
