@@ -255,7 +255,8 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
 /// - an untracked nested repository is recorded by the commit it has
 ///   checked out, the gitlink `git add -A` stages: an uncommitted edit
 ///   inside it is not seen, as it was not by the tree form.
-/// - a submodule entry is recorded as its status line, not hashed.
+/// - a submodule entry is recorded as its status line, not hashed (a
+///   renamed one with its origPath, which every `2` record carries).
 /// - a path containing a newline cannot go through `--stdin-paths`; the
 ///   digest then falls back to the tree form, objects and all.
 pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
@@ -270,64 +271,20 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
             "--untracked-files=all",
         ],
     )?;
-    let mut head = String::from("(unknown)");
-    // path -> (HEAD mode, HEAD blob), for tracked paths git names.
-    let mut in_head: std::collections::BTreeMap<String, (String, String)> = Default::default();
-    // path -> worktree mode, for every path to hash.
-    let mut worktree: std::collections::BTreeMap<String, String> = Default::default();
-    // Lines kept verbatim: submodules and conflicts.
-    let mut verbatim: Vec<String> = Vec::new();
-    // Untracked nested repositories, as gitlink lines.
-    let mut nested: Vec<String> = Vec::new();
-    let mut fields = status.split('\0').filter(|f| !f.is_empty());
-    while let Some(f) = fields.next() {
-        let cols: Vec<&str> = f.splitn(9, ' ').collect();
-        match cols.first().copied() {
-            Some("#") => {
-                if let Some(oid) = f.strip_prefix("# branch.oid ") {
-                    head = oid.to_string();
-                }
-            }
-            // `status` names an untracked nested repository `dir/`, and
-            // nothing inside it: a directory, which `hash-object` cannot
-            // hash. `git add -A` would stage it as a gitlink to its HEAD,
-            // so that is what is recorded.
-            Some("?") if f.ends_with('/') => {
-                let path = f[2..].to_string();
-                nested.push(format!("160000 {} {path}", nested_head(&root.join(&path))));
-            }
-            Some("?") => {
-                let path = f[2..].to_string();
-                let mode = untracked_mode(&root.join(&path));
-                worktree.insert(path, mode.to_string());
-            }
-            Some("1") | Some("2") if cols.len() >= 8 && cols[2].starts_with('N') => {
-                // 1 XY sub mH mI mW hH hI path
-                // 2 XY sub mH mI mW hH hI Xscore path \0 origPath
-                let path = if cols[0] == "2" {
-                    cols.get(8)
-                        .and_then(|rest| rest.split_once(' '))
-                        .map(|(_, p)| p.to_string())
-                        .unwrap_or_default()
-                } else {
-                    cols.get(8).map(|p| (*p).to_string()).unwrap_or_default()
-                };
-                // For a rename, `mH`/`hH` describe the source in HEAD. The
-                // source is gone from where it was unless the worktree still
-                // has it, in which case a `?` line names it too.
-                let head_path = if cols[0] == "2" {
-                    let orig = fields.next().unwrap_or_default().to_string();
-                    worktree
-                        .entry(orig.clone())
-                        .or_insert_with(|| "000000".into());
-                    orig
-                } else {
-                    path.clone()
-                };
-                in_head.insert(head_path, (cols[3].to_string(), cols[6].to_string()));
-                worktree.insert(path, cols[5].to_string());
-            }
-            _ => verbatim.push(f.to_string()),
+    let Parsed {
+        head,
+        in_head,
+        mut worktree,
+        verbatim,
+        nested,
+    } = parse_status_v2(&status);
+    let nested: Vec<String> = nested
+        .into_iter()
+        .map(|path| format!("160000 {} {path}", nested_head(&root.join(&path))))
+        .collect();
+    for (path, mode) in worktree.iter_mut() {
+        if mode.is_empty() {
+            *mode = untracked_mode(&root.join(path)).to_string();
         }
     }
     // (path, mode, exists, is a symlink), each looked at once: a second
@@ -381,6 +338,86 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
         manifest.push('\n');
     }
     Ok(manifest)
+}
+
+/// `git status --porcelain=v2 -z --branch` split into what
+/// [`worktree_digest`] hashes. Pure, so the record grammar can be tested
+/// with crafted bytes.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Parsed {
+    head: String,
+    /// path -> (HEAD mode, HEAD blob), for tracked paths git names.
+    in_head: std::collections::BTreeMap<String, (String, String)>,
+    /// path -> worktree mode, for every path to hash; empty for an
+    /// untracked file, whose mode is read from the filesystem by the caller.
+    worktree: std::collections::BTreeMap<String, String>,
+    /// Records kept verbatim: submodules and conflicts.
+    verbatim: Vec<String>,
+    /// Untracked nested repositories, by path.
+    nested: Vec<String>,
+}
+
+fn parse_status_v2(status: &str) -> Parsed {
+    let mut out = Parsed {
+        head: String::from("(unknown)"),
+        ..Parsed::default()
+    };
+    let mut fields = status.split('\0').filter(|f| !f.is_empty());
+    while let Some(f) = fields.next() {
+        let cols: Vec<&str> = f.splitn(9, ' ').collect();
+        match cols.first().copied() {
+            Some("#") => {
+                if let Some(oid) = f.strip_prefix("# branch.oid ") {
+                    out.head = oid.to_string();
+                }
+            }
+            // `status` names an untracked nested repository `dir/`, and
+            // nothing inside it: a directory, which `hash-object` cannot
+            // hash. `git add -A` would stage it as a gitlink to its HEAD,
+            // so that is what is recorded.
+            Some("?") if f.ends_with('/') => out.nested.push(f[2..].to_string()),
+            Some("?") => {
+                out.worktree.insert(f[2..].to_string(), String::new());
+            }
+            Some("1") | Some("2") if cols.len() >= 8 && cols[2].starts_with('N') => {
+                // 1 XY sub mH mI mW hH hI path
+                // 2 XY sub mH mI mW hH hI Xscore path \0 origPath
+                let path = if cols[0] == "2" {
+                    cols.get(8)
+                        .and_then(|rest| rest.split_once(' '))
+                        .map(|(_, p)| p.to_string())
+                        .unwrap_or_default()
+                } else {
+                    cols.get(8).map(|p| (*p).to_string()).unwrap_or_default()
+                };
+                // For a rename, `mH`/`hH` describe the source in HEAD. The
+                // source is gone from where it was unless the worktree still
+                // has it, in which case a `?` line names it too.
+                let head_path = if cols[0] == "2" {
+                    let orig = fields.next().unwrap_or_default().to_string();
+                    out.worktree
+                        .entry(orig.clone())
+                        .or_insert_with(|| "000000".into());
+                    orig
+                } else {
+                    path.clone()
+                };
+                out.in_head
+                    .insert(head_path, (cols[3].to_string(), cols[6].to_string()));
+                out.worktree.insert(path, cols[5].to_string());
+            }
+            // Every `2` record carries its origPath as the next field,
+            // whatever else it is: a renamed submodule (`S...`) lands here,
+            // and leaving its origPath unread made the next record's parse
+            // start on a path, so everything after it was misread.
+            Some("2") => match fields.next() {
+                Some(orig) => out.verbatim.push(format!("{f}\t{orig}")),
+                None => out.verbatim.push(f.to_string()),
+            },
+            _ => out.verbatim.push(f.to_string()),
+        }
+    }
+    out
 }
 
 /// The commit an untracked nested repository has checked out, as the
@@ -778,6 +815,49 @@ impl Worktree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_renamed_submodule_record_consumes_its_orig_path() {
+        // The risk: a `2` record for a submodule (`S...`) fell through to
+        // the verbatim arm without reading its origPath, so the origPath
+        // was parsed as the next record and every record after it was read
+        // one field late. Crafted, since a renamed submodule needs a second
+        // repository to set up and the grammar is what is under test.
+        let status = concat!(
+            "# branch.oid 0123abcd\0",
+            "2 R. S... 160000 160000 160000 aaaa aaaa R100 libs/new\0libs/old\0",
+            "? x.py\0",
+            "1 .M N... 100644 100644 100644 bbbb bbbb app.py\0",
+        );
+        let p = parse_status_v2(status);
+        assert_eq!(p.head, "0123abcd");
+        assert_eq!(
+            p.verbatim,
+            ["2 R. S... 160000 160000 160000 aaaa aaaa R100 libs/new\tlibs/old"],
+            "one record, both paths"
+        );
+        assert_eq!(p.worktree.get("x.py").map(String::as_str), Some(""));
+        assert_eq!(p.worktree.get("app.py").map(String::as_str), Some("100644"));
+        assert_eq!(
+            p.in_head.get("app.py"),
+            Some(&("100644".to_string(), "bbbb".to_string()))
+        );
+        assert!(!p.worktree.contains_key("libs/old"), "{p:?}");
+    }
+
+    #[test]
+    fn a_renamed_file_record_still_parses_as_before() {
+        let status = "2 R. N... 100644 100644 100644 cccc cccc R100 b.py\0a.py\0? z\0";
+        let p = parse_status_v2(status);
+        assert_eq!(p.worktree.get("b.py").map(String::as_str), Some("100644"));
+        assert_eq!(p.worktree.get("a.py").map(String::as_str), Some("000000"));
+        assert_eq!(
+            p.in_head.get("a.py"),
+            Some(&("100644".to_string(), "cccc".to_string()))
+        );
+        assert_eq!(p.worktree.get("z").map(String::as_str), Some(""));
+        assert!(p.verbatim.is_empty());
+    }
 
     fn temp_repo(name: &str) -> PathBuf {
         // Process id in the path, because these fixtures `remove_dir_all` then
