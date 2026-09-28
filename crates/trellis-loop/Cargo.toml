@@ -18,6 +18,8 @@ trellis-model.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The trust store's fingerprint (ADR 0023); already in the tree for the trail.
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
