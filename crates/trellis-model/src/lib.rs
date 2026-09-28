@@ -33,3 +33,4 @@ pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use secret::ApiKey;
 pub use spec::{ModelSpec, SpecError};
 pub use tier::{AdapterTier, BatchingCapability, Probe};
+pub use transport::{is_loopback, split_authority};

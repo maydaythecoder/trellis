@@ -273,6 +273,16 @@ then sent the user's key, or any variable the repository named
   and port with the default filled in; an authority the transport might
   read differently (userinfo, `?`, `#`, `\`, whitespace) is refused rather
   than interpreted.
+
+  *Amended after the fifth review of PR #1:* the host and port are split by
+  the transport's own parser, `trellis_model::split_authority`, now public
+  for this, and loopback is the transport's `is_loopback`. The allow list
+  had kept a split at the last `:` after the transport stopped using one,
+  so `http://[::1]/v1` was refused as loopback and a user's own provider on
+  a bracketed IPv6 literal never matched. An IPv6 origin is written with
+  its brackets (`https://[2001:db8::1]:8443`). Evidence:
+  `hosted::tests::a_bracketed_ipv6_authority_is_read_as_the_transport_reads_it`,
+  which failed before the change.
 - **"The repository chose"** means: the repository's `[model] spec`, an
   agent profile's `model` (ADR 0026), or any `[[providers]]` entry the
   repository defined, *whoever named the entry*: `--model provider:x#m`
