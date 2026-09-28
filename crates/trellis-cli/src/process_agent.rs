@@ -435,7 +435,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             }
             _ if head_moved.is_some() => {
                 "not converged: the command moved HEAD (a commit, reset or checkout), which \
-                 a run may not; a change is left uncommitted for review"
+                 a run may not: a run leaves its change uncommitted, for review"
             }
             _ if ignored_unread.is_some() => {
                 "not converged: what the command did to ignored files could not be read"
