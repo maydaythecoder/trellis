@@ -157,7 +157,7 @@ impl RepoConfig {
     /// prevent.
     pub(crate) fn load(root: &Path) -> Result<Self> {
         // ADR 0025 §7: the user's own file sits under this one. The layering
-        // and the repository read are at the end of this file.
+        // and the repository read are in `user_config.rs`.
         Self::load_with_user(root, crate::user_config::file().as_deref())
     }
 
@@ -716,53 +716,5 @@ deny_write = [\"vendor/\", \"*.lock\"]
             c.describe(),
             "approve (edit, read_file, run_checks, blast_radius)"
         );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ADR 0025 §7: user-level layering. Appended rather than woven into the code
-// above, so the sections other work edits stay as it left them.
-// ---------------------------------------------------------------------------
-
-impl RepoConfig {
-    /// The repository's file, over the user's file at `user` when given.
-    ///
-    /// Each file is refused if it holds a key (ADR 0010) before anything in
-    /// it is used. A malformed user file is an error that names the file: a
-    /// typo in `~/.config/trellis/config.toml` that was silently skipped
-    /// would drop a restriction the user believes is in force.
-    pub(crate) fn load_with_user(root: &Path, user: Option<&Path>) -> Result<Self> {
-        let path = root.join(".trellis").join("config.toml");
-        let repo = match std::fs::read_to_string(&path) {
-            Ok(text) => Self::parse_checked(&text, &path)?,
-            Err(_) => Self::default(),
-        };
-        let Some(user) = user else {
-            return Ok(repo);
-        };
-        let mine = match std::fs::read_to_string(user) {
-            Ok(text) => Self::parse_checked(&text, user)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(repo),
-            Err(e) => {
-                return Err(anyhow::Error::from(e))
-                    .with_context(|| format!("{} exists but could not be read", user.display()));
-            }
-        };
-        Ok(crate::user_config::layer(repo, mine))
-    }
-
-    /// Parses one file, refusing it first if it holds a key.
-    fn parse_checked(text: &str, path: &Path) -> Result<Self> {
-        let value: toml::Value = toml::from_str(text)
-            .with_context(|| format!("{} is not valid TOML", path.display()))?;
-        if let Some(at) = crate::user_config::key_in(&value) {
-            anyhow::bail!(
-                "{} holds what looks like a key at `{at}`. A key never goes in a file \
-                 trellis reads (ADR 0010); put it in the environment. The value was not \
-                 copied into this message or any log",
-                path.display()
-            );
-        }
-        toml::from_str(text).with_context(|| format!("{} is not valid TOML", path.display()))
     }
 }

@@ -34,6 +34,9 @@ tracing.workspace = true
 # serde and serde_json were already in the tree.
 tracing-subscriber = { workspace = true, features = ["json"] }
 rustyline.workspace = true
+# `--json`, `log --json` and `rpc` framing (ADR 0025). Already in the tree
+# through tracing-subscriber's `json` feature; this was a dev-dependency.
+serde_json.workspace = true
 tui-demo = { path = "../tui-demo", default-features = false }
 
 [lints]
@@ -41,4 +44,3 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-serde_json.workspace = true

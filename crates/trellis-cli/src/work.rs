@@ -8,6 +8,7 @@
 use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config};
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -179,7 +180,12 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
     listen_for_ctrl_c(stop.clone());
 
-    println!("work:     queue at {}", q.dir().display());
+    // ADR 0025 §4: the human stream, so `work --json` keeps stdout JSONL.
+    let _ = writeln!(
+        crate::output::human(),
+        "work:     queue at {}",
+        q.dir().display()
+    );
     let mut runner = CliRunner {
         root,
         model,
@@ -190,8 +196,11 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
         max_tasks: if args.once { Some(1) } else { args.max_tasks },
         every: args.every.map(Duration::from_secs),
     };
-    let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut std::io::stdout())?;
-    println!("work:     {ran} run(s) this invocation; stopped: {why}");
+    let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut crate::output::human())?;
+    let _ = writeln!(
+        crate::output::human(),
+        "work:     {ran} run(s) this invocation; stopped: {why}"
+    );
     Ok(why.code())
 }
 
@@ -302,7 +311,7 @@ impl Runner for CliRunner<'_> {
                 flag: Some(config::ControlMode::Auto),
                 human: Human::Absent,
             },
-            &mut std::io::stdout(),
+            &mut crate::output::human(),
         );
         let after = newest_run_id(self.root);
         let run_id = if after != before { after } else { None };

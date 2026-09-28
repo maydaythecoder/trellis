@@ -9,8 +9,9 @@ use crate::config::{
     BudgetSection, ChecksSection, ContextSection, ControlSection, GovernanceSection, ModelSection,
     RepoConfig,
 };
+use anyhow::{Context, Result};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The user config directory, from the environment.
 ///
@@ -56,6 +57,9 @@ pub(crate) fn resolve(env: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> 
 /// Struct-update syntax at the end on purpose: a section added later (W-B's
 /// `[tools]` and `[hooks]`) comes from the repository alone until someone
 /// decides how it layers, rather than compiling into a merge nobody chose.
+/// Today every field is named, so the update is a no-op, which is the lint
+/// allowed below; it stops being one the day a field is added.
+#[allow(clippy::needless_update)]
 pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
     RepoConfig {
         checks: either(repo.checks, user.checks, |r, u| ChecksSection {
@@ -170,6 +174,51 @@ pub(crate) fn key_in(v: &toml::Value) -> Option<String> {
         }
     }
     walk(v, "")
+}
+
+// Here rather than in `config.rs`, so that file changes by three lines and
+// the sections other work edits there stay as it left them.
+impl RepoConfig {
+    /// The repository's file, over the user's file at `user` when given.
+    ///
+    /// Each file is refused if it holds a key (ADR 0010) before anything in
+    /// it is used. A malformed user file is an error that names the file: a
+    /// typo in `~/.config/trellis/config.toml` that was silently skipped
+    /// would drop a restriction the user believes is in force.
+    pub(crate) fn load_with_user(root: &Path, user: Option<&Path>) -> Result<Self> {
+        let path = root.join(".trellis").join("config.toml");
+        let repo = match std::fs::read_to_string(&path) {
+            Ok(text) => Self::parse_checked(&text, &path)?,
+            Err(_) => Self::default(),
+        };
+        let Some(user) = user else {
+            return Ok(repo);
+        };
+        let mine = match std::fs::read_to_string(user) {
+            Ok(text) => Self::parse_checked(&text, user)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(repo),
+            Err(e) => {
+                return Err(anyhow::Error::from(e))
+                    .with_context(|| format!("{} exists but could not be read", user.display()));
+            }
+        };
+        Ok(layer(repo, mine))
+    }
+
+    /// Parses one file, refusing it first if it holds a key.
+    fn parse_checked(text: &str, path: &Path) -> Result<Self> {
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("{} is not valid TOML", path.display()))?;
+        if let Some(at) = key_in(&value) {
+            anyhow::bail!(
+                "{} holds what looks like a key at `{at}`. A key never goes in a file \
+                 trellis reads (ADR 0010); put it in the environment. The value was not \
+                 copied into this message or any log",
+                path.display()
+            );
+        }
+        toml::from_str(text).with_context(|| format!("{} is not valid TOML", path.display()))
+    }
 }
 
 #[cfg(test)]
