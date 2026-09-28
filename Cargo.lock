@@ -3007,6 +3007,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-vault"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "trellis-vcs"
 version = "0.0.1"
 dependencies = [

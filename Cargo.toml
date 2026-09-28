@@ -52,6 +52,7 @@ trellis-model  = { path = "crates/trellis-model" }
 trellis-loop   = { path = "crates/trellis-loop" }
 trellis-trail  = { path = "crates/trellis-trail" }
 trellis-vcs    = { path = "crates/trellis-vcs" }
+trellis-vault  = { path = "crates/trellis-vault" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
