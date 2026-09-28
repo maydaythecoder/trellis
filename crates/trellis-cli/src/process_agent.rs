@@ -92,7 +92,8 @@ impl Judge {
             .collect();
         deny.extend(trellis_checks::governance::deny_write_paths(&rules));
         Ok(Judge {
-            checks: cfg.checks(),
+            // Once per run, not per check spawn (review round 11).
+            checks: cfg.checks().for_run(root),
             rules,
             deny,
         })

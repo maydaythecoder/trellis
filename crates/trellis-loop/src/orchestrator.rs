@@ -305,7 +305,8 @@ impl Orchestrator {
         Self {
             root: root.to_path_buf(),
             session: Session::open(root),
-            checks,
+            // Once per run, not per check spawn (review round 11).
+            checks: checks.for_run(root),
             touched: Vec::new(),
             governance: GovernanceGate::new(crate::governance::Governance::default(), root),
             gates: Vec::new(),
