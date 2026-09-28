@@ -474,7 +474,12 @@ letter without regard to case.
 that no argv token names as a file — a module imported by a hook
 (`python -m tools.hook` resolving to `tools/hook.py`, or an `import app`
 inside `.trellis/hooks/gate.py`), a directory run as a program
-(`python pkg/`), a file a script reads or sources, a program on `PATH`. A
+(`python pkg/`), a file a script reads or sources, a program on `PATH`.
+The same holds for a repository path the tokens above do not separate: one
+glued to a flag (`-fscripts/gate.py`, `--config:scripts/gate.py`) or
+embedded in an expression (`exec(open(f'scripts/gate.py').read())`) is
+neither hashed nor refused. It is the class `-m` and imports are in, and a
+better tokenizer is not the fix (the eleventh amendment above). A
 change there does not untrust the repository. **Keep hook and tool code,
 and what it imports, under `.trellis/hooks/` or `.trellis/tools/`**, where
 every byte is in the digest.
