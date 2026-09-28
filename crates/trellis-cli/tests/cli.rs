@@ -2939,6 +2939,74 @@ fn a_model_run_s_bash_writes_to_git_config_and_hooks_are_put_back_on_rollback() 
 }
 
 #[test]
+fn a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run() {
+    // The risk (review round 9, finding 4): `.git/` is put back after the
+    // loop, but the digest taken around every hooked call runs `git
+    // status` in between, and `git status` runs `core.fsmonitor`. So a
+    // `bash` call that set it had trellis run the command at the next
+    // `post_tool`, before any guard could put the config back.
+    let (d, run) = ignored_model_fixture("model-fsmonitor-marker");
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+    let cfg = d.join(".trellis/config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(&format!(
+        "\n[hooks]\npost_tool = ['{shell}', '{flag}', 'exit 0']\n"
+    ));
+    std::fs::write(&cfg, text).unwrap();
+    git(&d, &["commit", "-qam", "a post_tool hook"]);
+    assert!(run(&["trust"]).status.success());
+    let parent = d.parent().unwrap();
+    let pid = std::process::id();
+    let mark = parent.join(format!("fsmonitor-ran-{pid}"));
+    let _ = std::fs::remove_file(&mark);
+    let fsm = parent.join(format!("fsmonitor-{pid}.sh"));
+    let slash = |p: &Path| p.display().to_string().replace('\\', "/");
+    std::fs::write(
+        &fsm,
+        format!("#!/bin/sh\necho x >> '{}'\nexit 1\n", slash(&mark)),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fsm, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let spec = script_beside(
+        &d,
+        "model-fsmonitor-marker",
+        serde_json::json!([
+            {"tool": "bash", "command": format!("git config core.fsmonitor {}", slash(&fsm))},
+            {"tool": "bash", "command": "echo x> a.txt"},
+            {"tool": "done", "summary": "set it"},
+        ]),
+    );
+    let out = run(&["run", "set fsmonitor", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+    assert!(
+        !mark.exists(),
+        "trellis ran the planted core.fsmonitor:\n{said}"
+    );
+    // The control: plain git in the same repository with the setting
+    // back in place runs it, so the assertion above is about trellis.
+    git(&d, &["config", "core.fsmonitor", &slash(&fsm)]);
+    std::fs::write(d.join("a.py"), "x = 3\n").unwrap();
+    let _ = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert!(mark.exists(), "control: plain `git status` runs it");
+    let _ = std::fs::remove_file(&mark);
+    let _ = std::fs::remove_file(&fsm);
+}
+
+#[test]
 fn a_model_run_that_changed_git_config_does_not_converge() {
     // Convergence leaves the tree for review, so a `core.fsmonitor` the run
     // set would run at the reviewer's next `git status`. A change there is

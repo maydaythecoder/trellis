@@ -35,7 +35,7 @@
 //! `config`, which is.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// How deep includes are followed. Git's own limit is 10.
 const MAX_INCLUDE_DEPTH: usize = 10;
@@ -75,8 +75,7 @@ impl GitGuard {
     /// Reads every guarded file. Before the writer runs: nothing can be put
     /// back that was not read.
     pub fn capture(root: &Path) -> Result<GitGuard, String> {
-        let mut git = Command::new("git");
-        trellis_core::secrets::scrub(&mut git);
+        let mut git = crate::command_with_hooks();
         git.args([
             "rev-parse",
             "--git-dir",
@@ -493,6 +492,7 @@ fn path_value(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")

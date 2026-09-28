@@ -13,7 +13,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// What `stat` says about one file, enough to tell that it changed without
 /// reading it: length and modification time, and on Unix the inode and the
@@ -114,7 +114,7 @@ pub fn shown(list: &[String]) -> String {
 
 impl IgnoredSnapshot {
     pub fn take(root: &Path) -> Result<IgnoredSnapshot, String> {
-        let mut git = Command::new("git");
+        let mut git = crate::command();
         git.args([
             "ls-files",
             "-z",
@@ -124,7 +124,6 @@ impl IgnoredSnapshot {
         ])
         .current_dir(root)
         .stdin(Stdio::null());
-        trellis_core::secrets::scrub(&mut git);
         let o = git
             .output()
             .map_err(|e| format!("git ls-files could not run: {e}"))?;
@@ -266,6 +265,7 @@ pub fn changes_since(root: &Path, before: &IgnoredSnapshot) -> Result<IgnoredCha
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")
