@@ -196,6 +196,18 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
     // an empty one is what git would start from.
     if index.is_file() {
         std::fs::copy(&index, &tmp)?;
+        // The copy keeps the index's mtime. Git decides whether a stat entry
+        // can be trusted by comparing it with the index file's own mtime (the
+        // racy-clean check); a copy stamped "now" makes every entry look
+        // settled, so a same-size edit made in the index's second is hashed
+        // as its old content. Linux's `copy` stamps now and Windows'
+        // `CopyFile` does not, which is why this showed up as a Linux-only
+        // flake of the after_run guard.
+        let mtime = std::fs::metadata(&index)?.modified()?;
+        std::fs::File::options()
+            .write(true)
+            .open(&tmp)?
+            .set_modified(mtime)?;
     }
     let run = |args: &[&str]| -> Result<String, VcsError> {
         let mut git = Command::new("git");
@@ -914,6 +926,51 @@ mod tests {
         // One that points nowhere is an entry, not an error.
         symlink(Path::new("missing"), &dir.join("dangling"), false).unwrap();
         worktree_digest(&dir).expect("a dangling link");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_same_size_edit_in_the_index_s_own_second_is_not_read_as_unchanged() {
+        // The risk, seen on Linux CI: the fingerprint copies the index, and
+        // the copy's fresh mtime defeated git's racy-clean check. An edit of
+        // the same size landing in the index's own second (`return 1` to
+        // `return 2`, as fast tests do) then matched its stat entry and was
+        // hashed as the old content, so the guard saw a stale tree and
+        // demoted converged runs at random.
+        //
+        // Set up exactly that: the entry's mtime equals the index's, the
+        // size is unchanged, and ctime is not trusted (as when it too falls
+        // in the same second). Git itself re-reads such a file.
+        let dir = temp_repo("racy");
+        git(&dir, &["config", "core.trustctime", "false"]).unwrap();
+        let a = dir.join("a.py");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        let touch = |p: &Path, t: std::time::SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        touch(&a, old);
+        // Record that mtime in the index, written now: not racy yet.
+        git(&dir, &["update-index", "--refresh"]).unwrap();
+        let before = worktree_fingerprint(&dir).unwrap();
+
+        std::fs::write(&a, "def f():\n    return 2\n").unwrap();
+        touch(&a, old);
+        let index = PathBuf::from(
+            git(&dir, &["rev-parse", "--git-path", "index"])
+                .unwrap()
+                .trim(),
+        );
+        touch(&dir.join(index), old);
+        assert_ne!(
+            before,
+            worktree_fingerprint(&dir).unwrap(),
+            "a same-size edit in the index's second must still change the fingerprint"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
