@@ -12,12 +12,26 @@
 //! ordering, what counts as whitespace — this crate does what JavaScript
 //! does, because the goldens are the contract and a divergence that only
 //! shows on unusual input is the kind nobody finds until it matters.
+//!
+//! Beyond the run gate, the crate reads a vault the way Apex Notes reads one
+//! ([`Vault`], [`Graph`]), searches it ([`search`]), keeps `dates.json`
+//! ([`dates`]) and edits it ([`edit`]) — ADR 0022. Reading is lenient;
+//! the gate stays strict about the two-key schema.
 
 mod compile;
+pub mod dates;
+pub mod edit;
+mod graph;
 mod js;
+mod reader;
+mod refs;
+pub mod search;
 mod validate;
 
 pub use compile::{Compiled, DEFAULT_CAP, compile};
+pub use graph::{Graph, Issue, Resolved, Resolver};
+pub use reader::{Note, Vault, notes_root};
+pub use refs::{WikiTarget, normalize_key, parse_wiki_target, slugify};
 pub use validate::{Stats, validate};
 
 use std::path::PathBuf;
@@ -56,6 +70,12 @@ pub enum VaultError {
 
     #[error("ambiguous stem: {stem} ({})", paths.join(", "))]
     AmbiguousStem { stem: String, paths: Vec<String> },
+
+    /// An edit that would break the vault or cannot mean anything: a parent
+    /// under its own child, a note linking to itself, `init` over an
+    /// existing vault. Nothing was written.
+    #[error("{0}")]
+    Refused(String),
 
     #[error("{}: {source}", path.display())]
     Io {
