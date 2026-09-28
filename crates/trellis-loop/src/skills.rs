@@ -1,0 +1,487 @@
+//! Skills: procedures a repository writes down, disclosed progressively.
+//!
+//! ADR 0019. Each skill is `.trellis/skills/<name>/SKILL.md` in the Agent
+//! Skills format: YAML frontmatter with `name` and `description`, then a body.
+//! The name and description of every valid skill go into the prompt; the body
+//! enters the transcript only when the model calls `read_skill`.
+//!
+//! **A skill informs; it does not bind.** It is repository text with the
+//! standing of `context.md`. Nothing in it is executed, and nothing in it can
+//! authorise skipping a check: convergence reads a `Verdict`, and a skill is
+//! neither a turn nor a check.
+//!
+//! The frontmatter reader here is deliberately small. It reads the two keys
+//! the format defines as required, as plain, quoted or block scalars, and
+//! ignores every other key. A full YAML parser would accept documents whose
+//! meaning a reader cannot predict from looking at them, and the only thing
+//! this needs to get right is two strings.
+
+use std::path::{Path, PathBuf};
+
+/// Where skills live, relative to the repository root.
+pub const SKILLS_DIR: &str = ".trellis/skills";
+
+/// The most the disclosed list may cost in the prompt, in bytes.
+///
+/// A library such as low-level-dev-skills has 142 descriptions; without a cap
+/// every one of them would be sent on every turn, and the window is the scarce
+/// resource on local weights (S5).
+pub const DISCLOSURE_CAP: usize = 4_096;
+
+const MAX_NAME: usize = 64;
+const MAX_DESCRIPTION: usize = 1_024;
+
+/// A skill that parsed and whose name matches its directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+}
+
+impl Skill {
+    /// The line this skill costs in the prompt. The cap is measured on this
+    /// string, so the number of bytes capped is the number of bytes sent.
+    pub fn listing(&self) -> String {
+        format!("  {}: {}\n", self.name, self.description)
+    }
+}
+
+/// A directory under `.trellis/skills/` that was skipped, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidSkill {
+    /// The directory name, as found.
+    pub dir: String,
+    pub reason: String,
+}
+
+/// Every skill a repository holds, sorted by name, and every one it skipped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillCatalog {
+    pub valid: Vec<Skill>,
+    pub invalid: Vec<InvalidSkill>,
+}
+
+/// What goes into the prompt: the skills that fit under the cap, and how many
+/// did not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Disclosed {
+    pub listed: Vec<Skill>,
+    /// Valid skills left out because the list was full. Stated, never
+    /// silent: a cut list read as the whole library is a false statement.
+    pub omitted: usize,
+}
+
+impl SkillCatalog {
+    /// Reads `<root>/.trellis/skills`. Absent is an empty catalog, not an
+    /// error: most repositories have no skills.
+    pub fn discover(root: &Path) -> Self {
+        let dir = root.join(SKILLS_DIR);
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            return Self::default();
+        };
+        let mut dirs: Vec<(String, PathBuf)> = read
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+            .collect();
+        // Sorted, so the list and which skills the cap leaves out are the same
+        // on every machine; `read_dir` order is the filesystem's.
+        dirs.sort();
+
+        let mut catalog = Self::default();
+        for (dir_name, path) in dirs {
+            match load(&dir_name, &path) {
+                Ok(s) => catalog.valid.push(s),
+                Err(reason) => catalog.invalid.push(InvalidSkill {
+                    dir: dir_name,
+                    reason,
+                }),
+            }
+        }
+        catalog
+    }
+
+    /// The skills that fit in [`DISCLOSURE_CAP`] bytes, in name order.
+    ///
+    /// Stops at the first that does not fit rather than skipping it for a
+    /// shorter one later: which skills a model is shown should follow from
+    /// their names, not from the length of their neighbours' descriptions.
+    pub fn disclosed(&self) -> Disclosed {
+        let mut used = 0;
+        let mut listed = Vec::new();
+        for s in &self.valid {
+            let cost = s.listing().len();
+            if used + cost > DISCLOSURE_CAP {
+                break;
+            }
+            used += cost;
+            listed.push(s.clone());
+        }
+        Disclosed {
+            omitted: self.valid.len() - listed.len(),
+            listed,
+        }
+    }
+}
+
+/// The body of a named skill, for `read_skill`.
+///
+/// The name is checked against the skill-name alphabet before it touches a
+/// path, which is what keeps `read_skill{name: "../../x"}` inside the skills
+/// directory. A skill that is present but invalid is refused with its reason,
+/// the same one `trellis doctor` gives.
+pub fn read_body(root: &Path, name: &str) -> Result<String, String> {
+    if let Err(e) = check_name(name) {
+        return Err(format!("`{name}` is not a skill name: {e}"));
+    }
+    let dir = root.join(SKILLS_DIR).join(name);
+    if !dir.is_dir() {
+        return Err(format!(
+            "no skill named `{name}`. The skills listed in the prompt are the ones this \
+             repository has."
+        ));
+    }
+    let text = std::fs::read_to_string(dir.join("SKILL.md"))
+        .map_err(|e| format!("skill `{name}` has no readable SKILL.md: {e}"))?;
+    let parsed = parse(&text).map_err(|e| format!("skill `{name}` is invalid: {e}"))?;
+    if parsed.name != name {
+        return Err(format!(
+            "skill `{name}` is invalid: its frontmatter names it `{}`",
+            parsed.name
+        ));
+    }
+    Ok(parsed.body)
+}
+
+fn load(dir_name: &str, path: &Path) -> Result<Skill, String> {
+    let text = match std::fs::read_to_string(path.join("SKILL.md")) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("no SKILL.md in the directory".into());
+        }
+        Err(e) => return Err(format!("SKILL.md could not be read: {e}")),
+    };
+    let p = parse(&text)?;
+    if p.name != dir_name {
+        return Err(format!(
+            "frontmatter name `{}` does not match the directory name `{dir_name}`",
+            p.name
+        ));
+    }
+    Ok(Skill {
+        name: p.name,
+        description: p.description,
+    })
+}
+
+struct Parsed {
+    name: String,
+    description: String,
+    body: String,
+}
+
+fn check_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("it is empty".into());
+    }
+    if name.len() > MAX_NAME {
+        return Err(format!(
+            "it is {} characters; the limit is {MAX_NAME}",
+            name.len()
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err("only lowercase letters, digits and `-` are allowed".into());
+    }
+    if name.starts_with('-') || name.ends_with('-') || name.contains("--") {
+        return Err("`-` may not lead, trail or repeat".into());
+    }
+    Ok(())
+}
+
+fn parse(text: &str) -> Result<Parsed, String> {
+    let text = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .replace("\r\n", "\n");
+    let mut lines = text.split('\n');
+    if lines.next().map(str::trim_end) != Some("---") {
+        return Err("SKILL.md does not open with `---` frontmatter".into());
+    }
+    let mut front: Vec<&str> = Vec::new();
+    let mut closed = false;
+    for l in lines.by_ref() {
+        if l.trim_end() == "---" {
+            closed = true;
+            break;
+        }
+        front.push(l);
+    }
+    if !closed {
+        return Err("the frontmatter is never closed with `---`".into());
+    }
+    let body = lines.collect::<Vec<_>>().join("\n");
+    let body = body.trim_start_matches('\n').to_string();
+
+    let name = scalar(&front, "name")?.ok_or("the frontmatter has no `name`")?;
+    check_name(&name).map_err(|e| format!("name `{name}` is invalid: {e}"))?;
+
+    let description =
+        scalar(&front, "description")?.ok_or("the frontmatter has no `description`")?;
+    // Newlines inside a folded or literal scalar become spaces: the listing is
+    // one line per skill, and a description that could break the line could
+    // close the block it sits in.
+    let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if description.is_empty() {
+        return Err("`description` is empty".into());
+    }
+    if description.chars().count() > MAX_DESCRIPTION {
+        return Err(format!(
+            "`description` is {} characters; the limit is {MAX_DESCRIPTION}",
+            description.chars().count()
+        ));
+    }
+    if description.chars().any(char::is_control) {
+        return Err("`description` contains a control character".into());
+    }
+    Ok(Parsed {
+        name,
+        description,
+        body,
+    })
+}
+
+/// A top-level scalar from the frontmatter, or `None` when the key is absent.
+///
+/// Reads `key: value`, `key: "value"`, `key: 'value'`, a plain value continued
+/// on indented lines, and `key: >` / `key: |` block scalars. Anything else a
+/// key's value could be — a list, a map, an anchor — is refused by name
+/// rather than read as something it is not.
+fn scalar(front: &[&str], key: &str) -> Result<Option<String>, String> {
+    let prefix = format!("{key}:");
+    let Some(at) = front.iter().position(|l| l.starts_with(&prefix)) else {
+        return Ok(None);
+    };
+    let first = front[at][prefix.len()..].trim();
+    let continuation: Vec<&str> = front[at + 1..]
+        .iter()
+        .take_while(|l| l.is_empty() || l.starts_with(' ') || l.starts_with('\t'))
+        .map(|l| l.trim())
+        .collect();
+
+    if let Some(style) = first.chars().next().filter(|c| *c == '>' || *c == '|') {
+        let joiner = if style == '>' { " " } else { "\n" };
+        return Ok(Some(continuation.join(joiner).trim().to_string()));
+    }
+    if let Some(rest) = first.strip_prefix('"') {
+        let inner = rest
+            .strip_suffix('"')
+            .ok_or_else(|| format!("`{key}` opens a double quote it does not close on its line"))?;
+        return Ok(Some(inner.replace("\\\"", "\"").replace("\\\\", "\\")));
+    }
+    if let Some(rest) = first.strip_prefix('\'') {
+        let inner = rest
+            .strip_suffix('\'')
+            .ok_or_else(|| format!("`{key}` opens a single quote it does not close on its line"))?;
+        return Ok(Some(inner.replace("''", "'")));
+    }
+    if first.starts_with('[')
+        || first.starts_with('{')
+        || first.starts_with('&')
+        || first.starts_with('*')
+    {
+        return Err(format!("`{key}` must be a string"));
+    }
+    let mut parts = vec![first];
+    parts.extend(continuation.iter().filter(|l| !l.is_empty()));
+    let v = parts.join(" ").trim().to_string();
+    if v.is_empty() {
+        return Err(format!("`{key}` has no value"));
+    }
+    Ok(Some(v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skill(root: &Path, dir: &str, text: &str) {
+        let d = root.join(SKILLS_DIR).join(dir);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), text).unwrap();
+    }
+
+    fn md(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nBODY-{name}\n")
+    }
+
+    /// The real-format fixture: `rust-unsafe` from low-level-dev-skills,
+    /// copied unchanged. See `tests/fixtures/skills/README.md`.
+    fn fixture_root() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/skills/rust-unsafe");
+        let dst = d.path().join(SKILLS_DIR).join("rust-unsafe");
+        std::fs::create_dir_all(dst.join("references")).unwrap();
+        std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).unwrap();
+        std::fs::copy(
+            src.join("references/unsafe-patterns.md"),
+            dst.join("references/unsafe-patterns.md"),
+        )
+        .unwrap();
+        d
+    }
+
+    #[test]
+    fn a_skill_in_the_agent_skills_format_loads_unchanged() {
+        // ADR 0019 promises that skills written for other harnesses load as
+        // they are. This one is copied byte for byte from the library the ADR
+        // names, extra keys and all.
+        let d = fixture_root();
+        let c = SkillCatalog::discover(d.path());
+        assert!(c.invalid.is_empty(), "{:?}", c.invalid);
+        assert_eq!(c.valid.len(), 1);
+        assert_eq!(c.valid[0].name, "rust-unsafe");
+        assert!(
+            c.valid[0]
+                .description
+                .starts_with("Rust unsafe code skill for systems programming."),
+            "{}",
+            c.valid[0].description
+        );
+        let body = read_body(d.path(), "rust-unsafe").unwrap();
+        assert!(body.starts_with("# Rust unsafe"), "{}", &body[..40]);
+        assert!(
+            !body.contains("description:"),
+            "the frontmatter is not the body"
+        );
+    }
+
+    #[test]
+    fn a_name_that_does_not_match_its_directory_is_skipped_with_the_reason() {
+        let d = tempfile::tempdir().unwrap();
+        skill(d.path(), "profiling", &md("perf", "How to profile."));
+        skill(d.path(), "ok", &md("ok", "Fine."));
+        let c = SkillCatalog::discover(d.path());
+        assert_eq!(c.valid.len(), 1);
+        assert_eq!(c.invalid.len(), 1);
+        assert_eq!(c.invalid[0].dir, "profiling");
+        assert!(
+            c.invalid[0]
+                .reason
+                .contains("`perf` does not match the directory name `profiling`"),
+            "{}",
+            c.invalid[0].reason
+        );
+        // And it cannot be read by either name.
+        assert!(read_body(d.path(), "profiling").is_err());
+        assert!(read_body(d.path(), "perf").is_err());
+    }
+
+    #[test]
+    fn each_kind_of_invalid_skill_says_what_is_wrong_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        let long = "x".repeat(1_025);
+        skill(d.path(), "no-front", "# just a body\n");
+        skill(d.path(), "no-desc", "---\nname: no-desc\n---\nbody\n");
+        skill(d.path(), "too-long", &md("too-long", &long));
+        skill(d.path(), "Upper", &md("Upper", "x"));
+        skill(
+            d.path(),
+            "unclosed",
+            "---\nname: unclosed\ndescription: x\n",
+        );
+        std::fs::create_dir_all(d.path().join(SKILLS_DIR).join("empty-dir")).unwrap();
+        let c = SkillCatalog::discover(d.path());
+        assert!(c.valid.is_empty(), "{:?}", c.valid);
+        let reason = |dir: &str| {
+            c.invalid
+                .iter()
+                .find(|i| i.dir == dir)
+                .map(|i| i.reason.clone())
+                .unwrap_or_else(|| panic!("{dir} was not reported: {:?}", c.invalid))
+        };
+        assert!(reason("no-front").contains("does not open with `---`"));
+        assert!(reason("no-desc").contains("no `description`"));
+        assert!(reason("too-long").contains("1025 characters; the limit is 1024"));
+        assert!(reason("Upper").contains("lowercase"));
+        assert!(reason("unclosed").contains("never closed"));
+        assert!(reason("empty-dir").contains("no SKILL.md"));
+    }
+
+    #[test]
+    fn quoted_and_block_descriptions_read_as_one_line() {
+        let d = tempfile::tempdir().unwrap();
+        skill(
+            d.path(),
+            "quoted",
+            "---\nname: quoted\ndescription: \"Guide no_std work. Use when: writing #![no_std].\"\nuser-invocable: true\n---\nb\n",
+        );
+        skill(
+            d.path(),
+            "folded",
+            "---\nname: folded\ndescription: >\n  First line\n  second line\nlicense: MIT\n---\nb\n",
+        );
+        let c = SkillCatalog::discover(d.path());
+        assert!(c.invalid.is_empty(), "{:?}", c.invalid);
+        let by = |n: &str| {
+            c.valid
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap()
+                .description
+                .clone()
+        };
+        assert_eq!(
+            by("quoted"),
+            "Guide no_std work. Use when: writing #![no_std]."
+        );
+        assert_eq!(by("folded"), "First line second line");
+    }
+
+    #[test]
+    fn past_the_cap_skills_are_counted_not_dropped() {
+        // 142 descriptions is what the library the ADR names would put into
+        // every prompt. The cap bounds the bytes; the count says what the
+        // bound cost.
+        let d = tempfile::tempdir().unwrap();
+        let desc = "d".repeat(200);
+        for i in 0..40 {
+            let n = format!("skill-{i:02}");
+            skill(d.path(), &n, &md(&n, &desc));
+        }
+        let c = SkillCatalog::discover(d.path());
+        let shown = c.disclosed();
+        let bytes: usize = shown.listed.iter().map(|s| s.listing().len()).sum();
+        assert!(bytes <= DISCLOSURE_CAP, "{bytes}");
+        assert!(shown.omitted > 0);
+        assert_eq!(shown.listed.len() + shown.omitted, 40, "none silently lost");
+        assert_eq!(
+            shown.listed[0].name, "skill-00",
+            "name order decides who is shown"
+        );
+    }
+
+    #[test]
+    fn a_name_cannot_climb_out_of_the_skills_directory() {
+        let d = fixture_root();
+        std::fs::write(d.path().join("secret.md"), "---\nname: x\n---\n").unwrap();
+        for bad in ["../../secret", "..", "rust-unsafe/../x", "a/b", "A", ""] {
+            let e = read_body(d.path(), bad).unwrap_err();
+            assert!(e.contains("is not a skill name"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn no_skills_directory_is_an_empty_catalog() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(SkillCatalog::discover(d.path()), SkillCatalog::default());
+        assert!(
+            read_body(d.path(), "anything")
+                .unwrap_err()
+                .contains("no skill named")
+        );
+    }
+}

@@ -337,6 +337,10 @@ impl Orchestrator {
             ToolCall::ReadFile { path } => self.read_file(path),
             ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
             ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
+            ToolCall::ReadSkill { name } => match crate::skills::read_body(&self.root, name) {
+                Ok(body) => ToolResult::FileContent(body),
+                Err(e) => ToolResult::Error(e),
+            },
         };
         Dispatched { result, human }
     }
