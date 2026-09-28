@@ -843,9 +843,9 @@ impl CliRunner<'_> {
             }
             None => t.task.clone(),
         };
-        if let Some(path) = profile.and_then(|p| p.instructions_path(self.root)) {
-            let instructions = std::fs::read_to_string(&path)
-                .with_context(|| format!("cannot read instructions {}", path.display()))?;
+        if let Some(p) = profile
+            && let Some(instructions) = instructions(self.root, p)?
+        {
             text = format!("{}\n\n{text}", instructions.trim_end());
         }
         Ok(text)
@@ -853,6 +853,28 @@ impl CliRunner<'_> {
 
     fn approve_mode(p: &Profile) -> bool {
         p.file.control.as_ref().and_then(|c| c.mode.as_deref()) == Some("approve")
+    }
+}
+
+/// A profile's `instructions` file, or `None` when it names none. Read
+/// through the one prompt-input reader, so a committed
+/// `.trellis/agents/r.md -> ~/.aws/credentials` is refused by name rather
+/// than put ahead of the task. Named but absent is an error, as it was: a
+/// profile that says it has instructions and runs without them is worse off
+/// than one that never had any.
+fn instructions(root: &Path, p: &Profile) -> Result<Option<String>> {
+    let Some(path) = p.instructions_path(root) else {
+        return Ok(None);
+    };
+    match crate::context_files::read_repo_text(root, &path)
+        .with_context(|| format!("agent `{}`: instructions were refused", p.name))?
+    {
+        Some(t) => Ok(Some(t)),
+        None => anyhow::bail!(
+            "agent `{}`: cannot read instructions {}: no such file",
+            p.name,
+            path.display()
+        ),
     }
 }
 
@@ -1111,6 +1133,40 @@ impl Runner for CliRunner<'_> {
             );
         }
         !self.stop_requested()
+    }
+}
+
+#[cfg(test)]
+mod instructions_tests {
+    use super::*;
+
+    #[test]
+    fn instructions_linked_outside_the_repository_are_refused() {
+        // The risk: a committed `.trellis/agents/r.md -> ~/.aws/credentials`
+        // was read through the link and put ahead of every task the profile
+        // ran, into a hosted request body.
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("credentials");
+        std::fs::write(&secret, "SECRET").unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis/agents")).unwrap();
+        let p = trellis_queue::profile::parse("r", "instructions = \"agents/r.md\"\n").unwrap();
+        let at = d.path().join(".trellis/agents/r.md");
+        if let Err(why) = trellis_core::paths::symlink_for_test(&secret, &at) {
+            eprintln!("{why}");
+            return;
+        }
+        let e = format!("{:#}", instructions(d.path(), &p).unwrap_err());
+        assert!(e.contains("outside the repository"), "{e}");
+        assert!(!e.contains("SECRET"), "{e}");
+
+        // A plain file still loads.
+        std::fs::remove_file(&at).unwrap();
+        std::fs::write(&at, "Review only.").unwrap();
+        assert_eq!(
+            instructions(d.path(), &p).unwrap().as_deref(),
+            Some("Review only.")
+        );
     }
 }
 
