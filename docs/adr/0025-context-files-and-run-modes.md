@@ -48,7 +48,17 @@ This ADR settles how each capability arrives without opening any of those.
   CR cannot start a line. Only those lines change: text with no such line
   goes in as written, less any CR of a CRLF. (Amended after the second
   review of PR #1; before it, a `CLAUDE.md` holding `--- end ---` closed
-  the fence.)
+  the fence.) *Amended after the twelfth review:* U+2028, U+2029 and
+  U+0085 are line breaks too, turned into newlines before lines are
+  checked, and format characters (Unicode Cf: zero-width space, BOM, bidi
+  controls) are dropped, so neither a separator nor a zero-width character
+  before `---` puts a marker in column 0. `before_run` output (ADR 0023
+  §5) goes through the same step. Evidence:
+  `a_unicode_line_break_or_format_character_cannot_start_an_unindented_marker`
+  in `crates/trellis-loop/src/extra_context.rs` and
+  `before_run_output_cannot_close_its_fence_through_a_unicode_line_break`
+  in `crates/trellis-loop/src/hooks.rs`, both failed before on
+  `text\u{2028}--- end ...` (a second unindented marker).
 - **Cap.** At most 16,384 bytes in total, measured on the file contents.
   Repository files are considered first, then user files, each in the order
   override, `AGENTS.md`, `CLAUDE.md`. A file that does not fit is left out
