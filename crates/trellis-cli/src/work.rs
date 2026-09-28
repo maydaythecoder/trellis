@@ -5,7 +5,7 @@
 //! the same path `trellis run` takes, so a queued task and a typed one cannot
 //! drift into two ways of running.
 
-use crate::{RunExit, RunSeeding, cmd_run, config};
+use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::path::Path;
@@ -290,10 +290,17 @@ impl Runner for CliRunner<'_> {
             &text,
             &self.model,
             self.unconstrained,
-            "1",
             RunSeeding {
                 resume: false,
                 focus: t.focus.as_deref(),
+            },
+            // Auto, whatever the config says: the heartbeat is the hands-off
+            // end of the dial (ADR 0020 §5), and nobody is at the terminal to
+            // answer. Approve mode here would refuse every task at the head
+            // of the queue rather than run it.
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
             },
             &mut std::io::stdout(),
         );
