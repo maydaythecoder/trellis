@@ -36,12 +36,12 @@ enum Ended {
 /// before, whose trimmed lines lost the first character of a modified
 /// tracked file's path.)
 fn changed(root: &Path) -> Result<Vec<String>, String> {
-    let mut git = Command::new("git");
+    // Run after the git guard has put `.git/` back; `command` turns
+    // `core.fsmonitor` and hooks off regardless.
+    let mut git = trellis_vcs::command();
     git.args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(root)
         .stdin(Stdio::null());
-    // `git status` can run the repository's filters and fsmonitor.
-    trellis_core::secrets::scrub(&mut git);
     let o = git
         .output()
         .map_err(|e| format!("git status could not run: {e}"))?;
@@ -242,10 +242,11 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             cmd.env(name, v);
         }
     }
-    // Its own process group, so what it starts can be ended with it
-    // (`end_group`), as `bash` is.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    // In trellis's own process group, the terminal's foreground group: it
+    // is the user's command on the user's terminal. In a group of its own
+    // (round 8) it was a background job, stopped by SIGTTOU or SIGTTIN the
+    // moment it touched the terminal (review round 9). What that costs is
+    // in `end_command`.
     let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
@@ -272,23 +273,15 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Err(_) => break Ended::Exited(None),
         }
         if stop.load(Ordering::SeqCst) {
-            end_tree(child.id(), true);
-            let _ = child.kill();
-            let _ = child.wait();
+            end_command(&mut child);
             break Ended::Interrupted;
         }
         if started.elapsed() >= timeout {
-            end_tree(child.id(), true);
-            let _ = child.kill();
-            let _ = child.wait();
+            end_command(&mut child);
             break Ended::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    // However it ended, what it left running is ended too, before anything
-    // is judged or rolled back: a backgrounded writer would otherwise land
-    // after both.
-    end_tree(child.id(), false);
     let secs = started.elapsed().as_secs();
     let exit_text = match &ended {
         Ended::Exited(Some(c)) => format!("exited {c} after {secs}s"),
@@ -338,7 +331,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let touched = match changed(root) {
         Ok(t) => t,
         Err(e) => {
-            let restored = undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty();
+            let restored =
+                undo(root, &snapshot, &ignored, &judge, out) && git_unrestored.is_empty();
             return if restored {
                 RunEnd::Error {
                     run_id: None,
@@ -455,7 +449,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         true
     } else {
         // A `.git/` file that could not be put back is a tree not restored.
-        undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty()
+        undo(root, &snapshot, &ignored, &judge, out) && git_unrestored.is_empty()
     };
 
     let run_id = write_trail(
@@ -487,42 +481,46 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
 /// worktree goes back to the snapshot. An ignored file that existed before
 /// and was changed or deleted cannot be put back, because trellis keeps no
 /// copy of ignored files; it is named. `false` when a created file could not
-/// be removed, a pre-existing one was changed or deleted, or the worktree
-/// is not restored.
+/// be removed, a pre-existing one was deleted, or changed where `.trellis/`
+/// or `deny_write` protects it, or the worktree is not restored. A changed
+/// one nothing protects does not count: an agent that runs the tests
+/// rewrites their caches every time (review round 9).
 fn undo(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
     ignored: &IgnoredChanges,
+    judge: &Judge,
     out: &mut dyn Write,
 ) -> bool {
-    let removed = trellis_vcs::ignored::undo(root, ignored, out);
+    let protected = |p: &str| {
+        !judge
+            .denied(root, std::iter::once(&p.to_string()))
+            .is_empty()
+    };
+    let removed = trellis_vcs::ignored::undo(root, ignored, &protected, out);
     rollback(snapshot, out) && removed
 }
 
-/// Ends what the command started. On Unix the command leads its own
-/// group, and `kill -KILL -- -<pgid>` reaches every member that did not
-/// leave it (`setsid`), whether or not the command itself is still alive.
-/// On Windows `taskkill /T` walks the tree from a live process, so only
-/// while the command is `alive`: after a normal exit what it started keeps
-/// running (ADR 0026 §11).
-fn end_tree(pid: u32, alive: bool) {
-    let mut k = if cfg!(windows) {
-        if !alive {
-            return;
-        }
-        let mut c = Command::new("taskkill");
-        c.args(["/T", "/F", "/PID", &pid.to_string()]);
-        c
-    } else {
-        let mut c = Command::new("kill");
-        c.args(["-KILL", "--", &format!("-{pid}")]);
-        c
-    };
-    k.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    trellis_core::secrets::scrub(&mut k);
-    let _ = k.status();
+/// Ends the command on a timeout or an interrupt, while it is still alive
+/// and unreaped. On Windows `taskkill /T` walks the tree from it. On Unix
+/// the command shares trellis's process group, so there is no group of its
+/// own to signal, and signalling trellis's would end trellis: the command
+/// itself is killed, and what it started may outlive it and write after
+/// the comparison (ADR 0026 §11). Ctrl-C at the terminal reaches the whole
+/// foreground group, the command's children included, as it reaches
+/// trellis. After a normal exit nothing is signalled on either platform.
+fn end_command(child: &mut std::process::Child) {
+    if cfg!(windows) {
+        let mut k = Command::new("taskkill");
+        k.args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        trellis_core::secrets::scrub(&mut k);
+        let _ = k.status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {

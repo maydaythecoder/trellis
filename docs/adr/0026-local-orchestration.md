@@ -543,6 +543,17 @@ scheduled instant) and the id of the last task the routine created.
   or a concurrent `work` could fire an instant between the read and the
   lock. Evidence: `a_tick_scans_the_queue_once_however_many_instants_are_due`,
   which counted five scans for five instants before the change.
+  *Amended after the ninth review:* `coalesce` and `skip` still read every
+  pending and claimed task once per due instant to find the open one. The
+  same one read per tick now also names it (the first claimed task, else
+  the first pending one, as before), and a fire that enqueues makes its
+  task the open one for the rest of the tick. What that gives up, stated:
+  a task that finishes while the tick is firing is still taken as open
+  for the rest of that tick, so a later fire of the same tick may coalesce
+  into it (the note it cannot take is logged) where a fresh read would
+  have enqueued; the next tick reads again. Evidence:
+  `a_coalescing_tick_scans_the_queue_once_however_many_instants_are_due`,
+  which counted six reads for five instants before the change.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
@@ -697,6 +708,23 @@ This is Paperclip's `process` adapter. A profile with
      Unix. Unix-only test, which this Windows development host cannot run:
      `exec::tests::what_a_command_backgrounded_cannot_write_after_the_call_returns`
      covers the same group kill for `bash`.
+     *Amended after the ninth review of PR #1: reverted for process
+     agents.* In a group of its own the command was a background job on
+     the user's terminal, and the kernel stops a background job that
+     writes to the terminal (with `tostop`) or reads from it, with
+     SIGTTOU or SIGTTIN: an interactive agent hung. A process agent is the
+     user's chosen command on their terminal, so it runs in trellis's own
+     process group, the foreground one, again. The cost, stated: on Unix
+     there is no group of its own to signal, so on a timeout or an
+     interrupt only the command itself is killed, and after a normal exit
+     nothing is; a grandchild it started (a backgrounded writer included)
+     can outlive it and write after the comparison and the rollback.
+     Ctrl-C at the terminal reaches the whole foreground group, the
+     command's children included. Windows is unchanged (`taskkill /T`
+     while the command is alive). Guarded, Unix-only and never run on this
+     Windows host: `a_process_agent_runs_in_trellis_s_own_process_group`
+     in `tests/orchestration.rs`, which compares the agent's process group
+     with the test's; a stopped background job needs a terminal to stage.
    - Ctrl-C kills the child and rolls back.
 
    *Amended (wave K): the environment has no keys unless the profile
@@ -790,6 +818,41 @@ This is Paperclip's `process` adapter. A profile with
    failed before on the read-only bit; the Unix mode bits it also checks
    are not exercised on Windows). A hook whose mode alone changed is not
    detected: the comparison is by bytes.
+   *Amended after the ninth review of PR #1: links.* The walk of the hooks
+   directory followed links and restore removed every file absent at
+   capture, so a planted `.git/hooks/lib -> $HOME` had restore delete the
+   home directory's files, and a hook replaced by a link to `~/.bashrc` had
+   the hook's bytes written over it. Now nothing is read, written or
+   removed through a link: every path is looked at with `symlink_metadata`,
+   a link is recorded by its text and never entered, a planted link is
+   removed as a link (never its target), a changed link is made again as a
+   link, a file is written back with `create_new` (which does not follow a
+   link) after whatever is at its path is removed, and a directory on the
+   way to it that has become a link is replaced by a directory. Nothing
+   outside the git directories as they resolved at capture is written or
+   removed, so a hooks directory outside them (`core.hooksPath` into the
+   worktree, or elsewhere) is no longer guarded; re-pointing
+   `core.hooksPath` is a change to `config`, which is. A hook the user keeps
+   as a link is compared as the link, so an edit to its target is not a
+   change here (the target is the worktree's, or not the repository's). The
+   comparison now includes a file's permissions, so a mode change alone
+   (`chmod +x` enabling a hook) is detected and put back. Evidence, in
+   `trellis_vcs::git_guard`:
+   `a_planted_directory_link_in_the_hooks_is_removed_and_its_target_is_untouched`
+   (a junction on this Windows host; it failed before with the target's
+   file listed as a new hook), `a_hooks_subdirectory_replaced_by_a_link_is_not_written_through`,
+   `a_hook_replaced_by_a_file_link_comes_back_as_a_file_and_the_target_is_untouched`
+   (it failed before with the target overwritten) and
+   `a_hook_that_was_a_link_at_capture_is_compared_as_a_link_and_never_written_through`,
+   all four failing before the change; and
+   `a_hooks_directory_outside_the_git_directory_is_not_touched`. What is
+   not closed, stated: each path is checked and then acted on, so a process
+   still running while restore runs (a grandchild that outlived the
+   command, step 2) could swap a directory for a link in between; closing
+   that needs `openat`-relative calls std does not offer. On Windows a link
+   is made again only where symbolic links may be created (developer mode
+   or the privilege), and a junction comes back as a directory link;
+   otherwise it is reported as not put back.
 
    *Amended after the sixth review of PR #1: files git ignores.* `git
    status` does not list them, so a command could write
@@ -834,6 +897,18 @@ This is Paperclip's `process` adapter. A profile with
      tree and cannot be told apart. A `.git/` file that could not be put
      back makes the rollback not restored too; before, it was only
      printed.
+     *Amended after the ninth review of PR #1:* that cost was the common
+     case, so a changed pre-existing ignored file now counts only where it
+     was already a breach: under `.trellis/` or named by `deny_write`. Any
+     other is named ("left as it is") and the run ends rolled back, since
+     the tracked tree is restored, which is what ADR 0009 promises. A
+     deleted pre-existing one still makes the tree not restored: that is
+     a loss, not a rewritten cache. Evidence:
+     `a_process_agent_that_changed_a_pre_existing_ignored_file_is_reported_and_work_goes_on`
+     (renamed from `…_leaves_the_tree_not_restored`; it failed before with
+     "left the tree NOT restored") and
+     `a_changed_or_deleted_ignored_file_the_rules_protect_leaves_the_tree_not_restored`.
+     The same rule holds for a model run (ADR 0023 §5).
    - **What a converged run keeps.** Ignored files the command created,
      such as a `.pytest_cache`, stay. That includes a `sitecustomize.py` or
      a `.pth` file written into an ignored `.venv`, which Python runs at

@@ -1686,6 +1686,23 @@ fn run_body(
     // trellis's next git call. So `.git/config`, what it includes, the hooks
     // and `info/` are read too, and put back before any git command runs
     // once the loop has ended (review round 8).
+    //
+    // Rule documents from `.trellis/governance/`, plus the older
+    // `[governance] deny_write` in config.toml. Both feed the same write-path
+    // refusal; the documents additionally carry rank and prose, which the
+    // audit and the prompt need and a config list cannot express. Read
+    // before the writers are guarded, which judge a changed ignored file by
+    // the same rules.
+    let rules = trellis_checks::governance::load(root)
+        .context("a governance rule would not load; runs would silently ignore it")?;
+    let mut deny: Vec<String> = cfg
+        .governance()
+        .rules()
+        .iter()
+        .map(|r| r.as_written())
+        .collect();
+    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
+    let governance = trellis_loop::Governance::new(&deny);
     let writers = if tooling.tools.bash().is_some()
         || !tooling.tools.customs().is_empty()
         || tooling.hooks.is_some()
@@ -1696,7 +1713,7 @@ fn run_body(
                  with bash, custom tools or hooks needs to put back their writes: {e}"
             )
         })?;
-        let ignored = trellis_vcs::ignored::IgnoredLedger::take(root).map_err(|e| {
+        let ignored = trellis_vcs::ignored::IgnoredSnapshot::take(root).map_err(|e| {
             anyhow::anyhow!(
                 "could not list the files git ignores before the run, which a run \
                  with bash, custom tools or hooks needs to undo their writes: {e}"
@@ -1704,7 +1721,8 @@ fn run_body(
         })?;
         Some(WriterGuards {
             git,
-            ignored: std::sync::Arc::new(std::sync::Mutex::new(ignored)),
+            ignored,
+            protected: governance.clone(),
         })
     } else {
         None
@@ -1718,20 +1736,6 @@ fn run_body(
         armed: true,
     };
 
-    // Rule documents from `.trellis/governance/`, plus the older
-    // `[governance] deny_write` in config.toml. Both feed the same write-path
-    // refusal; the documents additionally carry rank and prose, which the
-    // audit and the prompt need and a config list cannot express.
-    let rules = trellis_checks::governance::load(root)
-        .context("a governance rule would not load; runs would silently ignore it")?;
-    let mut deny: Vec<String> = cfg
-        .governance()
-        .rules()
-        .iter()
-        .map(|r| r.as_written())
-        .collect();
-    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
-    let governance = trellis_loop::Governance::new(&deny);
     let notes = config::RepoConfig::notes(root)?;
     // Skills (ADR 0019): names and descriptions to the prompt, capped. Read
     // before the snapshot like everything else the run is seeded with.
@@ -1937,9 +1941,6 @@ fn run_body(
             });
         if let Some(h) = &tooling.hooks {
             orchestrator = orchestrator.with_hooks(h.clone());
-        }
-        if let Some(w) = &writers {
-            orchestrator = orchestrator.with_ignored_ledger(w.ignored.clone());
         }
         // The hooks' guard and this one are one latch (ADR 0023 §5).
         if let Some(g) = &tooling.guard {
@@ -2255,12 +2256,7 @@ fn run_body(
             // and `/diff` do not show them, and reverting the change later
             // does not remove them.
             if let Some(w) = &writers {
-                match w
-                    .ignored
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .changes(root)
-                {
+                match trellis_vcs::ignored::changes_since(root, &w.ignored) {
                     Ok(c) if c.is_empty() => {}
                     Ok(c) => {
                         let _ = writeln!(
@@ -2529,8 +2525,11 @@ fn handle_interrupt(
 /// `.git/` (config, includes, hooks, `info/`) and files git ignores.
 struct WriterGuards {
     git: trellis_vcs::git_guard::GitGuard,
-    /// Shared with the orchestrator, which brackets each check in it.
-    ignored: std::sync::Arc<std::sync::Mutex<trellis_vcs::ignored::IgnoredLedger>>,
+    /// Every ignored file with its stat, before the run.
+    ignored: trellis_vcs::ignored::IgnoredSnapshot,
+    /// The run's `deny_write`: a changed pre-existing ignored file it names
+    /// is not a restored tree.
+    protected: trellis_loop::Governance,
 }
 
 /// Puts `.git/` back and says what differed; `Some` naming it when
@@ -2559,9 +2558,11 @@ fn put_git_back(
 /// goes back to the snapshot. `writers` is `None` for a run that loaded no
 /// writer able to reach either. Restored means all three: a `.git/` file
 /// that could not be put back, a created ignored file that could not be
-/// removed, a pre-existing ignored file a writer changed or deleted (no
-/// copy is kept), or an ignored listing that could not be read after the
-/// run, is not a restored tree.
+/// removed, a pre-existing ignored file the run deleted or changed where
+/// `.trellis/` or `deny_write` protects it (no copy is kept), or an ignored
+/// listing that could not be read after the run, is not a restored tree. A
+/// changed pre-existing ignored file nothing protects is named and does
+/// not count (`trellis_vcs::ignored::undo`).
 fn rollback_run(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
@@ -2578,13 +2579,14 @@ fn rollback_run(
     };
     let ignored_ok = match writers {
         None => true,
-        Some(w) => match w
-            .ignored
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .changes(root)
-        {
-            Ok(c) => trellis_vcs::ignored::undo(root, &c, out),
+        Some(w) => match trellis_vcs::ignored::changes_since(root, &w.ignored) {
+            Ok(c) => {
+                let protected = |p: &str| {
+                    trellis_loop::names_trellis_dir(p)
+                        || w.protected.denies_write_at(root, p).is_some()
+                };
+                trellis_vcs::ignored::undo(root, &c, &protected, out)
+            }
             Err(e) => {
                 let _ = writeln!(
                     out,

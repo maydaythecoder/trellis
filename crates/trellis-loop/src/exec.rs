@@ -159,6 +159,16 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     // Taken now: tokio's `id()` is `None` once the child has been reaped,
     // and the group is killed after that (`kill_group`).
     let pid = child.id();
+    // A member of the group that trellis holds and does not reap until the
+    // group has been signalled: alive or a zombie, it keeps the group id
+    // from being reused, so the group kill after a normal exit (which is
+    // only observable by reaping the command) cannot reach a stranger's
+    // group that took the id (review round 9). `None` on Windows, or when
+    // it could not be started; the post-exit kill is then skipped.
+    #[cfg(unix)]
+    let mut holder = pid.and_then(hold_group);
+    #[cfg(not(unix))]
+    let mut holder: Option<tokio::process::Child> = None;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -203,9 +213,17 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
         // A normal exit ends what the command left running too: a
         // backgrounded `sleep 1; touch x` would otherwise write after this
         // call returns, after a convergence judged the tree or a rollback
-        // restored it. Before the drain, so the pipes it held close.
+        // restored it. Before the drain, so the pipes it held close. Only
+        // while `holder` keeps the group id ours.
         if let Ok(Ok(_)) = &exited {
-            Box::pin(kill_group(pid)).await;
+            if holder.is_some() {
+                Box::pin(kill_group(pid)).await;
+            } else if cfg!(unix) {
+                tracing::warn!(
+                    "the group holder did not start; what the command left running is not \
+                     killed"
+                );
+            }
         }
         // Then what is left in the pipes, for a short grace. Dropping the
         // readers keeps every byte they already stored.
@@ -234,7 +252,27 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
             Box::pin(kill_tree(&mut child)).await;
         }
     }
+    // Reaped last, after every group signal: until now it held the id.
+    if let Some(h) = &mut holder {
+        let _ = h.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(2), h.wait()).await;
+    }
     Ok(out)
+}
+
+/// Starts `cat` in process group `pgid`, reading a pipe trellis holds so it
+/// ends with trellis. Joining needs the group to exist, and it does: the
+/// command leads it and has not been reaped yet (a zombie still counts).
+#[cfg(unix)]
+fn hold_group(pgid: u32) -> Option<tokio::process::Child> {
+    let mut c = tokio::process::Command::new("cat");
+    c.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .process_group(i32::try_from(pgid).ok()?);
+    trellis_core::secrets::scrub(c.as_std_mut());
+    c.spawn().ok()
 }
 
 /// Kills the child and what it started, as far as the platform allows
@@ -261,8 +299,11 @@ async fn kill_tree(child: &mut tokio::process::Child) {
 
 /// Kills the process group the child led, after the child has exited: on
 /// Unix the group outlives its leader while any member lives, and
-/// `kill -KILL -- -<pgid>` reaches every member that did not leave it. A
-/// group with no members left is an error `kill` reports and nothing more.
+/// `kill -KILL -- -<pgid>` reaches every member that did not leave it.
+/// Called only while the group provably has a member: the command itself,
+/// not yet reaped (`kill_tree`), or the holder `run` keeps unreaped. A
+/// group with no members could have had its id reused by then, and the
+/// signal would reach whoever took it.
 ///
 /// Nothing on Windows. `taskkill /T` walks the tree from a live process,
 /// and after a normal exit the child is gone, so it would reach nothing;
