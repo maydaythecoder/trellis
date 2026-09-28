@@ -1046,15 +1046,14 @@ impl Orchestrator {
 /// of `write_file` asks this same function, so a write the orchestrator
 /// refuses is not first put to a person.
 pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
-    let mut git = tokio::process::Command::new("git");
-    git.args(trellis_vcs::OVERRIDES)
-        .args(["check-ignore", "-q", "--no-index", "--"])
+    // Overrides and key scrub come with the constructor.
+    let mut git = tokio::process::Command::from(trellis_vcs::command());
+    git.args(["check-ignore", "-q", "--no-index", "--"])
         .arg(rel)
         .current_dir(root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    trellis_core::secrets::scrub(git.as_std_mut());
     let status = git.status().await;
     match status.as_ref().map(|s| s.code()) {
         Ok(Some(1)) => None,

@@ -174,11 +174,28 @@ const NO_HOOKS: &str = "core.hooksPath=NUL";
 const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
 /// `git` with [`OVERRIDES`], its environment scrubbed of keys.
+///
+/// Every `git` the workspace starts outside tests comes from here,
+/// [`command_with_hooks`] or [`git_argv`] (review round 10: `grep` and
+/// `find` started plain `git` and ran a planted `core.fsmonitor`).
+/// `every_git_spawn_goes_through_trellis_vcs` in `trellis-cli`'s
+/// `tests/hygiene.rs` fails on one that does not. For a tokio command,
+/// `tokio::process::Command::from(command())`.
 pub fn command() -> Command {
     let mut c = Command::new("git");
     c.args(OVERRIDES);
     trellis_core::secrets::scrub(&mut c);
     c
+}
+
+/// `git`, [`OVERRIDES`], then `args`, as an argv for a runner that takes
+/// one (`trellis-loop`'s `exec::run`, which scrubs keys itself).
+pub fn git_argv(args: &[&str]) -> Vec<String> {
+    std::iter::once("git")
+        .chain(OVERRIDES)
+        .chain(args.iter().copied())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `git` with `core.fsmonitor` off and the hooks left alone: for the

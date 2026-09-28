@@ -624,7 +624,7 @@ fn git_snapshot(root: &Path, r: &GitRef) -> Result<String, String> {
         GitRef::Diff => &["diff", "--stat"],
         GitRef::Status => &["status", "--porcelain"],
     };
-    let out = chat::scrub_keys(&mut std::process::Command::new("git"))
+    let out = chat::git_command()
         .args(args)
         .current_dir(root)
         .output()

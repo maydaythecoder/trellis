@@ -24,3 +24,24 @@ pub fn scrub_keys(cmd: &mut std::process::Command) -> &mut std::process::Command
     cmd.env_remove("OPENAI_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
 }
+
+/// `git` with a planted `core.fsmonitor` and hooks turned off, keys
+/// removed: this crate's copy of `trellis_vcs::command`, for the reason
+/// `scrub_keys` is a copy (it depends on nothing in the workspace). The
+/// `-c` values are `trellis_vcs::OVERRIDES`; the workspace's source scan
+/// (`every_git_spawn_goes_through_trellis_vcs`) allows this one site.
+pub fn git_command() -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    c.args([
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        if cfg!(windows) {
+            "core.hooksPath=NUL"
+        } else {
+            "core.hooksPath=/dev/null"
+        },
+    ]);
+    scrub_keys(&mut c);
+    c
+}
