@@ -240,16 +240,20 @@ impl Tz {
         let (h, m) = t[1..]
             .split_once(':')
             .ok_or_else(|| format!("timezone `{t}`: write the offset as `+HH:MM`"))?;
-        // Digits only: `i32::parse` takes a sign of its own, and read
-        // `+-05:00` as -05:00 and `+05:-30` as +04:30.
+        // Exactly two ASCII digits per field, checked on the input and not
+        // on the parsed value: `i32::parse` takes a sign of its own (and
+        // read `+-05:00` as -05:00), and a width test on the value let
+        // `+05:5` and `+005:00` through as forms nobody wrote down.
         let digits = |f: &str, what: &str| -> Result<i32, String> {
-            if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(format!("timezone `{t}`: bad {what}"));
+            if f.len() != 2 || !f.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!(
+                    "timezone `{t}`: bad {what}; write the offset as `+HH:MM`"
+                ));
             }
             f.parse().map_err(|_| format!("timezone `{t}`: bad {what}"))
         };
         let (h, m) = (digits(h, "hours")?, digits(m, "minutes")?);
-        if h > 14 || m > 59 || h.to_string().len() > 2 {
+        if h > 14 || m > 59 {
             return Err(format!("timezone `{t}`: offset out of range"));
         }
         Ok(Tz::Fixed(sign * (h * 3600 + m * 60)))
@@ -409,7 +413,18 @@ mod tests {
             assert!(Tz::parse(bad).is_err(), "`{bad}` was accepted");
         }
         assert_eq!(Tz::parse("+05:30").unwrap(), Tz::Fixed(5 * 3600 + 30 * 60));
-        assert_eq!(Tz::parse("-5:00").unwrap(), Tz::Fixed(-5 * 3600));
+        assert_eq!(Tz::parse("-05:00").unwrap(), Tz::Fixed(-5 * 3600));
+    }
+
+    #[test]
+    fn an_offset_field_that_is_not_exactly_two_digits_is_refused() {
+        // The width check tested the parsed value, so `+05:5` read as
+        // +05:05 and `+005:00` as +05:00: a form nobody documents,
+        // accepted by accident rather than by rule. `+HH:MM` or nothing.
+        for bad in ["+05:5", "+005:00", "+5:00", "-05:030", "+05:", "+:30"] {
+            assert!(Tz::parse(bad).is_err(), "`{bad}` was accepted");
+        }
+        assert_eq!(Tz::parse("-05:00").unwrap(), Tz::Fixed(-5 * 3600));
     }
 
     #[test]

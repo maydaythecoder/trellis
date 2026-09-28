@@ -401,7 +401,9 @@ that bundle one pin the tz data to whenever they were built. A fixed offset
 does not follow daylight saving time, so a routine that should fire at 09:00
 Amsterdam time is written `+01:00` in winter and `+02:00` in summer, or it is
 written in UTC. `Europe/Amsterdam` is refused with that explanation. It is
-not treated as UTC.
+not treated as UTC. An offset is exactly `+HH:MM` or `-HH:MM`, two digits in
+each field, checked on the text rather than on the parsed number: `-5:00`,
+`+05:5` and `+005:00` are refused rather than read as something close.
 
 **Firing.** `work` evaluates routines on every tick before claiming. The
 state of each routine is stored at `<git-dir>/trellis/routines/<name>.json`,
