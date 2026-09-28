@@ -191,7 +191,18 @@ pub(crate) fn replace<T: Serialize>(path: &Path, t: &T) -> Result<(), QueueError
         )));
     }
     remove(path)?;
-    patiently(|| link(&next, path)).map_err(io(path))?;
+    // The one step after which the caller's error and the disk disagree:
+    // the new content is the record already, so the error says so.
+    patiently(|| link(&next, path)).map_err(|e| {
+        io(path)(std::io::Error::new(
+            e.kind(),
+            format!(
+                "{e}; the new content is complete at {}, readers see it, and the next \
+                 change to this file puts it in place",
+                next.display()
+            ),
+        ))
+    })?;
     remove(&next)
 }
 

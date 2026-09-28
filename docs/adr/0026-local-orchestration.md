@@ -150,7 +150,9 @@ Every rewrite goes through one of three paths. None of them renames a file.
   that find the name missing read the side copy, `queue list` shows it, and
   the next holder of the lock finishes the swap. If the side copy exists
   while the old file is still there, the edit never took effect and the
-  side copy is discarded. The lock is taken by every mutation of a finished
+  side copy is discarded. If linking the side copy into place fails, the
+  caller gets an error, but the edit has already taken effect. The error
+  says so and names the side copy. The lock is taken by every mutation of a finished
   task: `queue set`, `queue note`, `queue requeue`, and the removal done by
   `import --on-conflict replace`. Before this, only `edit` took the lock, so a requeue
   that ran during an edit moved the task to `pending/`, and the edit then

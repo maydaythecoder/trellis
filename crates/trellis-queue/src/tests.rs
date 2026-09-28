@@ -854,6 +854,13 @@ fn an_edit_of_a_finished_task_that_fails_midway_never_loses_it() {
         if r.is_ok() {
             assert_eq!(t.labels, vec!["flaky"], "link {n}");
         }
+        if n == 3 {
+            // The swap failed after the old copy went: the edit is the
+            // record already, and the error must not say it was lost.
+            let e = r.as_ref().unwrap_err().to_string();
+            assert!(e.contains("the new content is complete at"), "{e}");
+            assert_eq!(t.labels, vec!["flaky"], "readers see the new content");
+        }
         let l = q.list().unwrap();
         assert_eq!(l.iter().filter(|e| e.id == a).count(), 1, "link {n}: {l:?}");
         assert!(l.iter().all(|e| e.task.is_ok()), "link {n}: {l:?}");

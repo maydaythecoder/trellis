@@ -246,7 +246,12 @@ anyone being asked. Now the digest also covers:
   `only_what_trellis_writes_is_left_out_of_the_dot_trellis_digest`,
   `a_symlinked_directory_under_dot_trellis_is_followed` and
   `a_symlink_under_dot_trellis_that_leaves_the_repository_refuses_trust`
-  in `crates/trellis-loop/src/trust.rs`.
+  in `crates/trellis-loop/src/trust.rs`. The `.trellis/` item's shown
+  text changed with this amendment, and that text is part of the digest.
+  So **every trust recorded before it no longer matches**, and each
+  repository needs `trellis trust` run again. That was unavoidable: the
+  set of files covered changed too, since a `.gitignore` trellis wrote used
+  to be hashed.
 - **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
   split on whitespace and shell punctuation, and every token that is a
   regular file in the repository is hashed like an argv path.
