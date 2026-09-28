@@ -131,10 +131,17 @@ pub(crate) fn read_repo_text(root: &Path, path: &Path) -> Result<Option<String>>
 /// The candidates in one directory. `AGENTS.override.md` replaces the other
 /// two in its own directory only, as in pi.
 fn in_dir(dir: &Path, place: &str, short_prefix: &str) -> Vec<Candidate> {
+    // The repository's links are judged by name; the user directory keeps
+    // `is_file()`, so a stale link in the user's own configuration is passed
+    // over as before rather than stopping every run in every repository.
+    let repo = short_prefix.is_empty();
     let present: Vec<&str> = NAMES
         .iter()
         .copied()
-        .filter(|n| present_entry(&dir.join(n)))
+        .filter(|n| {
+            let p = dir.join(n);
+            if repo { present_entry(&p) } else { p.is_file() }
+        })
         .collect();
     let chosen: Vec<&str> = if present.contains(&NAMES[0]) {
         vec![NAMES[0]]
@@ -147,7 +154,7 @@ fn in_dir(dir: &Path, place: &str, short_prefix: &str) -> Vec<Candidate> {
             path: dir.join(n),
             label: format!("`{n}` ({place})"),
             short: format!("{short_prefix}{n}"),
-            repo: short_prefix.is_empty(),
+            repo,
         })
         .collect()
 }
@@ -552,6 +559,20 @@ mod tests {
         assert!(link(Path::new("docs"), &d.path().join("CLAUDE.md")));
         let e = format!("{:#}", load(d.path(), None, true, &[], &[]).unwrap_err());
         assert!(e.contains("CLAUDE.md") && e.contains("not a file"), "{e}");
+    }
+
+    #[test]
+    fn a_dangling_link_in_the_user_directory_is_passed_over_as_before() {
+        // The repository rule is for what a repository supplies; a stale
+        // link in the user's own directory must not stop every run.
+        let d = dir();
+        let user = tempfile::tempdir().unwrap();
+        if !link(Path::new("gone.md"), &user.path().join("AGENTS.md")) {
+            return;
+        }
+        std::fs::write(d.path().join("CLAUDE.md"), "repo").unwrap();
+        let l = load(d.path(), Some(user.path()), true, &[], &[]).unwrap();
+        assert_eq!(l.extra.files.len(), 1);
     }
 
     #[test]

@@ -154,6 +154,17 @@ git lists and not only what is shown. Evidence:
 `crates/trellis-loop/src/listing.rs` (with a small cap through
 `find_capped`), which returned the cut subset before the change.
 
+*Amended after the sixth review:* keeping that tail cost more than the
+list. Each read past the cap moved every kept byte to drop the oldest, so
+192 MiB of output through the 64 MiB cap took over 10 s, and a large
+repository's list ran into the listing timeout instead of the refusal. The
+capture is now a ring, which drops from the front without moving what
+stays, and `find` asks for its output whole or not at all: past the cap
+nothing more is stored and only the count goes on
+(`a_stream_far_past_a_large_cap_is_read_in_linear_time`, about 0.3 s
+after; `find_far_past_the_cap_is_refused_with_the_true_size_not_timed_out`
+is a guard at a size a test can build).
+
 ### 3. `bash`, off by default
 
 `[tools] bash = true` enables `bash {command}`. It runs with the repository

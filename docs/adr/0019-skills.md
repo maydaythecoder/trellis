@@ -100,3 +100,10 @@ Decisions the text above left open, made when this was implemented.
 - **Test fixture.** `crates/trellis-loop/tests/fixtures/skills/rust-unsafe/`
   is copied unchanged from low-level-dev-skills at commit `bdc58472`, with its
   MIT licence beside it, and loads without modification.
+- *Amended after the sixth review of PR #1:* a repository skill's
+  `SKILL.md` (and its directory) is read only when its real path is inside
+  the repository and outside `.git`, and a skill directory that is a link
+  is now listed and judged rather than invisible to the listing while
+  readable by `read_skill`. User-level skills are not subject to it. The
+  rule and its tests are in ADR 0025, "A repository's prompt inputs are
+  its own files".
