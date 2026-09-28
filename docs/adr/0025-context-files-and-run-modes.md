@@ -284,6 +284,15 @@ on stderr.
   the letter of ADR 0010 §1, which allows a key in `.trellis/config.toml`.
   It matches `config.rs`'s own statement that a key never goes in a file
   trellis reads, and ADR 0021 row 2.5.
+- **`[[providers]]` is the user's where it matters** (*amended
+  2026-09-27*, ADR 0024 §3). Both lists apply, but on a name both files
+  define the **user's** entry wins, and only the user's file may set
+  `key_env`: a repository file that does is refused at load. The user's
+  `[model] spec` and `[[providers]]` are also kept after the merge
+  (`Provenance`), because whether a hosted endpoint is one the user chose
+  decides whether a key may be sent to it. Before this, a repository entry
+  won a name and could name any variable, which let a cloned repository
+  send the user's key (or any environment variable) to a host it chose.
 
 ## Not built (W-D rows of ADR 0021 outside this scope)
 

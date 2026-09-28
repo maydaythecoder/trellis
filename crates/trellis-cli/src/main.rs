@@ -467,7 +467,7 @@ fn main() -> Result<()> {
         let spec = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            return tui_run::run(&root, None, spec);
+            return tui_run::run(&root, None, spec, false);
         }
         return session::Session::open(&root, None)?.run();
     };
@@ -484,7 +484,7 @@ fn main() -> Result<()> {
             // that did not look.
             let configured = config::RepoConfig::load(&root).ok().and_then(|c| c.model());
             let spec = model.as_deref().map(str::to_string).or(configured);
-            cmd_doctor(&root, spec.as_deref())
+            cmd_doctor(&root, spec.as_deref(), model.is_some())
         }
         Command::Check { paths } => cmd_check(&root, paths),
         Command::Radius { symbol } => cmd_radius(&root, &symbol),
@@ -526,12 +526,16 @@ fn main() -> Result<()> {
                 }
                 None => task,
             };
-            let model = model
-                .or_else(|| config::RepoConfig::load(&root).ok()?.model())
-                .context(
+            let model_from_user = model.is_some();
+            // A config that fails to load says why, rather than reading as
+            // "no model": the refusal may be the point (ADR 0024 §3).
+            let model = match model {
+                Some(m) => m,
+                None => config::RepoConfig::load(&root)?.model().context(
                     "no model. Pass --model, or set [model] spec in \
                      .trellis/config.toml",
-                )?;
+                )?,
+            };
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
                 (_, true) => Some(config::ControlMode::Auto),
@@ -546,6 +550,7 @@ fn main() -> Result<()> {
                     resume,
                     focus: focus.as_deref(),
                     profile: None,
+                    model_from_user,
                 },
                 RunControl {
                     flag,
@@ -567,8 +572,9 @@ fn main() -> Result<()> {
         Command::Session => session::Session::open(&root, None)?.run(),
         Command::Init => cmd_init(&root),
         Command::Tui { task, model } => {
+            let from_user = model.is_some();
             let spec = model.or_else(|| config::RepoConfig::load(&root).ok()?.model());
-            tui_run::run(&root, task, spec)
+            tui_run::run(&root, task, spec, from_user)
         }
         Command::Resume => cmd_resume(&root),
         Command::Log { limit, .. } if output::json() => {
@@ -1132,8 +1138,9 @@ impl Driver {
         unconstrained: bool,
         tools: &trellis_loop::ToolSet,
         cfg: &config::RepoConfig,
+        from_user: bool,
     ) -> Result<Self> {
-        if let Some(r) = hosted::resolve(spec, cfg)? {
+        if let Some(r) = hosted::resolve(spec, cfg, from_user)? {
             if unconstrained {
                 anyhow::bail!(
                     "--unconstrained is meaningless for a hosted model: it calls tools \
@@ -1234,6 +1241,12 @@ struct RunSeeding<'a> {
     /// list and skill filter apply to this run, and the trail records its
     /// name. `None` for every caller but `work`.
     profile: Option<&'a trellis_queue::profile::Profile>,
+    /// Whether a person chose the model spec for this run (`--model`,
+    /// `/model`, an RPC request) rather than the repository (`[model] spec`,
+    /// an agent profile). A hosted endpoint the repository chose must be on
+    /// the user's allowlist before a key is sent to it (ADR 0024 §3).
+    /// `false` by default, which is the stricter reading.
+    model_from_user: bool,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -1419,6 +1432,7 @@ fn run_body(
         resume,
         focus,
         profile,
+        model_from_user,
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -1503,7 +1517,7 @@ fn run_body(
         _ => None,
     };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
-    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools, &cfg)?;
+    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools, &cfg, model_from_user)?;
 
     // Reachability before the snapshot, and the ordering is the whole point.
     //
@@ -1573,7 +1587,7 @@ fn run_body(
             // Not a warning and not a failure. The loop already validates and
             // retries; what was wrong was the claim, so the fix is to report
             // the tier that is actually running.
-            driver = Driver::build(&spec, true, &tooling.tools, &cfg)?;
+            driver = Driver::build(&spec, true, &tooling.tools, &cfg, model_from_user)?;
         }
         schema_note = Some(note);
     }
@@ -3166,7 +3180,7 @@ fn truncate_module(m: &str, width: usize) -> String {
         .collect()
 }
 
-fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
+fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
     let repo_cfg = config::RepoConfig::load(root)?;
@@ -3184,7 +3198,7 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
         // Tier 1 is the protocol, not a probe finding (ADR 0024 §2).
-        if let Some(h) = hosted::resolve(&spec, &repo_cfg)? {
+        if let Some(h) = hosted::resolve(&spec, &repo_cfg, from_user)? {
             let (m, r, n) = hosted::doctor(&h);
             model_id = m;
             runtime = r;
