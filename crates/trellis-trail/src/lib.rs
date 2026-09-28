@@ -62,6 +62,16 @@ pub struct Factual {
     /// both.
     #[serde(default)]
     pub actions: Vec<Action>,
+    /// Where the control dial stood for this run (ADR 0018): `auto`, or
+    /// `approve (<tools>)`.
+    ///
+    /// Hands-off and fine-grained runs go through the same loop, checks and
+    /// trail, and the only difference is which gates were installed — so
+    /// without this a reader cannot tell which kind of run they hold. Omitted
+    /// when unknown, so a trail written before the dial existed keeps its
+    /// shape and its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<String>,
 }
 
 /// One thing the agent did, and what came back.
@@ -75,8 +85,14 @@ pub struct Action {
     /// 1-based, matching the turn numbering a run prints.
     pub turn: u32,
     /// The tool, as the model named it: `blast_radius`, `read_file`, `edit`,
-    /// `run_checks`.
+    /// `run_checks`, `read_skill`.
+    ///
+    /// Or `approval`: a person's answer in approve mode (ADR 0018), recorded
+    /// just before the call it decided, under the same turn, with `outcome`
+    /// `approved` or `declined`. A human decision is a fact about the run
+    /// like any other, and a declined edit must be findable afterwards.
     pub tool: String,
+
     /// What it was aimed at — a path, a symbol, the checks requested. Empty
     /// when the call named nothing, which `run_checks` with no paths does.
     pub target: String,
@@ -395,7 +411,9 @@ mod tests {
                         wrote: false,
                     },
                 ],
+                control: None,
             },
+
             factual_sha256: String::new(),
             judgment: Judgment {
                 tech_debt_projection: Some("the adapter shim will need removing".into()),

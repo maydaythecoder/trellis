@@ -179,6 +179,52 @@ fn lost_run_report(join: &tokio::task::JoinError) -> Vec<Message> {
     ]
 }
 
+/// Carries each approval question to the modal and its answer back.
+///
+/// A question whose answer never comes — the interface quit, the channel
+/// closed — is dropped, and a dropped reply is a no to the gate. Nothing here
+/// can turn silence into a yes.
+async fn relay_approvals(
+    mut questions: tokio::sync::mpsc::Receiver<trellis_loop::ApprovalRequest>,
+    mut answers: tokio::sync::mpsc::Receiver<bool>,
+    screen: Sender<Message>,
+) {
+    while let Some(req) = questions.recv().await {
+        // Answers left over from a modal the mock or a stale key raised
+        // belong to no question, and must not answer this one.
+        while answers.try_recv().is_ok() {}
+        let text = if req.detail.is_empty() {
+            format!("{}?", req.question)
+        } else {
+            format!(
+                "{}
+{}?",
+                req.detail.trim_end(),
+                req.question
+            )
+        };
+        if screen
+            .send(Message::ApprovalRequested { diff: text })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Some(yes) = answers.recv().await else {
+            return;
+        };
+        let _ = screen
+            .send(Message::AgentToken(format!(
+                "· {} {}
+",
+                req.question,
+                if yes { "approved" } else { "declined" }
+            )))
+            .await;
+        let _ = req.reply.send(yes);
+    }
+}
+
 pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>) -> Result<()> {
     // Refused rather than attempted when there is no terminal to drive.
     // `EventStream` waits on console input, which never arrives from a pipe,
@@ -225,6 +271,14 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         // unbounded channel turns that into memory growth.
         let (tx, rx) = tokio::sync::mpsc::channel(256);
         let (task_tx, mut task_rx) = tokio::sync::mpsc::channel::<String>(8);
+
+        // Approve mode (ADR 0018). The run's approval gate asks here; the
+        // question becomes `Modal::Approval`, and the key pressed on it comes
+        // back on `answer_rx` and is sent to the gate's `oneshot`. One
+        // question at a time, because the gate waits for each answer.
+        let (approve_tx, approve_rx) = tokio::sync::mpsc::channel(1);
+        let (answer_tx, answer_rx) = tokio::sync::mpsc::channel::<bool>(1);
+        tokio::spawn(relay_approvals(approve_rx, answer_rx, tx.clone()));
 
         // One driver, serving every task the user types. It owns the
         // subscriber install and the worker thread so the interface does
@@ -339,6 +393,7 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
 
                     let (root, spec) = (root.clone(), spec.clone());
                     let (run_tx, lost_tx) = (tx.clone(), tx.clone());
+                    let approvals = approve_tx.clone();
                     // `spawn_blocking`, because `cmd_run` blocks on its own
                     // runtime and must not sit on a worker of this one.
                     let joined = tokio::task::spawn_blocking(move || {
@@ -354,8 +409,13 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                                 &task,
                                 &spec,
                                 false,
-                                "1",
                                 crate::RunSeeding::default(),
+                                // `[control] mode` applies. In auto mode no
+                                // gate is installed and nothing is asked.
+                                crate::RunControl {
+                                    flag: None,
+                                    human: crate::Human::Channel(approvals),
+                                },
                                 &mut narration,
                             )
                         });
@@ -388,7 +448,9 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         }
 
         let mut terminal = tui::terminal::init();
-        let result = tui::events::run(&mut terminal, &mut state, rx, task_tx).await;
+        let result =
+            tui::events::run_with_answers(&mut terminal, &mut state, rx, task_tx, Some(answer_tx))
+                .await;
         tui::terminal::restore();
 
         // Aborted after the terminal is handed back, so a panic inside a run
@@ -607,5 +669,68 @@ mod tests {
             let state = screen(outcome);
             assert!(!state.running, "input stayed held after a run ended");
         }
+    }
+
+    #[tokio::test]
+    async fn an_approval_question_becomes_the_modal_and_its_key_goes_back() {
+        // ADR 0018: the modal used to be driven only by the mock. Here the
+        // question comes from the gate's channel and the answer returns on
+        // the gate's `oneshot`.
+        let (q_tx, q_rx) = tokio::sync::mpsc::channel(1);
+        let (a_tx, a_rx) = tokio::sync::mpsc::channel(1);
+        let (screen_tx, mut screen_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(relay_approvals(q_rx, a_rx, screen_tx));
+
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        q_tx.send(trellis_loop::ApprovalRequest {
+            question: "edit a.py (+1 -1)".into(),
+            detail: "- x\n+ y\n".into(),
+            reply,
+        })
+        .await
+        .unwrap();
+
+        let mut state = AppState::default();
+        state.update(screen_rx.recv().await.unwrap());
+        match &state.modal {
+            Some(tui_demo::tui::app::Modal::Approval { diff }) => {
+                assert!(
+                    diff.contains("- x") && diff.contains("edit a.py (+1 -1)?"),
+                    "{diff}"
+                );
+            }
+            other => panic!("expected the approval modal, got {other:?}"),
+        }
+        // The key itself becomes `answered` in `AppState::update` and is sent
+        // by the event loop; both are tested in `tui-demo`. This is the
+        // relay's half: the answer reaches the gate.
+        a_tx.send(false).await.unwrap();
+        assert!(!answer.await.unwrap(), "n is a no");
+        let said = screen_rx.recv().await.unwrap();
+        assert!(
+            matches!(&said, Message::AgentToken(t) if t.contains("edit a.py (+1 -1) declined")),
+            "the decision is also left in the transcript: {said:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interface_that_goes_away_mid_question_has_not_said_yes() {
+        let (q_tx, q_rx) = tokio::sync::mpsc::channel(1);
+        let (a_tx, a_rx) = tokio::sync::mpsc::channel::<bool>(1);
+        let (screen_tx, _screen_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(relay_approvals(q_rx, a_rx, screen_tx));
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        q_tx.send(trellis_loop::ApprovalRequest {
+            question: "edit a.py (+1 -1)".into(),
+            detail: String::new(),
+            reply,
+        })
+        .await
+        .unwrap();
+        drop(a_tx);
+        assert!(
+            answer.await.is_err(),
+            "the reply is dropped, which the gate reads as a no"
+        );
     }
 }

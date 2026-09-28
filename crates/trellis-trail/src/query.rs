@@ -110,6 +110,13 @@ pub struct Mention {
     /// query — evidence, as opposed to the task string merely naming it.
     pub touched_file: Option<String>,
     pub task_mentions: bool,
+    /// A person's decisions in approve mode about calls aimed at the query,
+    /// as `(target, outcome)`: `("edit app/x.py", "declined")`.
+    ///
+    /// A declined edit never reaches `proposed`, so without this `why` could
+    /// not find the run in which someone refused exactly the change being
+    /// asked about (ADR 0018).
+    pub decisions: Vec<(String, String)>,
 }
 
 /// As [`mentions`], but any of several needles counts.
@@ -138,10 +145,23 @@ pub fn mentions_any(entries: &[Entry], queries: &[String]) -> Vec<Mention> {
                 let lt = e.trail.task.to_ascii_lowercase();
                 needles.iter().any(|n| lt.contains(n.as_str()))
             };
-            (touched.is_some() || in_task).then_some(Mention {
+            let decisions: Vec<(String, String)> = e
+                .trail
+                .factual
+                .actions
+                .iter()
+                .filter(|a| a.tool == "approval")
+                .filter(|a| {
+                    let lt = a.target.to_ascii_lowercase();
+                    needles.iter().any(|n| lt.contains(n.as_str()))
+                })
+                .map(|a| (a.target.clone(), a.outcome.clone()))
+                .collect();
+            (touched.is_some() || in_task || !decisions.is_empty()).then_some(Mention {
                 entry_index: i,
                 touched_file: touched,
                 task_mentions: in_task,
+                decisions,
             })
         })
         .collect()
@@ -165,6 +185,7 @@ pub fn mentions(entries: &[Entry], query: &str) -> Vec<Mention> {
                 entry_index: i,
                 touched_file: touched,
                 task_mentions: in_task,
+                decisions: Vec::new(),
             })
         })
         .collect()
@@ -381,6 +402,7 @@ mod tests {
             mode_counts: crate::ModeCounts::default(),
             context: None,
             actions: Vec::new(),
+            control: None,
         };
         let digest = crate::Trail::compute_factual_sha256(&factual);
         let factual_json = serde_json::to_string(&factual).unwrap();
@@ -413,6 +435,30 @@ mod tests {
             by_id("bad").integrity,
             crate::Integrity::Altered,
             "an edited check outcome must be visible in the listing"
+        );
+    }
+
+    #[test]
+    fn a_declined_edit_is_found_although_it_changed_nothing() {
+        // ADR 0018: a declined edit never reaches `proposed`, and the task
+        // may not name the file. The person's decision is the record.
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260927-000000-000-declined.json",
+            r#"{"task":"tidy things","factual":{"proposed":[],
+               "actions":[
+                 {"turn":1,"tool":"approval","target":"edit app/calc.py","outcome":"declined","wrote":false},
+                 {"turn":1,"tool":"edit","target":"app/calc.py","outcome":"error: declined by the user","wrote":false}
+               ]}}"#,
+        );
+        let entries = all(d.path());
+        let found = mentions_any(&entries, &["app/calc.py".to_string()]);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].touched_file.is_none());
+        assert_eq!(
+            found[0].decisions,
+            vec![("edit app/calc.py".to_string(), "declined".to_string())]
         );
     }
 }

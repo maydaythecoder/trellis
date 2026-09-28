@@ -128,3 +128,43 @@ is worse than no hook. Until a trust mechanism exists and has its own ADR,
   mode.
 - The trail records each human decision (`approved` or `declined`) as a factual
   action, so a declined edit is visible in `trellis why`.
+
+## As built
+
+Decisions the text above left open, made when this was implemented. Each is
+tested; the test names are in `docs/STATUS.md`.
+
+- **The mode is recorded** as `factual.control` in the trail: `auto`, or
+  `approve (<tools>)`. The field is omitted when unknown, so older trails keep
+  their shape and their digest.
+- **A decision is an action.** Each answer is an `Action` with tool
+  `approval`, target `<tool> <target>`, outcome `approved` or `declined`,
+  recorded under the same turn and just before the call it decided.
+  `trellis why <path>` lists decisions about calls aimed at that path, since a
+  declined edit never reaches `proposed`.
+- **An edit the orchestrator would refuse is not put to the human.** When the
+  file is missing, the anchor is absent or ambiguous, or `old == new`, the
+  approval gate allows the call and `apply_edit` refuses it in its usual
+  words. Such an edit cannot change the tree, and asking someone to approve a
+  refusal spends their attention on nothing. The diff is computed the way
+  `apply_edit` matches, on LF, so a CRLF checkout previews the edit that then
+  applies.
+- **Only an explicit yes counts.** `y` or `yes`, any case. An empty line,
+  anything else, end of input, a dropped reply channel, or an interface that
+  quit mid-question is a no.
+- **Time spent waiting on a person is not charged to the wall-clock budget.**
+  That ceiling bounds compute and a model's wandering; a diff read carefully
+  should not be what ends a run.
+- **The terminal answer is read on tokio's blocking pool**, so Ctrl-C while
+  a question is open still interrupts and rolls back the run.
+- **`trellis session` asks on the line** when its stdin is a terminal, and
+  refuses a task in approve mode with the same message when it is not. The
+  message says `pass --auto`, which is a `trellis run` flag; in a session the
+  way out is `[control] mode = "auto"`.
+- **`trellis tui` is wired.** The gate's question becomes `Modal::Approval`
+  with the diff and the question line; `y` or `n` on the modal goes back on
+  the request's `oneshot`. The modal's key handling was already there; what
+  is new is `AppState::answered` and `events::run_with_answers`, which carry
+  the key out of the pure state transition to the gate. The interface always
+  has a human, so it never takes the no-terminal refusal.
+- **`trellis doctor`** prints the configured mode, or the configuration error.
