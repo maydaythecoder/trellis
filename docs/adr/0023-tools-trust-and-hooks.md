@@ -74,6 +74,20 @@ binds; the others keep the model from asking.
 All paths go through the orchestrator's existing `resolve_in_repo` rule:
 relative, no `..`, no absolute paths.
 
+*Amended 2026-09-27: the rule is on the string, not on `is_absolute()`.*
+On Windows `/x` and `\x` are rooted without being absolute and `C:x` is
+relative to drive C's current directory, so all three passed and
+`root.join` left the repository. `unsafe_repo_path` now refuses, on every
+platform: a leading `/` or `\` (rooted, UNC, `\\?\`); any `:` (a drive
+prefix, and on NTFS an alternate data stream, which git cannot see and a
+rollback cannot remove; it also rules out git pathspec magic in `find`);
+any component made only of dots and spaces other than `.`, compared after
+the trailing dots and spaces Windows strips (`..`, `.. `, `...`); and any
+`RootDir`, `Prefix` or `ParentDir` component as the host parses it.
+Components split on both separators. The approval gate uses the same
+function for the calls it lets through unasked and for the edit preview,
+which read outside the repository on Windows before.
+
 - `grep {pattern, path?}` shells out to `git grep -n -I --untracked -e
   <pattern> -- <path>`. No regex crate: git's own matcher, over tracked and
   untracked files, skipping ignored ones and binaries.
