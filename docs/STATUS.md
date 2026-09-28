@@ -1705,6 +1705,39 @@ name the test that would fail if it were reverted.
 
 ## Recently closed
 
+- **Tool gate and control dial (ADR 0018).** The orchestrator consults an
+  ordered gate list before every model-originated call; governance
+  `deny_write` is the first gate, and the existing governance tests pass
+  unmodified. `[control] mode = "auto" | "approve"`, `approve = [tools]`
+  (default `edit`), and `trellis run --approve / --auto`. In approve mode
+  `trellis run` and `trellis session` ask on the line with the diff first
+  (`edit a.py (+1 -1)? [y/N]`), `trellis tui` shows `Modal::Approval` wired
+  to the gate, and with no terminal a run refuses before the snapshot. The
+  trail records the mode and each decision; `trellis why` finds a declined
+  edit by its path. Tested: first `Deny` wins and later gates are not asked;
+  governance runs before any other gate; a gate that allows everything, or
+  refuses checks, cannot make a run converge; no gate can refuse the
+  convergence audit; time waiting on a person is not charged to the
+  wall-clock budget; declined, approved and end-of-input answers through
+  `cmd_run` with the trail read back; the TUI channel path through `cmd_run`
+  and the modal relay; the no-terminal refusal from the real binary for
+  `run` and `session`. Not tested: a person at a real terminal or the
+  full-screen interface — both are exercised through the same channel with
+  the answer supplied by the test — and Ctrl-C while a question is open.
+  Executable hooks are not built (ADR 0018 §3).
+- **Skills (ADR 0019).** `.trellis/skills/<name>/SKILL.md` is discovered,
+  names and descriptions are listed inside the repository fence under a
+  reference-material heading, capped at 4,096 bytes with the omitted count on
+  the `repo:` line, and `read_skill` returns a body as a labelled
+  observation. `trellis doctor` reports found, listed, omitted and invalid,
+  with a reason per skipped skill. Tested: a real skill from
+  low-level-dev-skills loads unchanged; each kind of invalid skill is skipped
+  with its reason; the cap counts rather than drops; a name cannot leave the
+  skills directory; `read_skill` round-trips through the scripted model; the
+  schema includes it; a skill cannot make a run converge. Not measured:
+  whether any model reads a skill when one applies, or does better for it.
+  Known limit: the prompt keeps the last 2,000 characters of an observation,
+  so a long skill body is mostly cut; not changed here.
 - **Vault context (ADR 0017).** `trellis-vault` validates an Apex-format
   vault and compiles one focus note; `trellis run` reads `[context] vault`
   and `focus`, or `--focus <stem>`, compiles in memory before the snapshot,
