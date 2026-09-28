@@ -79,6 +79,40 @@ jobs:
           cargo build --release -p trellis-cli
           bash docs/bench/interrupt_test.sh "$PWD/target/release/trellis"
 
+  # Supply chain: licences, bans, sources and advisories against `deny.toml`,
+  # then the RustSec database again through cargo-audit. Its own job so a new
+  # advisory reads as a supply-chain failure, not as a broken build.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Caches ~/.cargo/bin, so the pinned tools are not recompiled per run.
+      - uses: Swatinem/rust-cache@v2
+
+      # Pinned so a new tool release cannot change what passes: these are the
+      # versions the checks were last run with locally. RUSTFLAGS is cleared
+      # for this step only: the workflow-wide `-D warnings` is for trellis's
+      # code, and applying it to the tools' dependency tree would fail the
+      # install on a lint in code this repository does not own.
+      - name: Install cargo-deny and cargo-audit (pinned)
+        env:
+          RUSTFLAGS: ""
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
+
+      # Fails on any advisory not listed, with its reason, in `deny.toml`.
+      - name: Licences, bans, sources, advisories
+        run: cargo deny check
+
+      # cargo-audit does not read `deny.toml`. It exits non-zero on a
+      # vulnerability and reports unmaintained crates as warnings, which is
+      # how RUSTSEC-2023-0089 (accepted in `deny.toml`) passes here without a
+      # second ignore list.
+      - name: RustSec advisories
+        run: cargo audit
+
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.
   index-invariants:
