@@ -34,10 +34,13 @@ enum Ended {
 /// before, whose trimmed lines lost the first character of a modified
 /// tracked file's path.)
 fn changed(root: &Path) -> Result<Vec<String>, String> {
-    let o = Command::new("git")
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    let mut git = Command::new("git");
+    git.args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(root)
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    // `git status` can run the repository's filters and fsmonitor.
+    trellis_core::secrets::scrub(&mut git);
+    let o = git
         .output()
         .map_err(|e| format!("git status could not run: {e}"))?;
     if !o.status.success() {
@@ -79,10 +82,12 @@ struct GitGuard {
 
 impl GitGuard {
     fn capture(root: &Path) -> Result<GitGuard, String> {
-        let o = Command::new("git")
-            .args(["rev-parse", "--git-path", "config", "--git-path", "hooks"])
+        let mut git = Command::new("git");
+        git.args(["rev-parse", "--git-path", "config", "--git-path", "hooks"])
             .current_dir(root)
-            .stdin(Stdio::null())
+            .stdin(Stdio::null());
+        trellis_core::secrets::scrub(&mut git);
+        let o = git
             .output()
             .map_err(|e| format!("git rev-parse could not run: {e}"))?;
         let text = String::from_utf8_lossy(&o.stdout);

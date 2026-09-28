@@ -117,14 +117,14 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    // Its own process group, so a timeout can kill what it started too
-    // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
-    #[cfg(unix)]
-    cmd.process_group(0);
     // After `envs`, so nothing in `spec.env` can put a key back. Every
     // `bash`, custom tool, hook and listing command is spawned here, and its
     // output is an observation the log and the trail both record.
     trellis_core::secrets::scrub(cmd.as_std_mut());
+    // Its own process group, so a timeout can kill what it started too
+    // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start `{program}`: {e}"))?;
@@ -219,6 +219,8 @@ async fn kill_tree(child: &mut tokio::process::Child) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        // `taskkill` and `kill` need no key, and are given none.
+        trellis_core::secrets::scrub(k.as_std_mut());
         if let Ok(mut k) = k.spawn() {
             let _ = tokio::time::timeout(Duration::from_secs(2), k.wait()).await;
         }
