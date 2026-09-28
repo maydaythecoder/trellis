@@ -2735,3 +2735,100 @@ fn doctor_names_each_skipped_skill_and_why() {
         "{said}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ignored files in a model run (ADR 0023 §5, ADR 0026 §11)
+// ---------------------------------------------------------------------------
+
+/// A repository whose `.gitignore` ignores `.venv/`, holding one ignored
+/// file already, with `bash` enabled and trusted in its own trust store.
+/// Returns the repository and a function running the binary against it.
+fn ignored_model_fixture(name: &str) -> (PathBuf, impl Fn(&[&str]) -> Output) {
+    let d = scratch(name);
+    let home = scratch(&format!("{name}-home"));
+    git(&d, &["init", "-q"]);
+    git(&d, &["config", "user.email", "t@example.invalid"]);
+    git(&d, &["config", "user.name", "t"]);
+    git(&d, &["config", "core.autocrlf", "false"]);
+    let (shell, flag, ok) = if cfg!(windows) {
+        ("cmd", "/C", r#"["cmd", "/C", "exit 0"]"#)
+    } else {
+        ("sh", "-c", r#"["sh", "-c", "exit 0"]"#)
+    };
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!(
+            "[checks]\ntypecheck = {ok}\ntests = {ok}\n\n\
+             [tools]\nbash = true\nbash_unattended = true\nshell = ['{shell}', '{flag}']\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(d.join(".gitignore"), ".venv/\n").unwrap();
+    std::fs::write(d.join("a.py"), "def f():\n    return 1\n").unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "fixture"]);
+    std::fs::create_dir_all(d.join(".venv")).unwrap();
+    std::fs::write(d.join(".venv/old.py"), "x = 1\n").unwrap();
+    let root = d.clone();
+    let run = move |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .arg("--root")
+            .arg(&root)
+            .args(args)
+            .current_dir(&root)
+            .env("NO_COLOR", "1")
+            .env("TRELLIS_CONFIG_DIR", home.join("trellis"))
+            .env("APPDATA", &home)
+            .env("XDG_CONFIG_HOME", &home)
+            .output()
+            .unwrap()
+    };
+    let t = run(&["trust"]);
+    assert!(t.status.success(), "trust: {}", combined(&t));
+    (d, run)
+}
+
+#[test]
+fn a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback() {
+    // The risk: `bash` in a model run writes `.venv/.../sitecustomize.py`,
+    // which git ignores; the run does not converge; the rollback's `git
+    // clean -fd` leaves ignored files, and the next check that starts the
+    // repository's Python runs it.
+    let (d, run) = ignored_model_fixture("model-ignored");
+    let cmd = if cfg!(windows) {
+        r"mkdir .venv\lib\site && echo import os > .venv\lib\site\sitecustomize.py && echo y = 2 >> .venv\old.py"
+    } else {
+        "mkdir -p .venv/lib/site && echo 'import os' > .venv/lib/site/sitecustomize.py && echo 'y = 2' >> .venv/old.py"
+    };
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("model-ignored-script-{}.json", std::process::id()));
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "bash", "command": cmd},
+            {"tool": "done", "summary": "wrote ignored files"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let out = run(&["run", "write ignored files", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(
+        !d.join(".venv/lib/site/sitecustomize.py").exists(),
+        "an ignored file the run created survived the rollback:\n{said}"
+    );
+    assert!(!d.join(".venv/lib").exists(), "{said}");
+    assert!(
+        d.join(".venv/old.py").exists(),
+        "a file that was there stays"
+    );
+    assert!(
+        said.contains("NOT put back") && said.contains(".venv/old.py"),
+        "a changed pre-existing ignored file is named:\n{said}"
+    );
+}
