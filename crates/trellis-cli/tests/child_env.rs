@@ -23,12 +23,33 @@ const MARKER: (&str, &str) = ("TRELLIS_TEST_VISIBLE", "visible-marker-61c0a2");
 /// Built-in names and two user-level providers' `key_env`s: every way a key
 /// reaches trellis's environment. (A repository may no longer name a
 /// `key_env` at all, ADR 0024 §3, so both custom names are the user's.)
-const KEYS: [(&str, &str); 4] = [
-    ("OPENAI_API_KEY", "canary-openai"),
-    ("ANTHROPIC_API_KEY", "canary-anthropic"),
-    ("TRELLIS_TEST_REPO_KEY", "canary-repo"),
-    ("TRELLIS_TEST_USER_KEY", "canary-user"),
-];
+///
+/// The values are built at run time rather than written here. They are
+/// canaries, not keys, but a key-shaped literal in source is exactly what a
+/// secret scanner flags, and GitGuardian did (PR #1). Unique per process, so
+/// a dump can only hold one because this test put it there.
+fn keys() -> &'static [(&'static str, &'static str)] {
+    static KEYS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "TRELLIS_TEST_REPO_KEY",
+            "TRELLIS_TEST_USER_KEY",
+        ]
+        .into_iter()
+        .map(|name| {
+            let value = format!(
+                "canary-{}-{}",
+                name.to_ascii_lowercase(),
+                std::process::id()
+            );
+            (name, &*Box::leak(value.into_boxed_str()))
+        })
+        .collect()
+    })
+}
 
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("trellis-childenv-{name}-{}", std::process::id()));
@@ -134,7 +155,7 @@ fn trellis(f: &Fixture, args: &[&str]) -> Output {
         .env("APPDATA", &f.home)
         .env("XDG_CONFIG_HOME", &f.home)
         .env(MARKER.0, MARKER.1);
-    for (k, v) in KEYS {
+    for &(k, v) in keys() {
         c.env(k, v);
     }
     c.output().expect("the binary is built before its tests")
@@ -231,7 +252,7 @@ fn checks_bash_custom_tools_and_hooks_inherit_no_key() {
     let said = combined(&out);
 
     for kind in ["check", "tests", "bash", "custom", "hook"] {
-        assert_scrubbed(kind, &dumps_of(d, kind), &KEYS, &said);
+        assert_scrubbed(kind, &dumps_of(d, kind), keys(), &said);
     }
 
     // The observation path too: the terminal and the trail hold no key.
@@ -249,7 +270,7 @@ fn checks_bash_custom_tools_and_hooks_inherit_no_key() {
         places.push((p.display().to_string(), read(p)));
     }
     for (name, text) in &places {
-        for (k, v) in KEYS {
+        for &(k, v) in keys() {
             assert!(!text.contains(v), "{name} contains {k}'s value");
         }
     }
@@ -295,10 +316,10 @@ fn a_process_agent_inherits_no_key_unless_its_profile_passes_that_one() {
     let out = trellis(&f, &["work"]);
     let said = combined(&out);
 
-    assert_scrubbed("process agent", &plain, &KEYS, &said);
+    assert_scrubbed("process agent", &plain, keys(), &said);
     // `pass_env` passes exactly what it names: the Anthropic key arrives,
     // and every other key is still removed.
-    let (named, rest) = KEYS.split_at(2);
+    let (named, rest) = keys().split_at(2);
     let (openai, anthropic) = (named[0], named[1]);
     assert!(
         read(&keyed).contains(anthropic.1),
