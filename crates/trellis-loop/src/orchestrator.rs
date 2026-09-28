@@ -576,7 +576,11 @@ impl Orchestrator {
                  change an existing one."
             ));
         }
-        let ignored = tokio::process::Command::new("git")
+        // `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on
+        // a fatal error. Only a 1 lets the write go ahead: a check that could
+        // not be made is not a "no", and reading it as one wrote files a
+        // rollback's `git clean` might never remove. Fail closed.
+        let status = tokio::process::Command::new("git")
             .args(["check-ignore", "-q", "--no-index", "--"])
             .arg(path)
             .current_dir(&self.root)
@@ -584,13 +588,27 @@ impl Orchestrator {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .await
-            .is_ok_and(|s| s.success());
-        if ignored {
-            return ToolResult::Error(format!(
-                "write_file refused: `{path}` is ignored by git, so a rollback could not \
-                 remove it. Choose a path git tracks."
-            ));
+            .await;
+        match status.as_ref().map(|s| s.code()) {
+            Ok(Some(1)) => {}
+            Ok(Some(0)) => {
+                return ToolResult::Error(format!(
+                    "write_file refused: `{path}` is ignored by git, so a rollback could not \
+                     remove it. Choose a path git tracks."
+                ));
+            }
+            other => {
+                let why = match other {
+                    Err(e) => format!("git could not be started: {e}"),
+                    Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
+                    Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
+                };
+                return ToolResult::Error(format!(
+                    "write_file refused: could not ask git whether `{path}` is ignored \
+                     ({why}), and a file git ignores would survive a rollback. Nothing \
+                     was written."
+                ));
+            }
         }
         if let Some(dir) = full.parent()
             && let Err(e) = std::fs::create_dir_all(dir)
