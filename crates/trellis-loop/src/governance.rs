@@ -55,13 +55,23 @@ impl Rule {
         }
     }
 
-    /// `path` is already [`fold`]ed; the rule is folded the same way here,
-    /// so a rule written `Vendor/` holds on Windows as `vendor/` does.
-    fn matches(&self, path: &str) -> bool {
+    /// The rule's pattern folded as a path is, so a rule written `Vendor/`
+    /// holds on Windows as `vendor/` does. Computed once, when the rules
+    /// are built ([`Governance::new`]), not at every comparison.
+    fn folded(&self) -> String {
         match self {
-            Rule::Prefix(p) => path.starts_with(fold(p).as_str()),
-            Rule::Suffix(s) => path.ends_with(fold_case(&s.replace('\\', "/")).as_str()),
-            Rule::Exact(e) => path == fold(e),
+            Rule::Prefix(p) => fold(p),
+            Rule::Suffix(s) => fold_case(&s.replace('\\', "/")),
+            Rule::Exact(e) => fold(e),
+        }
+    }
+
+    /// `path` is already [`fold`]ed, and `folded` is [`Self::folded`].
+    fn matches(&self, folded: &str, path: &str) -> bool {
+        match self {
+            Rule::Prefix(_) => path.starts_with(folded),
+            Rule::Suffix(_) => path.ends_with(folded),
+            Rule::Exact(_) => path == folded,
         }
     }
 
@@ -81,13 +91,15 @@ impl Rule {
 #[derive(Debug, Clone, Default)]
 pub struct Governance {
     deny_write: Vec<Rule>,
+    /// Each rule's [`Rule::folded`] pattern, in the same order.
+    folded: Vec<String>,
 }
 
 impl Governance {
     pub fn new(deny_write: &[String]) -> Self {
-        Self {
-            deny_write: deny_write.iter().map(|s| Rule::parse(s)).collect(),
-        }
+        let deny_write: Vec<Rule> = deny_write.iter().map(|s| Rule::parse(s)).collect();
+        let folded = deny_write.iter().map(Rule::folded).collect();
+        Self { deny_write, folded }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -108,7 +120,11 @@ impl Governance {
     /// resolves: every write path consults that one.
     pub fn denies_write(&self, path: &str) -> Option<&Rule> {
         let norm = fold(path);
-        self.deny_write.iter().find(|r| r.matches(&norm))
+        self.deny_write
+            .iter()
+            .zip(&self.folded)
+            .find(|(r, f)| r.matches(f, &norm))
+            .map(|(r, _)| r)
     }
 
     /// The rule forbidding a write to `rel` under `root`, if any: the
@@ -130,6 +146,8 @@ impl Governance {
 /// `Prefix` rule stays one, and each name [`fold_name`]d. `..` is left as
 /// it is: `unsafe_repo_path` refuses it before any write.
 fn fold(path: &str) -> String {
+    #[cfg(test)]
+    FOLDS.with(|c| c.set(c.get() + 1));
     let dir = path.ends_with(['/', '\\']);
     let mut s = path
         .split(['/', '\\'])
@@ -170,8 +188,27 @@ fn fold_case(s: &str) -> String {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Calls to `fold`, for the test that holds a lookup to one.
+    static FOLDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lookup_folds_the_path_once_and_no_rule_again() {
+        // The risk (review round 9, finding 9): each comparison folded the
+        // rule it compared with, so a lookup against `n` rules folded `n`
+        // strings that never change after parsing.
+        let g = Governance::new(&["vendor/".into(), "setup.py".into(), "*.lock".into()]);
+        FOLDS.with(|c| c.set(0));
+        for p in ["app/x.py", "vendor/y.py", "setup.py", "a.lock"] {
+            let _ = g.denies_write(p);
+        }
+        assert_eq!(FOLDS.with(std::cell::Cell::get), 4, "one fold per lookup");
+    }
 
     #[test]
     fn the_three_shapes_match_what_they_say() {
