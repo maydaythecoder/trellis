@@ -58,7 +58,12 @@ This ADR settles how each capability arrives without opening any of those.
   in `crates/trellis-loop/src/extra_context.rs` and
   `before_run_output_cannot_close_its_fence_through_a_unicode_line_break`
   in `crates/trellis-loop/src/hooks.rs`, both failed before on
-  `text\u{2028}--- end ...` (a second unindented marker).
+  `text\u{2028}--- end ...` (a second unindented marker). The cost, stated:
+  Cf includes U+200D (ZWJ) and U+200C (ZWNJ), so joined emoji reach the
+  model as separate ones, and a context file in a script where ZWNJ is
+  load-bearing (Persian, some Indic spellings) reaches it altered. A
+  narrower fix would ignore Cf only when testing a line for `---` and keep
+  the characters in the text; not taken in this round.
 - **Cap.** At most 16,384 bytes in total, measured on the file contents.
   Repository files are considered first, then user files, each in the order
   override, `AGENTS.md`, `CLAUDE.md`. A file that does not fit is left out

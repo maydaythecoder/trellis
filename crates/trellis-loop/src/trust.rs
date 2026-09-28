@@ -53,7 +53,9 @@ impl TrustItem {
     /// `["bash", "-lc", "python .trellis/hooks/gate.py"]` and `--file=x.py`
     /// cover their scripts. For a hook or custom tool, a file found this way
     /// outside `.trellis/` makes the fingerprint refused (`outside_code`,
-    /// review round 11). Code reached any other way — an import,
+    /// review round 11), as does any token that resolves, canonically, to
+    /// such a file even where this hashing does not take it (`..`, a
+    /// differently spelled absolute path; review round 12). Code reached any other way — an import,
     /// `python -m pkg.mod`, a file a script reads — is covered only if it
     /// lives under `.trellis/`, which [`Fingerprint`] hashes whole (ADR
     /// 0023 §4); keep hook and tool code in `.trellis/hooks/`.
@@ -1254,6 +1256,8 @@ mod tests {
                 refused(&rel_root, &["python", &abs]).is_some(),
                 "{rel_root:?}"
             );
+        } else {
+            eprintln!("skipped: the temporary directory and {cwd:?} share no root");
         }
 
         // Code under `.trellis/`, reached with or without `..`, is fine.
