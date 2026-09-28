@@ -318,24 +318,23 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
             _ => verbatim.push(f.to_string()),
         }
     }
-    let present: Vec<(&String, &String, bool)> = worktree
+    // (path, mode, exists, is a symlink), each looked at once: a second
+    // look could disagree with the first and misalign the hashed ids.
+    let present: Vec<(&String, &String, bool, bool)> = worktree
         .iter()
         .map(|(p, mode)| {
-            let exists = mode.as_str() != "000000" && root.join(p).symlink_metadata().is_ok();
-            (p, mode, exists)
+            let md = root.join(p).symlink_metadata();
+            let exists = mode.as_str() != "000000" && md.is_ok();
+            let link = md.is_ok_and(|m| m.file_type().is_symlink());
+            (p, mode, exists, link)
         })
         .collect();
     // A symlink is hashed as git stores it, by its link text: reading
     // through it fails on a directory or a dangling target, and hashes
     // bytes git would never commit for it.
-    let is_link = |p: &String| {
-        root.join(p)
-            .symlink_metadata()
-            .is_ok_and(|m| m.file_type().is_symlink())
-    };
     let to_hash: Vec<&String> = present
         .iter()
-        .filter(|x| x.2 && !is_link(x.0))
+        .filter(|x| x.2 && !x.3)
         .map(|x| x.0)
         .collect();
     if to_hash.iter().any(|p| p.contains('\n')) {
@@ -343,10 +342,10 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
     }
     let mut hashed = hash_without_writing(root, &to_hash)?.into_iter();
     let mut manifest = format!("head {head}\n");
-    for (path, mode, exists) in present {
+    for (path, mode, exists, link) in present {
         let head_entry = in_head.get(path).filter(|(m, _)| m.as_str() != "000000");
         if exists {
-            let blob = if is_link(path) {
+            let blob = if link {
                 hash_link(root, path)?
             } else {
                 hashed.next().unwrap_or_default()
