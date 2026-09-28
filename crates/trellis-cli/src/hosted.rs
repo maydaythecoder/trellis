@@ -31,7 +31,8 @@ pub(crate) struct Resolved {
 /// `[[providers]]` entry the repository defined, whoever named the entry.
 ///
 /// **A key goes only where the user chose to send it (ADR 0024 §3).** An
-/// endpoint the repository chose, not on this machine, is refused here —
+/// endpoint the repository chose — on this machine too, whenever the key's
+/// variable is set — is refused here —
 /// before any snapshot and any network call — unless the pair (its origin,
 /// the key's variable) is one the user already sends that key to: the
 /// official host for the protocol's own variable, or an entry in the user's
@@ -40,6 +41,22 @@ pub(crate) fn resolve(
     spec: &ModelSpec,
     cfg: &RepoConfig,
     from_user: bool,
+) -> Result<Option<Resolved>> {
+    // The same test `HostedClient::new` applies when it reads the key: set
+    // and not blank. What decides whether a key would be sent.
+    resolve_with(spec, cfg, from_user, &|var| {
+        std::env::var(var).is_ok_and(|v| !v.trim().is_empty())
+    })
+}
+
+/// [`resolve`] with the environment's answer to "is this key variable
+/// set" passed in, so the rule is tested without touching the process
+/// environment.
+pub(crate) fn resolve_with(
+    spec: &ModelSpec,
+    cfg: &RepoConfig,
+    from_user: bool,
+    key_set: &dyn Fn(&str) -> bool,
 ) -> Result<Option<Resolved>> {
     let (r, repository_chose) = match spec {
         ModelSpec::Hosted {
@@ -94,7 +111,7 @@ pub(crate) fn resolve(
         _ => return Ok(None),
     };
     if repository_chose {
-        allowed(&r, cfg)?;
+        allowed(&r, cfg, key_set)?;
     }
     Ok(Some(r))
 }
@@ -106,9 +123,15 @@ const OFFICIAL: [(&str, &str); 2] = [
 ];
 
 /// Refuses a repository-chosen endpoint unless its (origin, key variable)
-/// pair is one the user already sends that key to. Loopback is allowed: it
-/// is this machine, and a key is sent there only when its variable is set.
-fn allowed(r: &Resolved, cfg: &RepoConfig) -> Result<()> {
+/// pair is one the user already sends that key to.
+///
+/// Loopback is allowed only when no key would be sent: its variable is
+/// unset, so a keyless local server works from the repository's spec. With
+/// the variable set, loopback gets the same pair test as any host. "This
+/// machine" is not the user's choice: a port the repository's own test
+/// suite or dev server left listening is this machine too, and it would
+/// receive the key.
+fn allowed(r: &Resolved, cfg: &RepoConfig, key_set: &dyn Fn(&str) -> bool) -> Result<()> {
     let Some((origin, loopback)) = origin(&r.base) else {
         anyhow::bail!(
             "refused before any request: the repository's configuration names the \
@@ -118,7 +141,7 @@ fn allowed(r: &Resolved, cfg: &RepoConfig) -> Result<()> {
             r.key_env
         );
     };
-    if loopback {
+    if loopback && !key_set(&r.key_env) {
         return Ok(());
     }
     let users = cfg.provenance.providers.iter().filter_map(|p| {
@@ -145,7 +168,7 @@ fn allowed(r: &Resolved, cfg: &RepoConfig) -> Result<()> {
          chose (ADR 0024 §3): the official host for its protocol \
          (https://api.openai.com with OPENAI_API_KEY, https://api.anthropic.com with \
          ANTHROPIC_API_KEY), an entry in your own [[providers]]{file}, or a spec you \
-         pass with --model. Nothing was snapshotted: the run did not start.",
+         pass with --model.{local} Nothing was snapshotted: the run did not start.",
         key = r.key_env,
         file = cfg
             .provenance
@@ -153,6 +176,16 @@ fn allowed(r: &Resolved, cfg: &RepoConfig) -> Result<()> {
             .as_ref()
             .map(|f| format!(" ({})", f.display()))
             .unwrap_or_default(),
+        local = if loopback {
+            format!(
+                " The endpoint is on this machine, but so is any port the repository's \
+                 own code leaves listening; with {} set it is refused like any other \
+                 host, and without it a local server is used with no key.",
+                r.key_env
+            )
+        } else {
+            String::new()
+        },
     )
 }
 
@@ -443,13 +476,64 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_loopback_endpoint_gets_no_key_unless_the_user_chose_it() {
+        // The risk: the repository names `http://127.0.0.1:8123` — a
+        // listener its own test suite left running — and the user's
+        // OPENAI_API_KEY is sent there on a plain `trellis run`.
+        let set = |_: &str| true;
+        let unset = |_: &str| false;
+        let repo_spec = "[model]\nspec = \"openai-chat:http://127.0.0.1:8123/v1#m\"\n";
+        let s = spec("openai-chat:http://127.0.0.1:8123/v1#m");
+
+        // Keyless: a local server that needs no key is still allowed.
+        let cfg = layered(repo_spec, "");
+        assert!(resolve_with(&s, &cfg, false, &unset).is_ok());
+
+        // Keyed and repository-chosen: refused, naming the variable.
+        let e = format!(
+            "{:#}",
+            resolve_with(&s, &cfg, false, &set).expect_err("the key would go to the repo's port")
+        );
+        assert!(e.contains("OPENAI_API_KEY"), "{e}");
+        assert!(e.contains("http://127.0.0.1:8123"), "{e}");
+
+        // Keyed and chosen by the user: --model, the user's own [model]
+        // spec, or an entry in the user's [[providers]].
+        assert!(resolve_with(&s, &cfg, true, &set).is_ok(), "--model");
+        let cfg = layered("", repo_spec);
+        assert!(resolve_with(&s, &cfg, false, &set).is_ok(), "user's spec");
+        let user = "[[providers]]\nname = \"lm\"\nprotocol = \"openai\"\n\
+                    base_url = \"http://127.0.0.1:8123/v1\"\n";
+        let cfg = layered(repo_spec, user);
+        assert!(
+            resolve_with(&s, &cfg, false, &set).is_ok(),
+            "the user's own [[providers]] names this origin with this variable"
+        );
+
+        // A repository `[[providers]]` entry on loopback is the same case,
+        // whoever names the entry: its endpoint is the repository's choice.
+        let cfg = layered(
+            "[[providers]]\nname = \"loc\"\nprotocol = \"anthropic\"\n\
+             base_url = \"http://localhost:9\"\n",
+            "",
+        );
+        let e = format!(
+            "{:#}",
+            resolve_with(&spec("provider:loc#m"), &cfg, true, &set).unwrap_err()
+        );
+        assert!(e.contains("ANTHROPIC_API_KEY"), "{e}");
+        assert!(resolve_with(&spec("provider:loc#m"), &cfg, false, &unset).is_ok());
+    }
+
+    #[test]
     fn loopback_is_allowed_and_an_ambiguous_authority_is_not() {
         let cfg = layered("", "");
+        let unset = |_: &str| false;
         for ok in [
             "openai-chat:http://127.0.0.1:8080/v1#m",
             "anthropic:http://localhost:9#m",
         ] {
-            assert!(resolve(&spec(ok), &cfg, false).is_ok(), "{ok}");
+            assert!(resolve_with(&spec(ok), &cfg, false, &unset).is_ok(), "{ok}");
         }
         // A parser that read userinfo differently from the transport could
         // approve one host and connect to another.
@@ -472,7 +556,10 @@ mod tests {
             "openai-chat:http://[::1]/v1#m",
             "openai-chat:http://[::1]:8080/v1#m",
         ] {
-            assert!(resolve(&spec(ok), &cfg, false).is_ok(), "{ok}");
+            assert!(
+                resolve_with(&spec(ok), &cfg, false, &|_| false).is_ok(),
+                "{ok}"
+            );
         }
         let user = "[[providers]]\nname = \"v6\"\nprotocol = \"openai\"\n\
                     base_url = \"https://[2001:db8::1]:8443/v1\"\nkey_env = \"V6_KEY\"\n";
