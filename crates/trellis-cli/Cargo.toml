@@ -28,17 +28,32 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde.workspace = true
+# The outcome JSON an after_run hook reads (ADR 0023), and `--json`,
+# `log --json` and `rpc` framing (ADR 0025); already in the tree.
+serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 # `json`: the `--log-json` formatter (ADR 0020 §7). Adds `tracing-serde`;
 # serde and serde_json were already in the tree.
 tracing-subscriber = { workspace = true, features = ["json"] }
 rustyline.workspace = true
+# `trellis vault` (ADR 0022): dates.json records *local* calendar days, as
+# Apex's JavaScript `Date` computes them, and std has no time zones. Already
+# in the lockfile through tui-logger; the vault crate takes days as strings
+# so it stays free of it.
+jiff = "0.2.37"
 tui-demo = { path = "../tui-demo", default-features = false }
+
+# HTTPS to hosted providers (ADR 0024). On by default: the release binary
+# is built with default features, so this is what ships. `--no-default-features`
+# builds the local-only binary, which refuses an https endpoint with a message
+# naming this feature. Measured cost in ADR 0024, "Measurements".
+[features]
+default = ["hosted"]
+hosted = ["trellis-model/hosted"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-serde_json.workspace = true

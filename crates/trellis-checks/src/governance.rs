@@ -93,14 +93,23 @@ pub struct Violation {
 /// consequences.
 pub fn load(root: &Path) -> Result<Vec<Rule>, GovernanceError> {
     let dir = root.join(".trellis").join("governance");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Ok(Vec::new());
+    // Only a directory that is not there means no rules; one that cannot
+    // be listed, or an entry that cannot be read, is an error like a rule
+    // that cannot be (review round 10).
+    let unreadable =
+        |e: std::io::Error| GovernanceError::Unreadable(dir.display().to_string(), e.to_string());
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(unreadable(e)),
     };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
-        .collect();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for e in entries {
+        let p = e.map_err(unreadable)?.path();
+        if p.extension().is_some_and(|x| x == "toml") {
+            paths.push(p);
+        }
+    }
     paths.sort();
 
     let mut out = Vec::new();
@@ -211,6 +220,23 @@ mod tests {
         let g = dir.join(".trellis").join("governance");
         std::fs::create_dir_all(&g).unwrap();
         std::fs::write(g.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn a_rules_directory_that_cannot_be_read_is_an_error_not_no_rules() {
+        // The adjacent edge of review round 10, finding 5: any `read_dir`
+        // failure read as "no rules", so a `.trellis/governance` the
+        // process could not list ran every run with none in force. Only a
+        // directory that is not there means no rules.
+        let d = tempfile::tempdir().unwrap();
+        assert!(load(d.path()).unwrap().is_empty(), "absent: no rules");
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(d.path().join(".trellis/governance"), "not a directory").unwrap();
+        let e = load(d.path()).unwrap_err().to_string();
+        assert!(
+            e.contains("governance") && e.contains("could not be read"),
+            "{e}"
+        );
     }
 
     #[test]

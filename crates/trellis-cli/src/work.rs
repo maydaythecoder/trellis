@@ -1,40 +1,168 @@
-//! `trellis queue` and `trellis work` (ADR 0020).
+//! `trellis queue` and `trellis work` (ADR 0020, ADR 0026).
 //!
 //! The queue and the heartbeat's decisions live in `trellis-queue`. This is
 //! the part that needs the binary: a [`Runner`] whose `run` is `cmd_run`,
 //! the same path `trellis run` takes, so a queued task and a typed one cannot
-//! drift into two ways of running.
+//! drift into two ways of running — or, for a process agent, the command
+//! followed by `trellis check`'s two checks.
 
+use crate::orchestrate::{load_profiles, load_routines, spend_records, this_month};
 use crate::{Human, RunControl, RunExit, RunSeeding, cmd_run, config};
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use trellis_queue::{Queue, RunEnd, Runner, State, WorkOptions, plain};
+use trellis_queue::portable::{self, Action, OnConflict};
+use trellis_queue::profile::Profile;
+use trellis_queue::routine::{self, Routine};
+use trellis_queue::{
+    Actor, Blocked, Event, NewTask, Priority, Queue, QueueError, RunEnd, Runner, State, Status,
+    WorkOptions, approval, ledger, plain,
+};
+
+const PRIORITIES: [&str; 4] = ["critical", "high", "medium", "low"];
+const STATUSES: [&str; 8] = [
+    "backlog",
+    "todo",
+    "in_progress",
+    "in_review",
+    "blocked",
+    "done",
+    "cancelled",
+    "failed",
+];
 
 #[derive(Subcommand)]
 pub(crate) enum QueueAction {
-    /// Add a task. It runs when `trellis work` reaches it, oldest first.
+    /// Add a task. `work` runs the highest priority first, then the oldest.
     Add {
         /// Optional when `--prompt` names a template.
         #[arg(default_value = "")]
         task: String,
         /// The vault note to compile for this task's run, as `run --focus`.
-        #[arg(long)]
+        /// The task's goal (ADR 0020 §6).
+        #[arg(long, visible_alias = "goal")]
         focus: Option<String>,
         /// A template in `.trellis/prompts/<name>.md`, as `run --prompt`.
         #[arg(long)]
         prompt: Option<String>,
+        #[arg(long, value_parser = PRIORITIES, default_value = "medium")]
+        priority: String,
+        /// Repeatable.
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// A task this one is part of. Structure only: the parent does not
+        /// wait for it unless set to `--status blocked --reason children`.
+        #[arg(long)]
+        parent: Option<String>,
+        /// An agent profile in .trellis/agents/.
+        #[arg(long)]
+        assignee: Option<String>,
+        /// A task that must be `done` first. Repeatable.
+        #[arg(long = "blocked-by", value_name = "ID")]
+        blocked_by: Vec<String>,
+        /// `work` will not claim it until `trellis queue approve <id>`.
+        #[arg(long)]
+        needs_approval: bool,
+        /// Start in backlog: listed, never claimed until set to todo.
+        #[arg(long)]
+        backlog: bool,
     },
-    /// Every task and its state: pending, claimed, done or failed.
-    List,
+    /// Every task: state, status, priority, and why a pending one waits.
+    List {
+        #[arg(long, value_parser = STATUSES)]
+        status: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        assignee: Option<String>,
+        #[arg(long, value_parser = PRIORITIES)]
+        priority: Option<String>,
+    },
+    /// Change a task that is not running.
+    Set {
+        id: String,
+        #[arg(long, value_parser = PRIORITIES)]
+        priority: Option<String>,
+        /// Add a label. Repeatable.
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// Remove a label. Repeatable.
+        #[arg(long = "unlabel", value_name = "LABEL")]
+        unlabels: Vec<String>,
+        #[arg(long, conflicts_with = "unassign")]
+        assignee: Option<String>,
+        #[arg(long)]
+        unassign: bool,
+        #[arg(long, conflicts_with = "no_parent")]
+        parent: Option<String>,
+        #[arg(long)]
+        no_parent: bool,
+        /// Add a blocker. Repeatable.
+        #[arg(long = "blocked-by", value_name = "ID")]
+        blocked_by: Vec<String>,
+        /// Remove a blocker. Repeatable.
+        #[arg(long = "unblock", value_name = "ID")]
+        unblock: Vec<String>,
+        #[arg(long)]
+        needs_approval: Option<bool>,
+        /// `in_progress` is set only by a claim.
+        #[arg(long, value_parser = ["backlog", "todo", "in_review", "blocked", "done", "cancelled", "failed"])]
+        status: Option<String>,
+        /// With `--status blocked`: what it waits for.
+        #[arg(long, value_parser = ["blockers", "children", "manual"])]
+        reason: Option<String>,
+        /// With `--reason manual`: what unblocks it.
+        #[arg(long)]
+        detail: Option<String>,
+    },
+    /// Append a note to a task.
+    Note { id: String, text: String },
+    /// Cancel a task that is not running.
+    Cancel {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Approve a task that needs it, or a budget override request.
+    Approve {
+        id: String,
+        /// For a budget request: raise the limit that tripped by this many
+        /// tokens and resume the agent.
+        #[arg(long, value_name = "TOKENS")]
+        raise: Option<u64>,
+    },
+    /// Reject a task (it is cancelled) or a budget request (the agent
+    /// stays paused).
+    Reject {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Put a task from claimed/ or failed/ back in pending/.
     ///
     /// For a claim a crashed process left behind. `work` never re-runs one
     /// on its own, because it cannot tell a dead claimant from a live one.
     Requeue { id: String },
+    /// The activity log: every queue, agent, routine and approval change.
+    Log {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Write profiles, routines and tasks to a new folder.
+    Export { dir: PathBuf },
+    /// Read a folder written by `export`.
+    Import {
+        dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_parser = ["skip", "replace", "rename"], default_value = "skip")]
+        on_conflict: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -42,16 +170,31 @@ pub(crate) struct WorkArgs {
     /// Run at most one task, then exit.
     #[arg(long, conflicts_with_all = ["every", "max_tasks"])]
     once: bool,
-    /// When the queue is empty, look again after this many seconds instead
-    /// of exiting. Runs in the foreground; Ctrl-C stops it.
+    /// When nothing is claimable, look again after this many seconds (or
+    /// when the next routine is due, if sooner) instead of exiting. Runs in
+    /// the foreground; Ctrl-C stops it.
     #[arg(long, value_name = "SECONDS")]
     every: Option<u64>,
     /// Run at most this many tasks in this invocation.
     #[arg(long, value_name = "N")]
     max_tasks: Option<u32>,
-    /// As `trellis run --model`; falls back to `[model] spec`.
+    /// As `trellis run --model`; falls back to `[model] spec`. A task
+    /// assigned to a profile that names a model uses the profile's.
     #[arg(long)]
     model: Option<String>,
+}
+
+fn parse_priority(s: &str) -> Priority {
+    Priority::parse(s).unwrap_or_default()
+}
+
+/// Reconciles and prints the wakes: after any change that can end a task,
+/// whatever it was blocking or holding may now run.
+fn reconcile(q: &Queue) -> Result<()> {
+    for (id, why) in q.reconcile(Actor::Human)? {
+        println!("woken:    {id} ({why})");
+    }
+    Ok(())
 }
 
 pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
@@ -61,6 +204,13 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             task,
             focus,
             prompt,
+            priority,
+            labels,
+            parent,
+            assignee,
+            blocked_by,
+            needs_approval,
+            backlog,
         } => {
             if task.trim().is_empty() && prompt.is_none() {
                 anyhow::bail!("nothing to queue: give a task, or --prompt <name>, or both");
@@ -73,19 +223,305 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             if let Some(stem) = &focus {
                 check_focus(root, stem)?;
             }
-            let id = q.add(&task, focus.as_deref(), prompt.as_deref())?;
-            println!("queued:   {id}");
+            if let Some(a) = &assignee {
+                let profiles = load_profiles(root)?;
+                if !profiles.contains_key(a) {
+                    anyhow::bail!("no agent `{a}` in .trellis/agents/");
+                }
+            }
+            let id = q.add_task(
+                NewTask {
+                    task,
+                    focus,
+                    prompt,
+                    priority: parse_priority(&priority),
+                    labels,
+                    parent,
+                    assignee,
+                    blockers: blocked_by,
+                    needs_approval,
+                    backlog,
+                    routine: None,
+                    routine_at: None,
+                },
+                Actor::Human,
+            )?;
+            let (_, t) = q.find(&id)?;
+            println!("queued:   {id} ({})", t.status_in(State::Pending).as_str());
             println!("          {}", q.dir().join("pending").display());
             Ok(())
         }
-        QueueAction::List => {
+        QueueAction::List {
+            status,
+            label,
+            assignee,
+            priority,
+        } => {
             let entries = q.list()?;
+            let ix = Queue::index_of(&entries);
+            let shown: Vec<&trellis_queue::Entry> = entries
+                .iter()
+                .filter(|e| {
+                    let Ok(t) = &e.task else {
+                        return status.is_none() && label.is_none() && assignee.is_none();
+                    };
+                    status
+                        .as_deref()
+                        .is_none_or(|s| t.status_in(e.state).as_str() == s)
+                        && label.as_ref().is_none_or(|l| t.labels.contains(l))
+                        && assignee
+                            .as_deref()
+                            .is_none_or(|a| t.assignee.as_deref() == Some(a))
+                        && priority.as_deref().is_none_or(|p| t.priority.as_str() == p)
+                })
+                .collect();
             if entries.is_empty() {
                 println!("queue empty ({})", q.dir().display());
+            } else if shown.is_empty() {
+                println!("no task matches ({} in the queue)", entries.len());
+            }
+            for e in shown {
+                println!("{}", list_line(e, &ix));
+            }
+            let requests = approval::list(&q, "pending")?;
+            if !requests.is_empty() {
+                println!();
+                println!("approvals waiting:");
+                for r in requests {
+                    println!(
+                        "  {}  budget_override for agent `{}`: {} of {} {} tokens ({})",
+                        r.id,
+                        r.agent,
+                        r.spent,
+                        r.limit,
+                        r.window.as_str(),
+                        r.month
+                    );
+                }
+            }
+            Ok(())
+        }
+        QueueAction::Set {
+            id,
+            priority,
+            labels,
+            unlabels,
+            assignee,
+            unassign,
+            parent,
+            no_parent,
+            blocked_by,
+            unblock,
+            needs_approval,
+            status,
+            reason,
+            detail,
+        } => {
+            if let Some(a) = &assignee
+                && !load_profiles(root)?.contains_key(a)
+            {
+                anyhow::bail!("no agent `{a}` in .trellis/agents/");
+            }
+            let status = status.as_deref().and_then(Status::parse);
+            if reason.is_some() && status != Some(Status::Blocked) {
+                anyhow::bail!("--reason goes with --status blocked");
+            }
+            let blocked = match (status, reason.as_deref()) {
+                (Some(Status::Blocked), None) => anyhow::bail!(
+                    "--status blocked needs --reason blockers|children|manual: a block \
+                     that names nothing to wait for routes to nobody"
+                ),
+                (Some(Status::Blocked), Some("blockers")) => Some(Blocked::Blockers),
+                (Some(Status::Blocked), Some("children")) => Some(Blocked::Children),
+                (Some(Status::Blocked), Some(_)) => Some(Blocked::Manual {
+                    detail: detail
+                        .clone()
+                        .filter(|d| !d.trim().is_empty())
+                        .context("--reason manual needs --detail naming what unblocks it")?,
+                }),
+                _ => None,
+            };
+            let ix = q.index()?;
+            for b in parent.iter().chain(blocked_by.iter()) {
+                if b == &id {
+                    anyhow::bail!("a task cannot depend on or contain itself");
+                }
+                if !ix.by_id.contains_key(b) {
+                    return Err(QueueError::Unknown(b.clone()).into());
+                }
+            }
+            let children = ix.children.get(&id).map(Vec::len).unwrap_or(0);
+            let mut changes = Vec::new();
+            let (from, to) = q.edit(&id, |t, s| {
+                if let Some(p) = &priority {
+                    t.priority = parse_priority(p);
+                    changes.push(format!("priority {p}"));
+                }
+                for l in &labels {
+                    if !t.labels.contains(l) {
+                        t.labels.push(l.clone());
+                        changes.push(format!("+label {l}"));
+                    }
+                }
+                for l in &unlabels {
+                    t.labels.retain(|x| x != l);
+                    changes.push(format!("-label {l}"));
+                }
+                if let Some(a) = &assignee {
+                    t.assignee = Some(a.clone());
+                    changes.push(format!("assignee {a}"));
+                }
+                if unassign {
+                    t.assignee = None;
+                    changes.push("unassigned".into());
+                }
+                if let Some(p) = &parent {
+                    t.parent = Some(p.clone());
+                    changes.push(format!("parent {p}"));
+                }
+                if no_parent {
+                    t.parent = None;
+                    changes.push("no parent".into());
+                }
+                for b in &blocked_by {
+                    if !t.blockers.contains(b) {
+                        t.blockers.push(b.clone());
+                        changes.push(format!("+blocker {b}"));
+                    }
+                }
+                for b in &unblock {
+                    t.blockers.retain(|x| x != b);
+                    changes.push(format!("-blocker {b}"));
+                }
+                if let Some(n) = needs_approval {
+                    t.needs_approval = n;
+                    if n {
+                        // A new requirement needs a new decision.
+                        t.approval = None;
+                    }
+                    changes.push(format!("needs_approval {n}"));
+                }
+                let mut target = None;
+                if let Some(st) = status {
+                    match &blocked {
+                        Some(Blocked::Blockers) if t.blockers.is_empty() => {
+                            return Err(QueueError::Invalid(
+                                "--reason blockers, but the task has no blockers; add \
+                                 them with --blocked-by"
+                                    .into(),
+                            ));
+                        }
+                        Some(Blocked::Children) if children == 0 => {
+                            return Err(QueueError::Invalid(
+                                "--reason children, but no task names this one as its \
+                                 parent"
+                                    .into(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    t.status = Some(st);
+                    t.blocked = blocked.clone();
+                    t.claimed_at = None;
+                    t.claimed_by_pid = None;
+                    if st.home() == State::Pending && s != State::Pending {
+                        // Back to waiting: an old outcome on it would be
+                        // read as this attempt's, as `requeue` says.
+                        t.outcome = None;
+                    }
+                    target = Some(st.home());
+                    changes.push(format!("status {}", st.as_str()));
+                } else if s == State::Pending
+                    && !blocked_by.is_empty()
+                    && t.status_in(s) == Status::Todo
+                    && !ix.unresolved(t).is_empty()
+                {
+                    // New blockers that are not done: the task now waits,
+                    // and says so, rather than sitting in todo unclaimable.
+                    t.status = Some(Status::Blocked);
+                    t.blocked = Some(Blocked::Blockers);
+                    changes.push("status blocked (blockers)".into());
+                }
+                Ok(target)
+            })?;
+            if changes.is_empty() {
+                println!("nothing to change");
                 return Ok(());
             }
-            for e in entries {
-                println!("{}", list_line(&e));
+            q.log(
+                Event::new(Actor::Human, "task.set", format!("task:{id}"))
+                    .detail(changes.join(", ")),
+            )?;
+            println!(
+                "set:      {id}: {}{}",
+                changes.join(", "),
+                if from != to {
+                    format!(" ({}/ -> {}/)", from.dir_name(), to.dir_name())
+                } else {
+                    String::new()
+                }
+            );
+            reconcile(&q)
+        }
+        QueueAction::Note { id, text } => {
+            q.edit(&id, |t, _| {
+                t.note(Actor::Human, text.clone());
+                Ok(None)
+            })?;
+            q.log(Event::new(Actor::Human, "task.note", format!("task:{id}")).detail(text))?;
+            println!("noted:    {id}");
+            Ok(())
+        }
+        QueueAction::Cancel { id, reason } => {
+            let (from, _) = q.edit(&id, |t, _| {
+                t.status = Some(Status::Cancelled);
+                t.blocked = None;
+                t.note(
+                    Actor::Human,
+                    match &reason {
+                        Some(r) => format!("cancelled: {r}"),
+                        None => "cancelled".into(),
+                    },
+                );
+                Ok(Some(State::Cancelled))
+            })?;
+            let mut e = Event::new(Actor::Human, "task.cancel", format!("task:{id}"));
+            if let Some(r) = &reason {
+                e = e.detail(r.clone());
+            }
+            q.log(e)?;
+            println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
+            reconcile(&q)
+        }
+        QueueAction::Approve { id, raise } => {
+            if approval::is_request_id(&id) {
+                let raise = raise.context(
+                    "a budget override needs --raise <tokens>: how far to lift the limit \
+                     that tripped. `trellis queue reject <id>` keeps the agent paused",
+                )?;
+                let r = approval::approve_budget(&q, &id, raise, Actor::Human)?;
+                println!(
+                    "approved: {id}; agent `{}` {} limit raised by {raise} and resumed",
+                    r.agent,
+                    r.window.as_str()
+                );
+            } else {
+                if raise.is_some() {
+                    anyhow::bail!("--raise applies to a budget override request, not a task");
+                }
+                approval::approve_task(&q, &id, Actor::Human)?;
+                println!("approved: {id}; `work` may now claim it");
+            }
+            Ok(())
+        }
+        QueueAction::Reject { id, reason } => {
+            if approval::is_request_id(&id) {
+                let r = approval::reject_budget(&q, &id, reason.as_deref(), Actor::Human)?;
+                println!("rejected: {id}; agent `{}` stays paused", r.agent);
+            } else {
+                approval::reject_task(&q, &id, reason.as_deref(), Actor::Human)?;
+                println!("rejected: {id}; cancelled");
+                reconcile(&q)?;
             }
             Ok(())
         }
@@ -97,6 +533,92 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                 from.dir_name()
             );
             Ok(())
+        }
+        QueueAction::Log { limit } => {
+            let events = q.activity().tail(limit)?;
+            if events.is_empty() {
+                println!("no activity ({})", q.activity().path().display());
+            }
+            for e in events {
+                println!(
+                    "{} {:<7} {:<18} {}{}{}",
+                    plain(&e.at),
+                    e.actor.as_str(),
+                    plain(&e.action),
+                    plain(&e.entity),
+                    e.run_id
+                        .as_deref()
+                        .map(|r| format!(" run {}", plain(r)))
+                        .unwrap_or_default(),
+                    e.detail
+                        .as_deref()
+                        .map(|d| format!(" — {}", plain(d)))
+                        .unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
+        QueueAction::Export { dir } => {
+            load_profiles(root)?;
+            let n = portable::export(root, &q, &dir)?;
+            println!(
+                "exported: {} agent(s), {} instructions file(s), {} routine(s), {} task(s) to {}",
+                n.agents,
+                n.instructions,
+                n.routines,
+                n.tasks,
+                dir.display()
+            );
+            if n.claimed_skipped > 0 {
+                println!(
+                    "          {} claimed task(s) not exported: they belong to a run in \
+                     progress",
+                    n.claimed_skipped
+                );
+            }
+            println!(
+                "          nothing secret to scrub: profiles name a model spec, and keys \
+                 are never in files trellis reads (ADR 0010)"
+            );
+            Ok(())
+        }
+        QueueAction::Import {
+            dir,
+            dry_run,
+            on_conflict,
+        } => {
+            let on = OnConflict::parse(&on_conflict).unwrap_or(OnConflict::Skip);
+            let plan = portable::plan_import(root, &q, &dir, on)?;
+            if plan.items.is_empty() {
+                println!("nothing to import in {}", dir.display());
+                return Ok(());
+            }
+            for it in &plan.items {
+                println!(
+                    "{:<8} {:<8} {}",
+                    it.kind.as_str(),
+                    match &it.action {
+                        Action::Create => "create".to_string(),
+                        Action::Skip => "skip".to_string(),
+                        Action::Replace => "replace".to_string(),
+                        Action::Rename(_) => "rename".to_string(),
+                    },
+                    match &it.action {
+                        Action::Rename(to) => format!("{} -> {to}", it.name),
+                        _ => it.name.clone(),
+                    }
+                );
+            }
+            if dry_run {
+                println!("dry run: nothing written");
+                return Ok(());
+            }
+            portable::apply_import(root, &q, &plan)?;
+            println!(
+                "imported. Profiles and routines were written into .trellis/; review and \
+                 commit them like any change there"
+            );
+            reconcile(&q)
         }
     }
 }
@@ -115,14 +637,20 @@ fn check_focus(root: &Path, stem: &str) -> Result<()> {
     Ok(())
 }
 
-fn list_line(e: &trellis_queue::Entry) -> String {
+fn list_line(e: &trellis_queue::Entry, ix: &trellis_queue::Index) -> String {
     let age = e.age.map(ago).unwrap_or_else(|| "?".to_string());
     let state = e.state.dir_name();
     let t = match &e.task {
         Ok(t) => t,
-        Err(why) => return format!("{state:<8} {}  unreadable: {}", e.id, plain(why)),
+        Err(why) => return format!("{state:<9} {}  unreadable: {}", e.id, plain(why)),
     };
-    let mut line = format!("{state:<8} {}  ", e.id);
+    let st = t.status_in(e.state);
+    let mut line = format!(
+        "{state:<9} {}  {} {}  ",
+        e.id,
+        st.as_str(),
+        t.priority.as_str()
+    );
     match e.state {
         State::Pending => line.push_str(&format!("added {age} ago")),
         State::Claimed => line.push_str(&format!(
@@ -131,7 +659,7 @@ fn list_line(e: &trellis_queue::Entry) -> String {
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "?".into())
         )),
-        State::Done | State::Failed => {
+        State::Done | State::Failed | State::Cancelled => {
             if let Some(o) = &t.outcome {
                 line.push_str(&format!(
                     "{} ({})",
@@ -144,12 +672,35 @@ fn list_line(e: &trellis_queue::Entry) -> String {
     if t.attempts > 0 {
         line.push_str(&format!(", attempts {}", t.attempts));
     }
-    line.push_str(&format!("\n         {}", plain(&t.task)));
+    line.push_str(&format!("\n          {}", plain(&t.task)));
     if let Some(f) = &t.focus {
-        line.push_str(&format!(" [focus {}]", plain(f)));
+        line.push_str(&format!(" [goal {}]", plain(f)));
     }
     if let Some(p) = &t.prompt {
         line.push_str(&format!(" [prompt {}]", plain(p)));
+    }
+    if let Some(a) = &t.assignee {
+        line.push_str(&format!(" [agent {}]", plain(a)));
+    }
+    if !t.labels.is_empty() {
+        line.push_str(&format!(" [labels {}]", plain(&t.labels.join(","))));
+    }
+    if let Some(p) = &t.parent {
+        line.push_str(&format!(" [parent {}]", plain(p)));
+    }
+    if !t.blockers.is_empty() {
+        line.push_str(&format!(" [blocked by {}]", plain(&t.blockers.join(","))));
+    }
+    if let Some(r) = &t.routine {
+        line.push_str(&format!(" [routine {}]", plain(r)));
+    }
+    if !t.notes.is_empty() {
+        line.push_str(&format!(" [{} note(s)]", t.notes.len()));
+    }
+    if e.state == State::Pending
+        && let Some(why) = Queue::waiting_reason(t, ix)
+    {
+        line.push_str(&format!("\n          waiting: {}", plain(&why)));
     }
     line
 }
@@ -167,31 +718,54 @@ fn ago(d: Duration) -> String {
 /// The heartbeat. Returns the process exit code.
 pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     let cfg = config::RepoConfig::load(root)?;
-    let model = args
-        .model
-        .or_else(|| cfg.model())
-        .context("no model. Pass --model, or set [model] spec in .trellis/config.toml")?;
+    // Optional now: a queue of process-agent tasks, or of tasks whose
+    // profiles name their own model, needs none. A task that does need it
+    // is left waiting with that reason rather than failed.
+    let model_from_user = args.model.is_some();
+    let model = args.model.or_else(|| cfg.model());
     // Parsed before anything is claimed, so a typo costs nothing rather than
     // failing the task at the head of the queue.
-    let _: trellis_model::ModelSpec = model.parse()?;
+    if let Some(m) = &model {
+        let _: trellis_model::ModelSpec = m.parse()?;
+    }
+    // Profiles and routines are checked before anything is claimed, for the
+    // same reason.
+    let profiles = load_profiles(root)?;
+    load_routines(root, &profiles)?;
     let q = Queue::for_repo(root)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     listen_for_ctrl_c(stop.clone());
 
-    println!("work:     queue at {}", q.dir().display());
+    // ADR 0025 §4: the human stream, so `work --json` keeps stdout JSONL.
+    let _ = writeln!(
+        crate::output::human(),
+        "work:     queue at {}",
+        q.dir().display()
+    );
     let mut runner = CliRunner {
         root,
         model,
+        model_from_user,
         unconstrained: cfg.unconstrained(),
         stop,
+        profiles,
+        queue: q.clone(),
+        routines: BTreeMap::new(),
+        current: None,
+        said: BTreeSet::new(),
+        trust_check: crate::tooling::require_trusted,
+        trust: None,
     };
     let opts = WorkOptions {
         max_tasks: if args.once { Some(1) } else { args.max_tasks },
         every: args.every.map(Duration::from_secs),
     };
-    let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut std::io::stdout())?;
-    println!("work:     {ran} run(s) this invocation; stopped: {why}");
+    let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut crate::output::human())?;
+    let _ = writeln!(
+        crate::output::human(),
+        "work:     {ran} run(s) this invocation; stopped: {why}"
+    );
     Ok(why.code())
 }
 
@@ -221,19 +795,45 @@ fn listen_for_ctrl_c(flag: Arc<AtomicBool>) {
 
 struct CliRunner<'a> {
     root: &'a Path,
-    model: String,
+    model: Option<String>,
+    /// Whether `model` came from `--model` rather than `[model] spec`
+    /// (ADR 0024 §3). A profile's own model is the repository's.
+    model_from_user: bool,
     unconstrained: bool,
     stop: Arc<AtomicBool>,
+    /// Re-read every tick: a profile edited while `work --every` runs takes
+    /// effect at the next claim.
+    profiles: BTreeMap<String, Profile>,
+    /// Held rather than re-resolved: the gate runs per pending task per
+    /// tick, and finding the queue spawns `git rev-parse`.
+    queue: Queue,
+    routines: BTreeMap<String, Routine>,
+    /// The id of the task being run, for `TRELLIS_TASK_ID`.
+    current: Option<String>,
+    /// Lines already printed this invocation. A budget warning or a load
+    /// error that holds for hours is said once, not once per tick.
+    said: BTreeSet<String>,
+    /// How trust is decided: `tooling::require_trusted`, which walks and
+    /// hashes `.trellis/`. A field so a test can count the calls.
+    trust_check: fn(&Path) -> std::result::Result<(), String>,
+    /// This tick's answer, computed at the first process task the gate
+    /// sees and cleared by `tick`: once per tick, not once per pending
+    /// process task, and never older than the tick, so `trellis trust`
+    /// run while `work --every` waits takes effect at the next one.
+    trust: Option<std::result::Result<(), String>>,
 }
 
 impl CliRunner<'_> {
-    /// The task text as `trellis run --prompt` builds it.
-    ///
-    /// Repeated from the `run` dispatch rather than shared, to keep this
-    /// change out of the lines other work is editing; both are four lines
-    /// over `RepoConfig::prompt`, which is where the rules live.
-    fn text(&self, t: &trellis_queue::Task) -> Result<String> {
-        Ok(match &t.prompt {
+    fn once(&mut self, out: &mut dyn Write, line: String) {
+        if self.said.insert(line.clone()) {
+            let _ = writeln!(out, "{line}");
+        }
+    }
+
+    /// The task text as `trellis run --prompt` builds it, with the
+    /// profile's instructions ahead of it.
+    fn text(&self, t: &trellis_queue::Task, profile: Option<&Profile>) -> Result<String> {
+        let mut text = match &t.prompt {
             Some(name) => {
                 let template = config::RepoConfig::prompt(self.root, name)?;
                 if t.task.trim().is_empty() {
@@ -243,7 +843,39 @@ impl CliRunner<'_> {
                 }
             }
             None => t.task.clone(),
-        })
+        };
+        if let Some(p) = profile
+            && let Some(instructions) = instructions(self.root, p)?
+        {
+            text = format!("{}\n\n{text}", instructions.trim_end());
+        }
+        Ok(text)
+    }
+
+    fn approve_mode(p: &Profile) -> bool {
+        p.file.control.as_ref().and_then(|c| c.mode.as_deref()) == Some("approve")
+    }
+}
+
+/// A profile's `instructions` file, or `None` when it names none. Read
+/// through the one prompt-input reader, so a committed
+/// `.trellis/agents/r.md -> ~/.aws/credentials` is refused by name rather
+/// than put ahead of the task. Named but absent is an error, as it was: a
+/// profile that says it has instructions and runs without them is worse off
+/// than one that never had any.
+fn instructions(root: &Path, p: &Profile) -> Result<Option<String>> {
+    let Some(path) = p.instructions_path(root) else {
+        return Ok(None);
+    };
+    match crate::context_files::read_repo_text(root, &path)
+        .with_context(|| format!("agent `{}`: instructions were refused", p.name))?
+    {
+        Some(t) => Ok(Some(t)),
+        None => anyhow::bail!(
+            "agent `{}`: cannot read instructions {}: no such file",
+            p.name,
+            path.display()
+        ),
     }
 }
 
@@ -260,6 +892,16 @@ fn newest_run_id(root: &Path) -> Option<String> {
         .max()
 }
 
+/// The line for a budget pause `enforce` lifted, with its reason: a
+/// rollover and a raised limit call for different things from the person.
+fn resumed_line(agent: &str, why: &str) -> String {
+    format!("budget:   agent `{agent}` resumed; {why}")
+}
+
+fn has_terminal() -> bool {
+    matches!(Human::terminal(), Human::Line(_))
+}
+
 impl Runner for CliRunner<'_> {
     fn blocker(&mut self) -> Option<String> {
         match trellis_vcs::pending(self.root) {
@@ -274,8 +916,130 @@ impl Runner for CliRunner<'_> {
         }
     }
 
+    fn tick(&mut self, q: &Queue, out: &mut dyn Write) {
+        self.trust = None;
+        match load_profiles(self.root) {
+            Ok(p) => self.profiles = p,
+            Err(e) => self.once(
+                out,
+                format!("work:     profiles not reloaded, keeping the last good set: {e:#}"),
+            ),
+        }
+        match load_routines(self.root, &self.profiles) {
+            Ok(r) => self.routines = r,
+            Err(e) => self.once(
+                out,
+                format!("work:     routines not reloaded, keeping the last good set: {e:#}"),
+            ),
+        }
+        let now = trellis_queue::now_secs();
+        let routines: Vec<Routine> = self.routines.values().cloned().collect();
+        for r in &routines {
+            match routine::evaluate(q, r, now) {
+                Ok(t) => {
+                    if t.armed {
+                        let _ = writeln!(out, "routine:  {} armed", r.name);
+                    }
+                    if t.missed > 0 {
+                        let _ = writeln!(
+                            out,
+                            "routine:  {} dropped {} missed fire(s) (catch-up policy)",
+                            r.name, t.missed
+                        );
+                    }
+                    for (at, f) in t.fired {
+                        let when = trellis_queue::secs_to_iso(at);
+                        let _ = writeln!(
+                            out,
+                            "routine:  {} fired for {when}: {}",
+                            r.name,
+                            match f {
+                                routine::Fired::Enqueued(id) => format!("queued {id}"),
+                                routine::Fired::Coalesced(id) => format!("coalesced into {id}"),
+                                routine::Fired::Skipped(id) => format!("skipped; {id} still open"),
+                            }
+                        );
+                    }
+                }
+                Err(e) => self.once(out, format!("routine:  {} not evaluated: {e}", r.name)),
+            }
+        }
+        // Budgets: thresholds, hard stops, and monthly rollovers.
+        let month = this_month();
+        let records = spend_records(self.root);
+        let profiles: Vec<Profile> = self.profiles.values().cloned().collect();
+        for p in profiles.iter().filter(|p| p.file.budget.is_some()) {
+            let s = ledger::spend(&records, &p.name, &month);
+            match ledger::enforce(q, p, &s, &month, Actor::Work) {
+                Ok(done) => {
+                    if let Some(why) = &done.resumed {
+                        let _ = writeln!(out, "{}", resumed_line(&p.name, why));
+                    }
+                    if let Some(m) = done.message {
+                        self.once(out, format!("budget:   {m}"));
+                    }
+                }
+                Err(e) => self.once(out, format!("budget:   `{}` not checked: {e}", p.name)),
+            }
+        }
+    }
+
+    fn gate(&mut self, _id: &str, t: &trellis_queue::Task, _out: &mut dyn Write) -> Option<String> {
+        let Some(name) = &t.assignee else {
+            return self
+                .model
+                .is_none()
+                .then(|| "no model: pass --model, or set [model] spec".to_string());
+        };
+        let Some(p) = self.profiles.get(name) else {
+            return Some(format!("no agent profile `{name}` in .trellis/agents/"));
+        };
+        let o = match trellis_queue::profile::overlay(&self.queue, name) {
+            Ok(o) => o,
+            // An overlay that cannot be read may hold a pause; running the
+            // task anyway would ignore it.
+            Err(e) => return Some(format!("agent `{name}`: overlay unreadable: {e}")),
+        };
+        if let Some(why) = trellis_queue::profile::paused_reason(p, &o) {
+            return Some(why);
+        }
+        if Self::approve_mode(p) && !has_terminal() {
+            return Some(format!(
+                "agent `{name}` is in approve mode, and `work` has no terminal to ask on"
+            ));
+        }
+        // A process agent's command is repository code (ADR 0026 §11), so
+        // it waits for the same decision a hook does (ADR 0023 §4).
+        if p.is_process() {
+            let (check, root) = (self.trust_check, self.root);
+            if let Err(why) = self.trust.get_or_insert_with(|| check(root)) {
+                return Some(format!("agent `{name}` runs a repository command; {why}"));
+            }
+        }
+        if !p.is_process() && p.file.model.is_none() && self.model.is_none() {
+            return Some(format!(
+                "agent `{name}` names no model, and `work` has none: pass --model"
+            ));
+        }
+        None
+    }
+
+    fn next_due(&self) -> Option<Duration> {
+        let now = trellis_queue::now_secs();
+        routine::next_due(&self.routines, now).map(|t| Duration::from_secs((t - now).max(1) as u64))
+    }
+
+    fn starting(&mut self, id: &str) {
+        self.current = Some(id.to_string());
+    }
+
     fn run(&mut self, t: &trellis_queue::Task) -> RunEnd {
-        let text = match self.text(t) {
+        let profile = t
+            .assignee
+            .as_ref()
+            .and_then(|a| self.profiles.get(a))
+            .cloned();
+        let text = match self.text(t, profile.as_ref()) {
             Ok(s) => s,
             Err(e) => {
                 return RunEnd::Error {
@@ -284,25 +1048,64 @@ impl Runner for CliRunner<'_> {
                 };
             }
         };
+        if let Some(p) = profile.as_ref().filter(|p| p.is_process()) {
+            let id = self.current.clone().unwrap_or_default();
+            return crate::process_agent::run(
+                crate::process_agent::ProcessRun {
+                    root: self.root,
+                    profile: p,
+                    task_id: &id,
+                    text: &text,
+                    stop: &self.stop,
+                },
+                // The human stream, not stdout: under `work --json` stdout
+                // carries JSONL only (ADR 0025 §4).
+                &mut crate::output::human(),
+            );
+        }
+        let model_from_user =
+            self.model_from_user && profile.as_ref().is_none_or(|p| p.file.model.is_none());
+        let Some(model) = profile
+            .as_ref()
+            .and_then(|p| p.file.model.clone())
+            .or_else(|| self.model.clone())
+        else {
+            return RunEnd::Error {
+                run_id: None,
+                error: "no model for this task".into(),
+            };
+        };
+        if let Some(p) = &profile {
+            let _ = writeln!(crate::output::human(), "agent:    {}", p.name);
+        }
+        // Auto, unless the profile asks for approve mode — and the gate let
+        // that task through only with a terminal attached. The heartbeat is
+        // otherwise the hands-off end of the dial (ADR 0020 §5): approve
+        // mode with nobody to answer would refuse every task.
+        let control = match profile.as_ref().filter(|p| Self::approve_mode(p)) {
+            Some(_) => RunControl {
+                flag: Some(config::ControlMode::Approve),
+                human: Human::terminal(),
+            },
+            None => RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+            },
+        };
         let before = newest_run_id(self.root);
         let exit = cmd_run(
             self.root,
             &text,
-            &self.model,
+            &model,
             self.unconstrained,
             RunSeeding {
                 resume: false,
                 focus: t.focus.as_deref(),
+                profile: profile.as_ref(),
+                model_from_user,
             },
-            // Auto, whatever the config says: the heartbeat is the hands-off
-            // end of the dial (ADR 0020 §5), and nobody is at the terminal to
-            // answer. Approve mode here would refuse every task at the head
-            // of the queue rather than run it.
-            RunControl {
-                flag: Some(config::ControlMode::Auto),
-                human: Human::Absent,
-            },
-            &mut std::io::stdout(),
+            control,
+            &mut crate::output::human(),
         );
         let after = newest_run_id(self.root);
         let run_id = if after != before { after } else { None };
@@ -333,5 +1136,141 @@ impl Runner for CliRunner<'_> {
             );
         }
         !self.stop_requested()
+    }
+}
+
+#[cfg(test)]
+mod resumed_tests {
+    use super::*;
+
+    #[test]
+    fn a_lift_is_reported_with_enforce_s_reason_not_always_as_a_rollover() {
+        // The risk: every lift printed "its monthly window rolled over",
+        // including one for a lifetime limit raised in the profile file.
+        let d = tempfile::tempdir().unwrap();
+        let q = Queue::at(d.path().join("queue"));
+        let p = |lifetime: u64| {
+            trellis_queue::profile::parse(
+                "rev",
+                &format!("[budget]\nlifetime_tokens = {lifetime}\n"),
+            )
+            .unwrap()
+        };
+        let s = trellis_queue::ledger::Spend {
+            month: 100,
+            lifetime: 100,
+            ..Default::default()
+        };
+        trellis_queue::ledger::enforce(&q, &p(100), &s, "2026-09", Actor::Work).unwrap();
+        let done =
+            trellis_queue::ledger::enforce(&q, &p(1000), &s, "2026-09", Actor::Work).unwrap();
+        let line = resumed_line("rev", done.resumed.as_deref().expect("lifted"));
+        assert!(!line.contains("rolled over"), "{line}");
+        assert!(line.contains("no longer over its token limit"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod instructions_tests {
+    use super::*;
+
+    #[test]
+    fn instructions_linked_outside_the_repository_are_refused() {
+        // The risk: a committed `.trellis/agents/r.md -> ~/.aws/credentials`
+        // was read through the link and put ahead of every task the profile
+        // ran, into a hosted request body.
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("credentials");
+        std::fs::write(&secret, "SECRET").unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis/agents")).unwrap();
+        let p = trellis_queue::profile::parse("r", "instructions = \"agents/r.md\"\n").unwrap();
+        let at = d.path().join(".trellis/agents/r.md");
+        if let Err(why) = trellis_core::paths::symlink_for_test(&secret, &at) {
+            eprintln!("{why}");
+            return;
+        }
+        let e = format!("{:#}", instructions(d.path(), &p).unwrap_err());
+        assert!(e.contains("outside the repository"), "{e}");
+        assert!(!e.contains("SECRET"), "{e}");
+
+        // A plain file still loads.
+        std::fs::remove_file(&at).unwrap();
+        std::fs::write(&at, "Review only.").unwrap();
+        assert_eq!(
+            instructions(d.path(), &p).unwrap().as_deref(),
+            Some("Review only.")
+        );
+    }
+}
+
+#[cfg(test)]
+mod trust_per_tick_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TRUSTED: AtomicBool = AtomicBool::new(false);
+
+    fn counted(_: &Path) -> std::result::Result<(), String> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        if TRUSTED.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err("not trusted: run trellis trust".into())
+        }
+    }
+
+    #[test]
+    fn trust_is_decided_once_per_tick_and_again_at_the_next() {
+        // The risk: `require_trusted` walks and hashes `.trellis/`, and the
+        // gate ran it for every pending process task on every tick. And the
+        // other side: a cached answer must not outlive its tick, or a
+        // `trellis trust` while `work --every` waits is never noticed.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join(".trellis/agents")).unwrap();
+        std::fs::write(
+            root.join(".trellis/agents/p.toml"),
+            "command = [\"true\"]\n",
+        )
+        .unwrap();
+        let q = Queue::at(root.join("queue"));
+        let mut r = CliRunner {
+            root,
+            model: None,
+            model_from_user: false,
+            unconstrained: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            profiles: load_profiles(root).unwrap(),
+            queue: q.clone(),
+            routines: BTreeMap::new(),
+            current: None,
+            said: BTreeSet::new(),
+            trust_check: counted,
+            trust: None,
+        };
+        let task = trellis_queue::Task {
+            task: "t".into(),
+            assignee: Some("p".into()),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        r.tick(&q, &mut out);
+        for id in ["a", "b", "c"] {
+            let why = r.gate(id, &task, &mut out).expect("untrusted: waits");
+            assert!(why.contains("not trusted"), "{why}");
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "once for three tasks");
+
+        TRUSTED.store(true, Ordering::SeqCst);
+        r.tick(&q, &mut out);
+        assert_eq!(
+            r.gate("a", &task, &mut out),
+            None,
+            "the next tick sees trust"
+        );
+        assert_eq!(r.gate("b", &task, &mut out), None);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     }
 }

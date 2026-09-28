@@ -35,6 +35,25 @@ Enforced in the type system:
 - A process that failed to spawn yields `exit_code: None`, which never reads as
   success.
 
+### A pass describes the tree it ran against (amended 2026-09-27)
+
+A `Verdict` is evidence about one tree. Convergence reads
+`Transcript::last_check_passed`, which walks the run's turns from the end:
+a verdict answers, but **a turn that may have changed the tree, reached
+before any verdict, answers `false`**. The first version skipped every
+verdict-less turn, so pass, then edit, then done converged on bytes no
+check had seen. Found in review of PR #1; pre-existing since v0.2.
+
+"May have changed the tree" is decided by the orchestrator, which owns the
+only write path, and is conservative: an `edit` or `write_file` that reached
+a write (whether or not it then succeeded), any `bash` or custom tool that
+ran, and any turn around which a `pre_tool` or `post_tool` hook changed the
+worktree (ADR 0023, "After a pass"). Only tools known to be read-only are
+exempt. The match is exhaustive, so a new tool does not compile until
+someone decides whether it writes. A run stopped this way ends
+`ChangedAfterLastCheck`, whose explanation says the pass went stale rather
+than that there was none.
+
 ## Alternatives considered
 
 **A code-review guideline plus a lint.** Rejected. Under delivery pressure a

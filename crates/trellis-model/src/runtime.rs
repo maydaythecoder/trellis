@@ -40,6 +40,16 @@ pub enum RuntimeError {
     Shape(String),
     #[error("runtime did not respond within {0:?}")]
     Timeout(Duration),
+    /// The provider refused the key. Carries the variable's name and never
+    /// the provider's body, which may echo a masked form of the key.
+    #[error(
+        "the provider refused the key from {source_var} (HTTP {status}). Check that \
+         {source_var} holds a valid key for this endpoint."
+    )]
+    Auth { status: u16, source_var: String },
+    /// The request exceeded the provider's context window (ADR 0024 §5).
+    #[error("the request exceeded the provider's context window: {0}")]
+    ContextOverflow(String),
 }
 
 /// Which serving runtime is on the other end.
@@ -116,18 +126,8 @@ impl RuntimeClient {
             .strip_prefix("http://")
             .ok_or_else(|| RuntimeError::Config(format!("{base} must start with http://")))?;
         let rest = rest.trim_end_matches('/');
-        let (host, port) = match rest.rsplit_once(':') {
-            Some((h, p)) => (
-                h.to_string(),
-                p.parse().map_err(|_| {
-                    RuntimeError::Config(format!("{base}: `{p}` is not a port number"))
-                })?,
-            ),
-            None => (rest.to_string(), 80),
-        };
-        if host.is_empty() {
-            return Err(RuntimeError::Config(format!("{base} has no host")));
-        }
+        // The hosted transport's parser, so `[::1]` works here too.
+        let (host, port) = crate::transport::split_authority(base, rest, 80)?;
         Ok(Self {
             host,
             port,
@@ -154,7 +154,7 @@ impl RuntimeClient {
     /// or tier 4 and does not come through here.
     pub async fn reachable(&self) -> Result<(), RuntimeError> {
         const WINDOW: Duration = Duration::from_secs(5);
-        let addr = format!("{}:{}", self.host, self.port);
+        let addr = crate::transport::socket_addr(&self.host, self.port);
         match tokio::time::timeout(WINDOW, TcpStream::connect(&addr)).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(source)) => Err(RuntimeError::Connect { base: addr, source }),
@@ -255,8 +255,9 @@ impl RuntimeClient {
         let raw = tokio::time::timeout(self.timeout, self.post(self.dialect.path(), &body))
             .await
             .map_err(|_| RuntimeError::Timeout(self.timeout))??;
-        let v: Value = serde_json::from_str(&raw)
-            .map_err(|e| RuntimeError::Shape(format!("response is not JSON: {e}; body: {raw}")))?;
+        let v: Value = serde_json::from_str(&raw).map_err(|e| {
+            RuntimeError::Shape(format!("response is not JSON: {e}; body: {}", head(&raw)))
+        })?;
         self.extract(&v)
     }
 
@@ -312,7 +313,7 @@ impl RuntimeClient {
                     .await
                     .map_err(|_| RuntimeError::Timeout(self.timeout))??;
                 let v: Value = serde_json::from_str(&raw).map_err(|e| {
-                    RuntimeError::Shape(format!("/props is not JSON: {e}; body: {raw}"))
+                    RuntimeError::Shape(format!("/props is not JSON: {e}; body: {}", head(&raw)))
                 })?;
                 Ok(v["total_slots"]
                     .as_u64()
@@ -324,7 +325,7 @@ impl RuntimeClient {
     async fn get(&self, path: &str) -> Result<String, RuntimeError> {
         self.request(&format!(
             "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            self.host
+            self.host_header()
         ))
         .await
     }
@@ -334,10 +335,14 @@ impl RuntimeClient {
         self.request(&format!(
             "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            self.host,
+            self.host_header(),
             body.len()
         ))
         .await
+    }
+
+    fn host_header(&self) -> String {
+        crate::transport::host_header(&self.host, self.port, 80)
     }
 
     /// Sends one request and reads the whole response.
@@ -345,7 +350,7 @@ impl RuntimeClient {
     /// `Connection: close` means the body runs to EOF, which avoids
     /// implementing chunked transfer decoding for a localhost call.
     async fn request(&self, req: &str) -> Result<String, RuntimeError> {
-        let addr = format!("{}:{}", self.host, self.port);
+        let addr = crate::transport::socket_addr(&self.host, self.port);
         let mut stream =
             TcpStream::connect(&addr)
                 .await
@@ -362,11 +367,23 @@ impl RuntimeClient {
                 source,
             })?;
 
+        // Bounded as a hosted reply is (`transport::MAX_RESPONSE`): one byte
+        // past the cap is read, so an over-long reply is told from one that
+        // is exactly at it.
+        let cap = crate::transport::MAX_RESPONSE;
         let mut raw = Vec::new();
-        stream
+        (&mut stream)
+            .take(cap as u64 + 1)
             .read_to_end(&mut raw)
             .await
             .map_err(|source| RuntimeError::Connect { base: addr, source })?;
+        if raw.len() > cap {
+            return Err(RuntimeError::Shape(format!(
+                "the runtime's response is larger than {} MiB, which no model reply is; \
+                 nothing more was read",
+                cap >> 20
+            )));
+        }
         let text = String::from_utf8_lossy(&raw).into_owned();
 
         let (head, body) = text
@@ -385,6 +402,13 @@ impl RuntimeClient {
         }
         Ok(body.to_string())
     }
+}
+
+/// The first 400 characters of a body an error quotes, as the HTTP error
+/// quotes it: the whole of a reply up to the size cap is not a message
+/// anyone reads.
+fn head(raw: &str) -> String {
+    raw.chars().take(400).collect()
 }
 
 #[cfg(test)]
@@ -490,6 +514,14 @@ mod tests {
         assert!(RuntimeClient::new("http://localhost:1234", Dialect::LlamaCpp, None).is_ok());
         assert!(RuntimeClient::new("localhost:1234", Dialect::LlamaCpp, None).is_err());
         assert!(RuntimeClient::new("http://localhost:notaport", Dialect::LlamaCpp, None).is_err());
+        // Bracketed IPv6, with and without a port: the shared parser.
+        let c = RuntimeClient::new("http://[::1]", Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(
+            (c.host.as_str(), c.port, c.host_header()),
+            ("::1", 80, "[::1]".into())
+        );
+        let c = RuntimeClient::new("http://[::1]:8080/", Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(c.host_header(), "[::1]:8080");
     }
 
     /// A stub runtime, so the request shape and response parsing are tested
@@ -703,6 +735,29 @@ mod tests {
             matches!(e, RuntimeError::Timeout(d) if d == Duration::from_millis(150)),
             "the error must carry the timeout that fired, not a default: {e}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_runtime_reply_past_the_cap_is_refused_rather_than_buffered() {
+        // The hosted transport's cap (review round 8, finding 8) holds for
+        // the local client too, which read to end of stream unbounded.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
+            let chunk = vec![b'x'; 1 << 20];
+            for _ in 0..40 {
+                if sock.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let c = RuntimeClient::new(&format!("http://{addr}"), Dialect::LlamaCpp, None).unwrap();
+        let e = c.probe_slots().await.unwrap_err();
+        assert!(e.to_string().contains("32 MiB"), "{e}");
     }
 
     #[tokio::test]

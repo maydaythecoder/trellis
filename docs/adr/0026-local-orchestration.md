@@ -1,0 +1,1147 @@
+# ADR 0026 — Local orchestration: task model, agent profiles, routines, budgets
+
+**Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
+§10. §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
+was closed. Each amendment is marked in place. §4's `tools` list and skill deny
+list were integrated with ADR 0023 and ADR 0019 afterwards; see
+"Integrated" at the end.
+**Date:** 2026-09-27
+**Extends:** ADR 0020 (the local work queue). Every rule there still holds:
+the queue lives in the git directory, files are published by hard link and
+never renamed, execution is serial, and `work` stops at the first converged
+change.
+**Reference design:** Paperclip (`paperclipai/paperclip`, MIT), the rows of
+ADR 0021 dispositioned W-E. Semantics were read from Paperclip's own docs
+(`docs/api/routines.md`, `doc/execution-semantics.md`) where the inventory
+was not exact. No Paperclip code or server is used.
+
+## Context
+
+ADR 0020 built the queue as a list of tasks that run oldest first. Paperclip
+organizes work with more structure than that: priorities, dependencies,
+sub-tasks, named agents with their own instructions and budgets, schedules,
+approvals and an audit log. ADR 0021 took each of those as W-E.
+
+Two things found while reading the code decide the shape of what follows.
+
+1. **The trail did not record tokens.** The brief for this wave says the
+   budget ledger reads spend from the trail. It could not: `Factual` records
+   prompt size in bytes (`context`) and nothing else about spend. So this
+   ADR adds a token field to the trail (§8), and the ledger reads that.
+2. **Every mutation collides with the no-overwrite rule.** `publish` refuses
+   an existing name (ADR 0020 §3), and `set`, `note`, `cancel`, `approve`, a
+   routine's last-fired time and a profile's pause all rewrite a file. One
+   protocol has to cover all of them (§2).
+
+## Decision
+
+### 1. The task model
+
+A task file gains these fields. Every one has a serde default, so a task file
+written under ADR 0020 still loads unchanged.
+
+| Field | Meaning |
+|---|---|
+| `status` | `backlog`, `todo`, `in_progress`, `in_review`, `blocked`, `done`, `cancelled`, `failed` |
+| `blocked` | The typed reason when `status` is `blocked`: `blockers`, `children`, or `manual` with a detail naming what unblocks it |
+| `priority` | `critical`, `high`, `medium` (default), `low` |
+| `labels` | Free strings |
+| `parent` | A task id. Structure only, as in Paperclip: it is not a dependency |
+| `assignee` | An agent profile name (§4) |
+| `blockers` | Task ids this task waits for |
+| `needs_approval`, `approval` | §6 |
+| `notes` | `[{at, actor, text}]`, appended by `queue note` and by the queue |
+| `routine` | The routine that created the task, if any (§7) |
+
+The goal is the vault stem already stored as `focus` (ADR 0020 §6).
+`queue add --goal` is an alias of `--focus`.
+
+**The directory is still the state; `status` refines it.** `State` gains
+`cancelled/`. Which statuses may sit in which directory is fixed:
+
+| Directory | Statuses | Default when `status` is absent |
+|---|---|---|
+| `pending/` | `backlog`, `todo`, `blocked` | `todo` |
+| `claimed/` | `in_progress` | `in_progress` |
+| `done/` | `in_review`, `done` | `done` |
+| `failed/` | `failed` | `failed` |
+| `cancelled/` | `cancelled` | `cancelled` |
+
+A task in `done/` written before this ADR reads as `done`, not `in_review`.
+Those tasks converged under ADR 0020 and have almost certainly been reviewed
+since, and reading them as `in_review` would leave every task that names one
+as a blocker waiting forever.
+
+**A converged run now ends `in_review`, not `done`.** Its change is in the
+worktree waiting for a person, which is what `in_review` means in Paperclip.
+`trellis queue set <id> --status done` records that the person accepted it.
+
+**What is claimable.** A pending task is claimable when all of these hold:
+- its status is `todo`
+- every blocker is `done`
+- it does not need an approval it has not received
+- its assignee, if any, passes the gate in §4
+
+The heartbeat claims the highest priority first and, within a priority, the
+oldest. It reads every pending file to sort them. That costs one read per
+pending task per tick, and the queue is a person's backlog, not a message
+bus. A file that is not valid task JSON still goes to `failed/` when a claim
+reaches it, as in ADR 0020.
+
+**Blockers and parents wake tasks.** These rules are taken from Paperclip
+`execution-semantics.md` §6:
+- A blocker is resolved only when it is `done`. A `cancelled` blocker does
+  not satisfy the dependency. The edge stays unresolved until someone
+  removes it (`queue set <id> --unblock <blocker>`).
+- A task that is `blocked` for reason `blockers` becomes `todo` once every
+  blocker is `done`.
+- A task that is `blocked` for reason `children` becomes `todo` once every
+  direct child is terminal. Terminal is `done`, `cancelled` or `failed`.
+  Paperclip has no `failed` status. Trellis adds it, and counts it as
+  terminal because a failed child will not move again without a person.
+  `in_review` is not terminal.
+- A parent waits on its children only if it was set to wait with
+  `--status blocked --reason children`. Adding a child does not change the
+  parent, because Paperclip says structure is not dependency.
+
+These checks run in `Queue::reconcile`. `work` calls it before every claim,
+and every CLI command that ends a task calls it too. Each wake is written to
+the activity log (§9).
+
+Adding blockers that are not yet `done` sets the task to `blocked` for reason
+`blockers`. A task set to `todo` while it still has unresolved blockers stays
+unclaimable, and `queue list` says why.
+
+*Amended in implementation: a heartbeat that finds tasks but none it may
+claim now says so.* `work` without `--every` used to return "queue empty"
+whenever nothing was claimed. With gated tasks, that line is false. The loop
+prints each waiting task and its reason once, and it stops with
+`Stop::Waiting(n)`: "nothing claimable; n pending task(s) waiting". This
+exits 0, like an empty queue, because nothing is wrong: the tasks are waiting
+as designed. "Queue empty" is printed only when nothing is pending.
+
+### 2. Changing a file that already exists
+
+Every rewrite goes through one of three paths. None of them renames a file.
+
+- **A pending task is edited by claiming it.** `claim(id)` gives this process
+  the task under the same atomic checkout `work` uses. The edit is applied,
+  and the changed task is published back to `pending/` (or to its new
+  directory) before the claim is removed. While the
+  edit is in progress, `work` does not see the task. If `work` holds the
+  task, the edit fails with "claimed by pid N". The window ADR 0020 §3
+  already accepts also applies here. A claimer that read the old file a few
+  microseconds before the edit could run the old content.
+- **A claimed task is not edited.** The running process publishes its own
+  copy when it finishes, so an edit would be silently lost. `queue set` and
+  `queue note` on a claimed task refuse and say why.
+- **A task in `done/`, `failed/` or `cancelled/`, and the queue's other
+  state files, take an exclusive lock.** The lock is
+  `<git-dir>/trellis/locks/<name>.lock`, published by hard link, and the hard
+  link fails if a lock already exists. Profile overlays and routine state
+  use the same path.
+
+  *Amended after the third review of PR #1.* The holder first removed the
+  old file and then published the new one, so a failure or a crash between
+  the two lost the file: a finished task vanished from every directory. Now
+  the holder publishes the new content at the fixed side name
+  `.<name>.next`, removes the old file, links the side copy into place and
+  removes the side copy. A complete copy exists at every instant. Readers
+  that find the name missing read the side copy, `queue list` shows it, and
+  the next holder of the lock finishes the swap. If the side copy exists
+  while the old file is still there, the edit never took effect and the
+  side copy is discarded. If linking the side copy into place fails, the
+  caller gets an error, but the edit has already taken effect. The error
+  says so and names the side copy. The lock is taken by every mutation of a finished
+  task: `queue set`, `queue note`, `queue requeue`, and the removal done by
+  `import --on-conflict replace`. Before this, only `edit` took the lock, so a requeue
+  that ran during an edit moved the task to `pending/`, and the edit then
+  wrote it back to `failed/`. That left one task in two states.
+  `a_requeue_during_an_edit_of_a_failed_task_leaves_it_in_one_state` and
+  `an_edit_of_a_finished_task_that_fails_midway_never_loses_it` hold both. Approval requests are never rewritten in
+  place: they only move between `pending/`, `approved/` and `rejected/` by
+  publish-then-remove, like a task, so a second decision on the same request
+  fails at the publish. A crash while the lock is held leaves
+  the lock behind, and the next writer gets an error that names the lock
+  file. Removing it by hand is the recovery. This is the same kind of
+  visible, stuck-but-never-lost state as the two-copies window in ADR 0020
+  §3.
+
+  *Amended after the fourth review of PR #1: every reader goes through one
+  rule, and the settle has one owner.* A task left only as its side copy was
+  listed, because the directory listing reports a side copy whose name is
+  missing. But `queue export` copied the missing name and aborted, and
+  `queue list` showed no age for the task. Every read of a record now goes
+  through `files::read_settled`: its bytes, its age and an export's copy.
+  That function tries the name, then the side copy, then the name again,
+  and takes no lock. Evidence:
+  `export_and_list_read_a_task_whose_only_copy_is_its_side_file`, which
+  failed before the change, first on the missing age and then, with that
+  assertion set aside, on export's NotFound.
+  The unfinished swap was settled in three places around one edit: by the
+  task lock, by the locked-replace helper and by `replace`. `replace` now
+  owns the settle for an edit in place. The helper's copy is gone, because
+  the read before it already reads a side copy that is the record.
+  The task lock keeps its settle. The review assumed that settle was
+  redundant, and it is not. `queue requeue`, the removal on import, and an
+  edit that moves a task to another state all act on the name and never
+  call `replace`. A side copy they left behind would bring the task back
+  in its old state. Guards:
+  `a_task_left_only_as_its_side_file_is_moved_or_removed_whole` and
+  `an_overlay_change_cut_short_at_the_swap_is_read_and_finished_by_the_next`.
+
+**The activity log is appended, not published.** `activity.jsonl` is opened
+with `O_APPEND`, and each record is one `write_all` of one line. It is never
+renamed, replaced or truncated. The hard-link rule exists so that a file is
+never seen half-written and never overwritten. An append-only log meets the
+second part by construction. It meets the first part as long as each line
+goes out in one write, and a reader skips a last line that does not parse.
+
+### 3. The queue subcommands
+
+- `queue add` gains `--priority`, `--label` (repeatable), `--goal`,
+  `--parent`, `--assignee`, `--blocked-by` (repeatable), `--needs-approval`
+  and `--backlog`. The parent, the blockers and the assignee must exist when
+  the task is added. This follows ADR 0020's rule that anything checkable is
+  checked at add time.
+- `queue list` shows priority, status, labels, assignee, blockers, parent
+  and the reason a pending task is not claimable. It filters with
+  `--status`, `--label`, `--assignee` and `--priority`.
+- `queue set <id>` changes priority, labels, assignee, parent, blockers,
+  approval requirement, or status (`--status blocked` requires `--reason`).
+- `queue note <id> "<text>"` appends a note.
+- `queue cancel <id> [--reason]` moves the task to `cancelled/`.
+- `queue approve`, `queue reject`: §6.
+- `queue log [--limit N]`: §9.
+- `queue export`, `queue import`: §10.
+
+### 4. Agent profiles
+
+A profile is `.trellis/agents/<name>.toml`, committed with the repository
+like the rest of `.trellis/`:
+
+```toml
+role = "reviewer"
+instructions = "agents/reviewer.md"   # under .trellis/, prepended to the task
+model = "llamacpp:http://127.0.0.1:8080"
+# command = ["python", "tools/agent.py"]   # a process agent (§11); excludes model
+# timeout_s = 1800
+# pass_env = ["ANTHROPIC_API_KEY"]         # process agents only; default none (§11)
+reports_to = "lead"
+paused = false
+tools = ["read_file", "edit"]           # carried for W-B's registry; see below
+
+[control]
+mode = "auto"          # or "approve"
+approve = ["edit"]
+
+[skills]
+allow = ["refactor"]   # absent means all
+deny = []
+
+[budget]
+monthly_tokens = 2000000
+lifetime_tokens = 50000000
+warn_at = 0.8
+```
+
+**Validation** happens whenever profiles are loaded, which is every command
+that reads them:
+- A name is lowercase ASCII letters, digits, `-` and `_`.
+- `model` and `command` are mutually exclusive. With neither, the task uses
+  the `work` model.
+- `reports_to` must name an existing profile, and the chain must not form a
+  cycle (Paperclip item 4).
+- `[control]` uses the same vocabulary as the repository's `[control]`
+  (ADR 0018).
+- `warn_at` is in (0, 1].
+- A process profile may not set a budget, because trellis cannot see the
+  process's tokens (§8). A budget it could never enforce would read as a
+  limit that exists.
+- *Amended (wave K):* `pass_env` is refused on a profile without `command`.
+  A model profile starts no process to pass a variable to, and accepting
+  the field would read as a pass-through that happened. An entry that is
+  blank or contains `=` is refused as not a variable name.
+
+**What a profile changes about a run of its tasks:**
+- **`instructions`**: the file's text goes ahead of the task, the same way
+  `--prompt` does.
+- **`model`**: overrides `work --model` and `[model] spec` for this
+  profile's tasks.
+- **`[control] mode`**: overrides the dial. `work` still has nobody to ask,
+  so an `approve` profile's tasks can be claimed only when `work` runs
+  attached to a terminal. Otherwise they are unclaimable and give that
+  reason, instead of being claimed and refused by `NEEDS_A_TERMINAL`.
+- **`[control] approve`**: ~~replaces the repository's approve list for the
+  run.~~ *Amended after the tenth review of PR #1:* adds to the approve
+  list the repository's and the user's files layer to (ADR 0025 §7), for
+  the run. A profile is repository content, and replacing the list let
+  `approve = ["read_file"]` drop the user's own entries and the default
+  `edit`. A profile can only add restrictions. Evidence:
+  `a_profile_s_approve_list_adds_to_the_user_s_and_drops_nothing` in
+  `crates/trellis-cli/src/user_config.rs`, which failed before with
+  `["read_file", "edit"]` where `["edit", "run_checks", "read_file"]` was
+  due. The other fields were checked for the same direction and already
+  only restrict: `tools` and `[skills]` narrow, `[budget]` is a further
+  cap, and `[control] mode` can only raise `work`'s hands-off default to
+  approve (a profile without it runs auto under `work`, as every task
+  does, ADR 0020 §5). `pass_env` gives a variable back to a process
+  agent, and is a committed choice `trellis trust` shows (§11).
+- **`[skills]`**: filters the catalog disclosed to the model (ADR 0019).
+- **`tools`**: stored and validated only as a list of strings. W-B is
+  building the tool registry at the same time (ADR 0023), and this field is
+  what it will read. Until then, **it has no effect on the run**, and
+  `agents show` says so. *Integrated: it now narrows the run's tool set;
+  see "Integrated".*
+
+The first four settings reach `cmd_run` through one new field on
+`RunSeeding`. It is an optional reference to the profile, and every caller
+except `work` passes `None`.
+
+*Amended in implementation:*
+- **The skill filter narrows the list the model is shown, and nothing
+  more.** The `read_skill` tool reads any skill by exact name through
+  `skills::read_body` in the orchestrator, and that path is owned by W-B. So
+  a denied skill is left off the list, but a model that already knows the
+  name can still read it. `agents show` says so. Enforcing the filter at the
+  tool belongs with the tool registry (ADR 0023). *Integrated: enforced at
+  `read_skill`; see "Integrated".*
+- **`work --model` is optional.** A queue whose tasks all name a profile
+  with its own model, or a process command, needs no default model. A task
+  that does need one, when none is configured, is left pending with that
+  reason instead of failing.
+- **The profile's approve list travels on `RunSeeding`, not `RunControl`.**
+  `RunControl` is built with a struct literal at six call sites across the
+  modules that W-D is editing. `RunSeeding` has two such sites, `run` and
+  `work`; every other caller uses `default()`. The approve list is applied
+  to the dial just after `cfg.control(flag)`.
+
+**Pause state is not written into the profile file.** The TOML is tracked,
+and writing to it would dirty the worktree that every run needs clean
+(ADR 0009). `agents pause`, the budget hard stop and budget raises write an
+overlay at `<git-dir>/trellis/agents/<name>.json`, using the lock protocol of
+§2. A profile is paused if its file says `paused = true` or its overlay says
+so. `agents resume` on a profile paused in its file says to edit the file.
+
+**Subcommands:** `trellis agents list`, `show <name>`,
+`pause <name> [--reason]`, `resume <name>`.
+
+### 5. Budgets in tokens
+
+For each profile, the ledger sums the tokens recorded in trails (§8) whose
+`agent` is that profile. It keeps two sums:
+- **This calendar month, UTC.** The window resets at 00:00 UTC on the 1st.
+  A run belongs to the month its `started_at` falls in.
+- **Lifetime.**
+
+There are no dollars. COST_MODEL.md does not price tokens, and ADR 0021
+excludes dollars until it does.
+
+**What is counted, stated plainly.** The count is **completion tokens as the
+runtime adapter reported them**. It is `Model::tokens_used()`, which the
+runtime adapter sums from each completion's reported count. No figure for
+prompt tokens exists anywhere in trellis, so a budget here limits generated
+tokens, not billed tokens. A scripted run records no token count. A process
+agent's tokens are unknown to trellis.
+
+**A hosted reply with no usage figure** (amended after the second review of
+PR #1; before it such a reply was recorded as 0, so spend read as free and
+no budget tripped). The count is unknown, never zero:
+- The trail records `tokens: None` for the run once any reply went
+  unreported, because the sum of the others would be a lower bound
+  presented as a count.
+- The in-run `max_tokens` ceiling charges each unreported reply at the
+  `max_tokens` it was requested with, the most it can have cost, so it
+  trips early rather than never.
+- A run executed as a profile with a `[budget]` is refused at the first
+  unreported reply: the run ends not converged and rolls back, with a
+  reason naming the two fixes (a provider that reports usage, or no
+  `[budget]`). The ledger itself is unchanged, and still counts only
+  measured spend. The limit, stated: that one reply's tokens, at most its
+  `max_tokens`, are spent and counted nowhere, and `agents show` reports
+  the run among those without a count.
+
+**The ledger covers the trails in this checkout.** Trails are committed, so a
+branch that does not contain a run's trail does not count its spend. Trails
+are read as untrusted data (ADR 0007). A trail whose factual digest does not
+match is still counted, because it is the only record available, and
+`agents show` reports how many such trails there are.
+
+**Thresholds.** *Amended in implementation: every profile with a budget is
+checked at the top of every `work` tick, before anything is claimed.* The
+next tick after a run is the "after each run" check. The gate then reads the
+pause from the overlay.
+- **At `warn_at` of either window:** `work` prints a warning naming the
+  window, the spend and the limit.
+- **At 100% (hard stop):** the profile is paused by the budget in its
+  overlay, and `work` skips its tasks. A `budget_override` approval request
+  is created, unless one is already pending for this profile.
+  - `trellis queue approve <request> --raise <tokens>` raises the window
+    that tripped and resumes the profile. A monthly raise applies only to
+    the month it was granted in.
+  - `trellis queue reject <request>` keeps the profile paused.
+- *Amended in implementation:* **one request per pause, not per tick.** A
+  request is opened only on the transition into a budget pause. A profile
+  that stays over its limit keeps its pause and opens nothing more, so a
+  rejection stands until something changes. The first version reopened a
+  request on the next tick after every rejection; a unit test now covers
+  it.
+- **A budget pause lifts when the profile is under every limit again.** That
+  happens when the month rolls over, or when someone raises `[budget]` in
+  the profile file, which is the way out after a rejection. The resume is
+  logged. A pause by a person is never lifted automatically, and a profile
+  a person paused opens no request while it is over its limit.
+
+The budget is a cost guard, not a correctness claim. Nothing about it
+touches `Verdict`.
+
+### 6. Approvals
+
+**Task approval** (Paperclip item 32, the review stage run before a task
+starts):
+- `queue add --needs-approval`, or `queue set --needs-approval true`, makes a
+  task unclaimable until it is approved.
+- `trellis queue approve <task-id>` records `{decision: approved, at}` on the
+  task.
+- `trellis queue reject <task-id> [--reason]` records the rejection and
+  moves the task to `cancelled/`.
+
+**Budget override requests** (§5) are files under
+`<git-dir>/trellis/approvals/{pending,approved,rejected}/<id>.json`. Their
+ids begin with `budget-`, so `queue approve <id>` can tell them from task
+ids.
+
+*Amended after the seventh review of PR #1:*
+- **A request belongs to one pause.** When `work` lifts a budget pause (a
+  rollover, or `[budget]` raised in the file), every pending request for
+  that profile is closed: moved to `rejected/` with the reason
+  `superseded: the pause was lifted: <why>`, and logged as
+  `approval.supersede`. A later hard stop reuses a pending request only
+  when it names the same window, the same month for a monthly window, and
+  the same limit; any other pending request for the profile is closed as
+  superseded and a new one opened. Before this, a request stayed pending
+  after its pause lifted and the next pause reused it, so approving it
+  raised September's limit in October, on September's figures.
+- **A decision holds the request's lock** (`approval-<id>`) from its check
+  to its end, and `approve` claims the request (moves it out of
+  `pending/`) before it applies the raise. Two approvals of one request in
+  two terminals used to both pass the check and both raise the limit; a
+  test with two threads saw the doubled raise. A raise that fails to write
+  puts the request back in `pending/`. A crash between the claim and the
+  raise leaves the request approved with no raise and the profile still
+  paused, which `queue list` shows and a `[budget]` raise in the file
+  resolves; the old order could leave the raise applied and the request
+  pending, to be approved again.
+
+Every request and every decision is logged (§9).
+
+### 7. Routines
+
+A routine is `.trellis/routines/<name>.toml`:
+
+```toml
+schedule = "0 9 * * 1-5"    # minute hour day-of-month month day-of-week
+timezone = "UTC"            # or a fixed offset: "+02:00", "-05:30"
+concurrency = "coalesce"    # coalesce | skip | always
+catch_up = "skip"           # skip | enqueue
+catch_up_max = 5            # with enqueue: at most this many missed fires
+paused = false
+
+[task]
+text = "Triage new failures for {{date}} ({{routine}}), area {{area}}"
+priority = "high"
+labels = ["triage"]
+assignee = "reviewer"
+# focus, prompt, needs_approval, parent
+
+[vars]
+area = "parser"
+```
+
+**Cron.** The parser is written by hand. It supports:
+- `*`, lists, ranges and steps (`*/15`, `1-5/2`, `10/5`). *Amended after
+  the fifth review of PR #1:* a step of 0, or one larger than the field's
+  maximum (60 for minutes, 24 for hours, 32 for day-of-month), is refused.
+  `1/4294967295 * * * *` overflowed the step loop, a panic in a debug build
+  and a wrapped value in release; the loop's addition is now checked as
+  well. Evidence: `a_step_larger_than_the_field_is_refused_not_overflowed`
+  in `crates/trellis-queue/src/cron.rs`, which panicked with "attempt to
+  add with overflow" before the change.
+- month names `jan`–`dec` and day names `sun`–`sat`
+- day-of-week 0–7, where both 0 and 7 are Sunday
+- the usual rule that when day-of-month and day-of-week are both restricted,
+  a day matches if either one does. *Amended 2026-09-27:* "restricted" is
+  Vixie cron's test, a field whose first character is not `*`. A field
+  starting with `*` (including `*/2`) makes the two AND, so
+  `0 9 */2 * mon` is odd-numbered Mondays; it had been read as restricted
+  and ORed, firing every Monday and every odd day.
+
+It does not support `L`, `W`, `#`, `?` or `@daily`-style names.
+
+**Timezones: UTC and fixed offsets only, not IANA names.** IANA names would
+need a timezone database. That means a new dependency, and the small crates
+that bundle one pin the tz data to whenever they were built. A fixed offset
+does not follow daylight saving time, so a routine that should fire at 09:00
+Amsterdam time is written `+01:00` in winter and `+02:00` in summer, or it is
+written in UTC. `Europe/Amsterdam` is refused with that explanation. It is
+not treated as UTC. An offset is exactly `+HH:MM` or `-HH:MM`, two digits in
+each field, checked on the text rather than on the parsed number: `-5:00`,
+`+05:5` and `+005:00` are refused rather than read as something close.
+
+**Firing.** `work` evaluates routines on every tick before claiming. The
+state of each routine is stored at `<git-dir>/trellis/routines/<name>.json`,
+using the lock protocol of §2. It records `armed_at`, `last_fired` (the
+scheduled instant) and the id of the last task the routine created.
+- A routine seen for the first time is armed at that moment and does not
+  fire for times before it.
+- The due instants are the schedule's instants after `last_fired` (or
+  `armed_at`) and at or before now.
+- **`catch_up = "skip"`** (Paperclip `skip_missed`): only the most recent
+  due instant fires. The earlier ones count as missed, and the log records
+  how many were dropped.
+- **`catch_up = "enqueue"`** (Paperclip `enqueue_missed_with_cap`): the most
+  recent `catch_up_max` instants fire, oldest first.
+- **Concurrency** applies to each fire. A routine is active while a task it
+  created is in `pending/` or `claimed/`.
+  - `coalesce` (the default) creates no task. It appends a note to the
+    active task saying the routine fired again. This matches Paperclip's
+    `coalesce_if_active`, which links the new fire to the active run.
+  - `skip` creates no task and logs the skipped fire.
+  - `always` creates a task every time.
+- The template is filled per fire:
+  - `{{date}}` and `{{time}}`: the scheduled instant in the routine's
+    timezone
+  - `{{routine}}`: the routine's name
+  - any key in `[vars]`
+  An unknown `{{name}}` is an error when the routine is loaded, not when it
+  fires, and a var may not shadow a built-in.
+
+*Amended in implementation:*
+- **A `paused = true` routine is not evaluated at all**, so its state does
+  not move. When it is unpaused, the fires it missed while paused are
+  handled by its catch-up policy, as any other missed fires are.
+- **The look-back is clamped to 400 days** so that a routine left
+  unevaluated for years cannot stall a tick. The enumeration is one
+  `next_after` per due instant, and a year of every-minute fires is about
+  526,000 of them.
+- **A template's assignee must name an existing profile.** This is checked
+  when routines are loaded, like the template variables.
+- **A routine is loaded, and fails, as a set.** `work` refuses to start while
+  any routine or profile is invalid. That applies the ADR 0020 rule "refuse
+  before claiming" to definitions as well as to tasks. Once `work` is
+  running, a definition that breaks mid-session is reported once, and the
+  last good set is kept.
+- *Amended after the seventh review of PR #1:* **each scheduled instant is
+  enqueued at most once.** The state was saved once, after every due fire
+  of a tick, so a failure on the second fire left the first fire's task
+  created with `last_fired` unsaved, and every later tick enqueued it
+  again. Now the state is saved after each fire, under the routine's lock
+  held for the whole tick; and a scheduled fire's task records the instant
+  as `routine_at`, so a failure between a task and its save is found on
+  the next tick (a task of this routine for this instant, in any state, is
+  that fire) instead of being enqueued twice. The check runs before the
+  concurrency policy, so `coalesce` does not note the instant as a second
+  fire. A test fails each write of a three-fire tick in turn and checks
+  each instant is queued exactly once. `routines run` is not a scheduled
+  instant: its task has no `routine_at`, and two in one second are two
+  tasks. The check reads every task file, as `add_task`'s index already
+  does, so a fire costs two reads of the queue rather than one.
+  *Amended after the eighth review:* that read was made once per due
+  instant, so a catch-up of `n` instants read every task file `n` times
+  under the routine's lock. It is now made once per tick of a routine
+  with anything due, into a map of this routine's `routine_at` instants,
+  still under the lock and after the state is settled, so the
+  idempotence above holds (its test passes unchanged). Not one read
+  across all routines: each routine's read must be under its own lock,
+  or a concurrent `work` could fire an instant between the read and the
+  lock. Evidence: `a_tick_scans_the_queue_once_however_many_instants_are_due`,
+  which counted five scans for five instants before the change.
+  *Amended after the ninth review:* `coalesce` and `skip` still read every
+  pending and claimed task once per due instant to find the open one. The
+  same one read per tick now also names it (the first claimed task, else
+  the first pending one, as before), and a fire that enqueues makes its
+  task the open one for the rest of the tick. What that gives up, stated:
+  a task that finishes while the tick is firing is still taken as open
+  for the rest of that tick, so a later fire of the same tick may coalesce
+  into it (the note it cannot take is logged) where a fresh read would
+  have enqueued; the next tick reads again. Evidence:
+  `a_coalescing_tick_scans_the_queue_once_however_many_instants_are_due`,
+  which counted six reads for five instants before the change.
+
+`work --every S` now idles until the sooner of S seconds and the next due
+routine.
+
+**Subcommands:**
+- `trellis routines list` shows the schedule, timezone, policies, next due
+  instant and last fire.
+- `trellis routines run <name>` fires the routine now. Concurrency still
+  applies, as in Paperclip's manual run.
+
+### 8. What a trail now records
+
+`Factual` gains two optional fields. Each is omitted when it is `None`, the
+same shape `control` uses, so an older trail keeps its shape and its digest:
+- `tokens: Option<u64>`: completion tokens, as §5 defines them. `None` for a
+  scripted run and a process run.
+- `agent: Option<String>`: the profile the run was executed as.
+
+`UntrustedFactual` reads both back. This is the minimal additive change to
+`trellis-trail`. The CLI changes that carry the fields are:
+- `TrailFacts` gains two fields.
+- `cmd_run` reads `tokens_used()` from its driver after the loop.
+- `RunSeeding` gains the profile reference (§4).
+
+These are edits to `main.rs` outside the "mod lines, variants and dispatch"
+rule for this wave, and they are listed as such.
+
+*As implemented, the complete list of `main.rs` edits outside mod lines,
+variants and dispatch:*
+- the `RunSeeding` field, and `profile: None` in the `run` arm's literal
+- the destructure in `cmd_run`
+- the approve-list override after `cfg.control`
+- the skill `retain`
+- the `tokens` read
+- the two `TrailFacts` fields, and their use in `record_trail` and in one
+  test helper
+- the `Queue` variant's doc comment, which now names ADR 0026
+
+### 9. The activity log
+
+`<git-dir>/trellis/activity.jsonl` gets one line per mutation:
+
+```json
+{"at":"…","actor":"human|work|routine","action":"task.add","entity":"task:<id>","run_id":null,"detail":"…"}
+```
+
+**What is logged:**
+- task add, set, note, cancel, claim, finish, requeue, wake
+- approval request, approve, reject
+- agent pause and resume, including budget pauses and resumes
+- routine fire, coalesce, skip and missed-drop
+- import
+
+`trellis queue log [--limit N]` prints the newest N lines (default 20), with
+control characters escaped. The log lives in the git directory for the same
+reason as the queue.
+
+### 10. Export and import
+
+`trellis queue export <dir>` writes:
+- `agents/*.toml`, and each profile's `instructions` file under
+  `agents/instructions/`
+- `routines/*.toml`
+- `tasks/<state>/<id>.json`
+
+It does not export overlays, routine state, approval requests or the
+activity log. Those are this checkout's runtime state, not definitions.
+
+**Nothing secret exists to scrub.** Profiles name a model spec, and a key
+never goes in a file trellis reads (ADR 0010). Paperclip scrubs secrets and
+paths on export. Trellis has no secrets to scrub. The paths it exports are
+relative to `.trellis/`.
+
+`trellis queue import <dir> [--dry-run] [--on-conflict skip|replace|rename]`
+reads the same layout:
+- Profiles and routines are written into `.trellis/`, which leaves the
+  worktree dirty. They are definitions a person commits, like any edit to
+  `.trellis/`.
+- Tasks are published into the queue.
+- On a conflict, the default is `skip`. `replace` overwrites. `rename` gives
+  the incoming item a new name or id and rewrites references to it within
+  the imported set: `assignee`, `reports_to`, `parent`, `blockers` and a
+  routine's `task.assignee`.
+- `--dry-run` prints the plan and writes nothing.
+
+The profiles are validated after the import is planned, including cycles
+across old and new profiles, and before anything is written. An import that
+would create an invalid set is refused as a whole.
+
+*Amended in implementation:*
+- **Claimed tasks are not exported**, and the export says how many it left
+  out. A task in `claimed/` belongs to a run in progress. A `claimed/`
+  folder in an import is refused.
+- **Export refuses a folder that is not empty.** An export mixed into
+  another folder's contents would bring those contents along when it is
+  imported.
+- **An instructions file is shared by path, not owned by one profile.** An
+  import that creates or renames a profile whose instructions path already
+  exists locally with different content is refused as a whole. Only
+  `--on-conflict replace` overwrites it.
+- **Task ids from an import folder must be lowercase ASCII letters, digits
+  and dashes.** Each id becomes a file name in the git directory.
+- **`--on-conflict replace` against a task claimed here is refused while
+  planning**, before anything is written. It used to be found only when
+  the apply reached that task, after the profiles and routines ahead of it
+  were already in `.trellis/`. A claim made between the plan and the apply
+  is still refused at that task, with the earlier items written; the
+  window is the length of the import.
+
+### 11. Process agents
+
+This is Paperclip's `process` adapter. A profile with
+`command = ["prog", "arg", …]` instead of `model` runs its tasks like this:
+
+0. **Trust** (*amended 2026-09-27*, ADR 0023 §4). The command is
+   repository code, and before this amendment `work` ran it in a cloned
+   repository with no trust decision, where a hook or a custom tool would
+   not have loaded. Each process agent's argv, and the files it names, is
+   now an item in the trust fingerprint (`process agent <name>`, shown by
+   `trellis trust`). A task assigned to an untrusted process agent is not
+   claimed: it stays pending with the reason `agent <name> runs a
+   repository command; not trusted: run trellis trust`, and the runner
+   checks again before it spawns. *Amended after the fifth review of PR
+   #1:* the claim gate decides trust once per heartbeat tick, at the first
+   pending process task, and reuses that answer for the others in the same
+   tick; it had walked and hashed `.trellis/` once per pending process task
+   per tick. The answer is dropped at the next tick, so a `trellis trust`
+   run while `work --every` waits takes effect there, and the check right
+   before the spawn is unchanged. Evidence:
+   `trust_is_decided_once_per_tick_and_again_at_the_next` in
+   `crates/trellis-cli/src/work.rs`, which counted three checks for three
+   tasks before the change.
+1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
+   model run.
+2. **Run** the command in the worktree root. Its stdin is the task text,
+   with the instructions file prepended, and its environment has
+   `TRELLIS_TASK`, `TRELLIS_TASK_ID` and `TRELLIS_AGENT` set. Its stdout and
+   stderr go to `work`'s terminal.
+   - It runs under `timeout_s` (default 1800). On timeout the process is
+     killed.
+   - `Child::kill` terminates the direct child only. On Windows, and on Unix
+     for a process that ignores its group, a grandchild can outlive it. That
+     is recorded here, not solved.
+     *Amended after the eighth review of PR #1:* on Unix the command leads
+     its own process group, and however it ends — exit, timeout or Ctrl-C
+     — `kill -KILL -- -<pgid>` ends every member before anything is
+     judged or rolled back, so a backgrounded writer cannot land after
+     either. On Windows `taskkill /T /F` walks the tree on a timeout or an
+     interrupt, while the command is alive; after a normal exit it is gone
+     and the tree cannot be walked from it, so what it started keeps
+     running. A process that left its group (`setsid`) is not reached on
+     Unix. Unix-only test, which this Windows development host cannot run:
+     `exec::tests::what_a_command_backgrounded_cannot_write_after_the_call_returns`
+     covers the same group kill for `bash`.
+     *Amended after the ninth review of PR #1: reverted for process
+     agents.* In a group of its own the command was a background job on
+     the user's terminal, and the kernel stops a background job that
+     writes to the terminal (with `tostop`) or reads from it, with
+     SIGTTOU or SIGTTIN: an interactive agent hung. A process agent is the
+     user's chosen command on their terminal, so it runs in trellis's own
+     process group, the foreground one, again. The cost, stated: on Unix
+     there is no group of its own to signal, so on a timeout or an
+     interrupt only the command itself is killed, and after a normal exit
+     nothing is; a grandchild it started (a backgrounded writer included)
+     can outlive it and write after the comparison and the rollback.
+     Ctrl-C at the terminal reaches the whole foreground group, the
+     command's children included. Windows is unchanged (`taskkill /T`
+     while the command is alive). Guarded, Unix-only and never run on this
+     Windows host: `a_process_agent_runs_in_trellis_s_own_process_group`
+     in `tests/orchestration.rs`, which compares the agent's process group
+     with the test's; a stopped background job needs a terminal to stage.
+   - Ctrl-C kills the child and rolls back.
+
+   *Amended (wave K): the environment has no keys unless the profile
+   passes them.* The command's environment is trellis's own less every
+   hosted key variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and every
+   `[[providers]] key_env`), removed as for every other child (ADR 0024
+   §3). An external agent may legitimately need a key of its own, so the
+   profile field `pass_env = ["NAME", …]` puts back exactly the named
+   variables, each only if it is set in trellis's environment. The default
+   is none.
+
+   Passing a key is the profile owner's explicit choice, and it is made
+   knowing this: **whatever a process agent prints is recorded.** Its
+   stdout and stderr are not captured or scrubbed by trellis; they go
+   straight to `work`'s terminal, and from there into whatever keeps that
+   output (scrollback, a CI log, a file `work` was redirected to). What it
+   writes into the worktree is left for review if the run converges. A
+   process agent given a key and told to print its environment will print
+   the key. `agents list` and `agents show` name the passed variables,
+   never their values. *Amended after the third review of PR #1:* so does
+   `trellis trust`. The process agent's trust item carries `pass_env`, and
+   the item prints `receives: ANTHROPIC_API_KEY` on its own line. Before
+   this, the key was in the digest only because the profile file was, and
+   nobody trusting the repository was told a key would be handed to it
+   (`trust_names_the_keys_a_process_agent_receives`). Evidence:
+   `a_process_agent_inherits_no_key_unless_its_profile_passes_that_one` in
+   `crates/trellis-cli/tests/child_env.rs`.
+3. **Check** with the grounded checks, the same pair `trellis check` runs:
+   typecheck and tests over `.`.
+
+   *Amended after the second review of PR #1: governance binds a command
+   as it binds a model.* Before it, a process agent was judged on the two
+   checks alone, and a `[governance] deny_write` path or a
+   `.trellis/governance/` rule that refuses a model's edit did not refuse
+   a command's. Now, over every path `git status` names after the command
+   (untracked files one by one):
+   - each path is matched against `[governance] deny_write` and every
+     `deny-write` document; a match is a breach, named in the output;
+   - when the repository has rule documents, the same `governance_audit`
+     the loop runs at convergence produces a `Verdict` over those files,
+     recorded with the other two.
+
+   *Amended after the third review of PR #1: the judge is read before the
+   command.* The `[checks]` commands, `deny_write` and the rule documents
+   were read from the worktree after the command ran. A command could
+   therefore rewrite what verifies it, for example by setting `typecheck`
+   to a command that always passes or by deleting a `deny_write` line, and
+   then converge. All three are now loaded before the command is spawned,
+   as the `.git/` bytes below are, and a profile whose rules do not load is
+   refused before anything runs. Any changed path under `.trellis/` is a
+   breach, whatever the rules say, because that directory holds the checks,
+   the rules and the trust inputs that judge the run. The run does not
+   converge and is rolled back
+   (`a_process_agent_that_rewrites_its_own_checks_does_not_converge`). What
+   is not covered, stated: the repository's own test and typecheck
+   configuration outside `.trellis/` (`pyproject.toml`, `conftest.py`, the
+   tests themselves). A command can change those, just as a model run can,
+   and the diff that is left for review is where that shows.
+
+   **`.git/` is outside the worktree the rollback restores**, and `git
+   status` does not see it, so a command could plant a hook or set
+   `core.hooksPath` and survive any rollback. The bytes of `.git/config`,
+   of every file under the hooks directory and (*amended after the sixth
+   review*) of `info/exclude`, each as `git rev-parse --git-path` names
+   it, are read before the command and compared after. `info/exclude`
+   decides what `git status` and the rollback's `git clean` can see: a `*`
+   written there hid every later run's new files from both
+   (`a_process_agent_that_writes_git_info_exclude_has_it_restored`). A
+   difference is put back (the old bytes rewritten, a new file removed),
+   named in the output, and makes the run not converged. What is not
+   covered, stated: the rest of `.git/` (refs, objects, `packed-refs`, the
+   index), a change the command makes and reverts before it exits, and a
+   file that cannot be written back, which is reported as not put back. A
+   process that outlives the command (see step 2) can still write after
+   the comparison.
+   *Amended after the eighth review of PR #1:* the guard moved to
+   `trellis_vcs::git_guard`, and a model run with `bash`, custom tools or
+   hooks uses the same one (ADR 0023 §5). It now also covers
+   `config.worktree` (created or changed), every file a config
+   `include.path` or `includeIf.*.path` names that lives under the git
+   directory (followed through includes of includes, to git's depth of
+   10), and `info/attributes`, which can bind paths to a filter the config
+   defines. `--git-path hooks` already follows `core.hooksPath`, and a
+   config edit that re-points it is a change to `config`. Not covered,
+   stated: an include target outside the git directory (a tracked one is
+   the rollback's; one elsewhere on disk is not the repository's), and a
+   submodule's own git directory under `.git/modules/`. A hook written back
+   gets the permissions it had at capture: written with the default mode it
+   was not executable on Unix, so a deleted hook was "put back" and no
+   longer ran (`a_deleted_hook_comes_back_with_its_permissions`, which
+   failed before on the read-only bit; the Unix mode bits it also checks
+   are not exercised on Windows). A hook whose mode alone changed is not
+   detected: the comparison is by bytes.
+   *Amended after the ninth review of PR #1: links.* The walk of the hooks
+   directory followed links and restore removed every file absent at
+   capture, so a planted `.git/hooks/lib -> $HOME` had restore delete the
+   home directory's files, and a hook replaced by a link to `~/.bashrc` had
+   the hook's bytes written over it. Now nothing is read, written or
+   removed through a link: every path is looked at with `symlink_metadata`,
+   a link is recorded by its text and never entered, a planted link is
+   removed as a link (never its target), a changed link is made again as a
+   link, a file is written back with `create_new` (which does not follow a
+   link) after whatever is at its path is removed, and a directory on the
+   way to it that has become a link is replaced by a directory. Nothing
+   outside the git directories as they resolved at capture is written or
+   removed, so a hooks directory outside them (`core.hooksPath` into the
+   worktree, or elsewhere) is no longer guarded; re-pointing
+   `core.hooksPath` is a change to `config`, which is. A hook the user keeps
+   as a link is compared as the link, so an edit to its target is not a
+   change here (the target is the worktree's, or not the repository's). The
+   comparison now includes a file's permissions, so a mode change alone
+   (`chmod +x` enabling a hook) is detected and put back. Evidence, in
+   `trellis_vcs::git_guard`:
+   `a_planted_directory_link_in_the_hooks_is_removed_and_its_target_is_untouched`
+   (a junction on this Windows host; it failed before with the target's
+   file listed as a new hook), `a_hooks_subdirectory_replaced_by_a_link_is_not_written_through`,
+   `a_hook_replaced_by_a_file_link_comes_back_as_a_file_and_the_target_is_untouched`
+   (it failed before with the target overwritten) and
+   `a_hook_that_was_a_link_at_capture_is_compared_as_a_link_and_never_written_through`,
+   all four failing before the change; and
+   `a_hooks_directory_outside_the_git_directory_is_not_touched`. What is
+   not closed, stated: each path is checked and then acted on, so a process
+   still running while restore runs (a grandchild that outlived the
+   command, step 2) could swap a directory for a link in between; closing
+   that needs `openat`-relative calls std does not offer. On Windows a link
+   is made again only where symbolic links may be created (developer mode
+   or the privilege), and a junction comes back as a directory link;
+   otherwise it is reported as not put back.
+
+   *Amended after the sixth review of PR #1: files git ignores.* `git
+   status` does not list them, so a command could write
+   `.venv/.../sitecustomize.py`, an ignored path under `.trellis/` or an
+   ignored path `deny_write` names, and the breach test, governance and the
+   rollback (`git clean -fd` leaves ignored files) all missed it. Now
+   `git ls-files --others --ignored --exclude-standard` is listed just
+   before the command is spawned and again just after it ends (after the
+   `.git/` bytes above are put back, before the checks, which write caches
+   of their own), each file with its `symlink_metadata` length and
+   modification time, and on Unix its inode and change time. The
+   difference is three lists: created, modified, deleted.
+   - All three are named in the output and recorded in the trail as a
+     second `process` action whose target is `files git ignores`. They are
+     not `proposed`: that list is what a commit would carry.
+   - All three are subject to the `.trellis/` breach and `deny_write`,
+     whether or not anything git shows changed
+     (`a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach`).
+     The `forbid` audit is not run over them: it reads contents, and a
+     `pip install` is thousands of files.
+   - On a run that does not converge, every ignored file the command
+     created is removed (a link is removed as a link), and then any
+     directory that removal left empty
+     (`a_process_agent_s_ignored_writes_are_removed_on_rollback`). A
+     created file that cannot be removed makes the tree not restored.
+   - **What cannot be put back, stated.** An ignored file that existed
+     before and was changed or deleted: trellis keeps no copy of ignored
+     files (a `.venv` can be gigabytes), so it is named as not put back.
+     A directory that was empty before the command and held only what it
+     created is removed with it.
+     *Amended after the eighth review of PR #1:* such a rollback is not a
+     restored tree, and says so: the run ends `NotRestored`, `work` stops
+     with exit 2 and names the files
+     (`a_process_agent_that_changed_a_pre_existing_ignored_file_leaves_the_tree_not_restored`,
+     which failed before with the run reported rolled back). Before, the
+     restored status was git's alone and `work` went on over a file it
+     had just said it could not put back. The cost, stated: a process
+     agent that runs the repository's tests itself rewrites their caches
+     (`.pytest_cache`, `__pycache__`) when they already exist, so a failed
+     run of such an agent stops `work` as not restored. Unlike a model
+     run (ADR 0023 §5), the command and the tools it runs are one process
+     tree and cannot be told apart. A `.git/` file that could not be put
+     back makes the rollback not restored too; before, it was only
+     printed.
+     *Amended after the ninth review of PR #1:* that cost was the common
+     case, so a changed pre-existing ignored file now counts only where it
+     was already a breach: under `.trellis/` or named by `deny_write`. Any
+     other is named ("left as it is") and the run ends rolled back, since
+     the tracked tree is restored, which is what ADR 0009 promises. A
+     deleted pre-existing one still makes the tree not restored: that is
+     a loss, not a rewritten cache. Evidence:
+     `a_process_agent_that_changed_a_pre_existing_ignored_file_is_reported_and_work_goes_on`
+     (renamed from `…_leaves_the_tree_not_restored`; it failed before with
+     "left the tree NOT restored") and
+     `a_changed_or_deleted_ignored_file_the_rules_protect_leaves_the_tree_not_restored`.
+     The same rule holds for a model run (ADR 0023 §5).
+   - **What a converged run keeps.** Ignored files the command created,
+     such as a `.pytest_cache`, stay. That includes a `sitecustomize.py` or
+     a `.pth` file written into an ignored `.venv`, which Python runs at
+     start-up, inside the very checks that judged the run. A repository
+     that wants that refused says `deny_write = [".venv/"]`.
+   - **What the comparison misses, stated.** It is by stat, not by
+     content. On Windows, a rewrite that keeps a file's length and sets its
+     modification time back is not seen; on Unix the change time, which a
+     process cannot set, catches it. A listing that fails after the
+     command makes the run not converged and removes nothing.
+   - *Amended after the seventh review of PR #1:* the listing, the diff
+     and the removal moved to `trellis_vcs::ignored`, and a model run with
+     `bash`, a custom tool or hooks uses them too (ADR 0023, "after a
+     pass").
+   *Amended after the tenth review of PR #1: HEAD may not move.* The
+   changed paths were what `git status` named against the current HEAD,
+   so a command that committed part of its change (a `.trellis/` write,
+   say) hid that part from the `.trellis/` breach, `deny_write` and the
+   audit, converged on the part it left uncommitted, and the commit was
+   never rolled back. Now HEAD is compared with the snapshot right after
+   the `.git/` bytes are put back: a different commit or a different
+   branch (a commit, a reset, a checkout, a branch switch) is a breach.
+   The checks are not run, the run does not converge, and the output
+   names the move. The changed paths are now taken against the snapshot's
+   commit (`git diff --name-only --no-renames <snapshot>` plus the
+   untracked files), so what was committed is judged and named with the
+   rest. The rollback puts HEAD back first (ADR 0009, amended): on the
+   recorded branch with `symbolic-ref`, or detached at the recorded commit,
+   then `reset --hard` to it, so the user's branch no longer holds the
+   agent's commit. Evidence, in `tests/orchestration.rs`:
+   `a_process_agent_that_commits_part_of_its_change_is_refused_and_the_commit_undone`
+   (it failed before with "CONVERGED (converged: both checks passed)") and
+   `a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original`
+   (it failed before with "changed nothing", HEAD left on the agent's
+   branch). A model run with `bash`, a custom tool or hooks is held to the
+   same rule (ADR 0023 §5). Not covered, stated: a branch the command
+   created is left in place, and a ref other than HEAD and the snapshot's
+   branch (another branch moved with `git branch -f`, a tag) is not
+   compared.
+4. **Decide.** The run converged if and only if the command changed at least
+   one file, both checks pass, the governance audit (when there is one)
+   passes, no changed path (ignored ones included) is denied or under
+   `.trellis/`, nothing under `.git/config`, the hooks or `info/exclude`
+   changed, and HEAD is the commit and branch the snapshot recorded.
+   - A command that changed nothing has nothing to verify, and ends `failed`
+     with that reason.
+   - On anything other than convergence, the tree is rolled back exactly as
+     after a failed model run.
+   - The command's exit code is recorded. It is not evidence of success.
+5. **Record** a trail, built in the CLI from `trellis-trail` types. Its
+   fields:
+   - `proposed`: the changed paths
+   - `check_outcomes`: read from each `Verdict`'s `passed()` and kind
+   - one `process` action, carrying the argv, the exit status and the
+     duration
+   - `agent`: the profile
+   - `tokens`: none
+
+   As with a model run, the trail is committed and nothing else is.
+
+**The external agent never produces a verdict (ADR 0004).** Its exit code,
+its output and anything it writes are data. Convergence comes only from the
+two `Verdict`s that `trellis-checks` constructs from processes it ran itself.
+
+#### What rollback guarantees when trellis is not the only writer
+
+*Added after the eleventh review of PR #1.* ADR 0009's rollback rests on
+one premise: during a run the orchestrator is the only writer (ADR 0005).
+With `edit` and `write_file` as the only writers that premise holds, and
+the rollback's guarantee is exact. When `bash`, a custom tool, a hook or a
+process agent is enabled, it does not. Each of those is an unsandboxed
+process running with the user's authority, with write access to the whole
+worktree and to `.git/`. For them the rollback is **best-effort against
+git's view of the tree**: it restores what `git reset --hard`, `git clean
+-fd`, the ignored-file listing and the git guard can see, and a writer
+that shapes git's view can place a change outside all four.
+
+This is a limit, not a defect awaiting another guard. Eleven review rounds
+have closed one route after another with a post-hoc git check, and each
+round has found another, because the checks read state the writer can
+also write. The known ways around it, from rounds 5 to 11, stated so they
+are not assumed closed:
+
+- **Backgrounded processes on Windows.** After a normal exit
+  `taskkill /T` has no live process to walk the tree from, so what the
+  command started keeps running and can write after the comparison and
+  the rollback (ADR 0023 §3; ADR 0026 §11 step 2). On Unix a process that leaves
+  its group (`setsid`) is not reached, and a process agent runs in
+  trellis's own group, so nothing is killed after its normal exit.
+- **`.git/` writes outside the guarded files.** The git guard restores
+  `config`, `config.worktree`, include targets under the git directory,
+  the hooks, `info/exclude` and `info/attributes`. The rest of `.git/`
+  (refs, `packed-refs`, objects, the index, `.git/modules/`) is not
+  compared or restored, nor is a change made and reverted before the
+  command exits.
+- **Ignored-path tricks, `.gitignore` edits included.** `git clean -fd`
+  never removes an ignored file, and what is ignored is decided by files
+  the writer can edit: a tracked `.gitignore`, or a new one in a
+  directory it creates. The before/after listing of ignored paths
+  (`trellis_vcs::ignored`) narrows this, but it reads the same view of the
+  tree the writer shaped.
+- **`skip-worktree` and `assume-unchanged`.** `git update-index
+  --skip-worktree` or `--assume-unchanged` on a tracked file hides an edit
+  to it from `git status` and `git diff`, and so from every judgment made
+  from the changed paths, and from what the rollback's reset is relied on
+  to restore.
+- **Refs other than `HEAD`.** Only `HEAD` and the branch it was on are
+  recorded (ADR 0009). A branch the writer creates, another branch it
+  moves (`git branch -f`), a tag, a stash entry or a note is left as it
+  is.
+- **Pre-existing ignored files changed.** An ignored file that existed
+  before the run (`.env`, a virtualenv, build output, a cache) and that a
+  writer modifies is neither restored by the reset nor removed by the
+  clean. The ignored-file listing removes new ignored paths and notices a
+  changed one by its stat (a rewrite that keeps length and modification
+  time passes on Windows), but holds no copy to restore it from.
+- **TOCTOU in restore.** Each comparison and each restore is a separate
+  step. A process still running (the first item) can write between the
+  check and the restore, or after both.
+- **Code reached by import outside `.trellis/`.** Trust covers every byte
+  under `.trellis/` and refuses hook and tool code named outside it (ADR
+  0023 §4, amended after the eleventh review), but code a hook or tool imports from
+  elsewhere in the repository is an ordinary file a run may edit.
+
+**What holds.** For trellis's own edits (`edit`, `write_file`), the
+rollback's guarantee is exact, as ADR 0009 states. A run with none of
+these writers enabled (the default: `bash` off, and an untrusted
+repository loads no hook, custom tool or process agent) keeps it.
+
+**The real fix is sandboxing**: running these writers where they cannot
+reach `.git/`, the user's other files or processes that outlive them.
+That decision is deferred in ADR 0021 (1.6 swappable tool backends,
+13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
+the limit rather than adding another guard. `trellis trust` prints one line
+saying so when it records trust for any of these writers.
+
+## What is not built
+
+- **IANA timezone names** (§7).
+- ~~**The per-profile `tools` list takes no effect** until W-B's registry
+  reads it (§4).~~ Integrated; see below.
+- ~~**A profile's skill deny list does not stop `read_skill` by exact name**
+  (§4). It only narrows the list the model is shown.~~ Integrated; see
+  below.
+- **`@profile` mentions in notes do not wake anything.** ADR 0021 defers
+  them.
+- **No prompt-token or dollar accounting** (§5).
+- **Routines fire only while `work` is running.** There is no daemon
+  (ADR 0020). A schedule with no `work` running accumulates missed fires,
+  which the catch-up policy then handles.
+- **Webhook and API triggers.** ADR 0021 excludes them.
+- **Grandchildren of a timed-out process agent are not reaped** (§11).
+
+## Alternatives rejected
+
+- **Rewriting the profile TOML to pause a profile.** Rejected: it dirties
+  the worktree (§4).
+- **Treating `failed` as not terminal for parent wakes.** Rejected: nothing
+  moves a failed child again without a person, so the parent would wait
+  forever.
+- **A token budget for process agents, enforced by reading the process's own
+  report.** Rejected: that is a number the external agent chooses, and the
+  budget would then be the external agent's own opinion of its spend.
+- **Joining tasks to trails to attribute spend, instead of recording the
+  profile in the trail.** Rejected: a trail outlives the queue, which is per
+  worktree and is lost when a linked worktree is removed (ADR 0020 §1). The
+  trail is the durable record, so it says who ran.
+
+## Consequences
+
+- `trellis agents` and `trellis routines` are new subcommands, and `queue`
+  grows. This was owner-directed, like ADR 0020.
+- A trail may now carry `tokens` and `agent`. Readers that predate this ADR
+  ignore them.
+- `work` does more on each tick: it evaluates routines, runs
+  `reconcile`, checks budgets and reads every pending file. Each is a
+  directory listing and small file reads.
+
+## Integrated
+
+The two §4 items this wave left inert, closed after ADR 0023's registry
+landed. Tested unless stated.
+
+- **`tools` narrows the run's tool set.** `ToolSet::narrowed` intersects the
+  set `[tools]` built, after trust, with the profile's list. It is called in
+  `cmd_run` right after `tooling::prepare` and before the driver is built,
+  so the prompt, the schema, the script parser and the orchestrator all get
+  the narrowed set, and bash joins the approve list only if it survived.
+  - **Only narrows.** A listed tool the repository did not enable, or did
+    not trust (bash, a custom tool), is not added. The run's `tools:` line
+    names it: `narrowed by agent profile `x`; not added, because this
+    repository does not offer them: grep`
+    (`a_profile_cannot_widen_the_repository_s_tools_and_the_line_says_so`,
+    `a_profile_tool_list_can_never_widen_the_repositorys_set`).
+  - **`run_checks` is always kept,** listed or not, for the reason ADR 0023
+    §1 refuses to disable it. §4's own example, `tools = ["read_file",
+    "edit"]`, omits it, and refusing that list would have made the example
+    invalid; the `tools:` line says it was kept.
+  - **An unknown name is an error**, not a no-op, as in `[tools]`: checked
+    against every built-in and every custom tool the repository declares,
+    trusted or not, when profiles are loaded (`agents list`, `work`,
+    `doctor`) and again at run start.
+  - **The orchestrator refuses the rest** with the same "not a tool in this
+    run" as any call outside the set
+    (`a_profile_tool_list_narrows_the_run_and_the_orchestrator_refuses_the_rest`).
+    A script that calls a removed tool fails before the snapshot
+    (`a_profile_without_edit_cannot_edit_and_the_run_costs_nothing`).
+  - **A process profile may not have a `tools` list.** Refused at
+    validation, for the budget's reason: it does not call trellis's tools,
+    so the list could never be enforced, and an unenforceable restriction
+    reads as one that holds.
+- **The skill filter is enforced at `read_skill`.** The profile's
+  `[skills]` becomes a `SkillPolicy` in `trellis-loop`, used both to filter
+  the listing and by the orchestrator, which serves `read_skill`; one
+  predicate, so the two cannot drift. A denied name is an error observation
+  naming the profile and the list: `skill `refactor` is denied to agent
+  profile `reviewer`: its [skills] deny = ["refactor"]`, and a name outside
+  an allow list says `allow = [...]` instead
+  (`read_skill_by_exact_name_is_refused_when_the_profile_denies_it`,
+  `a_profile_s_denied_skill_is_refused_at_read_skill_in_a_real_run`).
+  `--skill` forcing is not filtered: it is a person at the terminal, not
+  the profile, and `work` never forces a skill.
+- `agents show` no longer says either field is inert.

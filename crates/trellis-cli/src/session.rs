@@ -32,6 +32,9 @@ pub(crate) struct Session {
     /// re-parsed it and disagreed about what was valid.
     model: Option<trellis_model::ModelSpec>,
     unconstrained: bool,
+    /// Whether `model` was given or typed rather than read from the
+    /// repository's config (ADR 0024 §3).
+    model_from_user: bool,
     /// Tasks run this session, for `/status`.
     tasks_run: u32,
 }
@@ -91,6 +94,7 @@ impl Session {
         // host and port they already wrote down. An explicit argument still
         // wins: it is the more specific statement of intent.
         let cfg = crate::config::RepoConfig::load(root)?;
+        let model_from_user = model.is_some();
         let model = match model.or_else(|| cfg.model()) {
             Some(spec) => Some(spec.parse().with_context(|| {
                 format!("`{spec}` was given as the model but is not a usable spec")
@@ -103,6 +107,7 @@ impl Session {
             index,
             model,
             unconstrained: cfg.unconstrained(),
+            model_from_user,
             tasks_run: 0,
         };
         s.banner(elapsed);
@@ -225,6 +230,11 @@ impl Session {
     }
 
     fn dispatch(&mut self, line: &str) -> Result<()> {
+        // ADR 0025 §6: `!cmd` and `!!cmd` are the same here; the output is
+        // shown and sent nowhere, because a session carries no conversation.
+        if let Some(cmd) = line.strip_prefix('!') {
+            return crate::session_extra::shell(&self.root, cmd.strip_prefix('!').unwrap_or(cmd));
+        }
         let (cmd, rest) = match line.split_once(char::is_whitespace) {
             Some((c, r)) => (c, r.trim()),
             None => (line, ""),
@@ -251,7 +261,7 @@ impl Session {
             }
             "/doctor" => {
                 let spec = self.model.as_ref().map(ToString::to_string);
-                crate::cmd_doctor(&self.root, spec.as_deref())
+                crate::cmd_doctor(&self.root, spec.as_deref(), self.model_from_user)
             }
             "/resume" => crate::cmd_resume(&self.root),
             "/diff" => self.show_pending(),
@@ -284,6 +294,8 @@ impl Session {
                 println!("model    {spec}");
                 self.probe_model(&spec);
                 self.model = Some(spec);
+                // Typed by the person at this prompt: their choice (ADR 0024 §3).
+                self.model_from_user = true;
                 Ok(())
             }
             "/unconstrained" => {
@@ -297,6 +309,36 @@ impl Session {
                     }
                 );
                 Ok(())
+            }
+            // ADR 0025 §6. A template or a forced skill is a task because the
+            // person said so, so neither goes through `ask::classify`.
+            "/prompts" => {
+                crate::session_extra::print_prompts(&self.root);
+                Ok(())
+            }
+            "/models" => {
+                let current = self.model.as_ref().map(ToString::to_string);
+                crate::session_extra::print_models(&self.root, current.as_deref());
+                Ok(())
+            }
+            "/skill" => match rest.split_once(char::is_whitespace) {
+                Some((name, task)) if !task.trim().is_empty() => {
+                    self.run_task(task.trim(), vec![name.to_string()])
+                }
+                _ => anyhow::bail!(
+                    "/skill needs a skill and a task, e.g. `/skill profiling speed up parse()`"
+                ),
+            },
+            other
+                if other.len() > 1
+                    && other.starts_with('/')
+                    && crate::templates::list(&self.root)
+                        .iter()
+                        .any(|t| t.name == other[1..]) =>
+            {
+                let args = (!rest.is_empty()).then_some(rest);
+                let text = crate::templates::render(&self.root, &other[1..], args)?;
+                self.run_task(&text, Vec::new())
             }
             other if other.starts_with('/') => {
                 anyhow::bail!("unknown command `{other}`. /help lists them.")
@@ -463,19 +505,35 @@ impl Session {
             }
         }
 
+        self.run_task(task, Vec::new())
+    }
+
+    /// Runs a task the person has already said is one: a typed task that
+    /// `classify` passed, a template, or `/skill` (ADR 0025 §6).
+    fn run_task(&mut self, task: &str, skills: Vec<String>) -> Result<()> {
+        let Some(model) = self.model.as_ref().map(ToString::to_string) else {
+            anyhow::bail!("no model set. /model <spec> first; /models lists what is configured");
+        };
         self.tasks_run += 1;
-        let outcome = crate::cmd_run(
+        let outcome = crate::cmd_run_with(
             &self.root,
             task,
             &model,
             self.unconstrained,
             // No resume, and no focus override: `[context] focus` applies.
-            crate::RunSeeding::default(),
+            crate::RunSeeding {
+                model_from_user: self.model_from_user,
+                ..crate::RunSeeding::default()
+            },
             // `[control] mode` applies. In approve mode each listed call is
             // asked about here, on the line, with the diff shown first.
             crate::RunControl {
                 flag: None,
                 human: crate::Human::terminal(),
+            },
+            crate::output::RunExtras {
+                skills,
+                ..crate::output::RunExtras::default()
             },
             &mut std::io::stdout(),
         );
@@ -895,7 +953,15 @@ fn help() {
             "  /accept [msg]     commit it\n",
             "  /revert           discard it\n",
             "\n",
+            "  /prompts          templates in .trellis/prompts/\n",
+            "  /<name> [args]    run a template as a task\n",
+            "  /skill <n> <task> run a task with a skill's body loaded\n",
+            "  !<cmd>            run a shell command in the repository root;\n",
+            "                    its output is shown, never sent to a model\n",
+            "                    (`!!` is the same: nothing is carried to a run)\n",
+            "\n",
             "  /model [spec]     set or show the model\n",
+            "  /models           the catalog and the configured specs\n",
             "  /unconstrained    toggle tier 4 (no schema; can fail on format)\n",
             "  /status           root, index, model, tier\n",
             "  /exit             leave\n",
@@ -1794,5 +1860,61 @@ def other():
             "and it must say what an unresolved call is, or the note reads \
              as a list of bugs someone shipped:\n{msg}"
         );
+    }
+
+    // ADR 0025 §6 -----------------------------------------------------------
+
+    /// A committed repository with a template, and a session over it holding
+    /// a script from outside it.
+    fn with_template(d: &Path) -> Session {
+        std::fs::create_dir_all(d.join("app")).unwrap();
+        std::fs::write(d.join("app/m.py"), "def go():\n    return 1\n").unwrap();
+        std::fs::create_dir_all(d.join(".trellis/prompts")).unwrap();
+        std::fs::write(
+            d.join(".trellis/prompts/fixit.md"),
+            "---\ndescription: Fix one file\nargument-hint: <path>\n---\nFix the annotations in $1.\n",
+        )
+        .unwrap();
+        git_repo(d);
+        let scripts = tempfile::tempdir().unwrap().keep();
+        let script = scripts.join("s.json");
+        std::fs::write(&script, r#"{"steps":[{"tool":"done","summary":"x"}]}"#).unwrap();
+        let mut s = Session::open(d, None).unwrap();
+        s.dispatch(&format!("/model scripted:{}", script.display()))
+            .unwrap();
+        s
+    }
+
+    #[test]
+    fn a_template_name_runs_its_expansion_as_a_task() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("/prompts").expect("lists");
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        assert_eq!(s.tasks_run, 1, "a template is a task");
+        let trails = trellis_trail::query::all(d.path());
+        assert_eq!(trails.len(), 1, "the run wrote its trail");
+        assert_eq!(trails[0].trail.task, "Fix the annotations in app/m.py.");
+    }
+
+    #[test]
+    fn skill_without_a_task_asks_for_one_and_starts_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        let e = s.dispatch("/skill release").unwrap_err();
+        assert!(e.to_string().contains("a skill and a task"), "{e}");
+        assert_eq!(s.tasks_run, 0);
+    }
+
+    #[test]
+    fn a_bang_line_runs_a_shell_command_and_never_a_task() {
+        // The risk: `!ls` falling through to the loop, which takes a
+        // snapshot and writes a trail for a line that was never a task.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("!git status --short").expect("runs");
+        s.dispatch("!!git status --short").expect("runs");
+        assert_eq!(s.tasks_run, 0);
+        assert!(trellis_trail::query::all(d.path()).is_empty());
     }
 }

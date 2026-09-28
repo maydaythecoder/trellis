@@ -5,9 +5,11 @@
 //! so a script that passes would stop proving anything about what a real model
 //! must produce.
 //!
-//! The `JsonSchema` derive here is the artefact tier 2 ships to the serving
-//! runtime, so this type *is* the constraint. Widening it widens what a model
-//! is allowed to emit.
+//! The `JsonSchema` derive here is every built-in tool there is. What tier 2
+//! ships to the runtime is this schema with its branches filtered to the
+//! tools a run enables and the repository's own tools appended
+//! (`registry::ToolSet::schema`, ADR 0023). Widening this type widens what a
+//! run *may* enable; the tool set decides what one does.
 
 use crate::agent::{Step, ToolCall};
 use schemars::JsonSchema;
@@ -43,6 +45,31 @@ pub enum ToolCallWire {
     /// Read one of the repository's skills, by the name it is listed under.
     /// Reference material; it informs and cannot stand in for a check.
     ReadSkill { name: String },
+    /// Create a new file. Refused if the path exists; use `edit` for that.
+    WriteFile { path: String, content: String },
+    /// Search file contents with `git grep`, optionally under one path.
+    Grep {
+        pattern: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// Repository files matching a glob: `*`, `**` and `?`.
+    Find { glob: String },
+    /// List one directory, relative to the repository root.
+    Ls {
+        #[serde(default = "default_dir")]
+        path: String,
+    },
+    /// Run a shell command in the repository root. Its output is not a check.
+    Bash { command: String },
+    /// Search the repository's note vault. Reference material.
+    SearchNotes {
+        query: String,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Read one vault note by stem, path or title. Reference material.
+    ReadNote { note: String },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
@@ -52,6 +79,10 @@ pub enum ToolCallWire {
 
 fn default_kinds() -> Vec<String> {
     vec!["typecheck".into()]
+}
+
+fn default_dir() -> String {
+    ".".into()
 }
 
 impl ToolCallWire {
@@ -82,6 +113,17 @@ impl ToolCallWire {
                 Step::Call(ToolCall::RunChecks { paths, kinds })
             }
             ToolCallWire::ReadSkill { name } => Step::Call(ToolCall::ReadSkill { name }),
+            ToolCallWire::WriteFile { path, content } => {
+                Step::Call(ToolCall::WriteFile { path, content })
+            }
+            ToolCallWire::Grep { pattern, path } => Step::Call(ToolCall::Grep { pattern, path }),
+            ToolCallWire::Find { glob } => Step::Call(ToolCall::Find { glob }),
+            ToolCallWire::Ls { path } => Step::Call(ToolCall::Ls { path }),
+            ToolCallWire::Bash { command } => Step::Call(ToolCall::Bash { command }),
+            ToolCallWire::SearchNotes { query, limit } => {
+                Step::Call(ToolCall::SearchNotes { query, limit })
+            }
+            ToolCallWire::ReadNote { note } => Step::Call(ToolCall::ReadNote { note }),
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }

@@ -121,6 +121,14 @@ removing the old one, the task exists complete in both places, and
 So the task is never run twice, but it stays stuck until someone removes one
 copy.
 
+A task changed where it stands (a note on a finished task, ADR 0026 §2)
+cannot be moved to a new name. It is replaced in three steps, and a complete
+copy exists after each one. First the new content is published at the side
+name `.<id>.json.next`. Then the old file is removed. Then the side copy is
+linked into place. If the process dies before the old file is removed, the
+old record stands. If it dies after, the side copy is the record: readers and
+`queue list` see it, and the next locked mutation links it into place.
+
 ### 4. Execution is serial
 
 A heartbeat runs one task at a time. ADR 0009 allows one run per worktree, and
@@ -198,6 +206,16 @@ task file to `done/` or `failed/` with the run id and exit reason appended.
 - The **run id** is the stem of the trail file this run wrote in
   `.trellis/runs/`, found by comparing the newest name before and after the
   run. It is `null` when no trail was written.
+
+**A pending file that is not a task** (it does not parse) is moved to
+`failed/` and reported, so it stops blocking the head of the queue.
+*Amended in implementation:* the pending name is removed only after the link
+into `failed/` succeeded. A `failed/<id>.json` already there with the same
+bytes is a racing claimer's copy; one with different bytes stays, and this
+file goes beside it as `<id>.unreadable-<stamp>.json`. Any other failure
+leaves the file in `pending/` and is reported every tick until someone
+looks: louder than the earlier behaviour, which ignored the failed link and
+deleted the only copy.
 
 **Ctrl-C.** `cmd_run` races each run against `tokio::signal::ctrl_c()`. Once
 that has been called, tokio owns the process's SIGINT handler for the rest of

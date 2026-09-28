@@ -112,6 +112,12 @@ fn run(root: &Path, args: &[&str]) -> Output {
         // care. Inheriting this test harness's stdio would make that
         // difference depend on how the suite was launched.
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         .output()
         .expect("the binary must be built before its integration tests run")
 }
@@ -550,6 +556,32 @@ fn model_listing_works_outside_a_repository() {
         out.status.success(),
         "model list must not need a repository: {}",
         combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn vault_init_works_outside_a_repository_and_other_vault_actions_still_refuse() {
+    // ADR 0022 §3, integrated: a vault may be created before there is a
+    // repository to put it in. The risk on the other side is the exemption
+    // widening to every `vault` action, which would let `vault check` read
+    // whatever directory someone happened to be standing in.
+    let d = scratch("no-repo-vault");
+    let out = run(&d, &["vault", "init", "notes"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert_eq!(
+        std::fs::read_to_string(d.join("notes/manifest.json"))
+            .unwrap()
+            .trim(),
+        "[]"
+    );
+    assert!(d.join("notes/layout.json").is_file());
+    let out = run(&d, &["vault", "--vault", "notes", "check"]);
+    assert!(!out.status.success(), "vault check needs a repository");
+    let s = combined(&out);
+    assert!(
+        s.contains("git init") || s.contains("git repository"),
+        "{s}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -1612,6 +1644,12 @@ fn session_with(root: &Path, lines: &str) -> Output {
         .arg("session")
         .current_dir(root)
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2342,6 +2380,12 @@ fn run_with_data_dir(root: &Path, data: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         .env("LOCALAPPDATA", data)
         .env("XDG_DATA_HOME", data)
         .env("HOME", data)
@@ -2690,4 +2734,379 @@ fn doctor_names_each_skipped_skill_and_why() {
         ),
         "{said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ignored files in a model run (ADR 0023 §5, ADR 0026 §11)
+// ---------------------------------------------------------------------------
+
+/// A repository whose `.gitignore` ignores `.venv/`, holding one ignored
+/// file already, with `bash` enabled and trusted in its own trust store.
+/// Returns the repository and a function running the binary against it.
+fn ignored_model_fixture(name: &str) -> (PathBuf, impl Fn(&[&str]) -> Output) {
+    ignored_model_fixture_with(name, "exit 0", "exit 0")
+}
+
+/// [`ignored_model_fixture`] with the two check commands given, each run
+/// by the platform shell.
+fn ignored_model_fixture_with(
+    name: &str,
+    typecheck: &str,
+    tests: &str,
+) -> (PathBuf, impl Fn(&[&str]) -> Output) {
+    let d = scratch(name);
+    let home = scratch(&format!("{name}-home"));
+    git(&d, &["init", "-q"]);
+    git(&d, &["config", "user.email", "t@example.invalid"]);
+    git(&d, &["config", "user.name", "t"]);
+    git(&d, &["config", "core.autocrlf", "false"]);
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+    let check = |c: &str| format!("['{shell}', '{flag}', '{c}']");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!(
+            "[checks]\ntypecheck = {}\ntests = {}\n\n\
+             [tools]\nbash = true\nbash_unattended = true\nshell = ['{shell}', '{flag}']\n",
+            check(typecheck),
+            check(tests)
+        ),
+    )
+    .unwrap();
+    std::fs::write(d.join(".gitignore"), ".venv/\n").unwrap();
+    std::fs::write(d.join("a.py"), "def f():\n    return 1\n").unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "fixture"]);
+    std::fs::create_dir_all(d.join(".venv")).unwrap();
+    std::fs::write(d.join(".venv/old.py"), "x = 1\n").unwrap();
+    let root = d.clone();
+    let run = move |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .arg("--root")
+            .arg(&root)
+            .args(args)
+            .current_dir(&root)
+            .env("NO_COLOR", "1")
+            .env("TRELLIS_CONFIG_DIR", home.join("trellis"))
+            .env("APPDATA", &home)
+            .env("XDG_CONFIG_HOME", &home)
+            .output()
+            .unwrap()
+    };
+    let t = run(&["trust"]);
+    assert!(t.status.success(), "trust: {}", combined(&t));
+    (d, run)
+}
+
+#[test]
+fn a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback() {
+    // The risk: `bash` in a model run writes `.venv/.../sitecustomize.py`,
+    // which git ignores; the run does not converge; the rollback's `git
+    // clean -fd` leaves ignored files, and the next check that starts the
+    // repository's Python runs it.
+    let (d, run) = ignored_model_fixture("model-ignored");
+    let cmd = if cfg!(windows) {
+        r"mkdir .venv\lib\site && echo import os > .venv\lib\site\sitecustomize.py && echo y = 2 >> .venv\old.py"
+    } else {
+        "mkdir -p .venv/lib/site && echo 'import os' > .venv/lib/site/sitecustomize.py && echo 'y = 2' >> .venv/old.py"
+    };
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("model-ignored-script-{}.json", std::process::id()));
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "bash", "command": cmd},
+            {"tool": "done", "summary": "wrote ignored files"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let out = run(&["run", "write ignored files", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(
+        !d.join(".venv/lib/site/sitecustomize.py").exists(),
+        "an ignored file the run created survived the rollback:\n{said}"
+    );
+    assert!(!d.join(".venv/lib").exists(), "{said}");
+    assert!(
+        d.join(".venv/old.py").exists(),
+        "a file that was there stays"
+    );
+    assert!(
+        said.contains("left as it is") && said.contains(".venv/old.py"),
+        "a changed pre-existing ignored file is named:\n{said}"
+    );
+    // The tracked tree is restored, which is what a rollback promises
+    // (ADR 0009). A changed pre-existing ignored file nothing protects is
+    // named but is not "not restored": round 8 made it exit 2, and every
+    // writer that runs pytest rewrites a cache (review round 9, finding 2).
+    assert_eq!(out.status.code(), Some(1), "{said}");
+}
+
+#[test]
+fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
+    // The risk (review round 10, finding 1): `bash`, a custom tool or a
+    // hook can commit. A committed change is invisible to `git status`, so
+    // the run converged with nothing to review and the commit stayed on
+    // the user's branch, past any rollback.
+    let (d, run) = ignored_model_fixture("model-commit");
+    let head = String::from_utf8_lossy(
+        &Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&d)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    let cmd = if cfg!(windows) {
+        r"echo x = 2> b.py && git add b.py && git commit -qm sneak"
+    } else {
+        "echo 'x = 2' > b.py && git add b.py && git commit -qm sneak"
+    };
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("model-commit-script-{}.json", std::process::id()));
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "bash", "command": cmd},
+            {"tool": "run_checks", "paths": ["a.py"], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "committed"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let out = run(&["run", "commit something", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(said.contains("HEAD moved"), "{said}");
+    assert!(!d.join("b.py").exists(), "{said}");
+    let parent = Command::new("git")
+        .args(["rev-parse", "HEAD~1"])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&parent.stdout).trim(),
+        head,
+        "only the trail's commit sits on the snapshot:\n{said}"
+    );
+}
+
+#[test]
+fn a_model_run_that_changed_an_ignored_file_deny_write_names_is_not_restored() {
+    // The stricter signal stays where a rule says the file is not to be
+    // written: a change there cannot be put back, and the run says the
+    // tree is not restored (exit 2).
+    let (d, run) = ignored_model_fixture("model-ignored-denied");
+    let cfg = d.join(".trellis/config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("\n[governance]\ndeny_write = [\".venv/old.py\"]\n");
+    std::fs::write(&cfg, text).unwrap();
+    git(&d, &["commit", "-qam", "deny"]);
+    assert!(run(&["trust"]).status.success());
+    let cmd = if cfg!(windows) {
+        r"echo y = 2 >> .venv\old.py"
+    } else {
+        "echo 'y = 2' >> .venv/old.py"
+    };
+    let spec = script_beside(
+        &d,
+        "model-ignored-denied",
+        serde_json::json!([
+            {"tool": "bash", "command": cmd},
+            {"tool": "done", "summary": "changed it"},
+        ]),
+    );
+    let out = run(&["run", "change it", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(
+        said.contains("NOT put back") && said.contains(".venv/old.py"),
+        "{said}"
+    );
+    assert_eq!(out.status.code(), Some(2), "{said}");
+}
+
+/// A scripted model's steps, written beside the repository; the `--model`
+/// spec that runs them.
+fn script_beside(d: &Path, name: &str, steps: serde_json::Value) -> String {
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("{name}-script-{}.json", std::process::id()));
+    std::fs::write(&script, serde_json::json!({ "steps": steps }).to_string()).unwrap();
+    format!("scripted:{}", script.display())
+}
+
+/// `core.fsmonitor` as the repository's config has it, if set.
+fn fsmonitor(d: &Path) -> Option<String> {
+    let o = Command::new("git")
+        .args(["config", "--get", "core.fsmonitor"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+#[test]
+fn a_model_run_s_bash_writes_to_git_config_and_hooks_are_put_back_on_rollback() {
+    // The risk: `bash` sets `core.fsmonitor` or plants a hook. `git status`
+    // does not show `.git/`, the rollback's reset does not restore it, and
+    // trellis's next git call runs the command (review round 8, finding 2).
+    let (d, run) = ignored_model_fixture("model-git-guard-rb");
+    let cmd = if cfg!(windows) {
+        r"git config core.fsmonitor ./evil.sh && echo x> .git\hooks\post-checkout"
+    } else {
+        "git config core.fsmonitor ./evil.sh && echo x > .git/hooks/post-checkout"
+    };
+    let spec = script_beside(
+        &d,
+        "model-git-guard-rb",
+        serde_json::json!([
+            {"tool": "bash", "command": cmd},
+            {"tool": "done", "summary": "planted"},
+        ]),
+    );
+    let out = run(&["run", "plant", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+    assert!(
+        !d.join(".git/hooks/post-checkout").exists(),
+        "a planted hook survived:\n{said}"
+    );
+}
+
+#[test]
+fn a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run() {
+    // The risk (review round 9, finding 4): `.git/` is put back after the
+    // loop, but the digest taken around every hooked call runs `git
+    // status` in between, and `git status` runs `core.fsmonitor`. So a
+    // `bash` call that set it had trellis run the command at the next
+    // `post_tool`, before any guard could put the config back.
+    let (d, run) = ignored_model_fixture("model-fsmonitor-marker");
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+    let cfg = d.join(".trellis/config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(&format!(
+        "\n[hooks]\npost_tool = ['{shell}', '{flag}', 'exit 0']\n"
+    ));
+    std::fs::write(&cfg, text).unwrap();
+    git(&d, &["commit", "-qam", "a post_tool hook"]);
+    assert!(run(&["trust"]).status.success());
+    let parent = d.parent().unwrap();
+    let pid = std::process::id();
+    let mark = parent.join(format!("fsmonitor-ran-{pid}"));
+    let _ = std::fs::remove_file(&mark);
+    let fsm = parent.join(format!("fsmonitor-{pid}.sh"));
+    let slash = |p: &Path| p.display().to_string().replace('\\', "/");
+    std::fs::write(
+        &fsm,
+        format!("#!/bin/sh\necho x >> '{}'\nexit 1\n", slash(&mark)),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fsm, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let spec = script_beside(
+        &d,
+        "model-fsmonitor-marker",
+        serde_json::json!([
+            {"tool": "bash", "command": format!("git config core.fsmonitor {}", slash(&fsm))},
+            {"tool": "bash", "command": "echo x> a.txt"},
+            {"tool": "done", "summary": "set it"},
+        ]),
+    );
+    let out = run(&["run", "set fsmonitor", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+    assert!(
+        !mark.exists(),
+        "trellis ran the planted core.fsmonitor:\n{said}"
+    );
+    // The control: plain git in the same repository with the setting
+    // back in place runs it, so the assertion above is about trellis.
+    git(&d, &["config", "core.fsmonitor", &slash(&fsm)]);
+    std::fs::write(d.join("a.py"), "x = 3\n").unwrap();
+    let _ = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert!(mark.exists(), "control: plain `git status` runs it");
+    let _ = std::fs::remove_file(&mark);
+    let _ = std::fs::remove_file(&fsm);
+}
+
+#[test]
+fn a_model_run_that_changed_git_config_does_not_converge() {
+    // Convergence leaves the tree for review, so a `core.fsmonitor` the run
+    // set would run at the reviewer's next `git status`. A change there is
+    // never part of a converged run: it fails the run and is put back.
+    let (d, run) = ignored_model_fixture("model-git-guard-cv");
+    let spec = script_beside(
+        &d,
+        "model-git-guard-cv",
+        serde_json::json!([
+            {"tool": "bash", "command": "git config core.fsmonitor ./evil.sh"},
+            {"tool": "run_checks", "paths": [], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "set it"},
+        ]),
+    );
+    let out = run(&["run", "set fsmonitor", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(!out.status.success(), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+}
+
+#[test]
+fn a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored() {
+    // The checks run the repository's tools, which rewrite their caches
+    // (`.mypy_cache`, `__pycache__`) on every run, and a failed run that
+    // ran a check must not exit 2 for that. Round 8 bracketed each check;
+    // round 9 holds no unprotected modified ignored file against the
+    // rollback, whoever changed it, and this stays as the guard.
+    let append = if cfg!(windows) {
+        r"echo z>> .venv\old.py"
+    } else {
+        "echo z >> .venv/old.py"
+    };
+    let (d, run) = ignored_model_fixture_with("model-ignored-check", append, "exit 1");
+    let spec = script_beside(
+        &d,
+        "model-ignored-check",
+        serde_json::json!([
+            {"tool": "bash", "command": "echo hi"},
+            {"tool": "run_checks", "paths": [], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "tried"},
+        ]),
+    );
+    let out = run(&["run", "try", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(!said.contains("NOT put back"), "{said}");
+    assert_eq!(out.status.code(), Some(1), "{said}");
 }

