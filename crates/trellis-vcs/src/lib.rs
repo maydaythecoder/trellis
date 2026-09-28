@@ -895,16 +895,56 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
     })
 }
 
-/// The branch `HEAD` is on (`refs/heads/main`), or `None` when detached:
-/// `rev-parse --symbolic-full-name` prints `HEAD` for a detached one.
+/// The branch `HEAD` is on (`refs/heads/main`), or `None` when detached.
+///
+/// `symbolic-ref -q`, which reads what `HEAD` points at without resolving
+/// it, so a branch with no commit yet (`git checkout --orphan x`) is still
+/// named. `rev-parse --symbolic-full-name HEAD` failed there, and the
+/// rollback returned before restoring anything (review round 11). Exit 1
+/// with `-q` is "not a symbolic ref": detached.
 fn branch_of(root: &Path) -> Result<Option<String>, VcsError> {
-    let name = git(root, &["rev-parse", "--symbolic-full-name", "HEAD"])?
-        .trim()
-        .to_string();
-    Ok((name != "HEAD" && !name.is_empty()).then_some(name))
+    let args = ["symbolic-ref", "-q", "HEAD"];
+    let out = command().args(args).current_dir(root).output()?;
+    if out.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !out.status.success() {
+        return Err(VcsError::GitFailed {
+            command: format!("git {}", args.join(" ")),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!name.is_empty()).then_some(name))
+}
+
+/// The commit `HEAD` resolves to, or `None` when it resolves to none: an
+/// unborn branch, which a writer's `checkout --orphan` leaves. That is a
+/// move to report, not an error that stops the report.
+fn head_commit(root: &Path) -> Result<Option<String>, VcsError> {
+    let args = ["rev-parse", "-q", "--verify", "HEAD^{commit}"];
+    let out = command().args(args).current_dir(root).output()?;
+    if out.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !out.status.success() {
+        return Err(VcsError::GitFailed {
+            command: format!("git {}", args.join(" ")),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+    ))
 }
 
 fn describe_head(sha: &str, branch: &Option<String>) -> String {
+    if sha.is_empty() {
+        return match branch {
+            Some(b) => format!("{} (no commit)", b.trim_start_matches("refs/heads/")),
+            None => "no commit".to_string(),
+        };
+    }
     let short = sha.get(..12).unwrap_or(sha);
     match branch {
         Some(b) => format!("{short} on {}", b.trim_start_matches("refs/heads/")),
@@ -931,20 +971,30 @@ impl Snapshot {
     /// it was): `reset --hard` moves whichever branch `HEAD` is on, so after
     /// a writer's `git checkout -b` it would reset the writer's branch and
     /// leave the user's holding the writer's commits. When `HEAD` cannot be
-    /// put back nothing is reset, since the reset would move a branch the
-    /// snapshot never recorded. A branch the writer created, or another
-    /// branch it moved, is left as it is: only `HEAD` and its branch are
-    /// recorded.
+    /// put back, the tree is still restored, by `read-tree --reset -u` and
+    /// `clean -fd`, which write the index and the worktree and move no ref:
+    /// a reset would move a branch the snapshot never recorded, and
+    /// returning without touching the tree (as before review round 11) left
+    /// every edit in place. The failure is then reported with whatever else
+    /// failed. A branch the writer created, or another branch it moved, is
+    /// left as it is: only `HEAD` and its branch are recorded.
     #[tracing::instrument(skip(self), fields(head = %self.head))]
     pub fn rollback(&self) -> Result<(), VcsError> {
-        if let Err(e) = self.put_head_back() {
-            return Err(VcsError::RollbackFailed {
-                root: self.root.display().to_string(),
-                head: self.head.clone(),
-                detail: format!("HEAD could not be put back where it was: {e}"),
-            });
+        let Err(head) = self.put_head_back() else {
+            return reset_and_clean(&self.root, &self.head);
+        };
+        let mut detail = format!("HEAD could not be put back where it was: {head}");
+        if let Err(e) = git(&self.root, &["read-tree", "--reset", "-u", &self.head]) {
+            detail.push_str(&format!("\n  read-tree --reset -u: {e}"));
         }
-        reset_and_clean(&self.root, &self.head)
+        if let Err(e) = git(&self.root, &["clean", "-fd"]) {
+            detail.push_str(&format!("\n  clean -fd: {e}"));
+        }
+        Err(VcsError::RollbackFailed {
+            root: self.root.display().to_string(),
+            head: self.head.clone(),
+            detail,
+        })
     }
 
     /// Re-points `HEAD` at the recorded branch, or detaches it at the
@@ -969,7 +1019,7 @@ impl Snapshot {
     /// Used by the rollback test to assert the gate condition rather than
     /// assume it.
     pub fn is_restored(&self) -> Result<bool, VcsError> {
-        let head = git(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
+        let head = head_commit(&self.root)?.unwrap_or_default();
         let status = git(&self.root, &["status", "--porcelain"])?;
         // The branch too: on another branch at the same commit, the next
         // commit lands somewhere the snapshot never was.
@@ -983,7 +1033,9 @@ impl Snapshot {
     /// (the `.trellis/` breach, `deny_write`, governance) would miss it,
     /// and a converged run leaves no commit for review (review round 10).
     pub fn head_moved(&self) -> Result<Option<String>, VcsError> {
-        let head = git(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
+        // Empty on an unborn branch (`checkout --orphan`), described as
+        // "no commit": a move, never a match.
+        let head = head_commit(&self.root)?.unwrap_or_default();
         let branch = branch_of(&self.root)?;
         if head == self.head && branch == self.branch {
             return Ok(None);
@@ -1669,6 +1721,76 @@ mod tests {
         );
         assert_ne!(moved_tip, tip);
         assert!(snap.is_restored().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_after_an_orphan_checkout_puts_the_branch_back_and_restores_the_tree() {
+        // The risk (review round 11): a writer's `git checkout --orphan x`
+        // leaves HEAD on a branch with no commit. `rev-parse
+        // --symbolic-full-name HEAD` fails there, `put_head_back` returned
+        // that error, and `rollback` returned before `reset --hard` and
+        // `clean -fd`: nothing was restored, on the one path that has to
+        // work.
+        let dir = temp_repo("orphan");
+        let snap = snapshot(&dir).unwrap();
+        let original = symbolic_head(&dir);
+
+        git(&dir, &["checkout", "-q", "--orphan", "elsewhere"]).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        std::fs::write(dir.join("planted.py"), "x = 1\n").unwrap();
+        let moved = snap.head_moved().unwrap();
+        assert!(
+            moved.as_deref().is_some_and(|m| m.contains("no commit")),
+            "an unborn HEAD is a move, not an error: {moved:?}"
+        );
+        assert!(!snap.is_restored().unwrap());
+
+        snap.rollback().unwrap();
+
+        assert_eq!(symbolic_head(&dir), original, "HEAD is back on the branch");
+        assert!(snap.is_restored().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        assert!(
+            !dir.join("planted.py").exists(),
+            "untracked file left behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_head_that_cannot_be_put_back_still_restores_the_tree_and_reports_it() {
+        // The method's doc says every step is attempted. A HEAD-restore
+        // failure returned before the tree was touched (review round 11).
+        // Here the recorded branch is a name `symbolic-ref` refuses, so
+        // putting HEAD back fails for certain; the tree must still be put
+        // back, without moving the branch HEAD is on now, and the failure
+        // reported.
+        let dir = temp_repo("head-unrestorable");
+        let mut snap = snapshot(&dir).unwrap();
+        let original = symbolic_head(&dir);
+        snap.branch = Some("refs/heads/..bad".into());
+
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        std::fs::write(dir.join("planted.py"), "x = 1\n").unwrap();
+
+        let e = snap.rollback().expect_err("HEAD could not be put back");
+        let msg = e.to_string();
+        assert!(msg.contains("HEAD could not be put back"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "the tracked edit is undone anyway"
+        );
+        assert!(
+            !dir.join("planted.py").exists(),
+            "the new file is removed anyway"
+        );
+        assert_eq!(symbolic_head(&dir), original);
+        assert_eq!(sha_of(&dir, &original), snap.head, "no branch moved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

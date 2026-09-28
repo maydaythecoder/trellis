@@ -58,6 +58,29 @@ failing before the change (HEAD left on the writer's branch, or reported
 restored there). Where a moved `HEAD` is refused: ADR 0026 §11 (process
 agents) and ADR 0023 §5 (model runs).
 
+*Amended after the eleventh review of PR #1: an unborn branch, and a
+HEAD that cannot be put back.* The branch was read with `rev-parse
+--symbolic-full-name HEAD`, which fails when `HEAD` names a branch with no
+commit, as a writer's `git checkout --orphan x` leaves it. The rollback
+returned that error before `reset --hard` and `clean -fd`, so nothing was
+restored. The branch is now read with `symbolic-ref -q HEAD`, which names
+an unborn branch, and `head_moved` reports one as "`x` (no commit)" rather
+than failing. The sentence above, "when `HEAD` cannot be re-pointed nothing
+is reset", is replaced: when it cannot, the tree is still restored, with
+`read-tree --reset -u <commit>` and `clean -fd`, which write the index and
+the worktree and move no ref, and the rollback then reports the failure
+with anything else that failed. A reset would still move a branch the
+snapshot never recorded, so it is not used on that path. Evidence, in
+`trellis-vcs`:
+`rollback_after_an_orphan_checkout_puts_the_branch_back_and_restores_the_tree`
+(failed before: `rev-parse HEAD` errored on the unborn branch) and
+`a_head_that_cannot_be_put_back_still_restores_the_tree_and_reports_it`
+(failed before: the tracked edit was left in place).
+
+What this rollback guarantees when trellis is not the only writer (bash,
+custom tools, hooks, process agents) is stated in ADR 0023 §5 and ADR 0026
+§11: for those writers it is best-effort against git's view of the tree.
+
 ## Alternatives considered
 
 **Snapshot a dirty tree and restore it.** Rejected. It means TRELLIS takes
