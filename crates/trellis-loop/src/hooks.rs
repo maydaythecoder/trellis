@@ -137,7 +137,9 @@ impl Hooks {
                 code(c.code),
                 c.stderr.render().trim()
             )),
-            Ok(c) => Ok(cap_head(&c.stdout.render(), BEFORE_RUN_CAP)),
+            // The head, and the stream's true size: this is context read
+            // top down, and `render()` is the tail.
+            Ok(c) => Ok(head_of(&c.stdout.head(), c.stdout.total, BEFORE_RUN_CAP)),
         })
     }
 
@@ -217,6 +219,22 @@ fn cap_head(s: &str, cap: usize) -> String {
         "{}\n...(cut at {cap} bytes; the hook printed {})",
         &s[..cut],
         s.len()
+    )
+}
+
+/// The first `cap` bytes of a stream whose start is `head` and whose size
+/// was `total`, cut at a character boundary, saying how much was printed.
+fn head_of(head: &str, total: usize, cap: usize) -> String {
+    if total <= cap && head.len() <= cap {
+        return head.to_string();
+    }
+    let cut = (0..=cap.min(head.len()))
+        .rev()
+        .find(|i| head.is_char_boundary(*i))
+        .unwrap_or(0);
+    format!(
+        "{}\n...(cut at {cap} bytes; the hook printed {total})",
+        &head[..cut]
     )
 }
 
@@ -401,6 +419,46 @@ mod tests {
         }
         let long = "x".repeat(10_000);
         assert!(cap_head(&long, BEFORE_RUN_CAP).len() < BEFORE_RUN_CAP + 100);
+    }
+
+    #[tokio::test]
+    async fn before_run_keeps_the_head_of_long_output_and_reports_the_true_size() {
+        // The risk: the capture kept the *last* 8 KiB and then cut that to
+        // its first 4 KiB, so the prompt got a slice from the middle and a
+        // byte count that was the slice's, not the hook's.
+        let d = tempfile::tempdir().unwrap();
+        let script = if cfg!(windows) {
+            "for /L %i in (1,1,1500) do @echo line %i"
+        } else {
+            "i=1; while [ $i -le 1500 ]; do echo line $i; i=$((i+1)); done"
+        };
+        let h = Hooks::new(
+            d.path(),
+            HookConfig {
+                before_run: Some(shell_argv(script)),
+                ..Default::default()
+            },
+            vec![],
+        );
+        let out = h.before_run().await.unwrap().unwrap();
+        assert!(
+            out.starts_with("line 1\n") || out.starts_with("line 1\r\n"),
+            "{out}"
+        );
+        assert!(!out.contains("line 1500"), "the tail is not what is kept");
+        let printed: usize = out
+            .rsplit("the hook printed ")
+            .next()
+            .and_then(|s| {
+                s.trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .parse()
+                    .ok()
+            })
+            .expect("the cut says how much the hook printed");
+        assert!(
+            printed > 12_000,
+            "1500 lines is more than 12 KB; {printed} is the size of what was kept"
+        );
     }
 
     #[test]

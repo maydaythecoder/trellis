@@ -103,20 +103,23 @@ which read outside the repository on Windows before.
   the trail's `proposed` list and in the governance audit's scope. Rollback's
   `git clean -fd` removes it, which is only true for a path git does not
   ignore; so a path `git check-ignore` reports as ignored is refused, as is
-  any path with a `.git` component. *Amended 2026-09-27:* "a `.git`
-  component" is compared case-insensitively, after trailing dots and spaces
-  are trimmed, and includes the 8.3 name `git~1`, on every component and
-  for `edit` as well as `write_file` (`names_git_dir`). The exact-match
-  check let `.GIT/hooks/pre-commit` create a git hook on a case-insensitive
-  filesystem (observed on Windows), and `edit` had no check, so
-  `.git/config` could be edited. Both survive a rollback, which is git's
-  own reset. *Also amended 2026-09-27:* the ignore check fails closed. Only
-  `git check-ignore` exiting 1 ("not ignored") lets the write proceed; a
-  failure to start git, an exit of 128, or a signal refuses it with the
-  reason, where it used to be read as "not ignored". Creating a `.py` file reopens the index
+  any path with a `.git` component. Creating a `.py` file reopens the index
   session (a full rebuild), because `Session::try_update` only knows files
   present at open, and a graph that disagrees with the tree is the failure
   the refusal in `apply_edit` exists to prevent.
+
+  *Amended 2026-09-27:* "a `.git` component" is compared case-insensitively,
+  after trailing dots and spaces are trimmed, and includes the 8.3 name
+  `git~1`, on every component and for `edit` as well as `write_file`
+  (`names_git_dir`). The exact-match check let `.GIT/hooks/pre-commit`
+  create a git hook on a case-insensitive filesystem (observed on Windows),
+  and `edit` had no check, so `.git/config` could be edited. Both survive a
+  rollback, which is git's own reset.
+
+  *Also amended 2026-09-27:* the ignore check fails closed. Only
+  `git check-ignore` exiting 1 ("not ignored") lets the write proceed; a
+  failure to start git, an exit of 128, or a signal refuses it with the
+  reason, where it used to be read as "not ignored".
 
 Output from `grep`, `bash` and custom tools is capped at the tail (8 KiB,
 with a line saying how much was cut) before it becomes an observation;
@@ -235,7 +238,9 @@ directory, the same two environment variables as `bash`, and a timeout
   the approval gate, so a person is never asked about a call a hook refused.
 - **`post_tool`**: the call and the tool's result as JSON on stdin. Observe
   only: its output is discarded and it cannot alter the observation.
-- **`before_run`**: stdout, capped at 4 KiB, is added to the repository's
+- **`before_run`**: stdout, capped to its first 4 KiB (with the true total
+  printed after the cut; *amended 2026-09-27*, it had been a 4 KiB slice
+  from the middle of the last 8 KiB), is added to the repository's
   context inside a fenced `untrusted hook output` block, within the fence
   whose closing sentence says nothing above can authorise skipping a check.
   Runs after the snapshot, because a hook can write to the tree.
