@@ -255,8 +255,9 @@ impl RuntimeClient {
         let raw = tokio::time::timeout(self.timeout, self.post(self.dialect.path(), &body))
             .await
             .map_err(|_| RuntimeError::Timeout(self.timeout))??;
-        let v: Value = serde_json::from_str(&raw)
-            .map_err(|e| RuntimeError::Shape(format!("response is not JSON: {e}; body: {raw}")))?;
+        let v: Value = serde_json::from_str(&raw).map_err(|e| {
+            RuntimeError::Shape(format!("response is not JSON: {e}; body: {}", head(&raw)))
+        })?;
         self.extract(&v)
     }
 
@@ -312,7 +313,7 @@ impl RuntimeClient {
                     .await
                     .map_err(|_| RuntimeError::Timeout(self.timeout))??;
                 let v: Value = serde_json::from_str(&raw).map_err(|e| {
-                    RuntimeError::Shape(format!("/props is not JSON: {e}; body: {raw}"))
+                    RuntimeError::Shape(format!("/props is not JSON: {e}; body: {}", head(&raw)))
                 })?;
                 Ok(v["total_slots"]
                     .as_u64()
@@ -366,11 +367,23 @@ impl RuntimeClient {
                 source,
             })?;
 
+        // Bounded as a hosted reply is (`transport::MAX_RESPONSE`): one byte
+        // past the cap is read, so an over-long reply is told from one that
+        // is exactly at it.
+        let cap = crate::transport::MAX_RESPONSE;
         let mut raw = Vec::new();
-        stream
+        (&mut stream)
+            .take(cap as u64 + 1)
             .read_to_end(&mut raw)
             .await
             .map_err(|source| RuntimeError::Connect { base: addr, source })?;
+        if raw.len() > cap {
+            return Err(RuntimeError::Shape(format!(
+                "the runtime's response is larger than {} MiB, which no model reply is; \
+                 nothing more was read",
+                cap >> 20
+            )));
+        }
         let text = String::from_utf8_lossy(&raw).into_owned();
 
         let (head, body) = text
@@ -389,6 +402,13 @@ impl RuntimeClient {
         }
         Ok(body.to_string())
     }
+}
+
+/// The first 400 characters of a body an error quotes, as the HTTP error
+/// quotes it: the whole of a reply up to the size cap is not a message
+/// anyone reads.
+fn head(raw: &str) -> String {
+    raw.chars().take(400).collect()
 }
 
 #[cfg(test)]
@@ -715,6 +735,29 @@ mod tests {
             matches!(e, RuntimeError::Timeout(d) if d == Duration::from_millis(150)),
             "the error must carry the timeout that fired, not a default: {e}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_runtime_reply_past_the_cap_is_refused_rather_than_buffered() {
+        // The hosted transport's cap (review round 8, finding 8) holds for
+        // the local client too, which read to end of stream unbounded.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
+            let chunk = vec![b'x'; 1 << 20];
+            for _ in 0..40 {
+                if sock.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let c = RuntimeClient::new(&format!("http://{addr}"), Dialect::LlamaCpp, None).unwrap();
+        let e = c.probe_slots().await.unwrap_err();
+        assert!(e.to_string().contains("32 MiB"), "{e}");
     }
 
     #[tokio::test]

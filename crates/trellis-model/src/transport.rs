@@ -285,13 +285,27 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
     let mut raw: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 16 * 1024];
     let mut framer = Framer::default();
+    let too_large = || {
+        SendError::Broken(format!(
+            "the response is larger than {} MiB, which no model reply is; nothing more was read",
+            MAX_RESPONSE >> 20
+        ))
+    };
     loop {
         match s.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
+                if raw.len() + n > MAX_RESPONSE {
+                    return Err(too_large());
+                }
                 raw.extend_from_slice(&buf[..n]);
                 if framer.complete(&raw) {
                     break;
+                }
+                // A declared length past the cap is refused on the header,
+                // not after the bytes it promises.
+                if framer.declared().is_some_and(|n| n > MAX_RESPONSE) {
+                    return Err(too_large());
                 }
             }
             // A TLS peer that closes without close_notify reads as this. The
@@ -345,6 +359,12 @@ enum Chunk {
     Trailers,
 }
 
+/// The most a response may be, head and body: 32 MiB. A model reply is
+/// kilobytes, and a whole large-context completion well under this; past
+/// it, the server is not answering the request that was sent, and
+/// reading on would fill memory until the timeout.
+pub(crate) const MAX_RESPONSE: usize = 32 << 20;
+
 /// A size line longer than this is not one; the parser reports it.
 const MAX_SIZE_LINE: usize = 4096;
 
@@ -358,17 +378,19 @@ impl Framer {
                 return false;
             };
             let end = from + i + 4;
-            let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
-            self.body = Some(if head.contains("transfer-encoding: chunked") {
-                Body::Chunked {
+            // The parser's own reading of the header, so the two cannot
+            // disagree about where the body ends.
+            let Ok(head) = parse_head(&raw[..end - 4]) else {
+                // Not a response header: the parser says why.
+                return true;
+            };
+            self.body = Some(match head.framing {
+                Framing::Chunked => Body::Chunked {
                     pos: end,
                     at: Chunk::Size,
-                }
-            } else {
-                match content_length(&head) {
-                    Some(n) => Body::Length(end.saturating_add(n)),
-                    None => Body::Unframed,
-                }
+                },
+                Framing::Length(n) => Body::Length(end.saturating_add(n)),
+                Framing::Unframed => Body::Unframed,
             });
         }
         match self.body.as_mut() {
@@ -377,6 +399,81 @@ impl Framer {
             Some(Body::Unframed) | None => false,
         }
     }
+
+    /// The whole response's length in bytes when its header declared one.
+    fn declared(&self) -> Option<usize> {
+        match self.body {
+            Some(Body::Length(n)) => Some(n),
+            _ => None,
+        }
+    }
+}
+
+/// How a response's body ends.
+#[derive(Debug, PartialEq, Eq)]
+enum Framing {
+    Chunked,
+    Length(usize),
+    /// At the end of the stream.
+    Unframed,
+}
+
+/// A response header, parsed once for the framer and the parser alike.
+struct Head {
+    status: u16,
+    /// Lower-cased names, trimmed values.
+    headers: Vec<(String, String)>,
+    framing: Framing,
+}
+
+/// Parses the status line and the header fields (the bytes before the
+/// blank line). Field names compare case-insensitively; values are
+/// trimmed. The framing is RFC 9112 §6.3's: any `Transfer-Encoding`
+/// overrides `Content-Length`; the body is chunked if and only if the last
+/// coding of the combined list (every `Transfer-Encoding` field, each a
+/// comma-separated list) is `chunked`, and otherwise runs to the end of the
+/// stream; with no `Transfer-Encoding`, a valid `Content-Length` frames it.
+fn parse_head(head: &[u8]) -> Result<Head, String> {
+    let text = String::from_utf8_lossy(head);
+    let mut lines = text.split("\r\n");
+    let status_line = lines.next().unwrap_or("");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("no HTTP status in `{status_line}`"))?;
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let codings: Vec<String> = headers
+        .iter()
+        .filter(|(k, _)| k == "transfer-encoding")
+        .flat_map(|(_, v)| v.split(','))
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let framing = if let Some(last) = codings.last() {
+        if last == "chunked" {
+            Framing::Chunked
+        } else {
+            Framing::Unframed
+        }
+    } else {
+        match headers
+            .iter()
+            .find(|(k, _)| k == "content-length")
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+        {
+            Some(n) => Framing::Length(n),
+            None => Framing::Unframed,
+        }
+    };
+    Ok(Head {
+        status,
+        headers,
+        framing,
+    })
 }
 
 /// Advances through a chunked body from `pos`. True once the zero-size
@@ -443,52 +540,28 @@ fn complete(raw: &[u8]) -> bool {
     Framer::default().complete(raw)
 }
 
-fn content_length(head_lower: &str) -> Option<usize> {
-    head_lower
-        .lines()
-        .find_map(|l| l.strip_prefix("content-length:"))
-        .and_then(|v| v.trim().parse().ok())
-}
-
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
 pub(crate) fn parse_response(raw: &[u8]) -> Result<Response, String> {
     let end = find(raw, b"\r\n\r\n").ok_or("no HTTP header terminator in the response")?;
-    let head = String::from_utf8_lossy(&raw[..end]).into_owned();
-    let mut lines = head.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let status: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| format!("no HTTP status in `{status_line}`"))?;
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|l| l.split_once(':'))
-        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
-        .collect();
+    let Head {
+        status,
+        headers,
+        framing,
+    } = parse_head(&raw[..end])?;
     let body_raw = &raw[end + 4..];
-    let chunked = headers
-        .iter()
-        .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
-    let body = if chunked {
-        dechunk(body_raw)?
-    } else {
-        match headers
-            .iter()
-            .find(|(k, _)| k == "content-length")
-            .and_then(|(_, v)| v.parse::<usize>().ok())
-        {
-            Some(n) if body_raw.len() >= n => body_raw[..n].to_vec(),
-            Some(n) => {
-                return Err(format!(
-                    "the response was cut short: {} of {n} body bytes arrived",
-                    body_raw.len()
-                ));
-            }
-            None => body_raw.to_vec(),
+    let body = match framing {
+        Framing::Chunked => dechunk(body_raw)?,
+        Framing::Length(n) if body_raw.len() >= n => body_raw[..n].to_vec(),
+        Framing::Length(n) => {
+            return Err(format!(
+                "the response was cut short: {} of {n} body bytes arrived",
+                body_raw.len()
+            ));
         }
+        Framing::Unframed => body_raw.to_vec(),
     };
     Ok(Response {
         status,
@@ -678,6 +751,105 @@ mod tests {
         raw.extend_from_slice(b"7\r\n0\r\n\r\nab\r\n0\r\n\r\n");
         assert_eq!(feed(&raw, 1).0, Some(raw.len()));
         assert_eq!(parse_response(&raw).unwrap().body, "0\r\n\r\nab");
+    }
+
+    #[test]
+    fn the_framer_and_the_parser_read_transfer_encoding_the_same_way() {
+        // The risk: the framer looked for the substring
+        // `transfer-encoding: chunked` and the parser for a header named
+        // `transfer-encoding` containing `chunked`, so `Transfer-Encoding:
+        // chunked` without the space was read to EOF and then dechunked,
+        // and `x-transfer-encoding: chunked` was framed as chunked and
+        // then parsed by its length (review round 8, finding 6).
+        let body = "5\r\nhello\r\n0\r\n\r\n";
+        for (headers, chunked) in [
+            ("Transfer-Encoding:chunked", true),
+            ("transfer-encoding:   Chunked  ", true),
+            ("Transfer-Encoding: gzip, chunked", true),
+            (
+                "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked",
+                true,
+            ),
+            (
+                "Content-Length: 3\r\nTransfer-Encoding: chunked",
+                true, // chunked overrides the length
+            ),
+            ("x-transfer-encoding: chunked\r\nContent-Length: 15", false),
+        ] {
+            let raw = format!("HTTP/1.1 200 OK\r\n{headers}\r\n\r\n{body}").into_bytes();
+            assert_eq!(feed(&raw, 1).0, Some(raw.len()), "framer: {headers}");
+            let r = parse_response(&raw).unwrap();
+            let want = if chunked { "hello" } else { body };
+            assert_eq!(r.body, want, "parser: {headers}");
+        }
+        // Another header's value is not a transfer coding: the length
+        // frames it, and the framer stops where the parser cuts.
+        let head = "HTTP/1.1 200 OK\r\nx-transfer-encoding: chunked\r\nContent-Length: 3\r\n\r\n";
+        let raw = format!("{head}{body}").into_bytes();
+        assert_eq!(feed(&raw, 1).0, Some(head.len() + 3));
+        assert_eq!(parse_response(&raw).unwrap().body, "5\r\n");
+        // A last coding that is not `chunked` is read to the end of the
+        // stream, whatever `Content-Length` says.
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\nContent-Length: 2\r\n\r\n{}xyz";
+        assert_eq!(feed(raw, 1).0, None, "only EOF ends it");
+        assert_eq!(parse_response(raw).unwrap().body, "{}xyz");
+    }
+
+    /// A loopback server that answers one connection with `head` and then
+    /// `body_bytes` bytes of `x`, ignoring errors (the client may hang up).
+    async fn stub(head: &'static str, body_bytes: usize) -> TcpStream {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = s.read(&mut req).await;
+            let _ = s.write_all(head.as_bytes()).await;
+            let chunk = vec![b'x'; 1 << 20];
+            let mut sent = 0;
+            while sent < body_bytes {
+                if s.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                sent += chunk.len();
+            }
+            // Held open: a client that waits for EOF waits for the timeout.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        TcpStream::connect(addr).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_response_past_the_cap_is_refused_rather_than_buffered() {
+        // The risk: `raw` grew without bound, so a server streaming an
+        // unframed body filled memory until the request's timeout
+        // (review round 8, finding 8).
+        let s = stub("HTTP/1.1 200 OK\r\n\r\n", MAX_RESPONSE + (4 << 20)).await;
+        let r = tokio::time::timeout(
+            Duration::from_secs(20),
+            exchange(s, b"GET / HTTP/1.1\r\n\r\n"),
+        )
+        .await
+        .expect("refused at the cap, not at the end of the stream");
+        match r {
+            Err(SendError::Broken(e)) => assert!(e.contains("32 MiB"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_declared_length_past_the_cap_is_refused_before_the_body() {
+        let s = stub("HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\n\r\n", 0).await;
+        let r = tokio::time::timeout(
+            Duration::from_secs(10),
+            exchange(s, b"GET / HTTP/1.1\r\n\r\n"),
+        )
+        .await
+        .expect("refused on the header");
+        match r {
+            Err(SendError::Broken(e)) => assert!(e.contains("32 MiB"), "{e}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

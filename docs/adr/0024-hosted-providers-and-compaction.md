@@ -39,6 +39,35 @@ No `reqwest`, `hyper` or `tokio` "full". The request is still written by hand
 `Content-Length` and chunked decoding, because hosted APIs send chunked
 bodies and do not always close promptly.
 
+*Amended after the eighth review of PR #1:*
+- **One header parser.** The framer (which decides when a response read in
+  pieces is whole) looked for the substring `transfer-encoding: chunked`,
+  and the parser for a field named `transfer-encoding` whose value
+  contained `chunked`. `Transfer-Encoding:chunked` (no space) was
+  therefore read to end of stream and then dechunked, and
+  `x-transfer-encoding: chunked` framed as chunked and parsed by its
+  length. Both now use `parse_head`: field names compared
+  case-insensitively, values trimmed, every `Transfer-Encoding` field's
+  comma-separated codings taken in order; the body is chunked if and only
+  if the last coding is `chunked`, any `Transfer-Encoding` overrides
+  `Content-Length`, and a last coding that is not `chunked` is read to end
+  of stream (RFC 9112 §6.3). Evidence:
+  `transport::tests::the_framer_and_the_parser_read_transfer_encoding_the_same_way`,
+  which failed before on `Transfer-Encoding:chunked`.
+- **A response is at most 32 MiB**, header and body. Past it the read
+  stops with an error naming the limit, and a `Content-Length` above it is
+  refused on the header, before the body it promises. A model reply is
+  kilobytes; before this, a server streaming an unframed body filled
+  memory until the request's timeout. The local runtime client
+  (`runtime.rs`), which read to end of stream the same way, has the same
+  cap, and its "not JSON" errors quote the first 400 characters of the
+  body rather than all of it. Evidence:
+  `a_response_past_the_cap_is_refused_rather_than_buffered`,
+  `a_declared_length_past_the_cap_is_refused_before_the_body` and
+  `runtime::tests::a_runtime_reply_past_the_cap_is_refused_rather_than_buffered`,
+  each of which failed before (the first two ran into their timeouts; the
+  third returned a 40 MiB body as a JSON error).
+
 Without the feature an `https://` base is refused with a message naming the
 feature. The local tiers are untouched either way.
 
