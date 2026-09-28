@@ -165,20 +165,67 @@ provider and asserts a refusal naming it, no `snapshot at` line and no
 trail. Unit tests cover `Debug` of the key and of the client, scrubbing,
 and the 401 body that echoes a masked key.
 
-*Amended at implementation: a path this section does not close.* The key is
-in trellis's own process environment, and every child process inherits it:
-`[checks]` commands, and, in a repository the user has trusted (ADR 0023),
-`bash`, custom tools and hooks. A command that prints the variable
-(`bash: echo $ANTHROPIC_API_KEY`) returns it as an observation, which the
-loop's `turn` event logs and the trail's action summary records. trellis
-writes nothing of the key itself; a command it runs can. Removing the
-variable from each child's environment is not built: the process-wide
-`std::env::remove_var` is `unsafe` in edition 2024 and the workspace forbids
-`unsafe`, so it would be a per-spawn `env_remove` in `trellis-loop` (bash,
-custom tools, hooks) and in `trellis-checks` (the check runner). Until then:
-a hosted key is readable by any command a run executes, which for `bash`,
-custom tools and hooks requires `trellis trust`, and for `[checks]` does not
-(ADR 0023 §4 records that gap).
+*Amended at implementation: the key reaches child processes. Recorded as a
+gap at first; closed in wave K as below.* The key is in trellis's own
+process environment, and a child inherits that environment unless the spawn
+removes the variable: `[checks]` commands, and, in a repository the user has
+trusted (ADR 0023), `bash`, custom tools and hooks. A command that prints
+the variable (`bash: echo $ANTHROPIC_API_KEY`) would return it as an
+observation, which the loop's `turn` event logs and the trail's action
+summary records.
+
+*Closed.* Every child process trellis starts has the key variables removed
+from its environment, per spawn, with `Command::env_remove`. The
+process-wide `std::env::remove_var` is not used: it is `unsafe` in edition
+2024, the workspace forbids `unsafe`, and trellis itself still needs the key
+for its own requests.
+
+- **One list, in `trellis-core`** (`trellis_core::secrets`), because every
+  crate that spawns may depend on it. `scrub(&mut Command)` removes
+  `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` always, whether or not anything
+  was registered, so a path where registration was missed still removes
+  the defaults. It also removes every name registered with
+  `register_key_vars`. A tokio command is scrubbed through `as_std_mut`.
+- **Registration.** `main` loads the effective configuration (the
+  repository's file over the user's, ADR 0025 §7) as soon as the root is
+  known and registers every `[[providers]] key_env` in it, before any
+  command runs. `hosted::build` registers the `key_env` it resolved as well.
+  A configuration that fails to load registers nothing, and the command
+  that reads it then fails on the same error; the two defaults are still
+  removed.
+- **Where it is applied.** Every `Command::new` in shipped code: the check
+  runner in `trellis-checks`; `trellis-loop`'s `exec::run`, which is the one
+  spawn behind `bash`, custom tools, hooks and the git-backed listings,
+  scrubbed after `spec.env` so nothing set there can put a key back; the
+  `write_file` ignore probe; `trellis-vcs`'s git runner, because `git
+  commit` runs the repository's own hooks; and in the binary the process
+  agent, `doctor`'s `--version` and `--help` probes of the configured
+  checkers, `model`'s `curl`, and the session's `!` shell line.
+- **One exception, by configuration.** A process agent's profile may name
+  variables in `pass_env`, which are put back after the scrub (ADR 0026
+  §11). The default is none.
+- **The `chat` crate** depends on nothing in the workspace by design, so it
+  removes the two default names itself (`chat::scrub_keys`) at its four
+  spawns. It reads no `[[providers]]`, so it has no other names to remove.
+
+Evidence is `crates/trellis-cli/tests/child_env.rs`. The binary is run with
+four canary keys in its environment: both defaults, a repository provider's
+`key_env`, and a user-level provider's `key_env` from a user configuration
+file. A marker variable is set alongside them. A check, a tests command,
+`bash`, a custom tool and a `pre_tool` hook each write their whole
+environment to a file outside the repository. Each file must hold the
+marker, so a dump that recorded nothing cannot pass, and none may hold a
+canary. Terminal output and the trail are checked for the canaries too. A
+process agent is run the same way, with and without `pass_env =
+["ANTHROPIC_API_KEY"]`: without it no canary arrives, and with it exactly
+that one does. A last test scans every non-test `Command::new` under
+`crates/*/src` and fails on one with no scrub within the next 16 lines.
+With the scrub removed from the check runner, `exec::run` and the process
+agent, the first two tests fail on `OPENAI_API_KEY`.
+
+Not covered: a process a child starts after reading the key from somewhere
+other than its environment (a file, a keychain) is outside what trellis
+passes to it.
 
 ### 4. Backoff, and thinking
 

@@ -508,16 +508,15 @@ impl Orchestrator {
                  change an existing one."
             ));
         }
-        let ignored = tokio::process::Command::new("git")
-            .args(["check-ignore", "-q", "--no-index", "--"])
+        let mut git = tokio::process::Command::new("git");
+        git.args(["check-ignore", "-q", "--no-index", "--"])
             .arg(path)
             .current_dir(&self.root)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .is_ok_and(|s| s.success());
+            .stderr(std::process::Stdio::null());
+        trellis_core::secrets::scrub(git.as_std_mut());
+        let ignored = git.status().await.is_ok_and(|s| s.success());
         if ignored {
             return ToolResult::Error(format!(
                 "write_file refused: `{path}` is ignored by git, so a rollback could not \

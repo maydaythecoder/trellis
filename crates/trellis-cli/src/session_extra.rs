@@ -39,18 +39,24 @@ pub(crate) fn shell(root: &Path, line: &str) -> Result<()> {
 /// `raw_arg` because std's argument quoting targets programs that parse
 /// their command line the C runtime's way, and `cmd.exe` does not. Quoted
 /// arguments inside the line would otherwise arrive escaped twice.
+///
+/// Scrubbed like every other child (ADR 0024 §3). The line is the person's
+/// own, but it runs inside trellis, and one rule for every spawn is the one
+/// that survives the next spawn someone adds.
 fn shell_command(cmd: &str) -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         let mut c = std::process::Command::new("cmd");
         c.arg("/C").raw_arg(cmd);
+        trellis_core::secrets::scrub(&mut c);
         c
     }
     #[cfg(not(windows))]
     {
         let mut c = std::process::Command::new("sh");
         c.arg("-c").arg(cmd);
+        trellis_core::secrets::scrub(&mut c);
         c
     }
 }

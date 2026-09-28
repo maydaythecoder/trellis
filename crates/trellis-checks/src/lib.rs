@@ -207,13 +207,15 @@ async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
         };
     };
 
-    let result = tokio::process::Command::new(program)
-        .args(args)
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
         .current_dir(root)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
+        .stderr(Stdio::piped());
+    // A check's output becomes a verdict's detail, and from there a trail:
+    // a checker that prints its environment must find no key in it.
+    trellis_core::secrets::scrub(cmd.as_std_mut());
+    let result = cmd.output().await;
 
     match result {
         Ok(o) => ProcessOutput {

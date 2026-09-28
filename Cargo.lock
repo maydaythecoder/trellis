@@ -3006,6 +3006,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "trellis-core",
  "trybuild",
 ]
 
@@ -3138,6 +3139,7 @@ version = "0.0.1"
 dependencies = [
  "thiserror 2.0.20",
  "tracing",
+ "trellis-core",
 ]
 
 [[package]]
