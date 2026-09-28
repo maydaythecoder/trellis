@@ -28,20 +28,23 @@ pub fn scrub_keys(cmd: &mut std::process::Command) -> &mut std::process::Command
 /// `git` with a planted `core.fsmonitor` and hooks turned off, keys
 /// removed: this crate's copy of `trellis_vcs::command`, for the reason
 /// `scrub_keys` is a copy (it depends on nothing in the workspace). The
-/// `-c` values are `trellis_vcs::OVERRIDES`; the workspace's source scan
+/// `-c` values are [`GIT_OVERRIDES`]; the workspace's source scan
 /// (`every_git_spawn_goes_through_trellis_vcs`) allows this one site.
 pub fn git_command() -> std::process::Command {
     let mut c = std::process::Command::new("git");
-    c.args([
-        "-c",
-        "core.fsmonitor=",
-        "-c",
-        if cfg!(windows) {
-            "core.hooksPath=NUL"
-        } else {
-            "core.hooksPath=/dev/null"
-        },
-    ]);
+    c.args(GIT_OVERRIDES);
     scrub_keys(&mut c);
     c
 }
+
+/// A copy of `trellis_vcs::OVERRIDES`, written the same way so the two can
+/// be compared as text: `chat_s_git_overrides_are_trellis_vcs_s` in
+/// `trellis-cli`'s `tests/hygiene.rs` fails when they differ (review round
+/// 11). A copy that drifted would leave this crate running a planted
+/// `core.fsmonitor` while the rest of the workspace does not.
+pub const GIT_OVERRIDES: [&str; 4] = ["-c", "core.fsmonitor=", "-c", NO_HOOKS];
+
+#[cfg(windows)]
+const NO_HOOKS: &str = "core.hooksPath=NUL";
+#[cfg(not(windows))]
+const NO_HOOKS: &str = "core.hooksPath=/dev/null";
