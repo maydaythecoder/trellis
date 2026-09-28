@@ -3,7 +3,8 @@
 //!
 //! A profile with `command = [argv]` runs its tasks by running that command
 //! in the worktree, then running the same two grounded checks `trellis
-//! check` runs. The run converged if and only if the command changed
+//! check` runs, and the governance rules a model run obeys. The run
+//! converged if and only if the command changed
 //! something and both checks passed; anything else is rolled back exactly
 //! as a failed model run is (ADR 0009).
 //!
@@ -27,18 +28,176 @@ enum Ended {
     Interrupted,
 }
 
-/// Paths `git status --porcelain` names: the files the command touched.
+/// The files the command touched, as `git status` names them: every
+/// untracked file rather than its directory, so each can be audited, and
+/// `-z` so no path is quoted or cut. (Read through `trellis_vcs::pending`
+/// before, whose trimmed lines lost the first character of a modified
+/// tracked file's path.)
 fn changed(root: &Path) -> Result<Vec<String>, String> {
-    trellis_vcs::pending(root)
-        .map(|lines| {
-            lines
-                .iter()
-                .filter_map(|l| l.get(3..))
-                .map(|p| p.trim().trim_matches('"').to_string())
-                .filter(|p| !p.is_empty())
-                .collect()
+    let o = Command::new("git")
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git status could not run: {e}"))?;
+    if !o.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&o.stdout);
+    let mut out = Vec::new();
+    let mut fields = text.split('\0').filter(|f| !f.is_empty());
+    while let Some(f) = fields.next() {
+        let (xy, path) = (f.get(..2).unwrap_or(""), f.get(3..).unwrap_or(""));
+        if !path.is_empty() {
+            out.push(path.to_string());
+        }
+        // A rename or copy carries its source as the next field; the
+        // source is changed too (it is gone).
+        if (xy.contains('R') || xy.contains('C'))
+            && let Some(src) = fields.next()
+        {
+            out.push(src.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// The files under `.git/` a command can use to run code later, as bytes:
+/// `config` (`core.hooksPath`, aliases, `core.fsmonitor`) and every file in
+/// the hooks directory. `git status` never shows them and the rollback
+/// never touches them, so they are compared around the command and put
+/// back. Nothing else in `.git/` is covered (ADR 0026 §11).
+struct GitGuard {
+    root: PathBuf,
+    config: PathBuf,
+    hooks: PathBuf,
+    files: Vec<(PathBuf, Vec<u8>)>,
+}
+
+impl GitGuard {
+    fn capture(root: &Path) -> Result<GitGuard, String> {
+        let o = Command::new("git")
+            .args(["rev-parse", "--git-path", "config", "--git-path", "hooks"])
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("git rev-parse could not run: {e}"))?;
+        let text = String::from_utf8_lossy(&o.stdout);
+        let mut lines = text.lines().map(|l| root.join(l.trim()));
+        let (Some(config), Some(hooks)) = (lines.next(), lines.next()) else {
+            return Err(format!(
+                "git rev-parse --git-path failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        };
+        let mut g = GitGuard {
+            root: root.to_path_buf(),
+            config,
+            hooks,
+            files: Vec::new(),
+        };
+        g.files = g.read()?;
+        Ok(g)
+    }
+
+    fn read(&self) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+        let mut paths = vec![self.config.clone()];
+        let mut dirs = vec![self.hooks.clone()];
+        while let Some(d) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in entries.filter_map(Result::ok) {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else {
+                    paths.push(p);
+                }
+            }
+        }
+        paths.sort();
+        let mut out = Vec::new();
+        for p in paths {
+            match std::fs::read(&p) {
+                Ok(b) => out.push((p, b)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{} could not be read: {e}", p.display())),
+            }
+        }
+        Ok(out)
+    }
+
+    fn label(&self, p: &Path) -> String {
+        p.strip_prefix(&self.root)
+            .unwrap_or(p)
+            .display()
+            .to_string()
+            .replace('\\', "/")
+    }
+
+    /// What differs from the capture, each put back: a changed or deleted
+    /// file gets its bytes again, a new one is removed. Returns the paths
+    /// that differed, and any that could not be put back.
+    fn restore(&self) -> (Vec<String>, Vec<String>) {
+        let now = match self.read() {
+            Ok(n) => n,
+            Err(e) => return (vec![format!("the git directory ({e})")], vec![e]),
+        };
+        let (mut differed, mut failed) = (Vec::new(), Vec::new());
+        for (p, bytes) in &self.files {
+            if now.iter().find(|(q, _)| q == p).map(|(_, b)| b) != Some(bytes) {
+                differed.push(self.label(p));
+                if let Err(e) = std::fs::write(p, bytes) {
+                    failed.push(format!("{}: {e}", self.label(p)));
+                }
+            }
+        }
+        for (p, _) in &now {
+            if !self.files.iter().any(|(q, _)| q == p) {
+                differed.push(self.label(p));
+                if let Err(e) = std::fs::remove_file(p) {
+                    failed.push(format!("{}: {e}", self.label(p)));
+                }
+            }
+        }
+        (differed, failed)
+    }
+}
+
+/// Governance as a model run meets it (ADR 0026 §11): `[governance]
+/// deny_write` and `deny-write` documents over every path the command
+/// changed, then the `forbid` audit over those files. The first is a list
+/// of breaches; the second is a `Verdict` from `trellis-checks`, present
+/// only when the repository has rule documents, as the loop audits only
+/// then.
+fn governance(
+    root: &Path,
+    touched: &[String],
+) -> Result<(Vec<String>, Option<trellis_checks::Verdict>), String> {
+    let rules = trellis_checks::governance::load(root).map_err(|e| e.to_string())?;
+    let cfg = crate::config::RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
+    let mut deny: Vec<String> = cfg
+        .governance()
+        .rules()
+        .iter()
+        .map(|r| r.as_written())
+        .collect();
+    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
+    let g = trellis_loop::Governance::new(&deny);
+    let denied = touched
+        .iter()
+        .filter_map(|p| {
+            g.denies_write(p)
+                .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
         })
-        .map_err(|e| e.to_string())
+        .collect();
+    let audit =
+        (!rules.is_empty()).then(|| trellis_checks::governance_audit(root, &rules, touched));
+    Ok((denied, audit))
 }
 
 pub(crate) struct ProcessRun<'a> {
@@ -91,6 +250,16 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         argv.join(" ")
     );
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
+    // Before the command, since nothing can be put back that was not read.
+    let git_guard = match GitGuard::capture(root) {
+        Ok(g) => g,
+        Err(e) => {
+            return RunEnd::Error {
+                run_id: None,
+                error: format!("could not read .git/config and hooks before the command: {e}"),
+            };
+        }
+    };
 
     let started = Instant::now();
     let mut cmd = Command::new(&argv[0]);
@@ -158,6 +327,21 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     };
     let _ = writeln!(out, "process:  {exit_text}");
 
+    // Whatever else happens, `.git/config` and the hooks go back first: a
+    // change there is never part of a converged run, and the worktree
+    // rollback would not undo it.
+    let (git_changed, git_unrestored) = git_guard.restore();
+    if !git_changed.is_empty() {
+        let _ = writeln!(
+            out,
+            "git:      the command changed {}; put back",
+            git_changed.join(", ")
+        );
+    }
+    for f in &git_unrestored {
+        let _ = writeln!(out, "git:      could NOT be put back: {f}");
+    }
+
     let touched = match changed(root) {
         Ok(t) => t,
         Err(e) => {
@@ -177,7 +361,22 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     // a timed-out or interrupted command left a tree nobody should verify,
     // and an unchanged tree has nothing to verify.
     let mut verdicts = Vec::new();
+    let mut denied = Vec::new();
+    let mut checked = false;
     if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
+        match governance(root, &touched) {
+            Ok((d, audit)) => {
+                denied = d;
+                verdicts.extend(audit);
+            }
+            Err(e) => {
+                // A rule that would not load is not a rule that passed.
+                denied.push(format!("governance could not be read: {e}"));
+            }
+        }
+        for d in &denied {
+            let _ = writeln!(out, "governance: refused: {d}");
+        }
         let checks = match crate::config::RepoConfig::load(root) {
             Ok(c) => c.checks(),
             Err(e) => {
@@ -198,12 +397,13 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             .build()
         {
             Ok(rt) => {
-                verdicts = rt.block_on(async {
+                verdicts.extend(rt.block_on(async {
                     vec![
                         trellis_checks::typecheck(root, &checks, &paths).await,
                         trellis_checks::run_tests(root, &checks, &paths).await,
                     ]
-                });
+                }));
+                checked = true;
             }
             Err(e) => {
                 let _ = writeln!(out, "checks:   could not start a runtime: {e}");
@@ -218,17 +418,36 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
                 if v.passed() { "passed" } else { "FAILED" },
                 d.command
             );
+            // The audit's findings name the rule and the line; a bare
+            // "FAILED" is not something anyone can act on.
+            if d.kind == trellis_checks::CheckKind::Governance {
+                for l in d.stdout.lines().take(20) {
+                    let _ = writeln!(out, "          {l}");
+                }
+            }
         }
     }
-    let converged = verdicts.len() == 2 && verdicts.iter().all(|v| v.passed());
+    // Both checks ran and every verdict passed (the governance audit's too,
+    // when there is one); nothing was written where a rule denies it; and
+    // nothing under `.git/` changed.
+    let converged = checked
+        && verdicts.iter().all(|v| v.passed())
+        && denied.is_empty()
+        && git_changed.is_empty();
     let why = if converged {
         "converged: both checks passed"
     } else {
         match &ended {
             Ended::TimedOut => "not converged: timed out",
             Ended::Interrupted => "interrupted",
+            _ if !git_changed.is_empty() => {
+                "not converged: the command changed files under .git/, which a run may not"
+            }
             _ if touched.is_empty() => {
                 "not converged: the command changed nothing, so there was nothing to verify"
+            }
+            _ if !denied.is_empty() => {
+                "not converged: the command wrote where [governance] deny_write refuses"
             }
             _ => "not converged: a check failed",
         }

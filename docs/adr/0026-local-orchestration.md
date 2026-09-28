@@ -598,8 +598,35 @@ This is Paperclip's `process` adapter. A profile with
    `crates/trellis-cli/tests/child_env.rs`.
 3. **Check** with the grounded checks, the same pair `trellis check` runs:
    typecheck and tests over `.`.
+
+   *Amended after the second review of PR #1: governance binds a command
+   as it binds a model.* Before it, a process agent was judged on the two
+   checks alone, and a `[governance] deny_write` path or a
+   `.trellis/governance/` rule that refuses a model's edit did not refuse
+   a command's. Now, over every path `git status` names after the command
+   (untracked files one by one):
+   - each path is matched against `[governance] deny_write` and every
+     `deny-write` document; a match is a breach, named in the output;
+   - when the repository has rule documents, the same `governance_audit`
+     the loop runs at convergence produces a `Verdict` over those files,
+     recorded with the other two.
+
+   **`.git/` is outside the worktree the rollback restores**, and `git
+   status` does not see it, so a command could plant a hook or set
+   `core.hooksPath` and survive any rollback. The bytes of `.git/config`
+   and of every file under the hooks directory (both as `git rev-parse
+   --git-path` names them) are read before the command and compared
+   after. A difference is put back (the old bytes rewritten, a new file
+   removed), named in the output, and makes the run not converged. What
+   is not covered, stated: the rest of `.git/` (`info/exclude`, refs,
+   objects, `packed-refs`, the index), a change the command makes and
+   reverts before it exits, and a file that cannot be written back, which
+   is reported as not put back. A process that outlives the command (see
+   step 2) can still write after the comparison.
 4. **Decide.** The run converged if and only if the command changed at least
-   one file and both checks pass.
+   one file, both checks pass, the governance audit (when there is one)
+   passes, no changed path is denied, and nothing under `.git/config` or
+   the hooks changed.
    - A command that changed nothing has nothing to verify, and ends `failed`
      with that reason.
    - On anything other than convergence, the tree is rolled back exactly as
