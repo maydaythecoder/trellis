@@ -534,7 +534,13 @@ check configuration and the process-agent profiles.
   `.git` through a link. The approval gate's prediction of these refusals
   (`preview_edit`, and its `write_file` branch) calls the same function,
   `write_refusal`, so a call it lets through unasked is one the
-  orchestrator refuses.
+  orchestrator refuses. *Amended after the sixth review:* the `write_file`
+  branch did not predict the one refusal left, a path git ignores, so a
+  person was asked to approve a write that was then refused. Both now ask
+  `ignored_refusal`, one `git check-ignore` that fails closed the same way
+  in each, and only after the path rules and the existing-file check pass
+  (`a_write_file_git_ignores_is_not_put_to_the_human`). The cost is one
+  `git` process per `write_file` the gate would otherwise have asked about.
 - **What cannot be path-checked is re-checked by fingerprint.** When the
   repository is trusted, `tooling::prepare` builds one `TrustGuard` over the
   fingerprint it trusted, from the same configuration inputs, and hands it
