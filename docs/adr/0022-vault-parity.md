@@ -1,6 +1,10 @@
 # ADR 0022 — Apex vault parity: lenient reading, strict run gate, `trellis vault`
 
-**Status:** Accepted.
+**Status:** Accepted. Amended in implementation: §3 (`reparent --no-parent`;
+`rm` writes only what changes; the search limit), §5 (`dates --seed` may
+create the file; a BOM changes anchors), §7 (added: `[context] dates` is not
+built), and "Evidence" (how the vectors were produced). Each amendment is
+marked in place.
 **Date:** 2026-09-27
 **Reference design:** Apex Notes (`boriemannetje/apex-notes`, MIT), commit
 `f449644a459b67c3b5f2d05ea676a48c1f63fe0e`. The behaviour below was read from
@@ -194,7 +198,7 @@ path, title or slug.
 | `search <query> [--limit N]` | `SearchIndex.search`: BM25 with k1 1.2 and b 0.75, and a trigram Jaccard fallback weighted 0.35 with a minimum of 0.18. |
 | `graph <note>` | Lineage from the root, children, `refs_out` and `refs_in` with weights, and depth. |
 | `new <title> [--parent <note>]` | `getAvailableDisplayTitle` (" 2", " 3", … on a title already taken), then `getAvailableNewNotePath` (slug, then `-2`, `-3`, …, compared case-insensitively), then `createNoteRaw`. |
-| `reparent <note> (<parent> \| --root)` | Refuses a parent that is the note itself or one of its descendants. Rewrites only the child. Apex's layout-driven "connection plan" can also rewrite the parent, and that is UI behaviour, not taken. |
+| `reparent <note> (<parent> \| --no-parent)` | Refuses a parent that is the note itself or one of its descendants. Rewrites only the child. Apex's layout-driven "connection plan" can also rewrite the parent, and that is UI behaviour, not taken. |
 | `link <from> <to>` | `appendBodyReference`: trailing whitespace is trimmed, then a blank line, `[[key]]` and a newline are appended. It is a no-op when a body link already resolves to the target. `key` is the basename, or the path without `.md` when the basename is shared. |
 | `retitle <note> <title>` | Sets the title, then rewrites every body wikilink that resolved to the note, under the index built before the change, into `[[New Title]]`, keeping `\|label`. |
 | `rm <note>` | Deletes the file. Body links that resolved to it become their label, or their reference when there is no label. Children get `parent: null`, which is Apex's code; its docs say children keep their broken parents. Git is the undo; there is no OS trash. |
@@ -210,6 +214,21 @@ path, title or slug.
 - writes notes with exactly two frontmatter keys, in `composeRaw`'s form.
 
 A note file is written only when its bytes change.
+
+*Amended in implementation:*
+
+- **`--no-parent`, not `--root`.** The binary's global `--root <PATH>` owns
+  that name. Clap panicked at parse time on the collision, so
+  `the_vault_subcommand_parses_under_the_real_cli` now parses through the
+  real `Cli`.
+- **`rm` rewrites only the notes whose links or parent change.** Apex's
+  `removeDeletedNoteLinks` writes every note whose `composeRaw` output
+  differs from its file. That would reformat unrelated notes, for the reason
+  given for `--fix` in §1.
+- **`search` defaults to 12 results**, the limit Apex's search box uses.
+- **The note argument resolves as a link would**, so `graph "Task A"` and
+  `graph task-a` name the same note. The run's `--focus` keeps stem-only
+  resolution (§1).
 
 The only automatic repair is `--fix`; the other commands refuse on a problem
 and name it. `trellis vault` is a command the human runs. It is not a tool the
@@ -313,6 +332,16 @@ created, and no output mentions dates. When it exists but fails validation,
 it is left untouched and the command says so. **A file that fails validation
 is never overwritten**, `--seed` included.
 
+*Amended in implementation:*
+
+- **`trellis vault dates --seed` creates `dates.json` when it is absent.**
+  This is the one exception to the rule above. The command asks for the file
+  by name, and Apex creates the file whenever it opens a folder.
+- **A note that starts with a BOM hashes differently.** Trellis strips the
+  BOM before parsing (ADR 0017). Apex does not strip it, so in Apex that note
+  has no frontmatter and its whole text is the body. So the two tools anchor
+  different lines for such a note. No other input is known to diverge.
+
 **Writes are atomic, mirroring `atomic_write_file`:**
 
 1. Serialise compactly, with keys in byte order, as `serde_json` does with
@@ -335,6 +364,15 @@ them (ADR 0019), and a built-in one would be the first skill trellis carries
 in its binary. Instead, `trellis vault check` prints the exact report line
 that SKILL.md asks an agent to end with, so an agent following Apex's skill
 can use trellis to verify its work. The owner can override this.
+
+### 7. `[context] dates` is not built
+
+*Added in implementation.* The brief made it optional to annotate compiled
+note headers with each note's created day, behind `[context] dates = true`.
+The annotation is not built. Reading the flag means changing `cmd_run` in
+`main.rs`, and this wave's edits to that file are limited to registering the
+subcommand. Nothing is stubbed: no config key is read, and the goldens are
+unaffected.
 
 ## Alternatives rejected
 
@@ -369,14 +407,18 @@ vault is in git.
     has no time zones.
   - `serde` (derive) in `trellis-vault`, to deserialise `dates.json` with
     unknown fields rejected. It is already a workspace dependency.
-- **The CLI grows by one subcommand, `vault`, with nine actions.** This is
+- **The CLI grows by one subcommand, `vault`, with ten actions.** This is
   owner-directed, like ADR 0020.
 - **`trellis vault` requires a repository**, like every command except `init`
   and `model`. So `trellis vault init` outside a repository needs `--root`.
 - **The gate accepts vaults that ADR 0017 refused**: title-form parents, the
-  null forms, and a `notes/` root. It refuses nothing that it accepted before,
-  except `.md` files inside dot-directories, which it now skips rather than
-  validates.
+  null forms, and a `notes/` root. The set of files it reads changes in two
+  ways:
+  - dotfiles and dot-directories are now skipped rather than validated;
+  - a file ending `.MD` or `.Md` is now a note, which the manifest must list.
+
+  The second is the one way a vault the gate accepted before can now be
+  refused.
 - **Size warnings use Apex's `>=`**: 1,000 notes, 50 MiB in total, and 2 MiB
   for one note. The brief said `>`; the code says `>=`, and the code is the
   reference.
@@ -398,16 +440,29 @@ For `"a"` (0x61, index 0), lane 0 runs:
 
 Every step is written out in the test comment.
 
-**Anchor vectors, generated.** The full vectors are in
-`crates/trellis-vault/src/dates.rs`. They were generated by running Apex's
-unmodified `web/notes/noteDates.ts` at `f449644a` under Node v25.6.0, which
-strips TypeScript types natively:
+**Anchor vectors, generated.** *Amended in implementation: the method
+changed.*
 
-```
-node -e 'import("./web/notes/noteDates.ts").then(m => console.log(m.lineAnchor("a")))'
-```
+The method:
 
-The vectors cover ASCII, a BMP character (`é`) and a surrogate pair (`😀`).
-Slug, alias-resolution and search-ranking vectors were generated the same way
-from `noteRefs.ts`, `graphModel.ts` and `searchIndex.ts`, and are recorded
-beside their tests.
+1. Each Apex source was fetched unmodified at `f449644a` with
+   `gh api repos/boriemannetje/apex-notes/contents/<path>?ref=<sha>` and laid
+   out in its original `web/` tree.
+2. Short `.mjs` scripts imported the `.ts` modules directly. Node v25.6.0
+   strips TypeScript types natively.
+3. Each script printed the vectors below.
+
+| File | Vectors |
+|---|---|
+| `crates/trellis-vault/src/dates.rs` | `lineAnchor` for nine strings; `seedNoteDates` with markers; two `reconcileNoteDates` cases; four documents `normalizeDateDocument` rejects |
+| `src/refs.rs` | `slugify`, `normalizeKey`, `parseWikiTarget`, `getNoteAliasKeys` |
+| `src/search.rs` | `createSearchIndex(…).search(q, {limit: 12})` scores for four queries |
+| `tests/parity.rs` (`graph_matches_apex_vectors`) | `createGraphIndex` parents, `resolvePath`, `refsOut`, `roots`, `derivedLevels`, `duplicateAliases` |
+
+The anchor strings cover ASCII, a BMP character (`é`) and a surrogate pair
+(`😀`).
+
+Every vector matched on the first run of the Rust tests except one, which was
+a mistaken expectation, not a divergence. `parseWikiTarget("[[notes/x/y.md | Label ]]")`
+yields `x/y.md`, because the trim runs after the `.md` strip. The Rust side
+already did this, and the test was corrected to match Apex.
