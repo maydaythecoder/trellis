@@ -217,6 +217,16 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
     Ok(tree?.trim().to_string())
 }
 
+/// The paths that differ between two trees from [`worktree_fingerprint`].
+///
+/// Both trees' objects are in the store, because computing a fingerprint
+/// writes them. For saying *what* changed when a guard fires, rather than
+/// only that something did.
+pub fn tree_diff(root: &Path, before: &str, after: &str) -> Result<Vec<String>, VcsError> {
+    let out = git(root, &["diff-tree", "-r", "--name-only", before, after])?;
+    Ok(out.lines().map(str::to_string).collect())
+}
+
 /// Commits exactly the given paths, and nothing else.
 ///
 /// Used for the decision trail. The brief calls for the trail to be
@@ -486,6 +496,23 @@ mod tests {
             worktree_fingerprint(&dir).unwrap(),
             "ignored files are outside it, as documented"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fired_guard_can_name_the_paths_that_changed() {
+        // The risk: a guard that only says "something changed" leaves the
+        // person to guess which file, and a flaky demotion cannot be told
+        // from a real one.
+        let dir = temp_repo("tree-diff");
+        let before = worktree_fingerprint(&dir).unwrap();
+        std::fs::write(dir.join("hook-wrote.txt"), "x").unwrap();
+        let after = worktree_fingerprint(&dir).unwrap();
+        assert_eq!(
+            tree_diff(&dir, &before, &after).unwrap(),
+            vec!["hook-wrote.txt".to_string()]
+        );
+        assert!(tree_diff(&dir, &before, &before).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

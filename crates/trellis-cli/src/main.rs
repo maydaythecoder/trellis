@@ -1958,30 +1958,46 @@ fn run_body(
         if let (Some(h), Some((o, _))) = (&tooling.hooks, &out)
             && h.config().after_run.is_some()
         {
-            let guard = o
-                .converged()
-                .then(|| trellis_vcs::worktree_fingerprint(root).ok());
+            // One retry: a fingerprint is two git commands against a copy of
+            // the index, and a transient failure there says nothing about
+            // the hook. A second failure still demotes the run, and says so.
+            let fingerprint = || {
+                trellis_vcs::worktree_fingerprint(root)
+                    .or_else(|_| trellis_vcs::worktree_fingerprint(root))
+            };
+            let guard = o.converged().then(fingerprint);
             if let Some(Err(e)) = h
                 .after_run(&tooling::outcome_json(o, &touched, &run_id))
                 .await
             {
                 tracing::warn!(error = %e, "after_run hook failed; it only observes");
             }
-            let changed = match guard {
-                None => false,
-                Some(None) => true,
-                Some(Some(before)) => trellis_vcs::worktree_fingerprint(root)
-                    .ok()
-                    .is_none_or(|after| after != before),
+            // What the guard saw, named: the paths that differ, or which
+            // fingerprint could not be taken and why. The two call for
+            // different fixes.
+            let detail = match guard {
+                None => None,
+                Some(Err(e)) => Some(format!("the worktree could not be fingerprinted before the hook: {e}")),
+                Some(Ok(before)) => match fingerprint() {
+                    Err(e) => Some(format!("the worktree could not be fingerprinted after the hook: {e}")),
+                    Ok(after) if after == before => None,
+                    Ok(after) => Some(match trellis_vcs::tree_diff(root, &before, &after) {
+                        Ok(paths) if !paths.is_empty() => format!("changed: {}", paths.join(", ")),
+                        Ok(_) => "the trees differ but git names no path".to_string(),
+                        Err(e) => format!("the trees differ; the paths could not be listed: {e}"),
+                    }),
+                },
             };
-            if changed && let Some((o, _)) = &mut out {
+            if let Some(detail) = detail
+                && let Some((o, _)) = &mut out
+            {
                 let iterations = match o {
                     trellis_loop::Outcome::Converged { iterations, .. }
                     | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
                 };
-                tracing::warn!("after_run changed the worktree of a converged run; rolling back");
+                tracing::warn!(%detail, "after_run changed the worktree of a converged run; rolling back");
                 *o = trellis_loop::Outcome::NotConverged {
-                    reason: trellis_loop::NotConverged::AfterRunChangedTree,
+                    reason: trellis_loop::NotConverged::AfterRunChangedTree { detail },
                     iterations,
                 };
             }
