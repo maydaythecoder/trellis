@@ -288,6 +288,8 @@ pub struct Tick {
 
 /// A task this routine created that is still pending or claimed.
 fn active(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
+    #[cfg(test)]
+    SCANS.with(|c| c.set(c.get() + 1));
     for s in [State::Claimed, State::Pending] {
         for id in q.ids(s)? {
             if let Ok(t) = crate::files::read_json::<crate::Task>(&q.path(s, &id))
@@ -302,57 +304,79 @@ fn active(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
 
 #[cfg(test)]
 thread_local! {
-    /// Whole-queue scans made for `fired_instants`, for the test that holds
+    /// Whole-queue scans made for `seen` and `active`, for the test that holds
     /// a tick to one.
     static SCANS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Every task this routine already created for a scheduled instant, in any
-/// state, by that instant. One read of the queue per tick, taken under the
-/// routine's lock like the fires it guards: it listed the whole queue once
-/// per due instant before, so a long catch-up read every task file once
-/// per instant. The instants this tick fires are distinct, so a task it
-/// creates never needs to be found by a later fire of the same tick.
-fn fired_instants(
-    q: &Queue,
-    name: &str,
-) -> Result<std::collections::BTreeMap<i64, String>, QueueError> {
+/// What one read of the queue says about a routine, for a whole tick.
+struct Seen {
+    /// Every task it already created for a scheduled instant, in any
+    /// state, by that instant.
+    by_at: std::collections::BTreeMap<i64, String>,
+    /// The task [`active`] would name: its first claimed one, else its
+    /// first pending one. Kept current as the tick fires.
+    open: Option<String>,
+}
+
+/// [`Seen`] for this tick. One read of the queue per tick, taken under the
+/// routine's lock like the fires it guards: the whole queue was listed
+/// once per due instant before round 8, and the open task (for `coalesce`
+/// and `skip`) read once per due instant before round 9, so a long
+/// catch-up read every task file once per instant. The instants this tick
+/// fires are distinct, so a task it creates never needs to be found by a
+/// later fire of the same tick; it does become the open task, which
+/// `fire` records.
+fn seen(q: &Queue, name: &str) -> Result<Seen, QueueError> {
     #[cfg(test)]
     SCANS.with(|c| c.set(c.get() + 1));
     let mut by_at = std::collections::BTreeMap::new();
+    let (mut claimed, mut pending) = (None, None);
     for e in q.list()? {
-        if let Ok(t) = e.task
-            && t.routine.as_deref() == Some(name)
-            && let Some(at) = t.routine_at
-        {
+        let Ok(t) = e.task else { continue };
+        if t.routine.as_deref() != Some(name) {
+            continue;
+        }
+        match e.state {
+            State::Claimed if claimed.is_none() => claimed = Some(e.id.clone()),
+            State::Pending if pending.is_none() => pending = Some(e.id.clone()),
+            _ => {}
+        }
+        if let Some(at) = t.routine_at {
             by_at.entry(at).or_insert(e.id);
         }
     }
-    Ok(by_at)
+    Ok(Seen {
+        by_at,
+        open: claimed.or(pending),
+    })
 }
 
 /// `scheduled`: `at` is an instant of the schedule, recorded on the task
-/// and fired at most once, and the map is [`fired_instants`] for this tick.
-/// A manual `run_now` is not one, and two of them in one second are two
-/// tasks.
+/// and fired at most once, and `Seen` is this tick's read of the queue. A
+/// manual `run_now` is not one, reads the open task itself, and two of
+/// them in one second are two tasks.
 fn fire(
     q: &Queue,
     r: &Routine,
     at: i64,
     actor: Actor,
-    scheduled: Option<&std::collections::BTreeMap<i64, String>>,
+    mut scheduled: Option<&mut Seen>,
 ) -> Result<Fired, QueueError> {
     let entity = format!("routine:{}", r.name);
     let when = crate::secs_to_iso(at);
     // Before the concurrency policy: a task for this very instant is this
     // fire, already done by a tick that failed before it could record it.
     // Under `coalesce` it would otherwise be noted as a second fire.
-    if let Some(id) = scheduled.and_then(|m| m.get(&at)) {
+    if let Some(id) = scheduled.as_ref().and_then(|s| s.by_at.get(&at)) {
         return Ok(Fired::Enqueued(id.clone()));
     }
-    if r.concurrency != Concurrency::Always
-        && let Some(open) = active(q, &r.name)?
-    {
+    let open = match (&scheduled, r.concurrency) {
+        (_, Concurrency::Always) => None,
+        (Some(s), _) => s.open.clone(),
+        (None, _) => active(q, &r.name)?,
+    };
+    if let Some(open) = open {
         if r.concurrency == Concurrency::Coalesce {
             // The open task may be claimed right now; a note it cannot
             // take is still a coalesced fire, recorded in the log.
@@ -378,6 +402,13 @@ fn fire(
     let mut new = r.new_task(at);
     new.routine_at = scheduled.is_some().then_some(at);
     let id = q.add_task(new, actor)?;
+    // A pending task of this routine now: the open one for the next fire,
+    // unless a claimed one already was (`active` prefers it).
+    if let Some(s) = scheduled.as_mut()
+        && s.open.is_none()
+    {
+        s.open = Some(id.clone());
+    }
     q.log(Event::new(actor, "routine.fire", entity).detail(format!("{when} -> task:{id}")))?;
     Ok(Fired::Enqueued(id))
 }
@@ -396,9 +427,9 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
     let path = state_path(q, &r.name);
     // The state is saved after each fire rather than once at the end: a
     // fire that fails partway through a tick leaves the earlier ones
-    // recorded, and `fired_for` covers a failure between a fire's task
-    // and its save. Saving only at the end re-enqueued every earlier fire
-    // on every later tick.
+    // recorded, and the `routine_at` read in `seen` covers a failure
+    // between a fire's task and its save. Saving only at the end
+    // re-enqueued every earlier fire on every later tick.
     let _lock = Lock::take(&q.locks(), &format!("routine-{}", r.name))?;
     settle(&path)?;
     let Some(mut st) = read_json_opt::<RoutineState>(&path)? else {
@@ -453,9 +484,9 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
             )),
         )?;
     }
-    let already = fired_instants(q, &r.name)?;
+    let mut already = seen(q, &r.name)?;
     for at in due {
-        let f = fire(q, r, at, Actor::Routine, Some(&already))?;
+        let f = fire(q, r, at, Actor::Routine, Some(&mut already))?;
         if let Fired::Enqueued(id) = &f {
             st.last_task = Some(id.clone());
         }
@@ -651,6 +682,45 @@ mod tests {
         let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
         assert_eq!(t.fired.len(), 5);
         assert_eq!(SCANS.with(|c| c.get()), 1, "one scan for five instants");
+    }
+
+    #[test]
+    fn a_coalescing_tick_scans_the_queue_once_however_many_instants_are_due() {
+        // The risk (review round 9, finding 8): round 8 made the "already
+        // fired?" read one per tick, but `coalesce` and `skip` still read
+        // every open task once per due instant to find the open one.
+        for (policy, second) in [("coalesce", "Coalesced"), ("skip", "Skipped")] {
+            let (_d, q) = queue();
+            let r = routine(&format!(
+                "concurrency = \"{policy}\"\ncatch_up = \"enqueue\"\ncatch_up_max = 5"
+            ));
+            for i in 0..20 {
+                q.add_task(
+                    crate::NewTask {
+                        task: format!("unrelated {i}"),
+                        ..Default::default()
+                    },
+                    Actor::Human,
+                )
+                .unwrap();
+            }
+            evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
+            SCANS.with(|c| c.set(0));
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+            assert_eq!(t.fired.len(), 5);
+            let Fired::Enqueued(first) = &t.fired[0].1 else {
+                panic!("{:?}", t.fired)
+            };
+            for (_, f) in &t.fired[1..] {
+                let (kind, id) = match f {
+                    Fired::Coalesced(id) => ("Coalesced", id),
+                    Fired::Skipped(id) => ("Skipped", id),
+                    Fired::Enqueued(id) => ("Enqueued", id),
+                };
+                assert_eq!((kind, id), (second, first), "{policy}: {:?}", t.fired);
+            }
+            assert_eq!(SCANS.with(|c| c.get()), 1, "{policy}: one scan");
+        }
     }
 
     #[test]

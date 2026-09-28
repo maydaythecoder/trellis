@@ -543,6 +543,17 @@ scheduled instant) and the id of the last task the routine created.
   or a concurrent `work` could fire an instant between the read and the
   lock. Evidence: `a_tick_scans_the_queue_once_however_many_instants_are_due`,
   which counted five scans for five instants before the change.
+  *Amended after the ninth review:* `coalesce` and `skip` still read every
+  pending and claimed task once per due instant to find the open one. The
+  same one read per tick now also names it (the first claimed task, else
+  the first pending one, as before), and a fire that enqueues makes its
+  task the open one for the rest of the tick. What that gives up, stated:
+  a task that finishes while the tick is firing is still taken as open
+  for the rest of that tick, so a later fire of the same tick may coalesce
+  into it (the note it cannot take is logged) where a fresh read would
+  have enqueued; the next tick reads again. Evidence:
+  `a_coalescing_tick_scans_the_queue_once_however_many_instants_are_due`,
+  which counted six reads for five instants before the change.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
