@@ -322,6 +322,35 @@ this amendment a hook that wrote at any of those points left bytes in a
   so a checker that left an untracked, non-ignored file (`.coverage`,
   junit XML, `__pycache__`) voided its own pass whenever any hook was
   declared. Cost: two git invocations per declared hook per call.
+
+  *Amended after the third review of PR #1: the per-call bracket writes no
+  objects and does not block the runtime.* Up to four fingerprints per call
+  ran `git add -A` and `git write-tree` on the async runtime's thread. Each
+  one wrote a loose blob for every untracked file, and a tree. The bracket
+  now uses `trellis_vcs::worktree_digest`, which is computed from:
+  - one `git --no-optional-locks status --porcelain=v2
+    --untracked-files=all`
+  - `git hash-object --stdin-paths` without `-w`, over the paths that
+    differ from `HEAD`
+  The digest is a manifest: `HEAD`'s id, then the worktree mode and blob id
+  of every path whose bytes differ from `HEAD`. It is compared for equality
+  and nothing else. It runs through `spawn_blocking`, and only around a hook
+  that is declared for that side, which the previous amendment already did.
+  It sees what the tree form sees, with these differences:
+  - It also moves when `HEAD` moves. A commit that leaves the worktree
+    unchanged counts as a change, which fails closed.
+  - An untracked file's mode comes from the filesystem, so on Windows a
+    mode-only change to an untracked file is not seen.
+  - A symlink is hashed through its target rather than by its link text.
+  - A submodule entry is recorded as its status line.
+  - A path containing a newline falls back to the tree form, objects
+    included.
+  Staging and unstaging alone change neither form. `after_run` still uses
+  the tree form, once per run, because naming the changed paths
+  (`tree_diff`) needs the objects. Evidence:
+  `the_per_call_digest_writes_no_objects_and_sees_every_worktree_change`
+  in `crates/trellis-vcs/src/lib.rs`. It saw three loose objects written
+  by the tree form, and sees none from the digest.
 - **`after_run`.** The binary fingerprints the worktree around the hook on
   a converged run. A difference, or a fingerprint that could not be taken,
   demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,
