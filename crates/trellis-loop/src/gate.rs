@@ -75,13 +75,29 @@ pub trait ToolGate: Send + Sync {
 /// `edit` is refused, the refusal names the rule as written, and it is made
 /// before the file is read, so a denied path is refused identically whether
 /// or not it exists.
-pub struct GovernanceGate(pub Governance);
+///
+/// Holds the root because a rule binds the path a write lands on, not the
+/// string the model wrote: `lnk/x.py` through a committed link to
+/// `vendor/` is a write to `vendor/x.py` ([`Governance::denies_write_at`]).
+pub struct GovernanceGate {
+    governance: Governance,
+    root: PathBuf,
+}
+
+impl GovernanceGate {
+    pub fn new(governance: Governance, root: &Path) -> Self {
+        Self {
+            governance,
+            root: root.to_path_buf(),
+        }
+    }
+}
 
 impl ToolGate for GovernanceGate {
     fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
         let decision = match call {
             ToolCall::Edit { path, .. } | ToolCall::WriteFile { path, .. } => {
-                match self.0.denies_write(path) {
+                match self.governance.denies_write_at(&self.root, path) {
                     Some(rule) => GateDecision::Deny {
                         reason: format!(
                             concat!(
@@ -599,7 +615,8 @@ mod tests {
 
     #[tokio::test]
     async fn governance_refuses_a_new_file_under_a_denied_path() {
-        let mut g = GovernanceGate(Governance::new(&["vendor/".into()]));
+        let d = tempfile::tempdir().unwrap();
+        let mut g = GovernanceGate::new(Governance::new(&["vendor/".into()]), d.path());
         let call = ToolCall::WriteFile {
             path: "vendor/new.py".into(),
             content: "x = 1\n".into(),
@@ -610,6 +627,77 @@ mod tests {
             }
             other => panic!("deny_write must cover created files: {other:?}"),
         }
+    }
+
+    /// A git repository with `vendor/` in it and `lnk` a link to it, or
+    /// `None` where this platform will not make the link.
+    fn repo_with_link_to_vendor() -> Option<tempfile::TempDir> {
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(d.path().join("vendor")).unwrap();
+        std::fs::write(d.path().join("vendor/a.py"), "x = 1\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("vendor", d.path().join("lnk")).ok()?;
+        // A junction needs no privilege, unlike a Windows symlink.
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J", "lnk", "vendor"])
+                .current_dir(d.path())
+                .output()
+                .ok()?;
+            if !made.status.success() {
+                return None;
+            }
+        }
+        Some(d)
+    }
+
+    async fn write_under(root: &Path, path: &str) -> crate::ToolResult {
+        let (h, _j) =
+            crate::orchestrator::Orchestrator::new(root, trellis_checks::CheckConfig::default())
+                .with_governance(Governance::new(&["vendor/".into(), "setup.py".into()]))
+                .with_tools(
+                    crate::ToolSet::build(crate::ToolSelection {
+                        enable: vec!["write_file".into()],
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                )
+                .spawn();
+        h.call(&ToolCall::WriteFile {
+            path: path.into(),
+            content: "x = 2\n".into(),
+        })
+        .await
+        .result
+    }
+
+    #[tokio::test]
+    async fn deny_write_holds_for_the_path_a_write_really_lands_on() {
+        // The risk: `deny_write` was matched against the model's string,
+        // so a write through a committed link, or spelt `.//vendor/x.py`,
+        // landed in the protected directory unrefused.
+        let Some(d) = repo_with_link_to_vendor() else {
+            eprintln!("skipped: no link on this platform");
+            return;
+        };
+        for p in ["lnk/new.py", ".//vendor/new.py", ".//setup.py"] {
+            let got = write_under(d.path(), p).await;
+            assert!(
+                matches!(&got, crate::ToolResult::Error(e) if e.contains("denied by the rule")),
+                "{p}: {got:?}"
+            );
+        }
+        assert!(!d.path().join("vendor/new.py").exists());
+        assert!(!d.path().join("setup.py").exists());
+        // An ordinary path is still written.
+        let got = write_under(d.path(), "app.py").await;
+        assert!(!matches!(got, crate::ToolResult::Error(_)), "{got:?}");
     }
 
     #[tokio::test]

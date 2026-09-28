@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use trellis_queue::RunEnd;
 use trellis_queue::profile::Profile;
+use trellis_vcs::git_guard::GitGuard;
 use trellis_vcs::ignored::{IgnoredChanges, IgnoredSnapshot};
 
 /// What the command did before the checks ran.
@@ -69,124 +70,6 @@ fn changed(root: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// The files under `.git/` a command can use to run code later, as bytes:
-/// `config` (`core.hooksPath`, aliases, `core.fsmonitor`), every file in
-/// the hooks directory, and `info/exclude`, which decides what `git status`
-/// and the rollback's `git clean` can see at all: a `*` written there would
-/// hide every later run's new files. `git status` never shows these and
-/// the rollback never touches them, so they are compared around the command
-/// and put back. Nothing else in `.git/` is covered (ADR 0026 §11).
-struct GitGuard {
-    root: PathBuf,
-    config: PathBuf,
-    hooks: PathBuf,
-    exclude: PathBuf,
-    files: Vec<(PathBuf, Vec<u8>)>,
-}
-
-impl GitGuard {
-    fn capture(root: &Path) -> Result<GitGuard, String> {
-        let mut git = Command::new("git");
-        git.args([
-            "rev-parse",
-            "--git-path",
-            "config",
-            "--git-path",
-            "hooks",
-            "--git-path",
-            "info/exclude",
-        ])
-        .current_dir(root)
-        .stdin(Stdio::null());
-        trellis_core::secrets::scrub(&mut git);
-        let o = git
-            .output()
-            .map_err(|e| format!("git rev-parse could not run: {e}"))?;
-        let text = String::from_utf8_lossy(&o.stdout);
-        let mut lines = text.lines().map(|l| root.join(l.trim()));
-        let (Some(config), Some(hooks), Some(exclude)) = (lines.next(), lines.next(), lines.next())
-        else {
-            return Err(format!(
-                "git rev-parse --git-path failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
-        };
-        let mut g = GitGuard {
-            root: root.to_path_buf(),
-            config,
-            hooks,
-            exclude,
-            files: Vec::new(),
-        };
-        g.files = g.read()?;
-        Ok(g)
-    }
-
-    fn read(&self) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
-        let mut paths = vec![self.config.clone(), self.exclude.clone()];
-        let mut dirs = vec![self.hooks.clone()];
-        while let Some(d) = dirs.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else {
-                continue;
-            };
-            for e in entries.filter_map(Result::ok) {
-                let p = e.path();
-                if p.is_dir() {
-                    dirs.push(p);
-                } else {
-                    paths.push(p);
-                }
-            }
-        }
-        paths.sort();
-        let mut out = Vec::new();
-        for p in paths {
-            match std::fs::read(&p) {
-                Ok(b) => out.push((p, b)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("{} could not be read: {e}", p.display())),
-            }
-        }
-        Ok(out)
-    }
-
-    fn label(&self, p: &Path) -> String {
-        p.strip_prefix(&self.root)
-            .unwrap_or(p)
-            .display()
-            .to_string()
-            .replace('\\', "/")
-    }
-
-    /// What differs from the capture, each put back: a changed or deleted
-    /// file gets its bytes again, a new one is removed. Returns the paths
-    /// that differed, and any that could not be put back.
-    fn restore(&self) -> (Vec<String>, Vec<String>) {
-        let now = match self.read() {
-            Ok(n) => n,
-            Err(e) => return (vec![format!("the git directory ({e})")], vec![e]),
-        };
-        let (mut differed, mut failed) = (Vec::new(), Vec::new());
-        for (p, bytes) in &self.files {
-            if now.iter().find(|(q, _)| q == p).map(|(_, b)| b) != Some(bytes) {
-                differed.push(self.label(p));
-                if let Err(e) = std::fs::write(p, bytes) {
-                    failed.push(format!("{}: {e}", self.label(p)));
-                }
-            }
-        }
-        for (p, _) in &now {
-            if !self.files.iter().any(|(q, _)| q == p) {
-                differed.push(self.label(p));
-                if let Err(e) = std::fs::remove_file(p) {
-                    failed.push(format!("{}: {e}", self.label(p)));
-                }
-            }
-        }
-        (differed, failed)
-    }
-}
-
 /// What judges the run, read from the worktree **before** the command runs:
 /// the `[checks]` commands, `[governance] deny_write`, and the rule
 /// documents under `.trellis/governance/`. Read after, they were the
@@ -230,7 +113,7 @@ impl Judge {
         root: &Path,
         touched: &[String],
     ) -> (Vec<String>, Option<trellis_checks::Verdict>) {
-        let denied = self.denied(touched.iter());
+        let denied = self.denied(root, touched.iter());
         let audit = (!self.rules.is_empty())
             .then(|| trellis_checks::governance_audit(root, &self.rules, touched));
         (denied, audit)
@@ -239,7 +122,7 @@ impl Judge {
     /// The `.trellis/` breach and `deny_write` over `paths`, whether git
     /// shows them or ignores them: an ignored path is still a write, and a
     /// rule that says "not here" does not ask git first.
-    fn denied<'p>(&self, paths: impl Iterator<Item = &'p String>) -> Vec<String> {
+    fn denied<'p>(&self, root: &Path, paths: impl Iterator<Item = &'p String>) -> Vec<String> {
         let g = trellis_loop::Governance::new(&self.deny);
         paths
             .filter_map(|p| {
@@ -248,7 +131,7 @@ impl Judge {
                         "{p} (under .trellis/, which holds what judges this run)"
                     ));
                 }
-                g.denies_write(p)
+                g.denies_write_at(root, p)
                     .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
             })
             .collect()
@@ -359,6 +242,10 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             cmd.env(name, v);
         }
     }
+    // Its own process group, so what it starts can be ended with it
+    // (`end_group`), as `bash` is.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
@@ -385,19 +272,23 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Err(_) => break Ended::Exited(None),
         }
         if stop.load(Ordering::SeqCst) {
-            // `kill` reaches the direct child only; a grandchild it started
-            // can outlive it (ADR 0026 §11, not solved here).
+            end_tree(child.id(), true);
             let _ = child.kill();
             let _ = child.wait();
             break Ended::Interrupted;
         }
         if started.elapsed() >= timeout {
+            end_tree(child.id(), true);
             let _ = child.kill();
             let _ = child.wait();
             break Ended::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // However it ended, what it left running is ended too, before anything
+    // is judged or rolled back: a backgrounded writer would otherwise land
+    // after both.
+    end_tree(child.id(), false);
     let secs = started.elapsed().as_secs();
     let exit_text = match &ended {
         Ended::Exited(Some(c)) => format!("exited {c} after {secs}s"),
@@ -442,12 +333,12 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             ignored.summary()
         );
     }
-    let ignored_denied = judge.denied(ignored.all());
+    let ignored_denied = judge.denied(root, ignored.all());
 
     let touched = match changed(root) {
         Ok(t) => t,
         Err(e) => {
-            let restored = undo(root, &snapshot, &ignored, out);
+            let restored = undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty();
             return if restored {
                 RunEnd::Error {
                     run_id: None,
@@ -563,7 +454,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let restored = if converged {
         true
     } else {
-        undo(root, &snapshot, &ignored, out)
+        // A `.git/` file that could not be put back is a tree not restored.
+        undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty()
     };
 
     let run_id = write_trail(
@@ -595,15 +487,42 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
 /// worktree goes back to the snapshot. An ignored file that existed before
 /// and was changed or deleted cannot be put back, because trellis keeps no
 /// copy of ignored files; it is named. `false` when a created file could not
-/// be removed or the worktree is not restored.
+/// be removed, a pre-existing one was changed or deleted, or the worktree
+/// is not restored.
 fn undo(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
     ignored: &IgnoredChanges,
     out: &mut dyn Write,
 ) -> bool {
-    let removed = trellis_vcs::ignored::undo_created(root, ignored, out);
+    let removed = trellis_vcs::ignored::undo(root, ignored, out);
     rollback(snapshot, out) && removed
+}
+
+/// Ends what the command started. On Unix the command leads its own
+/// group, and `kill -KILL -- -<pgid>` reaches every member that did not
+/// leave it (`setsid`), whether or not the command itself is still alive.
+/// On Windows `taskkill /T` walks the tree from a live process, so only
+/// while the command is `alive`: after a normal exit what it started keeps
+/// running (ADR 0026 §11).
+fn end_tree(pid: u32, alive: bool) {
+    let mut k = if cfg!(windows) {
+        if !alive {
+            return;
+        }
+        let mut c = Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        c
+    } else {
+        let mut c = Command::new("kill");
+        c.args(["-KILL", "--", &format!("-{pid}")]);
+        c
+    };
+    k.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    trellis_core::secrets::scrub(&mut k);
+    let _ = k.status();
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {
