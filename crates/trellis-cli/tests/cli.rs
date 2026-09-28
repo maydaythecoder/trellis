@@ -2841,11 +2841,48 @@ fn a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback() {
         "a file that was there stays"
     );
     assert!(
-        said.contains("NOT put back") && said.contains(".venv/old.py"),
+        said.contains("left as it is") && said.contains(".venv/old.py"),
         "a changed pre-existing ignored file is named:\n{said}"
     );
-    // A rollback that left a changed file behind did not restore the tree,
-    // and exit 1 said it had (review round 8, finding 5).
+    // The tracked tree is restored, which is what a rollback promises
+    // (ADR 0009). A changed pre-existing ignored file nothing protects is
+    // named but is not "not restored": round 8 made it exit 2, and every
+    // writer that runs pytest rewrites a cache (review round 9, finding 2).
+    assert_eq!(out.status.code(), Some(1), "{said}");
+}
+
+#[test]
+fn a_model_run_that_changed_an_ignored_file_deny_write_names_is_not_restored() {
+    // The stricter signal stays where a rule says the file is not to be
+    // written: a change there cannot be put back, and the run says the
+    // tree is not restored (exit 2).
+    let (d, run) = ignored_model_fixture("model-ignored-denied");
+    let cfg = d.join(".trellis/config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("\n[governance]\ndeny_write = [\".venv/old.py\"]\n");
+    std::fs::write(&cfg, text).unwrap();
+    git(&d, &["commit", "-qam", "deny"]);
+    assert!(run(&["trust"]).status.success());
+    let cmd = if cfg!(windows) {
+        r"echo y = 2 >> .venv\old.py"
+    } else {
+        "echo 'y = 2' >> .venv/old.py"
+    };
+    let spec = script_beside(
+        &d,
+        "model-ignored-denied",
+        serde_json::json!([
+            {"tool": "bash", "command": cmd},
+            {"tool": "done", "summary": "changed it"},
+        ]),
+    );
+    let out = run(&["run", "change it", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(
+        said.contains("NOT put back") && said.contains(".venv/old.py"),
+        "{said}"
+    );
     assert_eq!(out.status.code(), Some(2), "{said}");
 }
 
@@ -2902,6 +2939,74 @@ fn a_model_run_s_bash_writes_to_git_config_and_hooks_are_put_back_on_rollback() 
 }
 
 #[test]
+fn a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run() {
+    // The risk (review round 9, finding 4): `.git/` is put back after the
+    // loop, but the digest taken around every hooked call runs `git
+    // status` in between, and `git status` runs `core.fsmonitor`. So a
+    // `bash` call that set it had trellis run the command at the next
+    // `post_tool`, before any guard could put the config back.
+    let (d, run) = ignored_model_fixture("model-fsmonitor-marker");
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+    let cfg = d.join(".trellis/config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(&format!(
+        "\n[hooks]\npost_tool = ['{shell}', '{flag}', 'exit 0']\n"
+    ));
+    std::fs::write(&cfg, text).unwrap();
+    git(&d, &["commit", "-qam", "a post_tool hook"]);
+    assert!(run(&["trust"]).status.success());
+    let parent = d.parent().unwrap();
+    let pid = std::process::id();
+    let mark = parent.join(format!("fsmonitor-ran-{pid}"));
+    let _ = std::fs::remove_file(&mark);
+    let fsm = parent.join(format!("fsmonitor-{pid}.sh"));
+    let slash = |p: &Path| p.display().to_string().replace('\\', "/");
+    std::fs::write(
+        &fsm,
+        format!("#!/bin/sh\necho x >> '{}'\nexit 1\n", slash(&mark)),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fsm, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let spec = script_beside(
+        &d,
+        "model-fsmonitor-marker",
+        serde_json::json!([
+            {"tool": "bash", "command": format!("git config core.fsmonitor {}", slash(&fsm))},
+            {"tool": "bash", "command": "echo x> a.txt"},
+            {"tool": "done", "summary": "set it"},
+        ]),
+    );
+    let out = run(&["run", "set fsmonitor", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert_eq!(fsmonitor(&d), None, "core.fsmonitor survived:\n{said}");
+    assert!(
+        !mark.exists(),
+        "trellis ran the planted core.fsmonitor:\n{said}"
+    );
+    // The control: plain git in the same repository with the setting
+    // back in place runs it, so the assertion above is about trellis.
+    git(&d, &["config", "core.fsmonitor", &slash(&fsm)]);
+    std::fs::write(d.join("a.py"), "x = 3\n").unwrap();
+    let _ = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert!(mark.exists(), "control: plain `git status` runs it");
+    let _ = std::fs::remove_file(&mark);
+    let _ = std::fs::remove_file(&fsm);
+}
+
+#[test]
 fn a_model_run_that_changed_git_config_does_not_converge() {
     // Convergence leaves the tree for review, so a `core.fsmonitor` the run
     // set would run at the reviewer's next `git status`. A change there is
@@ -2926,9 +3031,10 @@ fn a_model_run_that_changed_git_config_does_not_converge() {
 #[test]
 fn a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored() {
     // The checks run the repository's tools, which rewrite their caches
-    // (`.mypy_cache`, `__pycache__`) on every run. Judged by the same
-    // before-and-after as `bash`, every failed run that ran a check would
-    // exit 2; only what the guarded writers did is held against the tree.
+    // (`.mypy_cache`, `__pycache__`) on every run, and a failed run that
+    // ran a check must not exit 2 for that. Round 8 bracketed each check;
+    // round 9 holds no unprotected modified ignored file against the
+    // rollback, whoever changed it, and this stays as the guard.
     let append = if cfg!(windows) {
         r"echo z>> .venv\old.py"
     } else {

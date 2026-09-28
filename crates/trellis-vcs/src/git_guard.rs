@@ -20,33 +20,62 @@
 //! index), a submodule's own git directory, and an include target outside
 //! the git directory (a tracked one is the rollback's; one elsewhere on
 //! disk is not the repository's).
+//!
+//! **Links are never followed** (review round 9). Every path is looked at
+//! with `symlink_metadata`: a link is recorded as a link, by its text, and
+//! the walk of the hooks directory does not enter one. Before, a planted
+//! `.git/hooks/lib -> $HOME` listed every file in the home directory as a
+//! new hook, and restore deleted them. Nothing is written or removed
+//! outside the git directories as they resolved at capture: a planted link
+//! is removed itself (never its target), a directory on the way to a file
+//! being put back that has become a link is replaced by a directory, and a
+//! file is created with `create_new`, which does not follow a link. A hooks
+//! directory outside the git directory (`core.hooksPath` pointing into the
+//! worktree or elsewhere) is not guarded; re-pointing it is a change to
+//! `config`, which is.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 
 /// How deep includes are followed. Git's own limit is 10.
 const MAX_INCLUDE_DEPTH: usize = 10;
 
+/// One guarded path, as `symlink_metadata` sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entry {
+    /// A file's bytes and permissions: a hook written back with the
+    /// default mode is not executable on Unix, and would be put back only
+    /// in name; and a mode change alone can enable a hook.
+    File(Vec<u8>, std::fs::Permissions),
+    /// A link, by its own text. `dir` is whether Windows made it as a
+    /// directory link, which is how it is removed and made again there.
+    Link { target: PathBuf, dir: bool },
+    /// A directory where one file is guarded (`config.worktree` made a
+    /// directory). The hooks directory's own directories are walked.
+    Dir,
+}
+
 pub struct GitGuard {
+    /// Canonical, for the labels.
     root: PathBuf,
-    hooks: PathBuf,
-    /// Every guarded path outside the hooks directory, with its bytes at
+    /// The git directory and the common one, canonical at capture: nothing
+    /// outside them is written or removed.
+    bases: Vec<PathBuf>,
+    /// The hooks directory, when it is inside one of `bases`.
+    hooks: Option<PathBuf>,
+    /// Every guarded path outside the hooks directory, as it was at
     /// capture, or `None` for one that did not exist: a `config.worktree`
     /// the writer creates is removed as a planted hook is.
-    fixed: Vec<(PathBuf, Option<Vec<u8>>)>,
-    /// The hooks directory's files at capture.
-    hook_files: Vec<(PathBuf, Vec<u8>)>,
-    /// Their permissions at capture: a hook written back with the default
-    /// mode is not executable on Unix, and would be put back only in name.
-    hook_modes: Vec<(PathBuf, std::fs::Permissions)>,
+    fixed: Vec<(PathBuf, Option<Entry>)>,
+    /// What the hooks directory held at capture, links unentered.
+    hook_files: Vec<(PathBuf, Entry)>,
 }
 
 impl GitGuard {
     /// Reads every guarded file. Before the writer runs: nothing can be put
     /// back that was not read.
     pub fn capture(root: &Path) -> Result<GitGuard, String> {
-        let mut git = Command::new("git");
-        trellis_core::secrets::scrub(&mut git);
+        let mut git = crate::command_with_hooks();
         git.args([
             "rev-parse",
             "--git-dir",
@@ -83,30 +112,45 @@ impl GitGuard {
                 String::from_utf8_lossy(&o.stderr).trim()
             )
         })?;
-        let mut fixed_paths = vec![config.clone(), worktree_config.clone(), exclude, attributes];
-        let under = [real(&git_dir), real(&common)];
-        for target in includes(&[config, worktree_config])? {
-            let r = real(&target);
-            if under.iter().any(|g| r.starts_with(g)) && !fixed_paths.contains(&target) {
-                fixed_paths.push(target);
+        let root_real = std::fs::canonicalize(root)
+            .map_err(|e| format!("{} could not be resolved: {e}", root.display()))?;
+        let mut bases = Vec::new();
+        for d in [&git_dir, &common] {
+            let b = std::fs::canonicalize(d)
+                .map_err(|e| format!("{} could not be resolved: {e}", d.display()))?;
+            if !bases.contains(&b) {
+                bases.push(b);
+            }
+        }
+        let inside = |p: &Path| locate(p).filter(|l| bases.iter().any(|b| l.starts_with(b)));
+        let mut fixed_paths: Vec<PathBuf> = Vec::new();
+        let standard = [config.clone(), worktree_config.clone(), exclude, attributes];
+        for p in standard
+            .into_iter()
+            .chain(includes(&[config, worktree_config])?)
+        {
+            if let Some(l) = inside(&p)
+                && !fixed_paths.contains(&l)
+            {
+                fixed_paths.push(l);
             }
         }
         let mut fixed = Vec::new();
         for p in fixed_paths {
-            let bytes = read_opt(&p)?;
-            fixed.push((p, bytes));
+            let e = read_entry(&p)?;
+            fixed.push((p, e));
         }
-        let hook_files = read_tree(&hooks)?;
-        let hook_modes = hook_files
-            .iter()
-            .filter_map(|(p, _)| Some((p.clone(), std::fs::metadata(p).ok()?.permissions())))
-            .collect();
+        let hooks = inside(&hooks);
+        let hook_files = match &hooks {
+            Some(h) => read_tree(h)?,
+            None => Vec::new(),
+        };
         Ok(GitGuard {
-            root: root.to_path_buf(),
+            root: root_real,
+            bases,
             hooks,
             fixed,
             hook_files,
-            hook_modes,
         })
     }
 
@@ -119,14 +163,20 @@ impl GitGuard {
     }
 
     /// What differs from the capture, each put back: a changed or deleted
-    /// file gets its bytes again, a new one is removed. Returns the paths
+    /// file gets its bytes again, a new file or link is removed (a link as
+    /// a link), a changed link is made again as a link. Returns the paths
     /// that differed, and any that could not be put back. Call it before
     /// any other git command once the writer has finished: `core.fsmonitor`
     /// runs at the next `git status`, a hook at the next `git commit`.
+    ///
+    /// What it cannot close, stated: each path is checked and then acted
+    /// on, and a process still running (a process agent's grandchild,
+    /// ADR 0026 §11) could swap a directory for a link in between. Closing
+    /// that needs `openat`-relative calls, which std does not offer.
     pub fn restore(&self) -> (Vec<String>, Vec<String>) {
         let (mut differed, mut failed) = (Vec::new(), Vec::new());
         for (p, was) in &self.fixed {
-            let now = match read_opt(p) {
+            let now = match read_entry(p) {
                 Ok(n) => n,
                 Err(e) => {
                     differed.push(self.label(p));
@@ -138,99 +188,222 @@ impl GitGuard {
                 continue;
             }
             differed.push(self.label(p));
-            let put = match was {
-                Some(bytes) => std::fs::write(p, bytes),
-                None => std::fs::remove_file(p),
-            };
-            if let Err(e) = put {
+            if let Err(e) = self.put(p, now.as_ref(), was.as_ref()) {
                 failed.push(format!("{}: {e}", self.label(p)));
             }
         }
-        let now = match read_tree(&self.hooks) {
+        let Some(hooks) = &self.hooks else {
+            return (differed, failed);
+        };
+        let now = match read_tree(hooks) {
             Ok(n) => n,
             Err(e) => {
-                differed.push(self.label(&self.hooks));
+                differed.push(self.label(hooks));
                 failed.push(e);
                 return (differed, failed);
             }
         };
-        for (p, bytes) in &self.hook_files {
-            if now.iter().find(|(q, _)| q == p).map(|(_, b)| b) != Some(bytes) {
-                differed.push(self.label(p));
-                if let Some(parent) = p.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let mode = self.hook_modes.iter().find(|(q, _)| q == p);
-                let put = std::fs::write(p, bytes).and_then(|()| match mode {
-                    Some((_, m)) => std::fs::set_permissions(p, m.clone()),
-                    None => Ok(()),
-                });
-                if let Err(e) = put {
-                    failed.push(format!("{}: {e}", self.label(p)));
-                }
-            }
-        }
-        for (p, _) in &now {
+        // What is new goes first, deepest first: a file or link planted
+        // where a captured hook's directory belongs is out of the way
+        // before that hook is written back.
+        for (p, e) in now.iter().rev() {
             if !self.hook_files.iter().any(|(q, _)| q == p) {
                 differed.push(self.label(p));
-                if let Err(e) = std::fs::remove_file(p) {
+                if let Err(err) = self.put(p, Some(e), None) {
+                    failed.push(format!("{}: {err}", self.label(p)));
+                }
+            }
+        }
+        for (p, was) in &self.hook_files {
+            let cur = now.iter().find(|(q, _)| q == p).map(|(_, e)| e);
+            if cur != Some(was) {
+                differed.push(self.label(p));
+                if let Err(e) = self.put(p, cur, Some(was)) {
                     failed.push(format!("{}: {e}", self.label(p)));
                 }
             }
         }
+        differed.sort();
+        differed.dedup();
         (differed, failed)
+    }
+
+    /// Takes `p` from `now` back to `was`, never outside the git directory
+    /// and never through a link.
+    fn put(&self, p: &Path, now: Option<&Entry>, was: Option<&Entry>) -> std::io::Result<()> {
+        let base = self
+            .bases
+            .iter()
+            .find(|b| p.starts_with(b))
+            .ok_or_else(|| std::io::Error::other("outside the git directory; not touched"))?;
+        dirs_to(base, p, was.is_some())?;
+        match now {
+            None => {}
+            Some(Entry::Link { .. }) => remove_link(p)?,
+            Some(Entry::File(..)) => std::fs::remove_file(p)?,
+            // Only an empty one: what was in it is not the guard's to judge.
+            Some(Entry::Dir) => std::fs::remove_dir(p)?,
+        }
+        match was {
+            None => Ok(()),
+            Some(Entry::File(bytes, perms)) => {
+                use std::io::Write;
+                // `create_new` fails on anything at `p`, a link included,
+                // so the bytes land in a new file and nowhere else.
+                let mut f = std::fs::File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(p)?;
+                f.write_all(bytes)?;
+                drop(f);
+                std::fs::set_permissions(p, perms.clone())
+            }
+            Some(Entry::Link { target, dir }) => make_link(target, p, *dir),
+            Some(Entry::Dir) => std::fs::create_dir(p),
+        }
     }
 }
 
-/// The file's bytes, `None` when it does not exist, `Err` when it cannot
-/// be read: a guard that cannot read a file cannot put it back.
+/// Checks every directory between `base` and `p`'s parent. A link there
+/// was planted (at capture each was a directory, or the canonical path
+/// would not run through it): when `create`, it is removed as a link and a
+/// directory made in its place, as is any that is missing; otherwise
+/// nothing is done under it. A file in the way is an error.
+fn dirs_to(base: &Path, p: &Path, create: bool) -> std::io::Result<()> {
+    let rel = p
+        .parent()
+        .and_then(|d| d.strip_prefix(base).ok())
+        .ok_or_else(|| std::io::Error::other("outside the git directory; not touched"))?;
+    let mut cur = base.to_path_buf();
+    for c in rel.components() {
+        let Component::Normal(n) = c else {
+            return Err(std::io::Error::other("not a plain path; not touched"));
+        };
+        cur.push(n);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => {
+                if !create {
+                    return Err(std::io::Error::other(format!(
+                        "{} is a link; nothing under it is touched",
+                        cur.display()
+                    )));
+                }
+                remove_link(&cur)?;
+                std::fs::create_dir(&cur)?;
+            }
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => {
+                return Err(std::io::Error::other(format!(
+                    "{} is a file where a directory was",
+                    cur.display()
+                )));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
+                std::fs::create_dir(&cur)?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Removes the link at `p`, never what it points at: `remove_file` on
+/// Unix; a Windows directory link or junction takes `remove_dir`, which
+/// removes the link and would refuse a real directory that is not empty.
+fn remove_link(p: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(p).or_else(|e| std::fs::remove_dir(p).map_err(|_| e))
+}
+
+fn make_link(target: &Path, p: &Path, dir: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = dir;
+        std::os::unix::fs::symlink(target, p)
+    }
+    // Needs developer mode or the privilege; without it the link is
+    // reported as not put back. A junction comes back as a directory link.
+    #[cfg(windows)]
+    if dir {
+        std::os::windows::fs::symlink_dir(target, p)
+    } else {
+        std::os::windows::fs::symlink_file(target, p)
+    }
+}
+
+/// What is at `p`, `None` when nothing is, `Err` when it cannot be read: a
+/// guard that cannot read a file cannot put it back. Never through a link.
+fn read_entry(p: &Path) -> Result<Option<Entry>, String> {
+    let fail = |e: std::io::Error| format!("{} could not be read: {e}", p.display());
+    let m = match std::fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(fail(e)),
+    };
+    if m.file_type().is_symlink() {
+        #[cfg(windows)]
+        let dir = std::os::windows::fs::FileTypeExt::is_symlink_dir(&m.file_type());
+        #[cfg(not(windows))]
+        let dir = false;
+        let target = std::fs::read_link(p).map_err(fail)?;
+        return Ok(Some(Entry::Link { target, dir }));
+    }
+    if m.is_dir() {
+        return Ok(Some(Entry::Dir));
+    }
+    let bytes = std::fs::read(p).map_err(fail)?;
+    Ok(Some(Entry::File(bytes, m.permissions())))
+}
+
+/// Every file and link under `dir`, sorted, links not entered. A missing
+/// directory is empty; one that is itself a link is that one entry.
+fn read_tree(dir: &Path) -> Result<Vec<(PathBuf, Entry)>, String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        match read_entry(&d)? {
+            None => {}
+            Some(Entry::Dir) => {
+                let Ok(entries) = std::fs::read_dir(&d) else {
+                    continue;
+                };
+                stack.extend(entries.filter_map(Result::ok).map(|e| e.path()));
+            }
+            Some(e) => out.push((d, e)),
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// Where `p` itself lives: its parent resolved through any link, its own
+/// name not followed. Where the parent does not exist, the nearest
+/// ancestor that does is resolved and the rest appended; `None` when that
+/// rest is not plain names, since `..` there could lead anywhere.
+fn locate(p: &Path) -> Option<PathBuf> {
+    let mut tail = vec![p.file_name()?.to_owned()];
+    let mut dir = p.parent()?;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(dir) {
+            let mut out = real;
+            out.extend(tail.iter().rev());
+            return Some(out);
+        }
+        match dir.components().next_back()? {
+            Component::Normal(n) => tail.push(n.to_owned()),
+            _ => return None,
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// The file's bytes, `None` when it does not exist, for reading the
+/// configs' includes (read through a link: reading is what git does too).
 fn read_opt(p: &Path) -> Result<Option<Vec<u8>>, String> {
     match std::fs::read(p) {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{} could not be read: {e}", p.display())),
     }
-}
-
-/// Every file under `dir`, with its bytes, sorted. A missing directory is
-/// empty.
-fn read_tree(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
-    let mut paths = Vec::new();
-    let mut dirs = vec![dir.to_path_buf()];
-    while let Some(d) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in entries.filter_map(Result::ok) {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else {
-                paths.push(p);
-            }
-        }
-    }
-    paths.sort();
-    let mut out = Vec::new();
-    for p in paths {
-        if let Some(b) = read_opt(&p)? {
-            out.push((p, b));
-        }
-    }
-    Ok(out)
-}
-
-/// `p` through any link, or as written where it does not exist yet.
-fn real(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| {
-        match (
-            p.parent().and_then(|d| std::fs::canonicalize(d).ok()),
-            p.file_name(),
-        ) {
-            (Some(d), Some(n)) => d.join(n),
-            _ => p.to_path_buf(),
-        }
-    })
 }
 
 /// Every file the configs name as an include, followed through includes
@@ -319,6 +492,7 @@ fn path_value(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")
@@ -433,6 +607,186 @@ mod tests {
         assert!(failed.is_empty(), "{failed:?}");
         assert_eq!(differed, [".git/deeper.cfg"]);
         assert_eq!(std::fs::read(root.join(".git/deeper.cfg")).unwrap(), b"");
+    }
+
+    /// A link to a directory at `link`: a junction on Windows, which any
+    /// user may create, and a symlink on Unix.
+    fn dir_link(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let ok = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                // `mklink` reads a `/` as the start of a switch.
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(target.to_string_lossy().replace('/', "\\"))
+                .stdout(Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "mklink /J");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// A link to a file, or `None` where the platform refuses one (Windows
+    /// without developer mode), in which case the test says so.
+    fn file_link(target: &Path, link: &Path) -> Option<()> {
+        #[cfg(windows)]
+        let r = std::os::windows::fs::symlink_file(target, link);
+        #[cfg(unix)]
+        let r = std::os::unix::fs::symlink(target, link);
+        match r {
+            Ok(()) => Some(()),
+            Err(e) => {
+                eprintln!("skipped: cannot create a file symlink here: {e}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn a_planted_directory_link_in_the_hooks_is_removed_and_its_target_is_untouched() {
+        // The risk (review round 9, finding 1): the walk followed a link,
+        // so `.git/hooks/lib -> $HOME` listed every file under it as a new
+        // hook, and restore deleted them all. The link is the only thing
+        // the writer planted; it is what goes.
+        let d = tempfile::tempdir().unwrap();
+        let victim = tempfile::tempdir().unwrap();
+        std::fs::write(victim.path().join("precious.txt"), "keep").unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        let g = GitGuard::capture(root).unwrap();
+
+        let link = root.join(".git/hooks/lib");
+        dir_link(victim.path(), &link);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "std reads the link as a link"
+        );
+        let (differed, failed) = g.restore();
+
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(differed, [".git/hooks/lib"]);
+        assert_eq!(
+            std::fs::read(victim.path().join("precious.txt")).unwrap(),
+            b"keep",
+            "the link's target was touched"
+        );
+        assert!(std::fs::symlink_metadata(&link).is_err(), "link removed");
+        assert_eq!(g.restore(), (vec![], vec![]), "nothing left to put back");
+    }
+
+    #[test]
+    fn a_hooks_subdirectory_replaced_by_a_link_is_not_written_through() {
+        // The risk: a hook at `.git/hooks/sub/x` was written back with
+        // `create_dir_all` and `write`, both of which follow a link, so a
+        // writer that replaced `sub` with a link to `$HOME` had the hook's
+        // bytes written into `$HOME/x`.
+        let d = tempfile::tempdir().unwrap();
+        let victim = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        std::fs::create_dir(root.join(".git/hooks/sub")).unwrap();
+        std::fs::write(root.join(".git/hooks/sub/x"), "hook").unwrap();
+        let g = GitGuard::capture(root).unwrap();
+
+        std::fs::remove_dir_all(root.join(".git/hooks/sub")).unwrap();
+        dir_link(victim.path(), &root.join(".git/hooks/sub"));
+        let (_, failed) = g.restore();
+
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(
+            !victim.path().join("x").exists(),
+            "the hook was written through the link"
+        );
+        let sub = std::fs::symlink_metadata(root.join(".git/hooks/sub")).unwrap();
+        assert!(sub.is_dir() && !sub.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read(root.join(".git/hooks/sub/x")).unwrap(),
+            b"hook"
+        );
+    }
+
+    #[test]
+    fn a_hook_replaced_by_a_file_link_comes_back_as_a_file_and_the_target_is_untouched() {
+        // The risk: `write` follows a link, so a hook replaced by a link to
+        // `~/.bashrc` had the hook's bytes written over `~/.bashrc`; and a
+        // config replaced the same way likewise.
+        let d = tempfile::tempdir().unwrap();
+        let victim = tempfile::tempdir().unwrap();
+        let target = victim.path().join("bashrc");
+        std::fs::write(&target, "mine").unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        let hook = root.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "hook").unwrap();
+        let config = root.join(".git/config");
+        let config_bytes = std::fs::read(&config).unwrap();
+        let g = GitGuard::capture(root).unwrap();
+
+        std::fs::remove_file(&hook).unwrap();
+        if file_link(&target, &hook).is_none() {
+            return;
+        }
+        std::fs::remove_file(&config).unwrap();
+        file_link(&target, &config).unwrap();
+        let (_, failed) = g.restore();
+
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"mine", "written through");
+        for (p, want) in [(&hook, &b"hook"[..]), (&config, &config_bytes[..])] {
+            let m = std::fs::symlink_metadata(p).unwrap();
+            assert!(
+                !m.file_type().is_symlink(),
+                "{} is still a link",
+                p.display()
+            );
+            assert_eq!(std::fs::read(p).unwrap(), want);
+        }
+    }
+
+    #[test]
+    fn a_hook_that_was_a_link_at_capture_is_compared_as_a_link_and_never_written_through() {
+        // The risk: a hook the user keeps as a link into the worktree
+        // (`pre-commit -> ../../scripts/pc`) was read through the link, so
+        // an edit to `scripts/pc` looked like a changed hook and restore
+        // wrote the captured bytes back through the link, outside `.git/`.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        std::fs::create_dir(root.join("scripts")).unwrap();
+        std::fs::write(root.join("scripts/pc"), "v1").unwrap();
+        let hook = root.join(".git/hooks/pre-commit");
+        if file_link(&root.join("scripts/pc"), &hook).is_none() {
+            return;
+        }
+        let g = GitGuard::capture(root).unwrap();
+
+        std::fs::write(root.join("scripts/pc"), "v2").unwrap();
+        assert_eq!(g.restore(), (vec![], vec![]), "the link did not change");
+        assert_eq!(std::fs::read(root.join("scripts/pc")).unwrap(), b"v2");
+    }
+
+    #[test]
+    fn a_hooks_directory_outside_the_git_directory_is_not_touched() {
+        // `core.hooksPath` pointing into the worktree (husky's `.husky`) or
+        // elsewhere names a directory that is not `.git/`'s: its tracked
+        // files are the rollback's, and anything else there is not the
+        // guard's to delete.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        std::fs::create_dir(root.join("hooks-dir")).unwrap();
+        git(root, &["config", "core.hooksPath", "hooks-dir"]);
+        let g = GitGuard::capture(root).unwrap();
+
+        std::fs::write(root.join("hooks-dir/pre-commit"), "x").unwrap();
+        assert_eq!(g.restore(), (vec![], vec![]));
+        assert!(root.join("hooks-dir/pre-commit").exists());
     }
 
     #[test]
