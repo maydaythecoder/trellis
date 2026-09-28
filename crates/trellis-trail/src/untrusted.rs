@@ -23,12 +23,64 @@ use serde::{Deserialize, Serialize};
 /// code. Nothing in the workspace accepts this where a `Verdict` is
 /// required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "RawCheck")]
 pub struct RecordedCheck {
     pub kind: String,
     pub command: String,
     pub exit_code: Option<i32>,
     /// What the trail claims. Not a verdict.
     pub passed: bool,
+}
+
+/// The two shapes a check has on disk: flat, as this type writes it, and
+/// nested, as a serialized `Verdict` is (`{passed, detail: {kind, ..}}`),
+/// which is what a process agent's trail carries (ADR 0026 §11).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawCheck {
+    Flat {
+        kind: String,
+        command: String,
+        #[serde(default)]
+        exit_code: Option<i32>,
+        passed: bool,
+    },
+    Nested {
+        passed: bool,
+        detail: RawDetail,
+    },
+}
+
+#[derive(Deserialize)]
+struct RawDetail {
+    kind: String,
+    command: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+}
+
+impl From<RawCheck> for RecordedCheck {
+    fn from(r: RawCheck) -> Self {
+        match r {
+            RawCheck::Flat {
+                kind,
+                command,
+                exit_code,
+                passed,
+            } => RecordedCheck {
+                kind,
+                command,
+                exit_code,
+                passed,
+            },
+            RawCheck::Nested { passed, detail } => RecordedCheck {
+                kind: detail.kind,
+                command: detail.command,
+                exit_code: detail.exit_code,
+                passed,
+            },
+        }
+    }
 }
 
 /// A trail as read back from disk.
@@ -269,6 +321,28 @@ mod tests {
         // The compile-time half of this test is that there is no
         // `impl From<RecordedCheck> for Verdict` anywhere, and no
         // `Deserialize` on `Verdict` to route around it.
+    }
+
+    #[test]
+    fn a_check_written_as_a_serialized_verdict_reads_back() {
+        // A process agent's trail carries real `Verdict`s, which serialize
+        // as `{passed, detail: {kind, command, exit_code, ..}}`. Read with
+        // the flat shape only, every such trail failed to parse and was
+        // skipped by the ledger and by `trail` queries.
+        let raw = r#"{
+          "task": "make a file",
+          "factual": {
+            "checks": [{ "passed": false, "detail": {
+              "kind": "Governance", "command": "governance audit", "exit_code": 1,
+              "failure_count": 1, "stdout": "", "stderr": "", "duration_ms": 3 } }]
+          }
+        }"#;
+        let t = UntrustedTrail::from_json(raw).unwrap();
+        let c = &t.factual.checks[0];
+        assert_eq!(
+            (c.kind.as_str(), c.command.as_str(), c.exit_code, c.passed),
+            ("Governance", "governance audit", Some(1), false)
+        );
     }
 
     #[test]
