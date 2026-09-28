@@ -304,12 +304,12 @@ rustc 1.93.0), release profile as the workspace defines it (`lto = "fat"`,
 | build | `trellis.exe` bytes | crates in the binary's graph |
 |---|---|---|
 | before this ADR (`3234bee`) | 7,084,032 | 168 |
-| this branch, `--no-default-features` (local only) | 7,354,880 | 168 |
-| this branch, default features (`hosted` on) | 8,683,008 | 178 |
+| `29528e2`, `--no-default-features` (local only) | 7,357,440 | 168 |
+| `29528e2`, default features (`hosted` on) | 8,685,568 | 178 |
 
 - **Size:** `cargo build --release -p trellis-cli [--no-default-features]`,
   then `ls -l target/release/trellis.exe`. The local-only build grows
-  270,848 bytes over `3234bee` (the protocol mapping, transport, compaction
+  273,408 bytes over `3234bee` (the protocol mapping, transport, compaction
   and note tools, all of which compile without TLS). TLS adds 1,328,128 bytes
   (18.1%) on top.
 - **Crates:** `cargo tree -p trellis-cli -e normal --prefix none
