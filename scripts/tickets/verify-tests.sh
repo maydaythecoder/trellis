@@ -13,7 +13,7 @@ min="${3:-1}"
 cd "$(git rev-parse --show-toplevel)"
 out=$(cargo test -p "$pkg" "$filter" 2>&1) || { printf '%s\n' "$out" | tail -40; echo "FAIL: tests failed"; exit 1; }
 ran=$(printf '%s\n' "$out" | sed -n 's/^test result: ok\. \([0-9]*\) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')
-printf '%s\n' "$out" | grep -E '^test .* \.\.\. ' | tail -40
+printf '%s\n' "$out" | grep -E '^test .* \.\.\. ' | tail -40 || true
 if [ "$ran" -lt "$min" ]; then
   echo "FAIL: $ran test(s) matched '$filter' in $pkg; need at least $min"
   exit 1

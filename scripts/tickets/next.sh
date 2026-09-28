@@ -28,12 +28,16 @@ while IFS=$'\x1f' read -r n p labels blocked done_when verify title; do
     *" type:story "*) reason="a story, not a ticket" ;;
     *" split "*) reason="split into children" ;;
     *" triage:needs-human "*) reason="needs a person" ;;
-    *" triage:blocked "*) reason="triage:blocked" ;;
+    *" parked "*) reason="parked: waits on the owner's answer" ;;
     *" risk:high "*) reason="risk:high: a person decides" ;;
     *" surface:public "*) reason="surface:public: a person approves" ;;
     *" area:checks "*) reason="area:checks: the Verdict seal" ;;
     *" !security "*) reason="!security: a person reviews" ;;
     *" triage:auto "*) ;;
+    # Blocked only on other issues: eligible once every blocked_by is closed
+    # (checked below). With no blocked_by there is nothing a script can see
+    # to wait for, so it stays out.
+    *" triage:blocked "*) [ -n "$blocked" ] || reason="triage:blocked with no blocked_by" ;;
     *) reason="not triage:auto" ;;
   esac
   [ -z "$reason" ] && [ "$done_when" != y ] && reason="no '## Done when'"
