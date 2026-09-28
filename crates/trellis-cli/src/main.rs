@@ -3252,6 +3252,7 @@ mod init_tests {
             check_kind: None,
             prompt_bytes: Some(1_000),
             radius_counts: None,
+            human: None,
         }
     }
 

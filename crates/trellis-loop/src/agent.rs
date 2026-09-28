@@ -86,6 +86,13 @@ pub struct Turn {
     /// the trail's factual section has to hold figures a reader can check —
     /// and re-parsing a string rendered for a model is not that.
     pub radius_counts: Option<(u32, u32, u32)>,
+    /// What a person said about this call, when approve mode asked one:
+    /// `Some(true)` approved, `Some(false)` declined, `None` nobody asked.
+    ///
+    /// Carried on the turn rather than recovered from the observation, for
+    /// the same reason as `radius_counts`: the trail records it as a fact,
+    /// and a fact re-parsed from text rendered for a model is not one.
+    pub human: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,6 +404,9 @@ pub async fn run_seeded<M: Model>(
     seed: Seed,
 ) -> (Outcome, Transcript) {
     let started = Instant::now();
+    // Time spent waiting on a person in approve mode. Not charged to the
+    // wall-clock budget: a diff read carefully should not be what ends a run.
+    let mut waited_on_human = std::time::Duration::ZERO;
     let mut t = Transcript {
         task: task.to_string(),
         turns: Vec::new(),
@@ -413,7 +423,7 @@ pub async fn run_seeded<M: Model>(
     loop {
         let spend = Spend {
             iterations,
-            elapsed: started.elapsed(),
+            elapsed: started.elapsed().saturating_sub(waited_on_human),
             tokens: model.tokens_used(),
         };
         if let Some(e) = budget.exceeded(&spend) {
@@ -457,11 +467,12 @@ pub async fn run_seeded<M: Model>(
                     // the discretion of the thing it constrains. The audit is
                     // scoped to what the run touched, so a run that edited
                     // nothing a rule governs is unaffected.
+                    //
+                    // Through the ungated door: this audit is the harness's
+                    // check on the model, and a tool gate that could refuse it
+                    // would decide convergence (ADR 0018).
                     let gate = match orch.has_governance_rules().await {
-                        true => Some(
-                            orch.run_checks(Vec::new(), vec![CheckKind::Governance])
-                                .await,
-                        ),
+                        true => Some(orch.audit_governance().await),
                         false => None,
                     };
                     if let Some(ToolResult::Checks(v)) = &gate {
@@ -494,6 +505,7 @@ pub async fn run_seeded<M: Model>(
                             check_kind: Some(format!("{:?}", detail.kind)),
                             radius_counts: None,
                             prompt_bytes: None,
+                            human: None,
                         });
                         if !v.passed() {
                             return (
@@ -530,7 +542,11 @@ pub async fn run_seeded<M: Model>(
                 // Read before dispatch: it describes the prompt that produced
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
-                let result = dispatch(orch, &call).await;
+                let crate::orchestrator::Dispatched { result, human } = orch.call(&call).await;
+                if let Some(h) = human {
+                    waited_on_human += h.waited;
+                }
+                let human = human.map(|h| h.approved);
                 // The orchestrator owns the index and the only write path. If
                 // its task is gone every remaining call returns an error, and
                 // without this the run reads that as a model going nowhere and
@@ -627,6 +643,7 @@ pub async fn run_seeded<M: Model>(
                     check_kind,
                     radius_counts,
                     prompt_bytes,
+                    human,
                 });
 
                 if repeats >= NO_PROGRESS_REPEATS {
@@ -647,15 +664,6 @@ pub async fn run_seeded<M: Model>(
                 }
             }
         }
-    }
-}
-
-async fn dispatch(orch: &Handle, call: &ToolCall) -> ToolResult {
-    match call {
-        ToolCall::BlastRadius { symbol } => orch.blast_radius(symbol).await,
-        ToolCall::ReadFile { path } => orch.read_file(path).await,
-        ToolCall::Edit { path, old, new } => orch.edit(path, old, new).await,
-        ToolCall::RunChecks { paths, kinds } => orch.run_checks(paths.clone(), kinds.clone()).await,
     }
 }
 
@@ -1932,6 +1940,7 @@ rank = \"non-negotiable\"
                     check_kind: Some("Typecheck".into()),
                     radius_counts: None,
                     prompt_bytes: None,
+                    human: None,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -1940,6 +1949,7 @@ rank = \"non-negotiable\"
                     check_kind: Some("Tests".into()),
                     radius_counts: None,
                     prompt_bytes: None,
+                    human: None,
                 },
             ],
             final_notice: false,
@@ -2052,5 +2062,222 @@ rank = \"non-negotiable\"
              wants to know: {e}"
         );
         assert!(!e.contains("  "), "{e:?}");
+    }
+
+    // ---- tool gates (ADR 0018) ----
+
+    use crate::gate::{GateDecision, GateFuture, ToolGate};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A gate that answers the same thing every time and counts how often it
+    /// was asked.
+    struct Fixed {
+        decision: GateDecision,
+        asked: Arc<AtomicUsize>,
+    }
+
+    impl Fixed {
+        fn gate(decision: GateDecision) -> (Box<dyn ToolGate>, Arc<AtomicUsize>) {
+            let asked = Arc::new(AtomicUsize::new(0));
+            (
+                Box::new(Fixed {
+                    decision,
+                    asked: asked.clone(),
+                }),
+                asked,
+            )
+        }
+    }
+
+    impl ToolGate for Fixed {
+        fn check<'a>(&'a mut self, _: &'a ToolCall) -> GateFuture<'a> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(self.decision.clone()))
+        }
+    }
+
+    /// Refuses only the check kind the convergence audit uses.
+    struct DenyGovernanceChecks;
+
+    impl ToolGate for DenyGovernanceChecks {
+        fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
+            let d = match call {
+                ToolCall::RunChecks { kinds, .. } if kinds.contains(&CheckKind::Governance) => {
+                    GateDecision::Deny {
+                        reason: "no audits today".into(),
+                    }
+                }
+                _ => GateDecision::Allow,
+            };
+            Box::pin(std::future::ready(d))
+        }
+    }
+
+    fn deny(reason: &str) -> GateDecision {
+        GateDecision::Deny {
+            reason: reason.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_deny_wins_and_later_gates_are_not_asked() {
+        // A later gate may be a person. Asking someone to approve a call a
+        // rule already refused spends their attention on nothing, and a
+        // second reason would muddy the one the model needs to act on.
+        let d = repo();
+        let (first, first_asked) = Fixed::gate(deny("first says no"));
+        let (second, second_asked) = Fixed::gate(deny("second says no"));
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_gate(first)
+            .with_gate(second)
+            .spawn();
+
+        let got = h
+            .call(&ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            })
+            .await;
+        match got.result {
+            ToolResult::Error(e) => assert_eq!(e, "first says no"),
+            other => panic!("expected the first denial, got {other:?}"),
+        }
+        assert_eq!(first_asked.load(Ordering::SeqCst), 1);
+        assert_eq!(second_asked.load(Ordering::SeqCst), 0);
+        assert!(got.human.is_none(), "no gate here is a person");
+    }
+
+    #[tokio::test]
+    async fn governance_is_consulted_before_any_other_gate() {
+        // First by construction, not by builder order: a gate added before
+        // `with_governance` still runs after it.
+        let d = repo();
+        let (later, later_asked) = Fixed::gate(GateDecision::Allow);
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_gate(later)
+            .with_governance(crate::governance::Governance::new(&["app/".into()]))
+            .spawn();
+        let got = h
+            .call(&ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return 2".into(),
+            })
+            .await;
+        assert!(
+            matches!(&got.result, ToolResult::Error(e) if e.contains("denied by the rule `app/`")),
+            "{:?}",
+            got.result
+        );
+        assert_eq!(later_asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_denial_reaches_the_model_as_an_error_observation_with_its_reason() {
+        let d = repo();
+        let (g, _) = Fixed::gate(deny("not on a Friday"));
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_gate(g)
+            .spawn();
+        let mut m = Scripted::new(vec![Step::Call(ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })]);
+        let (_, t) = run("look", &mut m, &h, &budget()).await;
+        assert_eq!(t.turns[0].observation, "error: not on a Friday");
+        assert_eq!(t.turns[0].verdict_passed, None, "a denial is not a verdict");
+    }
+
+    #[tokio::test]
+    async fn a_gate_that_allows_everything_cannot_make_a_run_converge() {
+        // A gate returns Allow or Deny and nothing else. Letting every call
+        // through is not a check that ran, so `done` still needs one.
+        let d = repo();
+        let (g, asked) = Fixed::gate(GateDecision::Allow);
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_gate(g)
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return 2".into(),
+            }),
+            Step::Done {
+                summary: "every gate allowed it, so it is right".into(),
+            },
+        ]);
+        let (outcome, t) = run("do it", &mut m, &h, &budget()).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::StoppedWithoutPassingChecks { .. },
+                    ..
+                }
+            ),
+            "got {outcome:?}"
+        );
+        assert!(!t.last_check_passed());
+    }
+
+    #[tokio::test]
+    async fn a_gate_that_refuses_checks_cannot_make_a_run_converge() {
+        let d = repo();
+        let (g, _) = Fixed::gate(deny("checks are off"));
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).with_gate(g).spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "the checks could not run, so nothing failed".into(),
+            },
+        ]);
+        let (outcome, _) = run("do it", &mut m, &h, &budget()).await;
+        assert!(!outcome.converged(), "got {outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn no_gate_can_refuse_the_convergence_audit() {
+        // The hole this closes: the audit used to travel the same door as a
+        // model's `run_checks`. A gate refusing it would have turned the audit
+        // into an error, the loop reads "no verdict" as nothing to report, and
+        // the run would converge over a broken non-negotiable. With
+        // `run_checks` in `[control] approve`, that gate is a person pressing
+        // `n`.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect");
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .with_gate(Box::new(DenyGovernanceChecks))
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return psycopg2.connect('s')".into(),
+            }),
+            Step::Call(ToolCall::RunChecks {
+                paths: vec!["app/util.py".into()],
+                kinds: vec![CheckKind::Typecheck],
+            }),
+            Step::Done {
+                summary: "fixed it".into(),
+            },
+        ]);
+        let (outcome, _) = run("fix it", &mut m, &h, &budget()).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::GovernanceViolation { .. },
+                    ..
+                }
+            ),
+            "the audit must run whatever the gates say, got {outcome:?}"
+        );
     }
 }

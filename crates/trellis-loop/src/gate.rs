@@ -1,0 +1,378 @@
+//! Gates: what the orchestrator consults before it dispatches a tool call.
+//!
+//! ADR 0018. The orchestrator holds an ordered list and the first `Deny`
+//! wins. A gate can only let a call through or stop it: there is no `Mutate`,
+//! because a gate that rewrote an edit would be a second writer (ADR 0005),
+//! and there is no pass, because a gate cannot make a `Verdict` and so cannot
+//! make a run converge (ADR 0004).
+//!
+//! Gates live inside the actor rather than in the loop so that the check and
+//! the dispatch happen in one message. A gate consulted before the actor sees
+//! the call could go stale by the time the actor applied it.
+
+use crate::agent::ToolCall;
+use crate::governance::Governance;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use tokio::sync::{mpsc, oneshot};
+
+/// What a gate says about one call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateDecision {
+    Allow,
+    /// Refused. The reason reaches the model as an error observation, so it
+    /// has to say something the model can act on.
+    Deny {
+        reason: String,
+    },
+}
+
+/// The future a gate's check returns.
+///
+/// Boxed so that `ToolGate` stays object-safe: the orchestrator holds a
+/// heterogeneous list, and `async fn` in a trait is not dyn-compatible.
+pub type GateFuture<'a> = Pin<Box<dyn Future<Output = GateDecision> + Send + 'a>>;
+
+/// A check the orchestrator runs before every model-originated tool call.
+///
+/// `check` is asynchronous, which ADR 0018 as first written did not say. The
+/// approval gate waits on a human through a `oneshot`, and the actor runs on
+/// a tokio runtime: a synchronous wait there (`blocking_recv`) panics, and
+/// `block_in_place` panics on the current-thread runtime `trellis run`
+/// builds.
+///
+/// `Sync` as well as `Send`, because the actor lends `&self` across an
+/// `.await` while a check subprocess runs, and the gates are part of `self`.
+pub trait ToolGate: Send + Sync {
+    fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a>;
+
+    /// Whether the decision `check` just returned was a person's answer.
+    ///
+    /// The trail records human decisions as factual actions and nothing else
+    /// does; a gate that allowed a call without asking anyone has not
+    /// produced one. Defaults to `false`, which is right for every gate that
+    /// is not the approval gate.
+    fn human_decided(&self) -> bool {
+        false
+    }
+}
+
+/// `[governance] deny_write` and the rule documents' write denials, as the
+/// first gate.
+///
+/// The semantics are those `apply_edit` had when the check lived there: only
+/// `edit` is refused, the refusal names the rule as written, and it is made
+/// before the file is read, so a denied path is refused identically whether
+/// or not it exists.
+pub struct GovernanceGate(pub Governance);
+
+impl ToolGate for GovernanceGate {
+    fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
+        let decision = match call {
+            ToolCall::Edit { path, .. } => match self.0.denies_write(path) {
+                Some(rule) => GateDecision::Deny {
+                    reason: format!(
+                        concat!(
+                            "edit refused: `{}` is denied by the rule `{}` in ",
+                            ".trellis/config.toml. This is the repository's own rule, ",
+                            "not a guess — change the rule if the file really should be ",
+                            "editable."
+                        ),
+                        path,
+                        rule.as_written()
+                    ),
+                },
+                None => GateDecision::Allow,
+            },
+            _ => GateDecision::Allow,
+        };
+        Box::pin(std::future::ready(decision))
+    }
+}
+
+/// The tool names a `[control] approve` list may contain.
+pub const APPROVABLE_TOOLS: &[&str] = &["edit", "read_file", "run_checks", "blast_radius"];
+
+/// The tool name a call is listed under in `[control] approve`.
+pub fn tool_name(call: &ToolCall) -> &'static str {
+    match call {
+        ToolCall::BlastRadius { .. } => "blast_radius",
+        ToolCall::ReadFile { .. } => "read_file",
+        ToolCall::Edit { .. } => "edit",
+        ToolCall::RunChecks { .. } => "run_checks",
+    }
+}
+
+/// One question for the human.
+///
+/// `detail` is shown first and `question` is the line the answer is typed
+/// after, so a surface that shows only one of them still shows the one that
+/// is asked. A dropped `reply` is a "no": a human who is gone has not said
+/// yes.
+pub struct ApprovalRequest {
+    /// e.g. `edit app/x.py (+12 -3)`.
+    pub question: String,
+    /// The diff for an edit; empty for anything else.
+    pub detail: String,
+    pub reply: oneshot::Sender<bool>,
+}
+
+/// Asks a human about each listed call, through a channel whose other end is
+/// a terminal or the full-screen interface.
+///
+/// **Not `tracing`.** An approval is a request that needs an answer, and
+/// ADR 0008 keeps `tracing` observe-only.
+pub struct ApprovalGate {
+    root: PathBuf,
+    tools: Vec<String>,
+    tx: mpsc::Sender<ApprovalRequest>,
+    asked: bool,
+}
+
+impl ApprovalGate {
+    pub fn new(root: &Path, tools: Vec<String>, tx: mpsc::Sender<ApprovalRequest>) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            tools,
+            tx,
+            asked: false,
+        }
+    }
+}
+
+/// The reason a declined call carries to the model.
+pub const DECLINED: &str = "declined by the user";
+
+impl ToolGate for ApprovalGate {
+    fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
+        Box::pin(async move {
+            self.asked = false;
+            if !self.tools.iter().any(|t| t == tool_name(call)) {
+                return GateDecision::Allow;
+            }
+            let (question, detail) = match call {
+                ToolCall::Edit { path, old, new } => {
+                    match preview_edit(&self.root, path, old, new) {
+                        Some(p) => (format!("edit {path} (+{} -{})", p.added, p.removed), p.diff),
+                        // An edit the orchestrator is about to refuse — no
+                        // such file, an anchor that is missing or ambiguous,
+                        // a change to nothing — is not put to the human.
+                        // It cannot change the tree, and asking someone to
+                        // approve a refusal spends their attention on noise.
+                        // The refusal still reaches the model, from
+                        // `apply_edit`, in its usual words.
+                        None => return GateDecision::Allow,
+                    }
+                }
+                other => (label(other), String::new()),
+            };
+            let (reply, rx) = oneshot::channel();
+            if self
+                .tx
+                .send(ApprovalRequest {
+                    question,
+                    detail,
+                    reply,
+                })
+                .await
+                .is_err()
+            {
+                // Nobody is listening. Refused rather than allowed: approve
+                // mode with no human is the case ADR 0018 says must not look
+                // as though it worked.
+                return GateDecision::Deny {
+                    reason: "no one is there to approve it, so it was not run".into(),
+                };
+            }
+            self.asked = true;
+            match rx.await {
+                Ok(true) => GateDecision::Allow,
+                Ok(false) | Err(_) => GateDecision::Deny {
+                    reason: DECLINED.into(),
+                },
+            }
+        })
+    }
+
+    fn human_decided(&self) -> bool {
+        self.asked
+    }
+}
+
+fn label(call: &ToolCall) -> String {
+    match call {
+        ToolCall::BlastRadius { symbol } => format!("blast_radius {symbol}"),
+        ToolCall::ReadFile { path } => format!("read_file {path}"),
+        ToolCall::Edit { path, .. } => format!("edit {path}"),
+        ToolCall::RunChecks { paths, kinds } => {
+            let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+            if paths.is_empty() {
+                format!("run_checks {} on the whole repository", kinds.join("+"))
+            } else {
+                format!("run_checks {} on {}", kinds.join("+"), paths.join(", "))
+            }
+        }
+    }
+}
+
+/// What an edit would do, for a human deciding whether to let it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditPreview {
+    pub added: usize,
+    pub removed: usize,
+    /// `-`/`+` lines with a line of context either side.
+    pub diff: String,
+}
+
+/// Previews an edit, or `None` when `apply_edit` would refuse it.
+///
+/// Matches the way `apply_edit` matches — on LF, whatever the file holds —
+/// or a Windows checkout would preview as "anchor not found" an edit that
+/// then applies.
+pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<EditPreview> {
+    let p = Path::new(path);
+    if p.is_absolute() || p.components().any(|c| c.as_os_str() == "..") {
+        return None;
+    }
+    let src = std::fs::read_to_string(root.join(p))
+        .ok()?
+        .replace("\r\n", "\n");
+    let old = old.replace("\r\n", "\n");
+    let new = new.replace("\r\n", "\n");
+    if old == new || src.matches(old.as_str()).count() != 1 {
+        return None;
+    }
+    let at = src.find(old.as_str())?;
+    let after = format!("{}{}{}", &src[..at], new, &src[at + old.len()..]);
+
+    let a: Vec<&str> = src.lines().collect();
+    let b: Vec<&str> = after.lines().collect();
+    // Trim the lines both versions share at either end; what is left is the
+    // change, as whole lines.
+    let head = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let tail = a[head..]
+        .iter()
+        .rev()
+        .zip(b[head..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let removed = &a[head..a.len() - tail];
+    let added = &b[head..b.len() - tail];
+
+    let mut diff = format!("--- {path}\n+++ {path}\n");
+    if head > 0 {
+        diff.push_str(&format!("  {}\n", a[head - 1]));
+    }
+    for l in removed {
+        diff.push_str(&format!("- {l}\n"));
+    }
+    for l in added {
+        diff.push_str(&format!("+ {l}\n"));
+    }
+    if tail > 0 {
+        diff.push_str(&format!("  {}\n", a[a.len() - tail]));
+    }
+    Some(EditPreview {
+        added: added.len(),
+        removed: removed.len(),
+        diff,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_preview_counts_whole_lines_and_quotes_them() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.py"), "def f():\n    return 1\n\nx = 2\n").unwrap();
+        let p = preview_edit(d.path(), "a.py", "return 1", "y = 3\n    return y").unwrap();
+        assert_eq!((p.added, p.removed), (2, 1), "{}", p.diff);
+        assert!(p.diff.contains("-     return 1"), "{}", p.diff);
+        assert!(p.diff.contains("+     y = 3"), "{}", p.diff);
+        assert!(p.diff.contains("  def f():"), "context line: {}", p.diff);
+    }
+
+    #[test]
+    fn a_crlf_file_previews_the_edit_apply_edit_would_make() {
+        // apply_edit matches on LF. A preview that did not would put
+        // "nothing to approve" in front of an edit that then applies.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.py"), "def f():\r\n    return 1\r\n").unwrap();
+        assert!(
+            preview_edit(
+                d.path(),
+                "a.py",
+                "def f():\n    return 1",
+                "def f():\n    return 2"
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn an_edit_that_would_be_refused_has_no_preview() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.py"), "x = 1\nx = 1\n").unwrap();
+        assert!(
+            preview_edit(d.path(), "a.py", "x = 1", "x = 2").is_none(),
+            "ambiguous"
+        );
+        assert!(preview_edit(d.path(), "a.py", "y", "z").is_none(), "absent");
+        assert!(
+            preview_edit(d.path(), "a.py", "x = 1\nx", "x = 1\nx").is_none(),
+            "no-op"
+        );
+        assert!(
+            preview_edit(d.path(), "nope.py", "a", "b").is_none(),
+            "missing file"
+        );
+        assert!(
+            preview_edit(d.path(), "../a.py", "a", "b").is_none(),
+            "escape"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_reply_is_a_no() {
+        // A surface that goes away mid-question has not approved anything.
+        let d = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut g = ApprovalGate::new(d.path(), vec!["read_file".into()], tx);
+        tokio::spawn(async move {
+            let req = rx.recv().await.unwrap();
+            drop(req.reply);
+        });
+        let call = ToolCall::ReadFile { path: "a".into() };
+        assert_eq!(
+            g.check(&call).await,
+            GateDecision::Deny {
+                reason: DECLINED.into()
+            }
+        );
+        assert!(g.human_decided());
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_tool_is_not_put_to_the_human() {
+        let d = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut g = ApprovalGate::new(d.path(), vec!["edit".into()], tx);
+        let call = ToolCall::ReadFile { path: "a".into() };
+        assert_eq!(g.check(&call).await, GateDecision::Allow);
+        assert!(!g.human_decided(), "nobody was asked");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn with_nobody_listening_a_listed_call_is_refused_not_run() {
+        let d = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let mut g = ApprovalGate::new(d.path(), vec!["read_file".into()], tx);
+        let call = ToolCall::ReadFile { path: "a".into() };
+        assert!(matches!(g.check(&call).await, GateDecision::Deny { .. }));
+    }
+}
