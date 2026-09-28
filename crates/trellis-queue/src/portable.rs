@@ -353,10 +353,20 @@ pub fn plan_import(root: &Path, q: &Queue, src: &Path, on: OnConflict) -> Result
                 )));
             }
             let t: Task = read_json(&p)?;
-            let action = if !existing_ids.by_id.contains_key(&id) {
-                Action::Create
-            } else {
-                match on {
+            let action = match existing_ids.by_id.get(&id) {
+                None => Action::Create,
+                // Found here rather than by `remove_task` in `apply_import`,
+                // which would refuse it only after every item ahead of it
+                // had been written. A claim made between this plan and the
+                // apply is still refused there, mid-import.
+                Some((State::Claimed, _)) if on == OnConflict::Replace => {
+                    return Err(QueueError::Invalid(format!(
+                        "task `{id}` is claimed by a run here, and --on-conflict replace \
+                         cannot replace a task a run holds; nothing was imported. Wait \
+                         for the run, or use --on-conflict skip or rename"
+                    )));
+                }
+                Some(_) => match on {
                     OnConflict::Skip => Action::Skip,
                     OnConflict::Replace => Action::Replace,
                     OnConflict::Rename => {
@@ -570,6 +580,42 @@ mod tests {
                 .contains("mine"),
             "the local profile is untouched"
         );
+    }
+
+    #[test]
+    fn replace_over_a_claimed_task_is_refused_before_anything_is_written() {
+        // The risk: `--on-conflict replace` against a task another process
+        // has claimed was only discovered in `apply_import`, after the
+        // profiles ahead of it had been written: half an import, and an
+        // error saying nothing was done.
+        let (d, root, q) = setup();
+        let id = q.add("local", None, None).unwrap();
+        let claim = q.claim(&id).unwrap().expect("claimed");
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("agents")).unwrap();
+        std::fs::create_dir_all(src.join("tasks/pending")).unwrap();
+        std::fs::write(src.join("agents/newcomer.toml"), "role = \"x\"\n").unwrap();
+        let t = Task {
+            task: "theirs".into(),
+            added_at: "2026-09-27T00:00:00Z".into(),
+            ..Task::default()
+        };
+        std::fs::write(
+            src.join(format!("tasks/pending/{id}.json")),
+            serde_json::to_string(&t).unwrap(),
+        )
+        .unwrap();
+
+        let e = plan_import(&root, &q, &src, OnConflict::Replace)
+            .map(|p| apply_import(&root, &q, &p))
+            .and_then(|r| r)
+            .expect_err("a claimed task cannot be replaced");
+        assert!(e.to_string().contains(&id), "{e}");
+        assert!(
+            !root.join(".trellis/agents/newcomer.toml").exists(),
+            "nothing is written when the import is refused"
+        );
+        claim.release(false).unwrap();
     }
 
     #[test]
