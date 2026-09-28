@@ -60,6 +60,33 @@ pub enum VcsError {
     },
 }
 
+/// Why the git guard ([`git_guard::GitGuard::capture`]) or the ignored-file
+/// listing ([`ignored::IgnoredSnapshot::take`]) could not be taken. The
+/// messages are the ones these returned as strings before (review round
+/// 10), since a caller prints them as they are.
+#[derive(Debug, thiserror::Error)]
+pub enum GuardError {
+    /// `what` is the command, e.g. `git rev-parse`.
+    #[error("{what} could not run: {source}")]
+    Spawn {
+        what: &'static str,
+        source: std::io::Error,
+    },
+    /// Trimmed stderr.
+    #[error("{what} failed: {stderr}")]
+    Failed { what: &'static str, stderr: String },
+    #[error("{} could not be read: {source}", path.display())]
+    Unreadable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{} could not be resolved: {source}", path.display())]
+    Unresolved {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
 /// Why a clean worktree is required, and the three ways past it.
 ///
 /// Written out because the requirement reads as arbitrary until you know what

@@ -2037,7 +2037,9 @@ fn run_body(
                 | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
             };
             *o = trellis_loop::Outcome::NotConverged {
-                reason: trellis_loop::NotConverged::TrustChanged { detail },
+                reason: trellis_loop::NotConverged::TrustChanged {
+                    detail: detail.to_string(),
+                },
                 iterations,
             };
         }
