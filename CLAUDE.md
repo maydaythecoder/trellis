@@ -79,6 +79,7 @@ trellis-loop     agent loop, tools, budgets, partitioning
 trellis-trail    the decision trail
 trellis-vcs      git snapshot and rollback
 trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis-model)
+trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir; no trellis-loop/model)
 trellis-cli      the binary
 ```
 

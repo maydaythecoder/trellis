@@ -1741,6 +1741,29 @@ name the test that would fail if it were reverted.
   whether any model reads a skill when one applies, or does better for it.
   Known limit: the prompt keeps the last 2,000 characters of an observation,
   so a long skill body is mostly cut; not changed here.
+- **Local work queue (ADR 0020).** `trellis-queue` stores tasks as JSON files
+  under `<git-dir>/trellis/queue/{pending,claimed,done,failed}`. The new
+  commands are `trellis queue add|list|requeue` and
+  `trellis work [--once | --every S] [--max-tasks N]`, which run each task
+  through `cmd_run`. There is also a global `--log-json <path>`, a JSON layer
+  on the existing subscriber.
+  - **Tested with a fake runner:** every run outcome (converged stops, rolled
+    back continues, not restored, error, interrupted with and without the
+    tree restored); a dirty tree refused before any claim; `--max-tasks`;
+    `--every` idling; stale claims named and not re-run.
+  - **Tested through the binary with scripted models:** the queue survives
+    rollback and never dirties the worktree; a converged task in `done/`
+    records the trail's run id; a queued `--focus` reaches the run's `repo:`
+    line; the JSONL log holds the per-turn events.
+  - **Linked worktree:** git-dir resolution is tested. Each worktree gets its
+    own queue.
+  - **The tests found two Windows defects.** A rename-based claim let two
+    claimers both win. Renaming over an existing task file was intermittently
+    refused with "Access is denied". The queue now writes only by temp file
+    plus exclusive hard link, and contains no `rename` (ADR 0020 §3).
+  - **Not tested automatically:** Ctrl-C during `work`. Not enforced: two
+    `work` processes in one worktree at once.
+  - **Not measured:** anything about unattended runs against a real model.
 - **Vault context (ADR 0017).** `trellis-vault` validates an Apex-format
   vault and compiles one focus note; `trellis run` reads `[context] vault`
   and `focus`, or `--focus <stem>`, compiles in memory before the snapshot,
