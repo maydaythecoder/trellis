@@ -100,8 +100,9 @@ pub fn parse(name: &str, text: &str) -> Result<Routine, QueueError> {
         ));
     }
     let file: RoutineFile = toml::from_str(text).map_err(|e| bad(e.to_string()))?;
-    let cron = Cron::parse(&file.schedule).map_err(bad)?;
-    let tz = Tz::parse(file.timezone.as_deref().unwrap_or("UTC")).map_err(bad)?;
+    let cron = Cron::parse(&file.schedule).map_err(|e| bad(e.to_string()))?;
+    let tz =
+        Tz::parse(file.timezone.as_deref().unwrap_or("UTC")).map_err(|e| bad(e.to_string()))?;
     let concurrency = match file.concurrency.as_deref().unwrap_or("coalesce") {
         "coalesce" => Concurrency::Coalesce,
         "skip" => Concurrency::Skip,

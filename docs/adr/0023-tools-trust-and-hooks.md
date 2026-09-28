@@ -416,12 +416,43 @@ anyone being asked. Now the digest also covers:
   in `crates/trellis-loop/src/trust.rs`, which failed before on
   `["bash", "-lc", "python scripts/gate.py"]` with no file hashed.
 
+*Amended after the eleventh review of PR #1: a rule, not a better
+tokenizer.* The review found scripts named inside larger expressions that
+the tokens above still missed, and every round before it had found one
+more spelling. So the tokenizer stops being the defence. **A hook or
+custom tool whose argv, in any element or any token of one, names a
+regular file in the repository outside `.trellis/` is refused**: `trellis
+trust` prints the item and the file, says to move the code to
+`.trellis/hooks/` (or `.trellis/tools/`) and name it there, and records
+nothing; a trust recorded earlier reads as `Refused` wherever trust is
+read (the run's `repo:` line, `work`, `doctor`), so nothing loads.
+`["bash", "-lc", "python scripts/gate.py"]` is refused;
+`["python", ".trellis/hooks/gate.py"]` is trusted. Programs on `PATH` and
+absolute paths outside the repository are the user's system and are fine.
+Everything under `.trellis/` is still hashed whole. Two narrowings,
+deliberate: the rule is on regular files, not directories, since a
+directory named as an argument (`ruff check src`) is data for the tool;
+and it is decided on the path as written (`names_trellis_dir`), so a link
+under `.trellis/` to a directory elsewhere is followed and hashed by the
+digest rather than refused. Process agents (ADR 0026 §11) and the `bash`
+shell argv are not under the rule: a process agent writes the whole tree
+anyway, and the shell argv names an interpreter. A repository whose hooks
+or custom tools name such a file needs them moved before it can be
+trusted again. Evidence:
+`a_hook_or_custom_tool_naming_code_outside_dot_trellis_is_refused` in
+`crates/trellis-loop/src/trust.rs` (failed with the rule removed: the
+fingerprint was not refused) and
+`trust_refuses_a_hook_whose_code_is_outside_dot_trellis_and_says_where_to_move_it`
+in `crates/trellis-cli/src/trust_cmd.rs`.
+
 **Not covered, plainly:** code reached indirectly from outside `.trellis/`
-and outside any file an argv or code string names — a module imported by
-a hook (`python -m tools.hook` resolving to `tools/hook.py`), a file a
-script reads or sources, a program on `PATH`. A change there does not
-untrust the repository. **Keep hook and tool code under `.trellis/hooks/`
-or `.trellis/tools/`**, where every byte is in the digest.
+that no argv token names as a file — a module imported by a hook
+(`python -m tools.hook` resolving to `tools/hook.py`, or an `import app`
+inside `.trellis/hooks/gate.py`), a directory run as a program
+(`python pkg/`), a file a script reads or sources, a program on `PATH`. A
+change there does not untrust the repository. **Keep hook and tool code,
+and what it imports, under `.trellis/hooks/` or `.trellis/tools/`**, where
+every byte is in the digest.
 
 Not covered, and stated so it is not assumed: `[checks] typecheck` and
 `tests` are repository-supplied argv that trellis has always executed
@@ -792,10 +823,12 @@ check configuration and the process-agent profiles.
   did not converge. Restoring the file does not clear the latch: a hook
   that ran rewritten, or was refused, is already part of this run.
 - **A hook script outside `.trellis/`** (`["python", "scripts/gate.py"]`)
-  is not refused up front: `edit scripts/gate.py` is an ordinary edit. The
-  guard sees it at the next spawn — the `post_tool` hook of that same call,
-  or the check after it — and ends the run there. Keeping hook code under
-  `.trellis/` (§4) turns that into a refusal the model can read.
+  is refused at trust time since the eleventh review (§4): the repository
+  cannot be trusted until it moves under `.trellis/`, where `edit` refuses
+  it. Before that it was trusted, `edit scripts/gate.py` was an ordinary
+  edit, and only the guard's next recheck saw it. Code such a hook reaches
+  by import outside `.trellis/` is still an ordinary file (§4, "not
+  covered").
 - **Process agents** (ADR 0026 §11) cannot be refused up front, since their
   command writes directly. Their run already failed to converge when git
   reported any changed path under `.trellis/`; that test now uses
@@ -853,6 +886,78 @@ and `a_custom_tool_does_not_start_once_trusted_code_has_changed`; and in
 `a_hook_rewritten_mid_run_is_not_run_and_the_run_is_rolled_back`, which
 drives `cmd_run` and fails when the orchestrator is not given the guard.
 Each failed with its fix's behaviour removed.
+
+#### What rollback guarantees when trellis is not the only writer
+
+*Added after the eleventh review of PR #1.* ADR 0009's rollback rests on
+one premise: during a run the orchestrator is the only writer (ADR 0005).
+With `edit` and `write_file` as the only writers that premise holds, and
+the rollback's guarantee is exact. When `bash`, a custom tool, a hook or a
+process agent is enabled, it does not. Each of those is an unsandboxed
+process running with the user's authority, with write access to the whole
+worktree and to `.git/`. For them the rollback is **best-effort against
+git's view of the tree**: it restores what `git reset --hard`, `git clean
+-fd`, the ignored-file listing and the git guard can see, and a writer
+that shapes git's view can place a change outside all four.
+
+This is a limit, not a defect awaiting another guard. Eleven review rounds
+have closed one route after another with a post-hoc git check, and each
+round has found another, because the checks read state the writer can
+also write. The known ways around it, from rounds 5 to 11, stated so they
+are not assumed closed:
+
+- **Backgrounded processes on Windows.** After a normal exit
+  `taskkill /T` has no live process to walk the tree from, so what the
+  command started keeps running and can write after the comparison and
+  the rollback (ADR 0023 §3; ADR 0026 §11 step 2). On Unix a process that leaves
+  its group (`setsid`) is not reached, and a process agent runs in
+  trellis's own group, so nothing is killed after its normal exit.
+- **`.git/` writes outside the guarded files.** The git guard restores
+  `config`, `config.worktree`, include targets under the git directory,
+  the hooks, `info/exclude` and `info/attributes`. The rest of `.git/`
+  (refs, `packed-refs`, objects, the index, `.git/modules/`) is not
+  compared or restored, nor is a change made and reverted before the
+  command exits.
+- **Ignored-path tricks, `.gitignore` edits included.** `git clean -fd`
+  never removes an ignored file, and what is ignored is decided by files
+  the writer can edit: a tracked `.gitignore`, or a new one in a
+  directory it creates. The before/after listing of ignored paths
+  (`trellis_vcs::ignored`) narrows this, but it reads the same view of the
+  tree the writer shaped.
+- **`skip-worktree` and `assume-unchanged`.** `git update-index
+  --skip-worktree` or `--assume-unchanged` on a tracked file hides an edit
+  to it from `git status` and `git diff`, and so from every judgment made
+  from the changed paths, and from what the rollback's reset is relied on
+  to restore.
+- **Refs other than `HEAD`.** Only `HEAD` and the branch it was on are
+  recorded (ADR 0009). A branch the writer creates, another branch it
+  moves (`git branch -f`), a tag, a stash entry or a note is left as it
+  is.
+- **Pre-existing ignored files changed.** An ignored file that existed
+  before the run (`.env`, a virtualenv, build output, a cache) and that a
+  writer modifies is neither restored by the reset nor removed by the
+  clean. The ignored-file listing removes new ignored paths and notices a
+  changed one by its stat (a rewrite that keeps length and modification
+  time passes on Windows), but holds no copy to restore it from.
+- **TOCTOU in restore.** Each comparison and each restore is a separate
+  step. A process still running (the first item) can write between the
+  check and the restore, or after both.
+- **Code reached by import outside `.trellis/`.** Trust covers every byte
+  under `.trellis/` and refuses hook and tool code named outside it (ADR
+  0023 §4, amended after the eleventh review), but code a hook or tool imports from
+  elsewhere in the repository is an ordinary file a run may edit.
+
+**What holds.** For trellis's own edits (`edit`, `write_file`), the
+rollback's guarantee is exact, as ADR 0009 states. A run with none of
+these writers enabled (the default: `bash` off, and an untrusted
+repository loads no hook, custom tool or process agent) keeps it.
+
+**The real fix is sandboxing**: running these writers where they cannot
+reach `.git/`, the user's other files or processes that outlive them.
+That decision is deferred in ADR 0021 (1.6 swappable tool backends,
+13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
+the limit rather than adding another guard. `trellis trust` prints one line
+saying so when it records trust for any of these writers.
 
 ### 6. Custom command tools
 

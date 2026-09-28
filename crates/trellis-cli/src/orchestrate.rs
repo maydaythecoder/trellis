@@ -144,6 +144,31 @@ fn state_text(p: &Profile, o: &profile::Overlay) -> String {
     }
 }
 
+/// The approve list this profile's runs use, and where it comes from.
+///
+/// Since review round 10 a profile's `[control] approve` adds to the
+/// layered list (the repository's `config.toml` and the user's own file)
+/// instead of replacing it, so printing the profile's list alone showed
+/// less than a run asks about (review round 11). This is the list
+/// `run_body` builds: `RepoConfig::control`, then
+/// `add_profile_approvals`. The mode does not change the list.
+fn approve_text(cfg: &crate::config::RepoConfig, p: &Profile) -> Result<String> {
+    let mut dial = cfg.control(None)?;
+    let own = p.file.control.as_ref().and_then(|c| c.approve.as_ref());
+    if let Some(list) = own {
+        dial.add_profile_approvals(list);
+    }
+    Ok(format!(
+        "approve {} ({})",
+        dial.approve.join(", "),
+        if own.is_some() {
+            "the repository's and your user file's list, plus this profile's"
+        } else {
+            "the repository's and your user file's list; this profile adds none"
+        }
+    ))
+}
+
 fn runs_with(p: &Profile) -> String {
     match (&p.file.command, &p.file.model) {
         // Names, never values: which keys the process is given is part of
@@ -248,15 +273,12 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
             );
             let control = f.control.clone().unwrap_or_default();
             println!(
-                "control:      mode {}; approve {}",
+                "control:      mode {}; {}",
                 control
                     .mode
                     .as_deref()
                     .unwrap_or("(the work default: auto)"),
-                control
-                    .approve
-                    .map(|a| a.join(", "))
-                    .unwrap_or("(the repository's list)".into())
+                approve_text(&crate::config::RepoConfig::load(root)?, p)?
             );
             if control.mode.as_deref() == Some("approve") {
                 println!(
@@ -477,6 +499,38 @@ pub(crate) fn routines(root: &Path, action: RoutinesAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agents_show_prints_the_effective_approve_list_not_the_profile_s_alone() {
+        // The risk (review round 11): since round 10 a profile's approve
+        // list adds to the repository's and the user's, but `agents show`
+        // printed the profile's list as if it were the whole of it, so a
+        // person reading it did not see `edit` or their own entries.
+        let d = tempfile::tempdir().unwrap();
+        let t = d.path().join(".trellis");
+        std::fs::create_dir_all(t.join("agents")).unwrap();
+        std::fs::write(t.join("config.toml"), "[control]\nmode = \"approve\"\n").unwrap();
+        std::fs::write(
+            t.join("agents/rev.toml"),
+            "role = \"reviews\"\n[control]\napprove = [\"read_file\"]\n",
+        )
+        .unwrap();
+        std::fs::write(t.join("agents/plain.toml"), "role = \"writes\"\n").unwrap();
+        let user = d.path().join("user.toml");
+        std::fs::write(&user, "[control]\napprove = [\"run_checks\"]\n").unwrap();
+        let cfg = crate::config::RepoConfig::load_with_user(d.path(), Some(&user)).unwrap();
+        let profiles = super::load_profiles(d.path()).unwrap();
+
+        let shown = super::approve_text(&cfg, &profiles["rev"]).unwrap();
+        assert!(
+            shown.starts_with("approve edit, run_checks, read_file ("),
+            "{shown}"
+        );
+        assert!(shown.contains("plus this profile's"), "{shown}");
+        let shown = super::approve_text(&cfg, &profiles["plain"]).unwrap();
+        assert!(shown.starts_with("approve edit, run_checks ("), "{shown}");
+        assert!(shown.contains("adds none"), "{shown}");
+    }
+
     #[test]
     fn a_profile_may_list_a_repository_tool_for_approval_by_its_name() {
         // The risk: `[control] approve` in the repository config accepted

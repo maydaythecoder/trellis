@@ -31,7 +31,7 @@ pub use agent::{
     Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
-pub use exec::default_shell;
+pub use exec::{ExecError, default_shell};
 pub use extra_context::{
     ContextFile, DEFAULT_ROLE, ExtraContext, FORCED_SKILL_HEAD, ForcedSkill, GROUNDING,
 };
@@ -41,7 +41,7 @@ pub use gate::{
 };
 pub use governance::{Governance, Rule};
 pub use hooks::{
-    BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookGate, Hooks,
+    BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
     fence_before_run,
 };
 pub use orchestrator::{
@@ -49,12 +49,13 @@ pub use orchestrator::{
 };
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use registry::{
-    BUILTIN_TOOLS, BashSettings, CustomTool, NotesSource, ToolSelection, ToolSet, call_json,
+    BUILTIN_TOOLS, BashSettings, CustomTool, NotesSource, ToolCallError, ToolConfigError,
+    ToolSelection, ToolSet, call_json,
 };
-pub use scripted::ScriptedModel;
+pub use scripted::{ScriptError, ScriptedModel};
 pub use skills::{
     DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillAccess, SkillCatalog,
-    SkillPolicy, read_body, read_body_in,
+    SkillError, SkillPolicy, read_body, read_body_in,
 };
 pub use tools::{EditOutcome, ToolResult};
 pub use trust::{Fingerprint, HashCache, TrustGuard, TrustItem, TrustState, TrustStore};

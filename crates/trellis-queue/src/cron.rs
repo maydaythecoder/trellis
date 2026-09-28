@@ -33,43 +33,110 @@ const MONTHS: [&str; 12] = [
 ];
 const DAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
-fn value(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<u32, String> {
+/// Why a cron expression was refused. Each message is the string
+/// [`Cron::parse`] returned before (review round 11).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CronError {
+    #[error("`{0}`: named schedules are not supported; write the five fields")]
+    Named(String),
+    /// `#`, `?`, `L` or `W`: refused by name rather than misread.
+    #[error("`{text}`: `{what}` is not supported")]
+    Unsupported { text: String, what: char },
+    #[error(
+        "`{text}` has {count} field(s); cron here is exactly five: minute hour day-of-month \
+         month day-of-week"
+    )]
+    FieldCount { text: String, count: usize },
+    #[error("{field}: {problem}")]
+    Field {
+        field: &'static str,
+        problem: FieldError,
+    },
+}
+
+/// What is wrong within one of the five fields.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FieldError {
+    #[error("`{text}` is not a number in {lo}-{hi}")]
+    NotANumber { text: String, lo: u32, hi: u32 },
+    #[error("{value} is outside {lo}-{hi}")]
+    OutOfRange { value: u32, lo: u32, hi: u32 },
+    #[error("empty list item in `{0}`")]
+    EmptyItem(String),
+    #[error("step `{0}` is not a number")]
+    StepNotANumber(String),
+    #[error("a step of 0 never advances")]
+    ZeroStep,
+    #[error("step {step} is larger than the field's maximum {hi}")]
+    StepTooLarge { step: u32, hi: u32 },
+    #[error("range `{0}` runs backwards")]
+    Backwards(String),
+}
+
+/// Why a timezone was refused. Each message is the string [`Tz::parse`]
+/// returned before (review round 11).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TzError {
+    #[error(
+        "timezone `{0}`: only `UTC` and fixed offsets like `+02:00` are supported. IANA names \
+         would need the tz database, a dependency that goes stale; a fixed offset does not \
+         follow daylight saving (ADR 0026 §7)"
+    )]
+    Unsupported(String),
+    #[error("timezone `{0}`: write the offset as `+HH:MM`")]
+    NoColon(String),
+    #[error("timezone `{tz}`: bad {what}; write the offset as `+HH:MM`")]
+    BadDigits { tz: String, what: &'static str },
+    #[error("timezone `{tz}`: bad {what}")]
+    BadNumber { tz: String, what: &'static str },
+    #[error("timezone `{0}`: offset out of range")]
+    OutOfRange(String),
+}
+
+fn value(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<u32, FieldError> {
     if let Some((names, base)) = names
         && let Some(i) = names.iter().position(|n| n.eq_ignore_ascii_case(s))
     {
         return Ok(i as u32 + base);
     }
-    let v: u32 = s
-        .parse()
-        .map_err(|_| format!("`{s}` is not a number in {lo}-{hi}"))?;
+    let v: u32 = s.parse().map_err(|_| FieldError::NotANumber {
+        text: s.to_string(),
+        lo,
+        hi,
+    })?;
     if v < lo || v > hi {
-        return Err(format!("{v} is outside {lo}-{hi}"));
+        return Err(FieldError::OutOfRange { value: v, lo, hi });
     }
     Ok(v)
 }
 
 /// A field as a bit set over `lo..=hi`, and whether it was `*`.
-fn field(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<(u64, bool), String> {
+fn field(
+    s: &str,
+    lo: u32,
+    hi: u32,
+    names: Option<(&[&str], u32)>,
+) -> Result<(u64, bool), FieldError> {
     let mut bits = 0u64;
     // Vixie cron's test: the field's first character, so `*/2` counts as a
     // star for the day-of-month / day-of-week rule, not only `*`.
     let star = s.starts_with('*');
     for part in s.split(',') {
         if part.is_empty() {
-            return Err(format!("empty list item in `{s}`"));
+            return Err(FieldError::EmptyItem(s.to_string()));
         }
         let (range, step) = match part.split_once('/') {
             Some((r, st)) => {
                 let st: u32 = st
                     .parse()
-                    .map_err(|_| format!("step `{st}` is not a number"))?;
+                    .map_err(|_| FieldError::StepNotANumber(st.to_string()))?;
                 if st == 0 {
-                    return Err("a step of 0 never advances".into());
+                    return Err(FieldError::ZeroStep);
                 }
                 // Past the field's largest value a step can only ever reach
                 // its start, and near u32::MAX it overflowed the loop below.
                 if st > hi {
-                    return Err(format!("step {st} is larger than the field's maximum {hi}"));
+                    return Err(FieldError::StepTooLarge { step: st, hi });
                 }
                 (r, st)
             }
@@ -85,7 +152,7 @@ fn field(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<(u6
             (a, if part.contains('/') { hi } else { a })
         };
         if a > b {
-            return Err(format!("range `{range}` runs backwards"));
+            return Err(FieldError::Backwards(range.to_string()));
         }
         // Checked as well as bounded above: the loop ends when the next
         // value would pass `b` or would not fit, whichever comes first.
@@ -99,16 +166,18 @@ fn field(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<(u6
 }
 
 impl Cron {
-    pub fn parse(s: &str) -> Result<Cron, String> {
+    pub fn parse(s: &str) -> Result<Cron, CronError> {
         let t = s.trim();
         if t.starts_with('@') {
-            return Err(format!(
-                "`{t}`: named schedules are not supported; write the five fields"
-            ));
+            return Err(CronError::Named(t.to_string()));
         }
+        let unsupported = |what: char| CronError::Unsupported {
+            text: t.to_string(),
+            what,
+        };
         for bad in ['#', '?'] {
             if t.contains(bad) {
-                return Err(format!("`{t}`: `{bad}` is not supported"));
+                return Err(unsupported(bad));
             }
         }
         // `L` and `W` only as Quartz uses them (`L`, `15W`, `5L`), so that
@@ -121,26 +190,24 @@ impl Cron {
             };
             for bad in ['L', 'W'] {
                 if tok == bad.to_string() || digits_then(bad) {
-                    return Err(format!("`{t}`: `{bad}` is not supported"));
+                    return Err(unsupported(bad));
                 }
             }
         }
         let f: Vec<&str> = t.split_whitespace().collect();
         if f.len() != 5 {
-            return Err(format!(
-                "`{t}` has {} field(s); cron here is exactly five: minute hour \
-                 day-of-month month day-of-week",
-                f.len()
-            ));
+            return Err(CronError::FieldCount {
+                text: t.to_string(),
+                count: f.len(),
+            });
         }
-        let (minutes, _) = field(f[0], 0, 59, None).map_err(|e| format!("minute: {e}"))?;
-        let (hours, _) = field(f[1], 0, 23, None).map_err(|e| format!("hour: {e}"))?;
-        let (doms, dom_star) =
-            field(f[2], 1, 31, None).map_err(|e| format!("day-of-month: {e}"))?;
-        let (months, _) =
-            field(f[3], 1, 12, Some((&MONTHS, 1))).map_err(|e| format!("month: {e}"))?;
+        let named = |field: &'static str| move |problem| CronError::Field { field, problem };
+        let (minutes, _) = field(f[0], 0, 59, None).map_err(named("minute"))?;
+        let (hours, _) = field(f[1], 0, 23, None).map_err(named("hour"))?;
+        let (doms, dom_star) = field(f[2], 1, 31, None).map_err(named("day-of-month"))?;
+        let (months, _) = field(f[3], 1, 12, Some((&MONTHS, 1))).map_err(named("month"))?;
         let (mut dows, dow_star) =
-            field(f[4], 0, 7, Some((&DAYS, 0))).map_err(|e| format!("day-of-week: {e}"))?;
+            field(f[4], 0, 7, Some((&DAYS, 0))).map_err(named("day-of-week"))?;
         if dows & (1 << 7) != 0 {
             dows = (dows | 1) & 0x7f;
         }
@@ -227,7 +294,7 @@ pub enum Tz {
 }
 
 impl Tz {
-    pub fn parse(s: &str) -> Result<Tz, String> {
+    pub fn parse(s: &str) -> Result<Tz, TzError> {
         let t = s.trim();
         if t.eq_ignore_ascii_case("utc") || t == "Z" || t == "+00:00" || t == "-00:00" {
             return Ok(Tz::Utc);
@@ -235,33 +302,30 @@ impl Tz {
         let sign = match t.as_bytes().first() {
             Some(b'+') => 1,
             Some(b'-') => -1,
-            _ => {
-                return Err(format!(
-                    "timezone `{t}`: only `UTC` and fixed offsets like `+02:00` are \
-                     supported. IANA names would need the tz database, a dependency \
-                     that goes stale; a fixed offset does not follow daylight saving \
-                     (ADR 0026 §7)"
-                ));
-            }
+            _ => return Err(TzError::Unsupported(t.to_string())),
         };
         let (h, m) = t[1..]
             .split_once(':')
-            .ok_or_else(|| format!("timezone `{t}`: write the offset as `+HH:MM`"))?;
+            .ok_or_else(|| TzError::NoColon(t.to_string()))?;
         // Exactly two ASCII digits per field, checked on the input and not
         // on the parsed value: `i32::parse` takes a sign of its own (and
         // read `+-05:00` as -05:00), and a width test on the value let
         // `+05:5` and `+005:00` through as forms nobody wrote down.
-        let digits = |f: &str, what: &str| -> Result<i32, String> {
+        let digits = |f: &str, what: &'static str| -> Result<i32, TzError> {
             if f.len() != 2 || !f.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(format!(
-                    "timezone `{t}`: bad {what}; write the offset as `+HH:MM`"
-                ));
+                return Err(TzError::BadDigits {
+                    tz: t.to_string(),
+                    what,
+                });
             }
-            f.parse().map_err(|_| format!("timezone `{t}`: bad {what}"))
+            f.parse().map_err(|_| TzError::BadNumber {
+                tz: t.to_string(),
+                what,
+            })
         };
         let (h, m) = (digits(h, "hours")?, digits(m, "minutes")?);
         if h > 14 || m > 59 {
-            return Err(format!("timezone `{t}`: offset out of range"));
+            return Err(TzError::OutOfRange(t.to_string()));
         }
         Ok(Tz::Fixed(sign * (h * 3600 + m * 60)))
     }
@@ -311,7 +375,7 @@ mod tests {
             "*/60 * * * *",
             "*/0 * * * *",
         ] {
-            let e = Cron::parse(bad).expect_err(bad);
+            let e = Cron::parse(bad).expect_err(bad).to_string();
             assert!(e.contains("step"), "{bad}: {e}");
         }
         // The largest step a field allows still parses: every 59 minutes
@@ -422,11 +486,26 @@ mod tests {
     fn what_is_not_supported_is_refused_by_name() {
         // The risk: a schedule silently read as something else fires at
         // times nobody asked for, unattended.
-        let e = Tz::parse("Europe/Amsterdam").unwrap_err();
+        let e = Tz::parse("Europe/Amsterdam").unwrap_err().to_string();
         assert!(e.contains("fixed offsets") && e.contains("daylight"), "{e}");
-        assert!(Cron::parse("@daily").unwrap_err().contains("five fields"));
-        assert!(Cron::parse("0 0 L * *").unwrap_err().contains("`L`"));
-        assert!(Cron::parse("0 0 * *").unwrap_err().contains("exactly five"));
+        assert!(
+            Cron::parse("@daily")
+                .unwrap_err()
+                .to_string()
+                .contains("five fields")
+        );
+        assert!(
+            Cron::parse("0 0 L * *")
+                .unwrap_err()
+                .to_string()
+                .contains("`L`")
+        );
+        assert!(
+            Cron::parse("0 0 * *")
+                .unwrap_err()
+                .to_string()
+                .contains("exactly five")
+        );
         assert!(Cron::parse("60 * * * *").is_err());
         assert!(Cron::parse("*/0 * * * *").is_err());
         assert!(Cron::parse("5-1 * * * *").is_err());
