@@ -474,6 +474,18 @@ this amendment a hook that wrote at any of those points left bytes in a
   `an_untracked_nested_repository_is_digested_by_its_head_not_hashed_as_a_file`
   and `an_untracked_symlink_is_digested_by_its_link_text`, both of which
   failed with `fatal: Unable to hash` before the change.
+
+  *Amended after the fifth review of PR #1:* one `git hash-object --stdin`
+  per symlink was a process per link per bracket. The link texts are now
+  written to files in a fresh directory under the system temp dir (never
+  the worktree) and hashed in one `git hash-object --no-filters
+  --stdin-paths`, run in the repository so the object format is its own;
+  the directory is removed however the call ends. Computing the ids in
+  process would need SHA-1 (not a dependency) and would be wrong for a
+  SHA-256 repository. The ids are unchanged: guarded by
+  `links_hashed_in_one_batch_get_the_ids_one_process_each_gave`, which
+  compares the batch with the per-link call on a link to a directory, to a
+  file and to nothing; a cost change, so no test failed before it.
 - **`after_run`.** The binary fingerprints the worktree around the hook on
   a converged run. A difference, or a fingerprint that could not be taken,
   demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,

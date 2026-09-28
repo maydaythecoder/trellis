@@ -352,13 +352,15 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
     if to_hash.iter().any(|p| p.contains('\n')) {
         return worktree_fingerprint(root).map(|t| format!("tree {t}"));
     }
+    let links: Vec<&String> = present.iter().filter(|x| x.2 && x.3).map(|x| x.0).collect();
     let mut hashed = hash_without_writing(root, &to_hash)?.into_iter();
+    let mut linked = hash_links(root, &links)?.into_iter();
     let mut manifest = format!("head {head}\n");
     for (path, mode, exists, link) in present {
         let head_entry = in_head.get(path).filter(|(m, _)| m.as_str() != "000000");
         if exists {
             let blob = if link {
-                hash_link(root, path)?
+                linked.next().unwrap_or_default()
             } else {
                 hashed.next().unwrap_or_default()
             };
@@ -397,9 +399,48 @@ fn nested_head(dir: &Path) -> String {
         .unwrap_or_else(|| "(unborn)".into())
 }
 
-/// The blob id of a symlink's link text, which is how git stores a
-/// symlink: `git hash-object --stdin`, without `-w`, so the object format
-/// is the repository's and nothing is written.
+/// The blob ids of symlinks' link texts, which is how git stores a symlink,
+/// in one `git hash-object --no-filters --stdin-paths` for all of them: one
+/// process per link had been a spawn per symlink per call. Each link text
+/// is written to a file in a fresh directory under the system temp dir —
+/// never in the worktree, whose digest this is — and hashed from there.
+/// Without `-w`, so the object format is the repository's and nothing is
+/// written to its store; `--no-filters`, since git applies none to a link.
+fn hash_links(root: &Path, paths: &[&String]) -> Result<Vec<String>, VcsError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = std::env::temp_dir().join(format!("trellis-links-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&tmp)?;
+    /// Removes the directory however the hashing ends.
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(tmp.clone());
+    let mut files = Vec::with_capacity(paths.len());
+    for (i, p) in paths.iter().enumerate() {
+        let target = std::fs::read_link(root.join(p))?;
+        // Git for Windows stores a link's separators as `/`.
+        let text = target.to_string_lossy().replace('\\', "/");
+        let f = tmp.join(i.to_string());
+        std::fs::write(&f, text.as_bytes())?;
+        files.push(f.to_string_lossy().into_owned());
+    }
+    let refs: Vec<&String> = files.iter().collect();
+    hash_paths(root, &refs, &["--no-filters"])
+}
+
+/// One link's blob id through `git hash-object --stdin`, as the digest
+/// computed it before links were batched: the reference the batch is
+/// tested against.
+#[cfg(test)]
 fn hash_link(root: &Path, path: &str) -> Result<String, VcsError> {
     use std::io::Write;
     let target = std::fs::read_link(root.join(path))?;
@@ -450,12 +491,20 @@ fn untracked_mode(p: &Path) -> &'static str {
 /// (the repository's clean filters applied), with no `-w`: nothing is
 /// written to the object store.
 fn hash_without_writing(root: &Path, paths: &[&String]) -> Result<Vec<String>, VcsError> {
+    hash_paths(root, paths, &[])
+}
+
+/// `git hash-object --stdin-paths` over `paths`, with `extra` flags, one id
+/// per path in order.
+fn hash_paths(root: &Path, paths: &[&String], extra: &[&str]) -> Result<Vec<String>, VcsError> {
     use std::io::Write;
     if paths.is_empty() {
         return Ok(Vec::new());
     }
     let mut cmd = Command::new("git");
-    cmd.args(["hash-object", "--stdin-paths"])
+    cmd.arg("hash-object")
+        .args(extra)
+        .arg("--stdin-paths")
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -926,6 +975,32 @@ mod tests {
         // One that points nowhere is an entry, not an error.
         symlink(Path::new("missing"), &dir.join("dangling"), false).unwrap();
         worktree_digest(&dir).expect("a dangling link");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn links_hashed_in_one_batch_get_the_ids_one_process_each_gave() {
+        // A guard, for the per-call cost cut: one `hash-object` for every
+        // symlink, where there had been one per link. The ids must be what
+        // they were, or every digest with a link in it would move once and
+        // void a pass for nothing.
+        let dir = temp_repo("digest-links-batch");
+        std::fs::create_dir_all(dir.join("d")).unwrap();
+        std::fs::write(dir.join("f.py"), "x = 1\n").unwrap();
+        let Some(()) = symlink(Path::new("d"), &dir.join("to-dir"), true) else {
+            return;
+        };
+        symlink(Path::new("f.py"), &dir.join("to-file"), false).unwrap();
+        symlink(Path::new("missing/x"), &dir.join("dangling"), false).unwrap();
+        let names: Vec<String> = ["to-dir", "to-file", "dangling"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let refs: Vec<&String> = names.iter().collect();
+        let batch = hash_links(&dir, &refs).unwrap();
+        let one_each: Vec<String> = names.iter().map(|n| hash_link(&dir, n).unwrap()).collect();
+        assert_eq!(batch, one_each);
+        assert_eq!(hash_links(&dir, &[]).unwrap(), Vec::<String>::new());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
