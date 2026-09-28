@@ -1109,7 +1109,10 @@ fn approving_with_a_raise_resumes_and_rejecting_keeps_the_pause() {
     // Raising the limit in the profile file lifts a budget pause.
     let raised = budgeted(1000);
     let r = ledger::enforce(&q, &raised, &spent(150), "2026-09", Actor::Work).unwrap();
-    assert!(r.resumed && !r.paused);
+    assert!(!r.paused);
+    // The risk: `work` said "its monthly window rolled over" for every
+    // lift, which here would send the person looking at the calendar.
+    assert_eq!(r.resumed.as_deref(), Some("no longer over its token limit"));
 }
 
 #[test]
@@ -1118,7 +1121,11 @@ fn a_monthly_budget_pause_lifts_when_the_month_rolls_over_and_a_human_pause_neve
     let p = budgeted(100);
     ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work).unwrap();
     let r = ledger::enforce(&q, &p, &spent(0), "2026-10", Actor::Work).unwrap();
-    assert!(r.resumed && !r.paused);
+    assert!(!r.paused);
+    assert_eq!(
+        r.resumed.as_deref(),
+        Some("monthly budget window rolled over to 2026-10")
+    );
     assert!(profile::overlay(&q, "rev").unwrap().paused.is_none());
 
     profile::update_overlay(&q, "rev", |o| {
@@ -1132,7 +1139,7 @@ fn a_monthly_budget_pause_lifts_when_the_month_rolls_over_and_a_human_pause_neve
     })
     .unwrap();
     let r = ledger::enforce(&q, &p, &spent(0), "2026-11", Actor::Work).unwrap();
-    assert!(!r.resumed);
+    assert!(r.resumed.is_none());
     assert!(profile::overlay(&q, "rev").unwrap().paused.is_some());
 }
 
