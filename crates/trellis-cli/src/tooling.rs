@@ -45,7 +45,48 @@ pub(crate) fn fingerprint(root: &Path, cfg: &RepoConfig) -> Fingerprint {
         );
         (shell, settings)
     });
-    Fingerprint::of(root, &cfg.hook_config(), cfg.custom_tools(), bash)
+    Fingerprint::of_with(
+        root,
+        &cfg.hook_config(),
+        cfg.custom_tools(),
+        bash,
+        process_agents(root),
+    )
+}
+
+/// Each process agent's `command` (ADR 0026 §11), as a trust item: an argv
+/// from `.trellis/agents/*.toml` that `work` runs in the worktree, which is
+/// repository code as much as a hook is. A profile set that does not load
+/// contributes nothing here; `work` refuses it before anything runs.
+fn process_agents(root: &Path) -> Vec<trellis_loop::TrustItem> {
+    trellis_queue::profile::load_all(root)
+        .unwrap_or_default()
+        .into_values()
+        .filter_map(|p| {
+            let argv = p.file.command.clone()?;
+            Some(trellis_loop::TrustItem::command(
+                root,
+                format!("process agent {}", p.name),
+                &argv,
+                format!("timeout_s = {:?}", p.file.timeout_s),
+            ))
+        })
+        .collect()
+}
+
+/// `Ok(())` when the repository's executable configuration is trusted,
+/// else the sentence a waiting task shows. For `work`, before it runs a
+/// process agent, and for the process runner itself, before it spawns.
+pub(crate) fn require_trusted(root: &Path) -> std::result::Result<(), String> {
+    const WHY: &str = "not trusted: run trellis trust";
+    let cfg = RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
+    let fp = fingerprint(root, &cfg);
+    match TrustStore::user().and_then(|s| s.state(root, &fp)) {
+        Ok(TrustState::Trusted) => Ok(()),
+        Ok(TrustState::Changed) => Err(format!("{WHY} (changed since it was trusted)")),
+        Ok(TrustState::Unknown) => Err(WHY.to_string()),
+        Err(e) => Err(format!("{WHY} (the trust store could not be read: {e})")),
+    }
 }
 
 /// Decides what this run loads.
@@ -136,6 +177,14 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
         }
         if cfg.bash_requested() {
             parts.push("bash: requested".to_string());
+        }
+        let agents = fp
+            .items
+            .iter()
+            .filter(|i| i.label.starts_with("process agent "))
+            .count();
+        if agents > 0 {
+            parts.push(format!("process agents: {agents} present"));
         }
         format!("{}, not trusted (run trellis trust)", parts.join(", "))
     });

@@ -91,6 +91,19 @@ impl Fingerprint {
         custom: &[CustomTool],
         bash: Option<(Vec<String>, String)>,
     ) -> Self {
+        Self::of_with(root, hooks, custom, bash, Vec::new())
+    }
+
+    /// As [`of`](Self::of), with further items the binary knows about and
+    /// this crate does not: process agents (ADR 0026 §11), whose profiles
+    /// the queue crate reads.
+    pub fn of_with(
+        root: &Path,
+        hooks: &HookConfig,
+        custom: &[CustomTool],
+        bash: Option<(Vec<String>, String)>,
+        extra: Vec<TrustItem>,
+    ) -> Self {
         let mut items = Vec::new();
         for (event, argv) in hooks.declared() {
             items.push(TrustItem::command(
@@ -116,6 +129,7 @@ impl Fingerprint {
                 settings,
             ));
         }
+        items.extend(extra);
         let canonical = serde_json::to_vec(&items).expect("a list of strings always serializes");
         Self {
             sha256: hex(&Sha256::digest(&canonical)),

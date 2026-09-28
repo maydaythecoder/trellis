@@ -972,6 +972,13 @@ impl Runner for CliRunner<'_> {
                 "agent `{name}` is in approve mode, and `work` has no terminal to ask on"
             ));
         }
+        // A process agent's command is repository code (ADR 0026 §11), so
+        // it waits for the same decision a hook does (ADR 0023 §4).
+        if p.is_process()
+            && let Err(why) = crate::tooling::require_trusted(self.root)
+        {
+            return Some(format!("agent `{name}` runs a repository command; {why}"));
+        }
         if !p.is_process() && p.file.model.is_none() && self.model.is_none() {
             return Some(format!(
                 "agent `{name}` names no model, and `work` has none: pass --model"
