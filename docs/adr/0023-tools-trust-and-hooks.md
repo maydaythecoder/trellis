@@ -477,6 +477,48 @@ this amendment a hook that wrote at any of those points left bytes in a
   process agent applies to them are not applied to a model run's — and
   the checks' own ignored writes (a `.pytest_cache`) are reported and
   removed with the run's.
+
+  *Amended after the eighth review of PR #1: `.git/`, and what "restored"
+  means.*
+  - **`.git/` is guarded in a model run too.** The same writers can set
+    `core.fsmonitor`, point `core.hooksPath` elsewhere, or plant a hook,
+    none of which `git status` shows or the rollback touches, and the
+    next git command trellis runs (the ignored listing, the rollback's
+    reset, the trail's commit) would execute it. The process agent's
+    guard moved to `trellis_vcs::git_guard` (what it covers is in ADR
+    0026 §11) and is captured beside the ignored listing. It is put back
+    before any git command once the loop ends: first on every rollback,
+    and on a converged run a change there demotes the run to not
+    converged (`NotConverged::GitDirChanged`), since it would run at the
+    reviewer's next `git status` and a diff does not show it. A file that
+    cannot be put back makes the rollback not restored. Evidence:
+    `a_model_run_s_bash_writes_to_git_config_and_hooks_are_put_back_on_rollback`
+    and `a_model_run_that_changed_git_config_does_not_converge` in
+    `tests/cli.rs`, which failed before with `core.fsmonitor = ./evil.sh`
+    left in the config (the second converged). Not covered, stated: the
+    git commands trellis runs *during* the run (a post_tool fingerprint's
+    `git add` into a copied index, `git check-ignore`) can meet a
+    `core.fsmonitor` that `bash` set a call earlier. That is code the
+    writer could already run directly, so it adds no reach; what the
+    guard prevents is it outliving the run.
+  - **A changed pre-existing ignored file is a tree not restored.** The
+    rollback said "NOT put back" and exited 1 as restored; it exits 2
+    now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
+    asserts it, and failed before with exit 1). So that the checks'
+    rewrites of their own caches do not make every failed run exit 2,
+    the listing became a ledger (`IgnoredLedger`): the orchestrator
+    lists ignored files before and after every typecheck, test and
+    import check, and only changes made outside those brackets — by
+    `bash`, custom tools, hooks — are held against the run. Created
+    files are all removed on rollback, whoever made them, as before.
+    Evidence: `a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored`,
+    which before this change printed "NOT put back" for a file only a
+    check had changed. What that gives up, stated: a check runs
+    repository code the run may have edited, so a rewritten test can
+    change a pre-existing ignored file unattributed; a run with none of
+    these writers keeps no ledger and was already exposed to exactly
+    that. Cost: two ignored listings per check, only in runs that load
+    one of these writers.
 - **`pre_tool` and `post_tool`.** Each declared hook is bracketed on its
   own: the worktree is fingerprinted before and after the gates (which
   hold `pre_tool`; the other gates do not write), and before and after
