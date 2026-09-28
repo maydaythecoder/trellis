@@ -108,11 +108,6 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(spec.cwd)
-        // No `__pycache__` from what trellis runs: under `.trellis/` it is in
-        // the trust digest (bytecode can be code, so it is not skipped), and
-        // anywhere git does not ignore it moves the per-call worktree digest
-        // and voids a pass (ADR 0023 §4, §5).
-        .env("PYTHONDONTWRITEBYTECODE", "1")
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(if spec.stdin.is_some() {
             std::process::Stdio::piped()
@@ -126,6 +121,11 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     // `bash`, custom tool, hook and listing command is spawned here, and its
     // output is an observation the log and the trail both record.
     trellis_core::secrets::scrub(cmd.as_std_mut());
+    // No `__pycache__` from anything trellis runs: under `.trellis/` it is
+    // in the trust digest (bytecode can be code, so it is not skipped), and
+    // where git does not ignore it, it moves the per-call worktree digest
+    // and voids a pass (ADR 0023 §4). Last, so `spec.env` cannot undo it.
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     // Its own process group, so a timeout can kill what it started too
     // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
     #[cfg(unix)]
