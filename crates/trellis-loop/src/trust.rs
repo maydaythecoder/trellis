@@ -1226,18 +1226,31 @@ mod tests {
             why.contains("names `.trellis/../scripts/gate.py`, which is `scripts/gate.py`"),
             "{why}"
         );
-        // Inside a code string, and with backslashes.
+        // Inside a code string.
         assert!(
             refused(
                 repo.path(),
-                &[
-                    "bash",
-                    "-lc",
-                    "python .trellis\\hooks\\..\\..\\scripts\\gate.py"
-                ]
+                &["bash", "-lc", "python .trellis/hooks/../../scripts/gate.py"]
             )
             .is_some()
         );
+        // With backslashes: a separator on Windows only. On Unix
+        // `.trellis\hooks\..\..\scripts\gate.py` is one file name that does
+        // not exist, so a hook with that argv could not reach
+        // `scripts/gate.py` either, and not refusing it is correct there.
+        if cfg!(windows) {
+            assert!(
+                refused(
+                    repo.path(),
+                    &[
+                        "bash",
+                        "-lc",
+                        "python .trellis\\hooks\\..\\..\\scripts\\gate.py"
+                    ]
+                )
+                .is_some()
+            );
+        }
 
         // An absolute path to the file, through the canonical root.
         let real = std::fs::canonicalize(repo.path().join("scripts/gate.py")).unwrap();
