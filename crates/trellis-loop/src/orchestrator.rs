@@ -307,7 +307,7 @@ impl Orchestrator {
             session: Session::open(root),
             checks,
             touched: Vec::new(),
-            governance: GovernanceGate(crate::governance::Governance::default()),
+            governance: GovernanceGate::new(crate::governance::Governance::default(), root),
             gates: Vec::new(),
             rules: Vec::new(),
             tools: ToolSet::default(),
@@ -373,7 +373,7 @@ impl Orchestrator {
     /// Applies the repository's rules to this run.
     #[must_use]
     pub fn with_governance(mut self, g: crate::governance::Governance) -> Self {
-        self.governance = GovernanceGate(g);
+        self.governance = GovernanceGate::new(g, &self.root);
         self
     }
 
@@ -1107,7 +1107,7 @@ pub fn names_trellis_dir(rel: &str) -> bool {
 /// with the part that does not exist yet appended as written. `Err` when
 /// that ancestor is outside the repository: a committed link to `/etc` or
 /// to `~` is a path the string rules cannot see.
-fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
+pub(crate) fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
     let Ok(real_root) = std::fs::canonicalize(root) else {
         return Ok(rel.to_string());
     };

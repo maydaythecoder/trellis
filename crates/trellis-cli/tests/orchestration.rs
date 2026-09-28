@@ -784,7 +784,7 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
             )
         }
     };
-    for (name, target, config) in [
+    let mut cases = vec![
         (
             "proc-ignored-trellis",
             ".trellis/evil.cfg",
@@ -795,7 +795,17 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
             "app/made.cfg",
             format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"app/made.cfg\"]\n"),
         ),
-    ] {
+    ];
+    // NTFS ignores case, so a rule spelt differently still names the file
+    // (finding r8-1): the audit folds as the write gate does.
+    if cfg!(windows) {
+        cases.push((
+            "proc-ignored-deny-case",
+            "app/made.cfg",
+            format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"./App//Made.cfg\"]\n"),
+        ));
+    }
+    for (name, target, config) in cases {
         let d = ignored_fixture(name, &both(target), &config);
         ok(&d, &["queue", "add", "write", "--assignee", "maker"]);
         let s = ok(&d, &["work"]);
