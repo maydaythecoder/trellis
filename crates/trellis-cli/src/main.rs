@@ -20,6 +20,9 @@ mod testutil;
 mod tui_bridge;
 mod tui_run;
 mod work;
+// ADR 0025 (W-D).
+mod templates;
+mod user_config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
