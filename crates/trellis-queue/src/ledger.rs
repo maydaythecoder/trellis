@@ -122,8 +122,9 @@ pub struct Enforced {
     pub message: Option<String>,
     /// The profile is paused by its budget as of now.
     pub paused: bool,
-    /// A budget pause was lifted: the month rolled over or the limit rose.
-    pub resumed: bool,
+    /// A budget pause was lifted, and why: the monthly window rolled over,
+    /// or the profile is no longer over its limit (its file raised it).
+    pub resumed: Option<String>,
     /// The pending override request, if one was created or already open.
     pub request: Option<String>,
 }
@@ -174,8 +175,8 @@ pub fn enforce(
             still
         })?;
         if lifted {
-            q.log(Event::new(actor, "agent.resume", entity.clone()).detail(why))?;
-            done.resumed = true;
+            q.log(Event::new(actor, "agent.resume", entity.clone()).detail(why.clone()))?;
+            done.resumed = Some(why);
             o = profile::overlay(q, &p.name)?;
         }
     }

@@ -891,6 +891,12 @@ fn newest_run_id(root: &Path) -> Option<String> {
         .max()
 }
 
+/// The line for a budget pause `enforce` lifted, with its reason: a
+/// rollover and a raised limit call for different things from the person.
+fn resumed_line(agent: &str, why: &str) -> String {
+    format!("budget:   agent `{agent}` resumed; {why}")
+}
+
 fn has_terminal() -> bool {
     matches!(Human::terminal(), Human::Line(_))
 }
@@ -965,12 +971,8 @@ impl Runner for CliRunner<'_> {
             let s = ledger::spend(&records, &p.name, &month);
             match ledger::enforce(q, p, &s, &month, Actor::Work) {
                 Ok(done) => {
-                    if done.resumed {
-                        let _ = writeln!(
-                            out,
-                            "budget:   agent `{}` resumed; its monthly window rolled over",
-                            p.name
-                        );
+                    if let Some(why) = &done.resumed {
+                        let _ = writeln!(out, "{}", resumed_line(&p.name, why));
                     }
                     if let Some(m) = done.message {
                         self.once(out, format!("budget:   {m}"));
@@ -1133,6 +1135,37 @@ impl Runner for CliRunner<'_> {
             );
         }
         !self.stop_requested()
+    }
+}
+
+#[cfg(test)]
+mod resumed_tests {
+    use super::*;
+
+    #[test]
+    fn a_lift_is_reported_with_enforce_s_reason_not_always_as_a_rollover() {
+        // The risk: every lift printed "its monthly window rolled over",
+        // including one for a lifetime limit raised in the profile file.
+        let d = tempfile::tempdir().unwrap();
+        let q = Queue::at(d.path().join("queue"));
+        let p = |lifetime: u64| {
+            trellis_queue::profile::parse(
+                "rev",
+                &format!("[budget]\nlifetime_tokens = {lifetime}\n"),
+            )
+            .unwrap()
+        };
+        let s = trellis_queue::ledger::Spend {
+            month: 100,
+            lifetime: 100,
+            ..Default::default()
+        };
+        trellis_queue::ledger::enforce(&q, &p(100), &s, "2026-09", Actor::Work).unwrap();
+        let done =
+            trellis_queue::ledger::enforce(&q, &p(1000), &s, "2026-09", Actor::Work).unwrap();
+        let line = resumed_line("rev", done.resumed.as_deref().expect("lifted"));
+        assert!(!line.contains("rolled over"), "{line}");
+        assert!(line.contains("no longer over its token limit"), "{line}");
     }
 }
 
