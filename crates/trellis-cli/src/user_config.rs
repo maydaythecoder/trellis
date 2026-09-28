@@ -98,8 +98,9 @@ pub(crate) fn resolve_skill_dirs(
 /// Struct-update syntax at the end on purpose: a section added later (W-B's
 /// `[tools]` and `[hooks]`) comes from the repository alone until someone
 /// decides how it layers, rather than compiling into a merge nobody chose.
-/// Today every field is named, so the update is a no-op, which is the lint
-/// allowed below; it stops being one the day a field is added.
+/// Today it carries `tools`, `hooks` and `provenance` from the repository;
+/// `provenance` is then replaced by `load_with_user` with the user file's.
+/// The allow is for the day every field is named again.
 #[allow(clippy::needless_update)]
 pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
     RepoConfig {
