@@ -356,9 +356,15 @@ repository may no longer name `key_env`.
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
-  in seconds when the response has one, capped at 60 s (the cap applied
-  to the number before it becomes a duration, so `1e20` waits 60 s rather
-  than panicking), otherwise 1, 2, 4 s.
+  when the response has one, capped at 60 s, otherwise 1, 2, 4 s. The
+  header is honoured in seconds (the cap applied to the number before it
+  becomes a duration, so `1e20` waits 60 s rather than panicking) or as an
+  IMF-fixdate HTTP date (`Sun, 06 Nov 1994 08:49:37 GMT`, the form RFC 9110
+  §5.6.7 says senders must use), parsed by hand rather than with a new
+  dependency: a future date waits until then, a date at or before now
+  waits zero. The obsolete RFC 850 and asctime date forms, a zone other
+  than `GMT`, and a date that does not exist (`31 Feb`) are not honoured
+  and fall back to the fixed backoff.
   At most four attempts per model call. A transport failure mid-request is
   retried the same way; a refused connection is not. A malformed reply keeps
   the existing format-retry path, which is separate.
@@ -577,7 +583,8 @@ build the local-only configuration; it was run by hand for this ADR.
 - Streaming.
 - A proxy from `HTTPS_PROXY` / `HTTP_PROXY` (row 2.13). A run behind a proxy
   cannot reach a hosted provider.
-- `Retry-After` given as an HTTP date; it falls back to the fixed backoff.
+- `Retry-After` given as an obsolete HTTP date (RFC 850 or asctime form);
+  it falls back to the fixed backoff. IMF-fixdate is honoured (§4).
 - OAuth, Bedrock, Vertex and Azure request signing.
 - Model-written summaries (§5).
 - Parallel tool calls (ADR 0005).
