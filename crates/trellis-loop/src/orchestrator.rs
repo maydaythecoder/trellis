@@ -517,10 +517,12 @@ impl Orchestrator {
                 None => crate::listing::grep(&self.root, pattern, None).await,
             },
             ToolCall::Find { glob } => {
-                if glob.starts_with('/') || glob.split(['/', '\\']).any(|s| s == "..") {
+                // The same predicate as every path: a `:` also rules out
+                // git's pathspec magic (`:/`, `:(top)`).
+                if unsafe_repo_path(glob).is_some() {
                     ToolResult::Error(format!(
-                        "glob `{glob}` must be relative to the repository root and must not \
-                         contain `..`"
+                        "glob `{glob}` must be relative to the repository root, with no \
+                         leading `/` or `\\`, no drive letter or `:`, and no `..`"
                     ))
                 } else {
                     crate::listing::find(&self.root, glob).await
@@ -984,15 +986,65 @@ impl Orchestrator {
     /// they are well-formed strings (S7 metric 3). `..` is the cheap way a
     /// well-formed path becomes a write outside the tree the rollback covers.
     fn resolve_in_repo(&self, rel: &str) -> Result<PathBuf, String> {
-        let p = Path::new(rel);
-        if p.is_absolute() || p.components().any(|c| c.as_os_str() == "..") {
-            return Err(format!(
-                "path `{rel}` must be relative to the repository root and must not \
-                 contain `..`"
-            ));
+        if let Some(why) = unsafe_repo_path(rel) {
+            return Err(why);
         }
-        Ok(self.root.join(p))
+        Ok(self.root.join(rel))
     }
+}
+
+/// Why `rel` cannot be used as a path inside the repository, or `None`.
+///
+/// Shared with the approval gate, which lets through (unasked) any call it
+/// predicts the orchestrator will refuse: a gate and an orchestrator that
+/// disagreed would skip the person on a call that then ran.
+///
+/// `is_absolute()` alone is not the rule: on Windows `/x` and `\x` are
+/// rooted but not absolute, `C:x` is relative to drive C's current
+/// directory, and `root.join` of any of them leaves the repository. So the
+/// rule is on the string, the same on every platform:
+///
+/// - no leading `/` or `\` (rooted, UNC, `\\?\`), and no drive prefix `X:`;
+/// - no `:` anywhere: on NTFS `a.py:s` is an alternate data stream, a write
+///   git cannot see and a rollback cannot remove;
+/// - no component that is only dots and spaces other than `.`, compared
+///   after the trailing dots and spaces Windows strips, so `..`, `.. ` and
+///   `...` are all parent references here;
+/// - and, belt and braces, no `RootDir` or `Prefix` component as this host
+///   parses it.
+///
+/// Components are split on both `/` and `\`, since Windows accepts either.
+pub(crate) fn unsafe_repo_path(rel: &str) -> Option<String> {
+    let refuse = || {
+        Some(format!(
+            "path `{rel}` must be relative to the repository root, with no leading \
+             `/` or `\\`, no drive letter or `:`, and no `..`"
+        ))
+    };
+    if rel.starts_with(['/', '\\']) || rel.contains(':') {
+        return refuse();
+    }
+    let parentish = |seg: &str| {
+        let t = seg.trim_end_matches(['.', ' ']);
+        t.is_empty() && seg != "." && !seg.is_empty()
+    };
+    if rel.split(['/', '\\']).any(parentish) {
+        return refuse();
+    }
+    let p = Path::new(rel);
+    if p.is_absolute()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+                    | std::path::Component::ParentDir
+            )
+        })
+    {
+        return refuse();
+    }
+    None
 }
 
 /// How long a custom tool may run. The same default as `bash`: a custom
@@ -1636,5 +1688,46 @@ scope = [\"{scope}\"]
 
         // A `.` component is not an escape.
         assert!(o.resolve_in_repo("./app/util.py").is_ok());
+    }
+
+    #[test]
+    fn rooted_and_drive_relative_paths_are_refused_on_every_platform() {
+        // The risk: on Windows `/x`, `\x` and `C:x` are not `is_absolute()`,
+        // and `root.join` of any of them leaves the repository — `/x` and
+        // `\x` to the root of the drive, `C:x` to drive C's current
+        // directory. Asserted on every platform, because the rule is on the
+        // string, not on how this host happens to read it.
+        let d = repo();
+        let o = Orchestrator::new(d.path(), CheckConfig::default());
+        for bad in [
+            "/x",
+            r"\x",
+            "C:x",
+            r"C:\x",
+            "c:/x",
+            r"\\server\share\x",
+            r"\\?\C:\x",
+            "app\\..\\..\\x",
+            "app/.. /x",
+            "app/../x",
+            "a.py:stream",
+        ] {
+            assert!(
+                o.resolve_in_repo(bad).is_err(),
+                "`{bad}` must be refused as a repository path"
+            );
+            assert!(
+                unsafe_repo_path(bad).is_some(),
+                "`{bad}`: the predicate the approval gate shares must agree"
+            );
+        }
+        for ok in [
+            "app/util.py",
+            "./app/util.py",
+            "a/b.c/d.py",
+            "..hidden/x.py",
+        ] {
+            assert!(unsafe_repo_path(ok).is_none(), "`{ok}` is ordinary");
+        }
     }
 }

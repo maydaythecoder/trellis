@@ -210,10 +210,10 @@ impl ToolGate for ApprovalGate {
                 // A path that already exists is refused by the orchestrator
                 // in its own words, so it is not put to the human either.
                 ToolCall::WriteFile { path, content } => {
-                    let p = Path::new(path);
-                    let refused = p.is_absolute()
-                        || p.components().any(|c| c.as_os_str() == "..")
-                        || self.root.join(p).exists();
+                    // The orchestrator's own predicate, so the two cannot
+                    // disagree about which calls go unasked.
+                    let refused = crate::orchestrator::unsafe_repo_path(path).is_some()
+                        || self.root.join(path).exists();
                     if refused {
                         return GateDecision::Allow;
                     }
@@ -391,11 +391,12 @@ pub struct EditPreview {
 /// or a Windows checkout would preview as "anchor not found" an edit that
 /// then applies.
 pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<EditPreview> {
-    let p = Path::new(path);
-    if p.is_absolute() || p.components().any(|c| c.as_os_str() == "..") {
+    // The orchestrator's predicate: `/x` on Windows is not `is_absolute()`,
+    // and a preview must not read outside the repository either.
+    if crate::orchestrator::unsafe_repo_path(path).is_some() {
         return None;
     }
-    let src = std::fs::read_to_string(root.join(p))
+    let src = std::fs::read_to_string(root.join(path))
         .ok()?
         .replace("\r\n", "\n");
     let old = old.replace("\r\n", "\n");
