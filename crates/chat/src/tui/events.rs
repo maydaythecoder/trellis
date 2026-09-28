@@ -39,7 +39,7 @@ pub async fn run<B>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
     theme: &Theme,
-    mut work_rx: mpsc::Receiver<Message>,
+    work_rx: mpsc::Receiver<Message>,
     effect_tx: mpsc::Sender<Effect>,
     cancel: crate::commands::runner::CancelToken,
 ) -> Result<(), B::Error>
@@ -47,7 +47,38 @@ where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let mut term_events = EventStream::new();
+    run_with_events(
+        terminal,
+        state,
+        theme,
+        EventStream::new(),
+        work_rx,
+        effect_tx,
+        cancel,
+    )
+    .await
+}
+
+/// The loop, with the terminal's event source passed in.
+///
+/// Separate because crossterm's `EventStream` opens the controlling terminal
+/// when first polled and panics where there is none — which is every CI
+/// runner on Linux. The tests below exercise the coalescing and effect rules
+/// with a source that never yields, so they run anywhere a terminal does not.
+async fn run_with_events<B, S>(
+    terminal: &mut Terminal<B>,
+    state: &mut AppState,
+    theme: &Theme,
+    mut term_events: S,
+    mut work_rx: mpsc::Receiver<Message>,
+    effect_tx: mpsc::Sender<Effect>,
+    cancel: crate::commands::runner::CancelToken,
+) -> Result<(), B::Error>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+    S: futures_util::Stream<Item = std::io::Result<Event>> + Unpin,
+{
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut view = ViewState::default();
@@ -147,10 +178,11 @@ mod tests {
         let mut term = terminal();
 
         tx.send(Message::Quit).await.unwrap();
-        run(
+        run_with_events(
             &mut term,
             &mut state,
             &Theme::new(ColorDepth::None),
+            futures_util::stream::pending(),
             rx,
             etx,
             crate::commands::runner::CancelToken::new(),
@@ -175,10 +207,11 @@ mod tests {
                 .unwrap();
         }
         tx.send(Message::Quit).await.unwrap();
-        run(
+        run_with_events(
             &mut term,
             &mut state,
             &Theme::new(ColorDepth::None),
+            futures_util::stream::pending(),
             rx,
             etx,
             crate::commands::runner::CancelToken::new(),
@@ -219,10 +252,11 @@ mod tests {
         .unwrap();
         tx.send(Message::Quit).await.unwrap();
 
-        run(
+        run_with_events(
             &mut term,
             &mut state,
             &Theme::new(ColorDepth::None),
+            futures_util::stream::pending(),
             rx,
             etx,
             crate::commands::runner::CancelToken::new(),
@@ -260,10 +294,11 @@ mod tests {
         .unwrap();
         tx.send(Message::Quit).await.unwrap();
 
-        run(
+        run_with_events(
             &mut term,
             &mut state,
             &Theme::new(ColorDepth::None),
+            futures_util::stream::pending(),
             rx,
             etx,
             crate::commands::runner::CancelToken::new(),
