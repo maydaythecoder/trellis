@@ -539,3 +539,458 @@ fn an_unreadable_pending_file_is_moved_aside_and_the_queue_goes_on() {
             .contains(&"00000000-bad".to_string())
     );
 }
+
+// ---------------------------------------------------------------------------
+// The task model (ADR 0026 §1–§3)
+// ---------------------------------------------------------------------------
+
+fn add(q: &Queue, text: &str, f: impl FnOnce(&mut NewTask)) -> String {
+    let mut n = NewTask {
+        task: text.into(),
+        ..NewTask::default()
+    };
+    f(&mut n);
+    q.add_task(n, Actor::Human).unwrap()
+}
+
+fn status(q: &Queue, id: &str) -> Status {
+    let (s, t) = q.find(id).unwrap();
+    t.status_in(s)
+}
+
+fn set_status(q: &Queue, id: &str, st: Status) {
+    q.edit(id, |t, _| {
+        t.status = Some(st);
+        t.blocked = None;
+        Ok(Some(st.home()))
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_task_file_written_before_adr_0026_still_loads_with_the_directory_status() {
+    // Existing queues must survive the upgrade: every new field defaults,
+    // and a file in done/ reads as done, not in_review, so nothing that
+    // names it as a blocker waits forever.
+    let (_d, q) = queue();
+    let old = r#"{"task":"old","focus":null,"prompt":null,"added_at":"2026-09-20T00:00:00Z","attempts":1,
+                  "outcome":{"run_id":null,"exit":"converged","finished_at":"2026-09-20T00:01:00Z"}}"#;
+    std::fs::create_dir_all(q.dir().join("done")).unwrap();
+    std::fs::create_dir_all(q.dir().join("pending")).unwrap();
+    std::fs::write(q.dir().join("done/20260920-000000-000000000-old.json"), old).unwrap();
+    std::fs::write(
+        q.dir().join("pending/20260920-000000-000000001-p.json"),
+        r#"{"task":"p","focus":null,"prompt":null,"added_at":"x","attempts":0}"#,
+    )
+    .unwrap();
+    assert_eq!(status(&q, "20260920-000000-000000000-old"), Status::Done);
+    let (_, t) = q.find("20260920-000000-000000001-p").unwrap();
+    assert_eq!(
+        (t.status_in(State::Pending), t.priority),
+        (Status::Todo, Priority::Medium)
+    );
+    let b = add(&q, "after", |n| {
+        n.blockers = vec!["20260920-000000-000000000-old".into()]
+    });
+    assert_eq!(
+        status(&q, &b),
+        Status::Todo,
+        "an old done task resolves a blocker"
+    );
+}
+
+#[test]
+fn a_new_file_omits_every_field_left_at_its_default() {
+    // A plain task written now reads, by hand, like one written under
+    // ADR 0020 plus its status — not a wall of empty arrays.
+    let (_d, q) = queue();
+    let id = q.add("x", None, None).unwrap();
+    let text = std::fs::read_to_string(q.path(State::Pending, &id)).unwrap();
+    for absent in [
+        "labels",
+        "blockers",
+        "notes",
+        "priority",
+        "needs_approval",
+        "assignee",
+    ] {
+        assert!(!text.contains(absent), "{absent} in {text}");
+    }
+    assert!(text.contains("\"status\": \"todo\""), "{text}");
+}
+
+#[test]
+fn claims_come_by_priority_then_age() {
+    let (_d, q) = queue();
+    let low = add(&q, "low", |n| n.priority = Priority::Low);
+    let m1 = add(&q, "m1", |_| {});
+    let crit = add(&q, "crit", |n| n.priority = Priority::Critical);
+    let m2 = add(&q, "m2", |_| {});
+    let got: Vec<String> = (0..4)
+        .map(|_| q.claim_next().unwrap().unwrap().id)
+        .collect();
+    assert_eq!(got, vec![crit, m1, m2, low]);
+}
+
+#[test]
+fn a_blocked_task_waits_for_done_and_a_cancelled_blocker_does_not_release_it() {
+    // Paperclip execution-semantics §6: cancelled is terminal for the
+    // blocker but does not satisfy the dependency.
+    let (_d, q) = queue();
+    let a = add(&q, "a", |n| n.backlog = true);
+    let c = add(&q, "c", |n| n.backlog = true);
+    let b = add(&q, "b", |n| n.blockers = vec![a.clone(), c.clone()]);
+    assert_eq!(status(&q, &b), Status::Blocked);
+    assert!(
+        q.claim_next().unwrap().is_none(),
+        "backlog and blocked are not claimable"
+    );
+
+    set_status(&q, &a, Status::Done);
+    set_status(&q, &c, Status::Cancelled);
+    assert!(q.reconcile(Actor::Work).unwrap().is_empty());
+    assert!(q.claim_next().unwrap().is_none());
+
+    q.edit(&b, |t, _| {
+        t.blockers.retain(|x| x != &c);
+        Ok(None)
+    })
+    .unwrap();
+    let woken = q.reconcile(Actor::Work).unwrap();
+    assert_eq!(woken.len(), 1);
+    assert_eq!(q.claim_next().unwrap().unwrap().id, b);
+}
+
+#[test]
+fn in_review_does_not_resolve_a_blocker_until_a_person_marks_it_done() {
+    // A converged run's change is uncommitted. Letting its dependents run
+    // on top of an unreviewed change is the queue making the human's
+    // decision for them.
+    let (_d, q) = queue();
+    let a = q.add("a", None, None).unwrap();
+    let b = add(&q, "b", |n| n.blockers = vec![a.clone()]);
+    let mut f = Fake {
+        ends: [RunEnd::Converged { run_id: None }].into(),
+        ..Fake::default()
+    };
+    drain(&q, &mut f, WorkOptions::default());
+    assert_eq!(status(&q, &a), Status::InReview);
+    assert!(q.reconcile(Actor::Work).unwrap().is_empty());
+    set_status(&q, &a, Status::Done);
+    assert_eq!(q.reconcile(Actor::Work).unwrap()[0].0, b);
+}
+
+#[test]
+fn a_waiting_parent_wakes_when_every_child_is_terminal_failed_included() {
+    let (_d, q) = queue();
+    let p = add(&q, "parent", |_| {});
+    let c1 = add(&q, "c1", |n| n.parent = Some(p.clone()));
+    let c2 = add(&q, "c2", |n| n.parent = Some(p.clone()));
+    q.edit(&p, |t, _| {
+        t.status = Some(Status::Blocked);
+        t.blocked = Some(Blocked::Children);
+        Ok(None)
+    })
+    .unwrap();
+    // Structure alone is not dependency: children run, the parent waits.
+    let mut f = Fake {
+        ends: [RunEnd::RolledBack { run_id: None }].into(),
+        ..Fake::default()
+    };
+    drain(
+        &q,
+        &mut f,
+        WorkOptions {
+            max_tasks: Some(1),
+            every: None,
+        },
+    );
+    assert_eq!(status(&q, &c1), Status::Failed);
+    assert!(
+        q.reconcile(Actor::Work).unwrap().is_empty(),
+        "c2 is still open"
+    );
+    set_status(&q, &c2, Status::Done);
+    let w = q.reconcile(Actor::Work).unwrap();
+    assert_eq!(
+        w,
+        vec![(p.clone(), "every sub-task is finished".to_string())]
+    );
+    let (_, t) = q.find(&p).unwrap();
+    assert!(t.notes.last().unwrap().text.contains("woken"));
+}
+
+#[test]
+fn a_task_needing_approval_is_skipped_until_approved_and_rejection_cancels() {
+    let (_d, q) = queue();
+    let a = add(&q, "gated", |n| n.needs_approval = true);
+    let b = add(&q, "gated2", |n| n.needs_approval = true);
+    let (c, waiting) = q.claim_next_where(&mut |_, _| None).unwrap();
+    assert!(c.is_none());
+    assert!(
+        waiting.iter().all(|(_, why)| why.contains("approve")),
+        "{waiting:?}"
+    );
+    approval::approve_task(&q, &a, Actor::Human).unwrap();
+    assert_eq!(q.claim_next().unwrap().unwrap().id, a);
+    approval::reject_task(&q, &b, Some("out of scope"), Actor::Human).unwrap();
+    assert_eq!(status(&q, &b), Status::Cancelled);
+    let log = q.activity().tail(10).unwrap();
+    assert!(log.iter().any(|e| e.action == "approval.approve"));
+    assert!(
+        log.iter()
+            .any(|e| e.action == "approval.reject" && e.detail.as_deref() == Some("out of scope"))
+    );
+}
+
+#[test]
+fn a_claimed_task_refuses_edits_rather_than_losing_them() {
+    // The running process publishes its own copy on finish; an edit made
+    // meanwhile would vanish without a word.
+    let (_d, q) = queue();
+    let a = q.add("x", None, None).unwrap();
+    let c = q.claim_next().unwrap().unwrap();
+    let e = q
+        .edit(&a, |t, _| {
+            t.note(Actor::Human, "hi");
+            Ok(None)
+        })
+        .unwrap_err();
+    assert!(matches!(e, QueueError::Claimed { .. }), "{e}");
+    c.release(false).unwrap();
+    q.edit(&a, |t, _| {
+        t.note(Actor::Human, "hi");
+        Ok(None)
+    })
+    .unwrap();
+    assert_eq!(q.find(&a).unwrap().1.notes.len(), 1);
+}
+
+#[test]
+fn a_failed_edit_puts_the_pending_task_back_unchanged() {
+    let (_d, q) = queue();
+    let a = q.add("x", None, None).unwrap();
+    let before = std::fs::read_to_string(q.path(State::Pending, &a)).unwrap();
+    let e = q.edit(&a, |t, _| {
+        t.task = "changed".into();
+        Err(QueueError::Invalid("no".into()))
+    });
+    assert!(e.is_err());
+    assert_eq!(
+        std::fs::read_to_string(q.path(State::Pending, &a)).unwrap(),
+        before
+    );
+    assert!(q.ids(State::Claimed).unwrap().is_empty());
+}
+
+#[test]
+fn a_finished_task_is_edited_under_a_lock_and_a_stale_lock_is_named() {
+    let (_d, q) = queue();
+    let a = q.add("x", None, None).unwrap();
+    q.claim_next()
+        .unwrap()
+        .unwrap()
+        .finish(
+            State::Failed,
+            Outcome {
+                run_id: None,
+                exit: "x".into(),
+                finished_at: iso_now(),
+            },
+        )
+        .unwrap();
+    q.edit(&a, |t, _| {
+        t.labels.push("flaky".into());
+        Ok(None)
+    })
+    .unwrap();
+    assert_eq!(q.find(&a).unwrap().1.labels, vec!["flaky"]);
+    // A lock left by a crashed process: reported with its path, not waited
+    // on forever and not broken silently.
+    std::fs::create_dir_all(q.trellis_dir().join("locks")).unwrap();
+    std::fs::write(q.trellis_dir().join(format!("locks/task-{a}.lock")), "{}").unwrap();
+    let e = q.edit(&a, |_, _| Ok(None)).unwrap_err();
+    assert!(matches!(e, QueueError::Locked(_)), "{e}");
+    assert!(e.to_string().contains("remove the file"), "{e}");
+}
+
+#[test]
+fn add_refuses_a_parent_or_blocker_that_does_not_exist() {
+    let (_d, q) = queue();
+    let e = q
+        .add_task(
+            NewTask {
+                task: "x".into(),
+                blockers: vec!["nope".into()],
+                ..NewTask::default()
+            },
+            Actor::Human,
+        )
+        .unwrap_err();
+    assert!(matches!(e, QueueError::Unknown(ref id) if id == "nope"));
+    assert!(q.ids(State::Pending).unwrap().is_empty());
+}
+
+#[test]
+fn a_gated_assignee_is_skipped_and_work_says_what_it_waits_for() {
+    struct Gated(Fake);
+    impl Runner for Gated {
+        fn blocker(&mut self) -> Option<String> {
+            None
+        }
+        fn run(&mut self, t: &Task) -> RunEnd {
+            self.0.run(t)
+        }
+        fn stop_requested(&self) -> bool {
+            false
+        }
+        fn idle(&mut self, _: Duration) -> bool {
+            false
+        }
+        fn gate(&mut self, _: &str, t: &Task, _: &mut dyn Write) -> Option<String> {
+            (t.assignee.as_deref() == Some("paused")).then(|| "agent `paused` is paused".into())
+        }
+    }
+    let (_d, q) = queue();
+    let skipped = add(&q, "theirs", |n| {
+        n.assignee = Some("paused".into());
+        n.priority = Priority::Critical;
+    });
+    add(&q, "mine", |_| {});
+    let mut g = Gated(Fake::default());
+    let (n, stop, out) = drain(&q, &mut g, WorkOptions::default());
+    assert_eq!((n, stop), (1, Stop::Empty));
+    assert_eq!(g.0.ran, vec!["mine"]);
+    assert!(out.contains(&skipped) && out.contains("is paused"), "{out}");
+    assert_eq!(q.ids(State::Pending).unwrap(), vec![skipped]);
+}
+
+#[test]
+fn every_mutation_the_heartbeat_makes_is_in_the_activity_log() {
+    let (_d, q) = queue();
+    let a = q.add("x", None, None).unwrap();
+    let mut f = Fake {
+        ends: [RunEnd::RolledBack {
+            run_id: Some("r1".into()),
+        }]
+        .into(),
+        ..Fake::default()
+    };
+    drain(&q, &mut f, WorkOptions::default());
+    let log = q.activity().tail(100).unwrap();
+    let acts: Vec<(&str, Actor)> = log.iter().map(|e| (e.action.as_str(), e.actor)).collect();
+    assert_eq!(
+        acts,
+        vec![
+            ("task.add", Actor::Human),
+            ("task.claim", Actor::Work),
+            ("task.finish", Actor::Work)
+        ]
+    );
+    assert_eq!(log[2].run_id.as_deref(), Some("r1"));
+    assert_eq!(log[2].entity, format!("task:{a}"));
+    assert!(q.activity().path().starts_with(q.trellis_dir()));
+}
+
+#[test]
+fn a_torn_last_line_does_not_hide_the_log() {
+    let (_d, q) = queue();
+    q.add("x", None, None).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(q.activity().path())
+        .unwrap();
+    f.write_all(b"{\"at\":\"2026").unwrap();
+    assert_eq!(q.activity().tail(10).unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Budgets (ADR 0026 §5)
+// ---------------------------------------------------------------------------
+
+fn budgeted(monthly: u64) -> profile::Profile {
+    profile::parse(
+        "rev",
+        &format!("[budget]\nmonthly_tokens = {monthly}\nwarn_at = 0.5\n"),
+    )
+    .unwrap()
+}
+
+fn spent(month: u64) -> ledger::Spend {
+    ledger::Spend {
+        month,
+        lifetime: month,
+        ..ledger::Spend::default()
+    }
+}
+
+#[test]
+fn the_hard_stop_pauses_once_and_opens_one_request() {
+    // The risk: a stop that re-fires every tick opening a new request each
+    // time, or a pause that a later tick quietly lifts.
+    let (_d, q) = queue();
+    let p = budgeted(100);
+    let w = ledger::enforce(&q, &p, &spent(60), "2026-09", Actor::Work).unwrap();
+    assert!(
+        !w.paused
+            && w.message
+                .unwrap()
+                .contains("60 of its monthly limit of 100")
+    );
+    let s1 = ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work).unwrap();
+    let s2 = ledger::enforce(&q, &p, &spent(120), "2026-09", Actor::Work).unwrap();
+    assert!(s1.paused && s2.paused);
+    assert_eq!(s1.request, s2.request);
+    assert_eq!(approval::list(&q, "pending").unwrap().len(), 1);
+    let o = profile::overlay(&q, "rev").unwrap();
+    assert!(profile::paused_reason(&p, &o).unwrap().contains("budget"));
+}
+
+#[test]
+fn approving_with_a_raise_resumes_and_rejecting_keeps_the_pause() {
+    let (_d, q) = queue();
+    let p = budgeted(100);
+    let req = ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work)
+        .unwrap()
+        .request
+        .unwrap();
+    assert!(approval::approve_budget(&q, &req, 0, Actor::Human).is_err());
+    approval::approve_budget(&q, &req, 50, Actor::Human).unwrap();
+    let o = profile::overlay(&q, "rev").unwrap();
+    assert!(profile::paused_reason(&p, &o).is_none());
+    let again = ledger::enforce(&q, &p, &spent(120), "2026-09", Actor::Work).unwrap();
+    assert!(!again.paused, "120 < 150 after the raise");
+
+    let req2 = ledger::enforce(&q, &p, &spent(150), "2026-09", Actor::Work)
+        .unwrap()
+        .request
+        .unwrap();
+    assert_ne!(req, req2);
+    approval::reject_budget(&q, &req2, None, Actor::Human).unwrap();
+    let o = profile::overlay(&q, "rev").unwrap();
+    assert!(profile::paused_reason(&p, &o).is_some());
+}
+
+#[test]
+fn a_monthly_budget_pause_lifts_when_the_month_rolls_over_and_a_human_pause_never_does() {
+    let (_d, q) = queue();
+    let p = budgeted(100);
+    ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work).unwrap();
+    let r = ledger::enforce(&q, &p, &spent(0), "2026-10", Actor::Work).unwrap();
+    assert!(r.resumed && !r.paused);
+    assert!(profile::overlay(&q, "rev").unwrap().paused.is_none());
+
+    profile::update_overlay(&q, "rev", |o| {
+        o.paused = Some(profile::Pause {
+            by: profile::PausedBy::Human,
+            at: iso_now(),
+            reason: None,
+            window: None,
+            month: None,
+        })
+    })
+    .unwrap();
+    let r = ledger::enforce(&q, &p, &spent(0), "2026-11", Actor::Work).unwrap();
+    assert!(!r.resumed);
+    assert!(profile::overlay(&q, "rev").unwrap().paused.is_some());
+}
