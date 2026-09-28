@@ -1,0 +1,27 @@
+[package]
+name = "trellis-queue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Internal to this workspace: the deliverable is the `trellis` binary.
+publish = false
+
+# The queue is file operations and a loop over a `Runner` the binary supplies.
+# It must not depend on trellis-loop or trellis-model: what it decides —
+# claim, stop, continue — is a function of how a run ended, not of how the
+# run was driven, and the tests prove that with a fake runner (ADR 0020).
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Default features off: they are the HTTPS and SSH transports, which pull
+# OpenSSL and libssh2 to answer a question that needs neither — where this
+# repository's git directory is.
+git2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
