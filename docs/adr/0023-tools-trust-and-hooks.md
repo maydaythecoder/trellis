@@ -209,7 +209,19 @@ way on Unix, before its pipes are drained, so a backgrounded
 `(sleep 1; touch x) &` cannot write after the call returns — after a
 convergence judged the tree or a rollback restored it (amended after the
 eighth review; before it, what a finished command left running was not
-reaped, and a model-run `bash` could write after rollback). On Windows it
+reaped, and a model-run `bash` could write after rollback). *Amended after
+the ninth review:* a normal exit is observable only by reaping the
+command, and once the leader is reaped and the group has no member left,
+its id can be reused, so `kill -- -<pgid>` could reach a stranger's group.
+The timeout path already signals the group before reaping the leader. For
+the normal-exit path, right after the command is spawned a `cat` reading a
+pipe trellis holds is started in its group (safe std `process_group`) and
+is not reaped until after the group signal: alive or a zombie, it keeps
+the id the command's group's. If it cannot be started, the post-exit
+group kill is skipped and a warning is logged, the safe direction. Guarded
+only: `what_a_command_backgrounded_cannot_write_after_the_call_returns`
+(Unix-only, not run on this Windows host) still asserts the group is
+killed; reuse of a group id cannot be staged in a test. On Windows it
 is not: `taskkill /T` walks the tree from a live process, and after a
 normal exit the command is gone, so what it started keeps running until it
 ends on its own; a Job Object would hold the tree, and that needs `unsafe`
