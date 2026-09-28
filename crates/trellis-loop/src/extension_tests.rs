@@ -929,3 +929,73 @@ async fn a_post_tool_hook_that_writes_after_the_pass_prevents_convergence() {
     );
     assert!(!converged(&outcome), "got {outcome:?}");
 }
+
+#[tokio::test]
+async fn a_check_that_writes_an_untracked_file_still_converges_under_a_no_op_hook() {
+    // The worktree was fingerprinted around the whole dispatch, the check
+    // included, whenever a pre_tool or post_tool hook existed. A checker
+    // that leaves `.coverage`, junit XML or `__pycache__` behind (untracked,
+    // not ignored) then marked its own turn as tree-changing and voided the
+    // pass it had just produced. A check's own output is classified by its
+    // kind; the fingerprint is for what the hooks do.
+    let d = git_repo();
+    let writes = if cfg!(windows) {
+        "echo x> .coverage"
+    } else {
+        "echo x > .coverage"
+    };
+    let checker = CheckConfig {
+        typecheck: shell_argv(writes),
+        ..CheckConfig::default()
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            pre_tool: opt("exit 0"),
+            post_tool: opt("exit 0"),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), checker)
+        .with_gate(Box::new(h.pre_tool_gate().unwrap()))
+        .with_hooks(h)
+        .spawn();
+    let mut m = script(
+        &ToolSet::default(),
+        &format!(r#"{{"steps":[{CHECK},{{"tool":"done","summary":"passed"}}]}}"#),
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(t.turns[0].verdict_passed, Some(true));
+    assert!(d.path().join(".coverage").is_file(), "the checker wrote");
+    assert!(!t.turns[0].may_have_changed_tree, "{:?}", t.turns[0]);
+    assert!(converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn a_pre_tool_hook_that_writes_marks_the_turn_as_tree_changing() {
+    // The other half: the fingerprint still brackets each hook.
+    let d = git_repo();
+    let write = if cfg!(windows) {
+        "echo hooked>> app\\util.py"
+    } else {
+        "echo hooked >> app/util.py"
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            pre_tool: opt(write),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_gate(Box::new(h.pre_tool_gate().unwrap()))
+        .with_hooks(h)
+        .spawn();
+    let mut m = after_a_pass(
+        &ToolSet::default(),
+        r#"{"tool":"read_file","path":"app/util.py"}"#,
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert!(t.turns[1].may_have_changed_tree, "{:?}", t.turns[1]);
+    assert!(!converged(&outcome), "got {outcome:?}");
+}

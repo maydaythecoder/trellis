@@ -156,8 +156,23 @@ calls a network service has done so for good. A command's writes inside the
 worktree are undone by rollback on a run that does not converge, but they
 are not in `touched`: the trail's `proposed` list names only what `edit` and
 `write_file` wrote, and on a converged run `git status` is the authority on
-what changed. On timeout the shell is killed; processes it started may
-outlive it on some platforms.
+what changed. A command is finished when its process exits: its pipes are
+read for two seconds more, and output still arriving after that (from
+something it backgrounded, which inherited the pipe) is cut and the
+observation says so. On timeout the command and what it started are
+killed: on Unix it leads its own process group and `kill -KILL -- -<pgid>`
+signals the group; on Windows `taskkill /T /F` walks the tree from it. A
+process that left the group (`setsid`, a daemon) or, on Windows, whose
+parent had already exited is not reached, and outlives the run. Killing
+more than that would need `unsafe` platform calls, which this crate does
+not make. A command that exits normally is not reaped of what it left
+running. Leading its own group has a cost on Unix: the child is no longer
+in the terminal's foreground group, so Ctrl-C does not deliver SIGINT to a
+running `bash` command, custom tool, hook or listing. It ends when trellis
+drops it (`kill_on_drop`, SIGKILL) during the interrupt's shutdown, with no
+chance to clean up. (Amended after the second review of PR #1: before it, the run
+waited for EOF on both pipes, so `sleep 30 & exit 0` read as a timeout,
+and a timeout killed only the shell.)
 
 Bash output is an observation. It is never a verdict, and an exit code of 0
 means nothing to convergence: only `run_checks` produces a `Verdict`.
@@ -268,14 +283,20 @@ this amendment a hook that wrote at any of those points left bytes in a
   would not, since a rewritten untracked file keeps its `??` line.
   **Ignored files are not covered**, as they are not part of any change
   trellis proposes, and a hook that writes one is not detected.
-- **`pre_tool` and `post_tool`.** When either is declared, the orchestrator
-  fingerprints the worktree before the gates and after `post_tool`. A
-  difference, or a fingerprint that could not be taken, marks the turn as
-  one that may have changed the tree, and `last_check_passed` stops there
-  (ADR 0004). One flag cannot say which side of a check a hook wrote on, so
-  a hook that writes on a check's own turn voids that check. Cost: two git
-  invocations per call, paid only by a repository that declares one of
-  these hooks.
+- **`pre_tool` and `post_tool`.** Each declared hook is bracketed on its
+  own: the worktree is fingerprinted before and after the gates (which
+  hold `pre_tool`; the other gates do not write), and before and after
+  `post_tool`. A difference, or a fingerprint that could not be taken,
+  marks the turn as one that may have changed the tree, and
+  `last_check_passed` stops there (ADR 0004). One flag cannot say which
+  side of a check a hook wrote on, so a hook that writes on a check's own
+  turn voids that check. The tool itself is not bracketed: whether it may
+  have changed the tree is decided by its kind (`edit` and `write_file`
+  when they wrote, `bash` and custom tools always). *Amended after the
+  second review of PR #1:* the first version bracketed the whole dispatch,
+  so a checker that left an untracked, non-ignored file (`.coverage`,
+  junit XML, `__pycache__`) voided its own pass whenever any hook was
+  declared. Cost: two git invocations per declared hook per call.
 - **`after_run`.** The binary fingerprints the worktree around the hook on
   a converged run. A difference, or a fingerprint that could not be taken,
   demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,

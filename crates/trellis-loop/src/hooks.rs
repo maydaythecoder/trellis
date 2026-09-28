@@ -99,6 +99,17 @@ impl Hooks {
     }
 
     async fn call(&self, argv: &[String], stdin: Vec<u8>) -> Result<exec::Captured, String> {
+        self.call_keeping(argv, stdin, false).await
+    }
+
+    /// `head`: keep the start of each stream as well, which only
+    /// `before_run` reads.
+    async fn call_keeping(
+        &self,
+        argv: &[String],
+        stdin: Vec<u8>,
+        head: bool,
+    ) -> Result<exec::Captured, String> {
         exec::run(Spec {
             argv,
             cwd: &self.root,
@@ -106,6 +117,7 @@ impl Hooks {
             stdin: Some(stdin),
             timeout: self.timeout,
             cap: OUTPUT_CAP,
+            head,
         })
         .await
     }
@@ -126,7 +138,7 @@ impl Hooks {
     /// check.
     pub async fn before_run(&self) -> Option<Result<String, String>> {
         let argv = self.cfg.before_run.as_ref()?;
-        Some(match self.call(argv, b"{}".to_vec()).await {
+        Some(match self.call_keeping(argv, b"{}".to_vec(), true).await {
             Err(e) => Err(e),
             Ok(c) if c.timed_out => Err(format!(
                 "before_run timed out after {}s",

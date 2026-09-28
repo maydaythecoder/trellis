@@ -585,6 +585,81 @@ fn a_process_agent_that_changes_nothing_has_nothing_to_verify() {
 }
 
 #[test]
+fn a_process_agent_that_writes_a_denied_path_is_rolled_back_though_the_checks_pass() {
+    // The risk: a process agent was judged on typecheck and tests alone, so
+    // `[governance] deny_write` and `.trellis/governance/` rules that bind
+    // every model run did not bind a command.
+    let d = process_fixture("proc-deny", MAKES_A_FILE, PASSES);
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n\
+         [governance]\ndeny_write = [\"app/\"]\n",
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "deny app/"]);
+    // The trust fingerprint covers config.toml.
+    ok(&d, &["trust"]);
+    ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("NOT CONVERGED") && s.contains("app/made.cfg"),
+        "{s}"
+    );
+    assert!(!d.join("app/made.cfg").exists(), "rolled back:\n{s}");
+    assert_eq!(ids(&d, "failed").len(), 1, "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+
+    // A `forbid` document is audited over what the command wrote.
+    let d = process_fixture("proc-forbid", MAKES_A_FILE, PASSES);
+    std::fs::create_dir_all(d.join(".trellis/governance")).unwrap();
+    std::fs::write(
+        d.join(".trellis/governance/no-c.toml"),
+        "name = \"no b = c\"\nrank = \"non-negotiable\"\nforbid = { pattern = \"b = c\" }\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "rule"]);
+    ok(&d, &["trust"]);
+    ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("NOT CONVERGED") && s.contains("no b = c"), "{s}");
+    assert!(!d.join("app/made.cfg").exists(), "rolled back:\n{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_process_agent_that_writes_git_config_or_a_hook_has_it_restored() {
+    // `.git/` is invisible to `git status` and untouched by the rollback, so
+    // a command could plant a hook or rewrite `core.hooksPath` and the run
+    // would roll back the worktree and leave both in place.
+    for (name, target) in [
+        ("proc-git-config", ".git/config"),
+        ("proc-git-hook", ".git/hooks/pre-commit"),
+    ] {
+        let cmd = format!(r#"["git", "config", "--file", "{target}", "evil.x", "y"]"#);
+        let d = process_fixture(name, &cmd, PASSES);
+        let before = std::fs::read(d.join(".git/config")).unwrap();
+        ok(&d, &["queue", "add", "touch git", "--assignee", "maker"]);
+        let s = ok(&d, &["work"]);
+        assert!(s.contains("NOT CONVERGED"), "{s}");
+        assert!(
+            s.contains(target),
+            "the report names what was changed:\n{s}"
+        );
+        assert_eq!(
+            std::fs::read(d.join(".git/config")).unwrap(),
+            before,
+            "{name}: .git/config restored byte for byte\n{s}"
+        );
+        assert!(
+            !d.join(".git/hooks/pre-commit").exists(),
+            "{name}: a planted hook is removed\n{s}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
 fn export_then_import_with_dry_run_and_rename() {
     let d = fixture(
         "export",
