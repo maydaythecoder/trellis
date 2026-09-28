@@ -55,11 +55,13 @@ impl Rule {
         }
     }
 
+    /// `path` is already [`fold`]ed; the rule is folded the same way here,
+    /// so a rule written `Vendor/` holds on Windows as `vendor/` does.
     fn matches(&self, path: &str) -> bool {
         match self {
-            Rule::Prefix(p) => path.starts_with(p.as_str()),
-            Rule::Suffix(s) => path.ends_with(s.as_str()),
-            Rule::Exact(e) => path == e,
+            Rule::Prefix(p) => path.starts_with(fold(p).as_str()),
+            Rule::Suffix(s) => path.ends_with(fold_case(&s.replace('\\', "/")).as_str()),
+            Rule::Exact(e) => path == fold(e),
         }
     }
 
@@ -96,15 +98,74 @@ impl Governance {
         &self.deny_write
     }
 
-    /// The rule forbidding a write to `path`, if any.
+    /// The rule forbidding a write to `path` as spelt, if any.
     ///
-    /// Separators are normalised first: a rule written `vendor/` must hold on
-    /// Windows, where a model will happily emit `vendor\thing.py`, and a rule
-    /// that silently stops applying on one platform is worse than no rule.
+    /// The spelling is [`fold`]ed first: a rule written `vendor/` must hold
+    /// on Windows, where a model will happily emit `vendor\thing.py`, and
+    /// for `.//vendor/x.py`, which is the same file; a rule that silently
+    /// stops applying to a spelling is worse than no rule. What this cannot
+    /// see is a link on the way, which [`denies_write_at`](Self::denies_write_at)
+    /// resolves: every write path consults that one.
     pub fn denies_write(&self, path: &str) -> Option<&Rule> {
-        let norm = path.replace('\\', "/");
-        let norm = norm.trim_start_matches("./");
-        self.deny_write.iter().find(|r| r.matches(norm))
+        let norm = fold(path);
+        self.deny_write.iter().find(|r| r.matches(&norm))
+    }
+
+    /// The rule forbidding a write to `rel` under `root`, if any: the
+    /// spelling, and then the repository-relative path the write really
+    /// lands on through any link (the one `write_refusal` computes). Every
+    /// place `deny_write` is consulted asks this — the gate for `edit` and
+    /// `write_file`, and a process agent's audit of what its command wrote —
+    /// so a rule cannot hold at one and not the other.
+    pub fn denies_write_at(&self, root: &std::path::Path, rel: &str) -> Option<&Rule> {
+        self.denies_write(rel).or_else(|| {
+            let real = crate::orchestrator::real_rel(root, rel).ok()?;
+            self.denies_write(&real)
+        })
+    }
+}
+
+/// A path in the form rules compare: `/` separators, no empty or `.`
+/// components (`.//setup.py` is `setup.py`), a trailing `/` kept so a
+/// `Prefix` rule stays one, and each name [`fold_name`]d. `..` is left as
+/// it is: `unsafe_repo_path` refuses it before any write.
+fn fold(path: &str) -> String {
+    let dir = path.ends_with(['/', '\\']);
+    let mut s = path
+        .split(['/', '\\'])
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .map(fold_name)
+        .collect::<Vec<_>>()
+        .join("/");
+    if dir && !s.is_empty() {
+        s.push('/');
+    }
+    s
+}
+
+/// One name as the filesystem compares it. On Windows the trailing dots
+/// and spaces Win32 strips go (`setup.py.` opens `setup.py`), and case goes
+/// on Windows and macOS, whose default filesystems ignore it. On a
+/// case-sensitive macOS volume that denies a file the rule did not name,
+/// which is the direction a deny list may err in.
+fn fold_name(seg: &str) -> String {
+    let seg = if cfg!(windows) {
+        match seg.trim_end_matches(['.', ' ']) {
+            // `..`, `. .`: not a name; refused as a path elsewhere.
+            "" => seg,
+            t => t,
+        }
+    } else {
+        seg
+    };
+    fold_case(seg)
+}
+
+fn fold_case(s: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) {
+        s.to_lowercase()
+    } else {
+        s.to_string()
     }
 }
 
@@ -163,5 +224,48 @@ mod tests {
         let g = Governance::default();
         assert!(g.is_empty());
         assert!(g.denies_write("anything/at/all.py").is_none());
+    }
+
+    #[test]
+    fn a_spelling_that_lands_on_a_protected_path_is_denied() {
+        // The risk: the rule was matched against the string the model
+        // wrote, and `.//setup.py` or `vendor//x.py` is not that string
+        // while the write lands on exactly the protected file.
+        let g = Governance::new(&["vendor/".into(), "setup.py".into(), "*.lock".into()]);
+        for p in [
+            ".//vendor/x.py",
+            ".//setup.py",
+            "././/setup.py",
+            "vendor//x.py",
+            "./vendor/./x.py",
+            ".\\.\\setup.py",
+        ] {
+            assert!(g.denies_write(p).is_some(), "`{p}` must be denied");
+        }
+        assert!(
+            g.denies_write("app//setup.py").is_none(),
+            "Exact means exact"
+        );
+        assert!(g.denies_write("vendored/x.py").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_a_case_or_trailing_dot_spelling_is_the_same_file() {
+        // NTFS compares names case-insensitively and Win32 strips a trailing
+        // dot or space, so each of these writes the file the rule protects.
+        let g = Governance::new(&["vendor/".into(), "setup.py".into(), "*.lock".into()]);
+        for p in [
+            "setup.py.",
+            "Setup.py",
+            "SETUP.PY ",
+            "Vendor/x.py",
+            "vendor./x.py",
+            "VENDOR \\x.py",
+            "poetry.LOCK",
+            "poetry.lock.",
+        ] {
+            assert!(g.denies_write(p).is_some(), "`{p}` must be denied");
+        }
     }
 }

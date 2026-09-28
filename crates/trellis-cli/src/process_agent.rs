@@ -230,7 +230,7 @@ impl Judge {
         root: &Path,
         touched: &[String],
     ) -> (Vec<String>, Option<trellis_checks::Verdict>) {
-        let denied = self.denied(touched.iter());
+        let denied = self.denied(root, touched.iter());
         let audit = (!self.rules.is_empty())
             .then(|| trellis_checks::governance_audit(root, &self.rules, touched));
         (denied, audit)
@@ -239,7 +239,7 @@ impl Judge {
     /// The `.trellis/` breach and `deny_write` over `paths`, whether git
     /// shows them or ignores them: an ignored path is still a write, and a
     /// rule that says "not here" does not ask git first.
-    fn denied<'p>(&self, paths: impl Iterator<Item = &'p String>) -> Vec<String> {
+    fn denied<'p>(&self, root: &Path, paths: impl Iterator<Item = &'p String>) -> Vec<String> {
         let g = trellis_loop::Governance::new(&self.deny);
         paths
             .filter_map(|p| {
@@ -248,7 +248,7 @@ impl Judge {
                         "{p} (under .trellis/, which holds what judges this run)"
                     ));
                 }
-                g.denies_write(p)
+                g.denies_write_at(root, p)
                     .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
             })
             .collect()
@@ -442,7 +442,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             ignored.summary()
         );
     }
-    let ignored_denied = judge.denied(ignored.all());
+    let ignored_denied = judge.denied(root, ignored.all());
 
     let touched = match changed(root) {
         Ok(t) => t,
