@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use trellis_queue::RunEnd;
 use trellis_queue::profile::Profile;
+use trellis_vcs::git_guard::GitGuard;
 use trellis_vcs::ignored::{IgnoredChanges, IgnoredSnapshot};
 
 /// What the command did before the checks ran.
@@ -67,124 +68,6 @@ fn changed(root: &Path) -> Result<Vec<String>, String> {
         }
     }
     Ok(out)
-}
-
-/// The files under `.git/` a command can use to run code later, as bytes:
-/// `config` (`core.hooksPath`, aliases, `core.fsmonitor`), every file in
-/// the hooks directory, and `info/exclude`, which decides what `git status`
-/// and the rollback's `git clean` can see at all: a `*` written there would
-/// hide every later run's new files. `git status` never shows these and
-/// the rollback never touches them, so they are compared around the command
-/// and put back. Nothing else in `.git/` is covered (ADR 0026 §11).
-struct GitGuard {
-    root: PathBuf,
-    config: PathBuf,
-    hooks: PathBuf,
-    exclude: PathBuf,
-    files: Vec<(PathBuf, Vec<u8>)>,
-}
-
-impl GitGuard {
-    fn capture(root: &Path) -> Result<GitGuard, String> {
-        let mut git = Command::new("git");
-        git.args([
-            "rev-parse",
-            "--git-path",
-            "config",
-            "--git-path",
-            "hooks",
-            "--git-path",
-            "info/exclude",
-        ])
-        .current_dir(root)
-        .stdin(Stdio::null());
-        trellis_core::secrets::scrub(&mut git);
-        let o = git
-            .output()
-            .map_err(|e| format!("git rev-parse could not run: {e}"))?;
-        let text = String::from_utf8_lossy(&o.stdout);
-        let mut lines = text.lines().map(|l| root.join(l.trim()));
-        let (Some(config), Some(hooks), Some(exclude)) = (lines.next(), lines.next(), lines.next())
-        else {
-            return Err(format!(
-                "git rev-parse --git-path failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
-        };
-        let mut g = GitGuard {
-            root: root.to_path_buf(),
-            config,
-            hooks,
-            exclude,
-            files: Vec::new(),
-        };
-        g.files = g.read()?;
-        Ok(g)
-    }
-
-    fn read(&self) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
-        let mut paths = vec![self.config.clone(), self.exclude.clone()];
-        let mut dirs = vec![self.hooks.clone()];
-        while let Some(d) = dirs.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else {
-                continue;
-            };
-            for e in entries.filter_map(Result::ok) {
-                let p = e.path();
-                if p.is_dir() {
-                    dirs.push(p);
-                } else {
-                    paths.push(p);
-                }
-            }
-        }
-        paths.sort();
-        let mut out = Vec::new();
-        for p in paths {
-            match std::fs::read(&p) {
-                Ok(b) => out.push((p, b)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("{} could not be read: {e}", p.display())),
-            }
-        }
-        Ok(out)
-    }
-
-    fn label(&self, p: &Path) -> String {
-        p.strip_prefix(&self.root)
-            .unwrap_or(p)
-            .display()
-            .to_string()
-            .replace('\\', "/")
-    }
-
-    /// What differs from the capture, each put back: a changed or deleted
-    /// file gets its bytes again, a new one is removed. Returns the paths
-    /// that differed, and any that could not be put back.
-    fn restore(&self) -> (Vec<String>, Vec<String>) {
-        let now = match self.read() {
-            Ok(n) => n,
-            Err(e) => return (vec![format!("the git directory ({e})")], vec![e]),
-        };
-        let (mut differed, mut failed) = (Vec::new(), Vec::new());
-        for (p, bytes) in &self.files {
-            if now.iter().find(|(q, _)| q == p).map(|(_, b)| b) != Some(bytes) {
-                differed.push(self.label(p));
-                if let Err(e) = std::fs::write(p, bytes) {
-                    failed.push(format!("{}: {e}", self.label(p)));
-                }
-            }
-        }
-        for (p, _) in &now {
-            if !self.files.iter().any(|(q, _)| q == p) {
-                differed.push(self.label(p));
-                if let Err(e) = std::fs::remove_file(p) {
-                    failed.push(format!("{}: {e}", self.label(p)));
-                }
-            }
-        }
-        (differed, failed)
-    }
 }
 
 /// What judges the run, read from the worktree **before** the command runs:
@@ -455,7 +338,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let touched = match changed(root) {
         Ok(t) => t,
         Err(e) => {
-            let restored = undo(root, &snapshot, &ignored, out);
+            let restored = undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty();
             return if restored {
                 RunEnd::Error {
                     run_id: None,
@@ -571,7 +454,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let restored = if converged {
         true
     } else {
-        undo(root, &snapshot, &ignored, out)
+        // A `.git/` file that could not be put back is a tree not restored.
+        undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty()
     };
 
     let run_id = write_trail(
@@ -603,14 +487,15 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
 /// worktree goes back to the snapshot. An ignored file that existed before
 /// and was changed or deleted cannot be put back, because trellis keeps no
 /// copy of ignored files; it is named. `false` when a created file could not
-/// be removed or the worktree is not restored.
+/// be removed, a pre-existing one was changed or deleted, or the worktree
+/// is not restored.
 fn undo(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
     ignored: &IgnoredChanges,
     out: &mut dyn Write,
 ) -> bool {
-    let removed = trellis_vcs::ignored::undo_created(root, ignored, out);
+    let removed = trellis_vcs::ignored::undo(root, ignored, out);
     rollback(snapshot, out) && removed
 }
 

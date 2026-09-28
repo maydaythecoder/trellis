@@ -205,7 +205,7 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
         // call returns, after a convergence judged the tree or a rollback
         // restored it. Before the drain, so the pipes it held close.
         if let Ok(Ok(_)) = &exited {
-            kill_group(pid).await;
+            Box::pin(kill_group(pid)).await;
         }
         // Then what is left in the pipes, for a short grace. Dropping the
         // readers keeps every byte they already stored.
@@ -231,7 +231,7 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
             // The timeout is the report; "still held after exit" is not.
             out.stdout.unfinished = false;
             out.stderr.unfinished = false;
-            kill_tree(&mut child).await;
+            Box::pin(kill_tree(&mut child)).await;
         }
     }
     Ok(out)
@@ -246,11 +246,13 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
 async fn kill_tree(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
         if cfg!(windows) {
-            let mut c = tokio::process::Command::new("taskkill");
-            c.args(["/T", "/F", "/PID", &pid.to_string()]);
-            quietly(c).await;
+            quietly(kill_command(
+                "taskkill",
+                &["/T", "/F", "/PID", &pid.to_string()],
+            ))
+            .await;
         } else {
-            kill_group(Some(pid)).await;
+            Box::pin(kill_group(Some(pid))).await;
         }
     }
     let _ = child.start_kill();
@@ -267,25 +269,34 @@ async fn kill_tree(child: &mut tokio::process::Child) {
 /// what the command started keeps running (a Job Object would hold the
 /// tree, which needs `unsafe` Win32 calls or a dependency this crate does
 /// not take). ADR 0023 §3 states it.
+///
+/// Awaited boxed, as `kill_tree` is: inline, their state made `run`'s
+/// future larger, and a debug build's deepest call path (a `pre_tool` hook
+/// before a custom tool, `child_env.rs`) overflowed the main thread's 1 MiB
+/// stack on Windows.
 async fn kill_group(pid: Option<u32>) {
     if cfg!(windows) {
         return;
     }
     let Some(pid) = pid else { return };
-    let mut c = tokio::process::Command::new("kill");
-    c.args(["-KILL", "--", &format!("-{pid}")]);
-    quietly(c).await;
+    quietly(kill_command("kill", &["-KILL", "--", &format!("-{pid}")])).await;
 }
 
-/// Runs a kill command with no input, output or key, for two seconds at
-/// most.
-async fn quietly(mut k: tokio::process::Command) {
-    k.stdin(std::process::Stdio::null())
+/// A kill command with no input, output or key.
+fn kill_command(program: &str, args: &[&str]) -> tokio::process::Command {
+    let mut k = tokio::process::Command::new(program);
+    // `taskkill` and `kill` need no key, and are given none.
+    trellis_core::secrets::scrub(k.as_std_mut());
+    k.args(args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    // `taskkill` and `kill` need no key, and are given none.
-    trellis_core::secrets::scrub(k.as_std_mut());
+    k
+}
+
+/// Runs a kill command for two seconds at most.
+async fn quietly(mut k: tokio::process::Command) {
     if let Ok(mut k) = k.spawn() {
         let _ = tokio::time::timeout(Duration::from_secs(2), k.wait()).await;
     }
