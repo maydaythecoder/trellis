@@ -299,9 +299,13 @@ fn skill_dirs(base: &Path) -> Vec<(String, PathBuf)> {
 /// (`trellis_core::paths::resolve_repo_input`): a skill's description goes
 /// into every prompt and its body into the transcript.
 fn repo_skill_md(root: &Path, dir: &Path) -> Result<PathBuf, String> {
-    let dir = trellis_core::paths::resolve_repo_input(root, dir)?.unwrap_or(dir.to_path_buf());
+    let dir = trellis_core::paths::resolve_repo_input(root, dir)
+        .map_err(|e| e.to_string())?
+        .unwrap_or(dir.to_path_buf());
     let file = dir.join("SKILL.md");
-    Ok(trellis_core::paths::resolve_repo_input(root, &file)?.unwrap_or(file))
+    Ok(trellis_core::paths::resolve_repo_input(root, &file)
+        .map_err(|e| e.to_string())?
+        .unwrap_or(file))
 }
 
 /// `root` is the repository when `path` is one of its skills, and `None`
