@@ -402,6 +402,19 @@ anyone being asked. Now the digest also covers:
 - **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
   split on whitespace and shell punctuation, and every token that is a
   regular file in the repository is hashed like an argv path.
+  *Amended after the tenth review of PR #1: every argument.* A list of
+  flags that introduce code is a list of the ones not yet missed:
+  `bash -lc`, `sh -ec`, `pwsh -Command` and `--file=x.py` all named a
+  script no token was taken from. Now every argv element is split (on
+  whitespace, `; & | ( ) < > =`, quotes trimmed), whatever precedes it,
+  and every token naming a regular file in the repository is hashed.
+  Splitting an argument that is not code only hashes files that exist,
+  which can only make the digest move more often. A repository whose
+  commands carry such a token reads as changed once after this and needs
+  `trellis trust` again. Evidence:
+  `a_script_named_in_any_argv_element_is_hashed_whatever_flag_precedes_it`
+  in `crates/trellis-loop/src/trust.rs`, which failed before on
+  `["bash", "-lc", "python scripts/gate.py"]` with no file hashed.
 
 **Not covered, plainly:** code reached indirectly from outside `.trellis/`
 and outside any file an argv or code string names — a module imported by
