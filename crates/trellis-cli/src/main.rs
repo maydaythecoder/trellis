@@ -1401,9 +1401,10 @@ fn cmd_run(
     )
 }
 
-/// The model a run drives, and whether its output is left unconstrained by
-/// a grammar (`--unconstrained`). Grouped because the two are read together
-/// to build the driver and to choose the tier, and are never passed apart.
+/// The model a run drives, and `--unconstrained`: send no schema and
+/// validate the reply instead (tier 4). Grouped because the two are read
+/// together to build the driver and to choose the tier, and are never
+/// passed apart.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ModelChoice<'a> {
     /// The model spec as given: `--model`, `/model`, `[model] spec`, a profile.
