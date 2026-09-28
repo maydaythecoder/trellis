@@ -177,6 +177,71 @@ fn rpc_runs_a_prompt_to_completion_when_input_ends() {
 }
 
 #[test]
+fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
+    // The process-level version of the unit test, because the defect it
+    // defends against lived only in a real process: a run thread's writes to
+    // stdout must not wait on the main thread's read of stdin.
+    let f = fixture("rpc-approve");
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut child = trellis(&f)
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            let _ = tx.send(serde_json::from_str(&line).expect("stdout is JSONL"));
+        }
+    });
+    let next = |pred: &dyn Fn(&Value) -> bool| -> Value {
+        loop {
+            let v = rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("a record within 60 s");
+            if pred(&v) {
+                return v;
+            }
+        }
+    };
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec})
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let q = next(&|v| v["type"] == "approval_request");
+    assert_eq!(q["question"], "edit a.py (+1 -1)");
+    writeln!(
+        stdin,
+        r#"{{"id":"{}","type":"approve","yes":true}}"#,
+        q["id"].as_str().unwrap()
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let end = next(&|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p");
+    writeln!(stdin, r#"{{"id":"m","type":"get_messages"}}"#).unwrap();
+    stdin.flush().unwrap();
+    let m = next(&|v| v["id"] == "m");
+    assert_eq!(m["data"]["messages"][0]["call"], "edit a.py", "{m}");
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    reader.join().unwrap();
+}
+
+#[test]
 fn a_user_context_file_and_config_reach_a_run_and_are_named() {
     let f = fixture("user-dir");
     std::fs::write(f.user.join("AGENTS.md"), "Prefer small diffs.\n").unwrap();
