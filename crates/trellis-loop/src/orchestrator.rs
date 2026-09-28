@@ -305,7 +305,8 @@ impl Orchestrator {
         Self {
             root: root.to_path_buf(),
             session: Session::open(root),
-            checks,
+            // Once per run, not per check spawn (review round 11).
+            checks: checks.for_run(root),
             touched: Vec::new(),
             governance: GovernanceGate::new(crate::governance::Governance::default(), root),
             gates: Vec::new(),
@@ -545,7 +546,7 @@ impl Orchestrator {
             ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
             ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
                 Ok(body) => ToolResult::FileContent(body),
-                Err(e) => ToolResult::Error(e),
+                Err(e) => ToolResult::Error(e.to_string()),
             },
             ToolCall::WriteFile { path, content } => self.write_file(path, content).await,
             ToolCall::Grep { pattern, path } => match path.as_deref().filter(|p| !p.is_empty()) {

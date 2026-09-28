@@ -99,8 +99,20 @@ struct Candidate {
 /// nothing, or out of the repository is present and refused by name when
 /// read ([`read_repo_text`]), where `is_file()` alone passed over it in
 /// silence.
+///
+/// An entry that cannot be looked at (permission denied on it or a
+/// parent, an I/O error) is present too, so the read refuses it with the
+/// reason (`resolve_repo_input`). Only not-found is absence: before review
+/// round 11 any error here dropped the file from the prompt in silence.
 fn present_entry(p: &Path) -> bool {
-    p.is_file() || std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+    p.is_file()
+        || match std::fs::symlink_metadata(p) {
+            Ok(m) => m.file_type().is_symlink(),
+            Err(e) => !matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ),
+        }
 }
 
 /// A repository-supplied prompt input, as UTF-8: `Ok(None)` when there is

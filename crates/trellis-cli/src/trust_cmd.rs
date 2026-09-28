@@ -78,8 +78,18 @@ pub(crate) fn run_with(
         out,
         "trusted. Any change to the above makes this repository untrusted again."
     )?;
+    // Every item here is a hook, a custom tool, bash or a process agent:
+    // each one writes with the user's authority, so trellis is no longer
+    // the only writer and rollback is best-effort against it (ADR 0023 §5).
+    writeln!(out, "{ROLLBACK_LIMIT}")?;
     Ok(())
 }
+
+/// Printed when trust is recorded. One line, plain: what the person gives
+/// up by trusting these, which no git check after the fact restores.
+pub(crate) const ROLLBACK_LIMIT: &str = "Note: these run unsandboxed with your permissions and \
+     can write anywhere in the repository, .git included, so rollback undoes trellis's own \
+     edits but is best-effort for theirs (ADR 0023 §5).";
 
 /// Each item, its argv, the files it names with their digests, and what else
 /// decides what runs. Printed whole: a summary of what will execute is not
@@ -129,8 +139,13 @@ mod tests {
 
     #[test]
     fn trust_shows_what_will_run_records_it_and_a_change_undoes_it() {
-        let d = repo_with("[hooks]\npre_tool = [\"python\", \"pre.py\"]\n");
-        std::fs::write(d.path().join("pre.py"), "import sys; sys.exit(0)\n").unwrap();
+        let d = repo_with("[hooks]\npre_tool = [\"python\", \".trellis/hooks/pre.py\"]\n");
+        std::fs::create_dir_all(d.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(
+            d.path().join(".trellis/hooks/pre.py"),
+            "import sys; sys.exit(0)\n",
+        )
+        .unwrap();
         let home = tempfile::tempdir().unwrap();
         let store = TrustStore::at(home.path().join("trust.json"));
 
@@ -138,8 +153,11 @@ mod tests {
         run_with(d.path(), &store, true, false, &mut out).unwrap();
         let shown = String::from_utf8(out).unwrap();
         assert!(shown.contains("hook pre_tool"), "{shown}");
-        assert!(shown.contains("\"pre.py\""), "{shown}");
-        assert!(shown.contains("file:  pre.py  sha256 "), "{shown}");
+        assert!(shown.contains("\".trellis/hooks/pre.py\""), "{shown}");
+        assert!(
+            shown.contains("file:  .trellis/hooks/pre.py  sha256 "),
+            "{shown}"
+        );
         assert!(shown.contains("state:   not trusted"), "{shown}");
         assert!(
             !home.path().join("trust.json").exists(),
@@ -148,9 +166,19 @@ mod tests {
 
         let mut out = Vec::new();
         run_with(d.path(), &store, false, false, &mut out).unwrap();
-        assert!(String::from_utf8(out).unwrap().contains("trusted."));
+        let recorded = String::from_utf8(out).unwrap();
+        assert!(recorded.contains("trusted."), "{recorded}");
+        assert!(
+            recorded.contains(ROLLBACK_LIMIT),
+            "recording trust in something that writes says what rollback no longer \
+             guarantees: {recorded}"
+        );
 
-        std::fs::write(d.path().join("pre.py"), "import os; os.system('x')\n").unwrap();
+        std::fs::write(
+            d.path().join(".trellis/hooks/pre.py"),
+            "import os; os.system('x')\n",
+        )
+        .unwrap();
         let mut out = Vec::new();
         run_with(d.path(), &store, true, false, &mut out).unwrap();
         let shown = String::from_utf8(out).unwrap();
@@ -159,6 +187,27 @@ mod tests {
         let mut out = Vec::new();
         run_with(d.path(), &store, false, true, &mut out).unwrap();
         assert!(String::from_utf8(out).unwrap().contains("trust revoked"));
+    }
+
+    #[test]
+    fn trust_refuses_a_hook_whose_code_is_outside_dot_trellis_and_says_where_to_move_it() {
+        // Review round 11, item 4, at the command a person types: a script
+        // named inside a larger expression is refused, not hashed and
+        // hoped for, and nothing is recorded.
+        let d = repo_with("[hooks]\npre_tool = [\"bash\", \"-lc\", \"python scripts/gate.py\"]\n");
+        std::fs::create_dir_all(d.path().join("scripts")).unwrap();
+        std::fs::write(d.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        let mut out = Vec::new();
+        let e = run_with(d.path(), &store, false, false, &mut out)
+            .expect_err("refused")
+            .to_string();
+        assert!(e.contains("names `scripts/gate.py`"), "{e}");
+        assert!(e.contains("move it to .trellis/hooks/"), "{e}");
+        assert!(!home.path().join("trust.json").exists(), "nothing recorded");
+        let shown = String::from_utf8(out).unwrap();
+        assert!(!shown.contains(ROLLBACK_LIMIT), "{shown}");
     }
 
     #[test]

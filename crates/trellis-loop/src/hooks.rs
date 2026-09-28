@@ -30,6 +30,28 @@ pub const DEFAULT_HOOK_TIMEOUT_S: u64 = 10;
 /// failed.
 pub const DENY_EXIT: i32 = 2;
 
+/// Why a hook was refused, did not run, or did not succeed. Each message is
+/// the string these functions returned before (review round 11).
+#[derive(Debug, thiserror::Error)]
+pub enum HookError {
+    /// A configuration error: a gate that silently is not there is the
+    /// worst kind.
+    #[error("[hooks] {event} is an empty command")]
+    EmptyCommand { event: &'static str },
+    /// The trusted code changed since trust was given (ADR 0023 §5).
+    #[error("not started, because {0}")]
+    Untrusted(crate::trust::TrustChanged),
+    #[error(transparent)]
+    Exec(#[from] exec::ExecError),
+    #[error("{event} timed out after {secs}s")]
+    TimedOut { event: &'static str, secs: u64 },
+    /// `before_run` says why on stderr, and that is what the caller prints.
+    #[error("before_run exited with {code}: {stderr}")]
+    BeforeRunExited { code: String, stderr: String },
+    #[error("after_run exited with {code}")]
+    AfterRunExited { code: String },
+}
+
 /// `[hooks]` as written. Each hook is an argv array, so it runs the same way
 /// on every platform with no shebang.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,10 +84,10 @@ impl HookConfig {
 
     /// An empty argv is a configuration error, not a hook that does nothing:
     /// a gate that silently is not there is the worst kind.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), HookError> {
         for (event, argv) in self.declared() {
             if argv.first().is_none_or(|p| p.trim().is_empty()) {
-                return Err(format!("[hooks] {event} is an empty command"));
+                return Err(HookError::EmptyCommand { event });
             }
         }
         Ok(())
@@ -114,7 +136,7 @@ impl Hooks {
         &self.cfg
     }
 
-    async fn call(&self, argv: &[String], stdin: Vec<u8>) -> Result<exec::Captured, String> {
+    async fn call(&self, argv: &[String], stdin: Vec<u8>) -> Result<exec::Captured, HookError> {
         self.call_keeping(argv, stdin, false).await
     }
 
@@ -125,11 +147,9 @@ impl Hooks {
         argv: &[String],
         stdin: Vec<u8>,
         head: bool,
-    ) -> Result<exec::Captured, String> {
+    ) -> Result<exec::Captured, HookError> {
         if let Some(g) = &self.guard {
-            g.check_async()
-                .await
-                .map_err(|why| format!("not started, because {why}"))?;
+            g.check_async().await.map_err(HookError::Untrusted)?;
         }
         exec::run(Spec {
             argv,
@@ -142,7 +162,7 @@ impl Hooks {
             whole: false,
         })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(HookError::from)
     }
 
     /// The gate for `pre_tool`, when one is declared.
@@ -159,19 +179,18 @@ impl Hooks {
     /// out contributes nothing to the prompt, and the caller says so: the
     /// run goes ahead, because what failed was a source of context, not a
     /// check.
-    pub async fn before_run(&self) -> Option<Result<String, String>> {
+    pub async fn before_run(&self) -> Option<Result<String, HookError>> {
         let argv = self.cfg.before_run.as_ref()?;
         Some(match self.call_keeping(argv, b"{}".to_vec(), true).await {
             Err(e) => Err(e),
-            Ok(c) if c.timed_out => Err(format!(
-                "before_run timed out after {}s",
-                self.timeout.as_secs()
-            )),
-            Ok(c) if c.code != Some(0) => Err(format!(
-                "before_run exited with {}: {}",
-                code(c.code),
-                c.stderr.render().trim()
-            )),
+            Ok(c) if c.timed_out => Err(HookError::TimedOut {
+                event: "before_run",
+                secs: self.timeout.as_secs(),
+            }),
+            Ok(c) if c.code != Some(0) => Err(HookError::BeforeRunExited {
+                code: code(c.code),
+                stderr: c.stderr.render().trim().to_string(),
+            }),
             // The head, and the stream's true size: this is context read
             // top down, and `render()` is the tail.
             Ok(c) => Ok(head_of(&c.stdout.head(), c.stdout.total, BEFORE_RUN_CAP)),
@@ -198,17 +217,17 @@ impl Hooks {
     }
 
     /// Runs `after_run` with the outcome. Observe only.
-    pub async fn after_run(&self, outcome: &serde_json::Value) -> Option<Result<(), String>> {
+    pub async fn after_run(&self, outcome: &serde_json::Value) -> Option<Result<(), HookError>> {
         let argv = self.cfg.after_run.as_ref()?;
         Some(
             match self.call(argv, outcome.to_string().into_bytes()).await {
                 Err(e) => Err(e),
                 Ok(c) if c.code == Some(0) => Ok(()),
-                Ok(c) if c.timed_out => Err(format!(
-                    "after_run timed out after {}s",
-                    self.timeout.as_secs()
-                )),
-                Ok(c) => Err(format!("after_run exited with {}", code(c.code))),
+                Ok(c) if c.timed_out => Err(HookError::TimedOut {
+                    event: "after_run",
+                    secs: self.timeout.as_secs(),
+                }),
+                Ok(c) => Err(HookError::AfterRunExited { code: code(c.code) }),
             },
         )
     }

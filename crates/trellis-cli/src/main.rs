@@ -4072,7 +4072,8 @@ fn floor_line(model_configured: bool) -> String {
 }
 
 fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
-    let cfg = config::RepoConfig::load(root)?.checks();
+    // `for_run`: two checks, one walk of `.trellis/` between them.
+    let cfg = config::RepoConfig::load(root)?.checks().for_run(root);
     // An empty path list would invoke the checker with no arguments, which
     // most tools treat as an error rather than as "everything". Make the
     // documented default real.

@@ -43,6 +43,28 @@ pub struct CheckConfig {
     pub tests: Vec<String>,
     /// Interpreter used for the import check.
     pub python: String,
+    /// Whether `.trellis/` holds Python, decided once for a run by
+    /// [`for_run`](Self::for_run). `None` decides it at every spawn, as
+    /// before review round 11, when the walk ran once per check spawn and a
+    /// check runs many times a run. Never read from or written to a file:
+    /// it describes the tree at run start, not the repository's settings.
+    #[serde(skip)]
+    pub dot_trellis_python: Option<bool>,
+}
+
+impl CheckConfig {
+    /// This configuration with [`dot_trellis_python`](Self::dot_trellis_python)
+    /// decided now, once, for a run in `root`.
+    ///
+    /// Deciding it at run start is sound for the runs that can change the
+    /// answer: `edit` and `write_file` refuse `.trellis/`, a trusted run
+    /// ends at the first change under `.trellis/` (the trust guard), and a
+    /// process agent that writes there does not converge. A caller that
+    /// does not call this is slower, never wrong.
+    pub fn for_run(mut self, root: &Path) -> Self {
+        self.dot_trellis_python = Some(dot_trellis_holds_python(root));
+        self
+    }
 }
 
 impl Default for CheckConfig {
@@ -67,6 +89,7 @@ impl Default for CheckConfig {
             typecheck: vec!["mypy".into(), "--no-incremental".into()],
             tests: vec!["pytest".into(), "-q".into()],
             python: "python".into(),
+            dot_trellis_python: None,
         }
     }
 }
@@ -76,7 +99,7 @@ impl Default for CheckConfig {
 pub async fn typecheck(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Verdict {
     let mut argv = cfg.typecheck.clone();
     argv.extend(paths.iter().map(|p| p.display().to_string()));
-    Verdict::from_typecheck(run(root, &argv).await)
+    Verdict::from_typecheck(run(root, cfg, &argv).await)
 }
 
 /// Runs the configured test runner over `paths`.
@@ -87,7 +110,7 @@ pub async fn typecheck(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Verdict {
     let mut argv = cfg.tests.clone();
     argv.extend(paths.iter().map(|p| p.display().to_string()));
-    Verdict::from_tests(run(root, &argv).await)
+    Verdict::from_tests(run(root, cfg, &argv).await)
 }
 
 /// Imports `module` in a fresh subprocess.
@@ -98,7 +121,7 @@ pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 #[tracing::instrument(skip(cfg))]
 pub async fn import_check(root: &Path, cfg: &CheckConfig, module: &str) -> Verdict {
     let argv = vec![cfg.python.clone(), "-c".into(), format!("import {module}")];
-    Verdict::from_import(run(root, &argv).await)
+    Verdict::from_import(run(root, cfg, &argv).await)
 }
 
 /// Audits the repository's own governance rules.
@@ -203,11 +226,27 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
 /// -> /` would read the disk) and answers `true`: the cautious answer costs
 /// a suite its bytecode cache, the other one could cost the repository its
 /// trust (ADR 0023 §4). The trust digest refuses such a link anyway.
+///
+/// `.trellis/runs/` is not walked (review round 11): it holds one trail per
+/// run and grows without bound, and trellis writes no Python there. The
+/// trust digest skips only the trails in it and hashes anything else, so a
+/// `.py` placed there is missed here and not there: a check that imports
+/// it writes `__pycache__` the digest sees, and the run ends
+/// `TrustChanged`. That errs toward refusing, never toward running
+/// uncovered code.
 fn dot_trellis_holds_python(root: &Path) -> bool {
-    fn any_py(dir: &Path, real_root: &Path, seen: &mut std::collections::HashSet<PathBuf>) -> bool {
+    fn any_py(
+        dir: &Path,
+        real_root: &Path,
+        runs: Option<&Path>,
+        seen: &mut std::collections::HashSet<PathBuf>,
+    ) -> bool {
         let Ok(real) = std::fs::canonicalize(dir) else {
             return false;
         };
+        if runs == Some(real.as_path()) {
+            return false;
+        }
         // Outside, or the root itself (`.trellis/up -> ..`), which would
         // walk the whole repository, `.git/` and `.venv/` included.
         if !real.starts_with(real_root) || real_root.starts_with(&real) {
@@ -222,7 +261,7 @@ fn dot_trellis_holds_python(root: &Path) -> bool {
         for e in rd.filter_map(Result::ok) {
             let p = e.path();
             let found = match std::fs::metadata(&p) {
-                Ok(m) if m.is_dir() => any_py(&p, real_root, seen),
+                Ok(m) if m.is_dir() => any_py(&p, real_root, runs, seen),
                 Ok(_) => p.extension().is_some_and(|x| x.eq_ignore_ascii_case("py")),
                 Err(_) => false,
             };
@@ -239,10 +278,11 @@ fn dot_trellis_holds_python(root: &Path) -> bool {
     if !dot.exists() {
         return false;
     }
-    any_py(&dot, &real_root, &mut Default::default())
+    let runs = std::fs::canonicalize(dot.join("runs")).ok();
+    any_py(&dot, &real_root, runs.as_deref(), &mut Default::default())
 }
 
-async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
+async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
     let started = Instant::now();
     let command = argv.join(" ");
     let Some((program, args)) = argv.split_first() else {
@@ -270,7 +310,10 @@ async fn run(root: &Path, argv: &[String]) -> ProcessOutput {
     // `.trellis/` nothing a check imports can write there, and a large
     // suite keeps the bytecode cache that saves it recompiling every file
     // on every check.
-    if dot_trellis_holds_python(root) {
+    if cfg
+        .dot_trellis_python
+        .unwrap_or_else(|| dot_trellis_holds_python(root))
+    {
         cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     }
     let result = cmd.output().await;
@@ -671,6 +714,35 @@ mod bytecode_tests {
         std::fs::create_dir_all(&dot).unwrap();
         assert!(link(Path::new(".."), &dot.join("up")));
         assert_eq!(within(d.path(), 10), Some(true));
+    }
+
+    /// Decided once per run (review round 11): the walk ran at every check
+    /// spawn. A guard: a configuration prepared for a run with no Python
+    /// under `.trellis/` keeps that answer when Python appears later, which
+    /// is what shows the walk is not repeated; and trails under `runs/` are
+    /// not walked.
+    #[tokio::test]
+    async fn the_python_walk_is_decided_once_per_run_and_skips_the_trails() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis/runs")).unwrap();
+        std::fs::write(d.path().join(".trellis/runs/gate.py"), "").unwrap();
+        assert!(!dot_trellis_holds_python(d.path()), "runs/ is not walked");
+        let cfg = CheckConfig {
+            tests: echo_flag(),
+            ..CheckConfig::default()
+        }
+        .for_run(d.path());
+        assert_eq!(cfg.dot_trellis_python, Some(false));
+        std::fs::write(d.path().join(".trellis/late.py"), "").unwrap();
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(!v.detail().stdout.contains("[1]"), "{}", v.detail().stdout);
+        // Without the run's answer it is decided at the spawn, as before.
+        let cfg = CheckConfig {
+            tests: echo_flag(),
+            ..CheckConfig::default()
+        };
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(v.detail().stdout.contains("[1]"), "{}", v.detail().stdout);
     }
 
     /// The cost is paid only where it buys something: a repository with no

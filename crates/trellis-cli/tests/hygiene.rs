@@ -174,8 +174,45 @@ fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 const GIT_ALLOWED: &[(&str, usize, &str)] = &[
     (
         "trellis-vcs/src/lib.rs",
+        14,
+        "`command`, `command_with_hooks`, `git_argv`: the constructors; the other 11 are \
+         `GitFailed` messages naming the command that failed (`\"git {}\"`, \
+         `\"git hash-object ...\"`), which the shell-line rule reads as a spawn",
+    ),
+    (
+        "trellis-cli/src/main.rs",
+        1,
+        "`trellis init`'s refusal prints `git init && ...` for the person to type",
+    ),
+    (
+        "trellis-cli/src/process_agent.rs",
+        2,
+        "messages naming the `git` subcommand that failed; the spawn is `trellis_vcs::command`",
+    ),
+    (
+        "trellis-loop/src/agent.rs",
+        1,
+        "prompt prose that begins a line with `git runs code ...`",
+    ),
+    (
+        "trellis-loop/src/exec.rs",
+        1,
+        "`Program Files\\Git\\bin\\bash.exe`: `Git` is a directory name there",
+    ),
+    (
+        "trellis-loop/src/orchestrator.rs",
         3,
-        "`command`, `command_with_hooks`, `git_argv`: the constructors",
+        "messages about `git check-ignore`, which runs through `trellis_vcs`",
+    ),
+    (
+        "trellis-vcs/src/git_guard.rs",
+        2,
+        "`GuardError` labels naming the command (`what: \"git rev-parse\"`)",
+    ),
+    (
+        "trellis-vcs/src/ignored.rs",
+        2,
+        "`GuardError` labels naming the command (`what: \"git ls-files\"`)",
     ),
     (
         "chat/src/lib.rs",
@@ -189,12 +226,113 @@ const GIT_ALLOWED: &[(&str, usize, &str)] = &[
     ),
 ];
 
-/// Whether `line` names `git` as a program: `Command::new("git")` of
-/// either kind, or `"git"` as an argv's first element, both of which
-/// contain the literal.
+/// Whether `line` names `git` as a program in a string literal: `"git"`
+/// in any case (Windows and macOS resolve `GIT` too), `"git.exe"` and the
+/// other Windows spellings, a path ending in one (`/usr/bin/git`), or a
+/// shell command line that runs one (`sh -c "git status"`, `cmd /C git`,
+/// `"a && git add ."`): the first word of the literal or of any part after
+/// `; & | (`, or the word after a flag that hands the rest to a shell.
+///
+/// Best effort, line by line, and its limits are stated rather than
+/// assumed away. It does not see: a name built at run time
+/// (`concat!("gi", "t")`, `format!`, bytes), a literal spanning lines, a
+/// raw string holding a `"` (the line is misread from there), a command
+/// after a newline escape inside one literal (`"cd x\ngit add ."`), a
+/// program named in a file or the environment, `git` reached through
+/// another program's own spawn (`xargs` with the name in a variable), or a
+/// literal inside a `//` comment's tail after code that contains `//` in a
+/// string. A `const` or `static` holding such a literal is caught at its
+/// definition and at every use ([`git_consts`]).
 fn names_git(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or("");
-    code.contains("\"git\"")
+    string_literals(code).iter().any(|l| runs_git(l))
+}
+
+/// The string literals on one line of Rust, their contents as written.
+/// A `'"'` char literal is not a string's start.
+fn string_literals(code: &str) -> Vec<String> {
+    let code = code.replace("'\\\"'", "").replace("'\"'", "");
+    let mut out = Vec::new();
+    let mut chars = code.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut lit = String::new();
+        let mut escaped = false;
+        for c in chars.by_ref() {
+            if escaped {
+                lit.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                lit.push(c);
+                escaped = true;
+            } else if c == '"' {
+                break;
+            } else {
+                lit.push(c);
+            }
+        }
+        out.push(lit);
+    }
+    out
+}
+
+/// Whether one word is the git program: `git`, `git.exe`, `git.cmd`,
+/// `git.bat`, `git.com` in any case, bare or at the end of a path.
+fn is_git_program(word: &str) -> bool {
+    let w = word
+        .trim_matches(|c| matches!(c, '\'' | '`' | '\\'))
+        .to_ascii_lowercase();
+    let w = w.rsplit(['/', '\\']).next().unwrap_or("");
+    matches!(w, "git" | "git.exe" | "git.cmd" | "git.bat" | "git.com")
+}
+
+/// Whether a string literal starts git: the whole literal, the first word
+/// of it or of any command after a shell separator, or the word after a
+/// flag that runs the rest (`/C`, `-c`, `-lc`, `exec`, `env`, `start`).
+fn runs_git(lit: &str) -> bool {
+    lit.split([';', '&', '|', '(']).any(|cmd| {
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        words.first().is_some_and(|w| is_git_program(w))
+            || words.windows(2).any(|w| {
+                matches!(
+                    w[0].to_ascii_lowercase().as_str(),
+                    "/c" | "/k" | "-c" | "-lc" | "-ec" | "-command" | "exec" | "env" | "start"
+                ) && is_git_program(w[1])
+            })
+    })
+}
+
+/// The name a `const` or `static` line defines, when its value is a
+/// literal [`names_git`] matches: `const GIT: &str = "git";`. Its uses name
+/// git without the literal, so they are scanned for too.
+fn git_consts(line: &str) -> Option<String> {
+    let code = line.split("//").next().unwrap_or("");
+    if !names_git(code) {
+        return None;
+    }
+    let after = code
+        .split_once("const ")
+        .or_else(|| code.split_once("static "))?
+        .1;
+    let name: String = after
+        .trim_start_matches("mut ")
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether `line` uses the identifier `name` (a whole word, outside a
+/// `//` comment).
+fn uses_ident(line: &str, name: &str) -> bool {
+    let code = line.split("//").next().unwrap_or("");
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(name).any(|(i, _)| {
+        !code[..i].chars().next_back().is_some_and(ident)
+            && !code[i + name.len()..].chars().next().is_some_and(ident)
+    })
 }
 
 #[test]
@@ -226,15 +364,31 @@ fn every_git_spawn_goes_through_trellis_vcs() {
     };
     let mut allowed_seen: std::collections::BTreeMap<&str, usize> = Default::default();
     let mut bare = Vec::new();
-    for f in files.iter().filter(|f| !test_file(f)) {
-        let rel = f
-            .strip_prefix(crates)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let text = std::fs::read_to_string(f).unwrap();
-        for (i, line) in non_test_lines(&text) {
-            if !names_git(line) {
+    let sources: Vec<(String, String)> = files
+        .iter()
+        .filter(|f| !test_file(f))
+        .map(|f| {
+            let rel = f
+                .strip_prefix(crates)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            (rel, std::fs::read_to_string(f).unwrap())
+        })
+        .collect();
+    // A const holding git names it wherever it is used, in any file.
+    let consts: Vec<String> = sources
+        .iter()
+        .flat_map(|(_, text)| {
+            non_test_lines(text)
+                .into_iter()
+                .filter_map(|(_, l)| git_consts(l))
+        })
+        .collect();
+    for (rel, text) in &sources {
+        let rel = rel.as_str();
+        for (i, line) in non_test_lines(text) {
+            if !names_git(line) && !consts.iter().any(|c| uses_ident(line, c)) {
                 continue;
             }
             if let Some((p, _, _)) = GIT_ALLOWED.iter().find(|(p, _, _)| *p == rel) {
@@ -268,6 +422,38 @@ fn the_git_scan_would_catch_a_bare_spawn() {
     assert!(names_git(r#"    let argv = ["git", "grep", "-n"];"#));
     assert!(!names_git(r#"    let mut git = trellis_vcs::command();"#));
     assert!(!names_git(r#"    // Command::new("git") in a comment"#));
+    // Review round 11: the other spellings, and git inside a shell line.
+    assert!(names_git(r#"    Command::new("git.exe")"#));
+    assert!(names_git(r#"    Command::new("GIT")"#));
+    assert!(names_git(r#"    Command::new("/usr/bin/git")"#));
+    assert!(names_git(
+        r#"    Command::new("sh").args(["-c", "git status"])"#
+    ));
+    assert!(names_git(
+        r#"    Command::new("sh").args(["-c", "cd x && git add ."])"#
+    ));
+    assert!(names_git(
+        r#"    Command::new("cmd").args(["/C", "git", "status"])"#
+    ));
+    assert!(names_git(r#"    Command::new("cmd").arg("/C git status")"#));
+    assert!(names_git(
+        r#"    Command::new("bash").args(["-lc", "exec git fetch"])"#
+    ));
+    assert!(!names_git(r#"    bail!("not a git repository: {0}")"#));
+    assert!(!names_git(r#"    let quote = '"'; let s = "a git b";"#));
+    // A const: caught at its definition, and its uses are found by name.
+    let def = r#"const PROGRAM: &str = "git";"#;
+    assert!(names_git(def));
+    assert_eq!(git_consts(def).as_deref(), Some("PROGRAM"));
+    assert_eq!(
+        git_consts(r#"static GIT_BIN: &str = "git.exe";"#).as_deref(),
+        Some("GIT_BIN")
+    );
+    assert!(uses_ident("    let c = Command::new(PROGRAM);", "PROGRAM"));
+    assert!(!uses_ident(
+        "    let c = Command::new(PROGRAM_NAME);",
+        "PROGRAM"
+    ));
     let src = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() { x(\"git\"); }\n}\nfn c() {}\n";
     let kept: Vec<&str> = non_test_lines(src).into_iter().map(|(_, l)| l).collect();
     assert_eq!(kept, ["fn a() {}", "fn c() {}"]);
@@ -275,4 +461,48 @@ fn the_git_scan_would_catch_a_bare_spawn() {
     let src = "fn a() {}\n#[cfg(test)]\nmod t;\nfn c() { x(\"git\"); }\n";
     let kept: Vec<&str> = non_test_lines(src).into_iter().map(|(_, l)| l).collect();
     assert_eq!(kept, ["fn a() {}", "fn c() { x(\"git\"); }"]);
+}
+
+/// The overrides a source file defines, as text: the array's elements and
+/// each `NO_HOOKS` value with the `#[cfg(...)]` above it. `array` is the
+/// constant's name (`OVERRIDES` in `trellis-vcs`, `GIT_OVERRIDES` in chat).
+fn overrides_in(text: &str, array: &str) -> (String, Vec<(String, String)>) {
+    let decl = format!("pub const {array}: [&str; 4] = [");
+    let elements = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(decl.as_str()))
+        .and_then(|rest| rest.strip_suffix("];"))
+        .unwrap_or_else(|| panic!("`{decl}...];` on one line"))
+        .to_string();
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let no_hooks = lines
+        .windows(2)
+        .filter_map(|w| {
+            let value = w[1].strip_prefix("const NO_HOOKS: &str = ")?;
+            Some((w[0].to_string(), value.to_string()))
+        })
+        .collect();
+    (elements, no_hooks)
+}
+
+#[test]
+fn chat_s_git_overrides_are_trellis_vcs_s() {
+    // The risk (review round 11): chat depends on nothing in the workspace,
+    // so it carries a copy of `trellis_vcs::OVERRIDES`, and nothing tied
+    // the copy to the original. One edited without the other leaves chat's
+    // `git` running a planted `core.fsmonitor` or hook. Compared as source
+    // text, since chat cannot name the constant.
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let vcs = std::fs::read_to_string(crates.join("trellis-vcs/src/lib.rs")).unwrap();
+    let chat = std::fs::read_to_string(crates.join("chat/src/lib.rs")).unwrap();
+    let want = overrides_in(&vcs, "OVERRIDES");
+    assert_eq!(want.1.len(), 2, "one value per platform: {want:?}");
+    assert_eq!(overrides_in(&chat, "GIT_OVERRIDES"), want);
+    // And the comparison can fail: a copy with one value changed differs.
+    let drifted = chat.replace("core.hooksPath=NUL", "core.hooksPath=.git/hooks");
+    assert_ne!(overrides_in(&drifted, "GIT_OVERRIDES"), want);
+    let drifted = chat.replace("\"core.fsmonitor=\"", "\"core.fsmonitor=false\"");
+    assert_ne!(overrides_in(&drifted, "GIT_OVERRIDES"), want);
 }

@@ -50,8 +50,10 @@ impl TrustItem {
     /// Every argument is also split into shell-ish tokens (whitespace,
     /// `; & | ( ) < > =`, quotes trimmed) and every token that is a file in
     /// the repository is hashed, whatever flag precedes it:
-    /// `["bash", "-lc", "python scripts/gate.py"]` and `--file=x.py` cover
-    /// their scripts. Code reached any other way — an import,
+    /// `["bash", "-lc", "python .trellis/hooks/gate.py"]` and `--file=x.py`
+    /// cover their scripts. For a hook or custom tool, a file found this way
+    /// outside `.trellis/` makes the fingerprint refused (`outside_code`,
+    /// review round 11). Code reached any other way — an import,
     /// `python -m pkg.mod`, a file a script reads — is covered only if it
     /// lives under `.trellis/`, which [`Fingerprint`] hashes whole (ADR
     /// 0023 §4); keep hook and tool code in `.trellis/hooks/`.
@@ -285,6 +287,49 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
     Ok(w.out.into_iter().collect())
 }
 
+/// Why the hooks and custom tools in `items` cannot be trusted, when any of
+/// their argv (any element, any token of one) names a regular file in the
+/// repository outside `.trellis/`.
+///
+/// A rule instead of a smarter tokenizer (review round 11). Which text in
+/// an argv is code is the interpreter's business, and every round found a
+/// spelling the last tokenizer missed. Code under `.trellis/` is covered
+/// whatever reaches it: the digest hashes every byte there, and `edit` and
+/// `write_file` refuse to write there. Code outside it is an ordinary file
+/// a run may edit, and a tokenizer was the only thing tying it to trust. So
+/// a hook or custom tool that names such a file is refused, with the fix:
+/// move the code under `.trellis/`.
+///
+/// Programs on `PATH` and absolute paths outside the repository are the
+/// user's system, not repository files. Files only: a directory named as an
+/// argument (`ruff check src`) is data for the tool, and refusing it would
+/// refuse ordinary lint commands. What this does not catch is said in ADR
+/// 0023 §4: code reached by import or `-m`, a directory run as a program
+/// (`python pkg/`), a file a script reads. "Under `.trellis/`" is decided
+/// on the path as written ([`crate::orchestrator::names_trellis_dir`]), so
+/// a link under `.trellis/` to a directory elsewhere in the repository is
+/// not caught here; the digest follows it and hashes what it reaches.
+fn outside_code(items: &[TrustItem]) -> Option<String> {
+    let why: Vec<String> = items
+        .iter()
+        .flat_map(|item| {
+            item.files
+                .iter()
+                .filter(|(path, _)| !crate::orchestrator::names_trellis_dir(path))
+                .map(move |(path, _)| format!("{} names `{path}`", item.label))
+        })
+        .collect();
+    (!why.is_empty()).then(|| {
+        format!(
+            "{}, a file in the repository outside .trellis/. A hook's or custom tool's code \
+             must live under .trellis/, where a run cannot edit it and every byte is in \
+             the trust digest: move it to .trellis/hooks/ (or .trellis/tools/) and name it \
+             there. Programs on PATH and files outside the repository are fine",
+            why.join(", ")
+        )
+    })
+}
+
 /// `path` as reached, with its parent made canonical, for naming a link in
 /// a message: the link itself, not what it resolves to.
 fn path_for_message(real_root: &Path, path: &Path) -> PathBuf {
@@ -362,6 +407,9 @@ impl Fingerprint {
                 cache,
             ));
         }
+        // Hooks and custom tools only, taken before `bash` and the extras
+        // are added: the rule is about where their code lives.
+        let outside = outside_code(&items);
         if let Some((shell, settings)) = bash {
             items.push(TrustItem::command_cached(
                 root,
@@ -374,12 +422,15 @@ impl Fingerprint {
         items.extend(extra);
         // Only when something would execute: a repository that declares
         // nothing still has nothing to trust, whatever `.trellis/` holds.
-        let mut refused = None;
+        let mut refused = outside;
         if !items.is_empty() {
             let (files, detail) = match dot_trellis_files(root, cache) {
                 Ok(files) => (files, String::new()),
                 Err(why) => {
-                    refused = Some(why.clone());
+                    refused = Some(match refused {
+                        Some(r) => format!("{r}; {why}"),
+                        None => why.clone(),
+                    });
                     (Vec::new(), format!("\nnot trustable: {why}"))
                 }
             };
@@ -880,9 +931,10 @@ mod tests {
         // trust in a file name.
         let repo = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        std::fs::write(repo.path().join("hook.py"), "print('ok')\n").unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.path().join(".trellis/hooks/hook.py"), "print('ok')\n").unwrap();
         let store = TrustStore::at(home.path().join("trust.json"));
-        let h = hooks(&["python", "hook.py"]);
+        let h = hooks(&["python", ".trellis/hooks/hook.py"]);
 
         let fp = Fingerprint::of(repo.path(), &h, &[], None);
         assert_eq!(fp.items[0].files.len(), 1, "the script is hashed");
@@ -890,7 +942,11 @@ mod tests {
         store.trust(repo.path(), &fp).unwrap();
         assert_eq!(store.state(repo.path(), &fp).unwrap(), TrustState::Trusted);
 
-        std::fs::write(repo.path().join("hook.py"), "import os; os.system('x')\n").unwrap();
+        std::fs::write(
+            repo.path().join(".trellis/hooks/hook.py"),
+            "import os; os.system('x')\n",
+        )
+        .unwrap();
         let fp2 = Fingerprint::of(repo.path(), &h, &[], None);
         assert_eq!(store.state(repo.path(), &fp2).unwrap(), TrustState::Changed);
     }
@@ -960,9 +1016,9 @@ mod tests {
         // argv element, so the script it runs was hashed by nothing and
         // could change after trust without anyone being asked again.
         let repo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
-        std::fs::write(repo.path().join("scripts/check.sh"), "exit 0\n").unwrap();
-        let h = hooks(&["sh", "-c", "./scripts/check.sh --fast && echo ok"]);
+        std::fs::create_dir_all(repo.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.path().join(".trellis/hooks/check.sh"), "exit 0\n").unwrap();
+        let h = hooks(&["sh", "-c", "./.trellis/hooks/check.sh --fast && echo ok"]);
         let fp = Fingerprint::of(repo.path(), &h, &[], None);
         assert_eq!(
             fp.items[0]
@@ -970,9 +1026,10 @@ mod tests {
                 .iter()
                 .map(|f| f.0.as_str())
                 .collect::<Vec<_>>(),
-            ["scripts/check.sh"]
+            [".trellis/hooks/check.sh"]
         );
-        std::fs::write(repo.path().join("scripts/check.sh"), "curl x | sh\n").unwrap();
+        assert_eq!(fp.refused, None);
+        std::fs::write(repo.path().join(".trellis/hooks/check.sh"), "curl x | sh\n").unwrap();
         assert_ne!(
             fp.sha256,
             Fingerprint::of(repo.path(), &h, &[], None).sha256
@@ -987,26 +1044,102 @@ mod tests {
         // otherwise, or `--file=...` left the script they run unhashed, and
         // it could change after trust with nobody asked again.
         let repo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
-        std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.path().join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
         for argv in [
-            &["bash", "-lc", "python scripts/gate.py"][..],
-            &["sh", "-ec", "python scripts/gate.py --fast"],
-            &["pwsh", "-Command", "& python scripts/gate.py"],
-            &["runner", "--file=scripts/gate.py"],
+            &["bash", "-lc", "python .trellis/hooks/gate.py"][..],
+            &["sh", "-ec", "python .trellis/hooks/gate.py --fast"],
+            &["pwsh", "-Command", "& python .trellis/hooks/gate.py"],
+            &["runner", "--file=.trellis/hooks/gate.py"],
         ] {
             let h = hooks(argv);
             let fp = Fingerprint::of(repo.path(), &h, &[], None);
             let files: Vec<&str> = fp.items[0].files.iter().map(|f| f.0.as_str()).collect();
-            assert_eq!(files, ["scripts/gate.py"], "{argv:?}");
-            std::fs::write(repo.path().join("scripts/gate.py"), "print('changed')\n").unwrap();
+            assert_eq!(files, [".trellis/hooks/gate.py"], "{argv:?}");
+            std::fs::write(
+                repo.path().join(".trellis/hooks/gate.py"),
+                "print('changed')\n",
+            )
+            .unwrap();
             assert_ne!(
                 fp.sha256,
                 Fingerprint::of(repo.path(), &h, &[], None).sha256,
                 "editing the script untrusts: {argv:?}"
             );
-            std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+            std::fs::write(repo.path().join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
         }
+    }
+
+    #[test]
+    fn a_hook_or_custom_tool_naming_code_outside_dot_trellis_is_refused() {
+        // Review round 11, item 4: the tokenizer missed scripts named inside
+        // larger expressions, and each round found another spelling. The
+        // class is closed by a rule instead: repository code a hook or
+        // custom tool names must live under `.trellis/`, where every byte is
+        // hashed and `edit` cannot reach it. Named anywhere else, it is
+        // refused at `trellis trust` and whenever trust is read.
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        std::fs::write(repo.path().join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
+
+        let outside = Fingerprint::of(
+            repo.path(),
+            &hooks(&["bash", "-lc", "python scripts/gate.py"]),
+            &[],
+            None,
+        );
+        let why = outside.refused.as_deref().expect("refused");
+        assert!(
+            why.contains("hook pre_tool names `scripts/gate.py`"),
+            "{why}"
+        );
+        assert!(
+            why.contains(".trellis/hooks/"),
+            "the message names the fix: {why}"
+        );
+        assert!(matches!(
+            store.trust(repo.path(), &outside),
+            Err(TrustStoreError::Refused(_))
+        ));
+        assert!(matches!(
+            store.state(repo.path(), &outside).unwrap(),
+            TrustState::Refused { .. }
+        ));
+
+        let tool = CustomTool {
+            name: "lint".into(),
+            description: "d".into(),
+            command: vec!["python".into(), "scripts/gate.py".into()],
+            schema: serde_json::json!({ "type": "object" }),
+        };
+        let why = Fingerprint::of(repo.path(), &HookConfig::default(), &[tool], None).refused;
+        assert!(
+            why.as_deref()
+                .is_some_and(|w| w.contains("custom tool lint names `scripts/gate.py`")),
+            "{why:?}"
+        );
+
+        // Under `.trellis/`, a directory as data, a program on PATH: fine.
+        for argv in [
+            &["python", ".trellis/hooks/gate.py"][..],
+            &["ruff", "check", "scripts"],
+            &["python", "-c", "print(1)"],
+        ] {
+            let fp = Fingerprint::of(repo.path(), &hooks(argv), &[], None);
+            assert_eq!(fp.refused, None, "{argv:?}");
+        }
+        let fp = Fingerprint::of(
+            repo.path(),
+            &hooks(&["python", ".trellis/hooks/gate.py"]),
+            &[],
+            None,
+        );
+        store.trust(repo.path(), &fp).unwrap();
+        assert_eq!(store.state(repo.path(), &fp).unwrap(), TrustState::Trusted);
     }
 
     #[test]
@@ -1330,11 +1463,11 @@ mod tests {
         assert!(Fingerprint::of(repo.path(), &HookConfig::default(), &[], None).is_empty());
     }
 
-    /// A guard over `hooks(["python", "hook.py"])` in `root`, built as the
+    /// A guard over `hooks(["python", ".trellis/hook.py"])` in `root`, built as the
     /// binary builds one.
     fn guard(root: &Path) -> TrustGuard {
         let root = root.to_path_buf();
-        let h = hooks(&["python", "hook.py"]);
+        let h = hooks(&["python", ".trellis/hook.py"]);
         let now = move |c: &HashCache| Fingerprint::of_cached(&root, &h, &[], None, Vec::new(), c);
         TrustGuard::over(now(&HashCache::default()), now)
     }
@@ -1346,17 +1479,21 @@ mod tests {
         // tree is walked every time, so a new file under `.trellis/` is seen.
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
-        std::fs::write(repo.path().join("hook.py"), "print('ok')\n").unwrap();
+        std::fs::write(repo.path().join(".trellis/hook.py"), "print('ok')\n").unwrap();
         let g = guard(repo.path());
         g.check().unwrap();
         g.check().unwrap();
-        std::fs::write(repo.path().join("hook.py"), "import os; os.system('x')\n").unwrap();
+        std::fs::write(
+            repo.path().join(".trellis/hook.py"),
+            "import os; os.system('x')\n",
+        )
+        .unwrap();
         let e = g.check().unwrap_err().to_string();
         assert!(e.contains("hook.py"), "{e}");
 
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
-        std::fs::write(repo.path().join("hook.py"), "print('ok')\n").unwrap();
+        std::fs::write(repo.path().join(".trellis/hook.py"), "print('ok')\n").unwrap();
         let g = guard(repo.path());
         g.check().unwrap();
         std::fs::write(repo.path().join(".trellis/sitecustomize.py"), "x").unwrap();
@@ -1371,7 +1508,7 @@ mod tests {
         // check, which the binary runs at convergence, hashes afresh.
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
-        let hook = repo.path().join("hook.py");
+        let hook = repo.path().join(".trellis/hook.py");
         std::fs::write(&hook, "print('aa')\n").unwrap();
         let g = guard(repo.path());
         g.check().unwrap();
