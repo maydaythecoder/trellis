@@ -38,6 +38,9 @@ import json
 import sys
 from pathlib import Path
 
+# Importing a sibling would otherwise write docs/bench/__pycache__/ into the
+# worktree, and trellis refuses to run on a dirty one (ADR 0009).
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import receiver_shapes  # noqa: E402  (the path insert above is what finds it)
 
