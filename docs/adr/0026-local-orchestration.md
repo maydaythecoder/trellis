@@ -138,9 +138,27 @@ Every rewrite goes through one of three paths. None of them renames a file.
 - **A task in `done/`, `failed/` or `cancelled/`, and the queue's other
   state files, take an exclusive lock.** The lock is
   `<git-dir>/trellis/locks/<name>.lock`, published by hard link, and the hard
-  link fails if a lock already exists. The holder removes the old file,
-  publishes the new one, and then removes the lock. Profile overlays and
-  routine state use the same path. Approval requests are never rewritten in
+  link fails if a lock already exists. Profile overlays and routine state
+  use the same path.
+
+  *Amended after the third review of PR #1.* The holder first removed the
+  old file and then published the new one, so a failure or a crash between
+  the two lost the file: a finished task vanished from every directory. Now
+  the holder publishes the new content at the fixed side name
+  `.<name>.next`, removes the old file, links the side copy into place and
+  removes the side copy. A complete copy exists at every instant. Readers
+  that find the name missing read the side copy, `queue list` shows it, and
+  the next holder of the lock finishes the swap. If the side copy exists
+  while the old file is still there, the edit never took effect and the
+  side copy is discarded. If linking the side copy into place fails, the
+  caller gets an error, but the edit has already taken effect. The error
+  says so and names the side copy. The lock is taken by every mutation of a finished
+  task: `queue set`, `queue note`, `queue requeue`, and the removal done by
+  `import --on-conflict replace`. Before this, only `edit` took the lock, so a requeue
+  that ran during an edit moved the task to `pending/`, and the edit then
+  wrote it back to `failed/`. That left one task in two states.
+  `a_requeue_during_an_edit_of_a_failed_task_leaves_it_in_one_state` and
+  `an_edit_of_a_finished_task_that_fails_midway_never_loses_it` hold both. Approval requests are never rewritten in
   place: they only move between `pending/`, `approved/` and `rejected/` by
   publish-then-remove, like a task, so a second decision on the same request
   fails at the publish. A crash while the lock is held leaves
@@ -401,7 +419,9 @@ that bundle one pin the tz data to whenever they were built. A fixed offset
 does not follow daylight saving time, so a routine that should fire at 09:00
 Amsterdam time is written `+01:00` in winter and `+02:00` in summer, or it is
 written in UTC. `Europe/Amsterdam` is refused with that explanation. It is
-not treated as UTC.
+not treated as UTC. An offset is exactly `+HH:MM` or `-HH:MM`, two digits in
+each field, checked on the text rather than on the parsed number: `-5:00`,
+`+05:5` and `+005:00` are refused rather than read as something close.
 
 **Firing.** `work` evaluates routines on every tick before claiming. The
 state of each routine is stored at `<git-dir>/trellis/routines/<name>.json`,
@@ -593,7 +613,12 @@ This is Paperclip's `process` adapter. A profile with
    writes into the worktree is left for review if the run converges. A
    process agent given a key and told to print its environment will print
    the key. `agents list` and `agents show` name the passed variables,
-   never their values. Evidence:
+   never their values. *Amended after the third review of PR #1:* so does
+   `trellis trust`. The process agent's trust item carries `pass_env`, and
+   the item prints `receives: ANTHROPIC_API_KEY` on its own line. Before
+   this, the key was in the digest only because the profile file was, and
+   nobody trusting the repository was told a key would be handed to it
+   (`trust_names_the_keys_a_process_agent_receives`). Evidence:
    `a_process_agent_inherits_no_key_unless_its_profile_passes_that_one` in
    `crates/trellis-cli/tests/child_env.rs`.
 3. **Check** with the grounded checks, the same pair `trellis check` runs:
@@ -611,6 +636,23 @@ This is Paperclip's `process` adapter. A profile with
      the loop runs at convergence produces a `Verdict` over those files,
      recorded with the other two.
 
+   *Amended after the third review of PR #1: the judge is read before the
+   command.* The `[checks]` commands, `deny_write` and the rule documents
+   were read from the worktree after the command ran. A command could
+   therefore rewrite what verifies it, for example by setting `typecheck`
+   to a command that always passes or by deleting a `deny_write` line, and
+   then converge. All three are now loaded before the command is spawned,
+   as the `.git/` bytes below are, and a profile whose rules do not load is
+   refused before anything runs. Any changed path under `.trellis/` is a
+   breach, whatever the rules say, because that directory holds the checks,
+   the rules and the trust inputs that judge the run. The run does not
+   converge and is rolled back
+   (`a_process_agent_that_rewrites_its_own_checks_does_not_converge`). What
+   is not covered, stated: the repository's own test and typecheck
+   configuration outside `.trellis/` (`pyproject.toml`, `conftest.py`, the
+   tests themselves). A command can change those, just as a model run can,
+   and the diff that is left for review is where that shows.
+
    **`.git/` is outside the worktree the rollback restores**, and `git
    status` does not see it, so a command could plant a hook or set
    `core.hooksPath` and survive any rollback. The bytes of `.git/config`
@@ -625,8 +667,8 @@ This is Paperclip's `process` adapter. A profile with
    step 2) can still write after the comparison.
 4. **Decide.** The run converged if and only if the command changed at least
    one file, both checks pass, the governance audit (when there is one)
-   passes, no changed path is denied, and nothing under `.git/config` or
-   the hooks changed.
+   passes, no changed path is denied or under `.trellis/`, and nothing
+   under `.git/config` or the hooks changed.
    - A command that changed nothing has nothing to verify, and ends `failed`
      with that reason.
    - On anything other than convergence, the tree is rolled back exactly as

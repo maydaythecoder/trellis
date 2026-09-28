@@ -31,6 +31,13 @@ pub struct TrustItem {
     pub detail: String,
     /// Repository files the argv names, with their sha256.
     pub files: Vec<(String, String)>,
+    /// Variables from the user's environment handed to the command, by
+    /// name: a process agent's `pass_env` (ADR 0026 §11). Consent to run a
+    /// command is not consent to give it a key, so `trellis trust` shows
+    /// these on their own line. Left out of the digest's JSON when empty, so
+    /// an item that receives nothing hashes as it did before this field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub receives: Vec<String>,
 }
 
 impl TrustItem {
@@ -73,6 +80,7 @@ impl TrustItem {
             argv: argv.to_vec(),
             detail,
             files,
+            receives: Vec::new(),
         }
     }
 }
@@ -110,36 +118,95 @@ fn rel(root: &Path, full: &Path) -> String {
         .to_string()
 }
 
-/// Every file under `.trellis/`, sorted, with its sha256 — except what
-/// trellis itself writes there on every run (`runs/`, the trails, and
-/// `index.bin`, the index cache), which would otherwise make a repository
-/// untrusted after each run. Hook and tool code kept under
-/// `.trellis/hooks/` or `.trellis/tools/` is covered by this whatever
-/// reaches it: an import, `-m`, a file a script reads.
-fn dot_trellis_files(root: &Path) -> Vec<(String, String)> {
-    fn walk(root: &Path, dir: &Path, top: bool, out: &mut Vec<(String, String)>) {
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in rd.filter_map(Result::ok) {
-            let path = e.path();
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if top && (name == "runs" || name.starts_with("index.bin")) {
-                continue;
-            }
-            let Ok(ft) = e.file_type() else { continue };
-            if ft.is_dir() {
-                walk(root, &path, false, out);
-            } else if let Ok(bytes) = std::fs::read(&path) {
-                out.push((rel(root, &path), hex(&Sha256::digest(&bytes))));
+/// Every file under `.trellis/`, sorted, with its sha256 — except exactly
+/// what trellis itself writes there, which would otherwise make a repository
+/// untrusted after each run:
+/// - `index.bin`, the index cache
+/// - `.gitignore`, while it is byte for byte the one trellis writes
+///   (line endings aside); one a person edited is theirs and is covered
+/// - `runs/<name>.json`, the trails: regular files directly under `runs/`
+///
+/// Nothing is skipped by prefix: `index.bin.py` and `runs/gate.py` are
+/// hashed. Hook and tool code kept under `.trellis/` is covered by this
+/// whatever reaches it: an import, `-m`, a file a script reads.
+///
+/// Symbolic links are followed. One that resolves outside the repository is
+/// not, and the returned `Err` names it: hashing what it points at could
+/// mean a whole disk, and leaving it out would leave code uncovered.
+fn dot_trellis_files(root: &Path) -> Result<Vec<(String, String)>, String> {
+    struct Walk<'a> {
+        root: &'a Path,
+        real_root: PathBuf,
+        /// Canonical directories already walked, so a link cycle ends.
+        seen: std::collections::HashSet<PathBuf>,
+        out: Vec<(String, String)>,
+    }
+    impl Walk<'_> {
+        fn skipped(&self, rel: &str, path: &Path) -> bool {
+            match rel {
+                ".trellis/index.bin" => true,
+                ".trellis/.gitignore" => std::fs::read_to_string(path)
+                    .is_ok_and(|t| t.replace("\r\n", "\n") == trellis_index::cache::IGNORE),
+                _ => rel
+                    .strip_prefix(".trellis/runs/")
+                    .is_some_and(|n| !n.contains('/') && n.ends_with(".json")),
             }
         }
+
+        fn dir(&mut self, dir: &Path) -> Result<(), String> {
+            if let Ok(real) = std::fs::canonicalize(dir)
+                && !self.seen.insert(real)
+            {
+                return Ok(());
+            }
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return Ok(());
+            };
+            for e in rd.filter_map(Result::ok) {
+                let path = e.path();
+                let rel = rel(self.root, &path);
+                let Ok(ft) = e.file_type() else { continue };
+                let linked = ft.is_symlink();
+                if linked {
+                    match std::fs::canonicalize(&path) {
+                        Ok(t) if t.starts_with(&self.real_root) => {}
+                        _ => {
+                            let to = std::fs::read_link(&path)
+                                .map(|t| t.display().to_string())
+                                .unwrap_or_else(|_| "?".into());
+                            return Err(format!(
+                                "`{rel}` is a symbolic link to `{to}`, which is outside the \
+                                 repository or does not exist. Trust covers the files under \
+                                 .trellis/, and this one cannot be covered: replace the link \
+                                 with the files, or remove it"
+                            ));
+                        }
+                    }
+                }
+                // `metadata` follows a link; `file_type` above did not.
+                let Ok(md) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                if md.is_dir() {
+                    self.dir(&path)?;
+                } else if (linked || !self.skipped(&rel, &path))
+                    && let Ok(bytes) = std::fs::read(&path)
+                {
+                    self.out.push((rel, hex(&Sha256::digest(&bytes))));
+                }
+            }
+            Ok(())
+        }
     }
-    let mut out = Vec::new();
-    walk(root, &root.join(".trellis"), true, &mut out);
-    out.sort();
-    out
+    let mut w = Walk {
+        root,
+        real_root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+        seen: Default::default(),
+        out: Vec::new(),
+    };
+    w.dir(&root.join(".trellis"))?;
+    w.out.sort();
+    Ok(w.out)
 }
 
 /// Everything a repository would execute, and one digest over all of it.
@@ -147,6 +214,10 @@ fn dot_trellis_files(root: &Path) -> Vec<(String, String)> {
 pub struct Fingerprint {
     pub items: Vec<TrustItem>,
     pub sha256: String,
+    /// Why this repository cannot be trusted as it stands, e.g. a link
+    /// under `.trellis/` that leaves it. [`TrustStore::trust`] refuses it
+    /// and [`TrustStore::state`] never reports it trusted.
+    pub refused: Option<String>,
 }
 
 impl Fingerprint {
@@ -200,20 +271,31 @@ impl Fingerprint {
         items.extend(extra);
         // Only when something would execute: a repository that declares
         // nothing still has nothing to trust, whatever `.trellis/` holds.
+        let mut refused = None;
         if !items.is_empty() {
+            let (files, detail) = match dot_trellis_files(root) {
+                Ok(files) => (files, String::new()),
+                Err(why) => {
+                    refused = Some(why.clone());
+                    (Vec::new(), format!("\nnot trustable: {why}"))
+                }
+            };
             items.push(TrustItem {
                 label: ".trellis/ (every file)".to_string(),
                 argv: Vec::new(),
-                detail: "all files under .trellis/ except runs/ and index.bin, which \
-                         trellis writes itself"
-                    .to_string(),
-                files: dot_trellis_files(root),
+                detail: format!(
+                    "all files under .trellis/ except index.bin, runs/*.json and the \
+                     .gitignore trellis wrote, which trellis writes itself{detail}"
+                ),
+                files,
+                receives: Vec::new(),
             });
         }
         let canonical = serde_json::to_vec(&items).expect("a list of strings always serializes");
         Self {
             sha256: hex(&Sha256::digest(&canonical)),
             items,
+            refused,
         }
     }
 
@@ -322,12 +404,15 @@ impl TrustStore {
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
         Ok(match self.read()?.repos.get(&key(root)) {
             None => TrustState::Unknown,
-            Some(e) if e.sha256 == fp.sha256 => TrustState::Trusted,
+            Some(e) if e.sha256 == fp.sha256 && fp.refused.is_none() => TrustState::Trusted,
             Some(_) => TrustState::Changed,
         })
     }
 
     pub fn trust(&self, root: &Path, fp: &Fingerprint) -> Result<(), String> {
+        if let Some(why) = &fp.refused {
+            return Err(format!("cannot trust this repository: {why}"));
+        }
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut f = self.read()?;
         let now = std::time::SystemTime::now()
@@ -512,6 +597,142 @@ mod tests {
 
         // With nothing declared there is still nothing to trust.
         assert!(Fingerprint::of(repo.path(), &HookConfig::default(), &[], None).is_empty());
+    }
+
+    /// A directory symlink, or `None` where the platform refuses to make one
+    /// (Windows without developer mode), in which case the test says so.
+    fn symlink_dir(target: &Path, link: &Path) -> Option<()> {
+        #[cfg(windows)]
+        let r = std::os::windows::fs::symlink_dir(target, link);
+        #[cfg(unix)]
+        let r = std::os::unix::fs::symlink(target, link);
+        match r {
+            Ok(()) => Some(()),
+            Err(e) => {
+                eprintln!("skipped: cannot create a symlink here: {e}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn only_what_trellis_writes_is_left_out_of_the_dot_trellis_digest() {
+        // The risk: the skip was every top-level name starting `index.bin`
+        // and all of `runs/`, so `.trellis/index.bin.py` or
+        // `.trellis/runs/gate.py` could hold hook code that changed after
+        // trust without anyone being asked again.
+        let repo = tempfile::tempdir().unwrap();
+        let dot = repo.path().join(".trellis");
+        std::fs::create_dir_all(dot.join("runs")).unwrap();
+        let h = hooks(&["python", "-m", "gate"]);
+        let digest = || Fingerprint::of(repo.path(), &h, &[], None).sha256;
+        let base = digest();
+
+        // What trellis writes: the index cache, trails, its own .gitignore.
+        std::fs::write(dot.join("index.bin"), [0u8, 1]).unwrap();
+        std::fs::write(dot.join("runs/20260101-x.json"), "{}").unwrap();
+        std::fs::write(dot.join(".gitignore"), trellis_index::cache::IGNORE).unwrap();
+        assert_eq!(
+            base,
+            digest(),
+            "trellis's own output is not repository code"
+        );
+
+        for (name, body) in [
+            (
+                "index.bin.py",
+                "import os
+",
+            ),
+            (
+                "runs/gate.py",
+                "import os
+",
+            ),
+            (
+                "runs/x.json.py",
+                "import os
+",
+            ),
+        ] {
+            let before = digest();
+            std::fs::write(dot.join(name), body).unwrap();
+            assert_ne!(before, digest(), "`.trellis/{name}` is not covered");
+        }
+        // A .gitignore a person wrote is theirs, and it is covered.
+        let before = digest();
+        std::fs::write(
+            dot.join(".gitignore"),
+            "index.bin
+!gate.py
+",
+        )
+        .unwrap();
+        assert_ne!(before, digest(), "an edited .gitignore is not covered");
+    }
+
+    #[test]
+    fn a_symlinked_directory_under_dot_trellis_is_followed() {
+        // The risk: `.trellis/hooks -> ../hooks` was skipped silently, so the
+        // hook code it points at was covered by nothing.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("hooks")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
+        std::fs::write(
+            repo.path().join("hooks/gate.py"),
+            "print('ok')
+",
+        )
+        .unwrap();
+        let Some(()) = symlink_dir(
+            &repo.path().join("hooks"),
+            &repo.path().join(".trellis/hooks"),
+        ) else {
+            return;
+        };
+        let h = hooks(&["python", "-m", "gate"]);
+        let fp = Fingerprint::of(repo.path(), &h, &[], None);
+        assert_eq!(fp.refused, None);
+        let dot = fp.items.last().unwrap();
+        assert!(
+            dot.files.iter().any(|(p, _)| p == ".trellis/hooks/gate.py"),
+            "{:?}",
+            dot.files
+        );
+        std::fs::write(
+            repo.path().join("hooks/gate.py"),
+            "import os
+",
+        )
+        .unwrap();
+        assert_ne!(
+            fp.sha256,
+            Fingerprint::of(repo.path(), &h, &[], None).sha256
+        );
+    }
+
+    #[test]
+    fn a_symlink_under_dot_trellis_that_leaves_the_repository_refuses_trust() {
+        // Following it would hash whatever it points at (a home directory, a
+        // whole disk); not following it would leave that code uncovered.
+        // Neither is trust in what runs, so it is refused, by name.
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
+        let Some(()) = symlink_dir(outside.path(), &repo.path().join(".trellis/lib")) else {
+            return;
+        };
+        let fp = Fingerprint::of(repo.path(), &hooks(&["x"]), &[], None);
+        let why = fp.refused.clone().expect("refused");
+        assert!(
+            why.contains(".trellis/lib") && why.contains("outside the repository"),
+            "{why}"
+        );
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        let e = store.trust(repo.path(), &fp).unwrap_err();
+        assert!(e.contains("outside the repository"), "{e}");
+        assert_ne!(store.state(repo.path(), &fp).unwrap(), TrustState::Trusted);
     }
 
     #[test]

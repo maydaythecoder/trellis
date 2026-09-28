@@ -462,17 +462,13 @@ impl Orchestrator {
             let c = h.config();
             (c.pre_tool.is_some(), c.post_tool.is_some())
         });
-        let root = self.root.clone();
-        let fingerprint = move || trellis_vcs::worktree_fingerprint(&root).ok();
-        // An unreadable fingerprint on either side counts as a change: the
-        // guard fails closed, because "could not tell" is not "unchanged".
-        let differs = |before: Option<String>, after: Option<String>| match (before, after) {
-            (Some(b), Some(a)) => a != b,
-            _ => true,
-        };
         // The gate loop holds `pre_tool`; the other gates (governance, the
         // bash policy, a person's approval) do not write.
-        let before_gates = pre.then(&fingerprint);
+        let before_gates = if pre {
+            Some(worktree_digest(&self.root).await)
+        } else {
+            None
+        };
         for i in 0..=self.gates.len() {
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
@@ -499,11 +495,11 @@ impl Orchestrator {
                 return Dispatched {
                     result: ToolResult::Error(reason),
                     human,
-                    may_have_changed_tree: before_gates.is_some_and(|b| differs(b, fingerprint())),
+                    may_have_changed_tree: changed_since(&self.root, before_gates).await,
                 };
             }
         }
-        let gates_changed = before_gates.is_some_and(|b| differs(b, fingerprint()));
+        let gates_changed = changed_since(&self.root, before_gates).await;
         let result = match &call {
             ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
             ToolCall::ReadFile { path } => self.read_file(path),
@@ -552,10 +548,14 @@ impl Orchestrator {
         // receives, whatever the hook prints or returns.
         let mut post_changed = false;
         if let Some(h) = &self.hooks {
-            let before_post = post.then(&fingerprint);
+            let before_post = if post {
+                Some(worktree_digest(&self.root).await)
+            } else {
+                None
+            };
             let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
             h.post_tool(&call, as_json).await;
-            post_changed = before_post.is_some_and(|b| differs(b, fingerprint()));
+            post_changed = changed_since(&self.root, before_post).await;
         }
         Dispatched {
             result,
@@ -1142,6 +1142,32 @@ fn excerpt(src: &str) -> String {
         out.push_str("\n...cut here; the rest of this file is too large to show.");
     }
     out
+}
+
+/// The worktree digest around a hook (ADR 0023, "after a pass"), off the
+/// async runtime: it is two blocking git processes, and on the runtime's
+/// own thread it stalled every other task for their duration. `None` when
+/// it could not be taken, a panicked blocking task included.
+async fn worktree_digest(root: &Path) -> Option<String> {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || trellis_vcs::worktree_digest(&root).ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Whether the worktree changed since `before`, which is `None` when no
+/// hook was bracketed. A digest that could not be taken on either side
+/// counts as a change: the guard fails closed, because "could not tell" is
+/// not "unchanged".
+async fn changed_since(root: &Path, before: Option<Option<String>>) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    match (before, worktree_digest(root).await) {
+        (Some(b), Some(a)) => a != b,
+        _ => true,
+    }
 }
 
 #[cfg(test)]

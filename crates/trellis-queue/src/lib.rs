@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 pub use activity::{ActivityLog, Actor, Event};
-use files::{io, move_to, publish, read_json, remove};
+use files::{io, move_to, present, publish, read_json, remove};
 pub use stamp::iso_now;
 pub use stamp::{civil_from_secs, month_of, now_secs, parse_iso, secs_to_iso};
 
@@ -605,11 +605,27 @@ impl Queue {
         let id = id.strip_suffix(".json").unwrap_or(id);
         for s in State::ALL {
             let p = self.path(s, id);
-            if p.exists() {
+            if present(&p) {
                 return Ok((s, read_json(&p)?));
             }
         }
         Err(QueueError::Unknown(id.to_string()))
+    }
+
+    /// The per-task lock every mutation of a task outside `pending/` and
+    /// `claimed/` takes, with any replacement of it that was cut short
+    /// finished first (`files::replace`).
+    ///
+    /// `edit`, `requeue` and `remove_task` all take it: one that did not
+    /// could move the task while an edit held it between its read and its
+    /// write, and the edit would then write it back where it was — one
+    /// task in two states.
+    fn lock_task(&self, id: &str) -> Result<files::Lock, QueueError> {
+        let lock = files::Lock::take(&self.locks(), &format!("task-{id}"))?;
+        for s in State::ALL {
+            files::settle(&self.path(s, id))?;
+        }
+        Ok(lock)
     }
 
     /// Ids in one state, sorted. Ids begin with a fixed-width UTC stamp, so
@@ -624,9 +640,16 @@ impl Queue {
         let mut ids: Vec<String> = rd
             .filter_map(Result::ok)
             .filter_map(|e| {
-                let name = e.file_name().to_str()?.to_string();
+                let mut name = e.file_name().to_str()?.to_string();
                 if name.starts_with('.') {
-                    return None;
+                    // A replacement cut short between removing the old copy
+                    // and linking the new: the new copy is the task, and
+                    // hiding it would hide the task.
+                    let orig = files::unside(&name)?;
+                    if d.join(orig).exists() {
+                        return None;
+                    }
+                    name = orig.to_string();
                 }
                 name.strip_suffix(".json").map(str::to_string)
             })
@@ -784,58 +807,79 @@ impl Queue {
                 id,
                 pid: current.claimed_by_pid,
             }),
-            State::Pending => {
-                let Some(mut c) = self.claim(&id)? else {
-                    let pid = self.find(&id).ok().and_then(|(_, t)| t.claimed_by_pid);
-                    return Err(QueueError::Claimed { id, pid });
-                };
-                c.task.claimed_at = None;
-                c.task.claimed_by_pid = None;
-                let to = match f(&mut c.task, State::Pending) {
-                    Ok(Some(State::Claimed)) => Err(QueueError::Invalid(
-                        "a task becomes in_progress only by being claimed".into(),
-                    )),
-                    Ok(to) => Ok(to.unwrap_or(State::Pending)),
-                    Err(e) => Err(e),
-                };
-                let to = match to {
-                    Ok(to) => to,
-                    Err(e) => {
-                        // Put back exactly as it was: the edit did not apply.
-                        let original = current;
-                        let from = self.path(State::Claimed, &id);
-                        move_to(&from, &self.path(State::Pending, &id), &original)?;
-                        return Err(e);
-                    }
-                };
-                let from = self.path(State::Claimed, &id);
-                move_to(&from, &self.path(to, &id), &c.task)?;
-                Ok((State::Pending, to))
-            }
-            s => {
-                let _lock = files::Lock::take(&self.locks(), &format!("task-{id}"))?;
-                let mut t: Task = read_json(&self.path(s, &id))?;
-                let to = f(&mut t, s)?.unwrap_or(s);
-                if to == State::Claimed {
-                    return Err(QueueError::Invalid(
-                        "a task becomes in_progress only by being claimed".into(),
-                    ));
+            State::Pending => self.edit_pending(id, current, f),
+            _ => {
+                let lock = self.lock_task(&id)?;
+                // Found again under the lock: a requeue that ran between the
+                // first look and the lock has moved it out of this state.
+                let (s, t) = self.find(&id)?;
+                if matches!(s, State::Pending | State::Claimed) {
+                    drop(lock);
+                    return self.edit(&id, f);
                 }
-                let from = self.path(s, &id);
-                if to == s {
-                    remove(&from)?;
-                    if !publish(&from, &t)? {
-                        return Err(io(&from)(std::io::Error::new(
-                            std::io::ErrorKind::AlreadyExists,
-                            "written by another process while this one held the lock",
-                        )));
-                    }
-                } else {
-                    move_to(&from, &self.path(to, &id), &t)?;
-                }
-                Ok((s, to))
+                self.edit_finished(&id, s, t, f)
             }
         }
+    }
+
+    fn edit_pending(
+        &self,
+        id: String,
+        current: Task,
+        f: impl FnOnce(&mut Task, State) -> Result<Option<State>, QueueError>,
+    ) -> Result<(State, State), QueueError> {
+        let Some(mut c) = self.claim(&id)? else {
+            let pid = self.find(&id).ok().and_then(|(_, t)| t.claimed_by_pid);
+            return Err(QueueError::Claimed { id, pid });
+        };
+        c.task.claimed_at = None;
+        c.task.claimed_by_pid = None;
+        let to = match f(&mut c.task, State::Pending) {
+            Ok(Some(State::Claimed)) => Err(QueueError::Invalid(
+                "a task becomes in_progress only by being claimed".into(),
+            )),
+            Ok(to) => Ok(to.unwrap_or(State::Pending)),
+            Err(e) => Err(e),
+        };
+        let to = match to {
+            Ok(to) => to,
+            Err(e) => {
+                // Put back exactly as it was: the edit did not apply.
+                let original = current;
+                let from = self.path(State::Claimed, &id);
+                move_to(&from, &self.path(State::Pending, &id), &original)?;
+                return Err(e);
+            }
+        };
+        let from = self.path(State::Claimed, &id);
+        move_to(&from, &self.path(to, &id), &c.task)?;
+        Ok((State::Pending, to))
+    }
+
+    /// Edits a task in `done/`, `failed/` or `cancelled/`. The caller holds
+    /// its lock.
+    fn edit_finished(
+        &self,
+        id: &str,
+        s: State,
+        mut t: Task,
+        f: impl FnOnce(&mut Task, State) -> Result<Option<State>, QueueError>,
+    ) -> Result<(State, State), QueueError> {
+        let to = f(&mut t, s)?.unwrap_or(s);
+        if to == State::Claimed {
+            return Err(QueueError::Invalid(
+                "a task becomes in_progress only by being claimed".into(),
+            ));
+        }
+        let from = self.path(s, id);
+        if to == s {
+            // Not remove-then-publish: a failure between those two lost the
+            // task. `replace` keeps a complete copy at every step.
+            files::replace(&from, &t)?;
+        } else {
+            move_to(&from, &self.path(to, id), &t)?;
+        }
+        Ok((s, to))
     }
 
     /// Wakes tasks whose wait is over (ADR 0026 §1): a task `blocked` on
@@ -897,6 +941,7 @@ impl Queue {
     /// from a live one in another terminal. `attempts` is kept.
     pub fn requeue(&self, id: &str) -> Result<State, QueueError> {
         let id = id.strip_suffix(".json").unwrap_or(id);
+        let _lock = self.lock_task(id)?;
         for s in [State::Claimed, State::Failed] {
             let from = self.path(s, id);
             if !from.exists() {
@@ -928,6 +973,7 @@ impl Queue {
 
     /// Removes a task wherever it is, except from `claimed/`.
     pub(crate) fn remove_task(&self, id: &str) -> Result<(), QueueError> {
+        let _lock = self.lock_task(id)?;
         let (s, t) = self.find(id)?;
         if s == State::Claimed {
             return Err(QueueError::Claimed {
