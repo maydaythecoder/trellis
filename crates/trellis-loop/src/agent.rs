@@ -188,7 +188,13 @@ pub enum NotConverged {
     /// worktree. The hook's bytes were never checked, so the change as a
     /// whole is not a converged one (ADR 0023, "after a pass"). Constructed
     /// by the binary, which is what runs `after_run`.
-    AfterRunChangedTree,
+    ///
+    /// `detail` names what the guard saw: the paths that differ, or why the
+    /// worktree could not be fingerprinted. The two call for different
+    /// fixes, and a demotion that cannot say which is one nobody can act on.
+    AfterRunChangedTree {
+        detail: String,
+    },
 }
 
 impl NotConverged {
@@ -218,13 +224,15 @@ impl NotConverged {
                 ),
                 summary
             ),
-            NotConverged::AfterRunChangedTree => concat!(
-                "the run converged, and then the after_run hook changed the working ",
-                "tree. No check saw those bytes, so nothing was accepted and the ",
-                "whole change was rolled back. An after_run hook observes; it must ",
-                "not write in the worktree."
-            )
-            .to_string(),
+            NotConverged::AfterRunChangedTree { detail } => format!(
+                concat!(
+                    "the run converged, and then the working tree could not be shown ",
+                    "to be unchanged by the after_run hook ({}). No check saw those ",
+                    "bytes, so nothing was accepted and the whole change was rolled ",
+                    "back. An after_run hook observes; it must not write in the worktree."
+                ),
+                detail
+            ),
             NotConverged::GovernanceViolation { detail } => format!(
                 concat!(
                     "the checks passed and a project rule was broken, so the ",

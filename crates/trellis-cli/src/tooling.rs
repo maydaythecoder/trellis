@@ -615,7 +615,10 @@ mod run_tests {
         trust(&dir);
         let said = run(&dir, &spec);
         assert!(said.contains("NOT CONVERGED"), "{said}");
-        assert!(said.contains("after_run hook changed"), "{said}");
+        assert!(
+            said.contains("unchanged by the after_run hook (changed: late.py)"),
+            "the demotion names the path the hook wrote: {said}"
+        );
         assert!(
             !dir.join("late.py").exists(),
             "the hook's file must not survive:\n{said}"
