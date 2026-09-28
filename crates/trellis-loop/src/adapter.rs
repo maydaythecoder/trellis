@@ -132,35 +132,106 @@ struct Compaction {
     /// history a provider sees changes only by appending after it.
     elided: usize,
     events: Vec<Compacted>,
+    /// The size of what the last `fit` returned, as `size` measured it, so
+    /// the caller does not serialize the request again to learn it.
+    last_size: Option<usize>,
 }
 
 impl Compaction {
     /// The rendering with as few elided turns as fits the budget, starting
     /// from what is already elided. The newest turn is never elided.
+    ///
+    /// For a rendering that embeds each observation as plain text once, as
+    /// `completion_prompt` does. See [`fit_by`](Self::fit_by).
     fn fit<T>(
         &mut self,
         t: &Transcript,
         render: impl Fn(usize) -> T,
         size: impl Fn(&T) -> usize,
     ) -> T {
+        self.fit_by(t, render, size, str::len)
+    }
+
+    /// As [`fit`](Self::fit), where `measure` is how many bytes one
+    /// observation's text costs in the rendering (its length for plain
+    /// text; its JSON-escaped length for a hosted body).
+    ///
+    /// **The answer is the linear scan's**: the smallest `k` at or above
+    /// what is already elided whose rendering fits, or the newest-but-one
+    /// when none does. It is found from per-turn sizes rather than by
+    /// rendering every candidate: eliding turn `i` changes the size by
+    /// `measure(note) - measure(observation)`, so each candidate's size is
+    /// the first rendering's plus a running sum. The chosen `k` is then
+    /// rendered and its real size compared with the prediction; if they
+    /// differ (a rendering that is not additive in its observations), the
+    /// linear scan runs as before. Two renders in the ordinary case instead
+    /// of one per candidate, which for a hosted body was one JSON
+    /// serialization of the whole conversation per extra elided turn.
+    /// Not a binary search: size is not monotone in `k`, because an elided
+    /// note can be longer than a tiny observation.
+    fn fit_by<T>(
+        &mut self,
+        t: &Transcript,
+        render: impl Fn(usize) -> T,
+        size: impl Fn(&T) -> usize,
+        measure: impl Fn(&str) -> usize,
+    ) -> T {
         let n = t.turns.len();
         let Some(budget) = self.budget else {
-            return render(0);
+            let out = render(0);
+            self.last_size = Some(size(&out));
+            return out;
         };
-        let mut k = self.elided.min(n.saturating_sub(1));
-        let mut out = render(k);
-        while size(&out) > budget && k + 1 < n {
-            k += 1;
-            out = render(k);
-        }
+        let k0 = self.elided.min(n.saturating_sub(1));
+        let first = render(k0);
+        let s0 = size(&first);
+        let (k, out, s) = if s0 <= budget || k0 + 1 >= n {
+            (k0, first, s0)
+        } else {
+            // Predicted size with turns k0..k elided, for k = k0+1, ...
+            let mut predicted = s0 as i64;
+            let mut pick = (n - 1, 0i64);
+            for k in k0 + 1..n {
+                let i = k - 1;
+                let turn = &t.turns[i];
+                predicted += measure(&elided_note(turn)) as i64
+                    - measure(&shown_observation(&turn.call, &turn.observation)) as i64;
+                pick = (k, predicted);
+                if predicted <= budget as i64 {
+                    break;
+                }
+            }
+            let (k, want) = pick;
+            let out = render(k);
+            let s = size(&out);
+            if s as i64 == want {
+                (k, out, s)
+            } else {
+                // Not additive after all: the scan the prediction stands
+                // in for, from the start.
+                tracing::debug!(
+                    predicted = want,
+                    actual = s,
+                    "compaction estimate missed; scanning"
+                );
+                let (mut k, mut out, mut s) = (k0, first, s0);
+                while s > budget && k + 1 < n {
+                    k += 1;
+                    out = render(k);
+                    s = size(&out);
+                }
+                (k, out, s)
+            }
+        };
+        self.last_size = Some(s);
         if k > self.elided {
             let ev = Compacted {
                 turn: n as u32 + 1,
                 elided_turns: k,
                 elided_bytes: t.turns[..k].iter().map(|x| x.observation.len()).sum(),
-                request_bytes: size(&out),
+                request_bytes: s,
                 budget,
-                fits: size(&out) <= budget,
+                fits: s <= budget,
             };
             tracing::info!(
                 turn = ev.turn,
@@ -919,12 +990,19 @@ impl Model for HostedModel {
         let mut attempt = 0;
         while attempt < MAX_FORMAT_RETRIES {
             let (client, issued, max) = (&self.client, &self.issued, self.max_tokens);
-            let body = self.compaction.fit(
+            // Each observation is one JSON string in the body, so its cost
+            // is its escaped length; `fit_by` checks that against a real
+            // render and falls back to the scan if it is ever wrong.
+            let body = self.compaction.fit_by(
                 t,
                 |k| client.body(&conversation(t, issued, protocol, k), &tools, max),
                 |b| b.to_string().len(),
+                |s| serde_json::to_string(s).map_or(s.len(), |j| j.len()),
             );
-            let bytes = body.to_string().len();
+            let bytes = self
+                .compaction
+                .last_size
+                .unwrap_or_else(|| body.to_string().len());
             self.last_prompt_bytes = Some(bytes);
             tracing::debug!(prompt_bytes = bytes, turns = t.turns.len());
             // The key is not in the body; it is added by the transport.
@@ -1580,6 +1658,131 @@ mod compaction_and_hosted_tests {
         let t = transcript(turns);
         let p = c.fit(&t, |k| completion_prompt(&t, k), String::len);
         assert!(p.contains("elided: read_file a.py"), "{p}");
+    }
+
+    /// The linear scan `fit` used to be, as the reference its answer must
+    /// match: the fewest elisions at or above `from` whose size fits.
+    fn linear(t: &Transcript, from: usize, budget: usize) -> usize {
+        let n = t.turns.len();
+        let mut k = from.min(n.saturating_sub(1));
+        while completion_prompt(t, k).len() > budget && k + 1 < n {
+            k += 1;
+        }
+        k
+    }
+
+    #[test]
+    fn fitting_a_long_transcript_renders_a_bounded_number_of_times() {
+        // The risk: `fit` re-rendered the whole request once per extra
+        // elided turn, which for a hosted body is a JSON serialization of
+        // the whole conversation each time — quadratic in a long run.
+        let turns: Vec<Turn> = (0..60)
+            .map(|i| turn(read(&format!("f{i}.py")), &"x".repeat(2_000), None))
+            .collect();
+        let t = transcript(turns);
+        let full = completion_prompt(&t, 0).len();
+        let renders = std::cell::Cell::new(0usize);
+        let mut c = Compaction {
+            budget: Some(full / 4),
+            ..Compaction::default()
+        };
+        let p = c.fit(
+            &t,
+            |k| {
+                renders.set(renders.get() + 1);
+                completion_prompt(&t, k)
+            },
+            String::len,
+        );
+        assert_eq!(c.elided, linear(&t, 0, full / 4), "the same answer");
+        assert_eq!(p, completion_prompt(&t, c.elided));
+        assert!(
+            renders.get() <= 3,
+            "{} renders for 60 turns; the answer is computable from per-turn sizes",
+            renders.get()
+        );
+    }
+
+    #[test]
+    fn a_json_body_is_predicted_exactly_so_it_is_rendered_twice_not_per_turn() {
+        // The hosted body embeds each observation once as a JSON string, so
+        // its escaped length is exact and no fallback scan is needed, even
+        // for text full of quotes, backslashes and newlines.
+        let turns: Vec<Turn> = (0..40)
+            .map(|i| {
+                turn(
+                    read(&format!("q{i}.py")),
+                    &"say \"hi\"\\n\n\ttab\u{1}".repeat(80),
+                    None,
+                )
+            })
+            .collect();
+        let t = transcript(turns);
+        let body = |k: usize| {
+            json!({
+                "messages": (0..t.turns.len())
+                    .map(|i| json!({"role": "tool", "content": observation_at(&t.turns[i], i, k)}))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let len = |b: &Value| b.to_string().len();
+        let full = len(&body(0));
+        let renders = std::cell::Cell::new(0usize);
+        let mut c = Compaction {
+            budget: Some(full / 3),
+            ..Compaction::default()
+        };
+        let got = c.fit_by(
+            &t,
+            |k| {
+                renders.set(renders.get() + 1);
+                body(k)
+            },
+            len,
+            |s| serde_json::to_string(s).unwrap().len(),
+        );
+        let mut want = 0;
+        while len(&body(want)) > full / 3 && want + 1 < t.turns.len() {
+            want += 1;
+        }
+        assert_eq!(c.elided, want);
+        assert_eq!(got, body(want));
+        assert_eq!(c.last_size, Some(len(&got)));
+        assert_eq!(renders.get(), 2, "the first render and the predicted one");
+    }
+
+    #[test]
+    fn the_fast_fit_agrees_with_the_linear_scan_even_where_size_is_not_monotone() {
+        // An elided note can be longer than a tiny observation, so size is
+        // not monotone in k and a binary search could pick a different k.
+        let mut turns = Vec::new();
+        for i in 0..12 {
+            let obs = if i % 3 == 0 {
+                "ok".to_string()
+            } else {
+                "y".repeat(700)
+            };
+            turns.push(turn(read(&format!("m{i}.py")), &obs, None));
+        }
+        let t = transcript(turns);
+        let full = completion_prompt(&t, 0).len();
+        for budget in (0..=full + 10).step_by(97) {
+            for from in [0usize, 2, 5] {
+                let mut c = Compaction {
+                    budget: Some(budget),
+                    elided: from,
+                    ..Compaction::default()
+                };
+                let p = c.fit(&t, |k| completion_prompt(&t, k), String::len);
+                let want = linear(&t, from, budget).max(from.min(t.turns.len() - 1));
+                assert_eq!(c.elided.max(from), want, "budget {budget}, from {from}");
+                assert_eq!(
+                    p,
+                    completion_prompt(&t, want),
+                    "budget {budget}, from {from}"
+                );
+            }
+        }
     }
 
     #[test]
