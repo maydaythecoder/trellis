@@ -13,12 +13,12 @@
 //! this way may be reported as a model floor (S7).
 
 use crate::agent::{Model, Step, Transcript};
-use crate::wire::ToolCallWire;
+use crate::registry::ToolSet;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct Script {
-    steps: Vec<ToolCallWire>,
+    steps: Vec<serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -31,13 +31,31 @@ impl ScriptedModel {
     /// Parses a script. An unknown tool or check kind is an error rather than
     /// a skipped step: a script that silently does less than it says would
     /// make the loop look better behaved than it is.
+    ///
+    /// Every built-in parses; a repository's own tools do not, since there
+    /// is no tool set to find them in. [`from_json_with`](Self::from_json_with)
+    /// parses against the run's own set.
     pub fn from_json(text: &str) -> Result<Self, String> {
+        Self::from_json_with(text, &ToolSet::every_builtin())
+    }
+
+    /// Parses a script against the tools a run actually offers, through the
+    /// same parser the runtime adapter uses (ADR 0023). A step calling a
+    /// tool the run does not have is an error at load, for the reason an
+    /// unknown tool is: a script that does less than it says makes the loop
+    /// look better behaved than it is.
+    pub fn from_json_with(text: &str, tools: &ToolSet) -> Result<Self, String> {
         let script: Script =
             serde_json::from_str(text).map_err(|e| format!("script is not valid JSON: {e}"))?;
         let steps = script
             .steps
             .into_iter()
-            .map(ToolCallWire::into_step)
+            .enumerate()
+            .map(|(i, v)| {
+                tools
+                    .parse_value(v)
+                    .map_err(|e| format!("step {}: {e}", i + 1))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         if steps.is_empty() {
             return Err("script has no steps".into());
@@ -99,6 +117,40 @@ mod tests {
         // A skipped step would make the loop look better behaved than it is.
         let e = ScriptedModel::from_json(r#"{"steps":[{"tool":"sudo","path":"x"}]}"#).unwrap_err();
         assert!(e.contains("not valid JSON") || e.contains("unknown"), "{e}");
+    }
+
+    #[test]
+    fn a_script_calls_a_repository_tool_only_where_the_run_offers_it() {
+        let lint = crate::registry::CustomTool {
+            name: "lint".into(),
+            description: "Lint one file.".into(),
+            command: vec!["x".into()],
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }),
+        };
+        let tools = ToolSet::build(crate::registry::ToolSelection {
+            custom: vec![lint],
+            ..Default::default()
+        })
+        .unwrap();
+        let text = r#"{"steps":[{"tool":"lint","path":"a.py"}]}"#;
+        assert_eq!(
+            ScriptedModel::from_json_with(text, &tools).unwrap().len(),
+            1
+        );
+        // Without the tool set there is no `lint`, and a script calling it is
+        // refused at load rather than failing mid-run.
+        assert!(ScriptedModel::from_json(text).is_err());
+        // A built-in the run does not enable is refused the same way.
+        let e = ScriptedModel::from_json_with(
+            r#"{"steps":[{"tool":"bash","command":"ls"}]}"#,
+            &ToolSet::default(),
+        )
+        .unwrap_err();
+        assert!(e.contains("step 1") && e.contains("bash"), "{e}");
     }
 
     #[test]
