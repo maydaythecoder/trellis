@@ -1705,6 +1705,24 @@ name the test that would fail if it were reverted.
 
 ## Recently closed
 
+- **PR #1 review: eleven rounds (2026-09-27/28).**
+  - **Method:** each round was a `/code-review high` pass over the whole PR
+    diff. Every finding was fixed with a regression test and merged, and
+    every merge passed CI on Linux and Windows.
+  - **Guards:** 11/11 whenever they were run, against the build with Ollama
+    up. At least five rounds' fixes were run against them.
+  - **Totals:** 101 findings raised, counted across the round reports. Each
+    was either fixed or, for the class below, recorded as a stated limit.
+    `cargo test --workspace` stood at 1,297 passed, 0 failed, at the
+    round-11 merge.
+  - **The one class not closed:** the writers trellis does not control
+    (`bash`, hooks, custom tools, process agents). Their rollback guarantee
+    is now stated as best-effort, not added to (ADR 0021 "Where this
+    stands", ADR 0023 §5, ADR 0026 §11). Sandboxing remains deferred.
+  - **One Linux-only CI flake traced to its cause:** `std::fs::copy` gives
+    the copied index a new mtime, which defeats git's racy-clean check.
+    Fixed in `4d868f1`. That diagnosis is inferred rather than observed
+    failing on Linux, since no Linux toolchain was available locally.
 - **pi, Apex and Paperclip inherited (ADR 0021; waves 0022–0026).** Each
   capability of the three projects has a disposition in ADR 0021: built,
   deferred, or excluded, with the clause it rests on. The waves built what

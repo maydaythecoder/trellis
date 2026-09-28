@@ -114,6 +114,38 @@ Two of these are not stylistic:
 - **`trellis-checks` owns `Verdict`.** That is what makes the grounding contract
   structural rather than advisory.
 
+## Invariants the PR #1 review rounds put in place
+
+Each one is held by a test that names it. Read the ADR before loosening any
+of them.
+
+- **Every `git` spawn goes through `trellis_vcs` (`command()`/`git_argv`)**,
+  so a `core.fsmonitor` or hooks path planted in `.git/config` never runs
+  under trellis. `tests/hygiene.rs` fails on a bare spawn. `chat` keeps a
+  copy of the overrides, and a test ties that copy to `trellis_vcs`.
+  (ADR 0023)
+- **Every child process drops the provider-key variables**
+  (`trellis_core::secrets::scrub`). `tests/child_env.rs` fails on an
+  unscrubbed spawn. A process agent gets back only the variables its profile
+  names in `pass_env`. (ADR 0024 §3, 0026)
+- **Repository-supplied prompt inputs are read through
+  `trellis_core::paths::resolve_repo_input`.** Nothing that resolves outside
+  the repository or into `.git` reaches a prompt. (ADR 0025)
+- **Only the user decides where a key is sent.** A repository may not name a
+  `key_env`, and a hosted or loopback endpoint the repository chose is not
+  given a key unless the user's own config or `--model` names it.
+  (ADR 0024 §3)
+- **Model writes never land in `.trellis/` or `.git/`, and trusted code
+  lives under `.trellis/`.** A hook or custom tool that names repository code
+  elsewhere is refused at `trellis trust`. (ADR 0023)
+- **A pass stops counting once the tree changes.** So does a run whose HEAD
+  moved, or whose trusted code or `.git/` changed during the run.
+  (ADR 0004, 0009, 0023)
+- **Rollback is complete only for trellis's own writes.** With `bash`,
+  hooks, custom tools or process agents enabled, it is best-effort, and the
+  ADRs list the known ways around it. Do not add another post-hoc git check
+  to close one more of those; the fix is a sandbox (ADR 0021, row 13.3).
+
 ## Rules that need an ADR to change
 
 Changing any of these without a new ADR should fail review regardless of how
