@@ -14,6 +14,8 @@
 
 mod ask;
 mod config;
+mod orchestrate;
+mod process_agent;
 mod session;
 #[cfg(test)]
 mod testutil;
@@ -226,7 +228,8 @@ enum Command {
         action: Option<ModelAction>,
     },
 
-    /// Add, list or requeue tasks for `trellis work` (ADR 0020).
+    /// Add, list, change, approve and export tasks for `trellis work`
+    /// (ADR 0020, ADR 0026).
     ///
     /// The queue lives in the git directory, so it never dirties the
     /// worktree and survives a rollback.
@@ -259,6 +262,20 @@ enum Command {
         /// Forget this repository's trust.
         #[arg(long)]
         revoke: bool,
+    },
+
+    /// Agent profiles in .trellis/agents/: list, show, pause, resume
+    /// (ADR 0026).
+    Agents {
+        #[command(subcommand)]
+        action: orchestrate::AgentsAction,
+    },
+
+    /// Scheduled tasks in .trellis/routines/: list, or fire one now
+    /// (ADR 0026). `work` fires them when due.
+    Routines {
+        #[command(subcommand)]
+        action: orchestrate::RoutinesAction,
     },
 }
 
@@ -445,6 +462,7 @@ fn main() -> Result<()> {
                 RunSeeding {
                     resume,
                     focus: focus.as_deref(),
+                    profile: None,
                 },
                 RunControl {
                     flag,
@@ -474,6 +492,8 @@ fn main() -> Result<()> {
         Command::Model { action } => cmd_models(action),
         Command::Partitions { symbols } => cmd_partitions(&root, &symbols),
         Command::Queue { action } => work::queue(&root, action),
+        Command::Agents { action } => orchestrate::agents(&root, action),
+        Command::Routines { action } => orchestrate::routines(&root, action),
         Command::Work(args) => {
             let code = work::work(&root, args)?;
             if code != 0 {
@@ -1064,6 +1084,10 @@ struct RunSeeding<'a> {
     resume: bool,
     /// `--focus`: overrides `[context] focus` for this run only.
     focus: Option<&'a str>,
+    /// The agent profile a queued task runs as (ADR 0026 §4): its approve
+    /// list and skill filter apply to this run, and the trail records its
+    /// name. `None` for every caller but `work`.
+    profile: Option<&'a trellis_queue::profile::Profile>,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -1192,7 +1216,11 @@ fn cmd_run(
     control: RunControl,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    let RunSeeding { resume, focus } = seeding;
+    let RunSeeding {
+        resume,
+        focus,
+        profile,
+    } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
     // First, because it costs nothing and needs nothing: a run in approve
@@ -1200,6 +1228,14 @@ fn cmd_run(
     // like a run that tried (ADR 0018). Before the model, before the
     // snapshot, before any file is read.
     let mut dial = cfg.control(control.flag)?;
+    // A profile's approve list replaces the repository's for its runs; the
+    // mode itself arrives as the flag (ADR 0026 §4).
+    if let Some(list) = profile
+        .and_then(|p| p.file.control.as_ref())
+        .and_then(|c| c.approve.clone())
+    {
+        dial.approve = list;
+    }
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);
     }
@@ -1383,7 +1419,11 @@ fn cmd_run(
     let notes = config::RepoConfig::notes(root)?;
     // Skills (ADR 0019): names and descriptions to the prompt, capped. Read
     // before the snapshot like everything else the run is seeded with.
-    let skills = trellis_loop::SkillCatalog::discover(root);
+    let mut skills = trellis_loop::SkillCatalog::discover(root);
+    // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4).
+    if let Some(p) = profile {
+        skills.valid.retain(|s| p.allows_skill(&s.name));
+    }
     let disclosed = skills.disclosed();
     if !governance.is_empty()
         || notes.is_some()
@@ -1628,6 +1668,12 @@ fn cmd_run(
     // pool — so an interrupted run would hang until someone pressed Enter.
     rt.shutdown_background();
 
+    // Completion tokens as the adapter counted them (ADR 0026 §8). A
+    // scripted driver has no count, which is `None`, not a free run.
+    let tokens = match &driver {
+        Driver::Scripted(_) => None,
+        Driver::Runtime(m) => Some(trellis_loop::Model::tokens_used(m)),
+    };
     let facts = |approved| TrailFacts {
         approved,
         base_commit: &snapshot.head,
@@ -1635,6 +1681,8 @@ fn cmd_run(
         control: Some(dial.describe()),
         gates: &gate_log,
         stamp: Some(&stamp),
+        tokens,
+        agent: profile.map(|p| p.name.clone()),
     };
     let Some(outcome) = outcome else {
         return interrupted_run(
@@ -2133,6 +2181,10 @@ struct TrailFacts<'a> {
     /// run id is the `TRELLIS_RUN_ID` bash and hooks were given. `None`
     /// stamps it now.
     stamp: Option<&'a (String, String)>,
+    /// Completion tokens and the agent profile, for the budget ledger
+    /// (ADR 0026 §8).
+    tokens: Option<u64>,
+    agent: Option<String>,
 }
 
 fn record_trail(
@@ -2150,6 +2202,8 @@ fn record_trail(
         control,
         gates,
         stamp,
+        tokens,
+        agent,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2246,6 +2300,8 @@ fn record_trail(
         context,
         actions,
         control,
+        tokens,
+        agent,
     };
 
     let slug = trellis_trail::slugify(task);
@@ -3386,6 +3442,8 @@ mod interrupt_tests {
             control: None,
             gates: &[],
             stamp: None,
+            tokens: None,
+            agent: None,
         }
     }
 
