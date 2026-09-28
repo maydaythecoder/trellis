@@ -15,6 +15,9 @@ trellis-core.workspace = true
 trellis-index.workspace = true
 trellis-checks.workspace = true
 trellis-model.workspace = true
+# `search_notes` and `read_note` (ADR 0024 §6) read the vault through its own
+# reader and BM25 index rather than a second implementation.
+trellis-vault.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

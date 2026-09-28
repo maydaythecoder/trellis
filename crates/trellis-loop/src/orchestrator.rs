@@ -466,6 +466,14 @@ impl Orchestrator {
                 Ok(full) => crate::listing::ls(&full, path),
             },
             ToolCall::Bash { command } => self.bash(command).await,
+            ToolCall::SearchNotes { query, limit } => match self.tools.notes() {
+                Some(n) => crate::notes::search(n, query, *limit),
+                None => ToolResult::Error("no note vault is configured for this run".into()),
+            },
+            ToolCall::ReadNote { note } => match self.tools.notes() {
+                Some(n) => crate::notes::read(n, note),
+                None => ToolResult::Error("no note vault is configured for this run".into()),
+            },
             ToolCall::Custom { name, args } => self.custom(name, args).await,
         };
         // Observe only. The result is already decided and is what the model

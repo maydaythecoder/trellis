@@ -77,6 +77,17 @@ pub enum ToolCall {
     Bash {
         command: String,
     },
+    /// BM25 search over the repository's note vault (ADR 0024 §6).
+    /// Read-only; offered only when `[context] vault` is configured.
+    SearchNotes {
+        query: String,
+        limit: Option<u32>,
+    },
+    /// One vault note's text, by stem, path or title. Reference material,
+    /// like `ReadSkill`.
+    ReadNote {
+        note: String,
+    },
     /// A repository's own tool (`[[tools.custom]]`), loaded only when
     /// trusted. `args` is the flat object the model sent, less `tool`.
     Custom {
@@ -419,6 +430,13 @@ pub trait Model {
     /// measurements.
     fn prompt_bytes(&self) -> Option<usize> {
         None
+    }
+
+    /// Every compaction so far (ADR 0024 §5), for the trail and the run's
+    /// output. Empty for a driver that never elides, which is every driver
+    /// with no `[model] context_bytes` and every scripted one.
+    fn compactions(&self) -> &[crate::adapter::Compacted] {
+        &[]
     }
 }
 

@@ -71,6 +71,18 @@ impl ExtraContext {
         format!("{role}Reply with exactly one JSON tool call.\n\n")
     }
 
+    /// The hosted system message's first paragraph (ADR 0024): the same role
+    /// sentence, `system.md` included, with the protocol line a native
+    /// tool-calling API needs in place of the JSON-reply one. Absent a
+    /// `system.md`, these are the bytes the hosted message always began with.
+    pub(crate) fn hosted_opening(&self) -> String {
+        let role = match &self.system {
+            Some(s) => format!("{}\n\n", s.trim()),
+            None => format!("{DEFAULT_ROLE} "),
+        };
+        format!("{role}Call exactly one of the provided tools on every reply.\n\n")
+    }
+
     /// After the protocol: the appended text, then the grounding paragraph
     /// whenever the repository supplied any system text at all.
     pub(crate) fn after_protocol(&self) -> String {

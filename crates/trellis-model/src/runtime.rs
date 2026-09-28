@@ -40,6 +40,16 @@ pub enum RuntimeError {
     Shape(String),
     #[error("runtime did not respond within {0:?}")]
     Timeout(Duration),
+    /// The provider refused the key. Carries the variable's name and never
+    /// the provider's body, which may echo a masked form of the key.
+    #[error(
+        "the provider refused the key from {source_var} (HTTP {status}). Check that \
+         {source_var} holds a valid key for this endpoint."
+    )]
+    Auth { status: u16, source_var: String },
+    /// The request exceeded the provider's context window (ADR 0024 §5).
+    #[error("the request exceeded the provider's context window: {0}")]
+    ContextOverflow(String),
 }
 
 /// Which serving runtime is on the other end.
