@@ -1666,6 +1666,12 @@ fn run_body(
     let snapshot =
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
+    // From here until the outcome is dispatched, a panic anywhere (inside
+    // `block_on` or after it) rolls back on its way out.
+    let mut on_panic = RollbackOnPanic {
+        snapshot: &snapshot,
+        armed: true,
+    };
 
     // Rule documents from `.trellis/governance/`, plus the older
     // `[governance] deny_write` in config.toml. Both feed the same write-path
@@ -1939,6 +1945,13 @@ fn run_body(
             // `rpc`'s `abort` (ADR 0025 §5): the same path as Ctrl-C.
             _ = output::aborted(extras.abort.clone()) => None,
         };
+        // Test-only injection point: a panic with the run's edits in the
+        // tree, where a real one (a provider value that overflows, an index
+        // bug) would unwind out of `block_on`.
+        #[cfg(test)]
+        if PANIC_IN_RUN.with(std::cell::Cell::get) {
+            panic!("injected: a panic inside the run");
+        }
         // Asked after the race either way: the orchestrator is still alive
         // and still knows what this run wrote, which is what the rollback and
         // the trail both need.
@@ -2032,6 +2045,9 @@ fn run_body(
         compactions: &compactions,
     };
     let Some(outcome) = outcome else {
+        // The interrupt path rolls back itself and then commits a trail; a
+        // second rollback on a later panic would remove that commit.
+        on_panic.armed = false;
         return interrupted_run(
             root,
             task,
@@ -2119,6 +2135,10 @@ fn run_body(
         let _ = writeln!(out, "{line}");
     }
 
+    // Each branch below disposes of the tree itself: a converged run leaves
+    // it for review, a non-converged one rolls back and then commits a
+    // trail, which a rollback on a later panic would remove.
+    on_panic.armed = false;
     match outcome {
         trellis_loop::Outcome::Converged {
             iterations,
@@ -2261,6 +2281,44 @@ make the run converge — only a check executed in that session ",
 ///
 /// Exits 130, the shell convention for a process terminated by SIGINT, so a
 /// script wrapping TRELLIS can tell an abort from a failed run.
+/// Rolls the worktree back when a run unwinds past it.
+///
+/// A panic inside the run's `block_on` (a provider value that overflows, a
+/// bug anywhere in the loop) propagated straight out of `cmd_run`, past the
+/// rollback on the non-converged path, and left the agent's edits in the
+/// tree. `Drop` runs during unwinding, which is why the release profile
+/// keeps `panic = "unwind"`. It reports on stderr, since `out` is borrowed
+/// by the frame being unwound, and lets the panic continue: the process
+/// still fails, now with the tree restored. No trail is written; the turn
+/// list died with the loop's future.
+struct RollbackOnPanic<'a> {
+    snapshot: &'a trellis_vcs::Snapshot,
+    armed: bool,
+}
+
+impl Drop for RollbackOnPanic<'_> {
+    fn drop(&mut self) {
+        if !(self.armed && std::thread::panicking()) {
+            return;
+        }
+        let mut err = std::io::stderr();
+        let _ = writeln!(err);
+        let _ = writeln!(
+            err,
+            "PANICKED mid-run. Rolling back — nothing is accepted from a run that did not finish."
+        );
+        rollback_and_report(self.snapshot, &mut err);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test to panic inside the run's `block_on`, after the loop
+    /// has written. Per thread, because `cmd_run` drives the loop on the
+    /// calling thread and tests run in parallel.
+    pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn interrupted_run(
     root: &Path,
     task: &str,

@@ -416,7 +416,9 @@ pub fn retry_delay(retry_after: Option<&str>, attempt: u32) -> Duration {
     retry_after
         .and_then(|v| v.trim().parse::<f64>().ok())
         .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(|s| Duration::from_secs_f64(s).min(MAX_RETRY_WAIT))
+        // Clamped before converting: `from_secs_f64` panics past u64::MAX
+        // seconds, and the value is whatever the provider sent.
+        .map(|s| Duration::from_secs_f64(s.min(MAX_RETRY_WAIT.as_secs_f64())))
         .unwrap_or_else(|| Duration::from_secs(1u64 << attempt.saturating_sub(1).min(5)))
 }
 
@@ -810,6 +812,16 @@ mod tests {
             retry_delay(Some("Wed, 21 Oct 2026 07:28:00 GMT"), 2),
             Duration::from_secs(2)
         );
+    }
+
+    #[test]
+    fn a_retry_after_too_large_for_a_duration_is_capped_not_a_panic() {
+        // `Duration::from_secs_f64` panics above u64::MAX seconds, and the
+        // cap was applied after it: a provider's `1e20` panicked the run
+        // mid-flight, before rollback.
+        for v in ["1e20", "1.8446744073709552e19", "1e308"] {
+            assert_eq!(retry_delay(Some(v), 1), MAX_RETRY_WAIT, "{v}");
+        }
     }
 
     #[test]

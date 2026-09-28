@@ -276,7 +276,9 @@ repository may no longer name `key_env`.
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
-  in seconds when the response has one, capped at 60 s, otherwise 1, 2, 4 s.
+  in seconds when the response has one, capped at 60 s (the cap applied
+  to the number before it becomes a duration, so `1e20` waits 60 s rather
+  than panicking), otherwise 1, 2, 4 s.
   At most four attempts per model call. A transport failure mid-request is
   retried the same way; a refused connection is not. A malformed reply keeps
   the existing format-retry path, which is separate.

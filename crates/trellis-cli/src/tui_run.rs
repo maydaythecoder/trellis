@@ -166,11 +166,12 @@ fn report_outcome(tx: &Sender<Message>, outcome: Result<crate::RunExit>) {
 /// nothing reports and `RunFinished` is never sent — leaving an interface
 /// that holds input forever and can only be quit.
 ///
-/// The worktree line is not hedging. `cmd_run` rolls back on its own
-/// non-converged path and there is no `catch_unwind` and no `Drop` guard
-/// around the snapshot, so a panic partway through genuinely leaves the tree
-/// as the agent left it. Saying so, and naming the command that shows it, is
-/// the difference between a recoverable surprise and a lost afternoon.
+/// The worktree line is hedged on purpose. A panic between the snapshot and
+/// the outcome's dispatch rolls back through `RollbackOnPanic`'s `Drop`, but
+/// that reports on stderr, which this interface draws over, and a panic
+/// before the snapshot or in the rollback itself does not restore anything.
+/// Naming the command that shows the truth is the difference between a
+/// recoverable surprise and a lost afternoon.
 fn lost_run_report(join: &tokio::task::JoinError) -> Vec<Message> {
     let what = if join.is_panic() {
         "the run panicked"
@@ -180,7 +181,8 @@ fn lost_run_report(join: &tokio::task::JoinError) -> Vec<Message> {
     vec![
         Message::AgentToken(format!("! {what}\n")),
         Message::AgentToken(
-            "! the worktree was NOT rolled back — check `git status` before rerunning\n"
+            "! a panic mid-run rolls the worktree back to the run's snapshot; whether \
+             that succeeded is not known here — check `git status` before rerunning\n"
                 .to_string(),
         ),
         Message::RunFinished,
@@ -665,7 +667,7 @@ mod tests {
         assert!(text.contains("panicked"), "got:\n{text}");
         assert!(
             text.contains("git status"),
-            "a panic leaves the tree as the agent left it, and the viewer has \
+            "a panic may leave the tree as the agent left it, and the viewer has \
              to be told how to see that:\n{text}"
         );
         assert!(
