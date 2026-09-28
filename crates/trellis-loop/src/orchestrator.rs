@@ -622,39 +622,8 @@ impl Orchestrator {
                  change an existing one."
             ));
         }
-        // `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on
-        // a fatal error. Only a 1 lets the write go ahead: a check that could
-        // not be made is not a "no", and reading it as one wrote files a
-        // rollback's `git clean` might never remove. Fail closed.
-        let mut git = tokio::process::Command::new("git");
-        git.args(["check-ignore", "-q", "--no-index", "--"])
-            .arg(path)
-            .current_dir(&self.root)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        trellis_core::secrets::scrub(git.as_std_mut());
-        let status = git.status().await;
-        match status.as_ref().map(|s| s.code()) {
-            Ok(Some(1)) => {}
-            Ok(Some(0)) => {
-                return ToolResult::Error(format!(
-                    "write_file refused: `{path}` is ignored by git, so a rollback could not \
-                     remove it. Choose a path git tracks."
-                ));
-            }
-            other => {
-                let why = match other {
-                    Err(e) => format!("git could not be started: {e}"),
-                    Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
-                    Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
-                };
-                return ToolResult::Error(format!(
-                    "write_file refused: could not ask git whether `{path}` is ignored \
-                     ({why}), and a file git ignores would survive a rollback. Nothing \
-                     was written."
-                ));
-            }
+        if let Some(why) = ignored_refusal(&self.root, path).await {
+            return ToolResult::Error(format!("write_file refused: {why}"));
         }
         if let Some(dir) = full.parent()
             && let Err(e) = std::fs::create_dir_all(dir)
@@ -1062,6 +1031,46 @@ impl Orchestrator {
         match read_refusal(&self.root, rel) {
             Some(why) => Err(why),
             None => Ok(self.root.join(rel)),
+        }
+    }
+}
+
+/// Why `write_file` may not create `rel` because git ignores it, or
+/// `None`. Rollback's `git clean -fd` leaves ignored files, so a file
+/// created there would outlive a run that did not converge.
+///
+/// `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on a
+/// fatal error. Only a 1 lets the write go ahead: a check that could not be
+/// made is not a "no", and reading it as one wrote files a rollback's `git
+/// clean` might never remove. Fail closed. The approval gate's prediction
+/// of `write_file` asks this same function, so a write the orchestrator
+/// refuses is not first put to a person.
+pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
+    let mut git = tokio::process::Command::new("git");
+    git.args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(rel)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    trellis_core::secrets::scrub(git.as_std_mut());
+    let status = git.status().await;
+    match status.as_ref().map(|s| s.code()) {
+        Ok(Some(1)) => None,
+        Ok(Some(0)) => Some(format!(
+            "`{rel}` is ignored by git, so a rollback could not remove it. Choose a path \
+             git tracks."
+        )),
+        other => {
+            let why = match other {
+                Err(e) => format!("git could not be started: {e}"),
+                Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
+                Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
+            };
+            Some(format!(
+                "could not ask git whether `{rel}` is ignored ({why}), and a file git \
+                 ignores would survive a rollback. Nothing was written."
+            ))
         }
     }
 }
