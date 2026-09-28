@@ -52,6 +52,13 @@ pub(crate) fn run_with(
     writeln!(out)?;
     writeln!(out, "digest:  {}", fp.sha256)?;
     writeln!(out, "store:   {}", store.path().display())?;
+    if let Some(why) = &fp.refused {
+        writeln!(out, "state:   cannot be trusted: {why}")?;
+        if show {
+            return Ok(());
+        }
+        return Err(anyhow!("cannot trust this repository: {why}"));
+    }
     if show {
         writeln!(
             out,

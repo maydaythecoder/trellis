@@ -222,6 +222,29 @@ anyone being asked. Now the digest also covers:
   the repository after each one. Added only when something would execute,
   so a repository that declares nothing still never opens the store. This
   includes `config.toml` itself, so any edit to it asks again.
+
+  *Amended after the third review of PR #1: exact skips, and links
+  followed.* The skip was implemented as every top-level name starting with
+  `index.bin` and all of `runs/`. That left `.trellis/index.bin.py` and
+  `.trellis/runs/gate.py` uncovered. A symbolic link to a directory was
+  skipped silently, which left whatever it pointed at uncovered too. Now
+  exactly three things are skipped:
+  - `.trellis/index.bin`
+  - `.trellis/.gitignore`, only while its bytes (ignoring line endings) are
+    the file trellis writes, `trellis_index::cache::IGNORE`. A `.gitignore`
+    a person edited is covered.
+  - regular files named `*.json` directly under `.trellis/runs/`, which are
+    the trails
+  Everything else under `runs/` is hashed. Symbolic links are followed, and
+  a directory reached twice is walked once. A link that resolves outside the
+  repository, or to nothing, makes the repository untrustable:
+  `trellis trust` prints the link and its target and records nothing, and
+  a trust recorded earlier no longer matches. Following such a link could
+  hash a whole disk, and skipping it would leave code uncovered. Evidence:
+  `only_what_trellis_writes_is_left_out_of_the_dot_trellis_digest`,
+  `a_symlinked_directory_under_dot_trellis_is_followed` and
+  `a_symlink_under_dot_trellis_that_leaves_the_repository_refuses_trust`
+  in `crates/trellis-loop/src/trust.rs`.
 - **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
   split on whitespace and shell punctuation, and every token that is a
   regular file in the repository is hashed like an argv path.

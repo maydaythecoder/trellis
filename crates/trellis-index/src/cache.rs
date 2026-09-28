@@ -109,7 +109,9 @@ fn ignore_the_blob(dir: &Path) -> std::io::Result<()> {
     std::fs::write(&p, IGNORE)
 }
 
-const IGNORE: &str = r#"# Written by TRELLIS. The index is derived state: keyed by a fingerprint of
+/// The `.gitignore` trellis writes unasked. Public so the trust digest can
+/// tell this file from one a person wrote (ADR 0023 §4).
+pub const IGNORE: &str = r#"# Written by TRELLIS. The index is derived state: keyed by a fingerprint of
 # the file set and discarded on any mismatch, so committing it would cost
 # every merge to save a rebuild of about 120 ms.
 #
