@@ -338,7 +338,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let touched = match changed(root) {
         Ok(t) => t,
         Err(e) => {
-            let restored = undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty();
+            let restored =
+                undo(root, &snapshot, &ignored, &judge, out) && git_unrestored.is_empty();
             return if restored {
                 RunEnd::Error {
                     run_id: None,
@@ -455,7 +456,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         true
     } else {
         // A `.git/` file that could not be put back is a tree not restored.
-        undo(root, &snapshot, &ignored, out) && git_unrestored.is_empty()
+        undo(root, &snapshot, &ignored, &judge, out) && git_unrestored.is_empty()
     };
 
     let run_id = write_trail(
@@ -487,15 +488,23 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
 /// worktree goes back to the snapshot. An ignored file that existed before
 /// and was changed or deleted cannot be put back, because trellis keeps no
 /// copy of ignored files; it is named. `false` when a created file could not
-/// be removed, a pre-existing one was changed or deleted, or the worktree
-/// is not restored.
+/// be removed, a pre-existing one was deleted, or changed where `.trellis/`
+/// or `deny_write` protects it, or the worktree is not restored. A changed
+/// one nothing protects does not count: an agent that runs the tests
+/// rewrites their caches every time (review round 9).
 fn undo(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
     ignored: &IgnoredChanges,
+    judge: &Judge,
     out: &mut dyn Write,
 ) -> bool {
-    let removed = trellis_vcs::ignored::undo(root, ignored, out);
+    let protected = |p: &str| {
+        !judge
+            .denied(root, std::iter::once(&p.to_string()))
+            .is_empty()
+    };
+    let removed = trellis_vcs::ignored::undo(root, ignored, &protected, out);
     rollback(snapshot, out) && removed
 }
 

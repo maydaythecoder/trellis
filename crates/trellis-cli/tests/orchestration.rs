@@ -767,10 +767,13 @@ fn a_process_agent_s_ignored_writes_are_removed_on_rollback() {
 }
 
 #[test]
-fn a_process_agent_that_changed_a_pre_existing_ignored_file_leaves_the_tree_not_restored() {
+fn a_process_agent_that_changed_a_pre_existing_ignored_file_is_reported_and_work_goes_on() {
     // trellis keeps no copy of ignored files, so one the command changed
-    // cannot be put back. The rollback said so and still reported the tree
-    // restored, and `work` carried on over it (review round 8, finding 5).
+    // cannot be put back, and it is named. It does not make the rollback
+    // "not restored": the tracked tree is restored, which is what ADR 0009
+    // promises, and an agent that runs the tests itself rewrites their
+    // caches on every run, so counting it stopped `work` with exit 2 on
+    // every failed run of such an agent (review round 9, finding 2).
     let cmd = r#"["git", "config", "--file", "app/old.cfg", "a.b", "c"]"#;
     let d = ignored_fixture("proc-ignored-old", cmd, PASSING_CHECKS);
     std::fs::write(d.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
@@ -778,10 +781,43 @@ fn a_process_agent_that_changed_a_pre_existing_ignored_file_leaves_the_tree_not_
     ok(&d, &["queue", "add", "change it", "--assignee", "maker"]);
     let o = trellis(&d, &["work"]);
     let s = combined(&o);
-    assert!(s.contains("NOT put back"), "{s}");
-    assert!(s.contains("left the tree NOT restored"), "{s}");
-    assert_eq!(o.status.code(), Some(2), "{s}");
+    assert!(s.contains("app/old.cfg"), "named:\n{s}");
+    assert!(!s.contains("NOT restored"), "{s}");
+    assert_eq!(o.status.code(), Some(0), "{s}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_changed_or_deleted_ignored_file_the_rules_protect_leaves_the_tree_not_restored() {
+    // The stricter signal is kept where it means something: a pre-existing
+    // ignored file `deny_write` names that the command changed, or one it
+    // deleted, is not a restored tree, and `work` stops.
+    let deny = format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"app/old.cfg\"]\n");
+    let rm = if cfg!(windows) {
+        r#"["cmd", "/C", "del app\\gone.cfg"]"#
+    } else {
+        r#"["rm", "app/gone.cfg"]"#
+    };
+    for (name, cmd, config) in [
+        (
+            "proc-ignored-old-denied",
+            r#"["git", "config", "--file", "app/old.cfg", "a.b", "c"]"#,
+            deny.as_str(),
+        ),
+        ("proc-ignored-gone", rm, PASSING_CHECKS),
+    ] {
+        let d = ignored_fixture(name, cmd, config);
+        std::fs::write(d.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
+        std::fs::write(d.join("app/gone.cfg"), "[x]\n\ty = 1\n").unwrap();
+        ok(&d, &["trust"]);
+        ok(&d, &["queue", "add", "change it", "--assignee", "maker"]);
+        let o = trellis(&d, &["work"]);
+        let s = combined(&o);
+        assert!(s.contains("NOT put back"), "{name}:\n{s}");
+        assert!(s.contains("left the tree NOT restored"), "{name}:\n{s}");
+        assert_eq!(o.status.code(), Some(2), "{name}:\n{s}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
 
 #[test]

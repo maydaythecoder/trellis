@@ -869,6 +869,18 @@ This is Paperclip's `process` adapter. A profile with
      tree and cannot be told apart. A `.git/` file that could not be put
      back makes the rollback not restored too; before, it was only
      printed.
+     *Amended after the ninth review of PR #1:* that cost was the common
+     case, so a changed pre-existing ignored file now counts only where it
+     was already a breach: under `.trellis/` or named by `deny_write`. Any
+     other is named ("left as it is") and the run ends rolled back, since
+     the tracked tree is restored, which is what ADR 0009 promises. A
+     deleted pre-existing one still makes the tree not restored: that is
+     a loss, not a rewritten cache. Evidence:
+     `a_process_agent_that_changed_a_pre_existing_ignored_file_is_reported_and_work_goes_on`
+     (renamed from `…_leaves_the_tree_not_restored`; it failed before with
+     "left the tree NOT restored") and
+     `a_changed_or_deleted_ignored_file_the_rules_protect_leaves_the_tree_not_restored`.
+     The same rule holds for a model run (ADR 0023 §5).
    - **What a converged run keeps.** Ignored files the command created,
      such as a `.pytest_cache`, stay. That includes a `sitecustomize.py` or
      a `.pth` file written into an ignored `.venv`, which Python runs at
