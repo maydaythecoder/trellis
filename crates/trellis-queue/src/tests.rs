@@ -540,6 +540,49 @@ fn an_unreadable_pending_file_is_moved_aside_and_the_queue_goes_on() {
     );
 }
 
+#[test]
+fn an_unreadable_pending_file_is_never_removed_without_a_copy_in_failed() {
+    // The risk: the link into failed/ failed (a failed/ file of that name
+    // already existed) and was ignored, then the pending file was removed:
+    // the only copy of whatever it held, gone.
+    let (_d, q) = queue();
+    let id = "00000000-bad";
+    std::fs::create_dir_all(q.dir().join("failed")).unwrap();
+    std::fs::create_dir_all(q.dir().join("pending")).unwrap();
+    std::fs::write(q.dir().join(format!("failed/{id}.json")), "earlier").unwrap();
+    std::fs::write(q.dir().join(format!("pending/{id}.json")), "{ half").unwrap();
+    assert!(q.claim(id).is_err(), "still reported");
+    let copies: Vec<String> = std::fs::read_dir(q.dir().join("failed"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .collect();
+    assert!(
+        copies.iter().any(|c| c == "{ half"),
+        "the unreadable file survives in failed/: {copies:?}"
+    );
+    assert!(copies.iter().any(|c| c == "earlier"), "{copies:?}");
+    assert!(!q.dir().join(format!("pending/{id}.json")).exists());
+
+    // Two claimers that both found it unreadable: the second finds the
+    // same bytes already in failed/, and leaves one copy, not two.
+    let id2 = "00000001-bad";
+    std::fs::write(q.dir().join(format!("pending/{id2}.json")), "{ x").unwrap();
+    std::fs::hard_link(
+        q.dir().join(format!("pending/{id2}.json")),
+        q.dir().join(format!("failed/{id2}.json")),
+    )
+    .unwrap();
+    assert!(q.claim(id2).is_err());
+    let n = std::fs::read_dir(q.dir().join("failed"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(id2))
+        .count();
+    assert_eq!(n, 1);
+    assert!(!q.dir().join(format!("pending/{id2}.json")).exists());
+}
+
 // ---------------------------------------------------------------------------
 // The task model (ADR 0026 §1–§3)
 // ---------------------------------------------------------------------------
