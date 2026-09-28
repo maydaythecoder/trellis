@@ -359,6 +359,10 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             cmd.env(name, v);
         }
     }
+    // Its own process group, so what it starts can be ended with it
+    // (`end_group`), as `bash` is.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
@@ -385,19 +389,23 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Err(_) => break Ended::Exited(None),
         }
         if stop.load(Ordering::SeqCst) {
-            // `kill` reaches the direct child only; a grandchild it started
-            // can outlive it (ADR 0026 §11, not solved here).
+            end_tree(child.id(), true);
             let _ = child.kill();
             let _ = child.wait();
             break Ended::Interrupted;
         }
         if started.elapsed() >= timeout {
+            end_tree(child.id(), true);
             let _ = child.kill();
             let _ = child.wait();
             break Ended::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // However it ended, what it left running is ended too, before anything
+    // is judged or rolled back: a backgrounded writer would otherwise land
+    // after both.
+    end_tree(child.id(), false);
     let secs = started.elapsed().as_secs();
     let exit_text = match &ended {
         Ended::Exited(Some(c)) => format!("exited {c} after {secs}s"),
@@ -604,6 +612,32 @@ fn undo(
 ) -> bool {
     let removed = trellis_vcs::ignored::undo_created(root, ignored, out);
     rollback(snapshot, out) && removed
+}
+
+/// Ends what the command started. On Unix the command leads its own
+/// group, and `kill -KILL -- -<pgid>` reaches every member that did not
+/// leave it (`setsid`), whether or not the command itself is still alive.
+/// On Windows `taskkill /T` walks the tree from a live process, so only
+/// while the command is `alive`: after a normal exit what it started keeps
+/// running (ADR 0026 §11).
+fn end_tree(pid: u32, alive: bool) {
+    let mut k = if cfg!(windows) {
+        if !alive {
+            return;
+        }
+        let mut c = Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        c
+    } else {
+        let mut c = Command::new("kill");
+        c.args(["-KILL", "--", &format!("-{pid}")]);
+        c
+    };
+    k.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    trellis_core::secrets::scrub(&mut k);
+    let _ = k.status();
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {
