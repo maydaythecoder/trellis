@@ -2056,6 +2056,136 @@ fn a_run_with_a_context_file_says_it_was_loaded() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A repository with a two-note vault under `notes/`, committed, plus the
+/// stopping script. `config` is the `[context]` section's body.
+fn repo_with_vault(name: &str, config: &str) -> (PathBuf, String) {
+    let d = repo(name);
+    let v = d.join("notes");
+    std::fs::create_dir_all(&v).unwrap();
+    std::fs::write(
+        v.join("root.md"),
+        "---\ntitle: \"Root\"\nparent: null\n---\nROOT-BODY\n",
+    )
+    .unwrap();
+    std::fs::write(
+        v.join("child.md"),
+        "---\ntitle: \"Child\"\nparent: \"[[root]]\"\n---\nCHILD-BODY\n",
+    )
+    .unwrap();
+    std::fs::write(v.join("manifest.json"), r#"["child.md","root.md"]"#).unwrap();
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!("[context]\n{config}"),
+    )
+    .unwrap();
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "vault"]);
+    (d, script)
+}
+
+fn porcelain(d: &Path) -> String {
+    let out = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+#[test]
+fn a_run_with_a_vault_focus_names_the_note_and_its_size() {
+    // The compiled note reaches the prompt, so like context.md it must be
+    // named where the run starts — with the focus, because the same vault
+    // gives a different prompt per note, and with the size, because that is
+    // what every turn pays for it.
+    //
+    // `--focus` overrides the configured focus: switching note by editing
+    // config.toml would dirty the worktree and the run would refuse to start.
+    let (d, script) = repo_with_vault("run-vault", "vault = \"notes\"\nfocus = \"root\"\n");
+    let out = run(
+        &d,
+        &["run", "--model", &script, "--focus", "child", "a task"],
+    );
+    let s = stdout(&out);
+    assert!(
+        s.contains("vault note `child` from notes loaded ("),
+        "the flag's focus, not the config's:\n{}",
+        combined(&out)
+    );
+    assert!(s.contains(" B)"), "the byte count is stated:\n{s}");
+    assert!(
+        !porcelain(&d).contains("notes"),
+        "compiled in memory; nothing is written into the vault or beside it"
+    );
+
+    // Without the flag the configured focus applies.
+    let s = stdout(&run(&d, &["run", "--model", &script, "a task"]));
+    assert!(s.contains("vault note `root` from notes loaded ("), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_vault_with_no_focus_says_nothing_was_sent_rather_than_skipping_quietly() {
+    let (d, script) = repo_with_vault("run-vault-nofocus", "vault = \"notes\"\n");
+    let s = stdout(&run(&d, &["run", "--model", &script, "a task"]));
+    assert!(
+        s.contains("notes configured but no focus set; no vault note sent"),
+        "{s}"
+    );
+    assert!(!s.contains("vault note `"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_invalid_vault_refuses_the_run_before_anything_is_touched() {
+    // An invalid vault is a run that cannot start as configured. It must cost
+    // what an unreachable runtime costs: nothing snapshotted, no trail.
+    let (d, script) = repo_with_vault("run-vault-invalid", "vault = \"notes\"\n");
+    std::fs::write(
+        d.join("notes/child.md"),
+        "---\ntitle: \"Child\"\ntags: x\nparent: \"[[root]]\"\n---\nCHILD-BODY\n",
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "break the vault"]);
+
+    let out = run(
+        &d,
+        &["run", "--model", &script, "--focus", "child", "a task"],
+    );
+    let all = combined(&out);
+    assert!(!out.status.success(), "{all}");
+    assert!(
+        all.contains("unexpected frontmatter key \"tags\""),
+        "the violation itself, not only that there was one:\n{all}"
+    );
+    assert!(all.contains("the run did not start"), "{all}");
+    assert!(!stdout(&out).contains("snapshot at"), "{all}");
+    assert!(
+        !d.join(".trellis/runs").exists(),
+        "no trail for a run that never began"
+    );
+    assert!(porcelain(&d).is_empty(), "{}", porcelain(&d));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_focus_that_names_no_note_refuses_the_run() {
+    let (d, script) = repo_with_vault("run-vault-unknown", "vault = \"notes\"\n");
+    let out = run(
+        &d,
+        &["run", "--model", &script, "--focus", "nope", "a task"],
+    );
+    assert!(!out.status.success());
+    assert!(
+        combined(&out).contains("unknown stem: nope"),
+        "{}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn a_failing_check_prints_what_the_checker_wrote_on_both_streams() {
     // Two guards, one per stream, and both survived. A `check` that reports

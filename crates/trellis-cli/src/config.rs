@@ -29,6 +29,31 @@ pub(crate) struct RepoConfig {
     pub governance: Option<GovernanceSection>,
     #[serde(default)]
     pub model: Option<ModelSection>,
+    #[serde(default)]
+    pub context: Option<ContextSection>,
+}
+
+/// A note vault to compile one focus note from (ADR 0017).
+#[derive(Debug, Deserialize)]
+pub(crate) struct ContextSection {
+    /// The vault directory, relative to the repository root.
+    pub vault: Option<String>,
+    /// The note stem to compile. `trellis run --focus` overrides it, because
+    /// editing this file to switch focus dirties the worktree, and a run
+    /// refuses a dirty worktree (ADR 0009).
+    pub focus: Option<String>,
+}
+
+/// Where the vault is and which note to compile, after validation of the
+/// configuration itself. Whether the vault is valid is `trellis-vault`'s
+/// question, asked later.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct VaultSetting {
+    /// Absolute: `root` joined with the configured path.
+    pub dir: std::path::PathBuf,
+    /// As written in `config.toml`, for messages and the prompt.
+    pub source: String,
+    pub focus: Option<String>,
 }
 
 /// A default model for this repository.
@@ -135,6 +160,53 @@ impl RepoConfig {
             .and_then(|g| g.deny_write.clone())
             .unwrap_or_default();
         trellis_loop::Governance::new(&rules)
+    }
+
+    /// The configured vault, with `--focus` applied over the config's focus.
+    ///
+    /// `Ok(None)` when no vault is configured and no focus asked for. A focus
+    /// with no vault is an error rather than a no-op: a flag that silently
+    /// does nothing is how a user ends up believing the model saw a note it
+    /// never saw.
+    ///
+    /// The path must stay inside the repository. The clean-worktree check
+    /// covers the repository and nothing else, so a vault outside it could
+    /// change between two runs from the same commit and neither the snapshot
+    /// nor the trail would show why they differed.
+    pub(crate) fn vault(&self, root: &Path, focus: Option<&str>) -> Result<Option<VaultSetting>> {
+        let section = self.context.as_ref();
+        let configured = section.and_then(|c| c.vault.clone());
+        let focus = focus
+            .map(str::to_string)
+            .or_else(|| section.and_then(|c| c.focus.clone()));
+        let Some(source) = configured else {
+            if let Some(f) = focus {
+                anyhow::bail!(
+                    "focus `{f}` was asked for, but no vault is configured. \
+                     Set [context] vault = \"<dir>\" in .trellis/config.toml"
+                );
+            }
+            return Ok(None);
+        };
+        let rel = Path::new(&source);
+        let escapes = rel.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+        if source.trim().is_empty() || escapes {
+            anyhow::bail!(
+                "[context] vault = \"{source}\" must be a relative path inside the \
+                 repository; a vault outside it is not covered by the clean-worktree \
+                 check, so two runs from one commit could see different notes"
+            );
+        }
+        Ok(Some(VaultSetting {
+            dir: root.join(rel),
+            source,
+            focus,
+        }))
     }
 
     /// A named task template from `.trellis/prompts/<name>.md`.
@@ -439,6 +511,56 @@ deny_write = [\"vendor/\", \"*.lock\"]
             RepoConfig::notes(d.path()).unwrap().as_deref(),
             Some("Use `make check`.")
         );
+    }
+
+    #[test]
+    fn a_vault_is_read_and_the_flag_overrides_the_configured_focus() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            RepoConfig::load(d.path())
+                .unwrap()
+                .vault(d.path(), None)
+                .unwrap(),
+            None
+        );
+
+        write(
+            d.path(),
+            "[context]\nvault = \"notes\"\nfocus = \"task-a\"\n",
+        );
+        let c = RepoConfig::load(d.path()).unwrap();
+        let v = c.vault(d.path(), None).unwrap().unwrap();
+        assert_eq!(v.dir, d.path().join("notes"));
+        assert_eq!(v.focus.as_deref(), Some("task-a"));
+        // The flag wins: switching focus must not require editing a tracked
+        // file, or the next run refuses the dirty worktree.
+        let v = c.vault(d.path(), Some("task-b")).unwrap().unwrap();
+        assert_eq!(v.focus.as_deref(), Some("task-b"));
+    }
+
+    #[test]
+    fn a_focus_with_no_vault_is_refused_rather_than_ignored() {
+        let d = tempfile::tempdir().unwrap();
+        let e = RepoConfig::load(d.path())
+            .unwrap()
+            .vault(d.path(), Some("task-a"))
+            .unwrap_err();
+        assert!(format!("{e}").contains("no vault is configured"), "{e}");
+    }
+
+    #[test]
+    fn a_vault_outside_the_repository_is_refused() {
+        // The clean-worktree check is what makes a run reproducible from its
+        // commit. A vault it does not cover breaks that silently.
+        let d = tempfile::tempdir().unwrap();
+        for bad in ["../notes", "/abs/notes", "notes/../../x", ""] {
+            write(d.path(), &format!("[context]\nvault = {bad:?}\n"));
+            let e = RepoConfig::load(d.path())
+                .unwrap()
+                .vault(d.path(), None)
+                .unwrap_err();
+            assert!(format!("{e}").contains("inside the"), "{bad}: {e}");
+        }
     }
 
     #[test]

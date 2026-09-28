@@ -2934,6 +2934,7 @@ dependencies = [
  "trellis-loop",
  "trellis-model",
  "trellis-trail",
+ "trellis-vault",
  "trellis-vcs",
  "tui-demo",
 ]

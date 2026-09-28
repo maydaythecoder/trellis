@@ -217,7 +217,9 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
         _ => "probing…".to_string(),
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async move {
         // Bounded. The loop can outrun a redraw during a turn burst, and an
         // unbounded channel turns that into memory growth.
@@ -345,7 +347,17 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                         let subscriber = tracing_subscriber::registry().with(layer);
                         let mut narration = TranscriptSink::new(run_tx.clone());
                         let outcome = tracing::subscriber::with_default(subscriber, || {
-                            crate::cmd_run(&root, &task, &spec, false, "1", false, &mut narration)
+                            // No resume, and no focus override: `[context]
+                            // focus` applies.
+                            crate::cmd_run(
+                                &root,
+                                &task,
+                                &spec,
+                                false,
+                                "1",
+                                crate::RunSeeding::default(),
+                                &mut narration,
+                            )
                         });
                         narration.flush_partial();
                         report_outcome(&run_tx, outcome);
