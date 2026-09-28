@@ -13,6 +13,15 @@ cd "$ROOT"
 # branch is cut from `inherit` and answers only for what it adds to it;
 # `inherit` itself answers to the PR base. Measuring a ticket against the PR
 # base would fail it on PR #1's debt, which it did not add.
+#
+# `--base <ref>` as a gate's first argument sets it for that run, so a ticket
+# whose work is cleaning up PR #1 itself (issue #13) can have a Verify line
+# that measures against the PR base; G6 allows no `VAR=` prefix. Sourcing
+# shares the caller's arguments, so the shift here is the caller's.
+if [ "${1:-}" = "--base" ]; then
+  GATE_BASE="${2:?--base needs a ref}"
+  shift 2
+fi
 if [ -z "${GATE_BASE:-}" ]; then
   if [ "$(git rev-parse --abbrev-ref HEAD)" = "inherit" ]; then
     GATE_BASE="origin/v0.1-resolver"

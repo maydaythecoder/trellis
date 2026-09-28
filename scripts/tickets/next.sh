@@ -1,29 +1,43 @@
 #!/usr/bin/env bash
-# Prints the next ticket for the orchestrator: highest priority, oldest first,
-# labelled `ready`, not blocked, not needing a person, not split, not a story,
-# and every `blocked_by` in its triage block closed.
+# Prints the next ticket an agent may start: highest priority, oldest first.
 #
 #   scripts/tickets/next.sh         the next ticket, as "<number> <title>"
-#   scripts/tickets/next.sh --why   every open ready issue and why it is or is not next
+#   scripts/tickets/next.sh --why   every open ticket and why it is or is not next
+#
+# Eligibility is read from the issue itself, by the same rules as G0
+# (scripts/gates/ticket-ready.sh), not from the `ready` label: a label the
+# triage writer computed from an older body would let the queue and the gate
+# disagree. On top of G0 it requires `triage:auto` and excludes what a person
+# decides (docs/BUILD_SYSTEM.md, "Where a person is needed").
 set -euo pipefail
 why="${1:-}"
 
 # gh's built-in --jq; unit separator between fields because `read` collapses
 # runs of tab, which drops empty fields.
-gh issue list --state open --label ready --limit 200 --json number,title,labels,body --jq '
+gh issue list --state open --limit 300 --json number,title,labels,body --jq '
   def prio: ([.labels[].name] | if index("P0") then 0 elif index("P1") then 1 else 2 end);
   sort_by(prio, .number)[] |
   [(.number | tostring), (prio | tostring), ([.labels[].name] | join(" ")),
-   ([.body | scan("blocked_by: \\[([^\\]]*)\\]") | .[0]] | join(" ")),
+   ([.body | scan("(?m)^blocked_by: \\[([^\\]]*)\\]") | .[0]] | join(" ")),
+   (if (.body | test("(?m)^## Done when")) then "y" else "n" end),
+   (if (.body | test("(?ms)^## Verify\\s*\\n+```")) then "y" else "n" end),
    .title] | join("\u001f")' |
-while IFS=$'\x1f' read -r n p labels blocked title; do
+while IFS=$'\x1f' read -r n p labels blocked done_when verify title; do
   reason=""
   case " $labels " in
-    *" triage:blocked "*) reason="triage:blocked" ;;
-    *" triage:needs-human "*) reason="needs a person" ;;
-    *" split "*) reason="split into children" ;;
     *" type:story "*) reason="a story, not a ticket" ;;
+    *" split "*) reason="split into children" ;;
+    *" triage:needs-human "*) reason="needs a person" ;;
+    *" triage:blocked "*) reason="triage:blocked" ;;
+    *" risk:high "*) reason="risk:high: a person decides" ;;
+    *" surface:public "*) reason="surface:public: a person approves" ;;
+    *" area:checks "*) reason="area:checks: the Verdict seal" ;;
+    *" !security "*) reason="!security: a person reviews" ;;
+    *" triage:auto "*) ;;
+    *) reason="not triage:auto" ;;
   esac
+  [ -z "$reason" ] && [ "$done_when" != y ] && reason="no '## Done when'"
+  [ -z "$reason" ] && [ "$verify" != y ] && reason="no fenced '## Verify'"
   if [ -z "$reason" ]; then
     # A dependency that is not an issue number cannot be looked up, so it blocks.
     for b in $(echo "$blocked" | tr ',"' '  '); do
