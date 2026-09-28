@@ -1128,6 +1128,7 @@ fn cmd_run(
         prior,
         repo: trellis_loop::RepoContext {
             notes,
+            vault: None,
             rules: prompt_rules,
             files,
         },

@@ -17,7 +17,7 @@ mod wire;
 pub use adapter::RuntimeModel;
 pub use agent::{
     Model, NotConverged, Outcome, PriorContext, RepoContext, Seed, Step, ToolCall, Transcript,
-    Turn, run, run_seeded,
+    Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
 pub use governance::{Governance, Rule};
