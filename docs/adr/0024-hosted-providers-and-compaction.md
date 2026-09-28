@@ -300,6 +300,19 @@ without a budget against the same replies and compares outcomes.
   produced `done` there is no such model turn; if the governance audit then
   appends one, the compaction sits just before the audit's action, which is
   also the order they happened in. Otherwise it is the trail's last action.
+- *Amended 2026-09-27.* **How the fit is found.** It used to render the
+  whole request once per candidate number of elided turns, which for a
+  hosted body is one JSON serialization of the conversation per extra
+  elided turn. The answer is unchanged (the smallest count at or above the
+  current one that fits, else all but the newest), but it is now computed
+  from per-turn sizes: eliding a turn changes the request by the size of
+  its note minus the size of its observation (plain length on the
+  completion tiers, JSON-escaped length for a hosted body). The chosen
+  count is rendered and its size checked against the prediction; on a
+  mismatch the old scan runs. Not a binary search, because the size is not
+  monotone: a note can be longer than a short observation. Tests assert
+  the same answer as the scan on a non-monotone transcript, and a bounded
+  number of renders.
 - **Model-written summaries are not built.** A summary is text a model wrote
   about the run, entering the context as though it were a record — judgment
   text in the place observations go. Elision loses detail and invents none.
