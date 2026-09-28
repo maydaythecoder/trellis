@@ -12,13 +12,13 @@ note depends on, and where it sits in the larger plan. Put all of that in
 `context.md` and every run pays for every note; leave it out and the model
 starts without it.
 
-The owner keeps such notes in an Apex-format vault, and a TypeScript
-implementation that compiles one note's context from such a vault already
-exists for another harness (pi). It is to live beside this one as a twin in
-`integrations/pi`, which had not landed when this ADR was written; the fixture
-and golden outputs both are to be tested against are already committed in
-`crates/trellis-vault/tests/fixtures/`, and the Rust side is tested against
-them.
+The owner keeps such notes in an Apex-format vault (`boriemannetje/apex-notes`,
+MIT; its format is borrowed, not its code). The selection rule was first
+prototyped in TypeScript outside this repository (`pistack`); that prototype
+produced the fixture and golden outputs committed in
+`crates/trellis-vault/tests/fixtures/`, and this crate is held to them byte for
+byte. The prototype is not maintained alongside this crate; the goldens are
+the specification.
 
 ## Decision
 
@@ -128,10 +128,10 @@ free of.
 **The whole vault, every run.** Every note costs context window on every turn,
 and on local weights the window is the scarce resource (S5).
 
-**Write the compiled file to `.trellis/` or `.ctx/`, as the pi twin does.**
+**Write the compiled file to `.trellis/` or `.ctx/`, as the prototype did.**
 Dirties the worktree, or requires an ignore rule that hides state a trail does
-not record. The pi twin writes a file because pi reads one; this harness has
-the prompt in hand and does not need the file.
+not record. The prototype wrote a file because its consumer read one; this
+harness has the prompt in hand and does not need the file.
 
 **Add keys to the frontmatter** (tags, status). Each is a field with semantics
 the compiler would have to implement, and the two implementations would have
@@ -146,11 +146,10 @@ the clean-worktree requirement.
 - The `repo:` line at run start names the focus, the vault path and the byte
   count, and the number of reference bodies dropped when any were.
 - Compile time at run start is **not measured**. The implementation rereads
-  every note on each run; the twin's plan assumes vaults of at most 2,000
-  notes. Pending a measurement on a real vault before any claim about it.
+  every note on each run; the prototype's plan assumed vaults of at most
+  2,000 notes. Pending a measurement on a real vault before any claim about it.
 - The vault is repository content and is instruction-shaped, like
   `context.md`. It has the same status and the same protection: it can waste a
   run, and it cannot make one converge.
-- The TypeScript twin in `integrations/pi` is held to the same three golden
-  files. A change to the selection rule is a change to both, and to the
-  goldens, in one commit.
+- The goldens are the specification of the selection rule. A change to the
+  rule is a change to the goldens, in the same commit.
