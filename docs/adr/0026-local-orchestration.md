@@ -598,6 +598,12 @@ would create an invalid set is refused as a whole.
   `--on-conflict replace` overwrites it.
 - **Task ids from an import folder must be lowercase ASCII letters, digits
   and dashes.** Each id becomes a file name in the git directory.
+- **`--on-conflict replace` against a task claimed here is refused while
+  planning**, before anything is written. It used to be found only when
+  the apply reached that task, after the profiles and routines ahead of it
+  were already in `.trellis/`. A claim made between the plan and the apply
+  is still refused at that task, with the earlier items written; the
+  window is the length of the import.
 
 ### 11. Process agents
 
