@@ -2,8 +2,8 @@
 
 **Status:** Accepted. Amended in implementation: §3 (`reparent --no-parent`;
 `rm` writes only what changes; the search limit), §5 (`dates --seed` may
-create the file; a BOM changes anchors), §7 (added: `[context] dates` is not
-built), and "Evidence" (how the vectors were produced). Each amendment is
+create the file; a BOM changes anchors), §7 (added: `[context] dates` and
+auto-created linked notes are not built), and "Evidence" (how the vectors were produced). Each amendment is
 marked in place.
 **Date:** 2026-09-27
 **Reference design:** Apex Notes (`boriemannetje/apex-notes`, MIT), commit
@@ -374,6 +374,13 @@ The annotation is not built. Reading the flag means changing `cmd_run` in
 subcommand. Nothing is stubbed: no config key is read, and the goldens are
 unaffected.
 
+**Auto-creating linked notes (inventory item 22) is not built either.** ADR
+0021 row 20, 22–26 assigns it to this wave. Apex creates a loose note when an
+editor autosave finds a *newly typed* `[[X]]` that resolves to nothing. A CLI
+has no "newly typed" event. Doing it on `check --fix` instead would create a
+note for every unresolved link in the vault, notes the writer never asked
+for. `trellis vault new` is the explicit form.
+
 ## Alternatives rejected
 
 **Two parsers, strict for the gate and Apex's for everything else.** With two
@@ -462,7 +469,8 @@ The method:
 The anchor strings cover ASCII, a BMP character (`é`) and a surrogate pair
 (`😀`).
 
-Every vector matched on the first run of the Rust tests except one, which was
-a mistaken expectation, not a divergence. `parseWikiTarget("[[notes/x/y.md | Label ]]")`
-yields `x/y.md`, because the trim runs after the `.md` strip. The Rust side
-already did this, and the test was corrected to match Apex.
+The Rust tests passed against these vectors on their first run. Before that
+run, one expectation had been written by hand before the vectors existed, and
+it was wrong: `parseWikiTarget("[[notes/x/y.md | Label ]]")` yields `x/y.md`,
+because the trim runs after the `.md` strip. The Rust code already did this.
+The expectation was corrected to Apex's output.
