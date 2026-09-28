@@ -676,7 +676,7 @@ impl Orchestrator {
         })
         .await;
         match r {
-            Err(e) => ToolResult::Error(e),
+            Err(e) => ToolResult::Error(e.to_string()),
             Ok(c) => {
                 let status = if c.timed_out {
                     format!("timed out after {}s and was killed", b.timeout.as_secs())
@@ -725,7 +725,7 @@ impl Orchestrator {
         })
         .await;
         match r {
-            Err(e) => ToolResult::Error(e),
+            Err(e) => ToolResult::Error(e.to_string()),
             Ok(c) if c.timed_out => ToolResult::Error(format!(
                 "`{name}` did not finish within {}s and was killed",
                 CUSTOM_TIMEOUT.as_secs()

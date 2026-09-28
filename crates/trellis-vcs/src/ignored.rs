@@ -113,7 +113,7 @@ pub fn shown(list: &[String]) -> String {
 }
 
 impl IgnoredSnapshot {
-    pub fn take(root: &Path) -> Result<IgnoredSnapshot, String> {
+    pub fn take(root: &Path) -> Result<IgnoredSnapshot, crate::GuardError> {
         let mut git = crate::command();
         git.args([
             "ls-files",
@@ -124,14 +124,15 @@ impl IgnoredSnapshot {
         ])
         .current_dir(root)
         .stdin(Stdio::null());
-        let o = git
-            .output()
-            .map_err(|e| format!("git ls-files could not run: {e}"))?;
+        let o = git.output().map_err(|source| crate::GuardError::Spawn {
+            what: "git ls-files",
+            source,
+        })?;
         if !o.status.success() {
-            return Err(format!(
-                "git ls-files --ignored failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
+            return Err(crate::GuardError::Failed {
+                what: "git ls-files --ignored",
+                stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            });
         }
         let text = String::from_utf8_lossy(&o.stdout);
         let files = text
@@ -258,7 +259,10 @@ pub fn undo(
 /// ignored files, or why that could not be read. A listing that fails is
 /// not read as "every ignored file deleted", and nothing is removed on its
 /// strength.
-pub fn changes_since(root: &Path, before: &IgnoredSnapshot) -> Result<IgnoredChanges, String> {
+pub fn changes_since(
+    root: &Path,
+    before: &IgnoredSnapshot,
+) -> Result<IgnoredChanges, crate::GuardError> {
     IgnoredSnapshot::take(root).map(|after| before.diff(&after))
 }
 

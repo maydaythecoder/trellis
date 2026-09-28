@@ -510,8 +510,7 @@ mod tests {
         let path = d.path().join(".trellis/config.toml");
         std::fs::write(&path, b"[governance]\ndeny_write = [\"\xff\xfe\"]\n").unwrap();
         let e = RepoConfig::load_with_user(d.path(), None)
-            .err()
-            .expect("an unreadable config is refused");
+            .expect_err("an unreadable config is refused");
         let msg = format!("{e:#}");
         assert!(msg.contains("config.toml"), "{msg}");
         assert!(msg.contains("could not be read"), "{msg}");

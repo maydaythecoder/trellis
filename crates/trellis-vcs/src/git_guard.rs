@@ -34,6 +34,7 @@
 //! worktree or elsewhere) is not guarded; re-pointing it is a change to
 //! `config`, which is.
 
+use crate::GuardError;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
@@ -74,7 +75,7 @@ pub struct GitGuard {
 impl GitGuard {
     /// Reads every guarded file. Before the writer runs: nothing can be put
     /// back that was not read.
-    pub fn capture(root: &Path) -> Result<GitGuard, String> {
+    pub fn capture(root: &Path) -> Result<GitGuard, GuardError> {
         let mut git = crate::command_with_hooks();
         git.args([
             "rev-parse",
@@ -93,9 +94,10 @@ impl GitGuard {
         ])
         .current_dir(root)
         .stdin(Stdio::null());
-        let o = git
-            .output()
-            .map_err(|e| format!("git rev-parse could not run: {e}"))?;
+        let o = git.output().map_err(|source| GuardError::Spawn {
+            what: "git rev-parse",
+            source,
+        })?;
         let text = String::from_utf8_lossy(&o.stdout);
         let paths: Vec<PathBuf> = text.lines().map(|l| root.join(l.trim())).collect();
         let [
@@ -106,18 +108,20 @@ impl GitGuard {
             hooks,
             exclude,
             attributes,
-        ] = <[PathBuf; 7]>::try_from(paths).map_err(|_| {
-            format!(
-                "git rev-parse --git-path failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            )
+        ] = <[PathBuf; 7]>::try_from(paths).map_err(|_| GuardError::Failed {
+            what: "git rev-parse --git-path",
+            stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
         })?;
-        let root_real = std::fs::canonicalize(root)
-            .map_err(|e| format!("{} could not be resolved: {e}", root.display()))?;
+        let resolve = |p: &Path| {
+            std::fs::canonicalize(p).map_err(|source| GuardError::Unresolved {
+                path: p.to_path_buf(),
+                source,
+            })
+        };
+        let root_real = resolve(root)?;
         let mut bases = Vec::new();
         for d in [&git_dir, &common] {
-            let b = std::fs::canonicalize(d)
-                .map_err(|e| format!("{} could not be resolved: {e}", d.display()))?;
+            let b = resolve(d)?;
             if !bases.contains(&b) {
                 bases.push(b);
             }
@@ -180,7 +184,7 @@ impl GitGuard {
                 Ok(n) => n,
                 Err(e) => {
                     differed.push(self.label(p));
-                    failed.push(e);
+                    failed.push(e.to_string());
                     continue;
                 }
             };
@@ -199,7 +203,7 @@ impl GitGuard {
             Ok(n) => n,
             Err(e) => {
                 differed.push(self.label(hooks));
-                failed.push(e);
+                failed.push(e.to_string());
                 return (differed, failed);
             }
         };
@@ -332,8 +336,11 @@ fn make_link(target: &Path, p: &Path, dir: bool) -> std::io::Result<()> {
 
 /// What is at `p`, `None` when nothing is, `Err` when it cannot be read: a
 /// guard that cannot read a file cannot put it back. Never through a link.
-fn read_entry(p: &Path) -> Result<Option<Entry>, String> {
-    let fail = |e: std::io::Error| format!("{} could not be read: {e}", p.display());
+fn read_entry(p: &Path) -> Result<Option<Entry>, GuardError> {
+    let fail = |source: std::io::Error| GuardError::Unreadable {
+        path: p.to_path_buf(),
+        source,
+    };
     let m = match std::fs::symlink_metadata(p) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -356,7 +363,7 @@ fn read_entry(p: &Path) -> Result<Option<Entry>, String> {
 
 /// Every file and link under `dir`, sorted, links not entered. A missing
 /// directory is empty; one that is itself a link is that one entry.
-fn read_tree(dir: &Path) -> Result<Vec<(PathBuf, Entry)>, String> {
+fn read_tree(dir: &Path) -> Result<Vec<(PathBuf, Entry)>, GuardError> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -398,18 +405,21 @@ fn locate(p: &Path) -> Option<PathBuf> {
 
 /// The file's bytes, `None` when it does not exist, for reading the
 /// configs' includes (read through a link: reading is what git does too).
-fn read_opt(p: &Path) -> Result<Option<Vec<u8>>, String> {
+fn read_opt(p: &Path) -> Result<Option<Vec<u8>>, GuardError> {
     match std::fs::read(p) {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{} could not be read: {e}", p.display())),
+        Err(source) => Err(GuardError::Unreadable {
+            path: p.to_path_buf(),
+            source,
+        }),
     }
 }
 
 /// Every file the configs name as an include, followed through includes
 /// of includes, each resolved as git resolves it: `~/` against the home
 /// directory, a relative path against the directory of the file naming it.
-fn includes(configs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+fn includes(configs: &[PathBuf]) -> Result<Vec<PathBuf>, GuardError> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut frontier: Vec<(PathBuf, usize)> = configs.iter().map(|c| (c.clone(), 0)).collect();
     while let Some((file, depth)) = frontier.pop() {
