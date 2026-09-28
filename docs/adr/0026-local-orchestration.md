@@ -612,7 +612,16 @@ This is Paperclip's `process` adapter. A profile with
    `trellis trust`). A task assigned to an untrusted process agent is not
    claimed: it stays pending with the reason `agent <name> runs a
    repository command; not trusted: run trellis trust`, and the runner
-   checks again before it spawns.
+   checks again before it spawns. *Amended after the fifth review of PR
+   #1:* the claim gate decides trust once per heartbeat tick, at the first
+   pending process task, and reuses that answer for the others in the same
+   tick; it had walked and hashed `.trellis/` once per pending process task
+   per tick. The answer is dropped at the next tick, so a `trellis trust`
+   run while `work --every` waits takes effect there, and the check right
+   before the spawn is unchanged. Evidence:
+   `trust_is_decided_once_per_tick_and_again_at_the_next` in
+   `crates/trellis-cli/src/work.rs`, which counted three checks for three
+   tasks before the change.
 1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
    model run.
 2. **Run** the command in the worktree root. Its stdin is the task text,
