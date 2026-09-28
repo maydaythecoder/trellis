@@ -597,9 +597,11 @@ this amendment a hook that wrote at any of those points left bytes in a
     writes against the run, and it listed ignored files synchronously on
     the async runtime under a std mutex, twice per check. Evidence:
     `a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
-    (exits 1 now, and failed before with exit 2) and
+    (exits 1 now; it failed before on the old "NOT put back" wording, with
+    exit 2). Guards only, never seen failing:
     `a_model_run_that_changed_an_ignored_file_deny_write_names_is_not_restored`
-    in `tests/cli.rs`, and in `trellis_vcs::ignored`,
+    in `tests/cli.rs`, which passed on the old code too (it holds the
+    strict path), and in `trellis_vcs::ignored`,
     `a_deleted_file_or_a_changed_protected_one_is_not_restored`.
     `a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored`
     stays as the guard. What this gives up, stated: a writer that changes
