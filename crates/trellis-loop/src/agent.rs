@@ -2536,4 +2536,63 @@ rank = \"non-negotiable\"
             "{p}"
         );
     }
+
+    /// A gate standing in for a slow person: it takes its time and says yes.
+    struct SlowPerson(std::time::Duration);
+
+    impl ToolGate for SlowPerson {
+        fn check<'a>(&'a mut self, _: &'a ToolCall) -> GateFuture<'a> {
+            let wait = self.0;
+            Box::pin(async move {
+                tokio::time::sleep(wait).await;
+                GateDecision::Allow
+            })
+        }
+        fn human_decided(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn time_spent_waiting_on_a_person_is_not_charged_to_the_wall_clock() {
+        // Approve mode would otherwise end runs for reading diffs carefully:
+        // two answers of 200 ms each against a 150 ms ceiling exhaust it
+        // twice over, while the loop itself takes a few milliseconds.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_gate(Box::new(SlowPerson(std::time::Duration::from_millis(200))))
+            .spawn();
+        let mut m = Scripted::new(vec![
+            Step::Call(ToolCall::ReadFile {
+                path: "app/util.py".into(),
+            }),
+            Step::Call(ToolCall::BlastRadius {
+                symbol: "helper".into(),
+            }),
+            Step::Done {
+                summary: "looked".into(),
+            },
+        ]);
+        let tight = Budget {
+            max_iterations: 10,
+            max_wall_clock: std::time::Duration::from_millis(150),
+            ..Budget::default()
+        };
+        let (outcome, t) = run("look", &mut m, &h, &tight).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::StoppedWithoutPassingChecks { .. },
+                    ..
+                }
+            ),
+            "the wait must not exhaust the budget, got {outcome:?}"
+        );
+        assert!(
+            !m.seen_final_notice,
+            "and must not trigger the escalation turn"
+        );
+        assert_eq!(t.turns[0].human, Some(true));
+    }
 }
