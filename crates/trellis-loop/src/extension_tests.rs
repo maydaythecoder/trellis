@@ -694,6 +694,63 @@ async fn read_skill_by_exact_name_is_refused_when_the_profile_denies_it() {
     );
 }
 
+#[tokio::test]
+async fn neither_write_file_nor_edit_can_reach_git_s_own_directory_by_any_spelling() {
+    // The risk: `.GIT/hooks/pre-commit` on a case-insensitive filesystem,
+    // or `.git.` / `.git ` on Windows (which strips trailing dots and
+    // spaces), or the 8.3 name `GIT~1`, lands in `.git` — a hook git will
+    // run, which no rollback touches because rollback is git's own reset.
+    let d = git_repo();
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    for path in [
+        ".GIT/hooks/pre-commit",
+        ".Git/hooks/pre-commit",
+        ".git./hooks/pre-commit",
+        ".git /hooks/pre-commit",
+        "GIT~1/hooks/pre-commit",
+        "app/.GIT/x",
+    ] {
+        let r = orch
+            .call(&ToolCall::WriteFile {
+                path: path.into(),
+                content: "#!/bin/sh\necho owned\n".into(),
+            })
+            .await
+            .result;
+        match r {
+            ToolResult::Error(e) => assert!(e.contains(".git"), "{path}: {e}"),
+            other => panic!("`{path}` must be refused: {other:?}"),
+        }
+    }
+    assert!(
+        !d.path().join(".git/hooks/pre-commit").exists(),
+        "nothing reached git's hooks"
+    );
+
+    // `edit` had no `.git` guard at all, and `.git/config` exists.
+    let before = std::fs::read_to_string(d.path().join(".git/config")).unwrap();
+    for path in [".git/config", ".GIT/config", ".git./config"] {
+        let r = orch
+            .call(&ToolCall::Edit {
+                path: path.into(),
+                old: "[core]".into(),
+                new: "[core]\n\thooksPath = app".into(),
+            })
+            .await
+            .result;
+        match r {
+            ToolResult::Error(e) => assert!(e.contains(".git"), "{path}: {e}"),
+            other => panic!("`{path}` must be refused: {other:?}"),
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".git/config")).unwrap(),
+        before
+    );
+}
+
 // ---------------------------------------------------------------------------
 // A pass describes the tree it ran against, and nothing after it.
 // ---------------------------------------------------------------------------
