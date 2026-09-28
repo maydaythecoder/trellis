@@ -248,6 +248,9 @@ pub struct RepoContext {
     pub skills: Vec<crate::skills::Skill>,
     /// Valid skills left off the list by the cap, stated in the prompt.
     pub skills_omitted: usize,
+    /// Context files, system prompt files and forced skills (ADR 0025).
+    /// Informs; never a turn, so it cannot satisfy the convergence test.
+    pub extra: crate::extra_context::ExtraContext,
 }
 
 impl RepoContext {
@@ -263,6 +266,7 @@ impl RepoContext {
             && self.rules.is_empty()
             && self.skills.is_empty()
             && self.skills_omitted == 0
+            && self.extra.fence_is_empty()
     }
 }
 
