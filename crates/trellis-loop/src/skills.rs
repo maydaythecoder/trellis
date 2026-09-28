@@ -181,7 +181,7 @@ pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<St
     else {
         return Err(format!(
             "no skill named `{name}`. The skills listed in the prompt are the ones this \
-             repository has."
+             run has."
         ));
     };
     let text = std::fs::read_to_string(dir.join("SKILL.md"))

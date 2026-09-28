@@ -9,14 +9,14 @@
 
 use crate::config::RepoConfig;
 use crate::{context_files, orchestrate, tooling, user_config};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The lines, in the order `doctor` prints them.
 pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
     vec![
         user_config_line(),
         context_line(root, cfg),
-        user_skills_line(),
+        user_skills_line(root, &user_config::skill_dirs()),
         trust_line(root, cfg),
         agents_line(root),
         vault_line(root, cfg),
@@ -60,25 +60,36 @@ fn context_line(root: &Path, cfg: &RepoConfig) -> String {
     }
 }
 
-fn user_skills_line() -> String {
-    let dirs = user_config::skill_dirs();
+/// Counted against this repository, as a run would load them: a user skill
+/// whose name the repository already has is shadowed, not loaded.
+fn user_skills_line(root: &Path, dirs: &[PathBuf]) -> String {
     let present: Vec<String> = dirs
         .iter()
         .filter(|d| d.is_dir())
-        .map(|d| crate::plain(&d.display().to_string()))
+        .map(|d| d.display().to_string())
         .collect();
     if present.is_empty() {
-        "user skills: none (the user's own; loaded without repository trust)".to_string()
-    } else {
-        let c = trellis_loop::SkillCatalog::discover_with(Path::new(""), &dirs);
-        format!(
-            "user skills: {} valid, {} invalid, from {} (the user's own; loaded without \
-             repository trust)",
-            c.valid.len(),
-            c.invalid.len(),
-            present.join(", ")
-        )
+        return "user skills: none (the user's own; loaded without repository trust)".to_string();
     }
+    let c = trellis_loop::SkillCatalog::discover_with(root, dirs);
+    // `discover_with` names a user directory's invalid skill by its full
+    // path; the repository's by its directory name alone.
+    let invalid = c
+        .invalid
+        .iter()
+        .filter(|i| present.iter().any(|p| i.dir.starts_with(p.as_str())))
+        .count();
+    format!(
+        "user skills: {} loaded, {} shadowed by the repository's, {invalid} invalid, from {} \
+         (the user's own; loaded without repository trust)",
+        c.user.len(),
+        c.shadowed.len(),
+        present
+            .iter()
+            .map(|p| crate::plain(p))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
@@ -195,6 +206,40 @@ mod tests {
         );
         assert!(s.contains("agents:     1 profile(s), 0 routine(s)"), "{s}");
         assert!(s.contains("vault:      not configured"), "{s}");
+    }
+
+    #[test]
+    fn user_skills_are_counted_against_the_repository_and_its_own_skills_are_not_among_them() {
+        // The risk: doctor counting the repository's skills as the user's,
+        // or a user skill as loaded when the repository shadows it.
+        let d = repo(&[(
+            ".trellis/skills/refactor/SKILL.md",
+            "---\nname: refactor\ndescription: repo\n---\nb\n",
+        )]);
+        let user = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            (
+                "refactor",
+                "---\nname: refactor\ndescription: user\n---\nb\n",
+            ),
+            ("mine", "---\nname: mine\ndescription: user\n---\nb\n"),
+            ("broken", "no frontmatter\n"),
+        ] {
+            let s = user.path().join(name);
+            std::fs::create_dir_all(&s).unwrap();
+            std::fs::write(s.join("SKILL.md"), text).unwrap();
+        }
+        let missing = user.path().join("absent");
+        let line = user_skills_line(d.path(), &[user.path().to_path_buf(), missing]);
+        assert!(
+            line.starts_with("user skills: 1 loaded, 1 shadowed by the repository's, 1 invalid"),
+            "{line}"
+        );
+        assert!(line.contains("loaded without repository trust"), "{line}");
+        assert_eq!(
+            user_skills_line(d.path(), &[]),
+            "user skills: none (the user's own; loaded without repository trust)"
+        );
     }
 
     #[test]
