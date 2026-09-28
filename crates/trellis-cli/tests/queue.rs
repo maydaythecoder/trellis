@@ -36,6 +36,12 @@ fn trellis(root: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         // The JSONL test depends on the default filter; an inherited
         // RUST_LOG would change what is logged.
         .env_remove("RUST_LOG")
