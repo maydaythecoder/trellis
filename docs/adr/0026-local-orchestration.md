@@ -290,6 +290,23 @@ prompt tokens exists anywhere in trellis, so a budget here limits generated
 tokens, not billed tokens. A scripted run records no token count. A process
 agent's tokens are unknown to trellis.
 
+**A hosted reply with no usage figure** (amended after the second review of
+PR #1; before it such a reply was recorded as 0, so spend read as free and
+no budget tripped). The count is unknown, never zero:
+- The trail records `tokens: None` for the run once any reply went
+  unreported, because the sum of the others would be a lower bound
+  presented as a count.
+- The in-run `max_tokens` ceiling charges each unreported reply at the
+  `max_tokens` it was requested with, the most it can have cost, so it
+  trips early rather than never.
+- A run executed as a profile with a `[budget]` is refused at the first
+  unreported reply: the run ends not converged and rolls back, with a
+  reason naming the two fixes (a provider that reports usage, or no
+  `[budget]`). The ledger itself is unchanged, and still counts only
+  measured spend. The limit, stated: that one reply's tokens, at most its
+  `max_tokens`, are spent and counted nowhere, and `agents show` reports
+  the run among those without a count.
+
 **The ledger covers the trails in this checkout.** Trails are committed, so a
 branch that does not contain a run's trail does not count its spend. Trails
 are read as untrusted data (ADR 0007). A trail whose factual digest does not

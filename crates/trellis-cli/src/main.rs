@@ -1601,6 +1601,12 @@ fn run_body(
         }
         schema_note = Some(note);
     }
+    // A budgeted profile's ledger counts only measured spend, so a hosted
+    // reply with no usage figure ends its run instead of spending what
+    // nothing can count (ADR 0026 §5).
+    if let Driver::Hosted(m) = &mut driver {
+        m.require_usage(profile.is_some_and(|p| p.file.budget.is_some()));
+    }
 
     // Printed after reachability, not before. Describing the tier of a
     // runtime that is not listening is noise ahead of the only line that
@@ -2028,8 +2034,11 @@ fn run_body(
         Driver::Scripted(_) => None,
         Driver::Runtime(m) => Some(trellis_loop::Model::tokens_used(m)),
         // Hosted runs count against a profile's budget too; the provider
-        // reports output tokens and the adapter sums them (ADR 0024).
-        Driver::Hosted(m) => Some(trellis_loop::Model::tokens_used(m.as_ref())),
+        // reports output tokens and the adapter sums them (ADR 0024). Not
+        // `tokens_used`, which charges an unreported reply its upper bound
+        // for the in-run ceiling: the trail takes only a measured count,
+        // and `None` once any reply went unreported.
+        Driver::Hosted(m) => m.tokens_measured(),
     };
     let compactions = driver.compactions();
     let facts = |approved| TrailFacts {

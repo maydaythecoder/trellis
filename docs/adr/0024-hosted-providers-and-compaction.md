@@ -122,6 +122,11 @@ the protocol already states. Streaming is not built; replies are read whole.
   `max_tokens` on Anthropic), against 4,096 locally: a hosted reasoning
   model spends thinking against it. An OpenAI-compatible server that accepts
   only `max_tokens` is not accommodated.
+- **Spend is the reply's reported output tokens** (`usage.completion_tokens`,
+  `usage.output_tokens`). A reply without one has an unknown count, not 0:
+  the trail records `None`, the in-run token ceiling charges it the reply
+  ceiling, and a budgeted profile's run is refused (ADR 0026 §5). Amended
+  after the second review of PR #1.
 - **A format retry resends the same request**, as the completion tiers do;
   the model is not told why its previous reply was refused.
 - **`trellis ask`'s intent classifier** treats a hosted spec as it treats a
