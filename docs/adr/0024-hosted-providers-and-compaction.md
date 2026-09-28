@@ -1,7 +1,8 @@
 # ADR 0024 — Hosted providers over HTTPS with native tool calls, and deterministic compaction
 
 **Status:** Accepted. Written before the code; amended in place where the
-code disagreed, each amendment marked *Amended at implementation*.
+code disagreed or the text left a decision open, each amendment marked
+*Amended at implementation* (§2, §3, §4, §5), and "Measurements" filled in.
 **Date:** 2026-09-27
 **Reference design:** pi (`earendil-works/pi`, MIT): `docs/providers.md`,
 `models.md`, `custom-provider.md`, `compaction.md`, `settings.md`. Borrowed as
@@ -104,6 +105,28 @@ notice is a user text block after the last result.
 without a probe request: a probe would spend the user's money to learn what
 the protocol already states. Streaming is not built; replies are read whole.
 
+*Amended at implementation.* Decisions the text above left open:
+
+- **History is replayed, not rebuilt.** Each reply's assistant message is
+  kept (Anthropic: the whole `content` array, thinking blocks and their
+  signatures included; OpenAI: `role`, `content`, `tool_calls` only) and sent
+  back unchanged with that call's result. A turn the provider never produced
+  (none today; the governance audit turn is appended after the last request)
+  gets a synthesised id, `call_trellis_<n>` or `toolu_trellis_<n>`.
+- **Native tool definitions** take the branch's `description` (the schemars
+  doc comment) and `{type: object, properties, required,
+  additionalProperties: false}` without `tool`. `read_skill` is left out when
+  there is no skill, matching the tool line.
+- **Reply ceiling** 16,000 tokens (`max_completion_tokens` on OpenAI,
+  `max_tokens` on Anthropic), against 4,096 locally: a hosted reasoning
+  model spends thinking against it. An OpenAI-compatible server that accepts
+  only `max_tokens` is not accommodated.
+- **A format retry resends the same request**, as the completion tiers do;
+  the model is not told why its previous reply was refused.
+- **`trellis ask`'s intent classifier** treats a hosted spec as it treats a
+  scripted one (everything is a task); the TUI labels it "tier 1, native
+  tool calls".
+
 ### 3. Keys (ADR 0010, narrowed)
 
 ADR 0010 permits a key in `.trellis/config.toml` with a warning. This ADR
@@ -127,6 +150,21 @@ trail, never logged.
   and asserts the key and the header value appear nowhere in the JSONL log,
   the terminal output, or the trail.
 
+*Amended at implementation.* Over loopback `http://` the key is sent when
+its variable is set and not required when it is not (a local server usually
+wants none). `[[providers]]` refuses unknown fields, so `api_key = "..."`
+fails to load rather than sitting unread in a committed file. The evidence
+is `crates/trellis-cli/tests/hosted_keys.rs`: one run per protocol, each
+asserting first that the stub received `Authorization: Bearer <key>` or
+`x-api-key: <key>`, that the run converged, and that the JSONL log holds the
+`request as sent` trace (so the widest log path was exercised); then that
+the key and `<header>sk-` appear in none of stdout, stderr (the fmt layer),
+the `--log-json` file, or any file in the repository outside `.git`, the
+trail included. A third test runs with the variable unset against an https
+provider and asserts a refusal naming it, no `snapshot at` line and no
+trail. Unit tests cover `Debug` of the key and of the client, scrubbing,
+and the 401 body that echoes a masked key.
+
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
@@ -145,6 +183,11 @@ trail, never logged.
 
   Neither protocol is sent `temperature`: reasoning models on both reject a
   non-default one.
+
+  *Amended at implementation.* A timeout is not retried (300 s per request;
+  retrying one would multiply a stall), and neither is a refused connection.
+  The retry waits are real sleeps and are not charged separately to the
+  budget; the wall-clock ceiling covers them.
 
 ### 5. Compaction: elision, not summary
 
@@ -178,6 +221,19 @@ without a budget against the same replies and compares outcomes.
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
   output. A run that never compacts records nothing new, so older trails keep
   their shape.
+- *Amended at implementation.* **What is measured.** On the completion
+  tiers, the prompt's bytes. On a hosted protocol, the serialized request
+  body's bytes, tools included, because that is what the provider counts
+  against its window. A compaction is recorded each time a request elides
+  more turns than the one before, so a run held at its budget records one
+  per turn. The notes name the call with the same label the gate uses:
+  `elided: run_checks Typecheck on a.py, 4000 bytes`.
+- *Amended at implementation.* **A caveat not measured.** Anthropic models
+  that check replayed history for edits (thinking blocks tied to earlier
+  turns) may reject a request whose older `tool_result` changed. Elision is
+  monotone so each result changes at most once, but no run against such a
+  model has been made; whether it is refused is pending the first hosted
+  measurement run.
 - **Model-written summaries are not built.** A summary is text a model wrote
   about the run, entering the context as though it were a record — judgment
   text in the place observations go. Elision loses detail and invents none.
@@ -213,7 +269,39 @@ by this repository, which informs and cannot authorise skipping a check.
 
 ## Measurements
 
-Pending: filled in at implementation with the method beside each figure.
+Taken 2026-09-27 on the build machine (Windows 11, `x86_64-pc-windows-msvc`,
+rustc 1.93.0), release profile as the workspace defines it (`lto = "fat"`,
+`codegen-units = 1`, `strip = "symbols"`).
+
+| build | `trellis.exe` bytes | crates in the binary's graph |
+|---|---|---|
+| before this ADR (`3234bee`) | 7,084,032 | 168 |
+| this branch, `--no-default-features` (local only) | 7,354,880 | 168 |
+| this branch, default features (`hosted` on) | 8,683,008 | 178 |
+
+- **Size:** `cargo build --release -p trellis-cli [--no-default-features]`,
+  then `ls -l target/release/trellis.exe`. The local-only build grows
+  270,848 bytes over `3234bee` (the protocol mapping, transport, compaction
+  and note tools, all of which compile without TLS). TLS adds 1,328,128 bytes
+  (18.1%) on top.
+- **Crates:** `cargo tree -p trellis-cli -e normal --prefix none
+  [--no-default-features]`, `(*)` markers stripped, unique lines counted.
+  Workspace crates are included in both counts. `Cargo.lock` is not a
+  measure of this: it records every optional crate whether or not a feature
+  turns it on, and went from 365 to 385 entries with or without `hosted`.
+  The ten crates `hosted` adds are `rustls`, `rustls-pki-types`,
+  `rustls-webpki`, `ring`, `untrusted`, `subtle`, `zeroize`, `tokio-rustls`,
+  `webpki-roots`, and a second `getrandom` (0.2, through `ring`).
+- **Duplicates:** `cargo deny check` now also warns of two `getrandom` and
+  two `windows-sys` versions, both through `ring`. Licences, bans,
+  advisories and sources pass.
+
+**Decision: `hosted` is a default feature of `trellis-cli`.** 1.3 MB buys
+tier 1, which BRIEF §4.7 says to use when present, and a local-only binary
+is one flag away and still builds and passes its tests (`cargo test -p
+trellis-cli --no-default-features`). `release.yml` passes no feature flags,
+so it is left as it is and **the released binary includes TLS**. CI does not
+build the local-only configuration; it was run by hand for this ADR.
 
 ## Not built
 
@@ -224,3 +312,8 @@ Pending: filled in at implementation with the method beside each figure.
 - OAuth, Bedrock, Vertex and Azure request signing.
 - Model-written summaries (§5).
 - Parallel tool calls (ADR 0005).
+- A byte default for `[model] context_bytes` (§5).
+- The intent classifier in `trellis ask` for a hosted model (§2).
+- A hosted run has not been made against a real provider: every test uses
+  a loopback stub. The first measured hosted run is pending.
+- A CI job for the local-only build.

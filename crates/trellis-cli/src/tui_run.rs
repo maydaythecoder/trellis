@@ -91,6 +91,14 @@ impl std::io::Write for TranscriptSink {
 /// an unverified claim and a false one — the same distinction `trellis run`
 /// draws in its banner, kept in step here deliberately.
 async fn tier_from_probe(spec: &trellis_model::ModelSpec) -> String {
+    // Tier 1 is the protocol; nothing to probe, and "scripted" would be
+    // untrue (ADR 0024).
+    if matches!(
+        spec,
+        trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. }
+    ) {
+        return "tier 1, native tool calls".to_string();
+    }
     let trellis_model::ModelSpec::Runtime {
         dialect,
         base,
