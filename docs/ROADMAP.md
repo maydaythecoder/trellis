@@ -102,7 +102,16 @@ Not deferred politely. Out of scope, and the gate does not bend for them:
 - **Cross-repo analysis.** First-party means *this repository*.
 - **Any surface beyond the CLI.** No TUI, no editor plugin, no web UI, no MCP
   server.
+  - *Built exception:* `trellis tui`, at the owner's direction, and now what
+    bare `trellis` opens. Recorded as a deviation in `STATUS.md`, "Not on the
+    critical path, but real".
+  - *Built exception:* `trellis rpc`, JSONL commands on stdin and events on
+    stdout, for a caller that drives trellis as a subprocess (ADR 0025). It
+    is a local pipe, not a server.
 - **Any networked component.** No telemetry, no sync, no hosted anything.
+  - *Built exception:* hosted model providers, reached with the user's own
+    key from the user's machine (ADR 0024). `--no-default-features` builds a
+    local-only binary with no TLS.
 - **Multi-user anything.** No shared state, no accounts, no collaboration.
 - **Running while the machine is asleep.**
 - **Multi-agent mode with N>1.** Built but not enabled; see v1.1.
