@@ -24,25 +24,36 @@ pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> QueueError + '_ 
     }
 }
 
-/// Reads `path`, or — while a [`replace`] of it is between removing the old
-/// copy and linking the new one, or was cut short there — the complete new
-/// copy beside it. Canonical, then the side copy, then canonical again: the
-/// replacer may link and remove the side copy between the first two reads.
+/// Reads the record at `path` through [`read_settled`].
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, QueueError> {
-    let text = match std::fs::read_to_string(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            match std::fs::read_to_string(side(path)) {
-                Ok(t) => Ok(t),
-                Err(_) => std::fs::read_to_string(path),
-            }
-        }
-        r => r,
-    }
-    .map_err(io(path))?;
+    let text = read_settled(path, |p| std::fs::read_to_string(p))?;
     serde_json::from_str(&text).map_err(|e| QueueError::Unreadable {
         path: path.to_path_buf(),
         error: e.to_string(),
     })
+}
+
+/// `op` applied to the complete copy of `path` that exists: the file
+/// itself, or the side copy of a [`replace`] that is between removing the
+/// old copy and linking the new one, or was cut short there. Every read of
+/// a record goes through here — its bytes, its age, an export's copy — so
+/// none of them can disagree with [`present`] about whether it exists.
+///
+/// Canonical, then the side copy, then canonical again: the replacer may
+/// link and remove the side copy between the first two. Takes no lock and
+/// settles nothing, so readers need none.
+pub(crate) fn read_settled<T>(
+    path: &Path,
+    op: impl Fn(&Path) -> std::io::Result<T>,
+) -> Result<T, QueueError> {
+    match op(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match op(&side(path)) {
+            Ok(t) => Ok(t),
+            Err(_) => op(path),
+        },
+        r => r,
+    }
+    .map_err(io(path))
 }
 
 /// Whether a reader of `path` finds a record there: the file itself or a
@@ -181,6 +192,12 @@ pub(crate) fn move_to<T: Serialize>(from: &Path, to: &Path, t: &T) -> Result<(),
 /// and the edit did not happen. One after 2 leaves the new record beside the
 /// name: readers see it, and [`settle`] — run by the next holder of the
 /// lock — links it into place. Either way the record is never in neither.
+///
+/// The settle is this function's own, first, so no caller of `replace`
+/// settles for it. Operations that move or remove the name instead of
+/// replacing it (`requeue`, `remove_task`, an edit that changes a task's
+/// state) settle under the task lock themselves, because a side copy they
+/// left behind would bring the record back where it was.
 pub(crate) fn replace<T: Serialize>(path: &Path, t: &T) -> Result<(), QueueError> {
     settle(path)?;
     let next = side(path);
@@ -306,7 +323,8 @@ where
     T: Serialize + DeserializeOwned,
 {
     let _lock = Lock::take(locks, name)?;
-    settle(path)?;
+    // No settle here: `read_json_opt` reads a side copy that is the
+    // record, and `replace` settles before it writes.
     let current = read_json_opt::<T>(path)?;
     let (next, r) = f(current)?;
     replace(path, &next)?;

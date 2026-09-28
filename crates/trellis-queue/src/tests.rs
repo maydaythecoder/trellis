@@ -1135,3 +1135,104 @@ fn a_monthly_budget_pause_lifts_when_the_month_rolls_over_and_a_human_pause_neve
     assert!(!r.resumed);
     assert!(profile::overlay(&q, "rev").unwrap().paused.is_some());
 }
+
+/// A failed task whose last edit was cut short after the old copy went:
+/// `.x.json.next` is the only copy of it.
+fn side_only_task(q: &Queue) -> String {
+    let a = failed_task(q);
+    // The third link of an edit is the swap (lock, side copy, swap).
+    files::fail::nth_link(3);
+    let r = q.edit(&a, |t, _| {
+        t.labels.push("flaky".into());
+        Ok(None)
+    });
+    files::fail::nth_link(0);
+    assert!(r.is_err(), "the swap was meant to fail");
+    let canonical = q.path(State::Failed, &a);
+    assert!(!canonical.exists() && files::side(&canonical).exists());
+    a
+}
+
+#[test]
+fn export_and_list_read_a_task_whose_only_copy_is_its_side_file() {
+    // The risk: `ids()` returns a task whose only copy is `.x.json.next`
+    // (hiding it would hide the task), but export copied the canonical
+    // path and aborted with NotFound, and `list` reported no age for it.
+    let (d, q) = queue();
+    let a = side_only_task(&q);
+    let l = q.list().unwrap();
+    let e = l.iter().find(|e| e.id == a).expect("listed");
+    assert!(e.task.is_ok(), "{e:?}");
+    assert!(e.age.is_some(), "an age, read from the copy that exists");
+
+    let root = d.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let out = d.path().join("export");
+    let n = crate::portable::export(&root, &q, &out).expect("export");
+    assert_eq!(n.tasks, 1);
+    let t: Task = files::read_json(&out.join("tasks/failed").join(format!("{a}.json"))).unwrap();
+    assert_eq!(t.labels, vec!["flaky"], "the side copy is the record");
+}
+
+#[test]
+fn an_overlay_change_cut_short_at_the_swap_is_read_and_finished_by_the_next() {
+    // Guard for dropping `replace_locked`'s own settle: the next change
+    // reads the side copy as the record, and `replace` settles it before
+    // writing, so the cut-short change is neither lost nor left behind.
+    let (_d, q) = queue();
+    let pause = || profile::Pause {
+        by: profile::PausedBy::Human,
+        at: iso_now(),
+        reason: Some("first".into()),
+        window: None,
+        month: None,
+    };
+    profile::update_overlay(&q, "rev", |_| ()).unwrap();
+    files::fail::nth_link(3);
+    let r = profile::update_overlay(&q, "rev", |o| o.paused = Some(pause()));
+    files::fail::nth_link(0);
+    assert!(r.is_err(), "the swap was meant to fail");
+    let seen = profile::update_overlay(&q, "rev", |o| {
+        let was = o.paused.as_ref().and_then(|p| p.reason.clone());
+        o.raises.clear();
+        was
+    })
+    .unwrap();
+    assert_eq!(
+        seen.as_deref(),
+        Some("first"),
+        "the cut-short change was read"
+    );
+    let dir = q.trellis_dir().join(profile::DIR);
+    let stray: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(stray.is_empty(), "left behind {stray:?}");
+    assert!(profile::overlay(&q, "rev").unwrap().paused.is_some());
+}
+
+#[test]
+fn a_task_left_only_as_its_side_file_is_moved_or_removed_whole() {
+    // Guard for the settle `lock_task` keeps: `requeue` and `remove_task`
+    // move or remove the name rather than replace it, so without settling
+    // first a side copy left behind would bring the task back in its old
+    // state.
+    let (_d, q) = queue();
+    let a = side_only_task(&q);
+    assert_eq!(q.requeue(&a).unwrap(), State::Failed);
+    assert_eq!(q.find(&a).unwrap().0, State::Pending);
+    assert!(q.ids(State::Failed).unwrap().is_empty());
+
+    let b = side_only_task(&q);
+    q.remove_task(&b).unwrap();
+    assert!(q.find(&b).is_err(), "removed");
+    assert!(q.ids(State::Failed).unwrap().is_empty());
+    let stray: Vec<_> = std::fs::read_dir(q.dir().join("failed"))
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(stray.is_empty(), "left behind {stray:?}");
+}
