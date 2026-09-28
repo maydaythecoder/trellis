@@ -156,8 +156,19 @@ calls a network service has done so for good. A command's writes inside the
 worktree are undone by rollback on a run that does not converge, but they
 are not in `touched`: the trail's `proposed` list names only what `edit` and
 `write_file` wrote, and on a converged run `git status` is the authority on
-what changed. On timeout the shell is killed; processes it started may
-outlive it on some platforms.
+what changed. A command is finished when its process exits: its pipes are
+read for two seconds more, and output still arriving after that (from
+something it backgrounded, which inherited the pipe) is cut and the
+observation says so. On timeout the command and what it started are
+killed: on Unix it leads its own process group and `kill -KILL -- -<pgid>`
+signals the group; on Windows `taskkill /T /F` walks the tree from it. A
+process that left the group (`setsid`, a daemon) or, on Windows, whose
+parent had already exited is not reached, and outlives the run. Killing
+more than that would need `unsafe` platform calls, which this crate does
+not make. A command that exits normally is not reaped of what it left
+running. (Amended after the second review of PR #1: before it, the run
+waited for EOF on both pipes, so `sleep 30 & exit 0` read as a timeout,
+and a timeout killed only the shell.)
 
 Bash output is an observation. It is never a verdict, and an exit code of 0
 means nothing to convergence: only `run_checks` produces a `Verdict`.
