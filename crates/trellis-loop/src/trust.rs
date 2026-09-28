@@ -31,6 +31,13 @@ pub struct TrustItem {
     pub detail: String,
     /// Repository files the argv names, with their sha256.
     pub files: Vec<(String, String)>,
+    /// Variables from the user's environment handed to the command, by
+    /// name: a process agent's `pass_env` (ADR 0026 §11). Consent to run a
+    /// command is not consent to give it a key, so `trellis trust` shows
+    /// these on their own line. Left out of the digest's JSON when empty, so
+    /// an item that receives nothing hashes as it did before this field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub receives: Vec<String>,
 }
 
 impl TrustItem {
@@ -73,6 +80,7 @@ impl TrustItem {
             argv: argv.to_vec(),
             detail,
             files,
+            receives: Vec::new(),
         }
     }
 }
@@ -280,6 +288,7 @@ impl Fingerprint {
                      .gitignore trellis wrote, which trellis writes itself{detail}"
                 ),
                 files,
+                receives: Vec::new(),
             });
         }
         let canonical = serde_json::to_vec(&items).expect("a list of strings always serializes");

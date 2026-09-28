@@ -64,12 +64,17 @@ fn process_agents(root: &Path) -> Vec<trellis_loop::TrustItem> {
         .into_values()
         .filter_map(|p| {
             let argv = p.file.command.clone()?;
-            Some(trellis_loop::TrustItem::command(
+            let mut item = trellis_loop::TrustItem::command(
                 root,
                 format!("process agent {}", p.name),
                 &argv,
                 format!("timeout_s = {:?}", p.file.timeout_s),
-            ))
+            );
+            // The keys it is handed are part of what is trusted, and shown
+            // by name: the profile file's hash alone put them in the digest
+            // without anyone being told.
+            item.receives = p.file.pass_env.clone();
+            Some(item)
         })
         .collect()
 }
