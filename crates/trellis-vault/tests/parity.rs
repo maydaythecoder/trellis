@@ -122,6 +122,20 @@ fn fix_rewrites_a_wrong_manifest_in_apex_s_format() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn every_apex_null_form_is_a_null_parent_at_the_gate() {
+    // Apex writes and reads these as "no parent"; a gate that refused them
+    // would refuse a vault Apex considers well-formed.
+    for form in ["~", "\"\"", "undefined", "NULL"] {
+        let d = copy_vault();
+        let p = d.path().join("task-b.md");
+        let t = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, t.replace("\"[[project]]\"", form)).unwrap();
+        let s = validate(d.path()).unwrap_or_else(|e| panic!("{form}: {e}"));
+        assert_eq!(s.parentless, 3, "{form}");
+    }
+}
+
+#[test]
 fn a_title_form_parent_resolves_at_the_gate_and_in_compile() {
     let d = copy_vault();
     let p = d.path().join("task-b.md");
