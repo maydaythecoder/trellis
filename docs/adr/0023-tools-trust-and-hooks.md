@@ -166,7 +166,11 @@ process that left the group (`setsid`, a daemon) or, on Windows, whose
 parent had already exited is not reached, and outlives the run. Killing
 more than that would need `unsafe` platform calls, which this crate does
 not make. A command that exits normally is not reaped of what it left
-running. (Amended after the second review of PR #1: before it, the run
+running. Leading its own group has a cost on Unix: the child is no longer
+in the terminal's foreground group, so Ctrl-C does not deliver SIGINT to a
+running `bash` command, custom tool, hook or listing. It ends when trellis
+drops it (`kill_on_drop`, SIGKILL) during the interrupt's shutdown, with no
+chance to clean up. (Amended after the second review of PR #1: before it, the run
 waited for EOF on both pipes, so `sleep 30 & exit 0` read as a timeout,
 and a timeout killed only the shell.)
 
