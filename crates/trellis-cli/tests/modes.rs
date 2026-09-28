@@ -178,9 +178,9 @@ fn rpc_runs_a_prompt_to_completion_when_input_ends() {
 
 #[test]
 fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
-    // The process-level version of the unit test, because the defect it
-    // defends against lived only in a real process: a run thread's writes to
-    // stdout must not wait on the main thread's read of stdin.
+    // The process-level version of the unit test. The unit tests drive
+    // `serve` in-process; here a run thread writes to a real stdout while the
+    // main thread blocks reading a real stdin, which only a process shows.
     let f = fixture("rpc-approve");
     std::fs::write(
         f.user.join("config.toml"),
