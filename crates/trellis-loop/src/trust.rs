@@ -47,13 +47,14 @@ impl TrustItem {
     /// file is there. A program found on `PATH` is not repository code and is
     /// not hashed; a script the repository ships is.
     ///
-    /// The string after `-c` or `-e` (`sh -c`, `python -c`, `node -e`) or
-    /// `/C` (`cmd /C`) is code, not a path, so it is also split into
-    /// shell-ish tokens and every token that is a file in the repository is
-    /// hashed: `["sh", "-c", "./scripts/check.sh"]` covers the script.
-    /// Code reached any other way — an import, `python -m pkg.mod`, a file
-    /// a script reads — is covered only if it lives under `.trellis/`,
-    /// which [`Fingerprint`] hashes whole (ADR 0023 §4).
+    /// Every argument is also split into shell-ish tokens (whitespace,
+    /// `; & | ( ) < > =`, quotes trimmed) and every token that is a file in
+    /// the repository is hashed, whatever flag precedes it:
+    /// `["bash", "-lc", "python scripts/gate.py"]` and `--file=x.py` cover
+    /// their scripts. Code reached any other way — an import,
+    /// `python -m pkg.mod`, a file a script reads — is covered only if it
+    /// lives under `.trellis/`, which [`Fingerprint`] hashes whole (ADR
+    /// 0023 §4); keep hook and tool code in `.trellis/hooks/`.
     pub fn command(root: &Path, label: String, argv: &[String], detail: String) -> Self {
         Self::command_cached(root, label, argv, detail, &HashCache::default())
     }
@@ -76,16 +77,18 @@ impl TrustItem {
                 files.push(f);
             }
         };
-        for (i, arg) in argv.iter().enumerate() {
+        // Every element, and every token of every element: which flag
+        // introduces code is the interpreter's business (`-c`, `-lc`,
+        // `-ec`, `-Command`, `--file=`), and a list of them is a list of
+        // the ones not yet missed (review round 10). Splitting where no
+        // code is only adds hashes of files that exist, the safe direction.
+        for arg in argv {
             add(arg);
-            let is_code = i > 0 && matches!(argv[i - 1].as_str(), "-c" | "-e" | "/C" | "/c");
-            if is_code {
-                for tok in arg.split(|c: char| {
-                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
-                }) {
-                    let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
-                    add(tok);
-                }
+            for tok in arg.split(|c: char| {
+                c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>' | '=')
+            }) {
+                let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
+                add(tok);
             }
         }
         Self {
@@ -921,6 +924,36 @@ mod tests {
             fp.sha256,
             Fingerprint::of(repo.path(), &h, &[], None).sha256
         );
+    }
+
+    #[test]
+    fn a_script_named_in_any_argv_element_is_hashed_whatever_flag_precedes_it() {
+        // The risk (review round 10, finding 3): only the string after
+        // exactly `-c`, `-e`, `/C` or `/c` was split into tokens, so
+        // `bash -lc`, `sh -ec`, `pwsh -Command`, `python -c` spelled
+        // otherwise, or `--file=...` left the script they run unhashed, and
+        // it could change after trust with nobody asked again.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
+        std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        for argv in [
+            &["bash", "-lc", "python scripts/gate.py"][..],
+            &["sh", "-ec", "python scripts/gate.py --fast"],
+            &["pwsh", "-Command", "& python scripts/gate.py"],
+            &["runner", "--file=scripts/gate.py"],
+        ] {
+            let h = hooks(argv);
+            let fp = Fingerprint::of(repo.path(), &h, &[], None);
+            let files: Vec<&str> = fp.items[0].files.iter().map(|f| f.0.as_str()).collect();
+            assert_eq!(files, ["scripts/gate.py"], "{argv:?}");
+            std::fs::write(repo.path().join("scripts/gate.py"), "print('changed')\n").unwrap();
+            assert_ne!(
+                fp.sha256,
+                Fingerprint::of(repo.path(), &h, &[], None).sha256,
+                "editing the script untrusts: {argv:?}"
+            );
+            std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        }
     }
 
     #[test]
