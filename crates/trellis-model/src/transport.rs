@@ -284,12 +284,13 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         .map_err(|e| SendError::Broken(format!("sending the request failed: {e}")))?;
     let mut raw: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 16 * 1024];
+    let mut framer = Framer::default();
     loop {
         match s.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
                 raw.extend_from_slice(&buf[..n]);
-                if complete(&raw) {
+                if framer.complete(&raw) {
                     break;
                 }
             }
@@ -306,20 +307,140 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
     parse_response(&raw).map_err(SendError::Broken)
 }
 
-/// Whether `raw` holds a whole response by its own framing.
+/// Decides when a response read in pieces is whole, by its own framing,
+/// resuming where the last call stopped.
+///
+/// Called after every read with the whole buffer so far. It used to
+/// rescan all of it each time, for the header and then for the chunked
+/// terminator, which made a large reply quadratic; and the terminator was
+/// the first `0\r\n\r\n` anywhere in the body, which a chunk's size line
+/// (`10\r\n`) or its data can contain. Now the header is found and parsed
+/// once, and a chunked body is walked chunk by chunk: size line, data
+/// skipped by its length, CRLF, until the zero-size chunk and its trailers.
+#[derive(Default)]
+struct Framer {
+    /// Bytes already searched for the header's end.
+    scanned: usize,
+    body: Option<Body>,
+    /// Bytes looked at, for the test that holds the work linear.
+    examined: usize,
+}
+
+enum Body {
+    /// `Content-Length`: whole at this many bytes of buffer.
+    Length(usize),
+    /// Neither: whole only at end of stream.
+    Unframed,
+    Chunked {
+        pos: usize,
+        at: Chunk,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum Chunk {
+    Size,
+    Data(usize),
+    DataEnd,
+    Trailers,
+}
+
+/// A size line longer than this is not one; the parser reports it.
+const MAX_SIZE_LINE: usize = 4096;
+
+impl Framer {
+    fn complete(&mut self, raw: &[u8]) -> bool {
+        if self.body.is_none() {
+            let from = self.scanned.saturating_sub(3);
+            self.examined += raw.len() - from;
+            let Some(i) = find(&raw[from..], b"\r\n\r\n") else {
+                self.scanned = raw.len();
+                return false;
+            };
+            let end = from + i + 4;
+            let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+            self.body = Some(if head.contains("transfer-encoding: chunked") {
+                Body::Chunked {
+                    pos: end,
+                    at: Chunk::Size,
+                }
+            } else {
+                match content_length(&head) {
+                    Some(n) => Body::Length(end.saturating_add(n)),
+                    None => Body::Unframed,
+                }
+            });
+        }
+        match self.body.as_mut() {
+            Some(Body::Length(n)) => raw.len() >= *n,
+            Some(Body::Chunked { pos, at }) => chunked(raw, pos, at, &mut self.examined),
+            Some(Body::Unframed) | None => false,
+        }
+    }
+}
+
+/// Advances through a chunked body from `pos`. True once the zero-size
+/// chunk and the blank line after its trailers have arrived, or once the
+/// framing is broken — then the parser, which is stricter, says how.
+fn chunked(raw: &[u8], pos: &mut usize, at: &mut Chunk, examined: &mut usize) -> bool {
+    loop {
+        let rest = &raw[*pos..];
+        match *at {
+            Chunk::Size | Chunk::Trailers => {
+                let window = &rest[..rest.len().min(MAX_SIZE_LINE + 2)];
+                *examined += window.len();
+                let Some(eol) = find(window, b"\r\n") else {
+                    return rest.len() > MAX_SIZE_LINE;
+                };
+                *pos += eol + 2;
+                if let Chunk::Trailers = at {
+                    if eol == 0 {
+                        return true;
+                    }
+                    continue;
+                }
+                match chunk_size(&rest[..eol]) {
+                    Ok(0) => *at = Chunk::Trailers,
+                    Ok(n) => *at = Chunk::Data(n),
+                    Err(_) => return true,
+                }
+            }
+            Chunk::Data(n) => {
+                if rest.len() < n {
+                    *pos += rest.len();
+                    *at = Chunk::Data(n - rest.len());
+                    return false;
+                }
+                *pos += n;
+                *at = Chunk::DataEnd;
+            }
+            Chunk::DataEnd => {
+                if rest.len() < 2 {
+                    return false;
+                }
+                *examined += 2;
+                if &rest[..2] != b"\r\n" {
+                    return true;
+                }
+                *pos += 2;
+                *at = Chunk::Size;
+            }
+        }
+    }
+}
+
+/// A chunk-size line's size: hex digits, then optional `;extensions`.
+fn chunk_size(line: &[u8]) -> Result<usize, String> {
+    let text = String::from_utf8_lossy(line);
+    let hex = text.split(';').next().unwrap_or("").trim();
+    usize::from_str_radix(hex, 16).map_err(|_| format!("`{hex}` is not a chunk size"))
+}
+
+/// Whether `raw` holds a whole response by its own framing. One pass; for
+/// a response read in pieces `exchange` keeps a [`Framer`] instead.
+#[cfg(test)]
 fn complete(raw: &[u8]) -> bool {
-    let Some(end) = find(raw, b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
-    let body = &raw[end + 4..];
-    if head.contains("transfer-encoding: chunked") {
-        return find(body, b"0\r\n\r\n").is_some_and(|i| i == 0 || body[..i].ends_with(b"\r\n"));
-    }
-    match content_length(&head) {
-        Some(n) => body.len() >= n,
-        None => false,
-    }
+    Framer::default().complete(raw)
 }
 
 fn content_length(head_lower: &str) -> Option<usize> {
@@ -380,10 +501,7 @@ fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     loop {
         let line_end = find(b, b"\r\n").ok_or("a chunk size line is unterminated")?;
-        let size_text = String::from_utf8_lossy(&b[..line_end]);
-        let size_hex = size_text.split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size_hex, 16)
-            .map_err(|_| format!("`{size_hex}` is not a chunk size"))?;
+        let size = chunk_size(&b[..line_end])?;
         b = &b[line_end + 2..];
         if size == 0 {
             return Ok(out);
@@ -490,6 +608,76 @@ mod tests {
         assert_eq!(r.status, 429);
         assert_eq!(r.header("retry-after"), Some("3"));
         assert!(!complete(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n{}"));
+    }
+
+    /// Feeds `raw` to a fresh framer the way `exchange` does, `step` bytes
+    /// per read, and returns at which length it first said complete.
+    fn feed(raw: &[u8], step: usize) -> (Option<usize>, usize) {
+        let mut f = Framer::default();
+        let mut n = 0;
+        while n < raw.len() {
+            n = (n + step).min(raw.len());
+            if f.complete(&raw[..n]) {
+                return (Some(n), f.examined);
+            }
+        }
+        (None, f.examined)
+    }
+
+    #[test]
+    fn a_large_response_is_framed_in_work_linear_in_its_size() {
+        // The risk: every 16 KiB read rescanned the whole buffer for the
+        // header, then the body for the terminator: a 4 MiB reply cost
+        // about 256 * 2 MiB of scanning, quadratic in the reply.
+        let body = vec![b'x'; 4 << 20];
+        let mut cl =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        cl.extend_from_slice(&body);
+        let (at, examined) = feed(&cl, 16 * 1024);
+        assert_eq!(at, Some(cl.len()));
+        assert!(
+            examined < 2 * cl.len(),
+            "examined {examined} for {}",
+            cl.len()
+        );
+
+        let mut ch = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        for piece in body.chunks(8 * 1024) {
+            ch.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+            ch.extend_from_slice(piece);
+            ch.extend_from_slice(b"\r\n");
+        }
+        ch.extend_from_slice(b"0\r\n\r\n");
+        let (at, examined) = feed(&ch, 16 * 1024);
+        assert_eq!(at, Some(ch.len()));
+        assert!(
+            examined < 2 * ch.len(),
+            "examined {examined} for {}",
+            ch.len()
+        );
+        assert_eq!(parse_response(&ch).unwrap().body.len(), body.len());
+    }
+
+    #[test]
+    fn a_zero_inside_a_chunk_is_not_the_terminator() {
+        let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        // A size line that ends in 0, and data that starts with CRLF: the
+        // first `0\r\n\r\n` in the body is inside `10\r\n\r\n…`.
+        let mut raw = head.clone();
+        raw.extend_from_slice(b"10\r\n\r\n0\r\n\r\nabcdefghi\r\n0\r\n\r\n");
+        assert_eq!(
+            feed(&raw, 1).0,
+            Some(raw.len()),
+            "complete, and only at the end"
+        );
+        assert_eq!(parse_response(&raw).unwrap().body, "\r\n0\r\n\r\nabcdefghi");
+
+        // Data that is itself `0\r\n\r\n…` right after a size line: not the
+        // end until the chunk's 7 bytes and the real terminator arrive.
+        let mut raw = head;
+        raw.extend_from_slice(b"7\r\n0\r\n\r\nab\r\n0\r\n\r\n");
+        assert_eq!(feed(&raw, 1).0, Some(raw.len()));
+        assert_eq!(parse_response(&raw).unwrap().body, "0\r\n\r\nab");
     }
 
     #[test]
