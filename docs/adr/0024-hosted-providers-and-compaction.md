@@ -322,6 +322,15 @@ repository may no longer name `key_env`.
   `with_thinking_on_a_history_the_provider_produced_keeps_thinking` in
   `crates/trellis-loop/src/adapter.rs`.
 
+  *Amended after the fourth review of PR #1.* The rule's input, "every turn
+  replayed", was computed twice. The adapter matched issued calls to turns
+  for the warning, and `request_body` checked each exchange for a replay.
+  The two agreed, but only because they were written the same way. Both now
+  call `trellis_model::every_turn_replayed` on the same `Conversation`, so
+  the warning and `thinking_withheld()` cannot disagree with the body that
+  is sent. The two tests above are unchanged and still pass. They guard
+  this change and did not fail before it.
+
   Neither protocol is sent `temperature`: reasoning models on both reject a
   non-default one.
 

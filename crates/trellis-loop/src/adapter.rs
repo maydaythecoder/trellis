@@ -1027,12 +1027,13 @@ impl Model for HostedModel {
         // the same refusal.
         let mut refused: Option<serde_json::Value> = None;
         let configured = self.client.thinking();
-        let replayed = t.turns.iter().enumerate().all(|(i, turn)| {
-            self.issued
-                .get(i)
-                .and_then(Option::as_ref)
-                .is_some_and(|x| x.call == turn.call)
-        });
+        // Decided from the conversation the body is built from, by the
+        // function the body builder uses, so the warning and the request
+        // cannot disagree. Elision (the last argument) changes only
+        // observations, never which turns are replayed, so 0 serves for
+        // every retry below.
+        let replayed =
+            trellis_model::every_turn_replayed(&conversation(t, &self.issued, protocol, 0));
         if !self.thinking_withheld
             && configured != trellis_model::Thinking::Off
             && trellis_model::thinking_sent(protocol, configured, replayed)
