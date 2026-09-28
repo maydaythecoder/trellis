@@ -27,6 +27,17 @@ Rollback is idempotent — error paths fire twice more often than anyone expects
 Verified by an induced mid-run panic in the test suite, and by the same at
 larger scale in CI against the benchmark repository.
 
+"Any failure" includes a panic in `trellis run` itself. From the snapshot
+until the outcome is dispatched, a guard's `Drop` rolls back while the
+panic unwinds, reports on stderr and lets the panic continue; no trail is
+written, because the turn list died with the loop. After dispatch each path
+owns the tree (a converged run leaves it, the others roll back and commit a
+trail), and the guard is disarmed so a later panic cannot remove that
+commit. A panic before the snapshot has nothing to undo. (Amended after the
+second review of PR #1: before it, a panic inside the run's `block_on`
+unwound past the rollback. Test:
+`a_panic_inside_the_run_still_rolls_the_worktree_back`.)
+
 ## Alternatives considered
 
 **Snapshot a dirty tree and restore it.** Rejected. It means TRELLIS takes

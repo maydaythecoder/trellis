@@ -649,6 +649,48 @@ mod run_tests {
         assert!(!said.contains("NOT CONVERGED"), "{said}");
     }
 
+    #[test]
+    fn a_panic_inside_the_run_still_rolls_the_worktree_back() {
+        // A panic in `block_on` unwound straight out of `cmd_run`, past the
+        // rollback, and left the agent's edits in the tree: the one state a
+        // run promises never to leave behind (ADR 0009).
+        let config = format!(
+            "[checks]\ntypecheck = {}\n[tools]\nenable = [\"write_file\"]\n",
+            sh("exit 0")
+        );
+        let script = r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"write_file","path":"new.py","content":"x = 1\n"},
+            {"tool":"done","summary":"changed it"}
+        ]}"#;
+        let (dir, spec) = fixture("panic-rolls-back", &config, script);
+        crate::PANIC_IN_RUN.with(|c| c.set(true));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = Vec::new();
+            cmd_run(
+                &dir,
+                "change f",
+                &spec,
+                false,
+                RunSeeding::default(),
+                RunControl::default(),
+                &mut out,
+            )
+        }));
+        crate::PANIC_IN_RUN.with(|c| c.set(false));
+        assert!(r.is_err(), "the injected panic still propagates: {r:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "the edit was rolled back"
+        );
+        assert!(!dir.join("new.py").exists(), "the new file was removed");
+        assert!(
+            trellis_vcs::snapshot(&dir).is_ok(),
+            "the worktree is clean enough for the next run"
+        );
+    }
+
     // ---- ADR 0026 × 0023 / 0019, integrated: a profile narrows the run ----
 
     fn profile(name: &str, toml: &str) -> trellis_queue::profile::Profile {
