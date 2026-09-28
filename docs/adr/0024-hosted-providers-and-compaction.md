@@ -296,6 +296,32 @@ repository may no longer name `key_env`.
   Current Anthropic models reject `budget_tokens` with a 400; effort is the
   control they accept.
 
+  *Amended after the third review of PR #1: a turn with no recorded reply
+  withholds thinking.* History is replayed from each reply the provider
+  sent (§2). A turn the provider did not produce has nothing to replay, so
+  it is rebuilt as a bare `tool_use`. Examples are a turn carried over from
+  another model or session, and the governance audit's turn. With thinking
+  on, Anthropic refuses such a request with a 400 ("Expected `thinking` or
+  `redacted_thinking`, but found `tool_use`"), and the run ended on a
+  request trellis had built wrong. Two fixes were considered:
+  - send the request without thinking
+  - render the whole history as plain user and assistant text instead of
+    tool blocks
+  Plain text would keep thinking on, but it changes what every other
+  request looks like to handle a rare case, and the model then sees its own
+  calls as prose. So on Anthropic, a request whose history has any turn
+  without a recorded reply is sent without `thinking` and `output_config`,
+  and one `thinking: withheld for the rest of this run` line says so. It
+  stays withheld for the rest of that transcript. The unreplayed turn is
+  still in the history, and the replies made without thinking have no
+  thinking block to send back, so turning it on again would draw the same
+  400. OpenAI's `reasoning_effort` has no such rule and is unchanged.
+  `trellis_model::thinking_sent` is the rule. Evidence, against a stub that
+  applies Anthropic's check:
+  `with_thinking_on_a_turn_with_no_recorded_reply_does_not_draw_a_400` and
+  `with_thinking_on_a_history_the_provider_produced_keeps_thinking` in
+  `crates/trellis-loop/src/adapter.rs`.
+
   Neither protocol is sent `temperature`: reasoning models on both reject a
   non-default one.
 
@@ -330,7 +356,13 @@ without a budget against the same replies and compares outcomes.
   to before. For a hosted provider, a context-overflow refusal (OpenAI
   `context_length_exceeded`; Anthropic `prompt is too long`; HTTP 413) sets
   the budget to three quarters of the request that was refused and retries,
-  at most twice.
+  at most twice. *Amended after the third review of PR #1:* a retry whose
+  body is byte for byte the one just refused is not sent. That happens once
+  nothing is left to elide: the newest observation, the system prompt and
+  the tools are never elided. The run ends with "the prompt without any
+  elidable observation still exceeds the provider's window" rather than
+  paying for the same refusal again
+  (`an_overflow_that_elision_cannot_shrink_is_not_resent_unchanged`).
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
