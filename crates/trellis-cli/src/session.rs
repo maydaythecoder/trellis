@@ -338,7 +338,10 @@ impl Session {
         let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, model.clone()) else {
             return;
         };
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
             return;
         };
         if let Err(e) = rt.block_on(client.reachable()) {
@@ -372,7 +375,10 @@ impl Session {
             return;
         };
 
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
             return;
         };
         rt.block_on(async {
@@ -438,7 +444,9 @@ impl Session {
         // snapshot, so nothing to roll back, and `tasks_run` does not count it
         // because it was not one.
         if let Ok(spec) = model.parse::<trellis_model::ModelSpec>() {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
             let inventory = trellis_index::discover_relative(&self.root);
             match rt.block_on(crate::ask::classify(&spec, task, &inventory)) {
                 Ok(crate::ask::Intent::Answer(text)) => {
@@ -462,7 +470,8 @@ impl Session {
             &model,
             self.unconstrained,
             "1",
-            false,
+            // No resume, and no focus override: `[context] focus` applies.
+            crate::RunSeeding::default(),
             &mut std::io::stdout(),
         );
 

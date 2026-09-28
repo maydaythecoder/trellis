@@ -112,6 +112,14 @@ enum Command {
         /// standing instruction with a specific ask after it.
         #[arg(long)]
         prompt: Option<String>,
+        /// Compile this note from the `[context] vault` and show it to the
+        /// model, overriding `[context] focus`.
+        ///
+        /// A flag because the alternative, editing config.toml to switch
+        /// note, dirties the worktree, and a run refuses a dirty worktree.
+        /// The note informs; it cannot make a run converge (ADR 0017).
+        #[arg(long)]
+        focus: Option<String>,
     },
 
     /// The line-based session: one command at a time, scrollback kept.
@@ -228,9 +236,8 @@ fn main() -> Result<()> {
     // recorded" is only true if the record is accurate.
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    let default = || {
-        tracing_subscriber::filter::Targets::new().with_target("trellis", tracing::Level::INFO)
-    };
+    let default =
+        || tracing_subscriber::filter::Targets::new().with_target("trellis", tracing::Level::INFO);
     let filter = match std::env::var("RUST_LOG") {
         // Set but empty means "say nothing", which is what `EnvFilter` did
         // with it. Parsing it as a directive instead yields one empty
@@ -317,6 +324,7 @@ fn main() -> Result<()> {
             agents,
             resume,
             prompt,
+            focus,
         } => {
             let task = match &prompt {
                 Some(name) => {
@@ -345,7 +353,10 @@ fn main() -> Result<()> {
                 &model,
                 unconstrained,
                 &agents,
-                resume,
+                RunSeeding {
+                    resume,
+                    focus: focus.as_deref(),
+                },
                 &mut std::io::stdout(),
             )?;
             // The one place that decides the process ends, because this is
@@ -926,6 +937,20 @@ impl Driver {
     }
 }
 
+/// What a run is seeded with beyond the task: text for the prompt that
+/// informs the model and never counts toward convergence.
+///
+/// Grouped because both are the same kind of thing, and because the session
+/// and the TUI pass neither — `default()` there says so in one word rather
+/// than in a row of positional `false, None`.
+#[derive(Debug, Default, Clone, Copy)]
+struct RunSeeding<'a> {
+    /// `--resume`: the last trail, fenced as data.
+    resume: bool,
+    /// `--focus`: overrides `[context] focus` for this run only.
+    focus: Option<&'a str>,
+}
+
 /// Runs the agent loop, and rolls back anything that did not converge.
 ///
 /// The ordering matters and is the whole safety story: snapshot before the
@@ -938,9 +963,10 @@ fn cmd_run(
     model_spec: &str,
     unconstrained: bool,
     agents: &str,
-    resume: bool,
+    seeding: RunSeeding<'_>,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
+    let RunSeeding { resume, focus } = seeding;
     if agents != "1" {
         anyhow::bail!(concat!(
             "multi-agent mode is v1.1 and is gated on single-agent numbers that ",
@@ -948,6 +974,30 @@ fn cmd_run(
         ));
     }
     let cfg = config::RepoConfig::load(root)?;
+
+    // The vault is compiled here, in memory, before the model is contacted
+    // and before the snapshot. Writing the compiled file anywhere in the
+    // repository would dirty the worktree the snapshot needs clean; and an
+    // invalid vault or an over-cap note is a run that cannot start as
+    // configured, which should cost nothing (ADR 0017).
+    let vault_setting = cfg.vault(root, focus)?;
+    let vault = match &vault_setting {
+        Some(config::VaultSetting {
+            dir,
+            source,
+            focus: Some(stem),
+        }) => {
+            let compiled = trellis_vault::compile(dir, stem, trellis_vault::DEFAULT_CAP)
+                .with_context(|| {
+                    format!(
+                        "the vault at {source} would not compile for focus `{stem}`; \
+                         the run did not start and nothing was snapshotted"
+                    )
+                })?;
+            Some((stem.clone(), source.clone(), compiled))
+        }
+        _ => None,
+    };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
     let mut driver = Driver::build(&spec, unconstrained)?;
 
@@ -962,7 +1012,9 @@ fn cmd_run(
     //
     // A refused connection is not a failed run. It is a run that could not
     // start, and it should cost nothing.
-    let probe_rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let probe_rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     if let Driver::Runtime(m) = &driver
         && let Err(e) = probe_rt.block_on(m.client().reachable())
     {
@@ -1080,16 +1132,42 @@ fn cmd_run(
     deny.extend(trellis_checks::governance::deny_write_paths(&rules));
     let governance = trellis_loop::Governance::new(&deny);
     let notes = config::RepoConfig::notes(root)?;
-    if !governance.is_empty() || notes.is_some() {
+    if !governance.is_empty() || notes.is_some() || vault.is_some() {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}",
+            "repo:     {} write rule(s){}{}",
             governance.rules().len(),
             if notes.is_some() {
                 ", .trellis/context.md loaded"
             } else {
                 ""
+            },
+            match &vault {
+                // The byte count is what the prompt pays on every turn, and
+                // the drop count is said aloud because a reference heading
+                // with no body under it is easy to read past.
+                Some((stem, source, c)) => format!(
+                    ", vault note `{stem}` from {source} loaded ({} B{})",
+                    c.bytes,
+                    match c.dropped_reference_bodies {
+                        0 => String::new(),
+                        n => format!(", {n} reference bod(ies) dropped to fit the cap"),
+                    }
+                ),
+                None => String::new(),
             }
+        );
+    }
+    // Configured and silently unused is the failure this line prevents: a
+    // user who set up a vault would otherwise assume the model saw it.
+    if let Some(v) = &vault_setting
+        && v.focus.is_none()
+    {
+        let _ = writeln!(
+            out,
+            "vault:    {} configured but no focus set; no vault note sent. \
+             Pass --focus <stem> or set [context] focus",
+            v.source
         );
     }
     // The model is told the rules it will be held to, ranked, with the prose
@@ -1128,13 +1206,19 @@ fn cmd_run(
         prior,
         repo: trellis_loop::RepoContext {
             notes,
-            vault: None,
+            vault: vault.map(|(focus, source, c)| trellis_loop::VaultContext {
+                focus,
+                source,
+                text: c.text,
+            }),
             rules: prompt_rules,
             files,
         },
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let (outcome, transcript) = rt.block_on(async {
         let (handle, _join) = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
@@ -2289,7 +2373,9 @@ fn cmd_doctor(root: &Path, model_spec: Option<&str>) -> Result<()> {
             None => "whatever the runtime has loaded".into(),
         };
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
         rt.block_on(async {
             match client.probe_constraint().await {
                 Ok(true) => {
@@ -2528,6 +2614,15 @@ const CONFIG_TEMPLATE: &str = r#"# TRELLIS configuration. Every setting below is
 # Paths no run may edit, enforced at the orchestrator's write path rather than
 # asked of the model. A rule that lives only in a prompt is a suggestion.
 # deny_write = ["vendor/", "*.lock", "migrations/"]
+
+# [context]
+# A note vault in Apex format (ADR 0017). One focus note, its parent chain,
+# its children's titles and the notes it links, compiled in memory when a run
+# starts and shown to the model. It informs; it does not bind. Switch note
+# per run with `trellis run --focus <stem>` rather than by editing this file,
+# which would dirty the worktree a run needs clean.
+# vault = "notes"
+# focus = "some-note"
 "#;
 
 /// The starter context file.
@@ -2749,7 +2844,9 @@ fn cmd_check(root: &Path, paths: Vec<PathBuf>) -> Result<()> {
     } else {
         paths
     };
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
 
     let verdicts = rt.block_on(async {
         let tc = trellis_checks::typecheck(root, &cfg, &paths).await;

@@ -22,6 +22,7 @@ trellis-model.workspace = true
 trellis-loop.workspace = true
 trellis-trail.workspace = true
 trellis-vcs.workspace = true
+trellis-vault.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
