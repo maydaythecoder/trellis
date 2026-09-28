@@ -704,6 +704,112 @@ fn a_process_agent_that_writes_git_config_or_a_hook_has_it_restored() {
     }
 }
 
+/// `process_fixture`, with `*.cfg` ignored by a committed `.gitignore`
+/// and `config` as `.trellis/config.toml`; trusted afterwards.
+fn ignored_fixture(name: &str, command: &str, config: &str) -> PathBuf {
+    let d = process_fixture(name, command, PASSES);
+    std::fs::write(d.join(".gitignore"), "*.cfg\n").unwrap();
+    std::fs::write(d.join(".trellis/config.toml"), config).unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "ignore *.cfg"]);
+    ok(&d, &["trust"]);
+    d
+}
+
+#[test]
+fn a_process_agent_that_writes_git_info_exclude_has_it_restored() {
+    // `.git/info/exclude` decides what `git status` and the rollback's
+    // `git clean` can see: a `*` there hides every later run's new files,
+    // and nothing in the worktree changes to say so.
+    let d = process_fixture(
+        "proc-git-exclude",
+        r#"["git", "config", "--file", ".git/info/exclude", "evil.x", "y"]"#,
+        PASSES,
+    );
+    let before = std::fs::read(d.join(".git/info/exclude")).ok();
+    ok(
+        &d,
+        &["queue", "add", "touch exclude", "--assignee", "maker"],
+    );
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("NOT CONVERGED"), "{s}");
+    assert!(
+        s.contains("changed .git/info/exclude; put back"),
+        "the report names it:\n{s}"
+    );
+    assert_eq!(
+        std::fs::read(d.join(".git/info/exclude")).ok(),
+        before,
+        "restored byte for byte:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+const PASSING_CHECKS: &str =
+    "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n";
+
+#[test]
+fn a_process_agent_s_ignored_writes_are_removed_on_rollback() {
+    // The risk: `git status` does not list ignored files, so a command that
+    // wrote only ignored paths "changed nothing", was rolled back, and left
+    // what it wrote in place (`.venv/.../sitecustomize.py` runs in the next
+    // check). What the command created is removed.
+    let d = ignored_fixture("proc-ignored", MAKES_A_FILE, PASSING_CHECKS);
+    ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("NOT CONVERGED"), "{s}");
+    assert!(s.contains("app/made.cfg"), "the report names it:\n{s}");
+    assert!(
+        !d.join("app/made.cfg").exists(),
+        "an ignored file the command created survived the rollback:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() {
+    // An ignored path is still a path: `.trellis/` holds what judges the
+    // run, and `deny_write` binds wherever git looks or not. The command
+    // also writes an ordinary file, so the checks run and pass; only the
+    // ignored write can stop it converging.
+    let both = |a: &str| {
+        if cfg!(windows) {
+            format!(
+                r"['cmd', '/C', 'git config --file {} a.b c && git config --file app\x.txt a.b c']",
+                a.replace('/', r"\")
+            )
+        } else {
+            format!(
+                "['sh', '-c', 'git config --file {a} a.b c && git config --file app/x.txt a.b c']"
+            )
+        }
+    };
+    for (name, target, config) in [
+        (
+            "proc-ignored-trellis",
+            ".trellis/evil.cfg",
+            PASSING_CHECKS.to_string(),
+        ),
+        (
+            "proc-ignored-deny",
+            "app/made.cfg",
+            format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"app/made.cfg\"]\n"),
+        ),
+    ] {
+        let d = ignored_fixture(name, &both(target), &config);
+        ok(&d, &["queue", "add", "write", "--assignee", "maker"]);
+        let s = ok(&d, &["work"]);
+        assert!(s.contains("NOT CONVERGED"), "{name}:\n{s}");
+        assert!(
+            s.contains(&format!("governance: refused: {target}")),
+            "{name}: the breach is named:\n{s}"
+        );
+        assert!(!d.join(target).exists(), "{name}: removed:\n{s}");
+        assert!(!d.join("app/x.txt").exists(), "{name}: rolled back:\n{s}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 #[test]
 fn export_then_import_with_dry_run_and_rename() {
     let d = fixture(
