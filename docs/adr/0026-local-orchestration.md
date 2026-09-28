@@ -790,6 +790,41 @@ This is Paperclip's `process` adapter. A profile with
    failed before on the read-only bit; the Unix mode bits it also checks
    are not exercised on Windows). A hook whose mode alone changed is not
    detected: the comparison is by bytes.
+   *Amended after the ninth review of PR #1: links.* The walk of the hooks
+   directory followed links and restore removed every file absent at
+   capture, so a planted `.git/hooks/lib -> $HOME` had restore delete the
+   home directory's files, and a hook replaced by a link to `~/.bashrc` had
+   the hook's bytes written over it. Now nothing is read, written or
+   removed through a link: every path is looked at with `symlink_metadata`,
+   a link is recorded by its text and never entered, a planted link is
+   removed as a link (never its target), a changed link is made again as a
+   link, a file is written back with `create_new` (which does not follow a
+   link) after whatever is at its path is removed, and a directory on the
+   way to it that has become a link is replaced by a directory. Nothing
+   outside the git directories as they resolved at capture is written or
+   removed, so a hooks directory outside them (`core.hooksPath` into the
+   worktree, or elsewhere) is no longer guarded; re-pointing
+   `core.hooksPath` is a change to `config`, which is. A hook the user keeps
+   as a link is compared as the link, so an edit to its target is not a
+   change here (the target is the worktree's, or not the repository's). The
+   comparison now includes a file's permissions, so a mode change alone
+   (`chmod +x` enabling a hook) is detected and put back. Evidence, in
+   `trellis_vcs::git_guard`:
+   `a_planted_directory_link_in_the_hooks_is_removed_and_its_target_is_untouched`
+   (a junction on this Windows host; it failed before with the target's
+   file listed as a new hook), `a_hooks_subdirectory_replaced_by_a_link_is_not_written_through`,
+   `a_hook_replaced_by_a_file_link_comes_back_as_a_file_and_the_target_is_untouched`
+   (it failed before with the target overwritten) and
+   `a_hook_that_was_a_link_at_capture_is_compared_as_a_link_and_never_written_through`,
+   all four failing before the change; and
+   `a_hooks_directory_outside_the_git_directory_is_not_touched`. What is
+   not closed, stated: each path is checked and then acted on, so a process
+   still running while restore runs (a grandchild that outlived the
+   command, step 2) could swap a directory for a link in between; closing
+   that needs `openat`-relative calls std does not offer. On Windows a link
+   is made again only where symbolic links may be created (developer mode
+   or the privilege), and a junction comes back as a directory link;
+   otherwise it is reported as not put back.
 
    *Amended after the sixth review of PR #1: files git ignores.* `git
    status` does not list them, so a command could write
