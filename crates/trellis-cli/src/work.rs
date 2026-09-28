@@ -753,6 +753,8 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
         routines: BTreeMap::new(),
         current: None,
         said: BTreeSet::new(),
+        trust_check: crate::tooling::require_trusted,
+        trust: None,
     };
     let opts = WorkOptions {
         max_tasks: if args.once { Some(1) } else { args.max_tasks },
@@ -810,6 +812,14 @@ struct CliRunner<'a> {
     /// Lines already printed this invocation. A budget warning or a load
     /// error that holds for hours is said once, not once per tick.
     said: BTreeSet<String>,
+    /// How trust is decided: `tooling::require_trusted`, which walks and
+    /// hashes `.trellis/`. A field so a test can count the calls.
+    trust_check: fn(&Path) -> std::result::Result<(), String>,
+    /// This tick's answer, computed at the first process task the gate
+    /// sees and cleared by `tick`: once per tick, not once per pending
+    /// process task, and never older than the tick, so `trellis trust`
+    /// run while `work --every` waits takes effect at the next one.
+    trust: Option<std::result::Result<(), String>>,
 }
 
 impl CliRunner<'_> {
@@ -878,6 +888,7 @@ impl Runner for CliRunner<'_> {
     }
 
     fn tick(&mut self, q: &Queue, out: &mut dyn Write) {
+        self.trust = None;
         match load_profiles(self.root) {
             Ok(p) => self.profiles = p,
             Err(e) => self.once(
@@ -974,10 +985,11 @@ impl Runner for CliRunner<'_> {
         }
         // A process agent's command is repository code (ADR 0026 §11), so
         // it waits for the same decision a hook does (ADR 0023 §4).
-        if p.is_process()
-            && let Err(why) = crate::tooling::require_trusted(self.root)
-        {
-            return Some(format!("agent `{name}` runs a repository command; {why}"));
+        if p.is_process() {
+            let (check, root) = (self.trust_check, self.root);
+            if let Err(why) = self.trust.get_or_insert_with(|| check(root)) {
+                return Some(format!("agent `{name}` runs a repository command; {why}"));
+            }
         }
         if !p.is_process() && p.file.model.is_none() && self.model.is_none() {
             return Some(format!(
@@ -1099,5 +1111,76 @@ impl Runner for CliRunner<'_> {
             );
         }
         !self.stop_requested()
+    }
+}
+
+#[cfg(test)]
+mod trust_per_tick_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TRUSTED: AtomicBool = AtomicBool::new(false);
+
+    fn counted(_: &Path) -> std::result::Result<(), String> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        if TRUSTED.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err("not trusted: run trellis trust".into())
+        }
+    }
+
+    #[test]
+    fn trust_is_decided_once_per_tick_and_again_at_the_next() {
+        // The risk: `require_trusted` walks and hashes `.trellis/`, and the
+        // gate ran it for every pending process task on every tick. And the
+        // other side: a cached answer must not outlive its tick, or a
+        // `trellis trust` while `work --every` waits is never noticed.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join(".trellis/agents")).unwrap();
+        std::fs::write(
+            root.join(".trellis/agents/p.toml"),
+            "command = [\"true\"]\n",
+        )
+        .unwrap();
+        let q = Queue::at(root.join("queue"));
+        let mut r = CliRunner {
+            root,
+            model: None,
+            model_from_user: false,
+            unconstrained: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            profiles: load_profiles(root).unwrap(),
+            queue: q.clone(),
+            routines: BTreeMap::new(),
+            current: None,
+            said: BTreeSet::new(),
+            trust_check: counted,
+            trust: None,
+        };
+        let task = trellis_queue::Task {
+            task: "t".into(),
+            assignee: Some("p".into()),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        r.tick(&q, &mut out);
+        for id in ["a", "b", "c"] {
+            let why = r.gate(id, &task, &mut out).expect("untrusted: waits");
+            assert!(why.contains("not trusted"), "{why}");
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "once for three tasks");
+
+        TRUSTED.store(true, Ordering::SeqCst);
+        r.tick(&q, &mut out);
+        assert_eq!(
+            r.gate("a", &task, &mut out),
+            None,
+            "the next tick sees trust"
+        );
+        assert_eq!(r.gate("b", &task, &mut out), None);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     }
 }

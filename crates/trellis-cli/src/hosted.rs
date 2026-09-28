@@ -166,12 +166,14 @@ fn origin(base: &str) -> Option<(String, bool)> {
         "http" => 80,
         _ => return None,
     };
-    // Split exactly as the transport does (`trellis_model`'s `Endpoint`):
-    // authority up to the first `/`, port after the last `:`. A parser that
-    // disagreed with the one that connects could approve one host and send
-    // to another, so anything the two might read differently — userinfo,
-    // a query or fragment before any path, a backslash, whitespace — is
-    // refused rather than interpreted.
+    // Split by the transport's own parser (`trellis_model::split_authority`,
+    // which `Endpoint` uses): authority up to the first `/`, then `[v6]`,
+    // `[v6]:port`, `name` or `name:port`. A parser that disagreed with the
+    // one that connects could approve one host and send to another — this
+    // one used to cut `[::1]` at its last colon — so there is one parser.
+    // Stricter here only in what it refuses before that: anything the two
+    // might read differently (userinfo, a query or fragment before any
+    // path, a backslash, whitespace) is refused rather than interpreted.
     let authority = rest.split('/').next()?;
     if authority
         .chars()
@@ -179,20 +181,16 @@ fn origin(base: &str) -> Option<(String, bool)> {
     {
         return None;
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().ok()?),
-        None => (authority, default),
-    };
-    if host.is_empty() {
-        return None;
-    }
+    let (host, port) = trellis_model::split_authority(base, authority, default).ok()?;
     let host = host.to_ascii_lowercase();
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
-    let loopback = bare == "localhost"
-        || bare
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    Some((format!("{scheme}://{host}:{port}"), loopback))
+    let loopback = trellis_model::is_loopback(&host);
+    // Brackets back on an IPv6 literal, so the origin is a URL again.
+    let shown = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    Some((format!("{scheme}://{shown}:{port}"), loopback))
 }
 
 fn origin_of(base: &str) -> Option<String> {
@@ -461,6 +459,49 @@ mod tests {
         ] {
             assert!(resolve(&spec(bad), &cfg, false).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_bracketed_ipv6_authority_is_read_as_the_transport_reads_it() {
+        // The risk: `rsplit_once(':')` cut `[::1]` at its last colon, so the
+        // allow list refused a loopback the transport would connect to, and
+        // a user's own provider on an IPv6 literal could never be used from
+        // the repository's spec. One parser, the transport's.
+        let cfg = layered("", "");
+        for ok in [
+            "openai-chat:http://[::1]/v1#m",
+            "openai-chat:http://[::1]:8080/v1#m",
+        ] {
+            assert!(resolve(&spec(ok), &cfg, false).is_ok(), "{ok}");
+        }
+        let user = "[[providers]]\nname = \"v6\"\nprotocol = \"openai\"\n\
+                    base_url = \"https://[2001:db8::1]:8443/v1\"\nkey_env = \"V6_KEY\"\n";
+        let cfg = layered("[model]\nspec = \"provider:v6#m\"\n", user);
+        let r = resolve(&spec("provider:v6#m"), &cfg, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.key_env, "V6_KEY");
+        // The same origin spelled differently is the same origin; with the
+        // repository's own variable it is still not a pair the user has.
+        let cfg = layered(
+            "[[providers]]\nname = \"mine\"\nprotocol = \"openai\"\n\
+             base_url = \"https://[2001:DB8::1]:8443/v1\"\n",
+            user,
+        );
+        let e = format!(
+            "{:#}",
+            resolve(&spec("provider:mine#m"), &cfg, false).unwrap_err()
+        );
+        assert!(e.contains("https://[2001:db8::1]:8443"), "{e}");
+        // Something after `]` that is not `:port` is not an authority.
+        assert!(
+            resolve(
+                &spec("openai-chat:https://[::1]x/v1#m"),
+                &layered("", ""),
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -372,6 +372,116 @@ impl Fingerprint {
     }
 }
 
+/// What a person trusted, re-checked before each spawn of trusted code
+/// during a run (ADR 0023 §5, "trusted code cannot be rewritten mid-run").
+///
+/// Hooks re-read their scripts on every spawn, and `bash`, a custom tool or
+/// a hook can rewrite any file; none of that can be path-checked the way
+/// `edit` and `write_file` are. So before a hook or a custom tool is
+/// started, and after any call that may have changed the tree, the
+/// fingerprint is computed again and compared with the one trusted. A
+/// difference refuses the spawn, and is latched: every later spawn is
+/// refused too, and the run does not converge. The latch is shared by every
+/// clone, so the `pre_tool` gate's copy of the hooks and the orchestrator's
+/// see one breach.
+#[derive(Clone)]
+pub struct TrustGuard(std::sync::Arc<GuardInner>);
+
+struct GuardInner {
+    recheck: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
+    breach: Mutex<Option<String>>,
+}
+
+impl std::fmt::Debug for TrustGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrustGuard")
+            .field("breach", &self.breach())
+            .finish_non_exhaustive()
+    }
+}
+
+impl TrustGuard {
+    /// A guard whose check is `recheck`: `Err` names what changed.
+    pub fn new(recheck: impl Fn() -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(GuardInner {
+            recheck: Box::new(recheck),
+            breach: Mutex::new(None),
+        }))
+    }
+
+    /// A guard over `trusted`, recomputed by `now`. The error names the
+    /// files whose hashes differ, so the trail says what was rewritten.
+    pub fn over(
+        trusted: Fingerprint,
+        now: impl Fn() -> Fingerprint + Send + Sync + 'static,
+    ) -> Self {
+        Self::new(move || {
+            let current = now();
+            if current.sha256 == trusted.sha256 && current.refused.is_none() {
+                return Ok(());
+            }
+            Err(describe_change(&trusted, &current))
+        })
+    }
+
+    /// `Ok` while what runs is what was trusted. Once it has failed it
+    /// fails for the rest of the run, even if the files are put back: a
+    /// hook that ran rewritten, or was refused, is already in this run.
+    pub fn check(&self) -> Result<(), String> {
+        let mut b = self.0.breach.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(why) = b.as_ref() {
+            return Err(why.clone());
+        }
+        if let Err(why) = (self.0.recheck)() {
+            *b = Some(why.clone());
+            return Err(why);
+        }
+        Ok(())
+    }
+
+    /// The first failed check's reason, if any check has failed.
+    pub fn breach(&self) -> Option<String> {
+        self.0
+            .breach
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
+/// What differs between two fingerprints, in words: the files whose hashes
+/// changed, appeared or went, or the items that did.
+fn describe_change(was: &Fingerprint, now: &Fingerprint) -> String {
+    if let Some(why) = &now.refused {
+        return format!("the trusted code can no longer be trusted: {why}");
+    }
+    let files = |f: &Fingerprint| -> BTreeMap<String, String> {
+        f.items
+            .iter()
+            .flat_map(|i| i.files.iter().cloned())
+            .collect()
+    };
+    let (a, b) = (files(was), files(now));
+    let mut changed: Vec<String> = a
+        .iter()
+        .filter(|(p, h)| b.get(*p) != Some(*h))
+        .map(|(p, _)| p.clone())
+        .chain(b.keys().filter(|p| !a.contains_key(*p)).cloned())
+        .collect();
+    changed.sort();
+    changed.dedup();
+    if changed.is_empty() {
+        "the trusted configuration changed since the run started (a hook, custom tool \
+         or bash setting)"
+            .to_string()
+    } else {
+        format!(
+            "trusted code changed since the run started: {}",
+            changed.join(", ")
+        )
+    }
+}
+
 /// Whether a repository's current fingerprint is the one a person trusted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustState {

@@ -273,6 +273,16 @@ then sent the user's key, or any variable the repository named
   and port with the default filled in; an authority the transport might
   read differently (userinfo, `?`, `#`, `\`, whitespace) is refused rather
   than interpreted.
+
+  *Amended after the fifth review of PR #1:* the host and port are split by
+  the transport's own parser, `trellis_model::split_authority`, now public
+  for this, and loopback is the transport's `is_loopback`. The allow list
+  had kept a split at the last `:` after the transport stopped using one,
+  so `http://[::1]/v1` was refused as loopback and a user's own provider on
+  a bracketed IPv6 literal never matched. An IPv6 origin is written with
+  its brackets (`https://[2001:db8::1]:8443`). Evidence:
+  `hosted::tests::a_bracketed_ipv6_authority_is_read_as_the_transport_reads_it`,
+  which failed before the change.
 - **"The repository chose"** means: the repository's `[model] spec`, an
   agent profile's `model` (ADR 0026), or any `[[providers]]` entry the
   repository defined, *whoever named the entry*: `--model provider:x#m`
@@ -345,6 +355,18 @@ repository may no longer name `key_env`.
   the warning and `thinking_withheld()` cannot disagree with the body that
   is sent. The two tests above are unchanged and still pass. They guard
   this change and did not fail before it.
+
+  *Amended after the fifth review of PR #1.* That built a whole
+  `Conversation` (system prompt, every observation) on each call only to
+  ask which turns carried a reply. The decider is now one per-turn
+  predicate in the adapter, `issued_for`, which `conversation()` uses to
+  set each exchange's `replay` and `every_turn_replayed(t, issued)` uses to
+  answer without building one. There is still one decider: the
+  `Conversation` the body is built from has a replay exactly where
+  `issued_for` found one. Guarded by
+  `the_replay_decision_without_a_conversation_agrees_with_the_body_s`, which
+  compares the two on seven history shapes under both protocols; a cost
+  change, so no test failed before it. The two thinking tests still pass.
 
   Neither protocol is sent `temperature`: reasoning models on both reject a
   non-default one.
