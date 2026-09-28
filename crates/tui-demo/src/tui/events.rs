@@ -43,7 +43,7 @@ where
 pub async fn run_with_answers<B>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut AppState,
-    mut work_rx: mpsc::Receiver<Message>,
+    work_rx: mpsc::Receiver<Message>,
     task_tx: mpsc::Sender<String>,
     answer_tx: Option<mpsc::Sender<bool>>,
 ) -> anyhow::Result<()>
@@ -51,7 +51,35 @@ where
     B: ratatui::backend::Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let mut term_events = EventStream::new();
+    run_with_events(
+        terminal,
+        state,
+        EventStream::new(),
+        work_rx,
+        task_tx,
+        answer_tx,
+    )
+    .await
+}
+
+/// The loop, with the terminal's event source passed in.
+///
+/// Separate because crossterm's `EventStream` opens the controlling terminal
+/// when first polled and panics ("reader source not set") where there is
+/// none — every Linux CI runner. The tests pass a source that never yields.
+async fn run_with_events<B, S>(
+    terminal: &mut ratatui::Terminal<B>,
+    state: &mut AppState,
+    mut term_events: S,
+    mut work_rx: mpsc::Receiver<Message>,
+    task_tx: mpsc::Sender<String>,
+    answer_tx: Option<mpsc::Sender<bool>>,
+) -> anyhow::Result<()>
+where
+    B: ratatui::backend::Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+    S: futures_util::Stream<Item = std::io::Result<Event>> + Unpin,
+{
     // For the elapsed-time display, not to drive rendering.
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
     let mut needs_redraw = true;
@@ -127,12 +155,16 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    fn headless() -> futures_util::stream::Pending<std::io::Result<Event>> {
+        futures_util::stream::pending()
+    }
+
     /// The exit path, driven through the real loop.
     ///
-    /// `EventStream` yields nothing without a tty, which is fine: the
-    /// `select!` still takes work messages, and a `Quit` has to end the loop
-    /// and return `Ok` — because that return is what lets `main` call
-    /// `restore()` and hand the terminal back.
+    /// The terminal source here never yields (crossterm's own panics with no
+    /// tty, as on Linux CI): the `select!` still takes work messages, and a
+    /// `Quit` has to end the loop and return `Ok` — because that return is
+    /// what lets `main` call `restore()` and hand the terminal back.
     #[tokio::test]
     async fn quit_ends_the_loop_and_returns_ok() {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -147,7 +179,7 @@ mod tests {
 
         let out = tokio::time::timeout(
             Duration::from_secs(5),
-            run(&mut terminal, &mut state, rx, task_tx),
+            run_with_events(&mut terminal, &mut state, headless(), rx, task_tx, None),
         )
         .await
         .expect("the loop must not hang on Quit");
@@ -174,7 +206,7 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_secs(5),
-            run(&mut terminal, &mut state, rx, task_tx),
+            run_with_events(&mut terminal, &mut state, headless(), rx, task_tx, None),
         )
         .await
         .expect("must not hang")
@@ -213,7 +245,14 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_secs(5),
-            run_with_answers(&mut terminal, &mut state, rx, task_tx, Some(answer_tx)),
+            run_with_events(
+                &mut terminal,
+                &mut state,
+                headless(),
+                rx,
+                task_tx,
+                Some(answer_tx),
+            ),
         )
         .await
         .expect("must not hang")
