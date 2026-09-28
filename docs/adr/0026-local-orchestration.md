@@ -272,8 +272,21 @@ that reads them:
   so an `approve` profile's tasks can be claimed only when `work` runs
   attached to a terminal. Otherwise they are unclaimable and give that
   reason, instead of being claimed and refused by `NEEDS_A_TERMINAL`.
-- **`[control] approve`**: replaces the repository's approve list for the
-  run.
+- **`[control] approve`**: ~~replaces the repository's approve list for the
+  run.~~ *Amended after the tenth review of PR #1:* adds to the approve
+  list the repository's and the user's files layer to (ADR 0025 §7), for
+  the run. A profile is repository content, and replacing the list let
+  `approve = ["read_file"]` drop the user's own entries and the default
+  `edit`. A profile can only add restrictions. Evidence:
+  `a_profile_s_approve_list_adds_to_the_user_s_and_drops_nothing` in
+  `crates/trellis-cli/src/user_config.rs`, which failed before with
+  `["read_file", "edit"]` where `["edit", "run_checks", "read_file"]` was
+  due. The other fields were checked for the same direction and already
+  only restrict: `tools` and `[skills]` narrow, `[budget]` is a further
+  cap, and `[control] mode` can only raise `work`'s hands-off default to
+  approve (a profile without it runs auto under `work`, as every task
+  does, ADR 0020 §5). `pass_env` gives a variable back to a process
+  agent, and is a committed choice `trellis trust` shows (§11).
 - **`[skills]`**: filters the catalog disclosed to the model (ADR 0019).
 - **`tools`**: stored and validated only as a list of strings. W-B is
   building the tool registry at the same time (ADR 0023), and this field is
