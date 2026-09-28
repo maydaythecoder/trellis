@@ -72,6 +72,22 @@ pub struct Factual {
     /// shape and its digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<String>,
+    /// Completion tokens the runtime adapter reported for the run
+    /// (ADR 0026 §8). The budget ledger sums this.
+    ///
+    /// Completion only: no prompt-token figure exists anywhere in trellis,
+    /// so a budget over this limits generated tokens, not billed ones.
+    /// `None` for a scripted run and for a process agent, whose spend
+    /// trellis cannot see — not a zero, which would read as a free run.
+    /// Omitted when absent, like `control`, so older trails keep their digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// The agent profile the run executed as (ADR 0026 §4), when one did.
+    ///
+    /// Recorded in the trail rather than joined from the queue: the queue is
+    /// per worktree and dies with it, and the trail is what outlives both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// One thing the agent did, and what came back.
@@ -412,6 +428,8 @@ mod tests {
                     },
                 ],
                 control: None,
+                tokens: None,
+                agent: None,
             },
 
             factual_sha256: String::new(),

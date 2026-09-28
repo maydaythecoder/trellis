@@ -403,6 +403,8 @@ mod tests {
             context: None,
             actions: Vec::new(),
             control: None,
+            tokens: None,
+            agent: None,
         };
         let digest = crate::Trail::compute_factual_sha256(&factual);
         let factual_json = serde_json::to_string(&factual).unwrap();
