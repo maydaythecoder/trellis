@@ -19,7 +19,12 @@ case " $labels " in *" triage:needs-human "*) problems+=("labelled triage:needs-
 case " $labels " in *" split "*) problems+=("split: work happens in its child tickets") ;; esac
 
 # Every blocked_by in the generated triage block must be closed.
-for b in $(printf '%s' "$body" | sed -n 's/^blocked_by: \[\([0-9, ]*\)\]/\1/p' | tr ',' ' '); do
+# An entry that is not an issue number blocks: a dependency the gate cannot
+# look up is not a satisfied one.
+for b in $(printf '%s' "$body" | sed -n 's/^blocked_by: \[\(.*\)\]/\1/p' | tr ',"' '  '); do
+  case "$b" in
+    *[!0-9]*) problems+=("blocked_by entry '$b' is not an issue number"); continue ;;
+  esac
   s=$(gh issue view "$b" --json state -q .state 2>/dev/null || echo UNKNOWN)
   [ "$s" = "CLOSED" ] || problems+=("blocked_by #$b is $s")
 done
