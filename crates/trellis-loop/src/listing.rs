@@ -21,10 +21,9 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
     if pattern.is_empty() {
         return ToolResult::Error("grep needs a non-empty pattern".into());
     }
-    let mut argv: Vec<String> = ["git", "grep", "-n", "-I", "--no-color", "--untracked", "-e"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    // With `trellis_vcs::OVERRIDES`: a `core.fsmonitor` or hook that `bash`
+    // planted a call earlier is not run by the model's next listing.
+    let mut argv = trellis_vcs::git_argv(&["grep", "-n", "-I", "--no-color", "--untracked", "-e"]);
     // After `-e`, so a pattern that starts with `-` is a pattern and not an
     // option; the path after `--` for the same reason.
     argv.push(pattern.to_string());
@@ -82,18 +81,14 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
     }
     let pat = glob.replace('\\', "/");
     let pat = pat.trim_start_matches("./");
-    let mut argv: Vec<String> = [
-        "git",
+    let mut argv = trellis_vcs::git_argv(&[
         "--literal-pathspecs",
         "ls-files",
         "-z",
         "--cached",
         "--others",
         "--exclude-standard",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+    ]);
     // The glob's leading literal directories, as a pathspec, so a narrower
     // glob lists less and not only shows less: that is what the refusal
     // below tells the model to do. Literal, so a `[` in a directory name is
@@ -320,6 +315,65 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(started.elapsed() < LISTING_TIMEOUT / 2);
+    }
+
+    #[tokio::test]
+    async fn grep_and_find_run_no_planted_fsmonitor() {
+        // The risk (review round 10, finding 2): `grep` and `find` started
+        // plain `git`, without `trellis_vcs::OVERRIDES`, so a
+        // `core.fsmonitor` that `bash` planted a call earlier ran at the
+        // model's next listing, under trellis's name.
+        let d = tempfile::tempdir().unwrap();
+        let marks = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(d.path())
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.invalid"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(d.path().join("a.py"), "needle = 1\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        let m = marks.path().display().to_string().replace('\\', "/");
+        let fsm = marks.path().join("fsmonitor.sh");
+        std::fs::write(&fsm, format!("#!/bin/sh\necho x >> '{m}/ran'\nexit 1\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fsm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        git(&[
+            "config",
+            "core.fsmonitor",
+            &fsm.display().to_string().replace('\\', "/"),
+        ]);
+        // An edit, so the index is stale and git has a reason to ask.
+        std::fs::write(d.path().join("a.py"), "needle = 2\n").unwrap();
+
+        match find(d.path(), "*.py").await {
+            ToolResult::Output(s) => assert_eq!(s, "a.py"),
+            other => panic!("{other:?}"),
+        }
+        match grep(d.path(), "needle", None).await {
+            ToolResult::Output(s) => assert!(s.contains("a.py"), "{s}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !marks.path().join("ran").exists(),
+            "grep or find ran the planted core.fsmonitor"
+        );
+        // The control: plain git runs it, so the assertion is about the
+        // overrides and not about a hook that could never run here.
+        git(&["status", "--porcelain"]);
+        assert!(marks.path().join("ran").exists(), "the control did not run");
     }
 
     #[test]

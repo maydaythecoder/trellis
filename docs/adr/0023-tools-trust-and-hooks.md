@@ -558,6 +558,25 @@ this amendment a hook that wrote at any of those points left bytes in a
       `core.sshCommand`, credential helpers) are not overridden.
     - A partition worktree's `git worktree add` runs no `post-checkout`
       hook now; its checkout still applies the user's filters.
+
+    *Amended after the tenth review of PR #1: "every" was not every.* The
+    `grep` and `find` tools built their own argv starting `git` and ran
+    it without the overrides, so a `core.fsmonitor` that `bash` planted
+    ran at the model's next listing. Every git the workspace starts outside
+    tests now comes from one place: `trellis_vcs::command` (or
+    `command_with_hooks` for the trail's commit and the guard's hooks
+    path), `tokio::process::Command::from(command())` for an async one, and
+    `trellis_vcs::git_argv` for `exec::run`'s argv. The one copy is
+    `chat::git_command`, since the `chat` crate depends on nothing in the
+    workspace (as its key scrub already is a copy). A source scan,
+    `every_git_spawn_goes_through_trellis_vcs` in
+    `crates/trellis-cli/tests/hygiene.rs`, fails on any non-test line
+    naming `"git"` outside those; run against the sources before this
+    change it named all four sites (`listing.rs` twice, the orchestrator's
+    `check-ignore`, `chat`'s status). Evidence for the behaviour:
+    `grep_and_find_run_no_planted_fsmonitor` in `trellis-loop`'s
+    `listing.rs`, which failed before with the marker written, and whose
+    control runs plain `git status` and sees it.
   - **A changed pre-existing ignored file is a tree not restored.** The
     rollback said "NOT put back" and exited 1 as restored; it exits 2
     now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
