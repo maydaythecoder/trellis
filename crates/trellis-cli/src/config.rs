@@ -233,19 +233,30 @@ impl RepoConfig {
             .and_then(|c| c.approve.clone())
             .unwrap_or_else(|| vec!["edit".to_string()]);
         for t in &approve {
-            // A repository's own tools are approvable by name (ADR 0023).
-            let custom = self.custom_tools().iter().any(|c| &c.name == t);
-            if !custom && !trellis_loop::APPROVABLE_TOOLS.contains(&t.as_str()) {
-                anyhow::bail!(
-                    "[control] approve lists `{t}`, which is not a tool; the tools are {}",
-                    trellis_loop::APPROVABLE_TOOLS.join(", ")
-                );
-            }
+            self.check_approvable(t)
+                .map_err(|e| anyhow::anyhow!("[control] {e}"))?;
         }
         Ok(Control {
             mode: flag.unwrap_or(configured),
             approve,
         })
+    }
+
+    /// Whether `t` may be listed in a `[control] approve` list: a built-in
+    /// approvable tool, or a repository's own tool by name (ADR 0023). The
+    /// one test the config's list and a profile's list both use, so a name
+    /// one accepts the other cannot refuse.
+    pub(crate) fn check_approvable(&self, t: &str) -> std::result::Result<(), String> {
+        let custom = self.custom_tools();
+        if custom.iter().any(|c| c.name == t) || trellis_loop::APPROVABLE_TOOLS.contains(&t) {
+            return Ok(());
+        }
+        let mut names: Vec<&str> = trellis_loop::APPROVABLE_TOOLS.to_vec();
+        names.extend(custom.iter().map(|c| c.name.as_str()));
+        Err(format!(
+            "approve lists `{t}`, which is not a tool; the tools are {}",
+            names.join(", ")
+        ))
     }
 
     /// The repository's write rules, or none.
