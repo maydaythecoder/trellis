@@ -96,6 +96,40 @@ pub struct Dispatched {
     pub result: ToolResult,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
+    /// Whether this call may have changed the working tree. See
+    /// [`may_change_tree`] for the tool's part; a `pre_tool` or `post_tool`
+    /// hook that changed the worktree (or whose effect could not be
+    /// compared) also sets it, because a hook runs around every call — the
+    /// passing check included — and would otherwise leave bytes behind that
+    /// no check saw (ADR 0023, "after a pass").
+    pub may_have_changed_tree: bool,
+}
+
+/// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
+/// that ran. `wrote` is whether `edit` or `write_file` reached the point of
+/// writing bytes, which is not the same as succeeding: a write that failed
+/// half way, or an edit written and then refused by the index, still
+/// changed the file.
+///
+/// Exhaustive on purpose, like `tool_result_variants_are_accounted_for`: a
+/// new tool does not compile until someone decides here whether it writes,
+/// and the answer for "not sure" is yes.
+pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
+    match call {
+        ToolCall::Edit { .. } | ToolCall::WriteFile { .. } => wrote,
+        // A process that ran may have written anything, whatever it
+        // printed and however it exited.
+        ToolCall::Bash { .. } | ToolCall::Custom { .. } => true,
+        ToolCall::BlastRadius { .. }
+        | ToolCall::ReadFile { .. }
+        | ToolCall::RunChecks { .. }
+        | ToolCall::ReadSkill { .. }
+        | ToolCall::Grep { .. }
+        | ToolCall::Find { .. }
+        | ToolCall::Ls { .. }
+        | ToolCall::SearchNotes { .. }
+        | ToolCall::ReadNote { .. } => false,
+    }
 }
 
 /// What a person said about one call, and how long they took to say it.
@@ -179,6 +213,8 @@ impl Handle {
             || Dispatched {
                 result: ToolResult::Error("orchestrator stopped".into()),
                 human: None,
+                // A stopped actor owns the only write path and wrote nothing.
+                may_have_changed_tree: false,
             },
         )
         .await
@@ -250,6 +286,9 @@ pub struct Orchestrator {
     /// `[skills]` lists, enforced here because this is where the body is
     /// served (ADR 0026 §4).
     skills: crate::skills::SkillAccess,
+    /// Whether the call being served reached a write, for
+    /// [`may_change_tree`]. Reset at the start of every gated call.
+    wrote: bool,
 }
 
 impl Orchestrator {
@@ -268,6 +307,7 @@ impl Orchestrator {
             calls: 0,
             gate_log: Vec::new(),
             skills: crate::skills::SkillAccess::default(),
+            wrote: false,
         }
     }
 
@@ -403,8 +443,32 @@ impl Orchestrator {
                     self.tools.names().join(", ")
                 )),
                 human,
+                may_have_changed_tree: false,
             };
         }
+        self.wrote = false;
+        // `pre_tool` and `post_tool` are repository code that runs around
+        // every call, the passing check included, and nothing stops either
+        // writing. The worktree is compared across both, so a hook that
+        // writes marks the turn as one that may have changed the tree and
+        // the pass before it stops counting (ADR 0023, "after a pass").
+        // Only when such a hook is declared: two git calls per turn is a
+        // cost only a repository with hooks pays.
+        let watched = self.hooks.as_ref().is_some_and(|h| {
+            let c = h.config();
+            c.pre_tool.is_some() || c.post_tool.is_some()
+        });
+        let before = watched.then(|| trellis_vcs::worktree_fingerprint(&self.root).ok());
+        let root = self.root.clone();
+        // An unreadable fingerprint on either side counts as a change: the
+        // guard fails closed, because "could not tell" is not "unchanged".
+        let changed_since = move |before: &Option<Option<String>>| match before {
+            None => false,
+            Some(None) => true,
+            Some(Some(b)) => trellis_vcs::worktree_fingerprint(&root)
+                .ok()
+                .is_none_or(|a| a != *b),
+        };
         for i in 0..=self.gates.len() {
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
@@ -431,6 +495,7 @@ impl Orchestrator {
                 return Dispatched {
                     result: ToolResult::Error(reason),
                     human,
+                    may_have_changed_tree: changed_since(&before),
                 };
             }
         }
@@ -482,7 +547,11 @@ impl Orchestrator {
             let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
             h.post_tool(&call, as_json).await;
         }
-        Dispatched { result, human }
+        Dispatched {
+            result,
+            human,
+            may_have_changed_tree: may_change_tree(&call, self.wrote) || changed_since(&before),
+        }
     }
 
     /// Creates a file that does not exist (ADR 0023 §2).
@@ -530,7 +599,9 @@ impl Orchestrator {
             return ToolResult::Error(format!("cannot create the directory for {path}: {e}"));
         }
         // `create_new`, not `write`: a file that appeared since the check
-        // above is not overwritten.
+        // above is not overwritten. `wrote` is set first, because a write
+        // that fails part way still leaves a file.
+        self.wrote = true;
         let written = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -814,6 +885,9 @@ impl Orchestrator {
             updated
         };
 
+        // Set before the write, not after it succeeds: a write that fails
+        // part way has still changed the file.
+        self.wrote = true;
         if let Err(e) = std::fs::write(&full, &updated) {
             return ToolResult::Error(format!("cannot write {path}: {e}"));
         }

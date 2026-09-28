@@ -189,10 +189,47 @@ directory, the same two environment variables as `bash`, and a timeout
   Runs after the snapshot, because a hook can write to the tree.
 - **`after_run`**: the outcome as JSON on stdin. Runs when the loop ends and
   before the rollback, so on a run that did not converge the rollback also
-  undoes what it wrote inside the worktree. It does not run on Ctrl-C.
+  undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
+  a converged run, a write by it demotes the run (see "After a pass").
 
 A hook can refuse a call. It cannot produce a pass, cannot make a run
 converge, and cannot rewrite a call or an observation (ADR 0004, ADR 0005).
+
+#### After a pass (amended 2026-09-27)
+
+A hook is repository code and nothing stops it writing in the worktree.
+Three of them run at points where a write would sit after the last check:
+`post_tool` after every call (the passing check included), `pre_tool`
+before every call, and `after_run` after the loop has converged. Before
+this amendment a hook that wrote at any of those points left bytes in a
+"converged" change that no check saw. Now:
+
+- **The worktree fingerprint.** `trellis_vcs::worktree_fingerprint` is the
+  tree id `git add -A && git write-tree` would give, computed in a copy of
+  the index so the user's is untouched. It covers the content of every
+  tracked and untracked file git does not ignore; `git status --porcelain`
+  would not, since a rewritten untracked file keeps its `??` line.
+  **Ignored files are not covered**, as they are not part of any change
+  trellis proposes, and a hook that writes one is not detected.
+- **`pre_tool` and `post_tool`.** When either is declared, the orchestrator
+  fingerprints the worktree before the gates and after `post_tool`. A
+  difference, or a fingerprint that could not be taken, marks the turn as
+  one that may have changed the tree, and `last_check_passed` stops there
+  (ADR 0004). One flag cannot say which side of a check a hook wrote on, so
+  a hook that writes on a check's own turn voids that check. Cost: two git
+  invocations per call, paid only by a repository that declares one of
+  these hooks.
+- **`after_run`.** The binary fingerprints the worktree around the hook on
+  a converged run. A difference, or a fingerprint that could not be taken,
+  demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,
+  the rollback removes the hook's bytes together with the run's, and the
+  trail records a run that did not converge. Chosen over moving `after_run`
+  to after the trail, which would still have needed the same guard. The
+  outcome JSON the hook was given said "converged"; the hook is told what
+  the loop decided, and the demotion is decided after it, from what it did.
+
+Hooks observe, gate, and add context. They do not write in the worktree,
+and a repository whose hooks do cannot converge.
 
 ### 6. Custom command tools
 

@@ -1155,6 +1155,7 @@ mod tests {
                 radius_counts: None,
                 prompt_bytes: None,
                 human: None,
+                may_have_changed_tree: false,
             }],
             final_notice: true,
             prior: None,
@@ -1193,6 +1194,7 @@ mod tests {
                 radius_counts: None,
                 prompt_bytes: None,
                 human: None,
+                may_have_changed_tree: false,
             }],
             final_notice: false,
             prior: None,
@@ -1492,6 +1494,7 @@ mod compaction_and_hosted_tests {
             prompt_bytes: None,
             radius_counts: None,
             human: None,
+            may_have_changed_tree: false,
         }
     }
 

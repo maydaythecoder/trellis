@@ -546,6 +546,57 @@ mod run_tests {
         );
     }
 
+    #[test]
+    fn an_after_run_hook_that_writes_cannot_leave_bytes_in_a_converged_change() {
+        // The risk: after_run runs after the last check, so a file it writes
+        // sat in a "converged" change that no check had seen. The guard
+        // fingerprints the worktree around it, demotes the run, and the
+        // rollback takes the hook's bytes with the run's.
+        let script = r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
+            {"tool":"done","summary":"checked"}
+        ]}"#;
+        let config = format!(
+            "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
+            sh("exit 0"),
+            sh("echo late> late.py")
+        );
+        let (dir, spec) = fixture("after-run-writes", &config, script);
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("NOT CONVERGED"), "{said}");
+        assert!(said.contains("after_run hook changed"), "{said}");
+        assert!(
+            !dir.join("late.py").exists(),
+            "the hook's file must not survive:\n{said}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "the run's own edit is rolled back with it"
+        );
+    }
+
+    #[test]
+    fn an_after_run_hook_that_only_observes_leaves_a_converged_run_alone() {
+        let script = r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
+            {"tool":"done","summary":"checked"}
+        ]}"#;
+        let config = format!(
+            "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
+            sh("exit 0"),
+            sh("exit 0")
+        );
+        let (dir, spec) = fixture("after-run-observes", &config, script);
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("CONVERGED after"), "{said}");
+        assert!(!said.contains("NOT CONVERGED"), "{said}");
+    }
+
     // ---- ADR 0026 × 0023 / 0019, integrated: a profile narrows the run ----
 
     fn profile(name: &str, toml: &str) -> trellis_queue::profile::Profile {
