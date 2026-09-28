@@ -346,7 +346,12 @@ this amendment a hook that wrote at any of those points left bytes in a
     unchanged counts as a change, which fails closed.
   - An untracked file's mode comes from the filesystem, so on Windows a
     mode-only change to an untracked file is not seen.
-  - A symlink is hashed through its target rather than by its link text.
+  - A symlink is hashed by its link text, as git stores it, through `git
+    hash-object --stdin` (on Windows with separators written `/`).
+  - An untracked nested repository (`status` names it `dir/`) is recorded
+    as `160000 <its HEAD> dir/`, the gitlink `git add -A` would stage, or
+    `(unborn)` before its first commit. An uncommitted edit inside it is
+    not seen, and was not seen by the tree form either.
   - A submodule entry is recorded as its status line.
   - A path containing a newline falls back to the tree form, objects
     included.
@@ -356,6 +361,16 @@ this amendment a hook that wrote at any of those points left bytes in a
   `the_per_call_digest_writes_no_objects_and_sees_every_worktree_change`
   in `crates/trellis-vcs/src/lib.rs`. It saw three loose objects written
   by the tree form, and sees none from the digest.
+
+  *Amended after the fourth review of PR #1: nested repositories and
+  symlinks.* `hash-object --stdin-paths` reads through a path. It failed on
+  an untracked nested repository and on a symlink to a directory or to
+  nothing. The failed digest counted as a change, so with any hook declared
+  every pass was voided and such a repository could never converge. The two
+  bullets above replaced "a symlink is hashed through its target". Evidence:
+  `an_untracked_nested_repository_is_digested_by_its_head_not_hashed_as_a_file`
+  and `an_untracked_symlink_is_digested_by_its_link_text`, both of which
+  failed with `fatal: Unable to hash` before the change.
 - **`after_run`.** The binary fingerprints the worktree around the hook on
   a converged run. A difference, or a fingerprint that could not be taken,
   demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,
