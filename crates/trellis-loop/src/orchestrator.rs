@@ -546,7 +546,7 @@ impl Orchestrator {
             ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
             ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
                 Ok(body) => ToolResult::FileContent(body),
-                Err(e) => ToolResult::Error(e),
+                Err(e) => ToolResult::Error(e.to_string()),
             },
             ToolCall::WriteFile { path, content } => self.write_file(path, content).await,
             ToolCall::Grep { pattern, path } => match path.as_deref().filter(|p| !p.is_empty()) {

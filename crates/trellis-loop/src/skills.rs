@@ -166,15 +166,60 @@ impl SkillCatalog {
 /// path, which is what keeps `read_skill{name: "../../x"}` inside the skills
 /// directory. A skill that is present but invalid is refused with its reason,
 /// the same one `trellis doctor` gives.
-pub fn read_body(root: &Path, name: &str) -> Result<String, String> {
+pub fn read_body(root: &Path, name: &str) -> Result<String, SkillError> {
     read_body_in(root, &[], name)
+}
+
+/// Why `read_skill` returned no body. The model is shown the message, so
+/// each is the string these functions returned before (review round 11).
+#[derive(Debug, thiserror::Error)]
+pub enum SkillError {
+    #[error("`{name}` is not a skill name: {why}")]
+    BadName { name: String, why: String },
+    /// The repository's entry resolves outside it, into `.git`, or could
+    /// not be looked at.
+    #[error("skill `{name}` was not read: {source}")]
+    Refused {
+        name: String,
+        source: trellis_core::paths::RepoInputError,
+    },
+    #[error("no skill named `{0}`. The skills listed in the prompt are the ones this run has.")]
+    NotFound(String),
+    #[error("skill `{name}` has no readable SKILL.md: {source}")]
+    Unreadable {
+        name: String,
+        source: std::io::Error,
+    },
+    #[error("skill `{name}` is invalid: {why}")]
+    Invalid { name: String, why: String },
+    #[error("skill `{name}` is invalid: its frontmatter names it `{declared}`")]
+    Misnamed { name: String, declared: String },
+    /// A rule, not a missing file: names the profile and its list.
+    #[error("skill `{name}` is denied to agent profile `{profile}`: its [skills] deny = {deny:?}")]
+    Denied {
+        name: String,
+        profile: String,
+        deny: Vec<String>,
+    },
+    #[error(
+        "skill `{name}` is not available to agent profile `{profile}`: its [skills] allow = \
+         {allow:?}"
+    )]
+    NotAllowed {
+        name: String,
+        profile: String,
+        allow: Vec<String>,
+    },
 }
 
 /// [`read_body`], looking in the user-level directories after the
 /// repository, in the order [`SkillCatalog::discover_with`] uses.
-pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<String, String> {
-    if let Err(e) = check_name(name) {
-        return Err(format!("`{name}` is not a skill name: {e}"));
+pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<String, SkillError> {
+    if let Err(why) = check_name(name) {
+        return Err(SkillError::BadName {
+            name: name.to_string(),
+            why,
+        });
     }
     // The repository's entry counts when it is a directory or any link,
     // including one that leaves the repository or resolves to nothing: that
@@ -183,28 +228,33 @@ pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<St
     let repo_found =
         repo.is_dir() || std::fs::symlink_metadata(&repo).is_ok_and(|m| m.file_type().is_symlink());
     let file = if repo_found {
-        repo_skill_md(root, &repo).map_err(|why| format!("skill `{name}` was not read: {why}"))?
+        repo_skill_md(root, &repo).map_err(|source| SkillError::Refused {
+            name: name.to_string(),
+            source,
+        })?
     } else {
         let Some(dir) = user_dirs
             .iter()
             .map(|base| base.join(name))
             .find(|d| d.is_dir())
         else {
-            return Err(format!(
-                "no skill named `{name}`. The skills listed in the prompt are the ones this \
-                 run has."
-            ));
+            return Err(SkillError::NotFound(name.to_string()));
         };
         dir.join("SKILL.md")
     };
-    let text = std::fs::read_to_string(&file)
-        .map_err(|e| format!("skill `{name}` has no readable SKILL.md: {e}"))?;
-    let parsed = parse(&text).map_err(|e| format!("skill `{name}` is invalid: {e}"))?;
+    let text = std::fs::read_to_string(&file).map_err(|source| SkillError::Unreadable {
+        name: name.to_string(),
+        source,
+    })?;
+    let parsed = parse(&text).map_err(|why| SkillError::Invalid {
+        name: name.to_string(),
+        why,
+    })?;
     if parsed.name != name {
-        return Err(format!(
-            "skill `{name}` is invalid: its frontmatter names it `{}`",
-            parsed.name
-        ));
+        return Err(SkillError::Misnamed {
+            name: name.to_string(),
+            declared: parsed.name,
+        });
     }
     Ok(parsed.body)
 }
@@ -225,7 +275,7 @@ pub struct SkillAccess {
 
 impl SkillAccess {
     /// The body `read_skill` returns, or why it may not.
-    pub fn read(&self, root: &Path, name: &str) -> Result<String, String> {
+    pub fn read(&self, root: &Path, name: &str) -> Result<String, SkillError> {
         if let Some(p) = &self.policy {
             p.check(name)?;
         }
@@ -249,21 +299,22 @@ pub struct SkillPolicy {
 impl SkillPolicy {
     /// `Err` names the profile and the list that excludes the skill, so the
     /// model is told it is a rule, not a missing file.
-    pub fn check(&self, name: &str) -> Result<(), String> {
+    pub fn check(&self, name: &str) -> Result<(), SkillError> {
         if self.deny.iter().any(|d| d == name) {
-            return Err(format!(
-                "skill `{name}` is denied to agent profile `{}`: its [skills] deny = {:?}",
-                self.profile, self.deny
-            ));
+            return Err(SkillError::Denied {
+                name: name.to_string(),
+                profile: self.profile.clone(),
+                deny: self.deny.clone(),
+            });
         }
         if let Some(a) = &self.allow
             && !a.iter().any(|x| x == name)
         {
-            return Err(format!(
-                "skill `{name}` is not available to agent profile `{}`: its [skills] \
-                 allow = {a:?}",
-                self.profile
-            ));
+            return Err(SkillError::NotAllowed {
+                name: name.to_string(),
+                profile: self.profile.clone(),
+                allow: a.clone(),
+            });
         }
         Ok(())
     }
@@ -298,21 +349,17 @@ fn skill_dirs(base: &Path) -> Vec<(String, PathBuf)> {
 /// directory and the file resolve inside the repository and outside `.git`
 /// (`trellis_core::paths::resolve_repo_input`): a skill's description goes
 /// into every prompt and its body into the transcript.
-fn repo_skill_md(root: &Path, dir: &Path) -> Result<PathBuf, String> {
-    let dir = trellis_core::paths::resolve_repo_input(root, dir)
-        .map_err(|e| e.to_string())?
-        .unwrap_or(dir.to_path_buf());
+fn repo_skill_md(root: &Path, dir: &Path) -> Result<PathBuf, trellis_core::paths::RepoInputError> {
+    let dir = trellis_core::paths::resolve_repo_input(root, dir)?.unwrap_or(dir.to_path_buf());
     let file = dir.join("SKILL.md");
-    Ok(trellis_core::paths::resolve_repo_input(root, &file)
-        .map_err(|e| e.to_string())?
-        .unwrap_or(file))
+    Ok(trellis_core::paths::resolve_repo_input(root, &file)?.unwrap_or(file))
 }
 
 /// `root` is the repository when `path` is one of its skills, and `None`
 /// for a user-level directory.
 fn load(dir_name: &str, path: &Path, root: Option<&Path>) -> Result<Skill, String> {
     let file = match root {
-        Some(root) => repo_skill_md(root, path)?,
+        Some(root) => repo_skill_md(root, path).map_err(|e| e.to_string())?,
         None => path.join("SKILL.md"),
     };
     let text = match std::fs::read_to_string(&file) {
@@ -508,7 +555,7 @@ mod tests {
             c.invalid[0].reason.contains("outside the repository"),
             "{c:?}"
         );
-        let e = read_body(d.path(), "leak").unwrap_err();
+        let e = read_body(d.path(), "leak").unwrap_err().to_string();
         assert!(e.contains("outside the repository"), "{e}");
         assert!(!e.contains("BODY-leak"), "{e}");
     }
@@ -531,7 +578,7 @@ mod tests {
         assert!(c.valid.is_empty(), "{c:?}");
         assert_eq!(c.invalid.len(), 1, "named, not skipped: {c:?}");
         assert!(c.invalid[0].reason.contains("outside the repository"));
-        let e = read_body(d.path(), "leak").unwrap_err();
+        let e = read_body(d.path(), "leak").unwrap_err().to_string();
         assert!(e.contains("outside the repository"), "{e}");
     }
 
@@ -721,7 +768,7 @@ mod tests {
         let d = fixture_root();
         std::fs::write(d.path().join("secret.md"), "---\nname: x\n---\n").unwrap();
         for bad in ["../../secret", "..", "rust-unsafe/../x", "a/b", "A", ""] {
-            let e = read_body(d.path(), bad).unwrap_err();
+            let e = read_body(d.path(), bad).unwrap_err().to_string();
             assert!(e.contains("is not a skill name"), "{bad}: {e}");
         }
     }
@@ -786,7 +833,7 @@ mod tests {
                 deny: vec!["refactor".into()],
             }),
         };
-        let e = access.read(d.path(), "refactor").unwrap_err();
+        let e = access.read(d.path(), "refactor").unwrap_err().to_string();
         assert!(
             e.contains("agent profile `reviewer`") && e.contains(r#"deny = ["refactor"]"#),
             "{e}"
@@ -801,7 +848,7 @@ mod tests {
             }),
             ..SkillAccess::default()
         };
-        let e = allow.read(d.path(), "refactor").unwrap_err();
+        let e = allow.read(d.path(), "refactor").unwrap_err().to_string();
         assert!(e.contains(r#"allow = ["triage"]"#), "{e}");
     }
 
@@ -812,6 +859,7 @@ mod tests {
         assert!(
             read_body(d.path(), "anything")
                 .unwrap_err()
+                .to_string()
                 .contains("no skill named")
         );
     }
