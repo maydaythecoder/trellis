@@ -33,21 +33,19 @@ makes the worktree dirty, which blocks every run (ADR 0009), and rollback's
 `git clean -fd` would delete it. The git directory is untracked by
 construction and survives rollback.
 
-*Amended in implementation.* In a linked worktree, `Repository::path()` is
+*Amended in implementation: the git directory comes from
+`git rev-parse --absolute-git-dir`, not `git2`.* The call is
+`trellis_vcs::git_dir`, run with the repository root as the working
+directory. `git2` was removed from the build on purpose (6b5db2a) to shrink
+the binary and the build, and `trellis-vcs` already shells out to `git` for
+everything else. Re-adding `git2` and libgit2 only to find one directory would
+have reversed that decision.
+
+In a linked worktree, `--absolute-git-dir` returns
 `<main>/.git/worktrees/<name>/`, not the common directory. So **each worktree
 has its own queue**, and `git worktree remove` deletes that worktree's queue
-along with it. Because execution is serial and one run per worktree (§4), this
-is the intended behaviour.
-
-`git2` is used with default features off. Its defaults are the HTTPS and SSH
-transports, and this lookup needs neither. It was declared in the workspace
-but unused before this ADR, so it and its build-time dependencies are new to
-the tree: `git2`, `libgit2-sys`, `libz-sys`, `jobserver`, `pkg-config`,
-`vcpkg`. `cargo deny check licenses` passes. The bundled libgit2 C library is
-GPL-2.0 with the linking exception, which permits linking it into a binary
-under another licence. `git rev-parse --absolute-git-dir` would have added no
-dependency. It was not chosen because this ADR names `git2`, and ADR 0009
-already kept `git2` for worktree management.
+along with it. Execution is serial and one run per worktree (§4), so this is
+the intended behaviour.
 
 ### 2. One task, one file
 
