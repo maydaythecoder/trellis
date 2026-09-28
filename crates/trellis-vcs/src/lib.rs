@@ -60,6 +60,33 @@ pub enum VcsError {
     },
 }
 
+/// Why the git guard ([`git_guard::GitGuard::capture`]) or the ignored-file
+/// listing ([`ignored::IgnoredSnapshot::take`]) could not be taken. The
+/// messages are the ones these returned as strings before (review round
+/// 10), since a caller prints them as they are.
+#[derive(Debug, thiserror::Error)]
+pub enum GuardError {
+    /// `what` is the command, e.g. `git rev-parse`.
+    #[error("{what} could not run: {source}")]
+    Spawn {
+        what: &'static str,
+        source: std::io::Error,
+    },
+    /// Trimmed stderr.
+    #[error("{what} failed: {stderr}")]
+    Failed { what: &'static str, stderr: String },
+    #[error("{} could not be read: {source}", path.display())]
+    Unreadable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{} could not be resolved: {source}", path.display())]
+    Unresolved {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
 /// Why a clean worktree is required, and the three ways past it.
 ///
 /// Written out because the requirement reads as arbitrary until you know what
@@ -131,6 +158,11 @@ pub struct Snapshot {
     pub root: PathBuf,
     /// Commit SHA recorded before the run.
     pub head: String,
+    /// The branch `HEAD` was on (`refs/heads/main`), `None` when detached.
+    /// A rollback puts `HEAD` back on it before resetting: `reset --hard`
+    /// moves whichever branch `HEAD` is on, and after a writer's `git
+    /// checkout -b` that is the writer's, not this one (review round 10).
+    pub branch: Option<String>,
 }
 
 /// Shelling out to `git` rather than using `git2` for v0.1.
@@ -169,11 +201,28 @@ const NO_HOOKS: &str = "core.hooksPath=NUL";
 const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
 /// `git` with [`OVERRIDES`], its environment scrubbed of keys.
+///
+/// Every `git` the workspace starts outside tests comes from here,
+/// [`command_with_hooks`] or [`git_argv`] (review round 10: `grep` and
+/// `find` started plain `git` and ran a planted `core.fsmonitor`).
+/// `every_git_spawn_goes_through_trellis_vcs` in `trellis-cli`'s
+/// `tests/hygiene.rs` fails on one that does not. For a tokio command,
+/// `tokio::process::Command::from(command())`.
 pub fn command() -> Command {
     let mut c = Command::new("git");
     c.args(OVERRIDES);
     trellis_core::secrets::scrub(&mut c);
     c
+}
+
+/// `git`, [`OVERRIDES`], then `args`, as an argv for a runner that takes
+/// one (`trellis-loop`'s `exec::run`, which scrubs keys itself).
+pub fn git_argv(args: &[&str]) -> Vec<String> {
+    std::iter::once("git")
+        .chain(OVERRIDES)
+        .chain(args.iter().copied())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `git` with `core.fsmonitor` off and the hooks left alone: for the
@@ -838,10 +887,29 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
     }
 
     let head = git(root, &["rev-parse", "HEAD"])?.trim().to_string();
+    let branch = branch_of(root)?;
     Ok(Snapshot {
         root: root.to_path_buf(),
         head,
+        branch,
     })
+}
+
+/// The branch `HEAD` is on (`refs/heads/main`), or `None` when detached:
+/// `rev-parse --symbolic-full-name` prints `HEAD` for a detached one.
+fn branch_of(root: &Path) -> Result<Option<String>, VcsError> {
+    let name = git(root, &["rev-parse", "--symbolic-full-name", "HEAD"])?
+        .trim()
+        .to_string();
+    Ok((name != "HEAD" && !name.is_empty()).then_some(name))
+}
+
+fn describe_head(sha: &str, branch: &Option<String>) -> String {
+    let short = sha.get(..12).unwrap_or(sha);
+    match branch {
+        Some(b) => format!("{short} on {}", b.trim_start_matches("refs/heads/")),
+        None => format!("{short} (detached)"),
+    }
 }
 
 impl Snapshot {
@@ -858,9 +926,42 @@ impl Snapshot {
     /// strictly better than leaving both kinds of residue; stopping at the
     /// first error would make the recovery path give up earlier than it
     /// needs to.
+    ///
+    /// `HEAD` is put back on the recorded branch first (or detached, when
+    /// it was): `reset --hard` moves whichever branch `HEAD` is on, so after
+    /// a writer's `git checkout -b` it would reset the writer's branch and
+    /// leave the user's holding the writer's commits. When `HEAD` cannot be
+    /// put back nothing is reset, since the reset would move a branch the
+    /// snapshot never recorded. A branch the writer created, or another
+    /// branch it moved, is left as it is: only `HEAD` and its branch are
+    /// recorded.
     #[tracing::instrument(skip(self), fields(head = %self.head))]
     pub fn rollback(&self) -> Result<(), VcsError> {
+        if let Err(e) = self.put_head_back() {
+            return Err(VcsError::RollbackFailed {
+                root: self.root.display().to_string(),
+                head: self.head.clone(),
+                detail: format!("HEAD could not be put back where it was: {e}"),
+            });
+        }
         reset_and_clean(&self.root, &self.head)
+    }
+
+    /// Re-points `HEAD` at the recorded branch, or detaches it at the
+    /// recorded commit, without touching the worktree; the reset that
+    /// follows does that. Nothing is written when it is already there.
+    fn put_head_back(&self) -> Result<(), VcsError> {
+        if branch_of(&self.root)? == self.branch {
+            return Ok(());
+        }
+        match &self.branch {
+            Some(b) => git(&self.root, &["symbolic-ref", "HEAD", b]).map(|_| ()),
+            None => git(
+                &self.root,
+                &["update-ref", "--no-deref", "HEAD", &self.head],
+            )
+            .map(|_| ()),
+        }
     }
 
     /// Whether the worktree currently matches the snapshot exactly.
@@ -870,7 +971,28 @@ impl Snapshot {
     pub fn is_restored(&self) -> Result<bool, VcsError> {
         let head = git(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
         let status = git(&self.root, &["status", "--porcelain"])?;
-        Ok(head == self.head && status.trim().is_empty())
+        // The branch too: on another branch at the same commit, the next
+        // commit lands somewhere the snapshot never was.
+        Ok(head == self.head && branch_of(&self.root)? == self.branch && status.trim().is_empty())
+    }
+
+    /// `Some` describing the move when `HEAD` is no longer the recorded
+    /// commit on the recorded branch: a commit, a reset, a checkout, a
+    /// branch switch. A run may not move it. Committed work is invisible to
+    /// `git status`, so every judgment made from the worktree's changes
+    /// (the `.trellis/` breach, `deny_write`, governance) would miss it,
+    /// and a converged run leaves no commit for review (review round 10).
+    pub fn head_moved(&self) -> Result<Option<String>, VcsError> {
+        let head = git(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
+        let branch = branch_of(&self.root)?;
+        if head == self.head && branch == self.branch {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "HEAD moved from {} to {}",
+            describe_head(&self.head, &self.branch),
+            describe_head(&head, &branch)
+        )))
     }
 }
 
@@ -1455,6 +1577,98 @@ mod tests {
         );
         assert!(!dir.join("pkg").exists(), "untracked directory left behind");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn symbolic_head(dir: &Path) -> String {
+        git(dir, &["rev-parse", "--symbolic-full-name", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn sha_of(dir: &Path, rev: &str) -> String {
+        git(dir, &["rev-parse", rev]).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn rollback_after_a_branch_switch_puts_the_original_branch_back_at_the_snapshot() {
+        // The risk: a writer commits on the user's branch and then switches
+        // to a new one. `reset --hard <snapshot>` alone moved the writer's
+        // branch, left the user's holding the writer's commit, and
+        // `is_restored` said yes because HEAD's sha matched (review round 10).
+        let dir = temp_repo("branch-switch");
+        let snap = snapshot(&dir).unwrap();
+        let original = symbolic_head(&dir);
+        assert!(original.starts_with("refs/heads/"), "{original}");
+
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        git(&dir, &["commit", "-qam", "on the user's branch"]).unwrap();
+        git(&dir, &["checkout", "-qb", "elsewhere"]).unwrap();
+        std::fs::write(dir.join("b.py"), "x = 1\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &["commit", "-qm", "on the writer's branch"]).unwrap();
+        assert!(snap.head_moved().unwrap().is_some());
+
+        snap.rollback().unwrap();
+
+        assert_eq!(symbolic_head(&dir), original, "HEAD is back on the branch");
+        assert_eq!(
+            sha_of(&dir, &original),
+            snap.head,
+            "the user's branch no longer holds the writer's commit"
+        );
+        assert!(snap.is_restored().unwrap());
+        assert!(snap.head_moved().unwrap().is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_restored_is_false_on_another_branch_at_the_same_commit() {
+        // Same sha, different branch: the next commit would land on the
+        // writer's branch, so it is not the state the snapshot recorded.
+        let dir = temp_repo("branch-same-sha");
+        let snap = snapshot(&dir).unwrap();
+        git(&dir, &["checkout", "-qb", "elsewhere"]).unwrap();
+        assert!(!snap.is_restored().unwrap());
+        assert!(snap.head_moved().unwrap().is_some());
+        snap.rollback().unwrap();
+        assert!(snap.is_restored().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_detached_snapshot_is_rolled_back_detached_and_moves_no_branch() {
+        // Detached at the snapshot; the writer checks out a branch and
+        // commits. `reset --hard` alone would have moved that branch.
+        let dir = temp_repo("detached");
+        let first = sha_of(&dir, "HEAD");
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        git(&dir, &["commit", "-qam", "second"]).unwrap();
+        let branch = symbolic_head(&dir);
+        let tip = sha_of(&dir, "HEAD");
+        git(&dir, &["checkout", "-q", "--detach", &first]).unwrap();
+        let snap = snapshot(&dir).unwrap();
+
+        git(&dir, &["checkout", "-q", &branch["refs/heads/".len()..]]).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 3\n").unwrap();
+        git(&dir, &["commit", "-qam", "third"]).unwrap();
+        let moved_tip = sha_of(&dir, "HEAD");
+
+        snap.rollback().unwrap();
+        assert_eq!(symbolic_head(&dir), "HEAD", "detached again");
+        assert_eq!(sha_of(&dir, "HEAD"), first);
+        assert_eq!(
+            sha_of(&dir, &branch),
+            moved_tip,
+            "a branch the snapshot was not on is not reset by the rollback"
+        );
+        assert_ne!(moved_tip, tip);
+        assert!(snap.is_restored().unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

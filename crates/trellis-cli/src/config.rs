@@ -83,6 +83,19 @@ impl Control {
             ControlMode::Approve => format!("approve ({})", self.approve.join(", ")),
         }
     }
+
+    /// A profile's `[control] approve` list, added to the layered dial. A
+    /// profile is repository content, and it replaced the list before,
+    /// dropping the user's own entries and the repository's default `edit`
+    /// (review round 10). A profile can only add restrictions, as a user's
+    /// file can (ADR 0025 §7).
+    pub(crate) fn add_profile_approvals(&mut self, list: &[String]) {
+        for t in list {
+            if !self.approve.contains(t) {
+                self.approve.push(t.clone());
+            }
+        }
+    }
 }
 
 /// A note vault to compile one focus note from (ADR 0017).

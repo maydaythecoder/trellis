@@ -98,6 +98,24 @@ pub(crate) struct Captured {
     pub(crate) stderr: Tail,
 }
 
+/// Why [`run`] returned no [`Captured`]. The messages are the ones it
+/// returned as strings before (review round 10).
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ExecError {
+    #[error("empty command")]
+    Empty,
+    #[error("could not start `{program}`: {source}")]
+    Start {
+        program: String,
+        source: std::io::Error,
+    },
+    #[error("`{program}` could not be waited on: {source}")]
+    Wait {
+        program: String,
+        source: std::io::Error,
+    },
+}
+
 /// One process to run.
 pub(crate) struct Spec<'a> {
     pub(crate) argv: &'a [String],
@@ -124,9 +142,9 @@ pub(crate) struct Spec<'a> {
 /// timeout the child and what it started are killed as far as
 /// [`kill_tree`] reaches, which ADR 0023 §3 states. `Err` only when the
 /// process could not be started.
-pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
+pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
     let Some((program, args)) = spec.argv.split_first() else {
-        return Err("empty command".into());
+        return Err(ExecError::Empty);
     };
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
@@ -153,9 +171,10 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
     #[cfg(unix)]
     cmd.process_group(0);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not start `{program}`: {e}"))?;
+    let mut child = cmd.spawn().map_err(|source| ExecError::Start {
+        program: program.clone(),
+        source,
+    })?;
     // Taken now: tokio's `id()` is `None` once the child has been reaped,
     // and the group is killed after that (`kill_group`).
     let pid = child.id();
@@ -243,7 +262,12 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
                 out.stderr.unfinished = false;
             }
         }
-        (Ok(Err(e)), _) => return Err(format!("`{program}` could not be waited on: {e}")),
+        (Ok(Err(source)), _) => {
+            return Err(ExecError::Wait {
+                program: program.clone(),
+                source,
+            });
+        }
         (Err(_), _) => {
             out.timed_out = true;
             // The timeout is the report; "still held after exit" is not.

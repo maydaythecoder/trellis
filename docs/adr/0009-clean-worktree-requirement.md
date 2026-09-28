@@ -38,6 +38,26 @@ second review of PR #1: before it, a panic inside the run's `block_on`
 unwound past the rollback. Test:
 `a_panic_inside_the_run_still_rolls_the_worktree_back`.)
 
+*Amended after the tenth review of PR #1: the recorded point is a commit on
+a branch.* The snapshot records the branch `HEAD` is on (or that it is
+detached) beside the commit. `reset --hard` moves whichever branch `HEAD`
+is on, so after a writer's `git checkout -b` it reset the writer's branch,
+left the user's holding the writer's commits, and "restored" was reported
+because the commit matched. The rollback now re-points `HEAD` first
+(`symbolic-ref HEAD <branch>`, or `update-ref --no-deref HEAD <commit>` for
+a detached snapshot) without touching the worktree, then resets and cleans
+as before; when `HEAD` cannot be re-pointed nothing is reset, since the
+reset would move a branch the snapshot never recorded. Restored now also
+means `HEAD` is on the recorded branch. A branch the writer created, or a
+ref other than `HEAD` and its branch that it moved, is not recorded and
+not put back. Evidence, in `trellis-vcs`:
+`rollback_after_a_branch_switch_puts_the_original_branch_back_at_the_snapshot`,
+`is_restored_is_false_on_another_branch_at_the_same_commit` and
+`a_detached_snapshot_is_rolled_back_detached_and_moves_no_branch`, all three
+failing before the change (HEAD left on the writer's branch, or reported
+restored there). Where a moved `HEAD` is refused: ADR 0026 §11 (process
+agents) and ADR 0023 §5 (model runs).
+
 ## Alternatives considered
 
 **Snapshot a dirty tree and restore it.** Rejected. It means TRELLIS takes

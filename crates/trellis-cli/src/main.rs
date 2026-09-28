@@ -1451,13 +1451,13 @@ fn run_body(
     // like a run that tried (ADR 0018). Before the model, before the
     // snapshot, before any file is read.
     let mut dial = cfg.control(control.flag)?;
-    // A profile's approve list replaces the repository's for its runs; the
+    // A profile's approve list adds to the layered one for its runs; the
     // mode itself arrives as the flag (ADR 0026 §4).
     if let Some(list) = profile
         .and_then(|p| p.file.control.as_ref())
-        .and_then(|c| c.approve.clone())
+        .and_then(|c| c.approve.as_ref())
     {
-        dial.approve = list;
+        dial.add_profile_approvals(list);
     }
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);
@@ -2037,7 +2037,9 @@ fn run_body(
                 | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
             };
             *o = trellis_loop::Outcome::NotConverged {
-                reason: trellis_loop::NotConverged::TrustChanged { detail },
+                reason: trellis_loop::NotConverged::TrustChanged {
+                    detail: detail.to_string(),
+                },
                 iterations,
             };
         }
@@ -2236,6 +2238,33 @@ fn run_body(
             },
         },
         (o, _) => o,
+    };
+    // After `.git/` is back. `bash`, a custom tool or a hook can commit,
+    // reset or check out, and committed work is invisible to everything
+    // that judged the run and to the review that follows (review round
+    // 10). Checked for every run: one without those writers cannot move
+    // HEAD, so the check costs it one `rev-parse`. A HEAD that cannot be
+    // read counts as moved.
+    let outcome = match outcome {
+        trellis_loop::Outcome::Converged {
+            iterations,
+            checks_passed,
+        } => match snapshot.head_moved() {
+            Ok(None) => trellis_loop::Outcome::Converged {
+                iterations,
+                checks_passed,
+            },
+            moved => trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::HeadMoved {
+                    detail: match moved {
+                        Ok(m) => m.unwrap_or_default(),
+                        Err(e) => format!("HEAD could not be read after the run ({e})"),
+                    },
+                },
+                iterations,
+            },
+        },
+        o => o,
     };
 
     // Each branch below disposes of the tree itself: a converged run leaves
@@ -2611,6 +2640,12 @@ fn rollback_run(
 /// Returns whether the worktree was restored, so the caller can pick an exit
 /// code that says which.
 fn rollback_and_report(snapshot: &trellis_vcs::Snapshot, out: &mut dyn std::io::Write) -> bool {
+    // Said before it is undone: the rollback puts HEAD back on the
+    // recorded branch, and a user whose branch was switched under them
+    // should read that it happened.
+    if let Ok(Some(m)) = snapshot.head_moved() {
+        let _ = writeln!(out, "git:      {m}; putting it back");
+    }
     match snapshot.rollback() {
         Ok(()) => {
             let restored = snapshot.is_restored().unwrap_or(false);

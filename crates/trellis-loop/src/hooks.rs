@@ -142,6 +142,7 @@ impl Hooks {
             whole: false,
         })
         .await
+        .map_err(|e| e.to_string())
     }
 
     /// The gate for `pre_tool`, when one is declared.
