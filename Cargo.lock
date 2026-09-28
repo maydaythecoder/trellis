@@ -2940,6 +2940,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "jiff",
  "rustyline",
  "serde",
  "serde_json",

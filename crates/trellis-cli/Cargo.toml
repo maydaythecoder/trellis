@@ -34,6 +34,11 @@ tracing.workspace = true
 # serde and serde_json were already in the tree.
 tracing-subscriber = { workspace = true, features = ["json"] }
 rustyline.workspace = true
+# `trellis vault` (ADR 0022): dates.json records *local* calendar days, as
+# Apex's JavaScript `Date` computes them, and std has no time zones. Already
+# in the lockfile through tui-logger; the vault crate takes days as strings
+# so it stays free of it.
+jiff = "0.2.37"
 tui-demo = { path = "../tui-demo", default-features = false }
 
 [lints]
