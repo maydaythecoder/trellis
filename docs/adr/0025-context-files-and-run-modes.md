@@ -437,6 +437,10 @@ Each item is tested unless it says otherwise.
   `needless_update` is allowed there on purpose. The update becomes live the
   day W-B adds `[tools]` or `[hooks]`, and the rule in §7, that unnamed
   sections come from the repository only, depends on it.
+  *Amended 2026-09-28 (#13):* the allow is gone. `..repo` still carries
+  `tools`, `hooks` and `provenance`, so `needless_update` never fired and the
+  suppression was dead. The §7 rule is unchanged: those sections still come
+  from the repository only.
 - **An unknown `[control] mode` word survives the merge.** A word that is
   neither `auto` nor `approve`, from either file, is kept as written so that
   `RepoConfig::control` still refuses it by name.
