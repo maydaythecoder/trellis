@@ -554,8 +554,10 @@ fn main() -> Result<()> {
             let exit = cmd_run_with(
                 &root,
                 &task,
-                &model,
-                unconstrained,
+                ModelChoice {
+                    spec: &model,
+                    unconstrained,
+                },
                 RunSeeding {
                     resume,
                     focus: focus.as_deref(),
@@ -1388,8 +1390,10 @@ fn cmd_run(
     cmd_run_with(
         root,
         task,
-        model_spec,
-        unconstrained,
+        ModelChoice {
+            spec: model_spec,
+            unconstrained,
+        },
         seeding,
         control,
         output::RunExtras::default(),
@@ -1397,47 +1401,49 @@ fn cmd_run(
     )
 }
 
+/// The model a run drives, and `--unconstrained`: send no schema and
+/// validate the reply instead (tier 4). Grouped because the two are read
+/// together to build the driver and to choose the tier, and are never
+/// passed apart.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModelChoice<'a> {
+    /// The model spec as given: `--model`, `/model`, `[model] spec`, a profile.
+    pub(crate) spec: &'a str,
+    pub(crate) unconstrained: bool,
+}
+
 /// `cmd_run` with what ADR 0025 adds: forced skills and JSON framing.
 ///
 /// A second entry point rather than a new parameter, so every existing
 /// caller (`work`, `session`, `tui`) keeps calling `cmd_run` unchanged.
-#[allow(clippy::too_many_arguments)]
 fn cmd_run_with(
     root: &Path,
     task: &str,
-    model_spec: &str,
-    unconstrained: bool,
+    model: ModelChoice<'_>,
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: output::RunExtras,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    output::framed(root, task, model_spec, &extras, || {
-        run_body(
-            root,
-            task,
-            model_spec,
-            unconstrained,
-            seeding,
-            control,
-            &extras,
-            out,
-        )
+    output::framed(root, task, model.spec, &extras, || {
+        run_body(root, task, model, seeding, control, &extras, out)
     })
 }
 
 /// The body of a run; see `cmd_run`.
-#[allow(clippy::too_many_arguments)]
 fn run_body(
     root: &Path,
     task: &str,
-    model_spec: &str,
-    unconstrained: bool,
+    model: ModelChoice<'_>,
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: &output::RunExtras,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
+    let ModelChoice {
+        spec: model_spec,
+        unconstrained,
+    } = model;
     let RunSeeding {
         resume,
         focus,
@@ -2475,7 +2481,6 @@ thread_local! {
     pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[allow(clippy::too_many_arguments)]
 fn interrupted_run(
     root: &Path,
     task: &str,

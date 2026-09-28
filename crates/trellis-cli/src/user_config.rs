@@ -100,8 +100,6 @@ pub(crate) fn resolve_skill_dirs(
 /// decides how it layers, rather than compiling into a merge nobody chose.
 /// Today it carries `tools`, `hooks` and `provenance` from the repository;
 /// `provenance` is then replaced by `load_with_user` with the user file's.
-/// The allow is for the day every field is named again.
-#[allow(clippy::needless_update)]
 pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
     RepoConfig {
         checks: either(repo.checks, user.checks, |r, u| ChecksSection {

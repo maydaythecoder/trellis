@@ -526,8 +526,10 @@ impl Server {
             let r = crate::cmd_run_with(
                 &root,
                 &task,
-                &model,
-                unconstrained,
+                crate::ModelChoice {
+                    spec: &model,
+                    unconstrained,
+                },
                 // No agent profile over RPC: the caller is the operator, and
                 // profiles are how `work` runs a task as someone (ADR 0026).
                 RunSeeding {

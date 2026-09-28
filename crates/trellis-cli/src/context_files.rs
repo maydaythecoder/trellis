@@ -675,8 +675,10 @@ mod tests {
         let r = crate::cmd_run_with(
             &dir,
             "change f",
-            &spec,
-            false,
+            crate::ModelChoice {
+                spec: &spec,
+                unconstrained: false,
+            },
             crate::RunSeeding::default(),
             crate::RunControl::default(),
             crate::output::RunExtras {
@@ -750,8 +752,10 @@ mod tests {
         let r = crate::cmd_run_with(
             &dir,
             "change f",
-            &spec,
-            false,
+            crate::ModelChoice {
+                spec: &spec,
+                unconstrained: false,
+            },
             crate::RunSeeding::default(),
             crate::RunControl::default(),
             crate::output::RunExtras {
