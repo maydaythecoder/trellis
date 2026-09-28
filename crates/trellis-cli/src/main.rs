@@ -1451,13 +1451,13 @@ fn run_body(
     // like a run that tried (ADR 0018). Before the model, before the
     // snapshot, before any file is read.
     let mut dial = cfg.control(control.flag)?;
-    // A profile's approve list replaces the repository's for its runs; the
+    // A profile's approve list adds to the layered one for its runs; the
     // mode itself arrives as the flag (ADR 0026 §4).
     if let Some(list) = profile
         .and_then(|p| p.file.control.as_ref())
-        .and_then(|c| c.approve.clone())
+        .and_then(|c| c.approve.as_ref())
     {
-        dial.approve = list;
+        dial.add_profile_approvals(list);
     }
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);

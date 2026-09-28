@@ -492,6 +492,25 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_s_approve_list_adds_to_the_user_s_and_drops_nothing() {
+        // The risk (review round 10, finding 4): a profile is repository
+        // content, and its `[control] approve` replaced the layered list, so
+        // `approve = ["read_file"]` in `.trellis/agents/x.toml` dropped the
+        // user's `run_checks` and the repository's default `edit`. A
+        // profile can only add restrictions.
+        let c = load(
+            "[control]\nmode = \"approve\"\n",
+            "[control]\napprove = [\"run_checks\"]\n",
+        );
+        let mut dial = c.control(None).unwrap();
+        dial.add_profile_approvals(&["read_file".to_string(), "edit".to_string()]);
+        assert_eq!(dial.approve, ["edit", "run_checks", "read_file"]);
+        // An empty list is no approvals added, not every approval removed.
+        dial.add_profile_approvals(&[]);
+        assert_eq!(dial.approve, ["edit", "run_checks", "read_file"]);
+    }
+
+    #[test]
     fn a_user_file_can_add_approval_the_repository_did_not_ask_for() {
         let c = load(
             "[control]\nmode = \"auto\"\n",
