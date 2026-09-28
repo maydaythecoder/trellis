@@ -201,6 +201,18 @@ a test failure.
 `bincode` 3.0.0 is a protest release that deliberately fails to compile. The
 workspace uses `postcard`.
 
+## Dependency pinning
+
+- Requirements in `Cargo.toml` use Cargo's default caret form (`"1.2"`), not
+  exact `=` pins.
+- `Cargo.lock` is committed, and it is the pin: CI and every contributor
+  build the versions it records.
+- A lockfile update is its own commit, and `cargo deny check` and
+  `cargo audit` both pass on it. CI runs both on every push and pull request
+  (the `supply-chain` job).
+- `tree-sitter` and `tree-sitter-python` move together; see Versions above.
+- A new crate dependency still needs an ADR.
+
 ## Before claiming a number
 
 No measurement goes into a document without its method beside it. If it cannot
