@@ -5,7 +5,10 @@ are what the board and people read; next.sh (and G0 behind it) is what the
 agents obey. This makes the first follow the second, and never the other way:
 it writes only when they differ, and changes nothing else in a body.
 
-    python scripts/tickets/sync-ready.py [--dry-run]
+    scripts/tickets/next.sh --why | python scripts/tickets/sync-ready.py [--dry-run]
+
+It reads next.sh's output on stdin rather than running it: from Windows
+Python, `bash` can resolve to WSL's, which has no gh.
 """
 
 import json
@@ -22,8 +25,9 @@ def gh(*args, input=None):
 
 
 def main():
-    why = subprocess.run(["bash", "scripts/tickets/next.sh", "--why"], check=True,
-                         capture_output=True, text=True, encoding="utf-8").stdout
+    why = sys.stdin.read()
+    if not why.strip():
+        sys.exit("no input: pipe `scripts/tickets/next.sh --why` into this")
     verdict = {}
     for line in why.splitlines():
         m = re.match(r"P\d #(\d+) (.*?): ", line)
@@ -41,8 +45,9 @@ def main():
         has_label = any(l["name"] == "ready" for l in i["labels"])
         body = i["body"]
         failures = "[]" if ready else json.dumps([reason])
-        new = re.sub(r"(?m)^ready: .*$", f"ready: {'true' if ready else 'false'}", body, count=1)
-        new = re.sub(r"(?m)^ready_failures: .*$", f"ready_failures: {failures}", new, count=1)
+        # Issue bodies are CRLF; `.*` would eat the \r and leave a bare \n.
+        new = re.sub(r"(?m)^ready: [^\r\n]*", f"ready: {'true' if ready else 'false'}", body, count=1)
+        new = re.sub(r"(?m)^ready_failures: [^\r\n]*", f"ready_failures: {failures}", new, count=1)
         edits = []
         if ready != has_label:
             edits += ["--add-label" if ready else "--remove-label", "ready"]
