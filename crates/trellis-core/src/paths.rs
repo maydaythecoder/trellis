@@ -172,6 +172,19 @@ pub enum RepoInputError {
     IntoGit { shown: String, inside: String },
 }
 
+/// Whether an error from looking at a path means nothing is there:
+/// `NotFound`, or `NotADirectory` for a parent that is a file (Unix
+/// reports ENOTDIR; Windows reports not found). Any other error (permission
+/// denied, an I/O error) is an entry that cannot be looked at, not an
+/// absent one. The one classifier for that rule, so every caller that
+/// decides "is a prompt input there" agrees (review round 12).
+pub fn is_absence(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
 /// Whether an entry is at the path, from what `symlink_metadata` returned.
 ///
 /// `NotFound` is absence, and so is `NotADirectory`: a parent that is a
@@ -183,14 +196,7 @@ pub enum RepoInputError {
 fn present(meta: std::io::Result<()>, shown: &str) -> Result<bool, RepoInputError> {
     match meta {
         Ok(()) => Ok(true),
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(false)
-        }
+        Err(e) if is_absence(&e) => Ok(false),
         Err(source) => Err(RepoInputError::Uninspectable {
             shown: shown.to_string(),
             source,

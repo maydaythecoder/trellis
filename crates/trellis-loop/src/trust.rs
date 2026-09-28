@@ -53,7 +53,9 @@ impl TrustItem {
     /// `["bash", "-lc", "python .trellis/hooks/gate.py"]` and `--file=x.py`
     /// cover their scripts. For a hook or custom tool, a file found this way
     /// outside `.trellis/` makes the fingerprint refused (`outside_code`,
-    /// review round 11). Code reached any other way — an import,
+    /// review round 11), as does any token that resolves, canonically, to
+    /// such a file even where this hashing does not take it (`..`, a
+    /// differently spelled absolute path; review round 12). Code reached any other way — an import,
     /// `python -m pkg.mod`, a file a script reads — is covered only if it
     /// lives under `.trellis/`, which [`Fingerprint`] hashes whole (ADR
     /// 0023 §4); keep hook and tool code in `.trellis/hooks/`.
@@ -84,14 +86,8 @@ impl TrustItem {
         // `-ec`, `-Command`, `--file=`), and a list of them is a list of
         // the ones not yet missed (review round 10). Splitting where no
         // code is only adds hashes of files that exist, the safe direction.
-        for arg in argv {
-            add(arg);
-            for tok in arg.split(|c: char| {
-                c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>' | '=')
-            }) {
-                let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
-                add(tok);
-            }
+        for tok in argv_candidates(argv) {
+            add(tok);
         }
         Self {
             label,
@@ -101,6 +97,21 @@ impl TrustItem {
             receives: Vec::new(),
         }
     }
+}
+
+/// Every argv element, then every shell-ish token of it (split on
+/// whitespace and `; & | ( ) < > =`, quotes trimmed). The one tokenizer for
+/// hashing ([`TrustItem::command_cached`]) and for the refusal
+/// ([`outside_code`]), so the two cannot drift apart.
+fn argv_candidates(argv: &[String]) -> impl Iterator<Item = &str> {
+    argv.iter().flat_map(|arg| {
+        std::iter::once(arg.as_str()).chain(
+            arg.split(|c: char| {
+                c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>' | '=')
+            })
+            .map(|tok| tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'))),
+        )
+    })
 }
 
 /// `(repository-relative path, sha256)` when `arg` names a regular file
@@ -305,20 +316,67 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
 /// argument (`ruff check src`) is data for the tool, and refusing it would
 /// refuse ordinary lint commands. What this does not catch is said in ADR
 /// 0023 §4: code reached by import or `-m`, a directory run as a program
-/// (`python pkg/`), a file a script reads. "Under `.trellis/`" is decided
-/// on the path as written ([`crate::orchestrator::names_trellis_dir`]), so
-/// a link under `.trellis/` to a directory elsewhere in the repository is
-/// not caught here; the digest follows it and hashes what it reaches.
-fn outside_code(items: &[TrustItem]) -> Option<String> {
-    let why: Vec<String> = items
-        .iter()
-        .flat_map(|item| {
-            item.files
-                .iter()
-                .filter(|(path, _)| !crate::orchestrator::names_trellis_dir(path))
-                .map(move |(path, _)| format!("{} names `{path}`", item.label))
+/// (`python pkg/`), a file a script reads.
+///
+/// Two tests, and a file failing either is refused. The first is on the
+/// files the item hashed, by the path as written
+/// ([`crate::orchestrator::names_trellis_dir`]). The second has its own
+/// resolver (review round 12), because what gets hashed is narrower than
+/// what a command can name: [`repo_file`] drops a path with `..` and an
+/// absolute one that is not lexically under `root`, so
+/// `.trellis/../scripts/gate.py`, an absolute path with its drive letter in
+/// the other case, or one reached through a relative `--root` was neither
+/// hashed nor refused. Every candidate token is made canonical (joined to
+/// `root` when relative), as are the root and `.trellis/`; a regular file
+/// inside the real root and outside the real `.trellis/` is refused. So a
+/// path under `.trellis/` that is a link to a file elsewhere in the
+/// repository is refused too: the file a run can edit is the one it
+/// resolves to, and `edit` checks the path as written.
+fn outside_code(root: &Path, items: &[TrustItem]) -> Option<String> {
+    let real_root = std::fs::canonicalize(root).ok();
+    let real_dot = std::fs::canonicalize(root.join(".trellis")).ok();
+    let resolves_outside = |tok: &str| -> Option<String> {
+        let real_root = real_root.as_ref()?;
+        if tok.is_empty() {
+            return None;
+        }
+        let p = Path::new(tok);
+        let real = std::fs::canonicalize(if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
         })
-        .collect();
+        .ok()?;
+        let inside_dot = real_dot.as_ref().is_some_and(|d| real.starts_with(d));
+        (real.is_file() && real.starts_with(real_root) && !inside_dot)
+            .then(|| rel(real_root, &real))
+    };
+    let mut why: Vec<String> = Vec::new();
+    let mut note = |line: String| {
+        if !why.contains(&line) {
+            why.push(line);
+        }
+    };
+    for item in items {
+        for (path, _) in &item.files {
+            if !crate::orchestrator::names_trellis_dir(path) {
+                note(format!("{} names `{path}`", item.label));
+            }
+        }
+        for tok in argv_candidates(&item.argv) {
+            let Some(real) = resolves_outside(tok) else {
+                continue;
+            };
+            if item.files.iter().any(|(p, _)| *p == real) {
+                continue; // already named above, by the same path
+            }
+            note(if tok.replace('\\', "/") == real {
+                format!("{} names `{real}`", item.label)
+            } else {
+                format!("{} names `{tok}`, which is `{real}`", item.label)
+            });
+        }
+    }
     (!why.is_empty()).then(|| {
         format!(
             "{}, a file in the repository outside .trellis/. A hook's or custom tool's code \
@@ -409,7 +467,7 @@ impl Fingerprint {
         }
         // Hooks and custom tools only, taken before `bash` and the extras
         // are added: the rule is about where their code lives.
-        let outside = outside_code(&items);
+        let outside = outside_code(root, &items);
         if let Some((shell, settings)) = bash {
             items.push(TrustItem::command_cached(
                 root,
@@ -1140,6 +1198,161 @@ mod tests {
         );
         store.trust(repo.path(), &fp).unwrap();
         assert_eq!(store.state(repo.path(), &fp).unwrap(), TrustState::Trusted);
+    }
+
+    /// A repository with `scripts/gate.py` and `.trellis/hooks/gate.py`.
+    fn repo_with_gate_scripts() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        std::fs::write(repo.path().join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
+        repo
+    }
+
+    #[test]
+    fn code_outside_dot_trellis_is_refused_however_the_path_is_spelled() {
+        // Review round 12, item 1: the refusal only saw what `repo_file`
+        // hashed, and `repo_file` drops `..` and any absolute path not
+        // lexically under the root. So `.trellis/../scripts/gate.py` was
+        // neither hashed nor refused, and the hook ran code a model run can
+        // edit.
+        let repo = repo_with_gate_scripts();
+        let refused =
+            |root: &Path, argv: &[&str]| Fingerprint::of(root, &hooks(argv), &[], None).refused;
+        let why = refused(repo.path(), &["python", ".trellis/../scripts/gate.py"])
+            .expect("`..` out of .trellis/ is refused");
+        assert!(
+            why.contains("names `.trellis/../scripts/gate.py`, which is `scripts/gate.py`"),
+            "{why}"
+        );
+        // Inside a code string, and with backslashes.
+        assert!(
+            refused(
+                repo.path(),
+                &[
+                    "bash",
+                    "-lc",
+                    "python .trellis\\hooks\\..\\..\\scripts\\gate.py"
+                ]
+            )
+            .is_some()
+        );
+
+        // An absolute path to the file, through the canonical root.
+        let real = std::fs::canonicalize(repo.path().join("scripts/gate.py")).unwrap();
+        let abs = real.to_string_lossy().into_owned();
+        assert!(refused(repo.path(), &["python", &abs]).is_some(), "{abs}");
+        // The root given relative to the working directory: the argv's
+        // relative path and the root are joined and made canonical, so the
+        // refusal does not depend on where trellis was started.
+        let cwd = std::env::current_dir().unwrap();
+        if let Some(rel_root) = pathdiff(repo.path(), &cwd) {
+            assert!(
+                refused(&rel_root, &["python", "scripts/gate.py"]).is_some(),
+                "{rel_root:?}"
+            );
+            assert!(
+                refused(&rel_root, &["python", &abs]).is_some(),
+                "{rel_root:?}"
+            );
+        } else {
+            eprintln!("skipped: the temporary directory and {cwd:?} share no root");
+        }
+
+        // Code under `.trellis/`, reached with or without `..`, is fine.
+        assert_eq!(
+            refused(repo.path(), &["python", ".trellis/hooks/../hooks/gate.py"]),
+            None
+        );
+        let dot = std::fs::canonicalize(repo.path().join(".trellis/hooks/gate.py")).unwrap();
+        assert_eq!(
+            refused(repo.path(), &["python", &dot.to_string_lossy()]),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_absolute_path_with_the_drive_letter_in_the_other_case_is_refused() {
+        // `Path::starts_with` compares the drive letter as written, so
+        // `c:\...` was not "under" a root spelled `C:\...`: not hashed, not
+        // refused. Windows opens either spelling.
+        let repo = repo_with_gate_scripts();
+        let root = repo.path().to_string_lossy().into_owned();
+        let file = repo.path().join("scripts").join("gate.py");
+        let file = file.to_string_lossy().into_owned();
+        let flip = |s: &str| {
+            let mut c = s.chars();
+            let first = c.next().unwrap();
+            assert!(first.is_ascii_alphabetic(), "a drive-letter path: {s}");
+            let first = if first.is_ascii_uppercase() {
+                first.to_ascii_lowercase()
+            } else {
+                first.to_ascii_uppercase()
+            };
+            format!("{first}{}", c.as_str())
+        };
+        for (root, file) in [(root.clone(), flip(&file)), (flip(&root), file.clone())] {
+            let fp = Fingerprint::of(Path::new(&root), &hooks(&["python", &file]), &[], None);
+            let why = fp.refused.expect("refused");
+            assert!(why.contains("`scripts/gate.py`"), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_link_under_dot_trellis_to_code_elsewhere_in_the_repository_is_refused_when_named() {
+        // The chosen behaviour for a link: decided on where the path
+        // resolves. `.trellis/hooks -> ../scripts` makes
+        // `.trellis/hooks/gate.py` the file `scripts/gate.py`, which `edit`
+        // and `write_file` reach by that name, so naming it is naming code
+        // outside `.trellis/`. Reached by `-m` instead (no path in the argv),
+        // it is not refused here, and the digest follows the link and
+        // hashes it: `a_symlinked_directory_under_dot_trellis_is_followed`.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
+        std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        let Some(()) = symlink_dir(
+            &repo.path().join("scripts"),
+            &repo.path().join(".trellis/hooks"),
+        ) else {
+            return;
+        };
+        let fp = Fingerprint::of(
+            repo.path(),
+            &hooks(&["python", ".trellis/hooks/gate.py"]),
+            &[],
+            None,
+        );
+        let why = fp.refused.expect("refused");
+        assert!(
+            why.contains("names `.trellis/hooks/gate.py`, which is `scripts/gate.py`"),
+            "{why}"
+        );
+        let fp = Fingerprint::of(repo.path(), &hooks(&["python", "-m", "gate"]), &[], None);
+        assert_eq!(fp.refused, None);
+    }
+
+    /// `path` relative to `base`, when both are on one volume and `path`
+    /// can be reached from `base` with `..` steps.
+    fn pathdiff(path: &Path, base: &Path) -> Option<PathBuf> {
+        let path = std::fs::canonicalize(path).ok()?;
+        let base = std::fs::canonicalize(base).ok()?;
+        let p: Vec<_> = path.components().collect();
+        let b: Vec<_> = base.components().collect();
+        let common = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        if common == 0 {
+            return None;
+        }
+        let mut out = PathBuf::new();
+        for _ in common..b.len() {
+            out.push("..");
+        }
+        for c in &p[common..] {
+            out.push(c.as_os_str());
+        }
+        Some(out)
     }
 
     #[test]
