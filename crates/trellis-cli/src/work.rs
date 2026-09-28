@@ -735,7 +735,12 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
     listen_for_ctrl_c(stop.clone());
 
-    println!("work:     queue at {}", q.dir().display());
+    // ADR 0025 §4: the human stream, so `work --json` keeps stdout JSONL.
+    let _ = writeln!(
+        crate::output::human(),
+        "work:     queue at {}",
+        q.dir().display()
+    );
     let mut runner = CliRunner {
         root,
         model,
@@ -751,8 +756,11 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
         max_tasks: if args.once { Some(1) } else { args.max_tasks },
         every: args.every.map(Duration::from_secs),
     };
-    let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut std::io::stdout())?;
-    println!("work:     {ran} run(s) this invocation; stopped: {why}");
+    let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut crate::output::human())?;
+    let _ = writeln!(
+        crate::output::human(),
+        "work:     {ran} run(s) this invocation; stopped: {why}"
+    );
     Ok(why.code())
 }
 
@@ -1001,7 +1009,9 @@ impl Runner for CliRunner<'_> {
                     text: &text,
                     stop: &self.stop,
                 },
-                &mut std::io::stdout(),
+                // The human stream, not stdout: under `work --json` stdout
+                // carries JSONL only (ADR 0025 §4).
+                &mut crate::output::human(),
             );
         }
         let Some(model) = profile
@@ -1015,7 +1025,7 @@ impl Runner for CliRunner<'_> {
             };
         };
         if let Some(p) = &profile {
-            println!("agent:    {}", p.name);
+            let _ = writeln!(crate::output::human(), "agent:    {}", p.name);
         }
         // Auto, unless the profile asks for approve mode — and the gate let
         // that task through only with a terminal attached. The heartbeat is
@@ -1043,7 +1053,7 @@ impl Runner for CliRunner<'_> {
                 profile: profile.as_ref(),
             },
             control,
-            &mut std::io::stdout(),
+            &mut crate::output::human(),
         );
         let after = newest_run_id(self.root);
         let run_id = if after != before { after } else { None };

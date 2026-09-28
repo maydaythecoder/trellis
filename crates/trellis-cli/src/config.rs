@@ -86,6 +86,9 @@ pub(crate) struct ContextSection {
     /// editing this file to switch focus dirties the worktree, and a run
     /// refuses a dirty worktree (ADR 0009).
     pub focus: Option<String>,
+    /// `false` turns off `AGENTS.md`, `CLAUDE.md` and `AGENTS.override.md`
+    /// (ADR 0025 §1). Absent means on.
+    pub files: Option<bool>,
 }
 
 /// Where the vault is and which note to compile, after validation of the
@@ -160,11 +163,9 @@ impl RepoConfig {
     /// the confident-verdict-about-the-wrong-thing failure the file exists to
     /// prevent.
     pub(crate) fn load(root: &Path) -> Result<Self> {
-        let path = root.join(".trellis").join("config.toml");
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Ok(Self::default());
-        };
-        toml::from_str(&text).with_context(|| format!("{} is not valid TOML", path.display()))
+        // ADR 0025 §7: the user's own file sits under this one. The layering
+        // and the repository read are in `user_config.rs`.
+        Self::load_with_user(root, crate::user_config::file().as_deref())
     }
 
     pub(crate) fn checks(&self) -> CheckConfig {
@@ -308,7 +309,9 @@ impl RepoConfig {
             .join("prompts")
             .join(format!("{name}.md"));
         std::fs::read_to_string(&path)
-            .map(|s| s.trim().to_string())
+            // Frontmatter stripped and defaults applied (ADR 0025 §3). A
+            // template without frontmatter comes back exactly as before.
+            .map(|s| crate::templates::render_text(&s, None))
             .with_context(|| {
                 let dir = root.join(".trellis").join("prompts");
                 let known: Vec<String> = std::fs::read_dir(&dir)

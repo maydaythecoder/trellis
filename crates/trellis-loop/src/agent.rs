@@ -284,6 +284,9 @@ pub struct RepoContext {
     /// to all three cannot disagree with itself. The orchestrator holds the
     /// same set and is what refuses a call outside it.
     pub tools: crate::registry::ToolSet,
+    /// Context files, system prompt files and forced skills (ADR 0025).
+    /// Informs; never a turn, so it cannot satisfy the convergence test.
+    pub extra: crate::extra_context::ExtraContext,
 }
 
 impl RepoContext {
@@ -299,6 +302,7 @@ impl RepoContext {
             && self.rules.is_empty()
             && self.skills.is_empty()
             && self.skills_omitted == 0
+            && self.extra.fence_is_empty()
     }
 }
 
