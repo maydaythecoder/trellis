@@ -808,11 +808,10 @@ impl Queue {
     ///
     /// Every pending file is read to sort by priority: one read per pending
     /// task per tick, for a queue that is a person's backlog.
-    #[allow(clippy::type_complexity)]
     pub fn claim_next_where(
         &self,
         gate: &mut dyn FnMut(&str, &Task) -> Option<String>,
-    ) -> Result<(Option<Claim>, Vec<(String, String)>), QueueError> {
+    ) -> Result<ClaimOutcome, QueueError> {
         self.ensure()?;
         let entries = self.list()?;
         let ix = Self::index_of(&entries);
@@ -1050,6 +1049,11 @@ impl Queue {
         format!("{}-{slug}", stamp::sortable_now())
     }
 }
+
+/// What [`Queue::claim_next_where`] returns: the task claimed, if any, and
+/// every pending task that was not claimable as `(id, why)`, so the
+/// heartbeat can say what it is waiting for.
+pub type ClaimOutcome = (Option<Claim>, Vec<(String, String)>);
 
 /// A task this process holds. Consumed by exactly one of [`Claim::finish`]
 /// or [`Claim::release`], so a claim cannot be both recorded and returned.
