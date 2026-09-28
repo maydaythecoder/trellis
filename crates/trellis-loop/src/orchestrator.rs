@@ -1047,7 +1047,8 @@ impl Orchestrator {
 /// refuses is not first put to a person.
 pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
     let mut git = tokio::process::Command::new("git");
-    git.args(["check-ignore", "-q", "--no-index", "--"])
+    git.args(trellis_vcs::OVERRIDES)
+        .args(["check-ignore", "-q", "--no-index", "--"])
         .arg(rel)
         .current_dir(root)
         .stdin(std::process::Stdio::null())

@@ -501,6 +501,51 @@ this amendment a hook that wrote at any of those points left bytes in a
     `core.fsmonitor` that `bash` set a call earlier. That is code the
     writer could already run directly, so it adds no reach; what the
     guard prevents is it outliving the run.
+
+    *Amended after the ninth review of PR #1: trellis's own git runs
+    nothing planted.* "No reach" was wrong in one respect: what trellis
+    runs, it runs at a time the writer did not choose, with trellis's
+    judgement waiting on the answer. Every `git` trellis runs now carries
+    `-c core.fsmonitor=false -c core.hooksPath=/dev/null` (`NUL` on
+    Windows) on its command line (`trellis_vcs::command`), which outranks
+    every config file, include and worktree config. The hooks override is
+    load-bearing: `git add -A` into the fingerprint's copied index writes
+    an index, and an index write runs `post-index-change`. The worktree
+    digest and fingerprint, which run between tool calls, also turn off
+    every filter driver the configuration defines: the drivers are listed
+    with `git config --get-regexp` (which reads and runs nothing) at every
+    call, and each gets an empty `clean`, `smudge` and `process` and
+    `required=false`, since git offers no "no filters" switch for `status`
+    or `add`. Both sides of a comparison then hash raw bytes, so equality
+    means what it did. Evidence:
+    `a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run`
+    in `tests/cli.rs` (a `post_tool` hook makes the digest run after the
+    `bash` call; it failed before with the marker written; its control
+    runs plain `git status` and sees the marker), and
+    `trellis_s_own_git_runs_no_planted_fsmonitor_hook_or_filter` in
+    `trellis-vcs`, which failed before with all three markers (fsmonitor,
+    `post-index-change`, a `required` clean filter) and checks with plain
+    git that each is live. What is not neutralised, stated:
+    - **The trail's commit keeps the user's hooks** (`pre-commit` and the
+      rest, `core.fsmonitor` still off): a commit in their repository runs
+      their hooks, and it runs after the guard has put `.git/` back.
+    - **Filters stay on outside the digest**: the snapshot's and the
+      rollback's `status`, `reset --hard` and `clean`, a process agent's
+      `status`, and `pending`. A rollback's checkout needs the user's own
+      drivers (Git LFS's smudge), and each of these runs after the guard
+      has restored the config that could define a planted driver. A driver
+      defined outside the git directory (the global config, an include
+      target elsewhere on disk) is not the guard's to restore.
+    - **A submodule's own configuration**: `git status` recurses into a
+      submodule with that repository's config, and whether the `-c`
+      overrides reach it depends on git's handling of
+      `GIT_CONFIG_PARAMETERS` for submodules; it is counted as not covered,
+      as the submodule's git directory is by the guard.
+    - Settings that run commands only in commands trellis does not run
+      during a run (`diff.external`, textconv, `core.pager`,
+      `core.sshCommand`, credential helpers) are not overridden.
+    - A partition worktree's `git worktree add` runs no `post-checkout`
+      hook now; its checkout still applies the user's filters.
   - **A changed pre-existing ignored file is a tree not restored.** The
     rollback said "NOT put back" and exited 1 as restored; it exits 2
     now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`

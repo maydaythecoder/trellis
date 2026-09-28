@@ -142,10 +142,108 @@ pub struct Snapshot {
 /// in the workspace manifest for the worktree management that multi-agent
 /// mode needs (4.13), where the library genuinely helps.
 fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
-    // Scrubbed: `git commit` runs the repository's own hooks, and they
-    // inherit this environment.
-    let out =
-        trellis_core::secrets::scrub(Command::new("git").args(args).current_dir(root)).output()?;
+    output(command().args(args).current_dir(root), args)
+}
+
+/// Settings every `git` trellis runs sets on its own command line, where no
+/// config file (repository, worktree, include, global) can outrank them,
+/// since a `bash` call, custom tool, hook or process agent can write
+/// `.git/config` and the git guard puts it back only once the writer is
+/// done (ADR 0023 §5):
+/// - `core.fsmonitor=false`: the command `git status` and `git add` would
+///   run to ask what changed;
+/// - `core.hooksPath` at a path that cannot hold a hook (`/dev/null`, or
+///   `NUL` on Windows): a hook runs on any index write
+///   (`post-index-change`), `git add` into a copied index included.
+///
+/// Clean filters are neutralised separately ([`filters_off`]) and only
+/// where a digest is taken, since a filter is named per driver and a
+/// rollback's checkout needs the user's own (Git LFS's smudge).
+pub const OVERRIDES: [&str; 4] = ["-c", "core.fsmonitor=false", "-c", NO_HOOKS];
+
+#[cfg(windows)]
+const NO_HOOKS: &str = "core.hooksPath=NUL";
+#[cfg(not(windows))]
+const NO_HOOKS: &str = "core.hooksPath=/dev/null";
+
+/// `git` with [`OVERRIDES`], its environment scrubbed of keys.
+pub fn command() -> Command {
+    let mut c = Command::new("git");
+    c.args(OVERRIDES);
+    trellis_core::secrets::scrub(&mut c);
+    c
+}
+
+/// `git` with `core.fsmonitor` off and the hooks left alone: for the
+/// trail's commit, which runs the user's hooks as any commit does, and for
+/// the git guard's `rev-parse --git-path hooks`, which must name the real
+/// hooks directory.
+pub(crate) fn command_with_hooks() -> Command {
+    let mut c = Command::new("git");
+    c.args(["-c", "core.fsmonitor=false"]);
+    trellis_core::secrets::scrub(&mut c);
+    c
+}
+
+/// `-c` pairs that turn off every filter driver the configuration defines,
+/// for the commands a digest runs (`status`, `hash-object`, `add`), which
+/// would otherwise run a driver's `clean` or `process` command on any file
+/// whose stat changed. Git cannot be told "no filters" for `status` or
+/// `add`, so the drivers are listed (`git config --get-regexp`, which reads
+/// and runs nothing) and each is emptied: an empty command is no filter,
+/// and `required=false` stops an empty one from failing the command. A
+/// driver name that `-c` cannot carry (one with `=` in it) makes git refuse
+/// the command, which reads as "changed": the safe direction.
+///
+/// Listed at every call, not once per run: a writer can define a driver
+/// between two digests. The digest then compares raw bytes rather than
+/// filtered ones, on both sides, so equality still means what it did.
+fn filters_off(root: &Path) -> Result<Vec<String>, VcsError> {
+    let args = [
+        "config",
+        "--name-only",
+        "--get-regexp",
+        r"^filter\..*\.(clean|smudge|process|required)$",
+    ];
+    let out = command().args(args).current_dir(root).output()?;
+    // 1 is "no such key": no drivers.
+    if !out.status.success() && out.status.code() != Some(1) {
+        return Err(VcsError::GitFailed {
+            command: format!("git {}", args.join(" ")),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    let mut names: Vec<String> = Vec::new();
+    for key in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some(name) = key
+            .strip_prefix("filter.")
+            .and_then(|k| k.rsplit_once('.'))
+            .map(|(n, _)| n.to_string())
+        else {
+            continue;
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut pairs = Vec::new();
+    for n in names {
+        for (k, v) in [
+            ("clean", ""),
+            ("smudge", ""),
+            ("process", ""),
+            ("required", "false"),
+        ] {
+            pairs.push("-c".to_string());
+            pairs.push(format!("filter.{n}.{k}={v}"));
+        }
+    }
+    Ok(pairs)
+}
+
+/// Runs `cmd`, its stdout as text, or the failure named by `args`.
+fn output(cmd: &mut Command, args: &[&str]) -> Result<String, VcsError> {
+    let out = cmd.output()?;
     if !out.status.success() {
         return Err(VcsError::GitFailed {
             command: format!("git {}", args.join(" ")),
@@ -212,20 +310,22 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
             .open(&tmp)?
             .set_modified(mtime)?;
     }
+    // `git add -A` would run the repository's clean filters, and its index
+    // write a `post-index-change` hook: both off (`filters_off`, `command`).
+    let filters = filters_off(root);
     let run = |args: &[&str]| -> Result<String, VcsError> {
-        let mut git = Command::new("git");
-        git.args(args).current_dir(root).env("GIT_INDEX_FILE", &tmp);
-        // `git add -A` runs the repository's filters (clean/smudge drivers),
-        // which are repository-supplied commands (ADR 0024 §3).
-        trellis_core::secrets::scrub(&mut git);
-        let out = git.output()?;
-        if !out.status.success() {
-            return Err(VcsError::GitFailed {
-                command: format!("git {}", args.join(" ")),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        let filters = filters.as_ref().map_err(|e| VcsError::GitFailed {
+            command: "git config --get-regexp filter".into(),
+            stderr: e.to_string(),
+        })?;
+        output(
+            command()
+                .args(filters)
+                .args(args)
+                .current_dir(root)
+                .env("GIT_INDEX_FILE", &tmp),
+            args,
+        )
     };
     let tree = run(&["add", "-A"]).and_then(|_| run(&["write-tree"]));
     let _ = std::fs::remove_file(&tmp);
@@ -263,17 +363,18 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
 /// - a path containing a newline cannot go through `--stdin-paths`; the
 ///   digest then falls back to the tree form, objects and all.
 pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
-    let status = git(
-        root,
-        &[
-            "--no-optional-locks",
-            "status",
-            "--porcelain=v2",
-            "-z",
-            "--branch",
-            "--untracked-files=all",
-        ],
-    )?;
+    // `status` and `hash-object` run clean filters on files whose stat
+    // changed; a writer may have planted one a call ago (`filters_off`).
+    let filters = filters_off(root)?;
+    let args = [
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--branch",
+        "--untracked-files=all",
+    ];
+    let status = output(command().args(&filters).args(args).current_dir(root), &args)?;
     let Parsed {
         head,
         in_head,
@@ -313,7 +414,7 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
         return worktree_fingerprint(root).map(|t| format!("tree {t}"));
     }
     let links: Vec<&String> = present.iter().filter(|x| x.2 && x.3).map(|x| x.0).collect();
-    let mut hashed = hash_without_writing(root, &to_hash)?.into_iter();
+    let mut hashed = hash_without_writing(root, &to_hash, &filters)?.into_iter();
     let mut linked = hash_links(root, &links)?.into_iter();
     let mut manifest = format!("head {head}\n");
     for (path, mode, exists, link) in present {
@@ -482,7 +583,7 @@ fn hash_links(root: &Path, paths: &[&String]) -> Result<Vec<String>, VcsError> {
         files.push(f.to_string_lossy().into_owned());
     }
     let refs: Vec<&String> = files.iter().collect();
-    hash_paths(root, &refs, &["--no-filters"])
+    hash_paths(root, &refs, &[], &["--no-filters"])
 }
 
 /// One link's blob id through `git hash-object --stdin`, as the digest
@@ -536,29 +637,38 @@ fn untracked_mode(p: &Path) -> &'static str {
 }
 
 /// Blob ids for `paths`, as `git hash-object --stdin-paths` computes them
-/// (the repository's clean filters applied), with no `-w`: nothing is
-/// written to the object store.
-fn hash_without_writing(root: &Path, paths: &[&String]) -> Result<Vec<String>, VcsError> {
-    hash_paths(root, paths, &[])
+/// with `config` (the digest's [`filters_off`]) in force, with no `-w`:
+/// nothing is written to the object store.
+fn hash_without_writing(
+    root: &Path,
+    paths: &[&String],
+    config: &[String],
+) -> Result<Vec<String>, VcsError> {
+    hash_paths(root, paths, config, &[])
 }
 
-/// `git hash-object --stdin-paths` over `paths`, with `extra` flags, one id
-/// per path in order.
-fn hash_paths(root: &Path, paths: &[&String], extra: &[&str]) -> Result<Vec<String>, VcsError> {
+/// `git hash-object --stdin-paths` over `paths`, with `config` pairs
+/// before the subcommand and `extra` flags after it, one id per path in
+/// order.
+fn hash_paths(
+    root: &Path,
+    paths: &[&String],
+    config: &[String],
+    extra: &[&str],
+) -> Result<Vec<String>, VcsError> {
     use std::io::Write;
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let mut cmd = Command::new("git");
-    cmd.arg("hash-object")
+    let mut cmd = command();
+    cmd.args(config)
+        .arg("hash-object")
         .args(extra)
         .arg("--stdin-paths")
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    // Clean filters are repository-supplied commands (ADR 0024 §3).
-    trellis_core::secrets::scrub(&mut cmd);
     let mut child = cmd.spawn()?;
     let mut input = String::new();
     for p in paths {
@@ -615,14 +725,19 @@ pub fn commit_paths(root: &Path, paths: &[&str], message: &str) -> Result<(), Vc
     if paths.is_empty() {
         return Ok(());
     }
+    // The one git call that keeps the user's hooks: a commit in their
+    // repository runs their `pre-commit`, as any commit does. It runs after
+    // the git guard has put `.git/` back, so the hooks are theirs.
+    let with_hooks =
+        |args: &[&str]| output(command_with_hooks().args(args).current_dir(root), args);
     let mut add: Vec<&str> = vec!["add", "--"];
     add.extend_from_slice(paths);
-    git(root, &add)?;
+    with_hooks(&add)?;
 
     // `--only` so staged-but-unrelated changes cannot ride along.
     let mut commit: Vec<&str> = vec!["commit", "--only", "-m", message, "--"];
     commit.extend_from_slice(paths);
-    git(root, &commit)?;
+    with_hooks(&commit)?;
     Ok(())
 }
 
@@ -913,6 +1028,98 @@ mod tests {
             "ignored files are outside it, as documented"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A repository whose config runs a marker-writing command from
+    /// `core.fsmonitor`, a `post-index-change` hook and a clean filter bound
+    /// to every `*.py` (`required`, so a filter that is merely skipped
+    /// fails loudly), with a tracked file edited and an untracked one
+    /// added. What `bash` could plant a call before a digest runs.
+    fn planted_repo(name: &str) -> (PathBuf, PathBuf) {
+        let dir = temp_repo(name);
+        let marks = dir.with_file_name(format!("{}-marks", dir.file_name().unwrap().display()));
+        let _ = std::fs::remove_dir_all(&marks);
+        std::fs::create_dir_all(&marks).unwrap();
+        let m = marks.display().to_string().replace('\\', "/");
+        let script = |what: &str, tail: &str| format!("#!/bin/sh\necho x >> '{m}/{what}'\n{tail}");
+        let fsm = marks.join("fsmonitor.sh");
+        std::fs::write(&fsm, script("fsmonitor", "exit 1\n")).unwrap();
+        std::fs::write(marks.join("clean.sh"), script("filter", "cat\n")).unwrap();
+        let hook = dir.join(".git/hooks/post-index-change");
+        std::fs::write(&hook, script("hook", "")).unwrap();
+        #[cfg(unix)]
+        for p in [&fsm, &hook] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let raw = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&dir)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        raw(&[
+            "config",
+            "core.fsmonitor",
+            &fsm.display().to_string().replace('\\', "/"),
+        ]);
+        raw(&[
+            "config",
+            "filter.planted.clean",
+            &format!("sh '{m}/clean.sh'"),
+        ]);
+        raw(&["config", "filter.planted.required", "true"]);
+        std::fs::write(dir.join(".gitattributes"), "*.py filter=planted\n").unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 2\n").unwrap();
+        std::fs::write(dir.join("b.py"), "y = 1\n").unwrap();
+        (dir, marks)
+    }
+
+    fn marked(marks: &Path) -> Vec<String> {
+        ["fsmonitor", "filter", "hook"]
+            .into_iter()
+            .filter(|w| marks.join(w).exists())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn trellis_s_own_git_runs_no_planted_fsmonitor_hook_or_filter() {
+        // The risk (review round 9, finding 4): the git guard puts `.git/`
+        // back only after the loop, and the digest and fingerprint trellis
+        // takes around every hooked call ran `git status`, `hash-object`
+        // and `add -A` in between, which run `core.fsmonitor`, a
+        // `post-index-change` hook and the repository's clean filters: a
+        // `bash` call could plant any of them and have trellis run it.
+        let (dir, marks) = planted_repo("planted");
+        worktree_digest(&dir).unwrap();
+        worktree_fingerprint(&dir).unwrap();
+        assert_eq!(marked(&marks), Vec::<String>::new(), "trellis ran it");
+        // Every other git call carries the fsmonitor and hook overrides;
+        // filters stay on there (a rollback's checkout needs Git LFS's).
+        pending(&dir).unwrap();
+        assert!(!marks.join("fsmonitor").exists() && !marks.join("hook").exists());
+        let _ = std::fs::remove_file(marks.join("filter"));
+
+        // The control: the same repository, asked by plain git, runs all
+        // three, so the assertion above is about the overrides.
+        let idx = marks.join("control.index");
+        std::fs::copy(dir.join(".git/index"), &idx).unwrap();
+        for args in [&["status", "--porcelain"][..], &["add", "-A"][..]] {
+            let _ = Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_INDEX_FILE", &idx)
+                .output()
+                .unwrap();
+        }
+        assert_eq!(marked(&marks), ["fsmonitor", "filter", "hook"], "control");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&marks);
     }
 
     fn loose_objects(dir: &Path) -> u64 {

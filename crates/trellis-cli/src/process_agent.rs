@@ -36,12 +36,12 @@ enum Ended {
 /// before, whose trimmed lines lost the first character of a modified
 /// tracked file's path.)
 fn changed(root: &Path) -> Result<Vec<String>, String> {
-    let mut git = Command::new("git");
+    // Run after the git guard has put `.git/` back; `command` turns
+    // `core.fsmonitor` and hooks off regardless.
+    let mut git = trellis_vcs::command();
     git.args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(root)
         .stdin(Stdio::null());
-    // `git status` can run the repository's filters and fsmonitor.
-    trellis_core::secrets::scrub(&mut git);
     let o = git
         .output()
         .map_err(|e| format!("git status could not run: {e}"))?;
