@@ -139,6 +139,7 @@ impl Hooks {
             timeout: self.timeout,
             cap: OUTPUT_CAP,
             head,
+            whole: false,
         })
         .await
     }
