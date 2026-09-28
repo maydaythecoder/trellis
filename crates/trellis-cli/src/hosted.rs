@@ -60,6 +60,9 @@ pub(crate) fn resolve(spec: &ModelSpec, cfg: &RepoConfig) -> Result<Option<Resol
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
 /// plain-http remote, or a build without TLS.
 pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
+    // `main` registers every configured `key_env`; this covers a caller that
+    // reached a provider some other way. Registering twice is harmless.
+    trellis_core::secrets::register_key_vars([&r.key_env]);
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
         .with_thinking(cfg.thinking()?);

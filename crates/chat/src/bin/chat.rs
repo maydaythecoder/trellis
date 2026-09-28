@@ -624,7 +624,7 @@ fn git_snapshot(root: &Path, r: &GitRef) -> Result<String, String> {
         GitRef::Diff => &["diff", "--stat"],
         GitRef::Status => &["status", "--porcelain"],
     };
-    let out = std::process::Command::new("git")
+    let out = chat::scrub_keys(&mut std::process::Command::new("git"))
         .args(args)
         .current_dir(root)
         .output()
@@ -828,7 +828,7 @@ fn shell(
     } else {
         ("sh", "-c")
     };
-    let mut child = std::process::Command::new(program)
+    let mut child = chat::scrub_keys(&mut std::process::Command::new(program))
         .arg(flag)
         .arg(command)
         .current_dir(root)
