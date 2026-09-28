@@ -112,6 +112,12 @@ fn run(root: &Path, args: &[&str]) -> Output {
         // care. Inheriting this test harness's stdio would make that
         // difference depend on how the suite was launched.
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         .output()
         .expect("the binary must be built before its integration tests run")
 }
@@ -1612,6 +1618,12 @@ fn session_with(root: &Path, lines: &str) -> Output {
         .arg("session")
         .current_dir(root)
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2342,6 +2354,12 @@ fn run_with_data_dir(root: &Path, data: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env("NO_COLOR", "1")
+        // Hermetic: the user-level config and context files (ADR 0025 §7)
+        // of whoever runs the suite must not change what it sees.
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
         .env("LOCALAPPDATA", data)
         .env("XDG_DATA_HOME", data)
         .env("HOME", data)

@@ -10,6 +10,7 @@ mod budget;
 mod exec;
 #[cfg(test)]
 mod extension_tests;
+mod extra_context;
 mod gate;
 mod governance;
 mod hooks;
@@ -30,6 +31,9 @@ pub use agent::{
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
 pub use exec::default_shell;
+pub use extra_context::{
+    ContextFile, DEFAULT_ROLE, ExtraContext, FORCED_SKILL_HEAD, ForcedSkill, GROUNDING,
+};
 pub use gate::{
     APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, BashPolicyGate, DECLINED, EditPreview,
     GateDecision, GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,

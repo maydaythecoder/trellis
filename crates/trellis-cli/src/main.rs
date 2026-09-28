@@ -25,9 +25,17 @@ mod tui_bridge;
 mod tui_run;
 mod vault_cmd;
 mod work;
+// ADR 0025 (W-D).
+mod context_files;
+mod output;
+mod rpc;
+mod session_extra;
+mod templates;
+mod user_config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -50,6 +58,15 @@ struct Cli {
     /// adding a field to either.
     #[arg(long, global = true, value_name = "PATH")]
     log_json: Option<PathBuf>,
+
+    /// Write JSONL to stdout: the same events `--log-json` writes, between
+    /// a `run_start` and a `run_end` record. Human text goes to stderr.
+    /// For `run`, `work` and `log` (ADR 0025 §4).
+    ///
+    /// Global for the reason `--log-json` is: it reaches `work` without a
+    /// field in its arguments. Refused by name on any other command.
+    #[arg(long, global = true)]
+    json: bool,
 
     /// Omit to enter an interactive session.
     #[command(subcommand)]
@@ -127,6 +144,17 @@ enum Command {
         /// standing instruction with a specific ask after it.
         #[arg(long)]
         prompt: Option<String>,
+        /// Arguments for the `--prompt` template, as one string split
+        /// shell-style: `--args '"app/x.py" strict'` gives `$1` and `$2`.
+        ///
+        /// One string rather than a repeated flag so the session and `rpc`,
+        /// which also receive one string, split it the same way (ADR 0025).
+        #[arg(long, requires = "prompt", value_name = "STRING")]
+        args: Option<String>,
+        /// Load this skill's body into the run's context, rather than waiting
+        /// for the model to ask for it. Repeatable. Informs; never binds.
+        #[arg(long, value_name = "NAME")]
+        skill: Vec<String>,
         /// Compile this note from the `[context] vault` and show it to the
         /// model, overriding `[context] focus`.
         ///
@@ -277,6 +305,12 @@ enum Command {
         #[command(subcommand)]
         action: orchestrate::RoutinesAction,
     },
+
+    /// JSONL commands on stdin, responses and events on stdout (ADR 0025 §5).
+    ///
+    /// `prompt` runs a task exactly as `trellis run` does. One run at a
+    /// time; the clean-worktree rule is unchanged. Human text goes to stderr.
+    Rpc,
 }
 
 #[derive(Subcommand)]
@@ -338,10 +372,43 @@ fn main() -> Result<()> {
         }
         None => None,
     };
+    // ADR 0025 §4: `--json` and `rpc` make stdout the JSON channel. Checked
+    // before anything prints, and refused by name where it would do nothing.
+    let is_rpc = matches!(cli.command, Some(Command::Rpc));
+    if cli.json
+        && !matches!(
+            cli.command,
+            Some(Command::Run { .. } | Command::Work(_) | Command::Log { .. })
+        )
+    {
+        anyhow::bail!("--json applies to `run`, `work` and `log`; `rpc` always writes JSON");
+    }
+    output::set_json(cli.json || is_rpc);
+    // Per-layer filters rather than one global one: the stdout event layer
+    // has a fixed `trellis=info` so a `RUST_LOG` meant for debugging cannot
+    // change what a machine reader receives. `RUST_LOG` still governs the
+    // human stream and `--log-json`, exactly as before.
+    use tracing_subscriber::Layer;
+    let stdout_json = output::json().then(|| {
+        tracing_subscriber::fmt::layer()
+            .json()
+            .with_ansi(false)
+            .with_writer(std::io::stdout)
+            .with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("trellis", tracing::Level::INFO),
+            )
+    });
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_target(false))
-        .with(json)
-        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_writer(output::human)
+                .with_filter(filter.clone()),
+        )
+        .with(json.map(|l| l.with_filter(filter)))
+        .with(stdout_json)
+        .with(is_rpc.then(rpc::TurnCapture::default))
         .init();
 
     let explicit = cli.root.is_some();
@@ -372,7 +439,12 @@ fn main() -> Result<()> {
     // be a home folder — `trellis index` there walked 1,295 files before
     // anyone could tell it had not found a repository.
     if !explicit && root != std::env::current_dir().unwrap_or_default() {
-        println!("root:     {} (repository root)", root.display());
+        // To the human stream: under `--json` stdout is JSONL only.
+        let _ = writeln!(
+            output::human(),
+            "root:     {} (repository root)",
+            root.display()
+        );
     }
 
     let Some(command) = cli.command else {
@@ -415,6 +487,8 @@ fn main() -> Result<()> {
             agents,
             resume,
             prompt,
+            args,
+            skill,
             focus,
             approve,
             auto,
@@ -430,7 +504,8 @@ fn main() -> Result<()> {
             }
             let task = match &prompt {
                 Some(name) => {
-                    let template = config::RepoConfig::prompt(&root, name)?;
+                    // ADR 0025 §3: frontmatter stripped, `--args` substituted.
+                    let template = templates::render(&root, name, args.as_deref())?;
                     if task.trim().is_empty() {
                         template
                     } else {
@@ -454,7 +529,7 @@ fn main() -> Result<()> {
                 (_, true) => Some(config::ControlMode::Auto),
                 _ => None,
             };
-            let exit = cmd_run(
+            let exit = cmd_run_with(
                 &root,
                 &task,
                 &model,
@@ -468,7 +543,11 @@ fn main() -> Result<()> {
                     flag,
                     human: Human::terminal(),
                 },
-                &mut std::io::stdout(),
+                output::RunExtras {
+                    skills: skill,
+                    ..output::RunExtras::default()
+                },
+                &mut output::human(),
             )?;
             // The one place that decides the process ends, because this is
             // the one caller that *is* the process.
@@ -484,6 +563,9 @@ fn main() -> Result<()> {
             tui_run::run(&root, task, spec)
         }
         Command::Resume => cmd_resume(&root),
+        Command::Log { limit, .. } if output::json() => {
+            output::log_json(&root, limit, &mut std::io::stdout())
+        }
         Command::Log { limit, actions } => cmd_log(&root, limit, actions),
         Command::Why { symbol } => cmd_why(&root, &symbol),
         // Takes no root at all: models are user state, not repository state.
@@ -495,7 +577,25 @@ fn main() -> Result<()> {
         Command::Agents { action } => orchestrate::agents(&root, action),
         Command::Routines { action } => orchestrate::routines(&root, action),
         Command::Work(args) => {
-            let code = work::work(&root, args)?;
+            // ADR 0025 §4: each task's run brackets itself; these bracket
+            // the invocation, so a reader knows when `work` itself is done.
+            let frames = output::json().then(output::stdout_sink);
+            if let Some(s) = &frames {
+                output::frame(s, &serde_json::json!({"type": "work_start", "version": 1}));
+            }
+            let result = work::work(&root, args);
+            if let Some(s) = &frames {
+                output::frame(
+                    s,
+                    &match &result {
+                        Ok(code) => serde_json::json!({"type": "work_end", "exit": code}),
+                        Err(e) => serde_json::json!({
+                            "type": "work_end", "exit": 1, "error": format!("{e:#}")
+                        }),
+                    },
+                );
+            }
+            let code = result?;
             if code != 0 {
                 std::process::exit(code);
             }
@@ -503,6 +603,12 @@ fn main() -> Result<()> {
         }
         Command::Vault(args) => vault_cmd::run(&root, args),
         Command::Trust { show, revoke } => trust_cmd::run(&root, show, revoke),
+        Command::Rpc => rpc::serve(
+            &root,
+            std::io::stdin().lock(),
+            output::stdout_sink(),
+            rpc::Mode::Process,
+        ),
     }
 }
 
@@ -1216,6 +1322,59 @@ fn cmd_run(
     control: RunControl,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
+    cmd_run_with(
+        root,
+        task,
+        model_spec,
+        unconstrained,
+        seeding,
+        control,
+        output::RunExtras::default(),
+        out,
+    )
+}
+
+/// `cmd_run` with what ADR 0025 adds: forced skills and JSON framing.
+///
+/// A second entry point rather than a new parameter, so every existing
+/// caller (`work`, `session`, `tui`) keeps calling `cmd_run` unchanged.
+#[allow(clippy::too_many_arguments)]
+fn cmd_run_with(
+    root: &Path,
+    task: &str,
+    model_spec: &str,
+    unconstrained: bool,
+    seeding: RunSeeding<'_>,
+    control: RunControl,
+    extras: output::RunExtras,
+    out: &mut dyn std::io::Write,
+) -> Result<RunExit> {
+    output::framed(root, task, model_spec, &extras, || {
+        run_body(
+            root,
+            task,
+            model_spec,
+            unconstrained,
+            seeding,
+            control,
+            &extras,
+            out,
+        )
+    })
+}
+
+/// The body of a run; see `cmd_run`.
+#[allow(clippy::too_many_arguments)]
+fn run_body(
+    root: &Path,
+    task: &str,
+    model_spec: &str,
+    unconstrained: bool,
+    seeding: RunSeeding<'_>,
+    control: RunControl,
+    extras: &output::RunExtras,
+    out: &mut dyn std::io::Write,
+) -> Result<RunExit> {
     let RunSeeding {
         resume,
         focus,
@@ -1395,6 +1554,15 @@ fn cmd_run(
         None
     };
 
+    // ADR 0025: context files, system prompt files and forced skills. Read
+    // before the snapshot, so an unreadable or over-cap file costs nothing.
+    let added = context_files::load(
+        root,
+        user_config::dir().as_deref(),
+        cfg.context.as_ref().and_then(|c| c.files).unwrap_or(true),
+        &extras.skills,
+    )?;
+
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
     // (ADR 0009).
@@ -1431,10 +1599,11 @@ fn cmd_run(
         || !skills.valid.is_empty()
         || !skills.invalid.is_empty()
         || tooling.untrusted.is_some()
+        || !added.report.is_empty()
     {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}{}{}",
+            "repo:     {} write rule(s){}{}{}{}{}",
             governance.rules().len(),
             if notes.is_some() {
                 ", .trellis/context.md loaded"
@@ -1475,6 +1644,12 @@ fn cmd_run(
                 Some(u) => format!(", {u}"),
                 None => String::new(),
             },
+            // ADR 0025: what was loaded and what was left out, by name.
+            added
+                .report
+                .iter()
+                .map(|r| format!(", {r}"))
+                .collect::<String>(),
         );
     }
 
@@ -1536,6 +1711,7 @@ fn cmd_run(
             skills: disclosed.listed,
             skills_omitted: disclosed.omitted,
             tools: tooling.tools.clone(),
+            extra: added.extra,
         },
     };
 
@@ -1645,6 +1821,8 @@ fn cmd_run(
             } => Some(out),
             _ = answer => None,
             _ = tokio::signal::ctrl_c() => None,
+            // `rpc`'s `abort` (ADR 0025 §5): the same path as Ctrl-C.
+            _ = output::aborted(extras.abort.clone()) => None,
         };
         // Asked after the race either way: the orchestrator is still alive
         // and still knows what this run wrote, which is what the rollback and
