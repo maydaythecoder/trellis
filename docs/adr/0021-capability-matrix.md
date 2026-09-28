@@ -8,7 +8,28 @@
 are MIT-licensed. Each inventory was read from its project's own source and
 docs, not from memory.
 
-## Where this stands (2026-09-27)
+## Where this stands (2026-09-28)
+
+**After review.** PR #1 went through eleven rounds of code review. Each
+round's findings were fixed with a regression test and merged, and every
+merge passed CI on Linux and Windows. The findings split into two classes:
+
+- **Trellis's own code.** This covers config, the queue, the transport,
+  templates, the vault and the model tool paths. Findings here got fewer and
+  less severe with each round.
+- **Writers trellis does not control.** These are `bash`, custom tools,
+  hooks and process agents: unsandboxed processes with the user's authority
+  and write access to `.git`. Rounds 5–11 kept finding new ways for them to
+  get past git-based checks, and no finite set of checks closes that.
+
+For the second class, ADR 0023 §5 and ADR 0026 §11 now state the limit as a
+first-class section, "What rollback guarantees when trellis is not the only
+writer". ADR 0009's guarantee holds for trellis's own edits and is
+best-effort for these writers. The real fix is sandboxing, row 13.3 below,
+which is still deferred. The rows below for `bash`, hooks, custom tools and
+process agents mean "built, with that limit".
+
+**When the waves landed** (2026-09-27):
 
 Every wave has landed on branch `inherit` (PR #1): W-A `2aa7b72`, W-B
 `749e5a0`, W-C `69f585b`, W-D `8147c7f`, W-E `773abb0`, and the cross-wave
