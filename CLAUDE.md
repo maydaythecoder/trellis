@@ -28,6 +28,16 @@ cargo run -p trellis-cli -- run "<task>" --focus <stem>    # vault note as conte
 cargo run -p trellis-cli -- run "<task>" --approve|--auto  # the control dial (ADR 0018)
 cargo run -p trellis-cli -- queue add "<task>" [--focus <stem>]   # (ADR 0020)
 cargo run -p trellis-cli -- work [--once | --every <s>] [--max-tasks N]
+cargo run -p trellis-cli -- vault check|search|graph|new|reparent|link|retitle|rm|init|dates   # (ADR 0022)
+cargo run -p trellis-cli -- trust [--show | --revoke]      # hooks, custom tools, bash (ADR 0023)
+cargo run -p trellis-cli -- run "<task>" --model anthropic:https://api.anthropic.com#<model>  # hosted (ADR 0024)
+cargo run -p trellis-cli -- run "<task>" --json            # JSONL on stdout (ADR 0025)
+cargo run -p trellis-cli -- rpc                            # JSONL commands on stdin (ADR 0025)
+cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
+cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
+
+# ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
+# it is built, deferred, or excluded (and by which clause).
 
 # qa/run-guards.py runs whichever `trellis` is on PATH, and dirty_worktree
 # needs the demo's runtime up: put target/debug first and start the runtime,
@@ -35,7 +45,7 @@ cargo run -p trellis-cli -- work [--once | --every <s>] [--max-tasks N]
 
 # v0.1 measurement tooling (examples, not CLI surface — the surface is fixed
 # by brief 4.12 and does not grow to suit us; growth the owner directs is
-# recorded in an ADR, as 0017, 0018 and 0020 do)
+# recorded in an ADR, as 0017, 0018, 0020 and 0021-0026 do)
 cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed> <dir>
 cargo run --release -p trellis-index --example audit_score  -- <dir>
 ```
