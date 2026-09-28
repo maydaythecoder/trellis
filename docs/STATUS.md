@@ -1705,6 +1705,15 @@ name the test that would fail if it were reverted.
 
 ## Recently closed
 
+- **Vault context (ADR 0017).** `trellis-vault` validates an Apex-format
+  vault and compiles one focus note; `trellis run` reads `[context] vault`
+  and `focus`, or `--focus <stem>`, compiles in memory before the snapshot,
+  and puts the block in the prompt beside `context.md`. Tested: the twin's
+  sixteen behaviours, byte-identical output on the three shared goldens, a
+  vault note that cannot make a run converge, and CLI runs that load, skip
+  with a notice, and refuse. Not measured: compile time on a real vault, and
+  whether a vault note changes what a model does. The TypeScript twin is held
+  to the same goldens; its state is not asserted here.
 - **S6, which turned out not to be a legibility problem.** `trellis radius`
   printed "92 of 2474 first-party call sites resolved (3.7%)" — sites reaching
   the symbol over every unbindable site in the touched files. Two populations,
