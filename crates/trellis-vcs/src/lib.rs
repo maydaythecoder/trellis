@@ -414,7 +414,15 @@ fn hash_links(root: &Path, paths: &[&String]) -> Result<Vec<String>, VcsError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = std::env::temp_dir().join(format!("trellis-links-{}-{nanos}", std::process::id()));
+    // A counter as well as the clock: two digests in one process within
+    // one clock tick (Windows counts in 100 ns) would otherwise collide,
+    // `create_dir` would fail, and a failed digest reads as a change.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!(
+        "trellis-links-{}-{nanos}-{seq}",
+        std::process::id()
+    ));
     std::fs::create_dir(&tmp)?;
     /// Removes the directory however the hashing ends.
     struct Cleanup(PathBuf);

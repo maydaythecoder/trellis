@@ -571,6 +571,39 @@ mod run_tests {
     }
 
     #[test]
+    fn a_check_that_writes_under_dot_trellis_does_not_converge() {
+        // The edge the guard left: it is checked after each call that may
+        // change the tree, and a check is not one, so a checker writing
+        // under `.trellis/` on the last turn converged with the judge
+        // changed, and only `after_run` (whose failure is only logged) was
+        // refused.
+        let write = if cfg!(windows) {
+            "echo covered> .trellis\\cov.txt"
+        } else {
+            "echo covered > .trellis/cov.txt"
+        };
+        let script = r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
+            {"tool":"done","summary":"checked"}
+        ]}"#;
+        let (dir, spec) = fixture(
+            "check-writes-judge",
+            &format!(
+                "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
+                sh(write),
+                sh("exit 0")
+            ),
+            script,
+        );
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("NOT CONVERGED"), "{said}");
+        assert!(said.contains("Trusted code was changed"), "{said}");
+        assert!(said.contains(".trellis/cov.txt"), "{said}");
+    }
+
+    #[test]
     fn a_hook_rewritten_mid_run_is_not_run_and_the_run_is_rolled_back() {
         // The risk, through `cmd_run`: trust was decided once before the
         // snapshot, and a `bash` command then rewrote a file under
