@@ -108,10 +108,7 @@ fn present_entry(p: &Path) -> bool {
     p.is_file()
         || match std::fs::symlink_metadata(p) {
             Ok(m) => m.file_type().is_symlink(),
-            Err(e) => !matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ),
+            Err(e) => !trellis_core::paths::is_absence(&e),
         }
 }
 
