@@ -240,12 +240,15 @@ impl Tz {
         let (h, m) = t[1..]
             .split_once(':')
             .ok_or_else(|| format!("timezone `{t}`: write the offset as `+HH:MM`"))?;
-        let (h, m): (i32, i32) = (
-            h.parse()
-                .map_err(|_| format!("timezone `{t}`: bad hours"))?,
-            m.parse()
-                .map_err(|_| format!("timezone `{t}`: bad minutes"))?,
-        );
+        // Digits only: `i32::parse` takes a sign of its own, and read
+        // `+-05:00` as -05:00 and `+05:-30` as +04:30.
+        let digits = |f: &str, what: &str| -> Result<i32, String> {
+            if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!("timezone `{t}`: bad {what}"));
+            }
+            f.parse().map_err(|_| format!("timezone `{t}`: bad {what}"))
+        };
+        let (h, m) = (digits(h, "hours")?, digits(m, "minutes")?);
         if h > 14 || m > 59 || h.to_string().len() > 2 {
             return Err(format!("timezone `{t}`: offset out of range"));
         }
@@ -394,6 +397,19 @@ mod tests {
         assert!(Cron::parse("60 * * * *").is_err());
         assert!(Cron::parse("*/0 * * * *").is_err());
         assert!(Cron::parse("5-1 * * * *").is_err());
+    }
+
+    #[test]
+    fn an_offset_with_a_second_sign_is_refused() {
+        // `i32::parse` accepts a leading sign, so `+-05:00` read as -05:00
+        // and `+05:-30` as +04:30: an offset nobody wrote, fired unattended.
+        for bad in [
+            "+-05:00", "++05:00", "+05:-30", "+05:+30", "- 5:00", "+05: 30",
+        ] {
+            assert!(Tz::parse(bad).is_err(), "`{bad}` was accepted");
+        }
+        assert_eq!(Tz::parse("+05:30").unwrap(), Tz::Fixed(5 * 3600 + 30 * 60));
+        assert_eq!(Tz::parse("-5:00").unwrap(), Tz::Fixed(-5 * 3600));
     }
 
     #[test]
