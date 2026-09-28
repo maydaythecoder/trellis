@@ -122,6 +122,11 @@ the protocol already states. Streaming is not built; replies are read whole.
   `max_tokens` on Anthropic), against 4,096 locally: a hosted reasoning
   model spends thinking against it. An OpenAI-compatible server that accepts
   only `max_tokens` is not accommodated.
+- **Spend is the reply's reported output tokens** (`usage.completion_tokens`,
+  `usage.output_tokens`). A reply without one has an unknown count, not 0:
+  the trail records `None`, the in-run token ceiling charges it the reply
+  ceiling, and a budgeted profile's run is refused (ADR 0026 §5). Amended
+  after the second review of PR #1.
 - **A format retry resends the same request**, as the completion tiers do;
   the model is not told why its previous reply was refused.
 - **`trellis ask`'s intent classifier** treats a hosted spec as it treats a
@@ -276,7 +281,9 @@ repository may no longer name `key_env`.
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
-  in seconds when the response has one, capped at 60 s, otherwise 1, 2, 4 s.
+  in seconds when the response has one, capped at 60 s (the cap applied
+  to the number before it becomes a duration, so `1e20` waits 60 s rather
+  than panicking), otherwise 1, 2, 4 s.
   At most four attempts per model call. A transport failure mid-request is
   retried the same way; a refused connection is not. A malformed reply keeps
   the existing format-retry path, which is separate.

@@ -415,11 +415,16 @@ impl Transcript {
     /// converged on bytes no check had seen.
     pub fn last_check_passed(&self) -> bool {
         for t in self.turns.iter().rev() {
-            // Before the verdict, on purpose: on a check's own turn the flag
-            // can only have come from a hook around it, and `post_tool` runs
-            // after the check. One flag cannot say which side of the verdict
-            // a hook wrote on, so a hook that writes on a check's turn
-            // voids that check. Hooks observe and gate; they do not write.
+            // Before the verdict, on purpose. A check is not a tree-changing
+            // kind, and the worktree is fingerprinted around each hook
+            // alone, never around the check itself, so on a check's own
+            // turn the flag comes only from `pre_tool` or `post_tool`
+            // having changed the tree; what the checker itself leaves
+            // (`.coverage`, `__pycache__`) does not set it. `post_tool` runs
+            // after the check, and one flag cannot say which side of the
+            // verdict a hook wrote on, so a hook that writes on a check's
+            // turn voids that check. Hooks observe and gate; they do not
+            // write.
             if t.may_have_changed_tree {
                 return false;
             }

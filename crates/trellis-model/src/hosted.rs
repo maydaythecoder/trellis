@@ -142,8 +142,10 @@ pub struct NativeCall {
 pub struct Reply {
     /// `Ok` with the one call, or `Err` saying why there is not exactly one.
     pub call: Result<NativeCall, String>,
-    /// Output tokens, where reported; `0` means not reported.
-    pub tokens: u64,
+    /// Output tokens as the provider reported them; `None` when the reply
+    /// carried no usage figure. Not `0`: an unreported reply is not free,
+    /// and reading it as free let budgets never trip.
+    pub tokens: Option<u64>,
     /// The assistant message to replay with this call's result.
     pub replay: Value,
 }
@@ -284,7 +286,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             let msg = v
                 .pointer("/choices/0/message")
                 .ok_or_else(|| shape("expected `choices[0].message`"))?;
-            let tokens = v["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+            let tokens = v["usage"]["completion_tokens"].as_u64();
             let calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
             let call = match calls.as_slice() {
                 [one] => {
@@ -333,7 +335,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             let content = v["content"]
                 .as_array()
                 .ok_or_else(|| shape("expected a `content` array"))?;
-            let tokens = v["usage"]["output_tokens"].as_u64().unwrap_or(0);
+            let tokens = v["usage"]["output_tokens"].as_u64();
             let uses: Vec<&Value> = content.iter().filter(|b| b["type"] == "tool_use").collect();
             let call = match uses.as_slice() {
                 [one] => Ok(NativeCall {
@@ -416,7 +418,9 @@ pub fn retry_delay(retry_after: Option<&str>, attempt: u32) -> Duration {
     retry_after
         .and_then(|v| v.trim().parse::<f64>().ok())
         .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(|s| Duration::from_secs_f64(s).min(MAX_RETRY_WAIT))
+        // Clamped before converting: `from_secs_f64` panics past u64::MAX
+        // seconds, and the value is whatever the provider sent.
+        .map(|s| Duration::from_secs_f64(s.min(MAX_RETRY_WAIT.as_secs_f64())))
         .unwrap_or_else(|| Duration::from_secs(1u64 << attempt.saturating_sub(1).min(5)))
 }
 
@@ -752,7 +756,7 @@ mod tests {
             {"id":"x","type":"function","function":{"name":"done","arguments":"{\"summary\":\"ok\"}"}}]}}],
             "usage":{"completion_tokens":9}});
         let r = parse_reply(Protocol::OpenAiChat, &v).unwrap();
-        assert_eq!(r.tokens, 9);
+        assert_eq!(r.tokens, Some(9));
         assert_eq!(
             r.call.unwrap(),
             NativeCall {
@@ -766,6 +770,7 @@ mod tests {
             {"type":"tool_use","id":"t","name":"read_file","input":{"path":"a.py"}}],
             "usage":{"output_tokens":5}});
         let r = parse_reply(Protocol::Anthropic, &v).unwrap();
+        assert_eq!(r.tokens, Some(5));
         assert_eq!(r.call.unwrap().name, "read_file");
         assert_eq!(r.replay["content"][0]["text"], "I think");
 
@@ -810,6 +815,32 @@ mod tests {
             retry_delay(Some("Wed, 21 Oct 2026 07:28:00 GMT"), 2),
             Duration::from_secs(2)
         );
+    }
+
+    #[test]
+    fn a_reply_without_usage_has_an_unknown_token_count_not_zero() {
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}]});
+        assert_eq!(parse_reply(Protocol::OpenAiChat, &v).unwrap().tokens, None);
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}]});
+        assert_eq!(parse_reply(Protocol::Anthropic, &v).unwrap().tokens, None);
+        // A reported zero is a figure, and stays one.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"output_tokens":0}});
+        assert_eq!(
+            parse_reply(Protocol::Anthropic, &v).unwrap().tokens,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_retry_after_too_large_for_a_duration_is_capped_not_a_panic() {
+        // `Duration::from_secs_f64` panics above u64::MAX seconds, and the
+        // cap was applied after it: a provider's `1e20` panicked the run
+        // mid-flight, before rollback.
+        for v in ["1e20", "1.8446744073709552e19", "1e308"] {
+            assert_eq!(retry_delay(Some(v), 1), MAX_RETRY_WAIT, "{v}");
+        }
     }
 
     #[test]

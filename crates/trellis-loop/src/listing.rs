@@ -39,6 +39,7 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         stdin: None,
         timeout: LISTING_TIMEOUT,
         cap: OUTPUT_CAP,
+        head: false,
     })
     .await;
     match r {
@@ -78,6 +79,7 @@ pub(crate) async fn find(root: &Path, glob: &str) -> ToolResult {
         stdin: None,
         timeout: LISTING_TIMEOUT,
         cap: 64 << 20,
+        head: false,
     })
     .await;
     let c = match r {

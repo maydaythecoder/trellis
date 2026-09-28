@@ -793,7 +793,16 @@ const MAX_OVERFLOW_RETRIES: u32 = 2;
 pub struct HostedModel {
     client: HostedClient,
     max_tokens: u32,
+    /// Output tokens the provider reported.
     tokens: u64,
+    /// Replies that carried no usage figure. Each is charged to the in-run
+    /// ceiling at the `max_tokens` it was requested with, the most it can
+    /// have cost; none of them reaches the trail as a number.
+    unreported: u64,
+    /// Refuse a reply with no usage figure: set when the run executes under
+    /// an agent profile with a `[budget]` (ADR 0026 §5), whose ledger counts
+    /// only measured spend.
+    usage_required: bool,
     /// Bytes of the most recent request body, tools included.
     last_prompt_bytes: Option<usize>,
     compaction: Compaction,
@@ -819,11 +828,27 @@ impl HostedModel {
             client,
             max_tokens: HOSTED_MAX_REPLY_TOKENS,
             tokens: 0,
+            unreported: 0,
+            usage_required: false,
             last_prompt_bytes: None,
             compaction: Compaction::default(),
             issued: Vec::new(),
             pending: None,
         }
+    }
+
+    /// Ends the run at the first reply with no usage figure, rather than
+    /// letting a budgeted profile spend what its ledger cannot count.
+    pub fn require_usage(&mut self, required: bool) {
+        self.usage_required = required;
+    }
+
+    /// Output tokens as the provider reported them, for the trail. `None`
+    /// once any reply carried no usage figure: the sum would then be a
+    /// lower bound presented as a count, and [`Model::tokens_used`]'s upper
+    /// bound is an estimate, not a measurement.
+    pub fn tokens_measured(&self) -> Option<u64> {
+        (self.unreported == 0).then_some(self.tokens)
     }
 
     /// `[model] context_bytes` (ADR 0024 §5).
@@ -1022,7 +1047,22 @@ impl Model for HostedModel {
                 Err(e) => return Err(format!("hosted call failed: {e}")),
             };
             attempt += 1;
-            self.tokens += reply.tokens;
+            match reply.tokens {
+                Some(n) => self.tokens += n,
+                None => {
+                    self.unreported += 1;
+                    if self.usage_required {
+                        return Err(format!(
+                            "the provider's reply carried no usage figure ({} has no \
+                             output-token count in it), and this run executes under an \
+                             agent profile with a [budget], whose ledger counts only \
+                             measured spend. Use a provider that reports usage, or \
+                             remove [budget] from the profile (ADR 0026 §5)",
+                            self.client.protocol().describe()
+                        ));
+                    }
+                }
+            }
             let call = match reply.call {
                 Ok(c) => c,
                 Err(why) => {
@@ -1069,8 +1109,12 @@ impl Model for HostedModel {
         ))
     }
 
+    /// For the in-run ceiling: what was reported, plus each unreported
+    /// reply at its request's `max_tokens`, so a silent provider trips the
+    /// budget early rather than never.
     fn tokens_used(&self) -> u64 {
         self.tokens
+            .saturating_add(self.unreported.saturating_mul(u64::from(self.max_tokens)))
     }
 
     fn prompt_bytes(&self) -> Option<usize> {
@@ -2020,6 +2064,49 @@ mod compaction_and_hosted_tests {
         let step = m.next_step(&transcript(Vec::new())).await.unwrap();
         assert!(matches!(step, Step::Done { .. }), "{step:?}");
         assert_eq!(h.await.unwrap().len(), 2);
+    }
+
+    fn done_without_usage() -> String {
+        json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+            {"id":"c1","type":"function","function":{"name":"done","arguments":"{\"summary\":\"x\"}"}}
+        ]}}]})
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_no_usage_block_still_counts_against_the_token_ceiling() {
+        // A provider that sends no `usage` was recorded as 0 tokens: spend
+        // read as free and `max_tokens` budgets never tripped. The reply
+        // cannot have cost more than the request's own `max_tokens`, so
+        // that is what the in-run ceiling is charged.
+        let (base, _h) = stub(vec![done_without_usage()]).await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client).with_max_tokens(500);
+        m.next_step(&transcript(Vec::new())).await.unwrap();
+        assert_eq!(m.tokens_used(), 500, "the upper bound, not zero");
+        // The trail gets no number: an estimate is not a measurement.
+        assert_eq!(m.tokens_measured(), None);
+    }
+
+    #[tokio::test]
+    async fn a_budgeted_run_stops_at_a_reply_with_no_usage() {
+        let (base, _h) = stub(vec![done_without_usage()]).await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        m.require_usage(true);
+        let e = m.next_step(&transcript(Vec::new())).await.unwrap_err();
+        assert!(
+            e.contains("no usage figure") && e.contains("[budget]"),
+            "{e}"
+        );
+
+        // And a reported count is measured as it was.
+        let (base, _h) = stub(vec![reply("c1", "done", json!({"summary":"x"}))]).await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        m.require_usage(true);
+        m.next_step(&transcript(Vec::new())).await.unwrap();
+        assert_eq!((m.tokens_used(), m.tokens_measured()), (7, Some(7)));
     }
 
     #[tokio::test]

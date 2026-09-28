@@ -416,6 +416,40 @@ fn retitle_rewrites_every_link_that_resolved_to_the_note_keeping_labels() {
 }
 
 #[test]
+fn retitle_keeps_a_child_whose_parent_named_the_old_title() {
+    // Only body links were rewritten, and a child with none was skipped, so
+    // `parent: "[[Big Plan]]"` pointed at a title that no longer existed:
+    // the child fell out of the hierarchy with nothing said.
+    let d = copy_vault();
+    write(
+        d.path(),
+        "project.md",
+        "---\ntitle: \"Big Plan\"\nparent: \"[[root]]\"\n---\nThe fixture project.\n",
+    );
+    write(
+        d.path(),
+        "task-b.md",
+        "---\ntitle: \"Task B\"\nparent: \"[[Big Plan]]\"\n---\nMARKER-B\n",
+    );
+    validate(d.path()).unwrap();
+    let a_before = read(d.path(), "task-a.md");
+    let out = edit::retitle(d.path(), "project", "Delivery").unwrap();
+    let b = read(d.path(), "task-b.md");
+    assert!(b.contains("parent: \"[[Delivery]]\""), "{b}");
+    assert!(out.touched.modified.contains(&"task-b.md".to_string()));
+    // Written as the basename, it still resolves: left byte for byte.
+    assert_eq!(read(d.path(), "task-a.md"), a_before);
+    validate(d.path()).unwrap();
+    let v = Vault::open(d.path()).unwrap();
+    let g = Graph::build(&v);
+    assert_eq!(
+        g.parents[idx(&v, "task-b.md")],
+        Some(idx(&v, "project.md")),
+        "task-b is still project's child"
+    );
+}
+
+#[test]
 fn rm_turns_links_to_text_orphans_children_and_prunes_sidecars() {
     let d = copy_vault();
     write(
