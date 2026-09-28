@@ -5,6 +5,7 @@
 
 pub mod cache;
 mod coverage;
+mod delta;
 mod graph;
 mod incremental;
 pub mod modules;
@@ -13,6 +14,7 @@ pub mod radius;
 mod resolve;
 
 pub use coverage::Coverage;
+pub use delta::{ChangeKind, IndexedSources, SymbolChange, symbol_delta};
 pub use graph::{
     CallSiteEntry, CalleeKind, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target,
 };
