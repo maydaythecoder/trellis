@@ -88,6 +88,13 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             deny_write: union(r.deny_write, u.deny_write),
         }),
         control: either(repo.control, user.control, |r, u| ControlSection {
+            // Each side's list is made concrete before the union. A file in
+            // approve mode with no list means `["edit"]` (the default in
+            // `RepoConfig::control`); left as `None`, the other file's list
+            // would replace that default instead of adding to it, and a
+            // user's `approve = ["run_checks"]` would stop edits needing a
+            // yes in a repository that asked for one.
+            approve: union(effective(&r), effective(&u)),
             // Approve is the restriction, so either file asking for it gets
             // it. An unknown word is kept as written from whichever file has
             // it, so `RepoConfig::control` still refuses it by name.
@@ -96,10 +103,19 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
                 (Some(a), _) => Some(a),
                 (None, b) => b,
             },
-            approve: union(r.approve, u.approve),
         }),
         agents: repo.agents.or(user.agents),
         ..repo
+    }
+}
+
+/// One file's approval list as it would apply on its own: the list it wrote,
+/// or `["edit"]` when it asks for approve mode without one, or nothing.
+fn effective(c: &ControlSection) -> Option<Vec<String>> {
+    match (&c.approve, c.mode.as_deref()) {
+        (Some(list), _) => Some(list.clone()),
+        (None, Some("approve")) => Some(vec!["edit".to_string()]),
+        (None, _) => None,
     }
 }
 
@@ -267,6 +283,21 @@ mod tests {
         let dial = c.control(None).unwrap();
         assert_eq!(dial.mode, ControlMode::Approve);
         assert_eq!(dial.approve, ["edit"]);
+    }
+
+    #[test]
+    fn a_user_list_adds_to_the_repositorys_default_rather_than_replacing_it() {
+        // The repository says approve and leaves the list at its default
+        // (`edit`); the user lists `run_checks`. A union of only the lists
+        // as written is `["run_checks"]`, under which edits need no yes; the
+        // first version of `layer` did exactly that, found in review.
+        let c = load(
+            "[control]\nmode = \"approve\"\n",
+            "[control]\napprove = [\"run_checks\"]\n",
+        );
+        let dial = c.control(None).unwrap();
+        assert_eq!(dial.mode, ControlMode::Approve);
+        assert_eq!(dial.approve, ["edit", "run_checks"]);
     }
 
     #[test]

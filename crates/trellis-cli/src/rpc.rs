@@ -382,6 +382,11 @@ impl Server {
                     format!("{t}\n\n{task}")
                 }
             }
+            // As `run --args` requires `--prompt`: arguments with no
+            // template to receive them would be dropped without a word.
+            None if cmd.get("args").is_some() => {
+                return Err("\"args\" needs \"prompt\", the template they fill".into());
+            }
             None if task.trim().is_empty() => {
                 return Err("prompt needs \"task\", \"prompt\", or both".into());
             }
@@ -659,12 +664,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn approve_mode_works_over_rpc_and_only_json_true_approves() {
-        // The risk: approve mode configured, a client driving trellis, and
-        // edits landing with nobody asked. The question must arrive as a
-        // record and the answer must be the client's.
-        let (dir, spec) = fixture("approve", "[control]\nmode = \"approve\"\n");
+    /// Runs one approve-mode prompt, answers its question with `yes`, and
+    /// returns the `approve` response and the approval outcomes the trail
+    /// recorded.
+    fn approval_round(name: &str, yes: Value) -> (Value, Vec<String>) {
+        let (dir, spec) = fixture(name, "[control]\nmode = \"approve\"\n");
         let c = Client::start(&dir);
         c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
         let q = c.wait_for(|r| r["type"] == "approval_request");
@@ -677,13 +681,11 @@ mod tests {
         let r2 = c.wait_for(|r| r["id"] == "second");
         assert_eq!(r2["success"], false);
 
-        c.send(json!({"id": "approval-1", "type": "approve", "yes": true}));
+        c.send(json!({"id": "approval-1", "type": "approve", "yes": yes}));
         let a = c.wait_for(|r| r["type"] == "response" && r["command"] == "approve");
-        assert_eq!(a["success"], true);
         let rs = c.finish();
         assert!(!of_type(&rs, "run_end").is_empty());
 
-        // The trail records the decision as the person's.
         let runs = dir.join(".trellis/runs");
         let file = std::fs::read_dir(&runs)
             .unwrap()
@@ -692,13 +694,34 @@ mod tests {
             .unwrap();
         let raw = std::fs::read_to_string(file.path()).unwrap();
         let t = trellis_trail::UntrustedTrail::from_json(&raw).unwrap();
-        assert!(
-            t.factual
-                .actions
-                .iter()
-                .any(|a| a.tool == "approval" && a.outcome == "approved"),
-            "{raw}"
-        );
+        let outcomes = t
+            .factual
+            .actions
+            .iter()
+            .filter(|a| a.tool == "approval")
+            .map(|a| a.outcome.clone())
+            .collect();
+        (a, outcomes)
+    }
+
+    #[test]
+    fn approve_mode_asks_over_rpc_and_the_trail_records_the_clients_yes() {
+        // The risk: approve mode configured, a client driving trellis, and
+        // edits landing with nobody asked. The question must arrive as a
+        // record and the answer must be the client's.
+        let (a, outcomes) = approval_round("approve-yes", json!(true));
+        assert_eq!(a["success"], true);
+        assert_eq!(a["data"]["approved"], true);
+        assert_eq!(outcomes, ["approved"]);
+    }
+
+    #[test]
+    fn a_yes_that_is_not_json_true_is_a_no() {
+        // ADR 0018: only an explicit yes counts. A client that sends the
+        // string "true" has not said yes in this protocol's terms.
+        let (a, outcomes) = approval_round("approve-string", json!("true"));
+        assert_eq!(a["data"]["approved"], false);
+        assert_eq!(outcomes, ["declined"]);
     }
 
     #[test]

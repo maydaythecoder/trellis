@@ -113,6 +113,26 @@ fn run_json_puts_only_jsonl_on_stdout_bracketed_by_start_and_end() {
 }
 
 #[test]
+fn work_json_puts_only_jsonl_on_stdout_and_brackets_the_invocation() {
+    // `work` prints through `work.rs` and `trellis-queue`, which other work
+    // owns; this is what catches one of their lines reaching stdout.
+    let f = fixture("work-json");
+    let o = run(&f, &["queue", "add", "change f"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = run(&f, &["work", "--once", "--model", &f.spec, "--json"]);
+    let lines = jsonl(&o);
+    let types: Vec<&str> = lines.iter().filter_map(|l| l["type"].as_str()).collect();
+    assert_eq!(
+        types,
+        ["work_start", "run_start", "run_end", "work_end"],
+        "{lines:?}"
+    );
+    assert_eq!(lines.last().unwrap()["exit"], o.status.code().unwrap());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("work:     queue at"), "{err}");
+}
+
+#[test]
 fn json_is_refused_where_it_would_do_nothing() {
     let f = fixture("json-refused");
     let o = run(&f, &["index", "--json"]);
