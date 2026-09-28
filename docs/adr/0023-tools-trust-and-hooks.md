@@ -445,6 +445,31 @@ fingerprint was not refused) and
 `trust_refuses_a_hook_whose_code_is_outside_dot_trellis_and_says_where_to_move_it`
 in `crates/trellis-cli/src/trust_cmd.rs`.
 
+*Amended after the twelfth review of PR #1: the rule has its own
+resolver.* It saw only the files the hashing accepted, and the hashing
+drops a path containing `..` and an absolute path not lexically under the
+root. So `["python", ".trellis/../scripts/gate.py"]`, or the file's
+canonical absolute path (`\\?\C:\...` on Windows) against a root spelled
+without that prefix, or an absolute path under a relative `--root`, was
+neither hashed nor refused. Now every argv element and token is also made
+canonical (joined to the root when relative), the root and `.trellis/`
+are made canonical, and a regular file inside the real root and outside
+the real `.trellis/` is refused. What is hashed is unchanged. This
+replaces the second narrowing above for paths an argv names: a link under
+`.trellis/` to a file or directory elsewhere in the repository, named
+through the link (`.trellis/hooks/gate.py` with `.trellis/hooks ->
+../scripts`), is refused, because the file a run can edit is the one it
+resolves to and `edit` checks the path as written. Reached with no path in
+the argv (`-m gate`), it is still followed and hashed by the digest.
+Evidence: `code_outside_dot_trellis_is_refused_however_the_path_is_spelled`
+(failed before on `.trellis/../scripts/gate.py` and on the canonical
+absolute path: not refused) and
+`a_link_under_dot_trellis_to_code_elsewhere_in_the_repository_is_refused_when_named`
+(failed before: not refused), in `crates/trellis-loop/src/trust.rs`. On
+Windows, `an_absolute_path_with_the_drive_letter_in_the_other_case_is_refused`
+is a guard only: it passed before too, because `Path` compares a drive
+letter without regard to case.
+
 **Not covered, plainly:** code reached indirectly from outside `.trellis/`
 that no argv token names as a file — a module imported by a hook
 (`python -m tools.hook` resolving to `tools/hook.py`, or an `import app`
