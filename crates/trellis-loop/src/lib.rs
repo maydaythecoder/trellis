@@ -7,6 +7,7 @@
 mod adapter;
 mod agent;
 mod budget;
+mod extra_context;
 mod gate;
 mod governance;
 mod orchestrator;
@@ -22,6 +23,9 @@ pub use agent::{
     Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
+pub use extra_context::{
+    ContextFile, DEFAULT_ROLE, ExtraContext, FORCED_SKILL_HEAD, ForcedSkill, GROUNDING,
+};
 pub use gate::{
     APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, DECLINED, EditPreview, GateDecision,
     GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
