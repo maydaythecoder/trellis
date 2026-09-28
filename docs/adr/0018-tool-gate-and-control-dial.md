@@ -22,10 +22,35 @@ by `tui_bridge`.
 ```rust
 pub enum GateDecision { Allow, Deny { reason: String } }
 
-pub trait ToolGate: Send {
-    fn check(&mut self, call: &ToolCall) -> GateDecision;
+pub type GateFuture<'a> = Pin<Box<dyn Future<Output = GateDecision> + Send + 'a>>;
+
+pub trait ToolGate: Send + Sync {
+    fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a>;
+    /// Whether the decision just returned was a person's answer.
+    fn human_decided(&self) -> bool { false }
 }
 ```
+
+*Amended at implementation.* As first accepted, `check` was synchronous and
+the trait was `Send` only. Neither survived contact with the code:
+
+- **`check` returns a future.** The approval gate waits on a
+  `tokio::sync::oneshot` inside the orchestrator actor, which runs on a tokio
+  runtime. A synchronous wait there (`blocking_recv`) panics, and
+  `block_in_place` panics on the current-thread runtime `trellis run` builds.
+  The future is boxed so the gate list stays a list of trait objects.
+- **`Sync` as well as `Send`.** The actor lends `&self` across the `.await`
+  of a running check subprocess, and the gates are part of `self`.
+- **`human_decided`.** The trail records human decisions (see Consequences),
+  and a gate that let a call through without asking anyone has not made one.
+  Only the approval gate overrides it. It carries no verdict and cannot affect
+  convergence.
+- **The convergence audit is not gated.** The loop's own governance audit at
+  `done` used to travel the same request as a model's `run_checks`. A gate
+  that refused it (with `run_checks` in the approve list, a person pressing
+  `n`) would have turned the audit into an error, which the loop reads as no
+  audit, and the run would converge over a broken rule. The audit has its own
+  ungated request; only model-originated calls pass through gates.
 
 The orchestrator holds an ordered list of gates, and the first `Deny` wins. A
 denial reaches the model as a `ToolResult::Error` observation that carries the

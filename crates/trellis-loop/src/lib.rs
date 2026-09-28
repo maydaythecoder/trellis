@@ -7,6 +7,7 @@
 mod adapter;
 mod agent;
 mod budget;
+mod gate;
 mod governance;
 mod orchestrator;
 pub mod partition;
@@ -20,8 +21,12 @@ pub use agent::{
     Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
+pub use gate::{
+    APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, DECLINED, EditPreview, GateDecision,
+    GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
+};
 pub use governance::{Governance, Rule};
-pub use orchestrator::{Handle, Orchestrator, Request};
+pub use orchestrator::{Dispatched, Handle, HumanDecision, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use scripted::ScriptedModel;
 pub use tools::{EditOutcome, ToolResult};

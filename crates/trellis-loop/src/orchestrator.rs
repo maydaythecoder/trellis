@@ -14,8 +14,11 @@
 //! property of the topology; a borrow makes it a property of whoever wrote the
 //! call chain.
 
+use crate::agent::ToolCall;
+use crate::gate::{GateDecision, GovernanceGate, ToolGate};
 use crate::tools::{EditOutcome, ToolResult};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use trellis_checks::{CheckConfig, CheckKind};
 use trellis_index::Session;
@@ -41,6 +44,19 @@ pub enum Request {
         kinds: Vec<CheckKind>,
         reply: oneshot::Sender<ToolResult>,
     },
+    /// A model-originated call, through the gates, with what a human decided
+    /// about it if one was asked. The loop's own path.
+    Call {
+        call: ToolCall,
+        reply: oneshot::Sender<Dispatched>,
+    },
+    /// The governance audit the loop runs at convergence. **Not gated.**
+    ///
+    /// It is the harness's check on the model, not a call the model made, and
+    /// a gate that could refuse it would decide convergence: the loop reads a
+    /// refused audit as no audit, and a run whose audit never ran converged
+    /// over whatever rule it broke. ADR 0018 says a gate cannot do that.
+    Audit { reply: oneshot::Sender<ToolResult> },
     /// Files written during this run, for the rollback path and the trail.
     Touched { reply: oneshot::Sender<Vec<String>> },
     /// Whether the repository configured any governance rule at all.
@@ -50,6 +66,25 @@ pub enum Request {
     /// nothing is not evidence of anything and must not inflate the count a
     /// user reads at the end of a run.
     HasRules { reply: oneshot::Sender<bool> },
+}
+
+/// A tool result, and the human decision that let it run or stopped it.
+#[derive(Debug)]
+pub struct Dispatched {
+    pub result: ToolResult,
+    /// `Some` only when a person was asked about this call.
+    pub human: Option<HumanDecision>,
+}
+
+/// What a person said about one call, and how long they took to say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HumanDecision {
+    pub approved: bool,
+    /// Time spent waiting on the answer. The loop leaves it out of the
+    /// wall-clock budget: that ceiling bounds what a run costs in compute and
+    /// in the user's patience with a model, and a person reading a diff is
+    /// neither.
+    pub waited: Duration,
 }
 
 /// Handle to a running orchestrator. Cloneable; every clone talks to the one
@@ -114,6 +149,28 @@ impl Handle {
         .await
     }
 
+    /// A model's call, through the gates.
+    pub async fn call(&self, call: &ToolCall) -> Dispatched {
+        let call = call.clone();
+        self.ask(
+            |reply| Request::Call { call, reply },
+            || Dispatched {
+                result: ToolResult::Error("orchestrator stopped".into()),
+                human: None,
+            },
+        )
+        .await
+    }
+
+    /// The convergence-time governance audit, which no gate may refuse.
+    pub async fn audit_governance(&self) -> ToolResult {
+        self.ask(
+            |reply| Request::Audit { reply },
+            || ToolResult::Error("orchestrator stopped".into()),
+        )
+        .await
+    }
+
     pub async fn touched(&self) -> Vec<String> {
         self.ask(|reply| Request::Touched { reply }, Vec::new).await
     }
@@ -143,7 +200,12 @@ pub struct Orchestrator {
     /// Project rules, enforced here because this is the only write path to
     /// the working tree. A rule enforced anywhere else is a rule a tool call
     /// can route around.
-    governance: crate::governance::Governance,
+    ///
+    /// Held apart from `gates` so that it is first by construction rather
+    /// than by the order someone called the builders in.
+    governance: GovernanceGate,
+    /// Every other gate, in the order they are consulted (ADR 0018).
+    gates: Vec<Box<dyn ToolGate>>,
     /// The repository's rule documents, for the governance audit.
     rules: Vec<trellis_checks::governance::Rule>,
 }
@@ -155,7 +217,8 @@ impl Orchestrator {
             session: Session::open(root),
             checks,
             touched: Vec::new(),
-            governance: crate::governance::Governance::default(),
+            governance: GovernanceGate(crate::governance::Governance::default()),
+            gates: Vec::new(),
             rules: Vec::new(),
         }
     }
@@ -170,7 +233,14 @@ impl Orchestrator {
     /// Applies the repository's rules to this run.
     #[must_use]
     pub fn with_governance(mut self, g: crate::governance::Governance) -> Self {
-        self.governance = g;
+        self.governance = GovernanceGate(g);
+        self
+    }
+
+    /// Adds a gate after governance and after every gate added before it.
+    #[must_use]
+    pub fn with_gate(mut self, g: Box<dyn ToolGate>) -> Self {
+        self.gates.push(g);
         self
     }
 
@@ -188,12 +258,19 @@ impl Orchestrator {
     #[tracing::instrument(skip_all)]
     async fn serve(mut self, mut rx: mpsc::Receiver<Request>) -> Self {
         while let Some(req) = rx.recv().await {
+            // Every tool request goes through the gates, whichever door it
+            // came in by. The single-purpose requests predate the gates and
+            // are still how a caller asks for one tool; routing them around
+            // the gates would make `deny_write` a property of which method
+            // was called.
             match req {
                 Request::BlastRadius { symbol, reply } => {
-                    let _ = reply.send(self.blast_radius(&symbol));
+                    let call = ToolCall::BlastRadius { symbol };
+                    let _ = reply.send(self.gated(call).await.result);
                 }
                 Request::ReadFile { path, reply } => {
-                    let _ = reply.send(self.read_file(&path));
+                    let call = ToolCall::ReadFile { path };
+                    let _ = reply.send(self.gated(call).await.result);
                 }
                 Request::ApplyEdit {
                     path,
@@ -201,14 +278,22 @@ impl Orchestrator {
                     new,
                     reply,
                 } => {
-                    let _ = reply.send(self.apply_edit(&path, &old, &new));
+                    let call = ToolCall::Edit { path, old, new };
+                    let _ = reply.send(self.gated(call).await.result);
                 }
                 Request::RunChecks {
                     paths,
                     kinds,
                     reply,
                 } => {
-                    let _ = reply.send(self.run_checks(&paths, &kinds).await);
+                    let call = ToolCall::RunChecks { paths, kinds };
+                    let _ = reply.send(self.gated(call).await.result);
+                }
+                Request::Call { call, reply } => {
+                    let _ = reply.send(self.gated(call).await);
+                }
+                Request::Audit { reply } => {
+                    let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance]).await);
                 }
                 Request::Touched { reply } => {
                     let _ = reply.send(self.touched.clone());
@@ -219,6 +304,41 @@ impl Orchestrator {
             }
         }
         self
+    }
+
+    /// Consults the gates in order, then dispatches. The first `Deny` wins
+    /// and nothing after it is asked — a human should not be asked about a
+    /// call a rule has already refused.
+    async fn gated(&mut self, call: ToolCall) -> Dispatched {
+        let mut human = None;
+        for i in 0..=self.gates.len() {
+            let gate: &mut dyn ToolGate = match i {
+                0 => &mut self.governance,
+                _ => self.gates[i - 1].as_mut(),
+            };
+
+            let asked_at = Instant::now();
+            let decision = gate.check(&call).await;
+            if gate.human_decided() {
+                human = Some(HumanDecision {
+                    approved: decision == GateDecision::Allow,
+                    waited: asked_at.elapsed(),
+                });
+            }
+            if let GateDecision::Deny { reason } = decision {
+                return Dispatched {
+                    result: ToolResult::Error(reason),
+                    human,
+                };
+            }
+        }
+        let result = match &call {
+            ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
+            ToolCall::ReadFile { path } => self.read_file(path),
+            ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
+            ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
+        };
+        Dispatched { result, human }
     }
 
     pub fn index(&self) -> &trellis_index::Index {
@@ -275,23 +395,12 @@ impl Orchestrator {
     /// between an edit the trail can describe and one that silently hit the
     /// wrong occurrence — and the model cannot check this for itself, because
     /// checking it is reading the file it is about to change.
+    ///
+    /// Project rules are not checked here. `GovernanceGate` refuses a denied
+    /// path before this runs and before the file is read, so a denied path is
+    /// refused identically whether or not it exists — otherwise the refusal
+    /// would leak which denied files are present.
     fn apply_edit(&mut self, path: &str, old: &str, new: &str) -> ToolResult {
-        // Project rules are checked before the file is read, so a denied path
-        // is refused identically whether or not it exists — otherwise the
-        // refusal message leaks which denied files are present.
-        if let Some(rule) = self.governance.denies_write(path) {
-            return ToolResult::Error(format!(
-                concat!(
-                    "edit refused: `{}` is denied by the rule `{}` in ",
-                    ".trellis/config.toml. This is the repository's own rule, ",
-                    "not a guess — change the rule if the file really should be ",
-                    "editable."
-                ),
-                path,
-                rule.as_written()
-            ));
-        }
-
         let full = match self.resolve_in_repo(path) {
             Ok(f) => f,
             Err(e) => return ToolResult::Error(e),
