@@ -99,9 +99,10 @@ pub(crate) struct Captured {
 }
 
 /// Why [`run`] returned no [`Captured`]. The messages are the ones it
-/// returned as strings before (review round 10).
+/// returned as strings before (review round 10). Public because a hook's
+/// error carries it.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ExecError {
+pub enum ExecError {
     #[error("empty command")]
     Empty,
     #[error("could not start `{program}`: {source}")]

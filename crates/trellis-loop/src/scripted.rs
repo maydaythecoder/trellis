@@ -13,8 +13,21 @@
 //! this way may be reported as a model floor (S7).
 
 use crate::agent::{Model, Step, Transcript};
-use crate::registry::ToolSet;
+use crate::registry::{ToolCallError, ToolSet};
 use serde::Deserialize;
+
+/// Why a script was refused at load. Each message is the string
+/// [`ScriptedModel::from_json_with`] returned before (review round 11).
+#[derive(Debug, thiserror::Error)]
+pub enum ScriptError {
+    #[error("script is not valid JSON: {0}")]
+    NotJson(serde_json::Error),
+    /// Numbered from 1, as a person counts the steps in the file.
+    #[error("step {step}: {source}")]
+    Step { step: usize, source: ToolCallError },
+    #[error("script has no steps")]
+    NoSteps,
+}
 
 #[derive(Debug, Deserialize)]
 struct Script {
@@ -35,7 +48,7 @@ impl ScriptedModel {
     /// Every built-in parses; a repository's own tools do not, since there
     /// is no tool set to find them in. [`from_json_with`](Self::from_json_with)
     /// parses against the run's own set.
-    pub fn from_json(text: &str) -> Result<Self, String> {
+    pub fn from_json(text: &str) -> Result<Self, ScriptError> {
         Self::from_json_with(text, &ToolSet::every_builtin())
     }
 
@@ -44,21 +57,21 @@ impl ScriptedModel {
     /// tool the run does not have is an error at load, for the reason an
     /// unknown tool is: a script that does less than it says makes the loop
     /// look better behaved than it is.
-    pub fn from_json_with(text: &str, tools: &ToolSet) -> Result<Self, String> {
-        let script: Script =
-            serde_json::from_str(text).map_err(|e| format!("script is not valid JSON: {e}"))?;
+    pub fn from_json_with(text: &str, tools: &ToolSet) -> Result<Self, ScriptError> {
+        let script: Script = serde_json::from_str(text).map_err(ScriptError::NotJson)?;
         let steps = script
             .steps
             .into_iter()
             .enumerate()
             .map(|(i, v)| {
-                tools
-                    .parse_value(v)
-                    .map_err(|e| format!("step {}: {e}", i + 1))
+                tools.parse_value(v).map_err(|source| ScriptError::Step {
+                    step: i + 1,
+                    source,
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         if steps.is_empty() {
-            return Err("script has no steps".into());
+            return Err(ScriptError::NoSteps);
         }
         Ok(Self { steps, at: 0 })
     }
@@ -108,14 +121,17 @@ mod tests {
     #[test]
     fn an_unknown_check_kind_is_refused() {
         let e = ScriptedModel::from_json(r#"{"steps":[{"tool":"run_checks","kinds":["lint"]}]}"#)
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("unknown check kind"), "{e}");
     }
 
     #[test]
     fn an_unknown_tool_is_refused_rather_than_skipped() {
         // A skipped step would make the loop look better behaved than it is.
-        let e = ScriptedModel::from_json(r#"{"steps":[{"tool":"sudo","path":"x"}]}"#).unwrap_err();
+        let e = ScriptedModel::from_json(r#"{"steps":[{"tool":"sudo","path":"x"}]}"#)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("not valid JSON") || e.contains("unknown"), "{e}");
     }
 
@@ -149,7 +165,8 @@ mod tests {
             r#"{"steps":[{"tool":"bash","command":"ls"}]}"#,
             &ToolSet::default(),
         )
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("step 1") && e.contains("bash"), "{e}");
     }
 

@@ -66,6 +66,74 @@ const NOTE_TOOLS: &[&str] = &["search_notes", "read_note"];
 /// line on every turn, where the window is the scarce resource (S5).
 const MAX_DESCRIPTION: usize = 200;
 
+/// Why a `[tools]` selection was refused when the set was built. Each
+/// message is the string [`ToolSet::build`] and [`ToolSet::with_notes`]
+/// returned before (review round 11).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ToolConfigError {
+    #[error("[[tools.custom]] declares `{0}` twice")]
+    DeclaredTwice(String),
+    #[error("[tools] enable lists `bash`; bash has its own switch, [tools] bash = true")]
+    EnableBash,
+    #[error(
+        "[tools] enable lists `{name}`, which is not a tool; the ones that are off by default \
+         are {}",
+        OPT_IN.join(", ")
+    )]
+    EnableUnknown { name: String },
+    #[error(
+        "[tools] disable lists `run_checks`, which cannot be disabled: it is the only way a \
+         check result enters the loop, so a run without it could never converge"
+    )]
+    DisableRunChecks,
+    #[error(
+        "[tools] disable lists `{name}`, which is not a tool; the tools are {}",
+        BUILTIN_TOOLS.join(", ")
+    )]
+    DisableUnknown { name: String },
+    #[error(
+        "[tools] enable lists `{0}`, which reads the note vault, and no vault is configured. \
+         Set [context] vault = \"<dir>\" or remove it from enable"
+    )]
+    NoVault(&'static str),
+    #[error(
+        "[[tools.custom]] name `{0}` must be lowercase letters, digits and `_`, start with a \
+         letter, and be at most 64 characters"
+    )]
+    BadName(String),
+    /// One custom tool's declaration, and what is wrong with it.
+    #[error("[[tools.custom]] `{tool}` {problem}")]
+    Custom { tool: String, problem: String },
+}
+
+/// Why one reply is not a call this run can make. The model is shown the
+/// message and may pick again, so it is the string [`ToolSet::parse`]
+/// returned before (review round 11).
+#[derive(Debug, thiserror::Error)]
+pub enum ToolCallError {
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error("a tool call must be a JSON object")]
+    NotAnObject,
+    #[error("a tool call needs a string `tool` field")]
+    NoToolField,
+    #[error("unknown tool `{name}` for this run; the tools are {tools}, done")]
+    UnknownTool { name: String, tools: String },
+    /// A built-in's arguments, as the wire format refused them.
+    #[error("{0}")]
+    Wire(String),
+    #[error("`{tool}` needs `{arg}`")]
+    MissingArgument { tool: String, arg: String },
+    #[error("`{tool}` has no argument `{arg}`")]
+    UnknownArgument { tool: String, arg: String },
+    #[error("`{tool}` argument `{arg}` must be {ty}")]
+    ArgumentType {
+        tool: String,
+        arg: String,
+        ty: String,
+    },
+}
+
 fn args_hint(name: &str) -> &'static str {
     match name {
         "blast_radius" => "symbol",
@@ -166,22 +234,19 @@ impl ToolSet {
     /// An unknown name anywhere is an error rather than a no-op: a typo in
     /// `disable = ["edits"]` that silently disabled nothing would run with
     /// the tool its owner meant to remove.
-    pub fn build(sel: ToolSelection) -> Result<Self, String> {
+    pub fn build(sel: ToolSelection) -> Result<Self, ToolConfigError> {
         let custom_names: Vec<&str> = sel.custom.iter().map(|c| c.name.as_str()).collect();
         for (i, c) in sel.custom.iter().enumerate() {
             validate_custom(c)?;
             if custom_names[..i].contains(&c.name.as_str()) {
-                return Err(format!("[[tools.custom]] declares `{}` twice", c.name));
+                return Err(ToolConfigError::DeclaredTwice(c.name.clone()));
             }
         }
 
         let mut builtins: Vec<&'static str> = DEFAULT_ON.to_vec();
         for name in &sel.enable {
             if name == "bash" {
-                return Err(
-                    "[tools] enable lists `bash`; bash has its own switch, [tools] bash = true"
-                        .into(),
-                );
+                return Err(ToolConfigError::EnableBash);
             }
             if let Some(b) = OPT_IN.iter().find(|b| **b == name) {
                 if !builtins.contains(b) {
@@ -189,11 +254,7 @@ impl ToolSet {
                 }
             } else if !DEFAULT_ON.contains(&name.as_str()) && !custom_names.contains(&name.as_str())
             {
-                return Err(format!(
-                    "[tools] enable lists `{name}`, which is not a tool; the ones that are off \
-                     by default are {}",
-                    OPT_IN.join(", ")
-                ));
+                return Err(ToolConfigError::EnableUnknown { name: name.clone() });
             }
         }
         if sel.bash.is_some() {
@@ -207,12 +268,7 @@ impl ToolSet {
         let mut bash = sel.bash;
         for name in &sel.disable {
             if name == "run_checks" {
-                return Err(concat!(
-                    "[tools] disable lists `run_checks`, which cannot be disabled: it is ",
-                    "the only way a check result enters the loop, so a run without it ",
-                    "could never converge"
-                )
-                .into());
+                return Err(ToolConfigError::DisableRunChecks);
             }
             if BUILTIN_TOOLS.contains(&name.as_str()) {
                 builtins.retain(|b| b != name);
@@ -222,10 +278,7 @@ impl ToolSet {
             } else if custom.iter().any(|c| &c.name == name) {
                 custom.retain(|c| &c.name != name);
             } else {
-                return Err(format!(
-                    "[tools] disable lists `{name}`, which is not a tool; the tools are {}",
-                    BUILTIN_TOOLS.join(", ")
-                ));
+                return Err(ToolConfigError::DisableUnknown { name: name.clone() });
             }
         }
 
@@ -284,14 +337,11 @@ impl ToolSet {
     /// A note tool enabled with no vault configured is an error rather than
     /// a tool that fails on every call: the fix is in the config, and a run
     /// should not spend a turn discovering it.
-    pub fn with_notes(mut self, notes: Option<NotesSource>) -> Result<Self, String> {
+    pub fn with_notes(mut self, notes: Option<NotesSource>) -> Result<Self, ToolConfigError> {
         if notes.is_none()
             && let Some(t) = NOTE_TOOLS.iter().find(|t| self.builtins.contains(t))
         {
-            return Err(format!(
-                "[tools] enable lists `{t}`, which reads the note vault, and no vault is \
-                 configured. Set [context] vault = \"<dir>\" or remove it from enable"
-            ));
+            return Err(ToolConfigError::NoVault(t));
         }
         self.notes = notes;
         Ok(self)
@@ -398,8 +448,8 @@ impl ToolSet {
     }
 
     /// Parses one reply against this set.
-    pub fn parse(&self, json: &str) -> Result<Step, String> {
-        let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    pub fn parse(&self, json: &str) -> Result<Step, ToolCallError> {
+        let v: Value = serde_json::from_str(json)?;
         self.parse_value(v)
     }
 
@@ -408,20 +458,20 @@ impl ToolSet {
     /// A built-in outside the set is refused here as well as at the
     /// orchestrator. Here, so a model is told at once and can pick again;
     /// there, because this is not the only way a call can arrive.
-    pub fn parse_value(&self, v: Value) -> Result<Step, String> {
+    pub fn parse_value(&self, v: Value) -> Result<Step, ToolCallError> {
         let Some(obj) = v.as_object() else {
-            return Err("a tool call must be a JSON object".into());
+            return Err(ToolCallError::NotAnObject);
         };
         let Some(tool) = obj.get("tool").and_then(Value::as_str) else {
-            return Err("a tool call needs a string `tool` field".into());
+            return Err(ToolCallError::NoToolField);
         };
         let tool = tool.to_string();
         if tool == "done" || BUILTIN_TOOLS.contains(&tool.as_str()) {
             if tool != "done" && !self.enabled(&tool) {
                 return Err(self.not_a_tool(&tool));
             }
-            let w: ToolCallWire = serde_json::from_value(v).map_err(|e| e.to_string())?;
-            return w.into_step();
+            let w: ToolCallWire = serde_json::from_value(v)?;
+            return w.into_step().map_err(ToolCallError::Wire);
         }
         let Some(c) = self.custom(&tool) else {
             return Err(self.not_a_tool(&tool));
@@ -435,11 +485,11 @@ impl ToolSet {
         }))
     }
 
-    fn not_a_tool(&self, name: &str) -> String {
-        format!(
-            "unknown tool `{name}` for this run; the tools are {}, done",
-            self.names().join(", ")
-        )
+    fn not_a_tool(&self, name: &str) -> ToolCallError {
+        ToolCallError::UnknownTool {
+            name: name.to_string(),
+            tools: self.names().join(", "),
+        }
     }
 }
 
@@ -471,7 +521,7 @@ fn custom_branch(c: &CustomTool) -> Value {
     Value::Object(b)
 }
 
-fn validate_custom(c: &CustomTool) -> Result<(), String> {
+fn validate_custom(c: &CustomTool) -> Result<(), ToolConfigError> {
     let n = &c.name;
     let shaped = !n.is_empty()
         && n.len() <= 64
@@ -479,68 +529,59 @@ fn validate_custom(c: &CustomTool) -> Result<(), String> {
         && n.chars()
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
     if !shaped {
-        return Err(format!(
-            "[[tools.custom]] name `{n}` must be lowercase letters, digits and `_`, \
-             start with a letter, and be at most 64 characters"
-        ));
+        return Err(ToolConfigError::BadName(n.clone()));
     }
+    let bad = |problem: String| ToolConfigError::Custom {
+        tool: n.clone(),
+        problem,
+    };
     if n == "done" || BUILTIN_TOOLS.contains(&n.as_str()) {
-        return Err(format!(
-            "[[tools.custom]] `{n}` would shadow a built-in; choose another name"
-        ));
+        return Err(bad("would shadow a built-in; choose another name".into()));
     }
     let d = c.description.trim();
     if d.is_empty() || d.chars().count() > MAX_DESCRIPTION || d.chars().any(char::is_control) {
-        return Err(format!(
-            "[[tools.custom]] `{n}` needs a description of 1 to {MAX_DESCRIPTION} characters \
-             with no control character; it is printed in the prompt's tool line"
-        ));
+        return Err(bad(format!(
+            "needs a description of 1 to {MAX_DESCRIPTION} characters with no control \
+             character; it is printed in the prompt's tool line"
+        )));
     }
     if c.command.is_empty() || c.command[0].trim().is_empty() {
-        return Err(format!("[[tools.custom]] `{n}` has an empty command"));
+        return Err(bad("has an empty command".into()));
     }
     let Some(s) = c.schema.as_object() else {
-        return Err(format!(
-            "[[tools.custom]] `{n}` schema must be a JSON Schema object"
-        ));
+        return Err(bad("schema must be a JSON Schema object".into()));
     };
     if let Some(t) = s.get("type")
         && t != "object"
     {
-        return Err(format!(
-            "[[tools.custom]] `{n}` schema must describe an object; arguments are flat, \
-             beside `tool`"
+        return Err(bad(
+            "schema must describe an object; arguments are flat, beside `tool`".into(),
         ));
     }
     let props = match s.get("properties") {
         None => Map::new(),
         Some(Value::Object(m)) => m.clone(),
         Some(_) => {
-            return Err(format!(
-                "[[tools.custom]] `{n}` schema `properties` must be an object"
-            ));
+            return Err(bad("schema `properties` must be an object".into()));
         }
     };
     if props.contains_key("tool") {
-        return Err(format!(
-            "[[tools.custom]] `{n}` schema declares `tool`, which names the tool itself"
+        return Err(bad(
+            "schema declares `tool`, which names the tool itself".into()
         ));
     }
     keywords(n, &c.schema, "schema")?;
     if let Some(r) = s.get("required") {
         let Some(r) = r.as_array() else {
-            return Err(format!(
-                "[[tools.custom]] `{n}` schema `required` must be a list"
-            ));
+            return Err(bad("schema `required` must be a list".into()));
         };
         for k in r {
             match k.as_str() {
                 Some(k) if props.contains_key(k) => {}
                 _ => {
-                    return Err(format!(
-                        "[[tools.custom]] `{n}` requires `{k}`, which it does not declare \
-                         under `properties`"
-                    ));
+                    return Err(bad(format!(
+                        "requires `{k}`, which it does not declare under `properties`"
+                    )));
                 }
             }
         }
@@ -578,19 +619,20 @@ const SCHEMA_TYPES: &[&str] = &[
     "string", "number", "integer", "boolean", "array", "object", "null",
 ];
 
-fn keywords(tool: &str, v: &Value, at: &str) -> Result<(), String> {
+fn keywords(tool: &str, v: &Value, at: &str) -> Result<(), ToolConfigError> {
+    let bad = |problem: String| ToolConfigError::Custom {
+        tool: tool.to_string(),
+        problem,
+    };
     let Some(m) = v.as_object() else {
-        return Err(format!(
-            "[[tools.custom]] `{tool}` {at} must be a JSON Schema object"
-        ));
+        return Err(bad(format!("{at} must be a JSON Schema object")));
     };
     for (k, sub) in m {
         if !SCHEMA_KEYWORDS.contains(&k.as_str()) {
-            return Err(format!(
-                "[[tools.custom]] `{tool}` {at} uses `{k}`, which is outside the supported \
-                 subset: {}",
+            return Err(bad(format!(
+                "{at} uses `{k}`, which is outside the supported subset: {}",
                 SCHEMA_KEYWORDS.join(", ")
-            ));
+            )));
         }
         match k.as_str() {
             "type" => {
@@ -602,10 +644,10 @@ fn keywords(tool: &str, v: &Value, at: &str) -> Result<(), String> {
                     _ => false,
                 };
                 if !ok {
-                    return Err(format!(
-                        "[[tools.custom]] `{tool}` {at} has type {sub}; the types are {}",
+                    return Err(bad(format!(
+                        "{at} has type {sub}; the types are {}",
                         SCHEMA_TYPES.join(", ")
-                    ));
+                    )));
                 }
             }
             "items" => keywords(tool, sub, &format!("{at}.items"))?,
@@ -615,9 +657,9 @@ fn keywords(tool: &str, v: &Value, at: &str) -> Result<(), String> {
                 }
             }
             "additionalProperties" if !sub.is_boolean() => {
-                return Err(format!(
-                    "[[tools.custom]] `{tool}` {at}.additionalProperties must be true or false"
-                ));
+                return Err(bad(format!(
+                    "{at}.additionalProperties must be true or false"
+                )));
             }
             _ => {}
         }
@@ -630,7 +672,7 @@ fn keywords(tool: &str, v: &Value, at: &str) -> Result<(), String> {
 /// schema does not declare, and each declared top-level `type` checked.
 /// Nothing deeper; the workspace has no JSON Schema validator, and the
 /// command validates its own input (ADR 0023 §6).
-fn check_args(c: &CustomTool, args: &Map<String, Value>) -> Result<(), String> {
+fn check_args(c: &CustomTool, args: &Map<String, Value>) -> Result<(), ToolCallError> {
     let props = c
         .schema
         .get("properties")
@@ -640,13 +682,19 @@ fn check_args(c: &CustomTool, args: &Map<String, Value>) -> Result<(), String> {
     if let Some(r) = c.schema.get("required").and_then(Value::as_array) {
         for k in r.iter().filter_map(Value::as_str) {
             if !args.contains_key(k) {
-                return Err(format!("`{}` needs `{k}`", c.name));
+                return Err(ToolCallError::MissingArgument {
+                    tool: c.name.clone(),
+                    arg: k.to_string(),
+                });
             }
         }
     }
     for (k, v) in args {
         let Some(p) = props.get(k) else {
-            return Err(format!("`{}` has no argument `{k}`", c.name));
+            return Err(ToolCallError::UnknownArgument {
+                tool: c.name.clone(),
+                arg: k.clone(),
+            });
         };
         if let Some(t) = p.get("type").and_then(Value::as_str) {
             let ok = match t {
@@ -660,7 +708,11 @@ fn check_args(c: &CustomTool, args: &Map<String, Value>) -> Result<(), String> {
                 _ => true,
             };
             if !ok {
-                return Err(format!("`{}` argument `{k}` must be {t}", c.name));
+                return Err(ToolCallError::ArgumentType {
+                    tool: c.name.clone(),
+                    arg: k.clone(),
+                    ty: t.to_string(),
+                });
             }
         }
     }
@@ -819,7 +871,8 @@ mod tests {
         .unwrap();
         let e = t
             .parse(r#"{"tool":"edit","path":"a","old":"x","new":"y"}"#)
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("unknown tool `edit`"), "{e}");
         assert!(!tools_in(&t.schema()).contains(&"edit".to_string()));
         // An opt-in tool that was not enabled is refused the same way.
@@ -832,7 +885,8 @@ mod tests {
             disable: vec!["run_checks".into()],
             ..Default::default()
         })
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("could never converge"), "{e}");
     }
 
@@ -854,7 +908,8 @@ mod tests {
             enable: vec!["bash".into()],
             ..Default::default()
         })
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("bash = true"), "one switch for bash: {e}");
     }
 
@@ -907,11 +962,13 @@ mod tests {
         assert!(
             t.parse(r#"{"tool":"lint"}"#)
                 .unwrap_err()
+                .to_string()
                 .contains("needs `path`")
         );
         assert!(
             t.parse(r#"{"tool":"lint","path":"a","sudo":true}"#)
                 .unwrap_err()
+                .to_string()
                 .contains("sudo")
         );
         assert!(t.parse(r#"{"tool":"lint","path":3}"#).is_err());
@@ -1013,7 +1070,10 @@ mod note_tool_tests {
     fn a_note_tool_with_no_vault_fails_when_the_set_is_built() {
         // The fix is in the config; a run should not spend a turn on a tool
         // that errors on every call.
-        let e = with(&["search_notes"]).with_notes(None).unwrap_err();
+        let e = with(&["search_notes"])
+            .with_notes(None)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("[context] vault"), "{e}");
         // Not asked for, nothing required: the default set is unaffected.
         assert!(ToolSet::default().with_notes(None).is_ok());

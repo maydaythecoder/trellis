@@ -92,11 +92,47 @@ pub fn line_anchor(text: &str) -> String {
     lanes.iter().map(|l| format!("{l:08x}")).collect()
 }
 
+/// Why a note's dates or `dates.json` itself were refused. The messages
+/// are Apex's where Apex has one, and each is the string these functions
+/// returned before (review round 11).
+#[derive(Debug, thiserror::Error)]
+pub enum DatesError {
+    #[error("Note exceeds {} date lines.", MAX_LINES_PER_NOTE)]
+    NoteTooLong,
+    #[error("dates.json version {0} is not supported (expected version 1)")]
+    Version(u32),
+    #[error("dates.json contains more than {} notes", MAX_NOTES)]
+    TooManyNotes,
+    #[error("dates.json contains an invalid Markdown note path: {0}")]
+    NotePath(String),
+    #[error("dates.json contains an invalid calendar day: {0}")]
+    Day(String),
+    #[error(
+        "dates.json contains more than {} lines for {path}",
+        MAX_LINES_PER_NOTE
+    )]
+    TooManyLines { path: String },
+    #[error("dates.json contains more than {} total lines", MAX_TOTAL_LINES)]
+    TooManyTotalLines,
+    #[error("dates.json contains an invalid line anchor for {0}")]
+    Anchor(String),
+    #[error("dates.json exceeds the {} byte limit", MAX_BYTES)]
+    TooLarge,
+    #[error("dates.json is invalid: {0}")]
+    Json(serde_json::Error),
+    /// A note named in the edit could not be read back.
+    #[error(transparent)]
+    Note(#[from] crate::VaultError),
+    /// The compare-and-replace write failed, and the file is as it was.
+    #[error(transparent)]
+    Write(std::io::Error),
+}
+
 /// `logicalLines`: one entry per `\n`-separated line, a trailing `\r`
 /// removed, refused past the per-note limit.
-pub fn logical_lines(body: &str) -> Result<Vec<&str>, String> {
+pub fn logical_lines(body: &str) -> Result<Vec<&str>, DatesError> {
     if body.matches('\n').count() + 1 > MAX_LINES_PER_NOTE {
-        return Err(format!("Note exceeds {MAX_LINES_PER_NOTE} date lines."));
+        return Err(DatesError::NoteTooLong);
     }
     Ok(body
         .split('\n')
@@ -195,7 +231,7 @@ fn is_heading(line: &str) -> bool {
 }
 
 /// `seedNoteDates`.
-pub fn seed(body: &str, opts: &Seed<'_>) -> Result<NoteDates, String> {
+pub fn seed(body: &str, opts: &Seed<'_>) -> Result<NoteDates, DatesError> {
     let lines = logical_lines(body)?;
     if opts.is_new {
         let s = stamp(opts.today, false);
@@ -290,7 +326,7 @@ pub fn reconcile(
     body: &str,
     previous: Option<&NoteDates>,
     with: &Stamp,
-) -> Result<NoteDates, String> {
+) -> Result<NoteDates, DatesError> {
     let lines = logical_lines(body)?;
     let anchors: Vec<String> = lines.iter().map(|l| line_anchor(l)).collect();
     let next = stamp(with.day.as_deref(), with.estimated);
@@ -371,57 +407,41 @@ fn valid_anchor(a: &str) -> bool {
 
 /// Every rule of `validate_dates` and `normalizeDateDocument`. The first
 /// failure is the error, as in both of Apex's validators.
-pub fn validate(doc: &Document) -> Result<(), String> {
+pub fn validate(doc: &Document) -> Result<(), DatesError> {
     if doc.version != 1 {
-        return Err(format!(
-            "dates.json version {} is not supported (expected version 1)",
-            doc.version
-        ));
+        return Err(DatesError::Version(doc.version));
     }
     if doc.notes.len() > MAX_NOTES {
-        return Err(format!("dates.json contains more than {MAX_NOTES} notes"));
+        return Err(DatesError::TooManyNotes);
     }
     let mut total = 0usize;
     for (path, note) in &doc.notes {
         if !valid_note_path(path) {
-            return Err(format!(
-                "dates.json contains an invalid Markdown note path: {path}"
-            ));
+            return Err(DatesError::NotePath(path.clone()));
         }
         let day_ok = |d: &Option<String>| d.as_deref().is_none_or(|d| normalize_day(d).is_some());
+        let bad_day = |d: &Option<String>| DatesError::Day(d.clone().unwrap_or_default());
         if !day_ok(&note.created.day) {
-            return Err(format!(
-                "dates.json contains an invalid calendar day: {}",
-                note.created.day.as_deref().unwrap_or("")
-            ));
+            return Err(bad_day(&note.created.day));
         }
         if note.lines.len() > MAX_LINES_PER_NOTE {
-            return Err(format!(
-                "dates.json contains more than {MAX_LINES_PER_NOTE} lines for {path}"
-            ));
+            return Err(DatesError::TooManyLines { path: path.clone() });
         }
         total += note.lines.len();
         if total > MAX_TOTAL_LINES {
-            return Err(format!(
-                "dates.json contains more than {MAX_TOTAL_LINES} total lines"
-            ));
+            return Err(DatesError::TooManyTotalLines);
         }
         for line in &note.lines {
             if !valid_anchor(&line.anchor) {
-                return Err(format!(
-                    "dates.json contains an invalid line anchor for {path}"
-                ));
+                return Err(DatesError::Anchor(path.clone()));
             }
             if !day_ok(&line.day) {
-                return Err(format!(
-                    "dates.json contains an invalid calendar day: {}",
-                    line.day.as_deref().unwrap_or("")
-                ));
+                return Err(bad_day(&line.day));
             }
         }
     }
     if to_bytes(doc).len() as u64 > MAX_BYTES {
-        return Err(format!("dates.json exceeds the {MAX_BYTES} byte limit"));
+        return Err(DatesError::TooLarge);
     }
     Ok(())
 }
@@ -432,12 +452,11 @@ pub fn to_bytes(doc: &Document) -> Vec<u8> {
 }
 
 /// Parses and validates bytes read from disk.
-pub fn parse(raw: &[u8]) -> Result<Document, String> {
+pub fn parse(raw: &[u8]) -> Result<Document, DatesError> {
     if raw.len() as u64 > MAX_BYTES {
-        return Err(format!("dates.json exceeds the {MAX_BYTES} byte limit"));
+        return Err(DatesError::TooLarge);
     }
-    let doc: Document =
-        serde_json::from_slice(raw).map_err(|e| format!("dates.json is invalid: {e}"))?;
+    let doc: Document = serde_json::from_slice(raw).map_err(DatesError::Json)?;
     validate(&doc)?;
     Ok(doc)
 }
@@ -514,7 +533,7 @@ pub fn load(root: &Path) -> State {
                 snapshot: raw,
                 doc,
             }),
-            Err(e) => State::Invalid(e),
+            Err(e) => State::Invalid(e.to_string()),
         },
     }
 }
@@ -522,13 +541,13 @@ pub fn load(root: &Path) -> State {
 impl File {
     /// Validates, then writes atomically if the bytes changed. Returns
     /// whether anything was written.
-    pub fn save(&self) -> Result<bool, String> {
+    pub fn save(&self) -> Result<bool, DatesError> {
         validate(&self.doc)?;
         let raw = to_bytes(&self.doc);
         if raw == self.snapshot {
             return Ok(false);
         }
-        atomic_write(&self.path, &raw, Some(&self.snapshot)).map_err(|e| e.to_string())?;
+        atomic_write(&self.path, &raw, Some(&self.snapshot)).map_err(DatesError::Write)?;
         Ok(true)
     }
 }
@@ -722,7 +741,11 @@ impl Touched {
 /// as new with `today`; a modified note is reconciled with {today, not
 /// estimated}; a deleted note's entry is removed. Does nothing, and returns
 /// `Ok(None)`, when `dates.json` is absent.
-pub fn after_edit(root: &Path, touched: &Touched, today: &str) -> Result<Option<String>, String> {
+pub fn after_edit(
+    root: &Path,
+    touched: &Touched,
+    today: &str,
+) -> Result<Option<String>, DatesError> {
     let mut file = match load(root) {
         State::Absent => return Ok(None),
         State::Invalid(e) => {
@@ -738,7 +761,7 @@ pub fn after_edit(root: &Path, touched: &Touched, today: &str) -> Result<Option<
     let with = stamp(Some(today), false);
     for p in touched.created.iter().chain(&touched.modified) {
         let full = reader::file_of(root, p);
-        let text = reader::read_text(&full).map_err(|e| e.to_string())?;
+        let text = reader::read_text(&full)?;
         let body = reader::split_markdown(&text).2;
         let nd = if touched.created.contains(p) && !file.doc.notes.contains_key(p) {
             seed(
