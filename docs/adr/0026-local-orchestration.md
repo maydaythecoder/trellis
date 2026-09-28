@@ -398,6 +398,28 @@ starts):
 ids begin with `budget-`, so `queue approve <id>` can tell them from task
 ids.
 
+*Amended after the seventh review of PR #1:*
+- **A request belongs to one pause.** When `work` lifts a budget pause (a
+  rollover, or `[budget]` raised in the file), every pending request for
+  that profile is closed: moved to `rejected/` with the reason
+  `superseded: the pause was lifted: <why>`, and logged as
+  `approval.supersede`. A later hard stop reuses a pending request only
+  when it names the same window, the same month for a monthly window, and
+  the same limit; any other pending request for the profile is closed as
+  superseded and a new one opened. Before this, a request stayed pending
+  after its pause lifted and the next pause reused it, so approving it
+  raised September's limit in October, on September's figures.
+- **A decision holds the request's lock** (`approval-<id>`) from its check
+  to its end, and `approve` claims the request (moves it out of
+  `pending/`) before it applies the raise. Two approvals of one request in
+  two terminals used to both pass the check and both raise the limit; a
+  test with two threads saw the doubled raise. A raise that fails to write
+  puts the request back in `pending/`. A crash between the claim and the
+  raise leaves the request approved with no raise and the profile still
+  paused, which `queue list` shows and a `[budget]` raise in the file
+  resolves; the old order could leave the raise applied and the request
+  pending, to be approved again.
+
 Every request and every decision is logged (§9).
 
 ### 7. Routines

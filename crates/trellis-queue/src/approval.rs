@@ -6,7 +6,7 @@
 //! between them by publish-then-remove like a task.
 
 use crate::activity::{Actor, Event};
-use crate::files::{move_to, publish, read_json};
+use crate::files::{Lock, move_to, publish, read_json, remove};
 use crate::profile::{self, PausedBy, Raise, Window};
 use crate::{Decision, Queue, QueueError, State, Verdict};
 use serde::{Deserialize, Serialize};
@@ -66,9 +66,27 @@ pub fn list(q: &Queue, which: &str) -> Result<Vec<BudgetRequest>, QueueError> {
     names.iter().map(|p| read_json(p)).collect()
 }
 
+/// Whether `r` asks about the same pause as (`window`, `month`, `limit`):
+/// the same window, for a monthly one the same month, and the same limit. A
+/// lifetime window has one period, so the limit is what tells a lifetime
+/// pause after a raise in the file from the one before it.
+fn same_pause(r: &BudgetRequest, window: Window, month: &str, limit: u64) -> bool {
+    r.window == window && (window == Window::Lifetime || r.month == month) && r.limit == limit
+}
+
+/// The lock every decision on request `id` holds from its check to its
+/// move, so two decisions cannot both find it pending.
+fn lock(q: &Queue, id: &str) -> Result<Lock, QueueError> {
+    Lock::take(&q.locks(), &format!("approval-{id}"))
+}
+
 /// Opens a budget override request for `agent`, or returns the id of the
-/// one already pending. One open request per profile: a hard stop that
-/// re-fires every tick must not bury the person in duplicates.
+/// one already pending for the same pause. One open request per pause: a
+/// hard stop that re-fires every tick must not bury the person in
+/// duplicates. A pending request for another window or month is stale (the
+/// pause it asked about was lifted) and is closed here rather than reused:
+/// approving it would raise a window that no longer matters, on figures
+/// that are out of date.
 pub fn open_budget_request(
     q: &Queue,
     agent: &str,
@@ -78,8 +96,17 @@ pub fn open_budget_request(
     limit: u64,
     actor: Actor,
 ) -> Result<String, QueueError> {
-    if let Some(r) = list(q, "pending")?.into_iter().find(|r| r.agent == agent) {
-        return Ok(r.id);
+    let mut reuse = None;
+    for r in list(q, "pending")?.into_iter().filter(|r| r.agent == agent) {
+        if reuse.is_none() && same_pause(&r, window, month, limit) {
+            reuse = Some(r.id);
+        } else {
+            let why = format!("a new {} pause for {month} replaced it", window.as_str());
+            supersede(q, &r.id, &why, actor)?;
+        }
+    }
+    if let Some(id) = reuse {
+        return Ok(id);
     }
     let r = BudgetRequest {
         id: format!("budget-{agent}-{}", crate::stamp::sortable_now()),
@@ -103,14 +130,73 @@ pub fn open_budget_request(
     Ok(r.id)
 }
 
+/// Closes every pending request for `agent`: the pause they asked about
+/// was lifted without them (a rollover, a limit raised in the file). Each
+/// goes to `rejected/` with the reason `superseded: <why>`, so the record
+/// says it was not a person's no. Returns the ids closed.
+pub fn close_open_requests(
+    q: &Queue,
+    agent: &str,
+    why: &str,
+    actor: Actor,
+) -> Result<Vec<String>, QueueError> {
+    let mut closed = Vec::new();
+    for r in list(q, "pending")?.into_iter().filter(|r| r.agent == agent) {
+        if supersede(q, &r.id, why, actor)? {
+            closed.push(r.id);
+        }
+    }
+    Ok(closed)
+}
+
+/// Moves one pending request to `rejected/` as superseded, under its lock.
+/// `false` when someone decided it first.
+fn supersede(q: &Queue, id: &str, why: &str, actor: Actor) -> Result<bool, QueueError> {
+    let _lock = lock(q, id)?;
+    let from = path(q, "pending", id);
+    if !from.exists() {
+        return Ok(false);
+    }
+    let mut r: BudgetRequest = read_json(&from)?;
+    r.decision = Some(Decision {
+        decision: Verdict::Rejected,
+        at: crate::iso_now(),
+        reason: Some(format!("superseded: {why}")),
+    });
+    move_to(&from, &path(q, "rejected", id), &r)?;
+    q.log(
+        Event::new(actor, "approval.supersede", format!("approval:{id}"))
+            .detail(format!("agent `{}`: {why}", r.agent)),
+    )?;
+    Ok(true)
+}
+
 /// Approves a budget request: raises the window that tripped by `raise`
 /// tokens and lifts the budget pause. A pause a person set is left alone.
+///
+/// Held under the request's lock from the check to the end, and the move
+/// out of `pending/` is the commit point, taken before the raise: two
+/// approvals cannot both find the request pending, so the raise is applied
+/// once. A raise that then fails to write puts the request back in
+/// `pending/`, so it is not recorded as approved with no raise behind it.
+/// A crash between the two leaves it approved without the raise and the
+/// profile still paused: visible, and undone by raising `[budget]` in the
+/// profile file. The other order left a raise applied with the request
+/// still pending, to be approved, and raised, again.
 pub fn approve_budget(
     q: &Queue,
     id: &str,
     raise: u64,
     actor: Actor,
 ) -> Result<BudgetRequest, QueueError> {
+    if raise == 0 {
+        return Err(QueueError::Invalid(
+            "--raise 0 would resume a profile that is still over its limit; \
+             give a positive raise, or `queue reject` to keep it paused"
+                .into(),
+        ));
+    }
+    let _lock = lock(q, id)?;
     let from = path(q, "pending", id);
     if !from.exists() {
         return Err(QueueError::Invalid(format!(
@@ -122,15 +208,17 @@ pub fn approve_budget(
             }
         )));
     }
-    if raise == 0 {
-        return Err(QueueError::Invalid(
-            "--raise 0 would resume a profile that is still over its limit; \
-             give a positive raise, or `queue reject` to keep it paused"
-                .into(),
-        ));
-    }
-    let mut r: BudgetRequest = read_json(&from)?;
-    profile::update_overlay(q, &r.agent, |o| {
+    let pending: BudgetRequest = read_json(&from)?;
+    let mut r = pending.clone();
+    r.decision = Some(Decision {
+        decision: Verdict::Approved,
+        at: crate::iso_now(),
+        reason: None,
+    });
+    r.raised_by = Some(raise);
+    let to = path(q, "approved", id);
+    move_to(&from, &to, &r)?;
+    let raised = profile::update_overlay(q, &r.agent, |o| {
         o.raises.push(Raise {
             window: r.window,
             month: (r.window == Window::Monthly).then(|| r.month.clone()),
@@ -140,14 +228,28 @@ pub fn approve_budget(
         if matches!(&o.paused, Some(p) if p.by == PausedBy::Budget) {
             o.paused = None;
         }
-    })?;
-    r.decision = Some(Decision {
-        decision: Verdict::Approved,
-        at: crate::iso_now(),
-        reason: None,
     });
-    r.raised_by = Some(raise);
-    move_to(&from, &path(q, "approved", id), &r)?;
+    if let Err(e) = raised {
+        // Put back: publish at the pending name, then drop the approved one.
+        let back = publish(&from, &pending).and_then(|ok| {
+            if ok {
+                remove(&to).map(|()| true)
+            } else {
+                Ok(false)
+            }
+        });
+        return Err(QueueError::Invalid(match back {
+            Ok(true) => format!(
+                "the raise for `{id}` could not be written ({e}); the request is \
+                 pending again and nothing changed"
+            ),
+            _ => format!(
+                "the raise for `{id}` could not be written ({e}), and the request could \
+                 not be put back in pending/: it is recorded as approved with no raise. \
+                 The agent stays paused; raise [budget] in its profile file instead"
+            ),
+        }));
+    }
     q.log(
         Event::new(actor, "approval.approve", format!("approval:{id}")).detail(format!(
             "agent `{}` {} limit raised by {raise}; resumed",
@@ -165,6 +267,7 @@ pub fn reject_budget(
     reason: Option<&str>,
     actor: Actor,
 ) -> Result<BudgetRequest, QueueError> {
+    let _lock = lock(q, id)?;
     let from = path(q, "pending", id);
     if !from.exists() {
         return Err(QueueError::Invalid(format!(

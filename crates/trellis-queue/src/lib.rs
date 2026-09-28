@@ -738,10 +738,8 @@ impl Queue {
                 if !same {
                     let mut linked = false;
                     for _ in 0..5 {
-                        let aside = failed.join(format!(
-                            "{id}.unreadable-{}.json",
-                            stamp::sortable_now()
-                        ));
+                        let aside =
+                            failed.join(format!("{id}.unreadable-{}.json", stamp::sortable_now()));
                         match std::fs::hard_link(from, &aside) {
                             Ok(()) => {
                                 linked = true;
