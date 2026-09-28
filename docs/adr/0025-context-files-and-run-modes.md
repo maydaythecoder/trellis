@@ -317,3 +317,63 @@ on stderr.
   `cmd_run_with` beside the unchanged `cmd_run`.
 - `work.rs` changes only where it wrote to stdout. Those writes now go to the
   human stream, so `work --json` keeps stdout clean.
+
+## As built
+
+Where the code settled what the text above left open, or disagreed with it.
+Each item is tested unless it says otherwise.
+
+- **Abort is per run, not per process, and waits to be observed.** The text
+  says "a flag that `cmd_run`'s select polls". It is: `RunExtras.abort`, polled
+  every 50 ms beside Ctrl-C. Per run, because tests run many `cmd_run`s in one
+  process, and a process-wide flag would let one test's abort end another's
+  run. The per-run flag was chosen before that could happen; it was never
+  observed.
+  - The first implementation also dropped every open approval question at
+    the moment of `abort`. Dropping one is required, because after the abort
+    the run asks the orchestrator what it touched, and an orchestrator still
+    waiting on an unanswered question never replies. Doing it at once was
+    wrong, though: a dropped question reads as a "no", the loop went on to
+    its next step, and the run ended `not_converged` instead of
+    `interrupted`. `abort_interrupts_the_run_and_it_rolls_back` caught it.
+  - The questions are now dropped only after the run has taken the abort path
+    (`Abort::observed`).
+- **The layering code lives in `user_config.rs`, not at the end of
+  `config.rs`.** Appending an `impl` after `config.rs`'s test module failed
+  `clippy::items_after_test_module`. `config.rs` now changes in three places:
+  - `load` calls `load_with_user`
+  - `ContextSection` gains `files`
+  - `prompt` strips frontmatter
+- **`layer` names every field and still ends in `..repo`.** Clippy's
+  `needless_update` is allowed there on purpose. The update becomes live the
+  day W-B adds `[tools]` or `[hooks]`, and the rule in §7, that unnamed
+  sections come from the repository only, depends on it.
+- **An unknown `[control] mode` word survives the merge.** A word that is
+  neither `auto` nor `approve`, from either file, is kept as written so that
+  `RepoConfig::control` still refuses it by name.
+- **The key test also matches names ending `-key` and `-token`**
+  (`x-api-key`). `max_tokens` is tested not to match.
+- **`/skill` needs a task.** `/skill <name> <task>` runs the task with the
+  body loaded. `/skill <name>` alone is refused, because pi's `/skill:name`
+  also takes the message after the name and nothing is carried to a later
+  task.
+- **Built-in slash commands shadow templates.** A template named `diff` is
+  reachable only through `run --prompt diff`, never as `/diff`. Untested.
+- **`approve`'s response** carries `{"approved": true|false}`, so a client
+  sees which way its answer was read.
+- **`get_state`** returns `running`, `run_request_id`, `model` (the
+  `set_model` value, else `[model] spec`), `root`, `last_run` (the `run_end`
+  fields without `type`) and `pending_approvals`.
+- **Key order in a record is not part of the format.** `serde_json` writes
+  keys in insertion order in one build and alphabetically in another,
+  depending on which features cargo unifies (a test build differs from a
+  release build). A consumer reads keys by name.
+- **The human tracing layer keeps its ANSI colour codes when it goes to
+  stderr.** It did the same on stdout before this ADR. Untested.
+- **A duplicate context file is reported** as `CLAUDE.md same as `AGENTS.md`
+  (repository root), sent once` on the `repo:` line.
+- **A process-level test of approve mode over RPC** keeps stdin open while
+  the question is answered: `rpc_approve_mode_asks_on_the_stream_while_input_stays_open`
+  in `tests/modes.rs`. The unit tests drive `serve` in-process, and a
+  defect in how the process's stdin and stdout interact would be invisible
+  to them.
