@@ -294,13 +294,22 @@ pub(crate) fn label(call: &ToolCall) -> String {
     }
 }
 
-/// The first line of a command, cut to 120 characters, for a label. The
-/// approval question shows the whole command; a label is a summary.
+/// The first non-blank line of a command, cut to 120 characters, for a
+/// label, and how many non-blank lines follow it. The approval question
+/// shows the whole command; a label is a summary. Not simply the first
+/// line: a command that opens with a newline was labelled `…`, which says
+/// nothing about what ran.
 pub(crate) fn first_line(s: &str) -> String {
-    let line = s.lines().next().unwrap_or("");
+    let mut lines = s.lines().filter(|l| !l.trim().is_empty());
+    let line = lines.next().unwrap_or("").trim_end();
     let mut out: String = line.chars().take(120).collect();
-    if out.len() < s.trim_end().len() {
+    if out.len() < line.len() {
         out.push('…');
+    }
+    match lines.count() {
+        0 => {}
+        1 => out.push_str(" [+1 more line]"),
+        n => out.push_str(&format!(" [+{n} more lines]")),
     }
     out
 }
@@ -447,6 +456,19 @@ pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<Edi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_names_the_first_command_line_not_a_leading_blank_one() {
+        // A command that starts with a newline was labelled `bash …`: the
+        // trail and the approval log showed nothing of what ran.
+        let l = first_line("\n  \nrm -rf build\npytest -q\n");
+        assert!(l.starts_with("rm -rf build"), "{l}");
+        assert!(l.contains("[+1 more line]"), "says more follows: {l}");
+        assert_eq!(first_line("pytest -q\n"), "pytest -q");
+        let long = "x".repeat(200);
+        let cut = first_line(&long);
+        assert!(cut.ends_with('…') && cut.chars().count() == 121, "{cut}");
+    }
 
     #[test]
     fn a_preview_counts_whole_lines_and_quotes_them() {
