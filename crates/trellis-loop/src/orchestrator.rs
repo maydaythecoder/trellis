@@ -459,7 +459,7 @@ impl Orchestrator {
         if let Some(g) = &self.guard {
             if d.may_have_changed_tree {
                 // Latches on failure; the reason is read below.
-                let _ = g.check();
+                let _ = g.check_async().await;
             }
             d.trust_breach = g.breach();
         }
@@ -622,39 +622,8 @@ impl Orchestrator {
                  change an existing one."
             ));
         }
-        // `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on
-        // a fatal error. Only a 1 lets the write go ahead: a check that could
-        // not be made is not a "no", and reading it as one wrote files a
-        // rollback's `git clean` might never remove. Fail closed.
-        let mut git = tokio::process::Command::new("git");
-        git.args(["check-ignore", "-q", "--no-index", "--"])
-            .arg(path)
-            .current_dir(&self.root)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        trellis_core::secrets::scrub(git.as_std_mut());
-        let status = git.status().await;
-        match status.as_ref().map(|s| s.code()) {
-            Ok(Some(1)) => {}
-            Ok(Some(0)) => {
-                return ToolResult::Error(format!(
-                    "write_file refused: `{path}` is ignored by git, so a rollback could not \
-                     remove it. Choose a path git tracks."
-                ));
-            }
-            other => {
-                let why = match other {
-                    Err(e) => format!("git could not be started: {e}"),
-                    Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
-                    Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
-                };
-                return ToolResult::Error(format!(
-                    "write_file refused: could not ask git whether `{path}` is ignored \
-                     ({why}), and a file git ignores would survive a rollback. Nothing \
-                     was written."
-                ));
-            }
+        if let Some(why) = ignored_refusal(&self.root, path).await {
+            return ToolResult::Error(format!("write_file refused: {why}"));
         }
         if let Some(dir) = full.parent()
             && let Err(e) = std::fs::create_dir_all(dir)
@@ -703,6 +672,7 @@ impl Orchestrator {
             timeout: b.timeout,
             cap: crate::exec::OUTPUT_CAP,
             head: false,
+            whole: false,
         })
         .await;
         match r {
@@ -739,7 +709,7 @@ impl Orchestrator {
         // Its command is trusted code, and a script it names may have been
         // rewritten since (ADR 0023 §5).
         if let Some(g) = &self.guard
-            && let Err(why) = g.check()
+            && let Err(why) = g.check_async().await
         {
             return ToolResult::Error(format!("`{name}` was not started, because {why}"));
         }
@@ -751,6 +721,7 @@ impl Orchestrator {
             timeout: CUSTOM_TIMEOUT,
             cap: crate::exec::OUTPUT_CAP,
             head: false,
+            whole: false,
         })
         .await;
         match r {
@@ -1064,19 +1035,49 @@ impl Orchestrator {
     }
 }
 
-/// Whether any component of `rel` names git's own directory, by any
-/// spelling a filesystem this runs on would resolve to it: compared
-/// case-insensitively (NTFS, APFS), after the trailing dots and spaces
-/// Windows strips (`.git.`, `.git `), and including the 8.3 short name
-/// `git~1` — the list git itself checks since CVE-2014-9390. Every
-/// component, so `app/.GIT/x` is caught as well: a nested `.git` is a
-/// repository git would honour.
-pub(crate) fn names_git_dir(rel: &str) -> bool {
-    rel.split(['/', '\\']).any(|seg| {
-        let s = seg.trim_end_matches(['.', ' ']).to_ascii_lowercase();
-        s == ".git" || s == "git~1"
-    })
+/// Why `write_file` may not create `rel` because git ignores it, or
+/// `None`. Rollback's `git clean -fd` leaves ignored files, so a file
+/// created there would outlive a run that did not converge.
+///
+/// `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on a
+/// fatal error. Only a 1 lets the write go ahead: a check that could not be
+/// made is not a "no", and reading it as one wrote files a rollback's `git
+/// clean` might never remove. Fail closed. The approval gate's prediction
+/// of `write_file` asks this same function, so a write the orchestrator
+/// refuses is not first put to a person.
+pub(crate) async fn ignored_refusal(root: &Path, rel: &str) -> Option<String> {
+    let mut git = tokio::process::Command::new("git");
+    git.args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(rel)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    trellis_core::secrets::scrub(git.as_std_mut());
+    let status = git.status().await;
+    match status.as_ref().map(|s| s.code()) {
+        Ok(Some(1)) => None,
+        Ok(Some(0)) => Some(format!(
+            "`{rel}` is ignored by git, so a rollback could not remove it. Choose a path \
+             git tracks."
+        )),
+        other => {
+            let why = match other {
+                Err(e) => format!("git could not be started: {e}"),
+                Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
+                Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
+            };
+            Some(format!(
+                "could not ask git whether `{rel}` is ignored ({why}), and a file git \
+                 ignores would survive a rollback. Nothing was written."
+            ))
+        }
+    }
 }
+
+/// Defined in `trellis-core`, where the binary's prompt-input reader uses
+/// the same predicate.
+pub(crate) use trellis_core::paths::names_git_dir;
 
 /// Whether `rel` names trellis's own directory, `.trellis/` at the root,
 /// by any spelling that resolves to it: its first component (after any
@@ -1182,55 +1183,10 @@ pub(crate) fn write_refusal(root: &Path, rel: &str) -> Option<String> {
 ///
 /// Shared with the approval gate, which lets through (unasked) any call it
 /// predicts the orchestrator will refuse: a gate and an orchestrator that
-/// disagreed would skip the person on a call that then ran.
-///
-/// `is_absolute()` alone is not the rule: on Windows `/x` and `\x` are
-/// rooted but not absolute, `C:x` is relative to drive C's current
-/// directory, and `root.join` of any of them leaves the repository. So the
-/// rule is on the string, the same on every platform:
-///
-/// - no leading `/` or `\` (rooted, UNC, `\\?\`), and no drive prefix `X:`;
-/// - no `:` anywhere: on NTFS `a.py:s` is an alternate data stream, a write
-///   git cannot see and a rollback cannot remove;
-/// - no component that is only dots and spaces other than `.`, compared
-///   after the trailing dots and spaces Windows strips, so `..`, `.. ` and
-///   `...` are all parent references here;
-/// - and, belt and braces, no `RootDir` or `Prefix` component as this host
-///   parses it.
-///
-/// Components are split on both `/` and `\`, since Windows accepts either.
-pub(crate) fn unsafe_repo_path(rel: &str) -> Option<String> {
-    let refuse = || {
-        Some(format!(
-            "path `{rel}` must be relative to the repository root, with no leading \
-             `/` or `\\`, no drive letter or `:`, and no `..`"
-        ))
-    };
-    if rel.starts_with(['/', '\\']) || rel.contains(':') {
-        return refuse();
-    }
-    let parentish = |seg: &str| {
-        let t = seg.trim_end_matches(['.', ' ']);
-        t.is_empty() && seg != "." && !seg.is_empty()
-    };
-    if rel.split(['/', '\\']).any(parentish) {
-        return refuse();
-    }
-    let p = Path::new(rel);
-    if p.is_absolute()
-        || p.components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::RootDir
-                    | std::path::Component::Prefix(_)
-                    | std::path::Component::ParentDir
-            )
-        })
-    {
-        return refuse();
-    }
-    None
-}
+/// disagreed would skip the person on a call that then ran. Defined in
+/// `trellis-core`, where the binary's prompt-template names obey it too;
+/// the rules it applies are documented there.
+pub(crate) use trellis_core::paths::unsafe_repo_path;
 
 /// How long a custom tool may run. The same default as `bash`: a custom
 /// tool is a command the repository wrote, and it is bounded like one.

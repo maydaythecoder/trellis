@@ -68,31 +68,225 @@ fn changed(root: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// What `stat` says about one file, enough to tell that it changed without
+/// reading it: length and modification time, and on Unix the inode and the
+/// change time, which a process cannot set back the way it can `mtime`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime: (i64, i64),
+}
+
+impl Stamp {
+    fn of(p: &Path) -> Option<Stamp> {
+        // Not followed: a link is recorded as the link, and removing one
+        // the command created removes the link, not what it points at.
+        let m = std::fs::symlink_metadata(p).ok()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Some(Stamp {
+            len: m.len(),
+            mtime: m.modified().ok(),
+            #[cfg(unix)]
+            ino: m.ino(),
+            #[cfg(unix)]
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+/// Every untracked file git ignores, with its [`Stamp`], taken just before
+/// the command starts and again just after it ends.
+///
+/// `git status` does not list ignored files, so without this a command
+/// could write `.venv/.../sitecustomize.py`, an ignored path under
+/// `.trellis/`, or an ignored path `deny_write` names, and neither the
+/// breach test nor governance nor the rollback (`git clean -fd` leaves
+/// ignored files) would see it (ADR 0026 §11). Compared by stat rather than
+/// by content, so a large `.venv` costs one `stat` per file, not a hash;
+/// what that misses is stated in the ADR.
+struct IgnoredSnapshot {
+    files: std::collections::BTreeMap<String, Stamp>,
+}
+
+/// What the command did to ignored files.
+#[derive(Debug, Default)]
+struct IgnoredChanges {
+    created: Vec<String>,
+    modified: Vec<String>,
+    deleted: Vec<String>,
+}
+
+impl IgnoredChanges {
+    fn all(&self) -> impl Iterator<Item = &String> {
+        self.created
+            .iter()
+            .chain(&self.modified)
+            .chain(&self.deleted)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.created.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
+    }
+
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        for (word, list) in [
+            ("created", &self.created),
+            ("modified", &self.modified),
+            ("deleted", &self.deleted),
+        ] {
+            if !list.is_empty() {
+                parts.push(format!("{word} {}", shown(list)));
+            }
+        }
+        parts.join("; ")
+    }
+}
+
+/// Up to ten names, then a count: a `pip install` into `.venv` is
+/// thousands of files, and the report is read by a person.
+fn shown(list: &[String]) -> String {
+    const MAX: usize = 10;
+    let mut s = list
+        .iter()
+        .take(MAX)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if list.len() > MAX {
+        s.push_str(&format!(" and {} more", list.len() - MAX));
+    }
+    s
+}
+
+impl IgnoredSnapshot {
+    fn take(root: &Path) -> Result<IgnoredSnapshot, String> {
+        let mut git = Command::new("git");
+        git.args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::null());
+        trellis_core::secrets::scrub(&mut git);
+        let o = git
+            .output()
+            .map_err(|e| format!("git ls-files could not run: {e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git ls-files --ignored failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        let text = String::from_utf8_lossy(&o.stdout);
+        let files = text
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .filter_map(|p| Some((p.to_string(), Stamp::of(&root.join(p))?)))
+            .collect();
+        Ok(IgnoredSnapshot { files })
+    }
+
+    fn diff(&self, after: &IgnoredSnapshot) -> IgnoredChanges {
+        let mut c = IgnoredChanges::default();
+        for (p, s) in &after.files {
+            match self.files.get(p) {
+                None => c.created.push(p.clone()),
+                Some(was) if was != s => c.modified.push(p.clone()),
+                Some(_) => {}
+            }
+        }
+        for p in self.files.keys() {
+            if !after.files.contains_key(p) {
+                c.deleted.push(p.clone());
+            }
+        }
+        c
+    }
+}
+
+/// Removes the ignored files the command created, then any directory that
+/// removal left empty, up to (not including) the root. Returns what could
+/// not be removed. A directory is removed only when empty, so one that held
+/// anything else stays; one that was empty before the command and held only
+/// what it created goes too, which git would not notice either way.
+fn remove_created(root: &Path, created: &[String]) -> Vec<String> {
+    let mut failed = Vec::new();
+    for rel in created {
+        let p = root.join(rel);
+        let is_dir_link =
+            std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink() && p.is_dir());
+        // A Windows directory link is removed with `remove_dir`; on Unix a
+        // link of any kind with `remove_file`.
+        let r = if is_dir_link && cfg!(windows) {
+            std::fs::remove_dir(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+        match r {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                failed.push(format!("{rel}: {e}"));
+                continue;
+            }
+        }
+        let mut dir = p.parent();
+        while let Some(d) = dir {
+            if d == root || !d.starts_with(root) || std::fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+    failed
+}
+
 /// The files under `.git/` a command can use to run code later, as bytes:
-/// `config` (`core.hooksPath`, aliases, `core.fsmonitor`) and every file in
-/// the hooks directory. `git status` never shows them and the rollback
-/// never touches them, so they are compared around the command and put
-/// back. Nothing else in `.git/` is covered (ADR 0026 §11).
+/// `config` (`core.hooksPath`, aliases, `core.fsmonitor`), every file in
+/// the hooks directory, and `info/exclude`, which decides what `git status`
+/// and the rollback's `git clean` can see at all: a `*` written there would
+/// hide every later run's new files. `git status` never shows these and
+/// the rollback never touches them, so they are compared around the command
+/// and put back. Nothing else in `.git/` is covered (ADR 0026 §11).
 struct GitGuard {
     root: PathBuf,
     config: PathBuf,
     hooks: PathBuf,
+    exclude: PathBuf,
     files: Vec<(PathBuf, Vec<u8>)>,
 }
 
 impl GitGuard {
     fn capture(root: &Path) -> Result<GitGuard, String> {
         let mut git = Command::new("git");
-        git.args(["rev-parse", "--git-path", "config", "--git-path", "hooks"])
-            .current_dir(root)
-            .stdin(Stdio::null());
+        git.args([
+            "rev-parse",
+            "--git-path",
+            "config",
+            "--git-path",
+            "hooks",
+            "--git-path",
+            "info/exclude",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::null());
         trellis_core::secrets::scrub(&mut git);
         let o = git
             .output()
             .map_err(|e| format!("git rev-parse could not run: {e}"))?;
         let text = String::from_utf8_lossy(&o.stdout);
         let mut lines = text.lines().map(|l| root.join(l.trim()));
-        let (Some(config), Some(hooks)) = (lines.next(), lines.next()) else {
+        let (Some(config), Some(hooks), Some(exclude)) = (lines.next(), lines.next(), lines.next())
+        else {
             return Err(format!(
                 "git rev-parse --git-path failed: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
@@ -102,6 +296,7 @@ impl GitGuard {
             root: root.to_path_buf(),
             config,
             hooks,
+            exclude,
             files: Vec::new(),
         };
         g.files = g.read()?;
@@ -109,7 +304,7 @@ impl GitGuard {
     }
 
     fn read(&self) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
-        let mut paths = vec![self.config.clone()];
+        let mut paths = vec![self.config.clone(), self.exclude.clone()];
         let mut dirs = vec![self.hooks.clone()];
         while let Some(d) = dirs.pop() {
             let Ok(entries) = std::fs::read_dir(&d) else {
@@ -216,9 +411,18 @@ impl Judge {
         root: &Path,
         touched: &[String],
     ) -> (Vec<String>, Option<trellis_checks::Verdict>) {
+        let denied = self.denied(touched.iter());
+        let audit = (!self.rules.is_empty())
+            .then(|| trellis_checks::governance_audit(root, &self.rules, touched));
+        (denied, audit)
+    }
+
+    /// The `.trellis/` breach and `deny_write` over `paths`, whether git
+    /// shows them or ignores them: an ignored path is still a write, and a
+    /// rule that says "not here" does not ask git first.
+    fn denied<'p>(&self, paths: impl Iterator<Item = &'p String>) -> Vec<String> {
         let g = trellis_loop::Governance::new(&self.deny);
-        let denied = touched
-            .iter()
+        paths
             .filter_map(|p| {
                 if trellis_loop::names_trellis_dir(p) {
                     return Some(format!(
@@ -228,10 +432,7 @@ impl Judge {
                 g.denies_write(p)
                     .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
             })
-            .collect();
-        let audit = (!self.rules.is_empty())
-            .then(|| trellis_checks::governance_audit(root, &self.rules, touched));
-        (denied, audit)
+            .collect()
     }
 }
 
@@ -304,6 +505,16 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             return RunEnd::Error {
                 run_id: None,
                 error: format!("could not read .git/config and hooks before the command: {e}"),
+            };
+        }
+    };
+    // Last before the spawn, so what differs afterwards is the command's.
+    let ignored_before = match IgnoredSnapshot::take(root) {
+        Ok(s) => s,
+        Err(e) => {
+            return RunEnd::Error {
+                run_id: None,
+                error: format!("could not list the ignored files before the command: {e}"),
             };
         }
     };
@@ -392,10 +603,32 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         let _ = writeln!(out, "git:      could NOT be put back: {f}");
     }
 
+    // Before the checks, which write caches of their own (`.mypy_cache`).
+    // A listing that fails reads as every ignored file deleted: nothing is
+    // removed on its strength, and the run cannot converge.
+    let (ignored, ignored_unread) = match IgnoredSnapshot::take(root) {
+        Ok(after) => (ignored_before.diff(&after), None),
+        Err(e) => (IgnoredChanges::default(), Some(e)),
+    };
+    if let Some(e) = &ignored_unread {
+        let _ = writeln!(
+            out,
+            "ignored:  could not list ignored files after the command: {e}"
+        );
+    }
+    if !ignored.is_empty() {
+        let _ = writeln!(
+            out,
+            "ignored:  the command changed files git ignores: {}",
+            ignored.summary()
+        );
+    }
+    let ignored_denied = judge.denied(ignored.all());
+
     let touched = match changed(root) {
         Ok(t) => t,
         Err(e) => {
-            let restored = rollback(&snapshot, out);
+            let restored = undo(root, &snapshot, &ignored, out);
             return if restored {
                 RunEnd::Error {
                     run_id: None,
@@ -411,16 +644,22 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     // a timed-out or interrupted command left a tree nobody should verify,
     // and an unchanged tree has nothing to verify.
     let mut verdicts = Vec::new();
-    let mut denied = Vec::new();
+    // Ignored writes are judged whether or not anything git shows changed.
+    let mut denied = ignored_denied;
     let mut checked = false;
-    let judge_touched = touched.iter().any(|p| trellis_loop::names_trellis_dir(p));
+    let judge_touched = touched
+        .iter()
+        .chain(ignored.all())
+        .any(|p| trellis_loop::names_trellis_dir(p));
     if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
         let (d, audit) = judge.governance(root, &touched);
-        denied = d;
+        denied.extend(d);
         verdicts.extend(audit);
-        for d in &denied {
-            let _ = writeln!(out, "governance: refused: {d}");
-        }
+    }
+    for d in &denied {
+        let _ = writeln!(out, "governance: refused: {d}");
+    }
+    if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
         let checks = &judge.checks;
         let paths = vec![PathBuf::from(".")];
         match tokio::runtime::Builder::new_current_thread()
@@ -464,7 +703,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let converged = checked
         && verdicts.iter().all(|v| v.passed())
         && denied.is_empty()
-        && git_changed.is_empty();
+        && git_changed.is_empty()
+        && ignored_unread.is_none();
     let why = if converged {
         "converged: both checks passed"
     } else {
@@ -473,6 +713,9 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Ended::Interrupted => "interrupted",
             _ if !git_changed.is_empty() => {
                 "not converged: the command changed files under .git/, which a run may not"
+            }
+            _ if ignored_unread.is_some() => {
+                "not converged: what the command did to ignored files could not be read"
             }
             _ if touched.is_empty() => {
                 "not converged: the command changed nothing, so there was nothing to verify"
@@ -501,7 +744,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let restored = if converged {
         true
     } else {
-        rollback(&snapshot, out)
+        undo(root, &snapshot, &ignored, out)
     };
 
     let run_id = write_trail(
@@ -513,6 +756,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             profile: &profile.name,
             touched: &touched,
             exit_text: &exit_text,
+            ignored: &ignored,
             verdicts,
         },
         out,
@@ -524,6 +768,46 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         _ if restored => RunEnd::RolledBack { run_id },
         _ => RunEnd::NotRestored { run_id },
     }
+}
+
+/// The rollback of a run that did not converge: the ignored files the
+/// command created are removed first (`git clean -fd` leaves ignored files,
+/// and then removes the directories their removal emptied), then the
+/// worktree goes back to the snapshot. An ignored file that existed before
+/// and was changed or deleted cannot be put back, because trellis keeps no
+/// copy of ignored files; it is named. `false` when a created file could not
+/// be removed or the worktree is not restored.
+fn undo(
+    root: &Path,
+    snapshot: &trellis_vcs::Snapshot,
+    ignored: &IgnoredChanges,
+    out: &mut dyn Write,
+) -> bool {
+    let failed = remove_created(root, &ignored.created);
+    if !ignored.created.is_empty() {
+        let _ = writeln!(
+            out,
+            "ignored:  removed what the command created: {}",
+            shown(&ignored.created)
+        );
+    }
+    for f in &failed {
+        let _ = writeln!(out, "ignored:  could NOT be removed: {f}");
+    }
+    let lost: Vec<String> = ignored
+        .modified
+        .iter()
+        .chain(&ignored.deleted)
+        .cloned()
+        .collect();
+    if !lost.is_empty() {
+        let _ = writeln!(
+            out,
+            "ignored:  NOT put back (trellis keeps no copy of ignored files): {}",
+            shown(&lost)
+        );
+    }
+    rollback(snapshot, out) && failed.is_empty()
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {
@@ -553,6 +837,7 @@ struct TrailInput<'a> {
     profile: &'a str,
     touched: &'a [String],
     exit_text: &'a str,
+    ignored: &'a IgnoredChanges,
     verdicts: Vec<trellis_checks::Verdict>,
 }
 
@@ -582,13 +867,24 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         approved_by: Approval::None,
         mode_counts: crate::audit_modes(root, t.touched),
         context: None,
-        actions: vec![Action {
+        actions: std::iter::once(Action {
             turn: 1,
             tool: "process".into(),
             target: t.argv.join(" "),
             outcome: t.exit_text.to_string(),
             wrote: !t.touched.is_empty(),
-        }],
+        })
+        // What it did to files git ignores: not `proposed`, which is what
+        // a commit would carry, but recorded, since a converged run keeps
+        // what it created there (ADR 0026 §11).
+        .chain((!t.ignored.is_empty()).then(|| Action {
+            turn: 1,
+            tool: "process".into(),
+            target: "files git ignores".into(),
+            outcome: t.ignored.summary(),
+            wrote: true,
+        }))
+        .collect(),
         control: Some("auto (process agent)".into()),
         // An external process's tokens are not visible to trellis.
         tokens: None,

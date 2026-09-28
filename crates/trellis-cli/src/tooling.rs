@@ -53,12 +53,19 @@ struct Inputs {
 
 impl Inputs {
     fn fingerprint(&self, root: &Path) -> Fingerprint {
-        Fingerprint::of_with(
+        self.fingerprint_cached(root, &trellis_loop::HashCache::default())
+    }
+
+    /// Through the trust guard's cache, which saves re-reading a file whose
+    /// stat is unchanged; the trust decision itself uses a fresh one.
+    fn fingerprint_cached(&self, root: &Path, cache: &trellis_loop::HashCache) -> Fingerprint {
+        Fingerprint::of_cached(
             root,
             &self.hooks,
             &self.custom,
             self.bash.clone(),
-            process_agents(root),
+            process_agents(root, cache),
+            cache,
         )
     }
 
@@ -88,17 +95,18 @@ impl Inputs {
 /// from `.trellis/agents/*.toml` that `work` runs in the worktree, which is
 /// repository code as much as a hook is. A profile set that does not load
 /// contributes nothing here; `work` refuses it before anything runs.
-fn process_agents(root: &Path) -> Vec<trellis_loop::TrustItem> {
+fn process_agents(root: &Path, cache: &trellis_loop::HashCache) -> Vec<trellis_loop::TrustItem> {
     trellis_queue::profile::load_all(root)
         .unwrap_or_default()
         .into_values()
         .filter_map(|p| {
             let argv = p.file.command.clone()?;
-            let mut item = trellis_loop::TrustItem::command(
+            let mut item = trellis_loop::TrustItem::command_cached(
                 root,
                 format!("process agent {}", p.name),
                 &argv,
                 format!("timeout_s = {:?}", p.file.timeout_s),
+                cache,
             );
             // The keys it is handed are part of what is trusted, and shown
             // by name: the profile file's hash alone put them in the digest
@@ -209,7 +217,9 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
     let guard = trusted.then(|| {
         let inputs = Inputs::of(cfg);
         let root = root.to_path_buf();
-        trellis_loop::TrustGuard::over(fp.clone(), move || inputs.fingerprint(&root))
+        trellis_loop::TrustGuard::over(fp.clone(), move |cache| {
+            inputs.fingerprint_cached(&root, cache)
+        })
     });
     let hooks = (trusted && hook_cfg.count() > 0).then(|| {
         let h = Hooks::new(root, hook_cfg.clone(), env.clone());
