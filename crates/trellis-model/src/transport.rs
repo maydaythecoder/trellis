@@ -64,8 +64,11 @@ impl Endpoint {
 
 /// `(host, port)` from a URL's authority: `name`, `name:port`, `[v6]` or
 /// `[v6]:port`. The host is returned without brackets, as a TLS server name
-/// and an IP parse both want it. Shared with the local runtime client.
-pub(crate) fn split_authority(
+/// and an IP parse both want it. Shared with the local runtime client, and
+/// public so the binary's endpoint allow list reads an authority exactly as
+/// the connection will: two parsers could approve one host and reach
+/// another.
+pub fn split_authority(
     base: &str,
     authority: &str,
     default_port: u16,
@@ -123,7 +126,9 @@ pub(crate) fn socket_addr(host: &str, port: u16) -> String {
     }
 }
 
-fn is_loopback(host: &str) -> bool {
+/// Whether `host` (bracketed or not) is this machine: `localhost` or a
+/// loopback address. The one test plain http and the allow list both use.
+pub fn is_loopback(host: &str) -> bool {
     let h = host.trim_start_matches('[').trim_end_matches(']');
     h.eq_ignore_ascii_case("localhost")
         || h.parse::<std::net::IpAddr>()
