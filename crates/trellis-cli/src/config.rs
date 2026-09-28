@@ -33,6 +33,13 @@ pub(crate) struct RepoConfig {
     pub context: Option<ContextSection>,
     #[serde(default)]
     pub control: Option<ControlSection>,
+    /// Which tools a run offers, bash, and the repository's own tools
+    /// (ADR 0023).
+    #[serde(default)]
+    pub tools: Option<ToolsSection>,
+    /// Executable hooks, loaded only when trusted (ADR 0023).
+    #[serde(default)]
+    pub hooks: Option<trellis_loop::HookConfig>,
 }
 
 /// Where a run sits between hands-off and asking about each step (ADR 0018).
@@ -207,7 +214,9 @@ impl RepoConfig {
             .and_then(|c| c.approve.clone())
             .unwrap_or_else(|| vec!["edit".to_string()]);
         for t in &approve {
-            if !trellis_loop::APPROVABLE_TOOLS.contains(&t.as_str()) {
+            // A repository's own tools are approvable by name (ADR 0023).
+            let custom = self.custom_tools().iter().any(|c| &c.name == t);
+            if !custom && !trellis_loop::APPROVABLE_TOOLS.contains(&t.as_str()) {
                 anyhow::bail!(
                     "[control] approve lists `{t}`, which is not a tool; the tools are {}",
                     trellis_loop::APPROVABLE_TOOLS.join(", ")
@@ -713,5 +722,95 @@ deny_write = [\"vendor/\", \"*.lock\"]
             c.describe(),
             "approve (edit, read_file, run_checks, blast_radius)"
         );
+    }
+
+    #[test]
+    fn a_repository_tool_may_be_listed_for_approval_by_its_name() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            concat!(
+                "[control]\nmode = \"approve\"\napprove = [\"lint\", \"bash\"]\n",
+                "[[tools.custom]]\nname = \"lint\"\ndescription = \"Lint.\"\n",
+                "command = [\"python\", \"lint.py\"]\n",
+                "schema = { type = \"object\", properties = { path = { type = \"string\" } } }\n",
+            ),
+        );
+        let cfg = RepoConfig::load(d.path()).unwrap();
+        assert_eq!(cfg.control(None).unwrap().approve, ["lint", "bash"]);
+        let c = &cfg.custom_tools()[0];
+        assert_eq!(c.schema["properties"]["path"]["type"], "string");
+    }
+
+    #[test]
+    fn tools_and_hooks_sections_are_read_and_a_typo_is_an_error() {
+        // A misspelt key that silently meant "no timeout" or "no allowlist"
+        // would change what runs unattended without anyone seeing it.
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            concat!(
+                "[tools]\nenable = [\"grep\"]\nbash = true\nbash_allow = [\"cargo test\"]\n",
+                "bash_timeout_s = 30\n",
+                "[hooks]\npre_tool = [\"python\", \"pre.py\"]\ntimeout_s = 5\n",
+            ),
+        );
+        let cfg = RepoConfig::load(d.path()).unwrap();
+        let t = cfg.tools.as_ref().unwrap();
+        assert_eq!(t.bash, Some(true));
+        assert_eq!(t.bash_timeout_s, Some(30));
+        assert_eq!(cfg.hooks.as_ref().unwrap().count(), 1);
+
+        write(d.path(), "[tools]\nbash_alow = [\"x\"]\n");
+        assert!(RepoConfig::load(d.path()).is_err());
+        write(d.path(), "[hooks]\npretool = [\"x\"]\n");
+        assert!(RepoConfig::load(d.path()).is_err());
+    }
+}
+
+/// `[tools]` (ADR 0023). Unknown keys are refused: every one of these
+/// changes what a run may execute.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ToolsSection {
+    /// Built-ins that are off by default: `write_file`, `grep`, `find`, `ls`.
+    pub enable: Option<Vec<String>>,
+    /// Any tool, custom ones included. Never `run_checks`.
+    pub disable: Option<Vec<String>>,
+    /// Turns the `bash` tool on. Subject to trust.
+    pub bash: Option<bool>,
+    /// Command prefixes an unattended run may execute.
+    pub bash_allow: Option<Vec<String>>,
+    /// Lets an unattended run execute any command.
+    pub bash_unattended: Option<bool>,
+    /// Default 120.
+    pub bash_timeout_s: Option<u64>,
+    /// argv prefix for `bash`; the command is appended. Default: the
+    /// platform's (`trellis_loop::default_shell`).
+    pub shell: Option<Vec<String>>,
+    /// `[[tools.custom]]`.
+    pub custom: Option<Vec<trellis_loop::CustomTool>>,
+}
+
+/// Default `[tools] bash_timeout_s`.
+pub(crate) const DEFAULT_BASH_TIMEOUT_S: u64 = 120;
+
+impl RepoConfig {
+    /// `[[tools.custom]]` as declared, trusted or not.
+    pub(crate) fn custom_tools(&self) -> &[trellis_loop::CustomTool] {
+        self.tools
+            .as_ref()
+            .and_then(|t| t.custom.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// Whether `[tools] bash = true`.
+    pub(crate) fn bash_requested(&self) -> bool {
+        self.tools.as_ref().and_then(|t| t.bash).unwrap_or(false)
+    }
+
+    /// `[hooks]`, or none.
+    pub(crate) fn hook_config(&self) -> trellis_loop::HookConfig {
+        self.hooks.clone().unwrap_or_default()
     }
 }

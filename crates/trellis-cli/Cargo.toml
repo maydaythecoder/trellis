@@ -28,6 +28,8 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde.workspace = true
+# The outcome JSON an after_run hook reads (ADR 0023); already in the tree.
+serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 # `json`: the `--log-json` formatter (ADR 0020 §7). Adds `tracing-serde`;

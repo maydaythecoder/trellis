@@ -28,6 +28,11 @@ pub enum ToolResult {
     Checks(Verdict),
     FileContent(String),
     Edit(EditOutcome),
+    /// What a listing or a command printed: `grep`, `find`, `ls`, `bash`, a
+    /// custom tool, a created file (ADR 0023). Text for the model to read.
+    /// An exit code of 0 is in here as a fact about a process, and it is
+    /// not a correctness claim: only `Checks` is.
+    Output(String),
     /// A tool failed. Note that this is *not* a correctness verdict either:
     /// a failed tool says nothing about whether the code is right.
     Error(String),
@@ -72,6 +77,10 @@ mod tests {
             "a successful edit is not evidence the edit was correct"
         );
         assert!(!ToolResult::Error("boom".into()).is_passing_check());
+        assert!(
+            !ToolResult::Output("exit 0\nall tests passed".into()).is_passing_check(),
+            "a command that says it passed is not a check that passed"
+        );
     }
 
     /// Compile-time guard, not a runtime one. If someone adds a variant to
@@ -85,6 +94,7 @@ mod tests {
                 ToolResult::Checks(_) => "the only claim-bearing variant",
                 ToolResult::FileContent(_) => "no claim",
                 ToolResult::Edit(_) => "no claim",
+                ToolResult::Output(_) => "no claim: a command's output, whatever its exit code",
                 ToolResult::Error(_) => "no claim",
             }
         }
