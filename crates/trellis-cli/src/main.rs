@@ -3814,9 +3814,14 @@ mod approval_tests {
             .filter_map(Result::ok)
             .find(|e| e.path().extension().is_some_and(|x| x == "json"))
             .expect("a trail was written");
-        trellis_trail::UntrustedTrail::from_json(&std::fs::read_to_string(file.path()).unwrap())
-            .unwrap()
-            .factual
+        let raw = std::fs::read_to_string(file.path()).unwrap();
+        let t = trellis_trail::UntrustedTrail::from_json(&raw).unwrap();
+        // Every trail here carries the new `control` field and approval
+        // actions, so every read-back also checks the digest still covers
+        // them: a field added to `factual` that the digest missed would make
+        // each of these trails read as altered.
+        assert_eq!(t.integrity(&raw), trellis_trail::Integrity::Intact);
+        t.factual
     }
 
     fn actions(f: &trellis_trail::UntrustedFactual) -> Vec<(String, String, String, bool)> {

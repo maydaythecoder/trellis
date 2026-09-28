@@ -1724,7 +1724,10 @@ name the test that would fail if it were reverted.
   `run` and `session`. Not tested: a person at a real terminal or the
   full-screen interface — both are exercised through the same channel with
   the answer supplied by the test — and Ctrl-C while a question is open.
-  Executable hooks are not built (ADR 0018 §3).
+  Executable hooks are not built (ADR 0018 §3). Known edge: whether there
+  is a person to ask is decided by stdin alone, so `trellis run` with a
+  terminal on stdin and stdout redirected to a file still asks, and the
+  question goes into the file.
 - **Skills (ADR 0019).** `.trellis/skills/<name>/SKILL.md` is discovered,
   names and descriptions are listed inside the repository fence under a
   reference-material heading, capped at 4,096 bytes with the omitted count on
