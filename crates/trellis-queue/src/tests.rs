@@ -191,8 +191,23 @@ fn requeue_moves_a_stale_claim_back_and_refuses_what_is_not_there() {
     let id = q.add("x", None, None).unwrap();
     std::mem::forget(q.claim_next().unwrap().unwrap()); // a crashed process
     assert_eq!(q.requeue(&format!("{id}.json")).unwrap(), State::Claimed);
-    assert_eq!(q.ids(State::Pending).unwrap(), vec![id]);
+    assert_eq!(q.ids(State::Pending).unwrap(), vec![id.clone()]);
     assert!(matches!(q.requeue("nope"), Err(QueueError::NoSuchTask(_))));
+
+    // From failed/: the old outcome goes, the attempt count stays.
+    let c = q.claim(&id).unwrap().unwrap();
+    c.finish(
+        State::Failed,
+        Outcome {
+            run_id: Some("r".into()),
+            exit: "not converged".into(),
+            finished_at: iso_now(),
+        },
+    )
+    .unwrap();
+    assert_eq!(q.requeue(&id).unwrap(), State::Failed);
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!((t.outcome, t.attempts), (None, 1));
 }
 
 #[test]
