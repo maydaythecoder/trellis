@@ -999,3 +999,369 @@ async fn a_pre_tool_hook_that_writes_marks_the_turn_as_tree_changing() {
     assert!(t.turns[1].may_have_changed_tree, "{:?}", t.turns[1]);
     assert!(!converged(&outcome), "got {outcome:?}");
 }
+
+// ---------------------------------------------------------------------------
+// What judges a run cannot be changed by it (ADR 0023 §5, fifth review).
+// ---------------------------------------------------------------------------
+
+/// A directory link, or `false` where this host will not make one (Windows
+/// without the privilege), so the test skips that case rather than fails.
+fn link_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link).is_ok()
+    }
+}
+
+fn with_hook_file() -> tempfile::TempDir {
+    let d = git_repo();
+    std::fs::create_dir_all(d.path().join(".trellis/hooks")).unwrap();
+    std::fs::write(
+        d.path().join(".trellis/hooks/gate.py"),
+        "import sys\nsys.exit(0)\n",
+    )
+    .unwrap();
+    d
+}
+
+#[tokio::test]
+async fn neither_edit_nor_write_file_can_reach_dot_trellis_by_any_spelling() {
+    // The risk: `edit .trellis/hooks/gate.py` rewrote the pre_tool gate the
+    // hooks re-read on every spawn, so the model could switch off a gate or
+    // run code of its own under the person's trust.
+    let d = with_hook_file();
+    let _ = link_dir(&d.path().join(".trellis"), &d.path().join("alias"));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    let before = std::fs::read_to_string(d.path().join(".trellis/hooks/gate.py")).unwrap();
+    let mut edits = vec![
+        ".trellis/hooks/gate.py",
+        ".TRELLIS/hooks/gate.py",
+        "./.trellis/hooks/gate.py",
+        ".trellis./hooks/gate.py",
+        ".trellis /hooks/gate.py",
+        ".trellis\\hooks\\gate.py",
+    ];
+    if d.path().join("alias").exists() {
+        edits.push("alias/hooks/gate.py");
+    }
+    for path in edits {
+        let r = orch
+            .call(&ToolCall::Edit {
+                path: path.into(),
+                old: "sys.exit(0)".into(),
+                new: "sys.exit(0)  # owned".into(),
+            })
+            .await
+            .result;
+        match r {
+            ToolResult::Error(e) => assert!(e.contains(".trellis/"), "{path}: {e}"),
+            other => panic!("`{path}` must be refused: {other:?}"),
+        }
+        // The approval gate lets through unasked only what the orchestrator
+        // refuses; it must predict this refusal, not show a diff for it.
+        assert!(
+            crate::gate::preview_edit(d.path(), path, "sys.exit(0)", "sys.exit(1)").is_none(),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".trellis/hooks/gate.py")).unwrap(),
+        before
+    );
+    for path in [
+        ".trellis/hooks/new.py",
+        ".Trellis/tools/x.py",
+        "TRELLI~1/x.py",
+        ".trellis/config.toml.new",
+    ] {
+        let r = orch
+            .call(&ToolCall::WriteFile {
+                path: path.into(),
+                content: "print('owned')\n".into(),
+            })
+            .await
+            .result;
+        match r {
+            ToolResult::Error(e) => assert!(e.contains(".trellis/"), "{path}: {e}"),
+            other => panic!("`{path}` must be refused: {other:?}"),
+        }
+    }
+    assert!(!d.path().join(".trellis/hooks/new.py").exists());
+    // Only the root's `.trellis/` is trellis's: a nested one is code.
+    let nested = orch
+        .call(&ToolCall::WriteFile {
+            path: "app/.trellis/x.py".into(),
+            content: "x = 1\n".into(),
+        })
+        .await
+        .result;
+    assert!(
+        matches!(&nested, ToolResult::Output(s) if s.starts_with("created")),
+        "{nested:?}"
+    );
+}
+
+#[tokio::test]
+async fn reads_and_listings_do_not_reach_git_s_own_directory() {
+    // The risk: `read_file .git/config` put a remote URL with a credential
+    // in it into an observation, and from there into a hosted request body
+    // and the committed trail.
+    let d = git_repo();
+    let secret = "https://user:tok3n-in-url@example.invalid/r.git";
+    std::process::Command::new("git")
+        .args(["remote", "add", "origin", secret])
+        .current_dir(d.path())
+        .output()
+        .unwrap();
+    let linked = link_dir(&d.path().join(".git"), &d.path().join("g"));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    let mut calls = vec![
+        ToolCall::ReadFile {
+            path: ".git/config".into(),
+        },
+        ToolCall::ReadFile {
+            path: ".GIT/config".into(),
+        },
+        ToolCall::ReadFile {
+            path: "./.git./config".into(),
+        },
+        ToolCall::Ls {
+            path: ".git".into(),
+        },
+        ToolCall::Ls {
+            path: ".Git/".into(),
+        },
+        ToolCall::Grep {
+            pattern: "tok3n".into(),
+            path: Some(".git/config".into()),
+        },
+        ToolCall::Grep {
+            pattern: "tok3n".into(),
+            path: Some(".git".into()),
+        },
+    ];
+    if linked {
+        calls.push(ToolCall::ReadFile {
+            path: "g/config".into(),
+        });
+        calls.push(ToolCall::Ls { path: "g".into() });
+    }
+    for call in calls {
+        match orch.call(&call).await.result {
+            ToolResult::Error(e) => {
+                assert!(!e.contains("tok3n"), "{call:?}: {e}");
+                assert!(e.contains(".git") || e.contains("outside"), "{call:?}: {e}");
+            }
+            other => panic!("{call:?} must be refused: {other:?}"),
+        }
+    }
+    // Searching and listing the whole repository surfaces none of it.
+    for call in [
+        ToolCall::Grep {
+            pattern: "tok3n".into(),
+            path: None,
+        },
+        ToolCall::Find { glob: "**".into() },
+        ToolCall::Find {
+            glob: ".git/**".into(),
+        },
+        ToolCall::Ls { path: ".".into() },
+    ] {
+        let out = format!("{:?}", orch.call(&call).await.result);
+        // The pattern is echoed in "no match for `tok3n`"; the URL is not.
+        assert!(!out.contains("example.invalid"), "{call:?}: {out}");
+        assert!(
+            !out.contains(".git/config") && !out.contains(".git/HEAD"),
+            "{call:?}: {out}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_link_out_of_the_repository_is_neither_read_nor_written() {
+    let d = git_repo();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "outside\n").unwrap();
+    if !link_dir(outside.path(), &d.path().join("out")) {
+        return;
+    }
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    for call in [
+        ToolCall::ReadFile {
+            path: "out/secret.txt".into(),
+        },
+        ToolCall::Ls { path: "out".into() },
+        ToolCall::Edit {
+            path: "out/secret.txt".into(),
+            old: "outside".into(),
+            new: "changed".into(),
+        },
+        ToolCall::WriteFile {
+            path: "out/new.txt".into(),
+            content: "x\n".into(),
+        },
+    ] {
+        match orch.call(&call).await.result {
+            ToolResult::Error(e) => assert!(e.contains("outside"), "{call:?}: {e}"),
+            other => panic!("{call:?} must be refused: {other:?}"),
+        }
+    }
+    assert!(!outside.path().join("new.txt").exists());
+}
+
+/// A trust guard over what `hooks` and `bash` would make trusted, as the
+/// binary builds one: the fingerprint at the start, recomputed on each
+/// check.
+fn guard_for(root: &Path, cfg: &HookConfig, tools: &ToolSet) -> crate::trust::TrustGuard {
+    let bash = tools
+        .bash()
+        .map(|b| (b.shell.clone(), "bash = true".to_string()));
+    let (root, cfg) = (root.to_path_buf(), cfg.clone());
+    let custom = tools.customs().to_vec();
+    let now = move || crate::trust::Fingerprint::of(&root, &cfg, &custom, bash.clone());
+    crate::trust::TrustGuard::over(now(), now)
+}
+
+fn log_line(log: &Path, word: &str) -> Option<Vec<String>> {
+    opt(&format!("echo {word}>> {}", log.display()))
+}
+
+#[tokio::test]
+async fn a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run() {
+    // The risk: `bash` cannot be path-checked, and a hook re-reads its
+    // script on every spawn, so a command that rewrote `.trellis/hooks/`
+    // had every later hook run code the person never trusted.
+    let d = with_hook_file();
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("hooks.log");
+    let cfg = HookConfig {
+        pre_tool: log_line(&log, "pre"),
+        post_tool: log_line(&log, "post"),
+        ..Default::default()
+    };
+    let tools = with_bash(&[], true, Duration::from_secs(20));
+    let guard = guard_for(d.path(), &cfg, &tools);
+    let h = hooks(d.path(), cfg).with_guard(guard.clone());
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_tools(tools.clone())
+        .with_gate(Box::new(h.pre_tool_gate().unwrap()))
+        .with_hooks(h.clone())
+        .with_trust_guard(guard)
+        .spawn();
+    let rewrite = if cfg!(windows) {
+        "echo import os> .trellis\\hooks\\gate.py"
+    } else {
+        "echo 'import os' > .trellis/hooks/gate.py"
+    };
+    let steps = serde_json::json!({"steps": [
+        {"tool": "run_checks", "paths": [], "kinds": ["typecheck"]},
+        {"tool": "bash", "command": rewrite},
+        {"tool": "read_file", "path": "app/util.py"},
+        {"tool": "done", "summary": "done"}
+    ]});
+    let mut m = script(&tools, &steps.to_string());
+    let (outcome, t) = run("change it", &mut m, &orch, &budget()).await;
+    match &outcome {
+        Outcome::NotConverged {
+            reason: NotConverged::TrustChanged { detail },
+            ..
+        } => assert!(detail.contains(".trellis/hooks/gate.py"), "{detail}"),
+        other => panic!("got {other:?}"),
+    }
+    assert_eq!(
+        t.turns.len(),
+        2,
+        "the run ends on the call that broke trust"
+    );
+    // pre and post around the check, pre around bash; bash's own post_tool
+    // was the next spawn, and it was refused.
+    let ran = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        ran.split_whitespace().collect::<Vec<_>>(),
+        ["pre", "post", "pre"],
+        "{ran}"
+    );
+    // And every spawn after it: the latch holds even if the file is put back.
+    let mut gate = h.pre_tool_gate().unwrap();
+    let call = ToolCall::ReadFile {
+        path: "app/util.py".into(),
+    };
+    match crate::gate::ToolGate::check(&mut gate, &call).await {
+        crate::gate::GateDecision::Deny { reason } => {
+            assert!(reason.contains("not started"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_bash_command_that_changes_dot_trellis_ends_the_run_with_no_hook_declared() {
+    // One rule, whichever tool broke it: a model run that changes
+    // `.trellis/` does not converge, as a process agent's does not.
+    let d = with_hook_file();
+    let tools = with_bash(&[], true, Duration::from_secs(20));
+    let guard = guard_for(d.path(), &HookConfig::default(), &tools);
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_tools(tools.clone())
+        .with_trust_guard(guard)
+        .spawn();
+    let write = if cfg!(windows) {
+        "echo [checks]> .trellis\\config.toml"
+    } else {
+        "echo '[checks]' > .trellis/config.toml"
+    };
+    let steps = serde_json::json!({"steps": [
+        {"tool": "run_checks", "paths": [], "kinds": ["typecheck"]},
+        {"tool": "bash", "command": write},
+        {"tool": "done", "summary": "done"}
+    ]});
+    let mut m = script(&tools, &steps.to_string());
+    let (outcome, _t) = run("change it", &mut m, &orch, &budget()).await;
+    assert!(
+        matches!(
+            &outcome,
+            Outcome::NotConverged {
+                reason: NotConverged::TrustChanged { .. },
+                ..
+            }
+        ),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_custom_tool_does_not_start_once_trusted_code_has_changed() {
+    let d = with_hook_file();
+    let tools = ToolSet::build(ToolSelection {
+        custom: vec![echo_tool("echo_args", "path")],
+        ..Default::default()
+    })
+    .unwrap();
+    let guard = guard_for(d.path(), &HookConfig::default(), &tools);
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools)
+        .with_trust_guard(guard)
+        .spawn();
+    std::fs::write(d.path().join(".trellis/hooks/gate.py"), "import os\n").unwrap();
+    let d2 = orch
+        .call(&ToolCall::Custom {
+            name: "echo_args".into(),
+            args: serde_json::json!({"path": "x"}),
+        })
+        .await;
+    match &d2.result {
+        ToolResult::Error(e) => assert!(e.contains("was not started"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(d2.trust_breach.is_some());
+}

@@ -79,6 +79,10 @@ pub struct Hooks {
     cfg: HookConfig,
     timeout: Duration,
     env: Vec<(String, String)>,
+    /// Re-checks trust before every spawn (ADR 0023 §5): a hook re-reads
+    /// its script each time, and a script rewritten since trust was given
+    /// is not what the person trusted.
+    guard: Option<crate::trust::TrustGuard>,
 }
 
 impl Hooks {
@@ -91,7 +95,19 @@ impl Hooks {
             cfg,
             timeout,
             env,
+            guard: None,
         }
+    }
+
+    /// Refuses every spawn once `guard` finds the trusted code changed.
+    #[must_use]
+    pub fn with_guard(mut self, guard: crate::trust::TrustGuard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    pub fn guard(&self) -> Option<&crate::trust::TrustGuard> {
+        self.guard.as_ref()
     }
 
     pub fn config(&self) -> &HookConfig {
@@ -110,6 +126,10 @@ impl Hooks {
         stdin: Vec<u8>,
         head: bool,
     ) -> Result<exec::Captured, String> {
+        if let Some(g) = &self.guard {
+            g.check()
+                .map_err(|why| format!("not started, because {why}"))?;
+        }
         exec::run(Spec {
             argv,
             cwd: &self.root,

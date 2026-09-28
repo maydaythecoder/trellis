@@ -916,6 +916,31 @@ fn hosted_system(t: &Transcript) -> String {
     p.trim_end().to_string()
 }
 
+/// The provider's own record of turn `i`, when there is one and it is for
+/// this very call. The one decider of which turns are replayed: the
+/// conversation is built from it, and so is [`every_turn_replayed`], which
+/// the thinking warning reads without building a conversation.
+fn issued_for<'a>(
+    issued: &'a [Option<Issued>],
+    i: usize,
+    turn: &crate::agent::Turn,
+) -> Option<&'a Issued> {
+    issued
+        .get(i)
+        .and_then(Option::as_ref)
+        .filter(|x| x.call == turn.call)
+}
+
+/// Whether every turn goes back as the provider's own reply: what
+/// `trellis_model::every_turn_replayed` would say of [`conversation`]'s
+/// result, decided by the same [`issued_for`], without building one.
+fn every_turn_replayed(t: &Transcript, issued: &[Option<Issued>]) -> bool {
+    t.turns
+        .iter()
+        .enumerate()
+        .all(|(i, turn)| issued_for(issued, i, turn).is_some())
+}
+
 /// The transcript as a conversation, with the `elided` oldest observations
 /// replaced by their one-line notes.
 fn conversation(
@@ -931,10 +956,7 @@ fn conversation(
         .iter()
         .enumerate()
         .map(|(i, turn)| {
-            let mine = issued
-                .get(i)
-                .and_then(Option::as_ref)
-                .filter(|x| x.call == turn.call);
+            let mine = issued_for(issued, i, turn);
             let mut args = crate::registry::call_json(&turn.call);
             if let Some(m) = args.as_object_mut() {
                 m.remove("tool");
@@ -1027,13 +1049,12 @@ impl Model for HostedModel {
         // the same refusal.
         let mut refused: Option<serde_json::Value> = None;
         let configured = self.client.thinking();
-        // Decided from the conversation the body is built from, by the
-        // function the body builder uses, so the warning and the request
-        // cannot disagree. Elision (the last argument) changes only
-        // observations, never which turns are replayed, so 0 serves for
-        // every retry below.
-        let replayed =
-            trellis_model::every_turn_replayed(&conversation(t, &self.issued, protocol, 0));
+        // Decided by `issued_for`, which also decides each exchange's
+        // `replay` in the conversation the body is built from, so the
+        // warning and the request cannot disagree; without building that
+        // conversation once more per call to find out. Elision changes only
+        // observations, never which turns are replayed.
+        let replayed = every_turn_replayed(t, &self.issued);
         if !self.thinking_withheld
             && configured != trellis_model::Thinking::Off
             && trellis_model::thinking_sent(protocol, configured, replayed)
@@ -2192,6 +2213,45 @@ mod compaction_and_hosted_tests {
         json!({"content":[{"type":"tool_use","id":"toolu_1","name":"done",
             "input":{"summary":"x"}}],"usage":{"output_tokens":5}})
         .to_string()
+    }
+
+    #[test]
+    fn the_replay_decision_without_a_conversation_agrees_with_the_body_s() {
+        // A guard, for the per-call cost cut: the thinking warning used to
+        // build a whole conversation to ask this. It must still say what
+        // the body builder would, on every shape of history.
+        let issued = |call: ToolCall| {
+            Some(Issued {
+                call,
+                id: "toolu_1".into(),
+                replay: json!({"role": "assistant", "content": []}),
+            })
+        };
+        let t1 = || transcript(vec![turn(read("a.py"), "x", None)]);
+        let t2 = || {
+            transcript(vec![
+                turn(read("a.py"), "x", None),
+                turn(read("b.py"), "y", None),
+            ])
+        };
+        for (t, rec) in [
+            (transcript(vec![]), vec![]),
+            (t1(), vec![]),
+            (t1(), vec![issued(read("a.py"))]),
+            (t1(), vec![issued(read("other.py"))]),
+            (t2(), vec![issued(read("a.py"))]),
+            (t2(), vec![issued(read("a.py")), issued(read("b.py"))]),
+            (t2(), vec![None, issued(read("b.py"))]),
+        ] {
+            for p in [Protocol::Anthropic, Protocol::OpenAiChat] {
+                assert_eq!(
+                    every_turn_replayed(&t, &rec),
+                    trellis_model::every_turn_replayed(&conversation(&t, &rec, p, 0)),
+                    "{} turns, {rec:?}",
+                    t.turns.len()
+                );
+            }
+        }
     }
 
     #[tokio::test]

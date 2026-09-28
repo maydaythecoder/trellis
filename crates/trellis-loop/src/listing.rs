@@ -46,7 +46,24 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         Err(e) => ToolResult::Error(format!("grep could not run git: {e}")),
         Ok(c) if c.timed_out => ToolResult::Error("grep timed out".into()),
         // git grep: 0 found, 1 found nothing, anything else is a failure.
-        Ok(c) if c.code == Some(0) => ToolResult::Output(c.stdout.render()),
+        Ok(c) if c.code == Some(0) => {
+            // git does not search its own directory, and a line from one
+            // would be a credential's way into the trail; belt and braces
+            // for a nested `.GIT` on a case-insensitive filesystem. The path
+            // ends at the first `:`, which a Windows path cannot contain.
+            let out = c.stdout.render();
+            let kept: Vec<&str> = out
+                .lines()
+                .filter(|l| {
+                    !crate::orchestrator::names_git_dir(l.split_once(':').map_or(*l, |(p, _)| p))
+                })
+                .collect();
+            if kept.is_empty() {
+                ToolResult::Output(format!("no match for `{pattern}`"))
+            } else {
+                ToolResult::Output(kept.join("\n"))
+            }
+        }
         Ok(c) if c.code == Some(1) && c.stderr.is_empty() => {
             ToolResult::Output(format!("no match for `{pattern}`"))
         }
@@ -55,11 +72,18 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
 }
 
 pub(crate) async fn find(root: &Path, glob: &str) -> ToolResult {
+    find_capped(root, glob, 64 << 20).await
+}
+
+async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
     if glob.is_empty() {
         return ToolResult::Error("find needs a glob, e.g. `**/*.py`".into());
     }
-    let argv: Vec<String> = [
+    let pat = glob.replace('\\', "/");
+    let pat = pat.trim_start_matches("./");
+    let mut argv: Vec<String> = [
         "git",
+        "--literal-pathspecs",
         "ls-files",
         "-z",
         "--cached",
@@ -69,16 +93,28 @@ pub(crate) async fn find(root: &Path, glob: &str) -> ToolResult {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    // Not capped at the tail: the list is filtered after reading, and a tail
-    // of it would be an arbitrary subset. A file list is bounded by the
-    // repository, so the cap here is generous.
+    // The glob's leading literal directories, as a pathspec, so a narrower
+    // glob lists less and not only shows less: that is what the refusal
+    // below tells the model to do. Literal, so a `[` in a directory name is
+    // not a git wildcard; the glob has already been refused any `:`.
+    let prefix: Vec<&str> = pat
+        .split('/')
+        .take_while(|s| !s.is_empty() && !s.contains(['*', '?']) && *s != ".")
+        .collect();
+    if !prefix.is_empty() {
+        argv.push("--".into());
+        argv.push(prefix.join("/"));
+    }
+    // The list is filtered after reading, and the capture keeps its tail,
+    // so a list past the cap is refused below rather than shown in part.
+    // A file list is bounded by the repository, so the cap is generous.
     let r = exec::run(Spec {
         argv: &argv,
         cwd: root,
         env: &[],
         stdin: None,
         timeout: LISTING_TIMEOUT,
-        cap: 64 << 20,
+        cap,
         head: false,
     })
     .await;
@@ -92,12 +128,23 @@ pub(crate) async fn find(root: &Path, glob: &str) -> ToolResult {
         }
         Ok(c) => c,
     };
+    // The capture keeps the tail, so past the cap it holds an arbitrary
+    // subset of the list whose first path is cut mid-name. Nothing from it
+    // is shown: a partial list read as the repository is worse than none.
+    if c.stdout.total > cap {
+        return ToolResult::Error(format!(
+            "find: git lists {} bytes of paths for `{glob}`, more than the {cap} this \
+             reads, so no list is given rather than part of one. Use a narrower glob that \
+             starts with a \
+             directory, e.g. `app/**/*.py`: only that directory is then listed. Or `ls` \
+             a directory.",
+            c.stdout.total
+        ));
+    }
     let listed = c.stdout.render();
-    let pat = glob.replace('\\', "/");
-    let pat = pat.trim_start_matches("./");
     let mut hits: Vec<&str> = listed
         .split('\0')
-        .filter(|p| !p.is_empty() && glob_match(pat, p))
+        .filter(|p| !p.is_empty() && glob_match(pat, p) && !crate::orchestrator::names_git_dir(p))
         .collect();
     hits.sort_unstable();
     hits.dedup();
@@ -111,7 +158,8 @@ pub(crate) fn ls(full: &Path, rel: &str) -> ToolResult {
     };
     let mut names: Vec<String> = rd
         .filter_map(Result::ok)
-        .filter(|e| e.file_name() != ".git")
+        // By any spelling: `.GIT` on a case-insensitive filesystem is it.
+        .filter(|e| !crate::orchestrator::names_git_dir(&e.file_name().to_string_lossy()))
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             if e.file_type().is_ok_and(|t| t.is_dir()) {
@@ -202,6 +250,42 @@ mod tests {
         assert!(!glob_match("app/?.py", "app/ab.py"));
         assert!(glob_match("tests/test_*.py", "tests/test_x.py"));
         assert!(glob_match("?.py", "é.py"), "one character, not one byte");
+    }
+
+    #[tokio::test]
+    async fn a_file_list_larger_than_the_cap_is_refused_not_cut() {
+        // The risk: the capture keeps the tail, so a list past the cap came
+        // back as an arbitrary subset whose first path was cut mid-name,
+        // and the model read it as the repository.
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        for i in 0..5 {
+            std::fs::write(d.path().join(format!("module_{i}.py")), "x = 1\n").unwrap();
+        }
+        match find_capped(d.path(), "*.py", 40).await {
+            ToolResult::Error(e) => {
+                assert!(e.contains("narrower"), "{e}");
+                assert!(!e.contains("module_"), "no partial list: {e}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Under the cap, the whole list.
+        match find_capped(d.path(), "*.py", 4096).await {
+            ToolResult::Output(s) => assert_eq!(s.lines().count(), 5, "{s}"),
+            other => panic!("{other:?}"),
+        }
+        // And the advice works: a glob inside a directory lists only that
+        // directory, so it fits a cap the whole repository does not.
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(d.path().join("app/a.py"), "x = 1\n").unwrap();
+        match find_capped(d.path(), "app/**/*.py", 40).await {
+            ToolResult::Output(s) => assert_eq!(s, "app/a.py"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

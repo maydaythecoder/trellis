@@ -66,6 +66,11 @@ fn field(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<(u6
                 if st == 0 {
                     return Err("a step of 0 never advances".into());
                 }
+                // Past the field's largest value a step can only ever reach
+                // its start, and near u32::MAX it overflowed the loop below.
+                if st > hi {
+                    return Err(format!("step {st} is larger than the field's maximum {hi}"));
+                }
                 (r, st)
             }
             None => (part, 1),
@@ -82,10 +87,12 @@ fn field(s: &str, lo: u32, hi: u32, names: Option<(&[&str], u32)>) -> Result<(u6
         if a > b {
             return Err(format!("range `{range}` runs backwards"));
         }
-        let mut v = a;
-        while v <= b {
-            bits |= 1 << v;
-            v += step;
+        // Checked as well as bounded above: the loop ends when the next
+        // value would pass `b` or would not fit, whichever comes first.
+        let mut v = Some(a);
+        while let Some(x) = v.filter(|x| *x <= b) {
+            bits |= 1 << x;
+            v = x.checked_add(step);
         }
     }
     Ok((bits, star))
@@ -290,6 +297,28 @@ impl std::fmt::Display for Tz {
 mod tests {
     use super::*;
     use crate::stamp::{parse_iso, secs_to_iso};
+
+    #[test]
+    fn a_step_larger_than_the_field_is_refused_not_overflowed() {
+        // The risk: `v += step` with a step near u32::MAX panicked in a
+        // debug build and wrapped in release, so a routine file could stop
+        // `work` or schedule a minute nobody wrote.
+        for bad in [
+            "1/4294967295 * * * *",
+            "*/4294967295 * * * *",
+            "* 0-23/24 * * *",
+            "* * */32 * *",
+            "*/60 * * * *",
+            "*/0 * * * *",
+        ] {
+            let e = Cron::parse(bad).expect_err(bad);
+            assert!(e.contains("step"), "{bad}: {e}");
+        }
+        // The largest step a field allows still parses: every 59 minutes
+        // from 0 is minutes 0 and 59.
+        let c = Cron::parse("*/59 * * * *").unwrap();
+        assert_eq!(c.minutes, (1 << 0) | (1 << 59));
+    }
 
     fn next(c: &str, after: &str, tz: &str) -> String {
         let c = Cron::parse(c).unwrap();
