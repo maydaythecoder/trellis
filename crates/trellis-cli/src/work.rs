@@ -720,6 +720,7 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     // Optional now: a queue of process-agent tasks, or of tasks whose
     // profiles name their own model, needs none. A task that does need it
     // is left waiting with that reason rather than failed.
+    let model_from_user = args.model.is_some();
     let model = args.model.or_else(|| cfg.model());
     // Parsed before anything is claimed, so a typo costs nothing rather than
     // failing the task at the head of the queue.
@@ -744,6 +745,7 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     let mut runner = CliRunner {
         root,
         model,
+        model_from_user,
         unconstrained: cfg.unconstrained(),
         stop,
         profiles,
@@ -791,6 +793,9 @@ fn listen_for_ctrl_c(flag: Arc<AtomicBool>) {
 struct CliRunner<'a> {
     root: &'a Path,
     model: Option<String>,
+    /// Whether `model` came from `--model` rather than `[model] spec`
+    /// (ADR 0024 §3). A profile's own model is the repository's.
+    model_from_user: bool,
     unconstrained: bool,
     stop: Arc<AtomicBool>,
     /// Re-read every tick: a profile edited while `work --every` runs takes
@@ -1014,6 +1019,8 @@ impl Runner for CliRunner<'_> {
                 &mut crate::output::human(),
             );
         }
+        let model_from_user =
+            self.model_from_user && profile.as_ref().is_none_or(|p| p.file.model.is_none());
         let Some(model) = profile
             .as_ref()
             .and_then(|p| p.file.model.clone())
@@ -1051,6 +1058,7 @@ impl Runner for CliRunner<'_> {
                 resume: false,
                 focus: t.focus.as_deref(),
                 profile: profile.as_ref(),
+                model_from_user,
             },
             control,
             &mut crate::output::human(),

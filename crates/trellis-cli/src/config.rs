@@ -43,6 +43,11 @@ pub(crate) struct RepoConfig {
     /// Hosted endpoints a `provider:<name>#<model>` spec names (ADR 0024).
     #[serde(default)]
     pub providers: Option<Vec<ProviderSection>>,
+    /// What the user's own file said, kept after layering, because where a
+    /// hosted endpoint came from decides whether a key may go to it
+    /// (ADR 0024 §3). Never read from any file.
+    #[serde(skip)]
+    pub provenance: crate::user_config::Provenance,
 }
 
 /// Where a run sits between hands-off and asking about each step (ADR 0018).
@@ -844,7 +849,11 @@ pub(crate) struct ProviderSection {
     /// `openai` or `anthropic`.
     pub protocol: String,
     pub base_url: String,
-    /// The environment variable holding the key.
+    /// The environment variable holding the key. Empty means the
+    /// protocol's own (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). Only the
+    /// user's file may set it; the repository's is refused if it does
+    /// (ADR 0024 §3).
+    #[serde(default)]
     pub key_env: String,
 }
 

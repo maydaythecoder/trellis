@@ -24,19 +24,46 @@ pub(crate) struct Resolved {
 }
 
 /// `Some` for a hosted or provider spec, `None` for everything else.
-pub(crate) fn resolve(spec: &ModelSpec, cfg: &RepoConfig) -> Result<Option<Resolved>> {
-    Ok(match spec {
+///
+/// `from_user` is whether a person chose `spec` for this run: `--model`, or
+/// `/model` typed in a session. A spec from the repository's `[model] spec`
+/// or an agent profile is not, and neither is the endpoint of a
+/// `[[providers]]` entry the repository defined, whoever named the entry.
+///
+/// **A key goes only where the user chose to send it (ADR 0024 §3).** An
+/// endpoint the repository chose, not on this machine, is refused here —
+/// before any snapshot and any network call — unless the pair (its origin,
+/// the key's variable) is one the user already sends that key to: the
+/// official host for the protocol's own variable, or an entry in the user's
+/// own `[[providers]]`. A spec the user's own file names counts as theirs.
+pub(crate) fn resolve(
+    spec: &ModelSpec,
+    cfg: &RepoConfig,
+    from_user: bool,
+) -> Result<Option<Resolved>> {
+    let (r, repository_chose) = match spec {
         ModelSpec::Hosted {
             protocol,
             base,
             model,
-        } => Some(Resolved {
-            protocol: *protocol,
-            base: base.clone(),
-            model: model.clone(),
-            key_env: protocol.default_key_env().to_string(),
-            provider: None,
-        }),
+        } => {
+            let users_file = cfg
+                .provenance
+                .spec
+                .as_deref()
+                .and_then(|s| s.parse::<ModelSpec>().ok())
+                .is_some_and(|s| &s == spec);
+            (
+                Resolved {
+                    protocol: *protocol,
+                    base: base.clone(),
+                    model: model.clone(),
+                    key_env: protocol.default_key_env().to_string(),
+                    provider: None,
+                },
+                !from_user && !users_file,
+            )
+        }
         ModelSpec::Provider { name, model } => {
             let p = cfg.provider(name)?;
             let protocol = Protocol::parse_config(&p.protocol).ok_or_else(|| {
@@ -45,16 +72,131 @@ pub(crate) fn resolve(spec: &ModelSpec, cfg: &RepoConfig) -> Result<Option<Resol
                     p.protocol
                 )
             })?;
-            Some(Resolved {
-                protocol,
-                base: p.base_url.clone(),
-                model: model.clone(),
-                key_env: p.key_env.clone(),
-                provider: Some(name.clone()),
-            })
+            let key_env = if p.key_env.is_empty() {
+                protocol.default_key_env().to_string()
+            } else {
+                p.key_env.clone()
+            };
+            // The user's entry wins a name when layering, so an entry whose
+            // name the user's file defines is the user's entry.
+            let users = cfg.provenance.providers.iter().any(|u| u.name == *name);
+            (
+                Resolved {
+                    protocol,
+                    base: p.base_url.clone(),
+                    model: model.clone(),
+                    key_env,
+                    provider: Some(name.clone()),
+                },
+                !users,
+            )
         }
-        _ => None,
-    })
+        _ => return Ok(None),
+    };
+    if repository_chose {
+        allowed(&r, cfg)?;
+    }
+    Ok(Some(r))
+}
+
+/// The built-in pairs: each protocol's official host, with its own variable.
+const OFFICIAL: [(&str, &str); 2] = [
+    ("https://api.openai.com:443", "OPENAI_API_KEY"),
+    ("https://api.anthropic.com:443", "ANTHROPIC_API_KEY"),
+];
+
+/// Refuses a repository-chosen endpoint unless its (origin, key variable)
+/// pair is one the user already sends that key to. Loopback is allowed: it
+/// is this machine, and a key is sent there only when its variable is set.
+fn allowed(r: &Resolved, cfg: &RepoConfig) -> Result<()> {
+    let Some((origin, loopback)) = origin(&r.base) else {
+        anyhow::bail!(
+            "refused before any request: the repository's configuration names the \
+             endpoint `{}`, which is not an http(s) URL trellis can check against the \
+             hosts you send {} to (ADR 0024 §3)",
+            r.base,
+            r.key_env
+        );
+    };
+    if loopback {
+        return Ok(());
+    }
+    let users = cfg.provenance.providers.iter().filter_map(|p| {
+        let key = if p.key_env.is_empty() {
+            Protocol::parse_config(&p.protocol)?
+                .default_key_env()
+                .to_string()
+        } else {
+            p.key_env.clone()
+        };
+        Some((origin_of(&p.base_url)?, key))
+    });
+    let ok = OFFICIAL
+        .iter()
+        .map(|(o, k)| (o.to_string(), k.to_string()))
+        .chain(users)
+        .any(|(o, k)| o == origin && k == r.key_env);
+    if ok {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refused before any request: the repository's configuration would send {key} \
+         to {origin}, a host the repository chose. A key goes only to an endpoint you \
+         chose (ADR 0024 §3): the official host for its protocol \
+         (https://api.openai.com with OPENAI_API_KEY, https://api.anthropic.com with \
+         ANTHROPIC_API_KEY), an entry in your own [[providers]]{file}, or a spec you \
+         pass with --model. Nothing was snapshotted: the run did not start.",
+        key = r.key_env,
+        file = cfg
+            .provenance
+            .file
+            .as_ref()
+            .map(|f| format!(" ({})", f.display()))
+            .unwrap_or_default(),
+    )
+}
+
+/// `scheme://host:port`, lowercased with the default port filled in, and
+/// whether the host is this machine. `None` for anything not http(s).
+fn origin(base: &str) -> Option<(String, bool)> {
+    let (scheme, rest) = base.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default = match scheme.as_str() {
+        "https" => 443,
+        "http" => 80,
+        _ => return None,
+    };
+    // Split exactly as the transport does (`trellis_model`'s `Endpoint`):
+    // authority up to the first `/`, port after the last `:`. A parser that
+    // disagreed with the one that connects could approve one host and send
+    // to another, so anything the two might read differently — userinfo,
+    // a query or fragment before any path, a backslash, whitespace — is
+    // refused rather than interpreted.
+    let authority = rest.split('/').next()?;
+    if authority
+        .chars()
+        .any(|c| matches!(c, '@' | '?' | '#' | '\\') || c.is_whitespace())
+    {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok()?),
+        None => (authority, default),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = bare == "localhost"
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    Some((format!("{scheme}://{host}:{port}"), loopback))
+}
+
+fn origin_of(base: &str) -> Option<String> {
+    origin(base).map(|(o, _)| o)
 }
 
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
@@ -180,17 +322,142 @@ mod tests {
              base_url = \"http://127.0.0.1:9\"\nkey_env = \"LOCAL_KEY\"\n",
         )
         .unwrap();
-        let r = resolve(&"provider:local#m".parse().unwrap(), &cfg)
+        let r = resolve(&"provider:local#m".parse().unwrap(), &cfg, false)
             .unwrap()
             .unwrap();
         assert_eq!(r.protocol, Protocol::Anthropic);
         assert_eq!(r.key_env, "LOCAL_KEY");
         assert!(
-            resolve(&"llamacpp:http://127.0.0.1:1".parse().unwrap(), &cfg)
+            resolve(&"llamacpp:http://127.0.0.1:1".parse().unwrap(), &cfg, false)
                 .unwrap()
                 .is_none()
         );
-        assert!(resolve(&"provider:other#m".parse().unwrap(), &cfg).is_err());
+        assert!(resolve(&"provider:other#m".parse().unwrap(), &cfg, false).is_err());
+    }
+
+    // ---- ADR 0024 §3: a key goes only where the user chose to send it ----
+
+    /// The repository's file over the user's, as a run loads them.
+    fn layered(repo: &str, user: &str) -> RepoConfig {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(d.path().join(".trellis/config.toml"), repo).unwrap();
+        let u = d.path().join("user.toml");
+        std::fs::write(&u, user).unwrap();
+        RepoConfig::load_with_user(d.path(), Some(&u)).unwrap()
+    }
+
+    fn spec(s: &str) -> ModelSpec {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_hosted_endpoint_the_repository_names_off_the_allowlist_is_refused() {
+        // The risk: a cloned repository's `[model] spec` sent the user's
+        // OPENAI_API_KEY to a host the repository chose, on a plain
+        // `trellis run` with no flag.
+        let cfg = layered(
+            "[model]\nspec = \"openai-chat:https://collector.example/v1#m\"\n",
+            "",
+        );
+        let e = resolve(
+            &spec("openai-chat:https://collector.example/v1#m"),
+            &cfg,
+            false,
+        )
+        .expect_err("a repository-chosen host must be refused");
+        let e = format!("{e:#}");
+        assert!(e.contains("https://collector.example:443"), "{e}");
+        assert!(e.contains("OPENAI_API_KEY"), "{e}");
+    }
+
+    #[test]
+    fn a_repository_provider_off_the_allowlist_is_refused_even_when_named_on_the_command_line() {
+        // `--model provider:x#m` names the entry, not the host: the host is
+        // still the repository's choice.
+        let cfg = layered(
+            "[[providers]]\nname = \"x\"\nprotocol = \"anthropic\"\n\
+             base_url = \"https://collector.example\"\n",
+            "",
+        );
+        assert!(resolve(&spec("provider:x#m"), &cfg, false).is_err());
+    }
+
+    #[test]
+    fn the_official_hosts_with_their_own_variables_are_allowed_from_the_repository() {
+        let cfg = layered(
+            "[[providers]]\nname = \"oai\"\nprotocol = \"openai\"\n\
+             base_url = \"https://API.openai.com/v1\"\n",
+            "",
+        );
+        let r = resolve(&spec("provider:oai#m"), &cfg, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.key_env, "OPENAI_API_KEY", "the protocol's own variable");
+        let r = resolve(&spec("anthropic:https://api.anthropic.com#m"), &cfg, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.key_env, "ANTHROPIC_API_KEY");
+        // The official host of one protocol with the other's variable is
+        // not a pair the user has.
+        assert!(resolve(&spec("anthropic:https://api.openai.com#m"), &cfg, false).is_err());
+    }
+
+    #[test]
+    fn a_user_s_own_provider_is_theirs_and_its_origin_is_allowed_only_with_its_key() {
+        let user = "[[providers]]\nname = \"groq\"\nprotocol = \"openai\"\n\
+                    base_url = \"https://api.groq.com/openai/v1\"\nkey_env = \"GROQ_API_KEY\"\n";
+        // Named from the repository's [model] spec: the entry is the user's.
+        let cfg = layered("[model]\nspec = \"provider:groq#llama\"\n", user);
+        let r = resolve(&spec("provider:groq#llama"), &cfg, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.key_env, "GROQ_API_KEY");
+        // The repository pointing its own entry at the user's origin gets
+        // the protocol's variable, and (groq, OPENAI_API_KEY) is not a pair
+        // the user sends: refused.
+        let cfg = layered(
+            "[[providers]]\nname = \"mine\"\nprotocol = \"openai\"\n\
+             base_url = \"https://api.groq.com/openai/v1\"\n",
+            user,
+        );
+        assert!(resolve(&spec("provider:mine#m"), &cfg, false).is_err());
+    }
+
+    #[test]
+    fn a_spec_the_user_chose_goes_where_they_said() {
+        let cfg = layered("", "");
+        let s = spec("openai-chat:https://proxy.internal.example/v1#m");
+        assert!(resolve(&s, &cfg, false).is_err(), "not from the repository");
+        assert!(
+            resolve(&s, &cfg, true).is_ok(),
+            "--model is the user's choice"
+        );
+        // The same spec in the user's own file is theirs as well.
+        let cfg = layered(
+            "",
+            "[model]\nspec = \"openai-chat:https://proxy.internal.example/v1#m\"\n",
+        );
+        assert!(resolve(&s, &cfg, false).is_ok());
+    }
+
+    #[test]
+    fn loopback_is_allowed_and_an_ambiguous_authority_is_not() {
+        let cfg = layered("", "");
+        for ok in [
+            "openai-chat:http://127.0.0.1:8080/v1#m",
+            "anthropic:http://localhost:9#m",
+        ] {
+            assert!(resolve(&spec(ok), &cfg, false).is_ok(), "{ok}");
+        }
+        // A parser that read userinfo differently from the transport could
+        // approve one host and connect to another.
+        for bad in [
+            "openai-chat:https://api.openai.com@collector.example/v1#m",
+            "openai-chat:https://collector.example\\@api.openai.com/v1#m",
+        ] {
+            assert!(resolve(&spec(bad), &cfg, false).is_err(), "{bad}");
+        }
     }
 
     #[test]

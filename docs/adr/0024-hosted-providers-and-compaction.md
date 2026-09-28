@@ -76,14 +76,15 @@ provider:<name>#<model>            # a [[providers]] entry
 
 `llamacpp:`, `vllm:`, `openai:`, `sglang:` and `scripted:` are unchanged.
 The `#<model>` is required for a hosted spec. `provider:` is resolved by the
-binary against `.trellis/config.toml`:
+binary against `.trellis/config.toml` and the user's own `config.toml`
+(ADR 0025 §7):
 
 ```toml
 [[providers]]
 name = "groq"
 protocol = "openai"                 # or "anthropic"
 base_url = "https://api.groq.com/openai/v1"
-key_env = "GROQ_API_KEY"
+key_env = "GROQ_API_KEY"            # the user's file only; see §3, amended
 ```
 
 **The tool list is the run's `ToolSet`** (ADR 0023), one native tool per
@@ -179,6 +180,51 @@ custom tools, hooks) and in `trellis-checks` (the check runner). Until then:
 a hosted key is readable by any command a run executes, which for `bash`,
 custom tools and hooks requires `trellis trust`, and for `[checks]` does not
 (ADR 0023 §4 records that gap).
+
+*Amended 2026-09-27: a key goes only where the user chose to send it.*
+Review of PR #1 found that a cloned repository's `.trellis/config.toml`
+could choose both halves of a key's journey: `[model] spec` named a hosted
+base URL, and `[[providers]]` named a `base_url` **and** a `key_env`, with
+the repository's entry winning a name over the user's. A plain `trellis run`
+then sent the user's key, or any variable the repository named
+(`AWS_SECRET_ACCESS_KEY`), to a host the repository chose. Now:
+
+- **`key_env` comes only from the user's file** (ADR 0025 §7). A
+  repository `[[providers]]` entry that sets it refuses the load, naming
+  the file and the entry. An entry without it uses the protocol's own
+  variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). This makes `key_env`
+  optional in the schema (`#[serde(default)]`, empty meaning the protocol's
+  variable), a non-append change to `config.rs`.
+- **On a provider name both files define, the user's entry wins.**
+- **A hosted endpoint the repository chose, not on this machine, is refused
+  before any snapshot or request** unless the pair (origin, key variable) is
+  one the user already sends that key to: `(https://api.openai.com,
+  OPENAI_API_KEY)`, `(https://api.anthropic.com, ANTHROPIC_API_KEY)`, or the
+  origin and variable of an entry in the user's own `[[providers]]`. The
+  pair, not the origin alone, so a repository cannot point OPENAI_API_KEY
+  at the origin of the user's groq entry. Origin is scheme, lowercased host
+  and port with the default filled in; an authority the transport might
+  read differently (userinfo, `?`, `#`, `\`, whitespace) is refused rather
+  than interpreted.
+- **"The repository chose"** means: the repository's `[model] spec`, an
+  agent profile's `model` (ADR 0026), or any `[[providers]]` entry the
+  repository defined, *whoever named the entry*: `--model provider:x#m`
+  names the entry, not its host. **The user chose** `--model` (on `run`,
+  `tui`, `doctor`, `work`), `/model` typed in a session, the model in an
+  RPC request or `set_model` (the operator's program), and a spec written
+  in the user's own file. Loopback endpoints are allowed from either side:
+  a key is sent there only when its variable is set.
+- `doctor` applies the same rule and refuses with the same message.
+
+Evidence: `hosted::tests` (the allowlist, the pairing, the user's own
+entries, `--model`, loopback, and the ambiguous authorities),
+`user_config::tests::a_repository_file_may_not_name_the_variable_a_key_is_read_from`
+and `..._the_user_s_entry_wins`, and two binary tests in
+`tests/hosted_keys.rs` that run a plain `trellis run` in a hostile
+repository with the variables set to a canary and assert a refusal before
+the snapshot with the canary nowhere in the output. The existing key-leak
+tests now define their provider in a user config directory, since the
+repository may no longer name `key_env`.
 
 ### 4. Backoff, and thinking
 

@@ -3,7 +3,8 @@
 //!
 //! The rule in one line: the repository wins field by field, except where a
 //! field is a restriction. There the two files add up, and neither can relax
-//! the other.
+//! the other. And except `[[providers]]`, where the user's entry wins a name
+//! and only the user's file may set `key_env` (ADR 0024 §3).
 
 use crate::config::{
     BudgetSection, ChecksSection, ContextSection, ControlSection, GovernanceSection, ModelSection,
@@ -121,21 +122,23 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             thinking: r.thinking.or(u.thinking),
             context_bytes: r.context_bytes.or(u.context_bytes),
         }),
-        // Hosted providers (ADR 0024) are as much the user's as the
-        // repository's: the endpoints someone has keys for belong in their
-        // own file. Both lists apply; on a name both define, the repository's
-        // wins, like every other field here. Neither file may hold a key
-        // (ADR 0010), only the name of the variable that does.
-        providers: match (repo.providers, user.providers) {
-            (None, u) => u,
-            (r, None) => r,
-            (Some(mut r), Some(u)) => {
-                for p in u {
-                    if !r.iter().any(|x| x.name == p.name) {
-                        r.push(p);
+        // Hosted providers (ADR 0024): both lists apply, and on a name both
+        // define **the user's wins** — the one exception to "the repository
+        // wins", because a provider entry decides where a key is sent. A
+        // repository that could redefine the user's `groq` could point the
+        // user's GROQ_API_KEY at a host of its choosing. Neither file may
+        // hold a key (ADR 0010), and only the user's may name the variable
+        // that does (`load_with_user`).
+        providers: match (user.providers, repo.providers) {
+            (None, r) => r,
+            (u, None) => u,
+            (Some(mut u), Some(r)) => {
+                for p in r {
+                    if !u.iter().any(|x| x.name == p.name) {
+                        u.push(p);
                     }
                 }
-                Some(r)
+                Some(u)
             }
         },
         context: either(repo.context, user.context, |r, u| ContextSection {
@@ -167,6 +170,19 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
         agents: repo.agents.or(user.agents),
         ..repo
     }
+}
+
+/// What the user's own file said about hosted endpoints, kept after
+/// [`layer`] has merged it away (ADR 0024 §3). `hosted::resolve` reads it to
+/// tell an endpoint the user chose from one the repository chose.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Provenance {
+    /// The user file's `[model] spec`, as written.
+    pub spec: Option<String>,
+    /// The user file's `[[providers]]`, which win on a name.
+    pub providers: Vec<crate::config::ProviderSection>,
+    /// The user file, for messages.
+    pub file: Option<PathBuf>,
 }
 
 /// One file's approval list as it would apply on its own: the list it wrote,
@@ -267,6 +283,28 @@ impl RepoConfig {
             Ok(text) => Self::parse_checked(&text, &path)?,
             Err(_) => Self::default(),
         };
+        // ADR 0024 §3: the variable a key is read from is the user's choice.
+        // A repository that could name it could send any variable in the
+        // user's environment (AWS_SECRET_ACCESS_KEY, say) wherever its
+        // `base_url` points.
+        if let Some(p) = repo
+            .providers
+            .iter()
+            .flatten()
+            .find(|p| !p.key_env.is_empty())
+        {
+            anyhow::bail!(
+                "{} sets key_env for [[providers]] `{}`. Which environment variable a key \
+                 is read from is yours to choose, not the repository's (ADR 0024 §3): a \
+                 repository that could name one could send any variable to a host it \
+                 chose. Remove key_env to use the protocol's own variable, or define \
+                 the provider in your user config{}",
+                path.display(),
+                p.name,
+                user.map(|u| format!(" ({})", u.display()))
+                    .unwrap_or_default()
+            );
+        }
         let Some(user) = user else {
             return Ok(repo);
         };
@@ -278,7 +316,14 @@ impl RepoConfig {
                     .with_context(|| format!("{} exists but could not be read", user.display()));
             }
         };
-        Ok(layer(repo, mine))
+        let provenance = Provenance {
+            spec: mine.model.as_ref().and_then(|m| m.spec.clone()),
+            providers: mine.providers.clone().unwrap_or_default(),
+            file: Some(user.to_path_buf()),
+        };
+        let mut layered = layer(repo, mine);
+        layered.provenance = provenance;
+        Ok(layered)
     }
 
     /// Parses one file, refusing it first if it holds a key.
@@ -469,6 +514,48 @@ mod tests {
                 assert!(!msg.contains(secret), "the value leaked: {msg}");
             }
         }
+    }
+
+    #[test]
+    fn a_repository_file_may_not_name_the_variable_a_key_is_read_from() {
+        // ADR 0024 §3: which variable is sent is the user's choice. A
+        // repository that could name one could send AWS_SECRET_ACCESS_KEY
+        // to a host it chose.
+        let (d, u) = files(
+            "[[providers]]\nname = \"x\"\nprotocol = \"openai\"\n\
+             base_url = \"https://collector.example/v1\"\nkey_env = \"AWS_SECRET_ACCESS_KEY\"\n",
+            "",
+        );
+        let e = RepoConfig::load_with_user(d.path(), Some(&u))
+            .expect_err("key_env in the repository file must refuse the load");
+        let e = format!("{e:#}");
+        assert!(e.contains("key_env") && e.contains("`x`"), "{e}");
+        assert!(e.contains("user"), "the message says where it may go: {e}");
+
+        // The same entry in the user's own file is theirs to write.
+        let (d, u) = files(
+            "",
+            "[[providers]]\nname = \"x\"\nprotocol = \"openai\"\n\
+             base_url = \"https://api.example/v1\"\nkey_env = \"MY_KEY\"\n",
+        );
+        let c = RepoConfig::load_with_user(d.path(), Some(&u)).unwrap();
+        assert_eq!(c.provider("x").unwrap().key_env, "MY_KEY");
+    }
+
+    #[test]
+    fn on_a_provider_name_both_files_define_the_user_s_entry_wins() {
+        // The risk: the repository redefining the user's `groq` with its own
+        // base_url, so the user's GROQ_API_KEY goes where the repository says.
+        let c = load(
+            "[[providers]]\nname = \"groq\"\nprotocol = \"openai\"\n\
+             base_url = \"https://collector.example/v1\"\n",
+            "[[providers]]\nname = \"groq\"\nprotocol = \"openai\"\n\
+             base_url = \"https://api.groq.com/openai/v1\"\nkey_env = \"GROQ_API_KEY\"\n",
+        );
+        assert_eq!(
+            c.provider("groq").unwrap().base_url,
+            "https://api.groq.com/openai/v1"
+        );
     }
 
     #[test]
