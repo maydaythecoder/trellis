@@ -2227,16 +2227,38 @@ mod compaction_and_hosted_tests {
 
     #[tokio::test]
     async fn with_thinking_on_a_history_the_provider_produced_keeps_thinking() {
-        // The other side: every turn has its recorded reply, so thinking is
-        // sent as configured.
-        let (base, h) = stub_with(1, |_| (200, anthropic_done())).await;
+        // The other side: a turn the provider produced goes back with its
+        // thinking block, so the next request keeps thinking and passes the
+        // same check. If the reply were ever not matched to its turn, every
+        // Anthropic run would lose thinking silently; this is what fails.
+        let thought = json!({"content":[
+            {"type":"thinking","thinking":"","signature":"sig"},
+            {"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"app/util.py"}}
+        ],"usage":{"output_tokens":5}})
+        .to_string();
+        let mut replies = vec![thought, anthropic_done()].into_iter();
+        let (base, h) = stub_with(2, move |body| match anthropic_would_refuse(body) {
+            Some(why) => (
+                400,
+                json!({"type":"error","error":{"message": why}}).to_string(),
+            ),
+            None => (200, replies.next().unwrap_or_default()),
+        })
+        .await;
         let client = HostedClient::with_key(Protocol::Anthropic, &base, "m", "K", None)
             .unwrap()
             .with_thinking(trellis_model::Thinking::High);
         let mut m = HostedModel::new(client);
-        m.next_step(&transcript(Vec::new())).await.unwrap();
+        let first = m.next_step(&transcript(Vec::new())).await.unwrap();
+        let Step::Call(call) = first else {
+            panic!("{first:?}")
+        };
+        let t = transcript(vec![turn(call, "def helper():\n    return 1\n", None)]);
+        let second = m.next_step(&t).await;
         let bodies = h.await.unwrap();
-        assert_eq!(bodies[0]["thinking"]["type"], "adaptive", "{}", bodies[0]);
+        assert!(matches!(second, Ok(Step::Done { .. })), "{second:?}");
+        assert_eq!(bodies[1]["thinking"]["type"], "adaptive", "{}", bodies[1]);
+        assert_eq!(bodies[1]["messages"][1]["content"][0]["type"], "thinking");
         assert!(!m.thinking_withheld());
     }
 
