@@ -656,6 +656,7 @@ impl Orchestrator {
             stdin: None,
             timeout: b.timeout,
             cap: crate::exec::OUTPUT_CAP,
+            head: false,
         })
         .await;
         match r {
@@ -696,6 +697,7 @@ impl Orchestrator {
             stdin: Some(args.to_string().into_bytes()),
             timeout: CUSTOM_TIMEOUT,
             cap: crate::exec::OUTPUT_CAP,
+            head: false,
         })
         .await;
         match r {
