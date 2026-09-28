@@ -312,6 +312,11 @@ only reading them:
   - a note whose lines changed is reconciled (`reconcileNoteDates`) with the
     stamp {mtime day, estimated};
   - an entry for a file that no longer exists is dropped.
+  - *Amended in implementation:* a note that is still on disk but cannot be
+    seeded or reconciled (past the per-note line limit) is reported as
+    skipped, and its previous entry, if it had one, is kept unchanged. It
+    used to be deleted while the counts said it was kept. A note that fails
+    to seed is not counted as seeded.
 
 The **body** hashed is Apex's lenient body: the text after `\n---` and its
 leading blank lines, split on `\n` with a trailing `\r` removed. It is not the
