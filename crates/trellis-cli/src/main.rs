@@ -1899,6 +1899,10 @@ fn run_body(
         if let Some(h) = &tooling.hooks {
             orchestrator = orchestrator.with_hooks(h.clone());
         }
+        // The hooks' guard and this one are one latch (ADR 0023 §5).
+        if let Some(g) = &tooling.guard {
+            orchestrator = orchestrator.with_trust_guard(g.clone());
+        }
         // Governance first by construction, then the bash policy and the
         // pre_tool hook, then the person: nobody is asked about a call a
         // rule or a hook has already refused.
