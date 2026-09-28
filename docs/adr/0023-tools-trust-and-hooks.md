@@ -416,12 +416,43 @@ anyone being asked. Now the digest also covers:
   in `crates/trellis-loop/src/trust.rs`, which failed before on
   `["bash", "-lc", "python scripts/gate.py"]` with no file hashed.
 
+*Amended after the eleventh review of PR #1: a rule, not a better
+tokenizer.* The review found scripts named inside larger expressions that
+the tokens above still missed, and every round before it had found one
+more spelling. So the tokenizer stops being the defence. **A hook or
+custom tool whose argv, in any element or any token of one, names a
+regular file in the repository outside `.trellis/` is refused**: `trellis
+trust` prints the item and the file, says to move the code to
+`.trellis/hooks/` (or `.trellis/tools/`) and name it there, and records
+nothing; a trust recorded earlier reads as `Refused` wherever trust is
+read (the run's `repo:` line, `work`, `doctor`), so nothing loads.
+`["bash", "-lc", "python scripts/gate.py"]` is refused;
+`["python", ".trellis/hooks/gate.py"]` is trusted. Programs on `PATH` and
+absolute paths outside the repository are the user's system and are fine.
+Everything under `.trellis/` is still hashed whole. Two narrowings,
+deliberate: the rule is on regular files, not directories, since a
+directory named as an argument (`ruff check src`) is data for the tool;
+and it is decided on the path as written (`names_trellis_dir`), so a link
+under `.trellis/` to a directory elsewhere is followed and hashed by the
+digest rather than refused. Process agents (ADR 0026 §11) and the `bash`
+shell argv are not under the rule: a process agent writes the whole tree
+anyway, and the shell argv names an interpreter. A repository whose hooks
+or custom tools name such a file needs them moved before it can be
+trusted again. Evidence:
+`a_hook_or_custom_tool_naming_code_outside_dot_trellis_is_refused` in
+`crates/trellis-loop/src/trust.rs` (failed with the rule removed: the
+fingerprint was not refused) and
+`trust_refuses_a_hook_whose_code_is_outside_dot_trellis_and_says_where_to_move_it`
+in `crates/trellis-cli/src/trust_cmd.rs`.
+
 **Not covered, plainly:** code reached indirectly from outside `.trellis/`
-and outside any file an argv or code string names — a module imported by
-a hook (`python -m tools.hook` resolving to `tools/hook.py`), a file a
-script reads or sources, a program on `PATH`. A change there does not
-untrust the repository. **Keep hook and tool code under `.trellis/hooks/`
-or `.trellis/tools/`**, where every byte is in the digest.
+that no argv token names as a file — a module imported by a hook
+(`python -m tools.hook` resolving to `tools/hook.py`, or an `import app`
+inside `.trellis/hooks/gate.py`), a directory run as a program
+(`python pkg/`), a file a script reads or sources, a program on `PATH`. A
+change there does not untrust the repository. **Keep hook and tool code,
+and what it imports, under `.trellis/hooks/` or `.trellis/tools/`**, where
+every byte is in the digest.
 
 Not covered, and stated so it is not assumed: `[checks] typecheck` and
 `tests` are repository-supplied argv that trellis has always executed
@@ -792,10 +823,12 @@ check configuration and the process-agent profiles.
   did not converge. Restoring the file does not clear the latch: a hook
   that ran rewritten, or was refused, is already part of this run.
 - **A hook script outside `.trellis/`** (`["python", "scripts/gate.py"]`)
-  is not refused up front: `edit scripts/gate.py` is an ordinary edit. The
-  guard sees it at the next spawn — the `post_tool` hook of that same call,
-  or the check after it — and ends the run there. Keeping hook code under
-  `.trellis/` (§4) turns that into a refusal the model can read.
+  is refused at trust time since the eleventh review (§4): the repository
+  cannot be trusted until it moves under `.trellis/`, where `edit` refuses
+  it. Before that it was trusted, `edit scripts/gate.py` was an ordinary
+  edit, and only the guard's next recheck saw it. Code such a hook reaches
+  by import outside `.trellis/` is still an ordinary file (§4, "not
+  covered").
 - **Process agents** (ADR 0026 §11) cannot be refused up front, since their
   command writes directly. Their run already failed to converge when git
   reported any changed path under `.trellis/`; that test now uses
