@@ -1,6 +1,8 @@
 # ADR 0025 — Context files, system prompt files, templates, and run modes
 
-**Status:** Accepted.
+**Status:** Accepted. Integrated afterwards: user-level skills, the trail's
+record of what a run saw, and `doctor`'s report; see "Integrated" at the
+end.
 **Date:** 2026-09-27
 **Reference design:** pi (`earendil-works/pi`, MIT): context files, `SYSTEM.md`
 and `APPEND_SYSTEM.md`, prompt-template arguments, JSON mode, RPC mode, `!cmd`,
@@ -287,7 +289,8 @@ on stderr.
 
 - 5.4 `~/.agents/skills`: it needs W-B's trust store (ADR 0023), because a
   user-directory skill is text from outside the repository that no one has
-  vouched for.
+  vouched for. *Integrated, and not through the trust store; see
+  "Integrated".*
 - `/new`, `/name` and `/copy`. `/new` means nothing when each task is
   already a fresh run. `/name` and `/copy` are deferred.
 - `compact` over RPC: W-C.
@@ -295,7 +298,8 @@ on stderr.
 - The trail does not record which context files or system files a run saw.
   That would be a factual-field change under ADR 0007's digest, and belongs
   in its own change. Until then the `repo:` line is the record, and two runs
-  from one commit can differ by their user-level files.
+  from one commit can differ by their user-level files. *Integrated: the
+  trail now records them by name and size; see "Integrated".*
 
 ## Alternatives rejected
 
@@ -389,7 +393,7 @@ Each item is tested unless it says otherwise.
   its actions.
 - **`trellis doctor` does not yet report** the user config file, the context
   files or the system files. The `repo:` line of a run is the only place
-  they are named. Not built.
+  they are named. Not built. *Integrated: it does now; see "Integrated".*
 - **Observed and not explained: a shell pipeline into `rpc`.** Under
   PowerShell 7, with `bash feed.sh | trellis rpc`, the run thread's first
   stdout writes (`run_start`, and in approve mode `approval_request`) did
@@ -403,3 +407,91 @@ Each item is tested unless it says otherwise.
   in `tests/modes.rs`. The unit tests drive `serve` in-process, and a
   defect in how the process's stdin and stdout interact would be invisible
   to them.
+
+## Integrated
+
+Items this wave left open because they crossed into W-B's or W-E's code,
+closed afterwards. Tested unless stated.
+
+### User-level skills, without repository trust
+
+Skills load from `<user config dir>/skills` (§7's directory) and then
+`~/.agents/skills` (`%USERPROFILE%` on Windows), after the repository's
+`.trellis/skills`. **They are not gated on the ADR 0023 trust store.** The
+"Not built" entry above assumed they would be; the store turned out to be
+the wrong gate:
+- **The store vouches for a repository, not for the user's files.** It is
+  keyed by repository root and fingerprints what the repository makes
+  trellis execute. A user-level skill is in no repository, is identical in
+  every repository on the machine, and was put there by the user or a tool
+  the user ran. Tying it to one repository's trust would make it appear
+  and disappear by a fact unrelated to it.
+- **Most repositories cannot be trusted at all.** `trellis trust` refuses a
+  repository that declares no hooks, custom tools or bash ("nothing to
+  trust"), so a trust-gated user skill would never load in the ordinary
+  repository.
+- **It has the standing user-level `AGENTS.md` already has.** §1 loads the
+  user directory's context files without trust, as the one exception the
+  owner asked for. A skill is less than that: nothing in it executes, its
+  body enters the transcript only when `read_skill` asks, and it sits under
+  the fence that says nothing can authorise skipping a check (ADR 0019).
+
+The residual risk, stated: a run whose repository has trusted bash can
+write into `~/.agents/skills` (bash's writes outside the worktree are not
+rolled back, ADR 0023 §3), and what it writes is then offered to later
+runs in every repository. The trust that let that bash run is where that
+risk was accepted.
+
+How it behaves:
+- **The repository wins a name.** A user skill with a repository skill's
+  name, or an earlier user directory's, is not loaded and is counted as
+  shadowed. The listing, `read_skill` and `--skill` resolve a name in the
+  same order, so the body read is the one whose description was listed
+  (`a_repository_skill_shadows_a_user_skill_of_the_same_name_in_listing_and_reading`).
+- **The `repo:` line says so**: `user skills: N from the user's own
+  directories (not gated on repository trust)`, plus the shadowed names.
+  `doctor` says the same.
+- **A profile's `[skills]` lists apply to user skills too** (ADR 0026,
+  integrated).
+- **`TRELLIS_CONFIG_DIR`, when set, is the whole user level**, and
+  `~/.agents/skills` is not read. The test suites set it to be hermetic;
+  without this rule every integration test of `run` would list the skills
+  of whoever runs the suite
+  (`user_skill_dirs_are_the_config_dir_then_agents_and_the_override_is_hermetic`).
+- `rpc`'s `get_commands` lists the same catalog.
+- Untested and not fixed: a forced user skill over 8,000 characters is
+  followed by a truncation note naming `.trellis/skills/<name>/SKILL.md`,
+  which is the repository's path, not the user directory's. The note is in
+  `extra_context.rs`, whose prompt text is held by its own tests.
+
+### The trail records what a run saw
+
+`Factual` gains `inputs: [{kind, name, bytes}]`, where `kind` is
+`context_file`, `system_file` or `forced_skill`. `name` is the name the
+`repo:` line uses (`CLAUDE.md`, `<user>/AGENTS.md`, `.trellis/system.md`, a
+skill's name), never an absolute path, because a trail is committed and an
+absolute path would put the user's home layout in the repository. `bytes`
+is the content sent: the file's length, or for a forced skill the head
+that fits the 8,000-character window. Contents are never recorded.
+- **Omitted when empty**, the discipline ADR 0026 §8 used for `tokens` and
+  `agent`, so a trail with none keeps its bytes and its digest. The field
+  is inside `factual`, so the digest covers it
+  (`a_trail_without_inputs_keeps_its_bytes_and_recorded_inputs_are_under_the_digest`).
+- `UntrustedFactual` reads it back as data.
+- A run interrupted by Ctrl-C records it too; a process agent records
+  none, since it is given its task and nothing else.
+- Two runs from one commit that differ by user-level files are now
+  distinguishable from their trails
+  (`a_run_names_what_it_loaded_on_the_repo_line_and_still_needs_a_check`).
+
+### `trellis doctor`
+
+`doctor` now prints, after the budget line: the user config file in effect
+and whether it exists; the context files and system files a run would
+consider, with sizes on disk, and whether `[context] files` is off; the
+user skill directories found; what needs trust (hooks, custom tools, bash)
+and whether it is trusted, changed since, or never trusted; how many agent
+profiles and routines load, or why they do not; and the vault, whether it
+validates, its focus, and whether `[context] dates` is on. Nothing on
+these lines stops `doctor`: a problem is printed on its line
+(`doctor_extra.rs`).

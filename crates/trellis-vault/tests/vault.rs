@@ -300,6 +300,87 @@ fn golden_task_b() {
 }
 
 // ---------------------------------------------------------------------------
+// `[context] dates` (ADR 0022 §7, integrated). The goldens are the
+// specification of the selection rule, so the annotation must leave them
+// byte-identical whenever it is off or has nothing to say.
+// ---------------------------------------------------------------------------
+
+fn dated(entries: &[(&str, Option<&str>, bool)]) -> trellis_vault::dates::Document {
+    let mut doc = trellis_vault::dates::Document::default();
+    for (path, day, estimated) in entries {
+        doc.notes.insert(
+            path.to_string(),
+            trellis_vault::dates::NoteDates {
+                created: trellis_vault::dates::Stamp {
+                    day: day.map(str::to_string),
+                    estimated: *estimated,
+                },
+                lines: Vec::new(),
+            },
+        );
+    }
+    doc
+}
+
+#[test]
+fn a_dates_json_beside_the_vault_does_not_change_the_goldens_when_the_flag_is_off() {
+    // The risk: the flag's plumbing reading dates.json whenever it exists,
+    // so a vault Apex has opened compiles differently from its golden.
+    let d = copy_vault();
+    let doc = dated(&[("task-a.md", Some("2026-03-01"), false)]);
+    std::fs::write(
+        d.path().join("dates.json"),
+        trellis_vault::dates::to_bytes(&doc),
+    )
+    .unwrap();
+    for stem in ["task-a", "project", "task-b"] {
+        let expected = std::fs::read(fixtures().join(format!("expected-{stem}.md"))).unwrap();
+        let off = trellis_vault::compile_with_dates(d.path(), stem, DEFAULT_CAP, None).unwrap();
+        assert_eq!(off.text.as_bytes(), expected.as_slice(), "{stem}");
+        assert_eq!(ok(d.path(), stem).text.as_bytes(), expected.as_slice());
+        // On, with a document that dates none of these notes: still the
+        // golden. Nothing is guessed for a note with no entry.
+        let none = dated(&[]);
+        let on =
+            trellis_vault::compile_with_dates(d.path(), stem, DEFAULT_CAP, Some(&none)).unwrap();
+        assert_eq!(on.text.as_bytes(), expected.as_slice(), "{stem}");
+    }
+}
+
+#[test]
+fn with_dates_on_lineage_and_reference_headings_carry_the_created_day() {
+    let doc = dated(&[
+        ("root.md", Some("2025-01-02"), true),
+        ("task-a.md", Some("2026-03-01"), false),
+        ("glossary.md", Some("2025-06-30"), false),
+        // A null day is written by Apex for a note it could not date.
+        ("project.md", None, false),
+    ]);
+    let c =
+        trellis_vault::compile_with_dates(&fixture(), "task-a", DEFAULT_CAP, Some(&doc)).unwrap();
+    assert!(
+        c.text
+            .contains("### Root (root.md, created 2025-01-02, estimated)\n"),
+        "{}",
+        c.text
+    );
+    assert!(c.text.contains("### Project (project.md)\n"), "{}", c.text);
+    assert!(
+        c.text
+            .contains("### Task A (task-a.md, created 2026-03-01) [target]\n"),
+        "{}",
+        c.text
+    );
+    assert!(
+        c.text
+            .contains("### Glossary (glossary.md, created 2025-06-30)\n"),
+        "{}",
+        c.text
+    );
+    assert_eq!(c.bytes, c.text.len());
+}
+
+// ---------------------------------------------------------------------------
 // Beyond the twin's suite: the error variants a caller branches on.
 // ---------------------------------------------------------------------------
 

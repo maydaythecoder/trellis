@@ -212,6 +212,39 @@ impl ToolSet {
         })
     }
 
+    /// This set restricted to `keep`: an agent profile's `tools` list
+    /// (ADR 0026 §4).
+    ///
+    /// An intersection, so a profile can only narrow what the repository
+    /// enabled and trusted, never widen it. The second value is every name in
+    /// `keep` this set does not offer, for the caller to report: a profile
+    /// naming `bash` in a repository without trusted bash does not get it.
+    /// `run_checks` stays whether or not it is listed, for the reason
+    /// `build` refuses to disable it.
+    #[must_use]
+    pub fn narrowed(&self, keep: &[String]) -> (Self, Vec<String>) {
+        let listed = |n: &str| keep.iter().any(|k| k == n);
+        let not_offered = keep.iter().filter(|k| !self.enabled(k)).cloned().collect();
+        (
+            Self {
+                builtins: self
+                    .builtins
+                    .iter()
+                    .copied()
+                    .filter(|b| *b == "run_checks" || listed(b))
+                    .collect(),
+                custom: self
+                    .custom
+                    .iter()
+                    .filter(|c| listed(&c.name))
+                    .cloned()
+                    .collect(),
+                bash: self.bash.clone().filter(|_| listed("bash")),
+            },
+            not_offered,
+        )
+    }
+
     /// Whether a call to `name` is allowed in this run.
     pub fn enabled(&self, name: &str) -> bool {
         self.builtins.contains(&name) || self.custom.iter().any(|c| c.name == name)

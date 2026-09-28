@@ -311,3 +311,23 @@ names are in the code beside each.
 Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust, a
 configurable custom-tool timeout, hooks for events other than the four
 above, and tracking of what `bash` or a custom tool wrote in the worktree.
+
+## Integrated
+
+- **An agent profile's `tools` list narrows the set** (ADR 0026 §4).
+  `ToolSet::narrowed` is an intersection taken after `[tools]` and trust, so
+  a committed profile cannot turn on a tool the repository left off or a
+  bash or custom tool the user has not trusted. `run_checks` stays, for the
+  reason §1 gives. It is applied once in `cmd_run`, before the driver, so
+  the one value this ADR hands to the prompt, schema, parser and
+  orchestrator is the narrowed one. Details and tests are in ADR 0026,
+  "Integrated".
+- **`read_skill` is served with a skill policy and user directories**
+  (`Orchestrator::with_skills`). The orchestrator is where the body is
+  served, so it is where a profile's deny list binds.
+- **`trellis doctor` reports trust**: what is declared that needs it, and
+  whether it is trusted, changed since, or never trusted. A repository that
+  declares nothing says so, and the store is still not opened for it.
+- **User-level skills are not gated on this store.** ADR 0025, "Integrated",
+  gives the reason: the store vouches for a repository, and a user skill is
+  in none.

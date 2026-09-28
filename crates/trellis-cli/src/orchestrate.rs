@@ -45,7 +45,17 @@ pub(crate) enum RoutinesAction {
 /// by `agents list` rather than by an unattended `work`.
 pub(crate) fn load_profiles(root: &Path) -> Result<BTreeMap<String, Profile>> {
     let set = profile::load_all(root)?;
+    // Only read when a profile names tools, so a broken config.toml is
+    // reported by the command that needs it rather than by `agents list`.
+    let cfg = if set.values().any(|p| p.file.tools.is_some()) {
+        Some(crate::config::RepoConfig::load(root)?)
+    } else {
+        None
+    };
     for (n, p) in &set {
+        if let (Some(list), Some(cfg)) = (&p.file.tools, &cfg) {
+            crate::tooling::check_profile_tools(n, list, cfg)?;
+        }
         if let Some(c) = &p.file.control
             && let Some(list) = &c.approve
         {
@@ -264,15 +274,16 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
             }
             if f.skills.is_some() {
                 println!(
-                    "              filters the skills listed to the model; `read_skill` by \
-                     exact name is not filtered"
+                    "              filters the skills listed to the model, and `read_skill` \
+                     refuses the rest by name"
                 );
             }
             match &f.tools {
-                None => println!("tools:        -"),
+                None => println!("tools:        (the repository's set)"),
                 Some(t) => println!(
-                    "tools:        {} — stored only; no effect until the tool registry \
-                     (ADR 0023) reads it",
+                    "tools:        {} — narrows the repository's set for these runs; a tool \
+                     the repository does not enable or trust is not added, and run_checks \
+                     is always kept",
                     t.join(", ")
                 ),
             }

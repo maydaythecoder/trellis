@@ -48,7 +48,8 @@ pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use registry::{BUILTIN_TOOLS, BashSettings, CustomTool, ToolSelection, ToolSet, call_json};
 pub use scripted::ScriptedModel;
 pub use skills::{
-    DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillCatalog, read_body,
+    DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillAccess, SkillCatalog,
+    SkillPolicy, read_body, read_body_in,
 };
 pub use tools::{EditOutcome, ToolResult};
 pub use trust::{Fingerprint, TrustItem, TrustState, TrustStore};

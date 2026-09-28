@@ -217,6 +217,7 @@ mod tests {
                 control: None,
                 tokens: None,
                 agent: None,
+                inputs: Vec::new(),
             },
             factual_sha256: String::new(),
             judgment: Judgment::default(),

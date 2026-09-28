@@ -24,6 +24,8 @@ pub(crate) struct Tooling {
     /// For the `repo:` line when something was declared and not trusted,
     /// e.g. `hooks: 2 present, not trusted (run trellis trust)`.
     pub untrusted: Option<String>,
+    /// For the `tools:` line when an agent profile narrowed the set.
+    pub narrowed_by: Option<String>,
 }
 
 /// Everything in `[tools]` and `[hooks]` that would execute, as the trust
@@ -143,10 +145,62 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
         hooks,
         env,
         untrusted,
+        narrowed_by: None,
     })
 }
 
+/// Checks each name in an agent profile's `tools` list against the tools
+/// the repository could offer: every built-in, and every custom tool it
+/// declares, trusted or not. An unknown name is an error, as in `[tools]`
+/// (ADR 0023 §1): a typo that silently removed a tool would run the profile
+/// without the tool its owner meant to keep.
+pub(crate) fn check_profile_tools(profile: &str, list: &[String], cfg: &RepoConfig) -> Result<()> {
+    for t in list {
+        let custom = cfg.custom_tools().iter().any(|c| &c.name == t);
+        if !trellis_loop::BUILTIN_TOOLS.contains(&t.as_str()) && !custom {
+            anyhow::bail!(
+                "agent `{profile}`: tools lists `{t}`, which is not a tool; the built-ins are \
+                 {}{}",
+                trellis_loop::BUILTIN_TOOLS.join(", "),
+                if cfg.custom_tools().is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ", and this repository declares {}",
+                        cfg.custom_tools()
+                            .iter()
+                            .map(|c| c.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Tooling {
+    /// Restricts the set to an agent profile's `tools` list (ADR 0026 §4,
+    /// integrated with ADR 0023). Called once, before anything reads the
+    /// set, so the prompt, the schema, the parser and the orchestrator all
+    /// receive the narrowed one.
+    pub(crate) fn narrow_for_profile(&mut self, profile: &str, keep: &[String]) {
+        let (set, not_offered) = self.tools.narrowed(keep);
+        self.tools = set;
+        let mut note = format!("narrowed by agent profile `{profile}`");
+        if !keep.iter().any(|k| k == "run_checks") {
+            note.push_str("; run_checks kept though unlisted, since no run converges without it");
+        }
+        if !not_offered.is_empty() {
+            note.push_str(&format!(
+                "; not added, because this repository does not offer them: {}",
+                not_offered.join(", ")
+            ));
+        }
+        self.narrowed_by = Some(note);
+    }
+
     /// The gates this adds, in order, to go after governance and before the
     /// approval gate: the bash policy (auto mode only, since in approve mode
     /// a person sees every command) and then the pre_tool hook.
@@ -165,7 +219,7 @@ impl Tooling {
     /// hooks are loaded. Silent otherwise, so an unconfigured run prints
     /// exactly what it printed before.
     pub(crate) fn line(&self, mode: ControlMode) -> Option<String> {
-        if self.tools.is_default() && self.hooks.is_none() {
+        if self.tools.is_default() && self.hooks.is_none() && self.narrowed_by.is_none() {
             return None;
         }
         let mut s = self.tools.names().join(", ");
@@ -187,6 +241,9 @@ impl Tooling {
         if let Some(h) = &self.hooks {
             let events: Vec<&str> = h.config().declared().iter().map(|(e, _)| *e).collect();
             s.push_str(&format!("; hooks: {}", events.join(", ")));
+        }
+        if let Some(n) = &self.narrowed_by {
+            s.push_str(&format!("; {n}"));
         }
         Some(s)
     }
@@ -486,6 +543,106 @@ mod run_tests {
         assert_eq!(
             (a[0].0.as_str(), a[0].1.as_str(), a[0].3),
             ("write_file", "pkg/new.py", true)
+        );
+    }
+
+    // ---- ADR 0026 × 0023 / 0019, integrated: a profile narrows the run ----
+
+    fn profile(name: &str, toml: &str) -> trellis_queue::profile::Profile {
+        trellis_queue::profile::parse(name, toml).unwrap()
+    }
+
+    fn run_as(
+        dir: &Path,
+        spec: &str,
+        p: &trellis_queue::profile::Profile,
+    ) -> (anyhow::Result<crate::RunExit>, String) {
+        let mut out = Vec::new();
+        let r = cmd_run(
+            dir,
+            "change f",
+            spec,
+            false,
+            RunSeeding {
+                profile: Some(p),
+                ..RunSeeding::default()
+            },
+            RunControl::default(),
+            &mut out,
+        );
+        (r, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn a_profile_without_edit_cannot_edit_and_the_run_costs_nothing() {
+        // The risk: the profile's list reaches the prompt but not the parser
+        // or the orchestrator, so a reviewer profile still edits. The script
+        // is parsed against the narrowed set, so the call is refused before
+        // the snapshot.
+        let (dir, spec) = fixture("profile-narrow", "", EDIT_THEN_STOP);
+        let p = profile("reviewer", "tools = [\"read_file\"]\n");
+        let (r, said) = run_as(&dir, &spec, &p);
+        let e = format!("{:#}", r.unwrap_err());
+        assert!(e.contains("edit"), "{e}\n{said}");
+        assert!(!said.contains("snapshot at"), "{said}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+    }
+
+    #[test]
+    fn a_profile_cannot_widen_the_repository_s_tools_and_the_line_says_so() {
+        // The risk: a committed profile switching on what the repository
+        // left off. `grep` is opt-in and this repository did not opt in.
+        let read_then_stop = r#"{"steps":[
+            {"tool":"read_file","path":"a.py"},
+            {"tool":"done","summary":"read it"}
+        ]}"#;
+        let (dir, spec) = fixture("profile-widen", "", read_then_stop);
+        let p = profile("reader", "tools = [\"read_file\", \"grep\"]\n");
+        let (r, said) = run_as(&dir, &spec, &p);
+        assert!(r.is_ok(), "{r:?}\n{said}");
+        let line = said
+            .lines()
+            .find(|l| l.starts_with("tools:"))
+            .unwrap_or_else(|| panic!("no tools: line\n{said}"));
+        assert!(line.contains("read_file, run_checks;"), "{line}");
+        assert!(!line.contains("grep,") && !line.contains("edit"), "{line}");
+        assert!(
+            line.contains("narrowed by agent profile `reader`")
+                && line.contains("not added, because this repository does not offer them: grep"),
+            "{line}"
+        );
+
+        // An unknown name is an error, not a no-op, as in `[tools]`.
+        let typo = profile("reader", "tools = [\"read_flie\"]\n");
+        let (r, _) = run_as(&dir, &spec, &typo);
+        assert!(format!("{:#}", r.unwrap_err()).contains("`read_flie`, which is not a tool"));
+    }
+
+    #[test]
+    fn a_profile_s_denied_skill_is_refused_at_read_skill_in_a_real_run() {
+        let script = r#"{"steps":[
+            {"tool":"read_skill","name":"refactor"},
+            {"tool":"done","summary":"read it"}
+        ]}"#;
+        let (dir, spec) = fixture("profile-skill", "", script);
+        std::fs::create_dir_all(dir.join(".trellis/skills/refactor")).unwrap();
+        std::fs::write(
+            dir.join(".trellis/skills/refactor/SKILL.md"),
+            "---\nname: refactor\ndescription: R.\n---\nBODY\n",
+        )
+        .unwrap();
+        crate::testutil::git_commit_all(&dir, "skill");
+        let p = profile("reviewer", "[skills]\ndeny = [\"refactor\"]\n");
+        let (r, said) = run_as(&dir, &spec, &p);
+        assert!(r.is_ok(), "{r:?}\n{said}");
+        let a = actions(&trail(&dir));
+        assert_eq!(a[0].0, "read_skill", "{a:?}");
+        assert!(
+            a[0].2.contains("denied to agent profile `reviewer`"),
+            "{a:?}"
         );
     }
 }

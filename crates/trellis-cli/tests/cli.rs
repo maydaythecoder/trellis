@@ -560,6 +560,32 @@ fn model_listing_works_outside_a_repository() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn vault_init_works_outside_a_repository_and_other_vault_actions_still_refuse() {
+    // ADR 0022 §3, integrated: a vault may be created before there is a
+    // repository to put it in. The risk on the other side is the exemption
+    // widening to every `vault` action, which would let `vault check` read
+    // whatever directory someone happened to be standing in.
+    let d = scratch("no-repo-vault");
+    let out = run(&d, &["vault", "init", "notes"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert_eq!(
+        std::fs::read_to_string(d.join("notes/manifest.json"))
+            .unwrap()
+            .trim(),
+        "[]"
+    );
+    assert!(d.join("notes/layout.json").is_file());
+    let out = run(&d, &["vault", "--vault", "notes", "check"]);
+    assert!(!out.status.success(), "vault check needs a repository");
+    let s = combined(&out);
+    assert!(
+        s.contains("git init") || s.contains("git repository"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ---------------------------------------------------------------------------
 // the surface itself
 // ---------------------------------------------------------------------------

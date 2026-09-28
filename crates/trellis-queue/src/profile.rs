@@ -52,8 +52,10 @@ pub struct ProfileFile {
     pub reports_to: Option<String>,
     #[serde(default)]
     pub paused: bool,
-    /// Carried for W-B's tool registry (ADR 0023). No effect until it
-    /// reads it, and `agents show` says so.
+    /// The tools this profile's runs may call: intersected with the set the
+    /// repository enabled and trusted (ADR 0023), so it can only narrow.
+    /// Names are checked against the repository's tools by the binary, which
+    /// is the side that knows the custom ones.
     pub tools: Option<Vec<String>>,
     pub control: Option<ControlFile>,
     pub skills: Option<SkillsFile>,
@@ -89,17 +91,9 @@ impl Profile {
             .as_ref()
             .map(|p| root.join(".trellis").join(p))
     }
-
-    /// Whether a skill may be disclosed to this profile's runs.
-    pub fn allows_skill(&self, name: &str) -> bool {
-        let Some(s) = &self.file.skills else {
-            return true;
-        };
-        if s.deny.iter().any(|d| d == name) {
-            return false;
-        }
-        s.allow.as_ref().is_none_or(|a| a.iter().any(|x| x == name))
-    }
+    // Whether a skill is allowed is `trellis_loop::SkillPolicy::check`, the
+    // one predicate both the listing and `read_skill` use. A second copy
+    // here is how the two would drift.
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -157,6 +151,17 @@ pub fn validate(set: &BTreeMap<String, Profile>) -> Result<(), QueueError> {
                 n,
                 "a process agent cannot have a token budget: trellis does not see \
                  its tokens, so the limit could never be enforced (ADR 0026 §4)"
+                    .into(),
+            );
+        }
+        if f.command.is_some() && f.tools.is_some() {
+            // The same reason as the budget: a process is not driven through
+            // trellis's tool set, so the list could restrict nothing, and a
+            // restriction that exists only on paper reads as one that holds.
+            return bad(
+                n,
+                "a process agent cannot have a `tools` list: it does not call trellis's \
+                 tools, so the list could never be enforced (ADR 0026 §4)"
                     .into(),
             );
         }
@@ -426,7 +431,12 @@ warn_at = 0.5
         .unwrap();
         let r = &s["reviewer"];
         assert_eq!(r.warn_at(), 0.5);
-        assert!(r.allows_skill("a") && !r.allows_skill("b") && !r.allows_skill("c"));
+        let sk = r.file.skills.as_ref().unwrap();
+        assert_eq!(
+            sk.allow.as_deref(),
+            Some(&["a".to_string(), "b".to_string()][..])
+        );
+        assert_eq!(sk.deny, ["b"]);
         assert_eq!(s["lead"].warn_at(), DEFAULT_WARN_AT);
     }
 
@@ -450,6 +460,10 @@ warn_at = 0.5
         assert!(
             err(&[("p", "command = [\"y\"]\n[budget]\nmonthly_tokens = 5")])
                 .contains("cannot have a token budget")
+        );
+        assert!(
+            err(&[("p", "command = [\"y\"]\ntools = [\"read_file\"]")])
+                .contains("cannot have a `tools` list")
         );
         assert!(err(&[("p", "[budgett]\nx = 1")]).contains("unknown field"));
         assert!(err(&[("p", "[control]\nmode = \"yolo\"")]).contains("not a mode"));
