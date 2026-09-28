@@ -316,6 +316,12 @@ pub struct Task {
     /// The routine that created this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<String>,
+    /// The scheduled instant (Unix seconds) it was created for. With
+    /// `routine`, what makes a fire idempotent: a tick that fails after the
+    /// task was published and before the routine's state was saved finds
+    /// this task on the next tick instead of enqueuing the instant again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine_at: Option<i64>,
 }
 
 impl Task {
@@ -388,6 +394,7 @@ pub struct NewTask {
     /// Start in `backlog` rather than `todo`.
     pub backlog: bool,
     pub routine: Option<String>,
+    pub routine_at: Option<i64>,
 }
 
 /// Every task's state and status by id: what blockers and wakes are decided
@@ -529,6 +536,7 @@ impl Queue {
             blockers: new.blockers,
             needs_approval: new.needs_approval,
             routine: new.routine,
+            routine_at: new.routine_at,
             ..Task::default()
         };
         t.status = Some(if new.backlog {
@@ -677,9 +685,7 @@ impl Queue {
             Err(e @ QueueError::Unreadable { .. }) => {
                 // Not runnable and not retryable. Moved to failed/ so it
                 // stops blocking the head of the queue, and reported.
-                let _ = std::fs::create_dir_all(self.state_dir(State::Failed));
-                let _ = std::fs::hard_link(&from, self.path(State::Failed, id));
-                remove(&from)?;
+                self.set_aside(id, &from)?;
                 return Err(e);
             }
             Err(e) => return Err(e),
@@ -713,6 +719,56 @@ impl Queue {
             id: id.to_string(),
             task,
         }))
+    }
+
+    /// Moves an unreadable pending file into `failed/`. The pending name is
+    /// removed only once a copy of these bytes is in `failed/`: it may be
+    /// the only copy of a task someone wrote by hand.
+    ///
+    /// `failed/<id>.json` already there holding the same bytes is a racing
+    /// claimer that moved it first. Holding different bytes, it is another
+    /// record of that id, and this one goes beside it under a suffixed name
+    /// rather than over it. Any other failure leaves the pending file where
+    /// it is and is returned: it then errors every tick until someone looks,
+    /// which is louder than losing it.
+    fn set_aside(&self, id: &str, from: &Path) -> Result<(), QueueError> {
+        let failed = self.state_dir(State::Failed);
+        std::fs::create_dir_all(&failed).map_err(io(&failed))?;
+        let to = self.path(State::Failed, id);
+        match files::patiently(|| std::fs::hard_link(from, &to)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let same = matches!(
+                    (std::fs::read(from), std::fs::read(&to)),
+                    (Ok(a), Ok(b)) if a == b
+                );
+                if !same {
+                    let mut linked = false;
+                    for _ in 0..5 {
+                        let aside =
+                            failed.join(format!("{id}.unreadable-{}.json", stamp::sortable_now()));
+                        match std::fs::hard_link(from, &aside) {
+                            Ok(()) => {
+                                linked = true;
+                                break;
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                            Err(e) => return Err(io(&aside)(e)),
+                        }
+                    }
+                    if !linked {
+                        return Err(io(&to)(std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            "no free name in failed/ to set the unreadable file aside; \
+                             it is left in pending/",
+                        )));
+                    }
+                }
+            }
+            Err(e) => return Err(io(&to)(e)),
+        }
+        remove(from)
     }
 
     /// Claims the next claimable pending task, with no assignee gate.

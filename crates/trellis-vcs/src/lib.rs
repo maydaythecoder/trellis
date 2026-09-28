@@ -10,6 +10,8 @@
 //! it — is a source of data-loss bugs, and this is the one path that has to
 //! be reliable. See `docs/adr/0009-clean-worktree-requirement.md`.
 
+pub mod ignored;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

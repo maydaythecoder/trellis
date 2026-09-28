@@ -8,7 +8,7 @@
 
 use crate::activity::{Actor, Event};
 use crate::cron::{Cron, Tz};
-use crate::files::{read_json_opt, replace_locked};
+use crate::files::{Lock, read_json_opt, replace, settle};
 use crate::{NewTask, Priority, Queue, QueueError, State};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -241,6 +241,7 @@ impl Routine {
             needs_approval: t.needs_approval,
             backlog: false,
             routine: Some(self.name.clone()),
+            routine_at: None,
         }
     }
 }
@@ -299,9 +300,32 @@ fn active(q: &Queue, name: &str) -> Result<Option<String>, QueueError> {
     Ok(None)
 }
 
-fn fire(q: &Queue, r: &Routine, at: i64, actor: Actor) -> Result<Fired, QueueError> {
+/// A task this routine already created for instant `at`, in any state.
+fn fired_for(q: &Queue, name: &str, at: i64) -> Result<Option<String>, QueueError> {
+    Ok(q.list()?.into_iter().find_map(|e| {
+        let t = e.task.ok()?;
+        (t.routine.as_deref() == Some(name) && t.routine_at == Some(at)).then_some(e.id)
+    }))
+}
+
+/// `scheduled`: `at` is an instant of the schedule, recorded on the task
+/// and fired at most once. A manual `run_now` is not one, and two of them
+/// in one second are two tasks.
+fn fire(
+    q: &Queue,
+    r: &Routine,
+    at: i64,
+    actor: Actor,
+    scheduled: bool,
+) -> Result<Fired, QueueError> {
     let entity = format!("routine:{}", r.name);
     let when = crate::secs_to_iso(at);
+    // Before the concurrency policy: a task for this very instant is this
+    // fire, already done by a tick that failed before it could record it.
+    // Under `coalesce` it would otherwise be noted as a second fire.
+    if scheduled && let Some(id) = fired_for(q, &r.name, at)? {
+        return Ok(Fired::Enqueued(id));
+    }
     if r.concurrency != Concurrency::Always
         && let Some(open) = active(q, &r.name)?
     {
@@ -327,7 +351,9 @@ fn fire(q: &Queue, r: &Routine, at: i64, actor: Actor) -> Result<Fired, QueueErr
         )?;
         return Ok(Fired::Skipped(open));
     }
-    let id = q.add_task(r.new_task(at), actor)?;
+    let mut new = r.new_task(at);
+    new.routine_at = scheduled.then_some(at);
+    let id = q.add_task(new, actor)?;
     q.log(Event::new(actor, "routine.fire", entity).detail(format!("{when} -> task:{id}")))?;
     Ok(Fired::Enqueued(id))
 }
@@ -344,75 +370,74 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
         return Ok(tick);
     }
     let path = state_path(q, &r.name);
-    replace_locked(
-        &q.locks(),
-        &format!("routine-{}", r.name),
-        &path,
-        |cur: Option<RoutineState>| {
-            let Some(mut st) = cur else {
-                tick.armed = true;
-                return Ok((
-                    RoutineState {
-                        armed_at: now,
-                        last_fired: None,
-                        last_task: None,
-                    },
-                    (),
-                ));
-            };
-            // A year of every-minute fires is 525,600 steps; clamp the look-back
-            // so a routine left for a decade cannot stall a tick.
-            let base = st.last_fired.unwrap_or(st.armed_at).max(now - 400 * 86_400);
-            let keep = match r.catch_up {
-                CatchUp::Skip => 1,
-                CatchUp::Enqueue(n) => n as usize,
-            };
-            let mut due: VecDeque<i64> = VecDeque::new();
-            let mut total = 0u64;
-            let mut t = base;
-            while let Some(next) = r.cron.next_after(t, r.tz) {
-                if next > now {
-                    break;
+    // The state is saved after each fire rather than once at the end: a
+    // fire that fails partway through a tick leaves the earlier ones
+    // recorded, and `fired_for` covers a failure between a fire's task
+    // and its save. Saving only at the end re-enqueued every earlier fire
+    // on every later tick.
+    let _lock = Lock::take(&q.locks(), &format!("routine-{}", r.name))?;
+    settle(&path)?;
+    let Some(mut st) = read_json_opt::<RoutineState>(&path)? else {
+        tick.armed = true;
+        let st = RoutineState {
+            armed_at: now,
+            last_fired: None,
+            last_task: None,
+        };
+        replace(&path, &st)?;
+        return Ok(tick);
+    };
+    // A year of every-minute fires is 525,600 steps; clamp the look-back
+    // so a routine left for a decade cannot stall a tick.
+    let base = st.last_fired.unwrap_or(st.armed_at).max(now - 400 * 86_400);
+    let keep = match r.catch_up {
+        CatchUp::Skip => 1,
+        CatchUp::Enqueue(n) => n as usize,
+    };
+    let mut due: VecDeque<i64> = VecDeque::new();
+    let mut total = 0u64;
+    let mut t = base;
+    while let Some(next) = r.cron.next_after(t, r.tz) {
+        if next > now {
+            break;
+        }
+        total += 1;
+        due.push_back(next);
+        if due.len() > keep {
+            due.pop_front();
+        }
+        t = next;
+    }
+    if total == 0 {
+        return Ok(tick);
+    }
+    tick.missed = total - due.len() as u64;
+    if tick.missed > 0 {
+        q.log(
+            Event::new(
+                Actor::Routine,
+                "routine.missed",
+                format!("routine:{}", r.name),
+            )
+            .detail(format!(
+                "{} due fire(s) dropped by catch_up = {}",
+                tick.missed,
+                match r.catch_up {
+                    CatchUp::Skip => "skip".to_string(),
+                    CatchUp::Enqueue(n) => format!("enqueue (max {n})"),
                 }
-                total += 1;
-                due.push_back(next);
-                if due.len() > keep {
-                    due.pop_front();
-                }
-                t = next;
-            }
-            if total == 0 {
-                return Ok((st, ()));
-            }
-            tick.missed = total - due.len() as u64;
-            if tick.missed > 0 {
-                q.log(
-                    Event::new(
-                        Actor::Routine,
-                        "routine.missed",
-                        format!("routine:{}", r.name),
-                    )
-                    .detail(format!(
-                        "{} due fire(s) dropped by catch_up = {}",
-                        tick.missed,
-                        match r.catch_up {
-                            CatchUp::Skip => "skip".to_string(),
-                            CatchUp::Enqueue(n) => format!("enqueue (max {n})"),
-                        }
-                    )),
-                )?;
-            }
-            for at in due {
-                let f = fire(q, r, at, Actor::Routine)?;
-                if let Fired::Enqueued(id) = &f {
-                    st.last_task = Some(id.clone());
-                }
-                st.last_fired = Some(at);
-                tick.fired.push((at, f));
-            }
-            Ok((st, ()))
-        },
-    )?;
+            )),
+        )?;
+    }
+    for at in due {
+        let f = fire(q, r, at, Actor::Routine, true)?;
+        if let Fired::Enqueued(id) = &f {
+            st.last_task = Some(id.clone());
+        }
+        st.last_fired = Some(at);
+        replace(&path, &st)?;
+        tick.fired.push((at, f));
+    }
     Ok(tick)
 }
 
@@ -420,7 +445,7 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
 /// manual run does; catch-up does not, and the schedule's state is left
 /// alone so the next scheduled fire is unaffected.
 pub fn run_now(q: &Queue, r: &Routine, now: i64) -> Result<Fired, QueueError> {
-    fire(q, r, now, Actor::Human)
+    fire(q, r, now, Actor::Human, false)
 }
 
 /// The next scheduled instant after `now` across every unpaused routine.
@@ -546,6 +571,35 @@ mod tests {
                 if coalesced { 2 } else { 0 },
                 "{policy}"
             );
+        }
+    }
+
+    #[test]
+    fn a_failure_partway_through_a_tick_never_enqueues_an_instant_twice() {
+        // The risk: three due fires, the second one fails, and the state
+        // holding `last_fired` was saved only at the end — so the first
+        // fire's task existed with nothing recording it, and every later
+        // tick enqueued it again. Every write that can fail is failed in
+        // turn, and each instant must end up queued exactly once.
+        for k in 1..=24 {
+            let (_d, q) = queue();
+            let r = routine("concurrency = \"always\"\ncatch_up = \"enqueue\"\ncatch_up_max = 3");
+            evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
+            crate::files::fail::nth_link(k);
+            let first = evaluate(&q, &r, at("2026-09-27T12:00:00Z"));
+            crate::files::fail::nth_link(0);
+            // Ticks after the failure, as `work` would run them.
+            for _ in 0..2 {
+                evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+            }
+            let mut texts: Vec<String> = pending(&q).into_iter().map(|t| t.task).collect();
+            texts.sort();
+            let want = [
+                "triage 2026-09-25 for parser (nightly)",
+                "triage 2026-09-26 for parser (nightly)",
+                "triage 2026-09-27 for parser (nightly)",
+            ];
+            assert_eq!(texts, want, "failing link {k} (first tick: {first:?})");
         }
     }
 

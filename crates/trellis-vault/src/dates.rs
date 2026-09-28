@@ -662,31 +662,37 @@ pub fn refresh(
     let mut next = BTreeMap::new();
     for n in &vault.notes {
         let d = days(&n.path);
-        let result = match doc.notes.get(&n.path) {
-            Some(prev) => {
-                let r = reconcile(&n.body, Some(prev), &stamp(d.modified.as_deref(), true));
-                if r.as_ref().is_ok_and(|r| r != prev) {
+        let prev = doc.notes.get(&n.path);
+        let result = match prev {
+            Some(prev) => reconcile(&n.body, Some(prev), &stamp(d.modified.as_deref(), true)),
+            None => seed(
+                &n.body,
+                &Seed {
+                    created_day: d.created.as_deref(),
+                    modified_day: d.modified.as_deref(),
+                    ..Seed::default()
+                },
+            ),
+        };
+        match (result, prev) {
+            (Ok(nd), Some(prev)) => {
+                if &nd != prev {
                     reconciled += 1;
                 }
-                r
-            }
-            None => {
-                seeded += 1;
-                seed(
-                    &n.body,
-                    &Seed {
-                        created_day: d.created.as_deref(),
-                        modified_day: d.modified.as_deref(),
-                        ..Seed::default()
-                    },
-                )
-            }
-        };
-        match result {
-            Ok(nd) => {
                 next.insert(n.path.clone(), nd);
             }
-            Err(e) => failures.push(format!("{}: {e}", n.path)),
+            (Ok(nd), None) => {
+                seeded += 1;
+                next.insert(n.path.clone(), nd);
+            }
+            // The note is still on disk, so its entry is not dropped: the
+            // failure (a note past the line limit) may be one edit long,
+            // and the dates it had are not recoverable once deleted.
+            (Err(e), Some(prev)) => {
+                failures.push(format!("{}: {e}; its previous entry is kept", n.path));
+                next.insert(n.path.clone(), prev.clone());
+            }
+            (Err(e), None) => failures.push(format!("{}: {e}", n.path)),
         }
     }
     let kept = vault
@@ -938,5 +944,45 @@ mod tests {
         };
         assert_eq!(after_edit(d.path(), &touched, "2024-01-01").unwrap(), None);
         assert!(!path(d.path()).exists());
+    }
+
+    #[test]
+    fn a_note_that_fails_to_reconcile_keeps_its_entry_and_is_not_counted_dropped() {
+        // The risk: a note past the line limit had its dates.json entry
+        // deleted by the refresh while the counts said it was kept, so one
+        // over-limit edit erased every date the note had.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("ok.md"), "one\ntwo\n").unwrap();
+        std::fs::write(d.path().join("big.md"), "short\n").unwrap();
+        let v = crate::reader::Vault::open(d.path()).unwrap();
+        let mut doc = Document::default();
+        let days = |_: &str| FileDays {
+            created: Some("2024-01-01".into()),
+            modified: Some("2024-01-02".into()),
+        };
+        let (seeded, _, dropped, failures) = refresh(&v, &mut doc, &days);
+        assert_eq!((seeded, dropped, failures.len()), (2, 0, 0));
+        let before = doc.notes["big.md"].clone();
+
+        // Now over the limit: the reconcile fails.
+        let over = "x\n".repeat(MAX_LINES_PER_NOTE + 1);
+        std::fs::write(d.path().join("big.md"), &over).unwrap();
+        let v = crate::reader::Vault::open(d.path()).unwrap();
+        let (_, _, dropped, failures) = refresh(&v, &mut doc, &days);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(dropped, 0);
+        assert_eq!(
+            doc.notes.get("big.md"),
+            Some(&before),
+            "the entry is carried forward unchanged"
+        );
+
+        // A new note that cannot be seeded is a failure, not a seed.
+        std::fs::write(d.path().join("new.md"), &over).unwrap();
+        let v = crate::reader::Vault::open(d.path()).unwrap();
+        let (seeded, _, _, failures) = refresh(&v, &mut doc, &days);
+        assert_eq!((seeded, failures.len()), (0, 2), "{failures:?}");
+        assert!(!doc.notes.contains_key("new.md"));
+        assert_eq!(doc.notes.get("big.md"), Some(&before));
     }
 }

@@ -217,6 +217,16 @@ on stderr.
     `printf '{"type":"prompt",…}\n' | trellis rpc` runs one task to
     completion. pi disposes the runtime at end of input; here that would make
     one-shot piping useless.
+  - *Amended after the seventh review of PR #1:* **end of input declines
+    every approval.** No `approve` can arrive once input has ended, so
+    every question open then, and every one the run asks afterwards, is
+    declined (its reply channel is dropped, which ADR 0018 reads as no),
+    and the run continues to its end: in approve mode that is normally not
+    converged, rolled back, trail written. Before this the server joined
+    the run with a question open, and an approve-mode run piped in with
+    `printf … | trellis rpc` never exited. After an `abort` the abort path
+    drops the questions instead, once the run has taken it, so an aborted
+    run still ends as interrupted.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation

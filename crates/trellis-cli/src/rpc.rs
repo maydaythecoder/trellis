@@ -128,6 +128,9 @@ struct Server {
     /// Open approval questions, by id, each holding its reply channel.
     approvals: Arc<Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     next_approval: Arc<AtomicU64>,
+    /// Set, under the `approvals` lock, when input ends: no `approve` can
+    /// arrive after it, so a question asked from then on is declined.
+    input_closed: Arc<AtomicBool>,
 }
 
 /// Reads commands until `quit` or end of input.
@@ -135,6 +138,12 @@ struct Server {
 /// End of input waits for a run in flight to finish, so
 /// `printf '{"type":"prompt",...}\n' | trellis rpc` runs one task to
 /// completion. `quit` aborts it instead.
+///
+/// End of input also means no `approve` can come: every question open
+/// then, and every one the run asks after, is declined (a dropped reply
+/// channel is a no, ADR 0018), and the run goes on to its end. Joining
+/// with a question still open would wait forever on an answer nobody can
+/// send.
 pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) -> Result<()> {
     let mut s = Server {
         root: root.to_path_buf(),
@@ -145,6 +154,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         last: Arc::default(),
         approvals: Arc::default(),
         next_approval: Arc::default(),
+        input_closed: Arc::default(),
     };
     for line in input.lines() {
         let line = line?;
@@ -166,6 +176,18 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         if !s.handle(&cmd) {
             return Ok(());
         }
+    }
+    // Under the lock the forwarder inserts under, so a question it is
+    // about to record is either cleared here or sees the flag and is
+    // dropped: none is left open.
+    //
+    // Not after an `abort`: `abort_run` already drops every question once
+    // the run has taken the abort path, and a "no" delivered before that
+    // would let the run end as not converged instead of interrupted.
+    let aborting = s.running.as_ref().is_some_and(|r| r.abort.requested());
+    if !aborting && let Ok(mut a) = s.approvals.lock() {
+        s.input_closed.store(true, Ordering::SeqCst);
+        a.clear();
     }
     if let Some(r) = s.running.take() {
         let _ = r.thread.join();
@@ -431,10 +453,11 @@ impl Server {
         let run_done = done.clone();
         let request_id = id.map(str::to_string);
         let (root, sink, mode) = (self.root.clone(), self.sink.clone(), self.mode);
-        let (approvals, next, last) = (
+        let (approvals, next, last, closed) = (
             self.approvals.clone(),
             self.next_approval.clone(),
             self.last.clone(),
+            self.input_closed.clone(),
         );
         let run_abort = abort.clone();
         let rid = request_id.clone();
@@ -454,7 +477,9 @@ impl Server {
                             // under: a question arriving after the run took
                             // the abort path is dropped here, because the
                             // clear may already have happened.
-                            if aborted.observed() {
+                            // The same for end of input: nobody is left
+                            // to answer, and the drop is the no.
+                            if aborted.observed() || closed.load(Ordering::SeqCst) {
                                 continue;
                             }
                             a.insert(aid.clone(), req.reply);
@@ -748,6 +773,37 @@ mod tests {
         assert_eq!(end["outcome"], "interrupted", "{rs:?}");
         assert_eq!(end["exit"], 130);
         assert_eq!(end["restored"], true);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+    }
+
+    #[test]
+    fn end_of_input_with_a_question_open_declines_it_and_the_process_exits() {
+        // The risk: the client closed stdin while an approve-mode run
+        // waited on a person. The server joined the run, the run waited on
+        // a reply channel the server still held, and nothing ever ended.
+        let (dir, spec) = fixture("eof-approval", "[control]\nmode = \"approve\"\n");
+        let mut c = Client::start(&dir);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        drop(c.tx.take());
+        let server = c.server.take().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(server.join());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the server returns at end of input")
+            .unwrap()
+            .unwrap();
+        let rs = c.records();
+        let end = of_type(&rs, "run_end")[0];
+        // Declined, then `done` with nothing checked: not converged, and
+        // the edit never landed.
+        assert_eq!(end["outcome"], "not_converged", "{rs:?}");
         assert_eq!(
             std::fs::read_to_string(dir.join("a.py")).unwrap(),
             "def f():\n    return 1\n"

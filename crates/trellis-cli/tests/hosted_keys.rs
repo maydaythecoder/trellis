@@ -341,6 +341,29 @@ fn a_plain_run_refuses_a_hosted_endpoint_the_repository_chose() {
 }
 
 #[test]
+fn a_plain_run_sends_no_key_to_a_loopback_port_the_repository_chose() {
+    // ADR 0024 §3. The risk: loopback was always allowed, so a repository
+    // whose `[model] spec` named a port its own test suite leaves listening
+    // received the user's OPENAI_API_KEY on a plain `trellis run`.
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    let d = hostile(
+        "hostile-loopback",
+        &format!("[model]\nspec = \"openai-chat:http://127.0.0.1:{port}/v1#m\"\n"),
+    );
+    let (ok, all) = plain_run(&d);
+    assert!(!ok, "{all}");
+    assert!(all.contains("OPENAI_API_KEY"), "{all}");
+    assert!(!all.contains("snapshot at"), "{all}");
+    assert!(!all.contains(CANARY), "{all}");
+    assert!(
+        matches!(l.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "nothing connected to the repository's port"
+    );
+}
+
+#[test]
 fn a_repository_that_names_the_key_variable_is_refused_at_load() {
     // The risk: `key_env = "AWS_SECRET_ACCESS_KEY"` in a committed file, and
     // whatever that variable holds sent to the repository's `base_url`.
