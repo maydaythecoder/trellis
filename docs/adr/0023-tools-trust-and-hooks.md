@@ -337,6 +337,20 @@ anyone being asked. Now the digest also covers:
     in `crates/trellis-checks/src/lib.rs` failed before the change;
     `a_check_keeps_bytecode_caching_when_dot_trellis_holds_no_python` is a
     guard on the cost side.
+
+    *Amended after the sixth review:* the walk that answers "is there
+    Python under `.trellis/`" was bounded by depth only, so two links back
+    to `.trellis/` itself branched twice per level, 2^32 directory reads
+    before it gave up, on every check spawn. It now keeps the set of
+    canonical directories walked, as the trust walker does, and walks each
+    once
+    (`self_referencing_links_under_dot_trellis_end_the_walk_quickly`: with
+    `.trellis/a -> .` and `.trellis/b -> .` it had not answered after 10 s
+    before the change). A directory whose real path is outside the
+    repository, or is the root or an ancestor of it, is not walked and
+    answers yes: the variable costs a suite its cache, and a wrong no costs
+    the repository its trust. The trust digest refuses such a link anyway
+    (`a_link_out_of_the_repository_is_not_walked_and_answers_yes`).
   - **`TrustState::Refused { reason }`.** A fingerprint that cannot be
     trusted read `Changed` when a trust was on record and `Unknown` when not.
     Either way the `repo:` line, `work`'s waiting reason and `doctor` told
