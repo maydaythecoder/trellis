@@ -693,3 +693,157 @@ async fn read_skill_by_exact_name_is_refused_when_the_profile_denies_it() {
         "{r:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A pass describes the tree it ran against, and nothing after it.
+// ---------------------------------------------------------------------------
+
+/// A typecheck that really runs and exits 0, as `agent.rs` builds one.
+fn passing_checker() -> CheckConfig {
+    let argv = if cfg!(windows) {
+        vec!["cmd".into(), "/C".into(), "exit 0".into()]
+    } else {
+        vec!["sh".into(), "-c".into(), "exit 0".into()]
+    };
+    CheckConfig {
+        typecheck: argv,
+        ..CheckConfig::default()
+    }
+}
+
+const CHECK: &str = r#"{"tool":"run_checks","paths":[],"kinds":["typecheck"]}"#;
+
+fn after_a_pass(tools: &ToolSet, middle: &str) -> ScriptedModel {
+    script(
+        tools,
+        &format!(
+            r#"{{"steps":[{CHECK},{middle},{{"tool":"done","summary":"it passed earlier"}}]}}"#
+        ),
+    )
+}
+
+fn converged(o: &Outcome) -> bool {
+    matches!(o, Outcome::Converged { .. })
+}
+
+#[tokio::test]
+async fn a_pass_then_an_applied_edit_then_done_does_not_converge() {
+    // The grounding contract (ADR 0004): `last_check_passed` returned the
+    // most recent verdict and skipped every verdict-less turn, so an edit
+    // made after the pass converged on a tree no check had seen.
+    let d = repo();
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker()).spawn();
+    let mut m = after_a_pass(
+        &ToolSet::default(),
+        r#"{"tool":"edit","path":"app/util.py","old":"return 1","new":"return 2"}"#,
+    );
+    let (outcome, t) = run("change helper", &mut m, &orch, &budget()).await;
+    assert_eq!(
+        t.turns[0].verdict_passed,
+        Some(true),
+        "the setup is a real pass"
+    );
+    assert!(
+        std::fs::read_to_string(d.path().join("app/util.py"))
+            .unwrap()
+            .contains("return 2"),
+        "the edit applied"
+    );
+    assert!(!converged(&outcome), "got {outcome:?}");
+    assert!(!t.last_check_passed());
+}
+
+#[tokio::test]
+async fn a_pass_then_a_read_then_done_still_converges() {
+    // Precision: a read cannot change the tree, and refusing to converge
+    // after one would make every careful model fail.
+    let d = repo();
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker()).spawn();
+    let mut m = after_a_pass(
+        &ToolSet::default(),
+        r#"{"tool":"read_file","path":"app/util.py"}"#,
+    );
+    let (outcome, _t) = run("look", &mut m, &orch, &budget()).await;
+    assert!(converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn a_pass_then_a_refused_edit_then_done_still_converges() {
+    // An edit whose anchor is not there wrote nothing.
+    let d = repo();
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker()).spawn();
+    let mut m = after_a_pass(
+        &ToolSet::default(),
+        r#"{"tool":"edit","path":"app/util.py","old":"not in the file","new":"x"}"#,
+    );
+    let (outcome, _t) = run("try", &mut m, &orch, &budget()).await;
+    assert!(converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn a_pass_then_bash_then_done_does_not_converge() {
+    // A shell command may write anything, and whether it did is not
+    // something the loop can tell from what it printed.
+    let d = repo();
+    let tools = with_bash(&[], true, Duration::from_secs(30));
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_tools(tools.clone())
+        .spawn();
+    let mut m = after_a_pass(&tools, r#"{"tool":"bash","command":"echo hello"}"#);
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(t.turns[0].verdict_passed, Some(true));
+    assert!(!converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn a_pass_then_a_created_file_then_done_does_not_converge() {
+    let d = git_repo();
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_tools(write_tools())
+        .spawn();
+    let mut m = after_a_pass(
+        &write_tools(),
+        r#"{"tool":"write_file","path":"app/late.py","content":"x = 1\n"}"#,
+    );
+    let (outcome, _t) = run("add", &mut m, &orch, &budget()).await;
+    assert!(
+        d.path().join("app/late.py").is_file(),
+        "the file was created"
+    );
+    assert!(!converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn a_post_tool_hook_that_writes_after_the_pass_prevents_convergence() {
+    // post_tool runs after every call, including the check that passed. A
+    // hook that writes there leaves bytes no check saw.
+    let d = git_repo();
+    let write = if cfg!(windows) {
+        "echo hooked>> app\\util.py"
+    } else {
+        "echo hooked >> app/util.py"
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            post_tool: opt(write),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_hooks(h)
+        .spawn();
+    let mut m = script(
+        &ToolSet::default(),
+        &format!(r#"{{"steps":[{CHECK},{{"tool":"done","summary":"passed"}}]}}"#),
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(t.turns[0].verdict_passed, Some(true));
+    assert!(
+        std::fs::read_to_string(d.path().join("app/util.py"))
+            .unwrap()
+            .contains("hooked"),
+        "the hook wrote"
+    );
+    assert!(!converged(&outcome), "got {outcome:?}");
+}

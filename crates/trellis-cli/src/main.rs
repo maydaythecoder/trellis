@@ -1923,12 +1923,44 @@ fn run_body(
         // Before the rollback, so on a run that did not converge the
         // rollback also undoes what the hook wrote in the worktree. Not on
         // an interrupt: Ctrl-C means stop.
+        //
+        // On a converged run the hook runs after the last check, so any byte
+        // it writes is one no check saw. The worktree is fingerprinted
+        // around it, and a difference (or a fingerprint that could not be
+        // taken) demotes the run: it is reported, and the rollback below
+        // removes the hook's bytes together with the run's (ADR 0023,
+        // "after a pass").
+        let mut out = out;
         if let (Some(h), Some((o, _))) = (&tooling.hooks, &out)
-            && let Some(Err(e)) = h
+            && h.config().after_run.is_some()
+        {
+            let guard = o
+                .converged()
+                .then(|| trellis_vcs::worktree_fingerprint(root).ok());
+            if let Some(Err(e)) = h
                 .after_run(&tooling::outcome_json(o, &touched, &run_id))
                 .await
-        {
-            tracing::warn!(error = %e, "after_run hook failed; it only observes");
+            {
+                tracing::warn!(error = %e, "after_run hook failed; it only observes");
+            }
+            let changed = match guard {
+                None => false,
+                Some(None) => true,
+                Some(Some(before)) => trellis_vcs::worktree_fingerprint(root)
+                    .ok()
+                    .is_none_or(|after| after != before),
+            };
+            if changed && let Some((o, _)) = &mut out {
+                let iterations = match o {
+                    trellis_loop::Outcome::Converged { iterations, .. }
+                    | trellis_loop::Outcome::NotConverged { iterations, .. } => *iterations,
+                };
+                tracing::warn!("after_run changed the worktree of a converged run; rolling back");
+                *o = trellis_loop::Outcome::NotConverged {
+                    reason: trellis_loop::NotConverged::AfterRunChangedTree,
+                    iterations,
+                };
+            }
         }
         (out, touched, gate_log)
     });
@@ -4127,6 +4159,7 @@ mod init_tests {
             prompt_bytes: Some(1_000),
             radius_counts: None,
             human: None,
+            may_have_changed_tree: false,
         }
     }
 
