@@ -1672,10 +1672,35 @@ fn run_body(
     let snapshot =
         trellis_vcs::snapshot(root).context("a clean git worktree is required before a run")?;
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
+    // `git status` does not see ignored files and the rollback's `git clean
+    // -fd` does not remove them, so a writer that can reach any path could
+    // leave `.venv/.../sitecustomize.py` behind a rollback for a later check
+    // to execute. The orchestrator's own writes refuse ignored paths; the
+    // writers that can reach them are `bash`, custom tools and hooks, so the
+    // ignored files are listed with their stat around a run that loads any
+    // of them, as a process agent's are (ADR 0023 §5, ADR 0026 §11). Taken
+    // after the snapshot and before `before_run`, which is one of them.
+    let ignored = if tooling.tools.bash().is_some()
+        || !tooling.tools.customs().is_empty()
+        || tooling.hooks.is_some()
+    {
+        Some(
+            trellis_vcs::ignored::IgnoredSnapshot::take(root).map_err(|e| {
+                anyhow::anyhow!(
+                    "could not list the files git ignores before the run, which a run \
+                     with bash, custom tools or hooks needs to undo their writes: {e}"
+                )
+            })?,
+        )
+    } else {
+        None
+    };
     // From here until the outcome is dispatched, a panic anywhere (inside
     // `block_on` or after it) rolls back on its way out.
     let mut on_panic = RollbackOnPanic {
+        root,
         snapshot: &snapshot,
+        ignored: ignored.as_ref(),
         armed: true,
     };
 
@@ -2086,6 +2111,7 @@ fn run_body(
             task,
             &transcript,
             &snapshot,
+            ignored.as_ref(),
             facts(trellis_trail::Approval::None),
             out,
         );
@@ -2182,6 +2208,28 @@ fn run_body(
                 out,
                 "CONVERGED after {iterations} iterations, {checks_passed} checks passed."
             );
+            // Left in place with the run's changes, but said: `git status`
+            // and `/diff` do not show them, and reverting the change later
+            // does not remove them.
+            if let Some(before) = &ignored {
+                match trellis_vcs::ignored::changes_since(root, before) {
+                    Ok(c) if c.is_empty() => {}
+                    Ok(c) => {
+                        let _ = writeln!(
+                            out,
+                            "ignored:  the run changed files git ignores, which git status \
+                             does not show and a revert does not undo: {}",
+                            c.summary()
+                        );
+                    }
+                    Err(e) => {
+                        let _ = writeln!(
+                            out,
+                            "ignored:  could not list the files git ignores after the run: {e}"
+                        );
+                    }
+                }
+            }
             let trail = record_trail(
                 root,
                 task,
@@ -2239,7 +2287,7 @@ fn run_body(
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_and_report(&snapshot, &mut *out);
+            let restored = rollback_run(root, &snapshot, ignored.as_ref(), &mut *out);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -2325,7 +2373,9 @@ make the run converge — only a check executed in that session ",
 /// still fails, now with the tree restored. No trail is written; the turn
 /// list died with the loop's future.
 struct RollbackOnPanic<'a> {
+    root: &'a Path,
     snapshot: &'a trellis_vcs::Snapshot,
+    ignored: Option<&'a trellis_vcs::ignored::IgnoredSnapshot>,
     armed: bool,
 }
 
@@ -2340,7 +2390,7 @@ impl Drop for RollbackOnPanic<'_> {
             err,
             "PANICKED mid-run. Rolling back — nothing is accepted from a run that did not finish."
         );
-        rollback_and_report(self.snapshot, &mut err);
+        rollback_run(self.root, self.snapshot, self.ignored, &mut err);
     }
 }
 
@@ -2352,15 +2402,17 @@ thread_local! {
     pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[allow(clippy::too_many_arguments)]
 fn interrupted_run(
     root: &Path,
     task: &str,
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
+    ignored: Option<&trellis_vcs::ignored::IgnoredSnapshot>,
     facts: TrailFacts<'_>,
     out: &mut dyn std::io::Write,
 ) -> Result<RunExit> {
-    let restored = handle_interrupt(root, task, touched, snapshot, facts, out);
+    let restored = handle_interrupt(root, task, touched, snapshot, ignored, facts, out);
     Ok(RunExit::Interrupted { restored })
 }
 
@@ -2376,6 +2428,7 @@ fn handle_interrupt(
     task: &str,
     touched: &[String],
     snapshot: &trellis_vcs::Snapshot,
+    ignored: Option<&trellis_vcs::ignored::IgnoredSnapshot>,
     facts: TrailFacts<'_>,
     out: &mut dyn std::io::Write,
 ) -> bool {
@@ -2388,7 +2441,7 @@ fn handle_interrupt(
         let _ = writeln!(out, "files this run had written: {}", touched.join(", "));
     }
 
-    let restored = rollback_and_report(snapshot, &mut *out);
+    let restored = rollback_run(root, snapshot, ignored, &mut *out);
 
     // The turn list cannot be recovered: it lives in the loop's future, which
     // was just cancelled. The factual half that matters survives, because the
@@ -2421,6 +2474,37 @@ fn handle_interrupt(
     // An abort that could not restore the tree is not an ordinary abort, and
     // gets the same code a failed rollback gets anywhere else.
     restored
+}
+
+/// A run's whole rollback: the ignored files the run created are removed
+/// first (the snapshot's `git clean -fd` leaves them, then removes the
+/// directories their removal emptied), then the worktree goes back to the
+/// snapshot. `ignored` is `None` for a run that loaded no writer able to
+/// reach an ignored path. Restored means both: a created ignored file that
+/// could not be removed, or an ignored listing that could not be read after
+/// the run, is not a restored tree.
+fn rollback_run(
+    root: &Path,
+    snapshot: &trellis_vcs::Snapshot,
+    ignored: Option<&trellis_vcs::ignored::IgnoredSnapshot>,
+    out: &mut dyn std::io::Write,
+) -> bool {
+    let ignored_ok = match ignored {
+        None => true,
+        Some(before) => match trellis_vcs::ignored::changes_since(root, before) {
+            Ok(c) => trellis_vcs::ignored::undo_created(root, &c, out),
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "ignored:  could not list the files git ignores after the run ({e}); \
+                     nothing git ignores was removed, and whatever the run wrote there is \
+                     still there"
+                );
+                false
+            }
+        },
+    };
+    rollback_and_report(snapshot, out) && ignored_ok
 }
 
 /// Rolls back, and if that fails says so at the top of its voice.
@@ -3967,6 +4051,7 @@ mod interrupt_tests {
             "a task that was interrupted",
             &["a.py".to_string()],
             &snap,
+            None,
             facts_for(&snap),
             &mut said,
         );
@@ -4029,6 +4114,7 @@ mod interrupt_tests {
             "t",
             &["a.py".to_string()],
             &snap,
+            None,
             facts_for(&snap),
             &mut Vec::new(),
         );

@@ -207,6 +207,16 @@ task file to `done/` or `failed/` with the run id and exit reason appended.
   `.trellis/runs/`, found by comparing the newest name before and after the
   run. It is `null` when no trail was written.
 
+**A pending file that is not a task** (it does not parse) is moved to
+`failed/` and reported, so it stops blocking the head of the queue.
+*Amended in implementation:* the pending name is removed only after the link
+into `failed/` succeeded. A `failed/<id>.json` already there with the same
+bytes is a racing claimer's copy; one with different bytes stays, and this
+file goes beside it as `<id>.unreadable-<stamp>.json`. Any other failure
+leaves the file in `pending/` and is reported every tick until someone
+looks: louder than the earlier behaviour, which ignored the failed link and
+deleted the only copy.
+
 **Ctrl-C.** `cmd_run` races each run against `tokio::signal::ctrl_c()`. Once
 that has been called, tokio owns the process's SIGINT handler for the rest of
 the process. After the first task, a plain `sleep` would therefore swallow

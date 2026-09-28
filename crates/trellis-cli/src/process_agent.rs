@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use trellis_queue::RunEnd;
 use trellis_queue::profile::Profile;
+use trellis_vcs::ignored::{IgnoredChanges, IgnoredSnapshot};
 
 /// What the command did before the checks ran.
 enum Ended {
@@ -66,188 +67,6 @@ fn changed(root: &Path) -> Result<Vec<String>, String> {
         }
     }
     Ok(out)
-}
-
-/// What `stat` says about one file, enough to tell that it changed without
-/// reading it: length and modification time, and on Unix the inode and the
-/// change time, which a process cannot set back the way it can `mtime`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    mtime: Option<std::time::SystemTime>,
-    #[cfg(unix)]
-    ino: u64,
-    #[cfg(unix)]
-    ctime: (i64, i64),
-}
-
-impl Stamp {
-    fn of(p: &Path) -> Option<Stamp> {
-        // Not followed: a link is recorded as the link, and removing one
-        // the command created removes the link, not what it points at.
-        let m = std::fs::symlink_metadata(p).ok()?;
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Some(Stamp {
-            len: m.len(),
-            mtime: m.modified().ok(),
-            #[cfg(unix)]
-            ino: m.ino(),
-            #[cfg(unix)]
-            ctime: (m.ctime(), m.ctime_nsec()),
-        })
-    }
-}
-
-/// Every untracked file git ignores, with its [`Stamp`], taken just before
-/// the command starts and again just after it ends.
-///
-/// `git status` does not list ignored files, so without this a command
-/// could write `.venv/.../sitecustomize.py`, an ignored path under
-/// `.trellis/`, or an ignored path `deny_write` names, and neither the
-/// breach test nor governance nor the rollback (`git clean -fd` leaves
-/// ignored files) would see it (ADR 0026 §11). Compared by stat rather than
-/// by content, so a large `.venv` costs one `stat` per file, not a hash;
-/// what that misses is stated in the ADR.
-struct IgnoredSnapshot {
-    files: std::collections::BTreeMap<String, Stamp>,
-}
-
-/// What the command did to ignored files.
-#[derive(Debug, Default)]
-struct IgnoredChanges {
-    created: Vec<String>,
-    modified: Vec<String>,
-    deleted: Vec<String>,
-}
-
-impl IgnoredChanges {
-    fn all(&self) -> impl Iterator<Item = &String> {
-        self.created
-            .iter()
-            .chain(&self.modified)
-            .chain(&self.deleted)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.created.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
-    }
-
-    fn summary(&self) -> String {
-        let mut parts = Vec::new();
-        for (word, list) in [
-            ("created", &self.created),
-            ("modified", &self.modified),
-            ("deleted", &self.deleted),
-        ] {
-            if !list.is_empty() {
-                parts.push(format!("{word} {}", shown(list)));
-            }
-        }
-        parts.join("; ")
-    }
-}
-
-/// Up to ten names, then a count: a `pip install` into `.venv` is
-/// thousands of files, and the report is read by a person.
-fn shown(list: &[String]) -> String {
-    const MAX: usize = 10;
-    let mut s = list
-        .iter()
-        .take(MAX)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    if list.len() > MAX {
-        s.push_str(&format!(" and {} more", list.len() - MAX));
-    }
-    s
-}
-
-impl IgnoredSnapshot {
-    fn take(root: &Path) -> Result<IgnoredSnapshot, String> {
-        let mut git = Command::new("git");
-        git.args([
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-        ])
-        .current_dir(root)
-        .stdin(Stdio::null());
-        trellis_core::secrets::scrub(&mut git);
-        let o = git
-            .output()
-            .map_err(|e| format!("git ls-files could not run: {e}"))?;
-        if !o.status.success() {
-            return Err(format!(
-                "git ls-files --ignored failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
-        }
-        let text = String::from_utf8_lossy(&o.stdout);
-        let files = text
-            .split('\0')
-            .filter(|p| !p.is_empty())
-            .filter_map(|p| Some((p.to_string(), Stamp::of(&root.join(p))?)))
-            .collect();
-        Ok(IgnoredSnapshot { files })
-    }
-
-    fn diff(&self, after: &IgnoredSnapshot) -> IgnoredChanges {
-        let mut c = IgnoredChanges::default();
-        for (p, s) in &after.files {
-            match self.files.get(p) {
-                None => c.created.push(p.clone()),
-                Some(was) if was != s => c.modified.push(p.clone()),
-                Some(_) => {}
-            }
-        }
-        for p in self.files.keys() {
-            if !after.files.contains_key(p) {
-                c.deleted.push(p.clone());
-            }
-        }
-        c
-    }
-}
-
-/// Removes the ignored files the command created, then any directory that
-/// removal left empty, up to (not including) the root. Returns what could
-/// not be removed. A directory is removed only when empty, so one that held
-/// anything else stays; one that was empty before the command and held only
-/// what it created goes too, which git would not notice either way.
-fn remove_created(root: &Path, created: &[String]) -> Vec<String> {
-    let mut failed = Vec::new();
-    for rel in created {
-        let p = root.join(rel);
-        let is_dir_link =
-            std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink() && p.is_dir());
-        // A Windows directory link is removed with `remove_dir`; on Unix a
-        // link of any kind with `remove_file`.
-        let r = if is_dir_link && cfg!(windows) {
-            std::fs::remove_dir(&p)
-        } else {
-            std::fs::remove_file(&p)
-        };
-        match r {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                failed.push(format!("{rel}: {e}"));
-                continue;
-            }
-        }
-        let mut dir = p.parent();
-        while let Some(d) = dir {
-            if d == root || !d.starts_with(root) || std::fs::remove_dir(d).is_err() {
-                break;
-            }
-            dir = d.parent();
-        }
-    }
-    failed
 }
 
 /// The files under `.git/` a command can use to run code later, as bytes:
@@ -783,31 +602,8 @@ fn undo(
     ignored: &IgnoredChanges,
     out: &mut dyn Write,
 ) -> bool {
-    let failed = remove_created(root, &ignored.created);
-    if !ignored.created.is_empty() {
-        let _ = writeln!(
-            out,
-            "ignored:  removed what the command created: {}",
-            shown(&ignored.created)
-        );
-    }
-    for f in &failed {
-        let _ = writeln!(out, "ignored:  could NOT be removed: {f}");
-    }
-    let lost: Vec<String> = ignored
-        .modified
-        .iter()
-        .chain(&ignored.deleted)
-        .cloned()
-        .collect();
-    if !lost.is_empty() {
-        let _ = writeln!(
-            out,
-            "ignored:  NOT put back (trellis keeps no copy of ignored files): {}",
-            shown(&lost)
-        );
-    }
-    rollback(snapshot, out) && failed.is_empty()
+    let removed = trellis_vcs::ignored::undo_created(root, ignored, out);
+    rollback(snapshot, out) && removed
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {

@@ -398,6 +398,28 @@ starts):
 ids begin with `budget-`, so `queue approve <id>` can tell them from task
 ids.
 
+*Amended after the seventh review of PR #1:*
+- **A request belongs to one pause.** When `work` lifts a budget pause (a
+  rollover, or `[budget]` raised in the file), every pending request for
+  that profile is closed: moved to `rejected/` with the reason
+  `superseded: the pause was lifted: <why>`, and logged as
+  `approval.supersede`. A later hard stop reuses a pending request only
+  when it names the same window, the same month for a monthly window, and
+  the same limit; any other pending request for the profile is closed as
+  superseded and a new one opened. Before this, a request stayed pending
+  after its pause lifted and the next pause reused it, so approving it
+  raised September's limit in October, on September's figures.
+- **A decision holds the request's lock** (`approval-<id>`) from its check
+  to its end, and `approve` claims the request (moves it out of
+  `pending/`) before it applies the raise. Two approvals of one request in
+  two terminals used to both pass the check and both raise the limit; a
+  test with two threads saw the doubled raise. A raise that fails to write
+  puts the request back in `pending/`. A crash between the claim and the
+  raise leaves the request approved with no raise and the profile still
+  paused, which `queue list` shows and a `[budget]` raise in the file
+  resolves; the old order could leave the raise applied and the request
+  pending, to be approved again.
+
 Every request and every decision is logged (§9).
 
 ### 7. Routines
@@ -496,6 +518,21 @@ scheduled instant) and the id of the last task the routine created.
   before claiming" to definitions as well as to tasks. Once `work` is
   running, a definition that breaks mid-session is reported once, and the
   last good set is kept.
+- *Amended after the seventh review of PR #1:* **each scheduled instant is
+  enqueued at most once.** The state was saved once, after every due fire
+  of a tick, so a failure on the second fire left the first fire's task
+  created with `last_fired` unsaved, and every later tick enqueued it
+  again. Now the state is saved after each fire, under the routine's lock
+  held for the whole tick; and a scheduled fire's task records the instant
+  as `routine_at`, so a failure between a task and its save is found on
+  the next tick (a task of this routine for this instant, in any state, is
+  that fire) instead of being enqueued twice. The check runs before the
+  concurrency policy, so `coalesce` does not note the instant as a second
+  fire. A test fails each write of a three-fire tick in turn and checks
+  each instant is queued exactly once. `routines run` is not a scheduled
+  instant: its task has no `routine_at`, and two in one second are two
+  tasks. The check reads every task file, as `add_task`'s index already
+  does, so a fire costs two reads of the queue rather than one.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
@@ -598,6 +635,12 @@ would create an invalid set is refused as a whole.
   `--on-conflict replace` overwrites it.
 - **Task ids from an import folder must be lowercase ASCII letters, digits
   and dashes.** Each id becomes a file name in the git directory.
+- **`--on-conflict replace` against a task claimed here is refused while
+  planning**, before anything is written. It used to be found only when
+  the apply reached that task, after the profiles and routines ahead of it
+  were already in `.trellis/`. A claim made between the plan and the apply
+  is still refused at that task, with the earlier items written; the
+  window is the length of the import.
 
 ### 11. Process agents
 
@@ -749,6 +792,10 @@ This is Paperclip's `process` adapter. A profile with
      modification time back is not seen; on Unix the change time, which a
      process cannot set, catches it. A listing that fails after the
      command makes the run not converged and removes nothing.
+   - *Amended after the seventh review of PR #1:* the listing, the diff
+     and the removal moved to `trellis_vcs::ignored`, and a model run with
+     `bash`, a custom tool or hooks uses them too (ADR 0023, "after a
+     pass").
 4. **Decide.** The run converged if and only if the command changed at least
    one file, both checks pass, the governance audit (when there is one)
    passes, no changed path (ignored ones included) is denied or under

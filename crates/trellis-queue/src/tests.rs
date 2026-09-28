@@ -540,6 +540,49 @@ fn an_unreadable_pending_file_is_moved_aside_and_the_queue_goes_on() {
     );
 }
 
+#[test]
+fn an_unreadable_pending_file_is_never_removed_without_a_copy_in_failed() {
+    // The risk: the link into failed/ failed (a failed/ file of that name
+    // already existed) and was ignored, then the pending file was removed:
+    // the only copy of whatever it held, gone.
+    let (_d, q) = queue();
+    let id = "00000000-bad";
+    std::fs::create_dir_all(q.dir().join("failed")).unwrap();
+    std::fs::create_dir_all(q.dir().join("pending")).unwrap();
+    std::fs::write(q.dir().join(format!("failed/{id}.json")), "earlier").unwrap();
+    std::fs::write(q.dir().join(format!("pending/{id}.json")), "{ half").unwrap();
+    assert!(q.claim(id).is_err(), "still reported");
+    let copies: Vec<String> = std::fs::read_dir(q.dir().join("failed"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .collect();
+    assert!(
+        copies.iter().any(|c| c == "{ half"),
+        "the unreadable file survives in failed/: {copies:?}"
+    );
+    assert!(copies.iter().any(|c| c == "earlier"), "{copies:?}");
+    assert!(!q.dir().join(format!("pending/{id}.json")).exists());
+
+    // Two claimers that both found it unreadable: the second finds the
+    // same bytes already in failed/, and leaves one copy, not two.
+    let id2 = "00000001-bad";
+    std::fs::write(q.dir().join(format!("pending/{id2}.json")), "{ x").unwrap();
+    std::fs::hard_link(
+        q.dir().join(format!("pending/{id2}.json")),
+        q.dir().join(format!("failed/{id2}.json")),
+    )
+    .unwrap();
+    assert!(q.claim(id2).is_err());
+    let n = std::fs::read_dir(q.dir().join("failed"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(id2))
+        .count();
+    assert_eq!(n, 1);
+    assert!(!q.dir().join(format!("pending/{id2}.json")).exists());
+}
+
 // ---------------------------------------------------------------------------
 // The task model (ADR 0026 §1–§3)
 // ---------------------------------------------------------------------------
@@ -1109,7 +1152,143 @@ fn approving_with_a_raise_resumes_and_rejecting_keeps_the_pause() {
     // Raising the limit in the profile file lifts a budget pause.
     let raised = budgeted(1000);
     let r = ledger::enforce(&q, &raised, &spent(150), "2026-09", Actor::Work).unwrap();
-    assert!(r.resumed && !r.paused);
+    assert!(!r.paused);
+    // The risk: `work` said "its monthly window rolled over" for every
+    // lift, which here would send the person looking at the calendar.
+    assert_eq!(r.resumed.as_deref(), Some("no longer over its token limit"));
+}
+
+#[test]
+fn a_lifted_pause_closes_its_request_and_a_later_pause_opens_its_own() {
+    // The risk: September's request stayed pending after the October
+    // rollover lifted the pause, and October's hard stop reused it. Its
+    // approval would then raise September's limit, which helps nobody,
+    // and its figures were a month old.
+    let (_d, q) = queue();
+    let p = budgeted(100);
+    let sept = ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work)
+        .unwrap()
+        .request
+        .unwrap();
+    let lifted = ledger::enforce(&q, &p, &spent(0), "2026-10", Actor::Work).unwrap();
+    assert!(lifted.resumed.is_some());
+    assert!(
+        approval::list(&q, "pending").unwrap().is_empty(),
+        "the lift closes the request it made moot"
+    );
+    let closed = approval::list(&q, "rejected").unwrap();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].id, sept);
+    let why = closed[0].decision.as_ref().unwrap().reason.clone().unwrap();
+    assert!(why.contains("superseded"), "{why}");
+
+    let oct = ledger::enforce(&q, &p, &spent(100), "2026-10", Actor::Work)
+        .unwrap()
+        .request
+        .unwrap();
+    assert_ne!(oct, sept);
+    let open = approval::list(&q, "pending").unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!((open[0].month.as_str(), open[0].spent), ("2026-10", 100));
+}
+
+#[test]
+fn a_request_for_another_window_or_month_is_not_reused() {
+    // A request left pending by an older build, or by a crash between the
+    // lift and the close: `open_budget_request` must not hand it out for
+    // a different window or month.
+    let (_d, q) = queue();
+    let old = approval::open_budget_request(
+        &q,
+        "rev",
+        profile::Window::Monthly,
+        "2026-09",
+        100,
+        100,
+        Actor::Work,
+    )
+    .unwrap();
+    let same = approval::open_budget_request(
+        &q,
+        "rev",
+        profile::Window::Monthly,
+        "2026-09",
+        120,
+        100,
+        Actor::Work,
+    )
+    .unwrap();
+    assert_eq!(old, same, "one open request per pause");
+    let new = approval::open_budget_request(
+        &q,
+        "rev",
+        profile::Window::Monthly,
+        "2026-10",
+        100,
+        100,
+        Actor::Work,
+    )
+    .unwrap();
+    assert_ne!(old, new);
+    let open = approval::list(&q, "pending").unwrap();
+    assert_eq!(open.len(), 1, "the stale one is closed: {open:?}");
+    assert_eq!(open[0].id, new);
+}
+
+#[test]
+fn two_approvals_of_one_request_raise_the_limit_once() {
+    // The risk: exists-check, raise, then move, with no lock over the
+    // three: two `queue approve` in two terminals both passed the check
+    // and both raised.
+    for _ in 0..20 {
+        let (_d, q) = queue();
+        let p = budgeted(100);
+        let req = ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work)
+            .unwrap()
+            .request
+            .unwrap();
+        let gate = Arc::new(Barrier::new(2));
+        let results: Vec<bool> = (0..2)
+            .map(|_| {
+                let (q, req, gate) = (q.clone(), req.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    approval::approve_budget(&q, &req, 50, Actor::Human).is_ok()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|ok| **ok).count(), 1, "{results:?}");
+        let o = profile::overlay(&q, "rev").unwrap();
+        assert_eq!(o.raises.len(), 1, "{:?}", o.raises);
+    }
+}
+
+#[test]
+fn a_raise_that_cannot_be_written_leaves_the_request_pending() {
+    // The claim (pending -> approved) is the commit point; a raise that
+    // then fails puts the request back, so it can be approved again and is
+    // never recorded as approved with no raise behind it.
+    let (_d, q) = queue();
+    let p = budgeted(100);
+    let req = ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work)
+        .unwrap()
+        .request
+        .unwrap();
+    // Links: the request's lock, the claim into approved/, then the
+    // overlay's lock, which fails.
+    crate::files::fail::nth_link(3);
+    let e = approval::approve_budget(&q, &req, 50, Actor::Human);
+    crate::files::fail::nth_link(0);
+    assert!(e.is_err());
+    assert!(profile::overlay(&q, "rev").unwrap().raises.is_empty());
+    let open = approval::list(&q, "pending").unwrap();
+    assert_eq!(open.len(), 1, "back in pending/");
+    assert!(approval::list(&q, "approved").unwrap().is_empty());
+    approval::approve_budget(&q, &req, 50, Actor::Human).unwrap();
+    assert_eq!(profile::overlay(&q, "rev").unwrap().raises.len(), 1);
 }
 
 #[test]
@@ -1118,7 +1297,11 @@ fn a_monthly_budget_pause_lifts_when_the_month_rolls_over_and_a_human_pause_neve
     let p = budgeted(100);
     ledger::enforce(&q, &p, &spent(100), "2026-09", Actor::Work).unwrap();
     let r = ledger::enforce(&q, &p, &spent(0), "2026-10", Actor::Work).unwrap();
-    assert!(r.resumed && !r.paused);
+    assert!(!r.paused);
+    assert_eq!(
+        r.resumed.as_deref(),
+        Some("monthly budget window rolled over to 2026-10")
+    );
     assert!(profile::overlay(&q, "rev").unwrap().paused.is_none());
 
     profile::update_overlay(&q, "rev", |o| {
@@ -1132,7 +1315,7 @@ fn a_monthly_budget_pause_lifts_when_the_month_rolls_over_and_a_human_pause_neve
     })
     .unwrap();
     let r = ledger::enforce(&q, &p, &spent(0), "2026-11", Actor::Work).unwrap();
-    assert!(!r.resumed);
+    assert!(r.resumed.is_none());
     assert!(profile::overlay(&q, "rev").unwrap().paused.is_some());
 }
 

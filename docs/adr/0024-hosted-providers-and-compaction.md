@@ -289,8 +289,29 @@ then sent the user's key, or any variable the repository named
   names the entry, not its host. **The user chose** `--model` (on `run`,
   `tui`, `doctor`, `work`), `/model` typed in a session, the model in an
   RPC request or `set_model` (the operator's program), and a spec written
-  in the user's own file. Loopback endpoints are allowed from either side:
-  a key is sent there only when its variable is set.
+  in the user's own file. ~~Loopback endpoints are allowed from either side:
+  a key is sent there only when its variable is set.~~
+- *Amended after the seventh review of PR #1:* **a repository-chosen
+  loopback endpoint is allowed only when no key would be sent.** If the
+  key's variable is unset (or blank, the test `HostedClient` applies when
+  it reads the key), a keyless local server works from the repository's
+  spec as before. If it is set, a repository-chosen loopback endpoint gets
+  the same pair test as any other host: it is allowed only when the user's
+  own `[[providers]]` names that origin with that variable, and otherwise
+  refused before the snapshot; `--model` (or any other choice by the user,
+  as above) sends the key where it says. The old reason, "a key is sent
+  there only when its variable is set", was the problem stated as its
+  defence: "this machine" includes any port the repository's own test
+  suite or dev server leaves listening, so a committed
+  `[model] spec = "openai-chat:http://127.0.0.1:<port>/v1#m"` received the
+  user's OPENAI_API_KEY on a plain `trellis run`. Evidence:
+  `hosted::tests::a_repository_loopback_endpoint_gets_no_key_unless_the_user_chose_it`
+  (failed before the change: the keyed repository-chosen spec resolved),
+  and `tests/hosted_keys.rs::a_plain_run_sends_no_key_to_a_loopback_port_the_repository_chose`,
+  which binds a port, points a hostile repository's spec at it, and
+  asserts the run refuses before its snapshot and nothing connects; with
+  the old rule the run started with "key from OPENAI_API_KEY" and
+  connected.
 - `doctor` applies the same rule and refuses with the same message.
 
 Evidence: `hosted::tests` (the allowlist, the pairing, the user's own
