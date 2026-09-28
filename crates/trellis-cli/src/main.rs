@@ -19,6 +19,7 @@ mod session;
 mod testutil;
 mod tui_bridge;
 mod tui_run;
+mod work;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -35,6 +36,15 @@ struct Cli {
     /// Repository root. Defaults to the current directory.
     #[arg(long, global = true)]
     root: Option<PathBuf>,
+
+    /// Also write every tracing event as one JSON object per line to this
+    /// file, appending. For `run` and `work` left unattended (ADR 0020 §7).
+    ///
+    /// A second formatter on the one subscriber, not a second telemetry
+    /// path (ADR 0008). Global so it reaches `run` and `work` without
+    /// adding a field to either.
+    #[arg(long, global = true, value_name = "PATH")]
+    log_json: Option<PathBuf>,
 
     /// Omit to enter an interactive session.
     #[command(subcommand)]
@@ -204,6 +214,21 @@ enum Command {
         #[command(subcommand)]
         action: Option<ModelAction>,
     },
+
+    /// Add, list or requeue tasks for `trellis work` (ADR 0020).
+    ///
+    /// The queue lives in the git directory, so it never dirties the
+    /// worktree and survives a rollback.
+    Queue {
+        #[command(subcommand)]
+        action: work::QueueAction,
+    },
+
+    /// Run queued tasks one at a time, oldest first, through `trellis run`.
+    ///
+    /// Stops at the first converged change, which waits for review; never
+    /// claims a task while the worktree is dirty.
+    Work(work::WorkArgs),
 }
 
 #[derive(Subcommand)]
@@ -247,12 +272,30 @@ fn main() -> Result<()> {
         Ok(s) => s.parse().unwrap_or_else(|_| default()),
         Err(_) => default(),
     };
+    // Parsed first so `--log-json` is known before the subscriber is built.
+    let cli = Cli::parse();
+    let json = match &cli.log_json {
+        Some(p) => {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .with_context(|| format!("cannot open --log-json {}", p.display()))?;
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(f)),
+            )
+        }
+        None => None,
+    };
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(json)
         .with(filter)
         .init();
 
-    let cli = Cli::parse();
     let explicit = cli.root.is_some();
     // Two commands are exempt, and both for the same reason: they are how
     // someone gets ready to use a repository, so requiring one inverts the
@@ -380,6 +423,14 @@ fn main() -> Result<()> {
         // `needs_repo` above — this arm alone was never enough.
         Command::Model { action } => cmd_models(action),
         Command::Partitions { symbols } => cmd_partitions(&root, &symbols),
+        Command::Queue { action } => work::queue(&root, action),
+        Command::Work(args) => {
+            let code = work::work(&root, args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
     }
 }
 
