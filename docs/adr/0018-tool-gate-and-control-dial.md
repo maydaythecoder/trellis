@@ -89,7 +89,9 @@ the config for that run.
   answer, not telemetry, and ADR 0008 keeps `tracing` observe-only.
 - **With no human to ask, a run in approve mode refuses to start.** A plain
   `trellis run` in approve mode with no terminal attached exits with `approve
-  mode needs an interactive terminal; pass --auto`. It does not start and then
+  mode needs an interactive terminal; pass --auto, or set [control] mode =
+  "auto"` (the second way out because `trellis session` reaches the same
+  refusal and has no `--auto` flag). It does not start and then
   deny every edit, because that would be a run that looks as though it worked
   without doing the work.
 

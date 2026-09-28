@@ -1049,13 +1049,17 @@ pub(crate) enum Human {
 }
 
 impl Human {
-    /// This process's stdin, if it is a terminal a person is typing into.
+    /// This process's terminal, if a person is both reading it and typing
+    /// into it.
     ///
-    /// Stdin specifically: the question can be printed anywhere, but the
-    /// answer has to come from somebody, and a pipe is not somebody.
+    /// Stdin because the answer has to come from somebody, and a pipe is not
+    /// somebody. Stdout as well because the diff and the question are written
+    /// there: with stdout redirected to a file, a person at the keyboard would
+    /// be answering a question they cannot see, and a `y` given blind is not
+    /// an approval.
     pub(crate) fn terminal() -> Self {
         use std::io::IsTerminal;
-        if std::io::stdin().is_terminal() {
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
             Human::Line(Box::new(|| {
                 let mut line = String::new();
                 match std::io::stdin().read_line(&mut line) {
@@ -1086,7 +1090,11 @@ impl Default for RunControl {
 }
 
 /// The exact refusal ADR 0018 names, so a script can match on it.
-const NEEDS_A_TERMINAL: &str = "approve mode needs an interactive terminal; pass --auto";
+///
+/// Both ways out are named because `session` reaches this too, and `--auto`
+/// is a `run` flag: a session user told only to pass it has nowhere to pass it.
+const NEEDS_A_TERMINAL: &str =
+    "approve mode needs an interactive terminal; pass --auto, or set [control] mode = \"auto\"";
 
 /// Whether a typed answer is a yes. Only an explicit one counts: the prompt
 /// says `[y/N]`, and an empty line, a typo or end of input is the N.

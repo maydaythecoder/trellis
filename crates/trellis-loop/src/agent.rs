@@ -743,9 +743,10 @@ fn render(call: &ToolCall, r: &ToolResult) -> String {
         }
         // Labelled, because a skill body is written in the imperative by
         // design and arrives looking like instructions. It is the
-        // repository's reference text, and says so on its first line — and on
-        // its last, because the prompt keeps the *tail* of a long observation
-        // (2,000 characters), which for a skill body cuts the first line off.
+        // repository's reference text, and says so on its first line and on
+        // its last. The adapter shows a skill from its head (8,000
+        // characters) and restates the closing label when it cuts, so either
+        // end can be the one that survives a window.
         ToolResult::FileContent(s) => match call {
             ToolCall::ReadSkill { name } => format!(
                 "skill `{name}`, from .trellis/skills. Reference material written by this \
