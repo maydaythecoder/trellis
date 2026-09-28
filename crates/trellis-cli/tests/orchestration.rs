@@ -510,6 +510,31 @@ fn a_process_agent_converges_only_when_it_changed_something_and_the_checks_pass(
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_process_agent_runs_in_trellis_s_own_process_group() {
+    // The risk (review round 9, finding 5): in a process group of its own
+    // the agent was a background job on the user's terminal, stopped by
+    // SIGTTOU or SIGTTIN the moment it wrote to or read from it. That
+    // cannot be staged without a terminal, so this guards the cause: the
+    // agent's group is trellis's, which is this test's.
+    let d = process_fixture(
+        "proc-pgid",
+        r#"["sh", "-c", "mkdir -p app && ps -o pgid= -p $$ > app/pgid.txt"]"#,
+        PASSES,
+    );
+    ok(&d, &["queue", "add", "pgid", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("CONVERGED"), "{s}");
+    let theirs = std::fs::read_to_string(d.join("app/pgid.txt")).unwrap();
+    let ours = Command::new("ps")
+        .args(["-o", "pgid=", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    assert_eq!(theirs.trim(), String::from_utf8_lossy(&ours.stdout).trim());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn a_process_agent_whose_checks_fail_is_rolled_back_whatever_its_exit_code() {
     // The command exits 0. That is data, not a verdict (ADR 0004): the

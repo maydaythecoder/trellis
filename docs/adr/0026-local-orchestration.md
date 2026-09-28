@@ -697,6 +697,23 @@ This is Paperclip's `process` adapter. A profile with
      Unix. Unix-only test, which this Windows development host cannot run:
      `exec::tests::what_a_command_backgrounded_cannot_write_after_the_call_returns`
      covers the same group kill for `bash`.
+     *Amended after the ninth review of PR #1: reverted for process
+     agents.* In a group of its own the command was a background job on
+     the user's terminal, and the kernel stops a background job that
+     writes to the terminal (with `tostop`) or reads from it, with
+     SIGTTOU or SIGTTIN: an interactive agent hung. A process agent is the
+     user's chosen command on their terminal, so it runs in trellis's own
+     process group, the foreground one, again. The cost, stated: on Unix
+     there is no group of its own to signal, so on a timeout or an
+     interrupt only the command itself is killed, and after a normal exit
+     nothing is; a grandchild it started (a backgrounded writer included)
+     can outlive it and write after the comparison and the rollback.
+     Ctrl-C at the terminal reaches the whole foreground group, the
+     command's children included. Windows is unchanged (`taskkill /T`
+     while the command is alive). Guarded, Unix-only and never run on this
+     Windows host: `a_process_agent_runs_in_trellis_s_own_process_group`
+     in `tests/orchestration.rs`, which compares the agent's process group
+     with the test's; a stopped background job needs a terminal to stage.
    - Ctrl-C kills the child and rolls back.
 
    *Amended (wave K): the environment has no keys unless the profile
