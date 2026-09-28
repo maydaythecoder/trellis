@@ -258,7 +258,11 @@ on stderr.
 - **Restrictions only add:**
   - `[governance] deny_write` is the union of both lists.
   - `[control] mode` is `approve` if either file says `approve`.
-  - `[control] approve` is the union of both lists.
+  - `[control] approve` is the union of both lists. *Amended in
+    implementation:* each list is made concrete first. A file that asks for
+    approve mode with no list contributes `edit`, the default, so that a
+    user's `approve = ["run_checks"]` adds to the repository's default
+    rather than replacing it.
   - Neither file can relax the other. `--auto` and `--approve` still
     override, because a flag is a person at the terminal deciding for one
     run. `trellis work` still forces auto (ADR 0020 §5), so a user-level
@@ -372,6 +376,28 @@ Each item is tested unless it says otherwise.
   stderr.** It did the same on stdout before this ADR. Untested.
 - **A duplicate context file is reported** as `CLAUDE.md same as `AGENTS.md`
   (repository root), sent once` on the `repo:` line.
+- **The first `layer` let a user list replace the repository's default.**
+  With the repository at `mode = "approve"` and no list, and the user file
+  at `approve = ["run_checks"]`, the union of the lists as written was
+  `["run_checks"]`, so edits no longer needed a yes. Review found it, not a
+  test. §7 is amended above, and
+  `a_user_list_adds_to_the_repositorys_default_rather_than_replacing_it`
+  now holds it.
+- **RPC `args` without `prompt` is refused**, as `run --args` requires
+  `--prompt`. The alternative was arguments dropped with no message.
+- **`log --json` ignores `--actions`.** The exported trail already carries
+  its actions.
+- **`trellis doctor` does not yet report** the user config file, the context
+  files or the system files. The `repo:` line of a run is the only place
+  they are named. Not built.
+- **Observed and not explained: a shell pipeline into `rpc`.** Under
+  PowerShell 7, with `bash feed.sh | trellis rpc`, the run thread's first
+  stdout writes (`run_start`, and in approve mode `approval_request`) did
+  not appear until the main thread's next read of stdin returned. With pipes
+  created directly by a parent process (`System.Diagnostics.Process`,
+  `std::process::Command`) this did not happen, and the process-level test
+  below uses such pipes. The cause was not identified. A client should
+  drive `rpc` through its own pipes, not a shell pipeline.
 - **A process-level test of approve mode over RPC** keeps stdin open while
   the question is answered: `rpc_approve_mode_asks_on_the_stream_while_input_stays_open`
   in `tests/modes.rs`. The unit tests drive `serve` in-process, and a
