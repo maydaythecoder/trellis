@@ -887,6 +887,78 @@ and `a_custom_tool_does_not_start_once_trusted_code_has_changed`; and in
 drives `cmd_run` and fails when the orchestrator is not given the guard.
 Each failed with its fix's behaviour removed.
 
+#### What rollback guarantees when trellis is not the only writer
+
+*Added after the eleventh review of PR #1.* ADR 0009's rollback rests on
+one premise: during a run the orchestrator is the only writer (ADR 0005).
+With `edit` and `write_file` as the only writers that premise holds, and
+the rollback's guarantee is exact. When `bash`, a custom tool, a hook or a
+process agent is enabled, it does not. Each of those is an unsandboxed
+process running with the user's authority, with write access to the whole
+worktree and to `.git/`. For them the rollback is **best-effort against
+git's view of the tree**: it restores what `git reset --hard`, `git clean
+-fd`, the ignored-file listing and the git guard can see, and a writer
+that shapes git's view can place a change outside all four.
+
+This is a limit, not a defect awaiting another guard. Eleven review rounds
+have closed one route after another with a post-hoc git check, and each
+round has found another, because the checks read state the writer can
+also write. The known ways around it, from rounds 5 to 11, stated so they
+are not assumed closed:
+
+- **Backgrounded processes on Windows.** After a normal exit
+  `taskkill /T` has no live process to walk the tree from, so what the
+  command started keeps running and can write after the comparison and
+  the rollback (ADR 0023 §3; ADR 0026 §11 step 2). On Unix a process that leaves
+  its group (`setsid`) is not reached, and a process agent runs in
+  trellis's own group, so nothing is killed after its normal exit.
+- **`.git/` writes outside the guarded files.** The git guard restores
+  `config`, `config.worktree`, include targets under the git directory,
+  the hooks, `info/exclude` and `info/attributes`. The rest of `.git/`
+  (refs, `packed-refs`, objects, the index, `.git/modules/`) is not
+  compared or restored, nor is a change made and reverted before the
+  command exits.
+- **Ignored-path tricks, `.gitignore` edits included.** `git clean -fd`
+  never removes an ignored file, and what is ignored is decided by files
+  the writer can edit: a tracked `.gitignore`, or a new one in a
+  directory it creates. The before/after listing of ignored paths
+  (`trellis_vcs::ignored`) narrows this, but it reads the same view of the
+  tree the writer shaped.
+- **`skip-worktree` and `assume-unchanged`.** `git update-index
+  --skip-worktree` or `--assume-unchanged` on a tracked file hides an edit
+  to it from `git status` and `git diff`, and so from every judgment made
+  from the changed paths, and from what the rollback's reset is relied on
+  to restore.
+- **Refs other than `HEAD`.** Only `HEAD` and the branch it was on are
+  recorded (ADR 0009). A branch the writer creates, another branch it
+  moves (`git branch -f`), a tag, a stash entry or a note is left as it
+  is.
+- **Pre-existing ignored files changed.** An ignored file that existed
+  before the run (`.env`, a virtualenv, build output, a cache) and that a
+  writer modifies is neither restored by the reset nor removed by the
+  clean. The ignored-file listing removes new ignored paths and notices a
+  changed one by its stat (a rewrite that keeps length and modification
+  time passes on Windows), but holds no copy to restore it from.
+- **TOCTOU in restore.** Each comparison and each restore is a separate
+  step. A process still running (the first item) can write between the
+  check and the restore, or after both.
+- **Code reached by import outside `.trellis/`.** Trust covers every byte
+  under `.trellis/` and refuses hook and tool code named outside it (ADR
+  0023 §4, amended after the eleventh review), but code a hook or tool imports from
+  elsewhere in the repository is an ordinary file a run may edit.
+
+**What holds.** For trellis's own edits (`edit`, `write_file`), the
+rollback's guarantee is exact, as ADR 0009 states. A run with none of
+these writers enabled (the default: `bash` off, and an untrusted
+repository loads no hook, custom tool or process agent) keeps it.
+
+**The real fix is sandboxing**: running these writers where they cannot
+reach `.git/`, the user's other files or processes that outlive them.
+That decision is deferred in ADR 0021 (1.6 swappable tool backends,
+13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
+the limit rather than adding another guard. `trellis trust` prints one line
+saying so when it records trust for any of these writers.
+
 ### 6. Custom command tools
 
 ```toml
