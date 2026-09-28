@@ -238,8 +238,11 @@ pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
 /// - an untracked file's mode is read from the filesystem (executable bit
 ///   on Unix, a symlink as `120000`); on Windows every untracked file reads
 ///   `100644`, so a mode-only change to one is not seen.
-/// - a symlink is hashed by what `git hash-object` reads through it, not
-///   by its link text.
+/// - a symlink is hashed by its link text, as git stores one (on Windows
+///   with its separators written `/`), never by what it points at.
+/// - an untracked nested repository is recorded by the commit it has
+///   checked out, the gitlink `git add -A` stages: an uncommitted edit
+///   inside it is not seen, as it was not by the tree form.
 /// - a submodule entry is recorded as its status line, not hashed.
 /// - a path containing a newline cannot go through `--stdin-paths`; the
 ///   digest then falls back to the tree form, objects and all.
@@ -262,6 +265,8 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
     let mut worktree: std::collections::BTreeMap<String, String> = Default::default();
     // Lines kept verbatim: submodules and conflicts.
     let mut verbatim: Vec<String> = Vec::new();
+    // Untracked nested repositories, as gitlink lines.
+    let mut nested: Vec<String> = Vec::new();
     let mut fields = status.split('\0').filter(|f| !f.is_empty());
     while let Some(f) = fields.next() {
         let cols: Vec<&str> = f.splitn(9, ' ').collect();
@@ -270,6 +275,14 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
                 if let Some(oid) = f.strip_prefix("# branch.oid ") {
                     head = oid.to_string();
                 }
+            }
+            // `status` names an untracked nested repository `dir/`, and
+            // nothing inside it: a directory, which `hash-object` cannot
+            // hash. `git add -A` would stage it as a gitlink to its HEAD,
+            // so that is what is recorded.
+            Some("?") if f.ends_with('/') => {
+                let path = f[2..].to_string();
+                nested.push(format!("160000 {} {path}", nested_head(&root.join(&path))));
             }
             Some("?") => {
                 let path = f[2..].to_string();
@@ -305,23 +318,38 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
             _ => verbatim.push(f.to_string()),
         }
     }
-    let present: Vec<(&String, &String, bool)> = worktree
+    // (path, mode, exists, is a symlink), each looked at once: a second
+    // look could disagree with the first and misalign the hashed ids.
+    let present: Vec<(&String, &String, bool, bool)> = worktree
         .iter()
         .map(|(p, mode)| {
-            let exists = mode.as_str() != "000000" && root.join(p).symlink_metadata().is_ok();
-            (p, mode, exists)
+            let md = root.join(p).symlink_metadata();
+            let exists = mode.as_str() != "000000" && md.is_ok();
+            let link = md.is_ok_and(|m| m.file_type().is_symlink());
+            (p, mode, exists, link)
         })
         .collect();
-    let to_hash: Vec<&String> = present.iter().filter(|x| x.2).map(|x| x.0).collect();
+    // A symlink is hashed as git stores it, by its link text: reading
+    // through it fails on a directory or a dangling target, and hashes
+    // bytes git would never commit for it.
+    let to_hash: Vec<&String> = present
+        .iter()
+        .filter(|x| x.2 && !x.3)
+        .map(|x| x.0)
+        .collect();
     if to_hash.iter().any(|p| p.contains('\n')) {
         return worktree_fingerprint(root).map(|t| format!("tree {t}"));
     }
     let mut hashed = hash_without_writing(root, &to_hash)?.into_iter();
     let mut manifest = format!("head {head}\n");
-    for (path, mode, exists) in present {
+    for (path, mode, exists, link) in present {
         let head_entry = in_head.get(path).filter(|(m, _)| m.as_str() != "000000");
         if exists {
-            let blob = hashed.next().unwrap_or_default();
+            let blob = if link {
+                hash_link(root, path)?
+            } else {
+                hashed.next().unwrap_or_default()
+            };
             // The same bytes and mode as HEAD: whatever the index says,
             // the worktree does not differ here.
             if head_entry.is_some_and(|(m, h)| m == mode && *h == blob) {
@@ -334,11 +362,56 @@ pub fn worktree_digest(root: &Path) -> Result<String, VcsError> {
         // Neither in HEAD nor in the worktree: added in the index and
         // removed from disk, which changes no worktree byte.
     }
-    for v in verbatim {
+    for v in nested.into_iter().chain(verbatim) {
         manifest.push_str(&v);
         manifest.push('\n');
     }
     Ok(manifest)
+}
+
+/// The commit an untracked nested repository has checked out, as the
+/// gitlink `git add -A` would record; `(unborn)` before its first commit.
+///
+/// Asked only of a directory with its own `.git`: without one, `rev-parse`
+/// would walk up and answer for the outer repository.
+fn nested_head(dir: &Path) -> String {
+    if !dir.join(".git").exists() {
+        return "(not-a-repository)".into();
+    }
+    git(dir, &["rev-parse", "--verify", "-q", "HEAD"])
+        .map(|h| h.trim().to_string())
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "(unborn)".into())
+}
+
+/// The blob id of a symlink's link text, which is how git stores a
+/// symlink: `git hash-object --stdin`, without `-w`, so the object format
+/// is the repository's and nothing is written.
+fn hash_link(root: &Path, path: &str) -> Result<String, VcsError> {
+    use std::io::Write;
+    let target = std::fs::read_link(root.join(path))?;
+    // Git for Windows stores a link's separators as `/`.
+    let text = target.to_string_lossy().replace('\\', "/");
+    let mut cmd = Command::new("git");
+    cmd.args(["hash-object", "--stdin"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    trellis_core::secrets::scrub(&mut cmd);
+    let mut child = cmd.spawn()?;
+    let mut stdin = child.stdin.take().expect("piped");
+    stdin.write_all(text.as_bytes())?;
+    drop(stdin);
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        return Err(VcsError::GitFailed {
+            command: "git hash-object --stdin".into(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// `100644`, `100755` or `120000` for a file git does not track, as it
@@ -746,6 +819,101 @@ mod tests {
         std::fs::create_dir_all(dir.join("build")).unwrap();
         std::fs::write(dir.join("build/x"), "y").unwrap();
         assert_eq!(ignored_before, worktree_digest(&dir).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_untracked_nested_repository_is_digested_by_its_head_not_hashed_as_a_file() {
+        // The risk: `status` names an untracked nested repository `nested/`,
+        // `git hash-object` cannot hash a directory, the digest errored,
+        // every hooked call read as "changed", and a run could never
+        // converge. The old `git add -A` form recorded it as a gitlink: its
+        // HEAD, and nothing inside.
+        let dir = temp_repo("digest-nested");
+        let clean = worktree_digest(&dir).unwrap();
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "-q"]).unwrap();
+        // With no commit yet, as `git init` leaves it.
+        let unborn = worktree_digest(&dir).expect("a nested repository with no commit");
+        assert_ne!(clean, unborn, "the nested repository is an untracked entry");
+        assert_eq!(unborn, worktree_digest(&dir).unwrap(), "stable");
+
+        git(&nested, &["config", "user.email", "t@example.invalid"]).unwrap();
+        git(&nested, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(nested.join("x.py"), "x = 1\n").unwrap();
+        git(&nested, &["add", "-A"]).unwrap();
+        git(&nested, &["commit", "-qm", "one"]).unwrap();
+        let one = worktree_digest(&dir).expect("a nested repository with a commit");
+        assert_ne!(unborn, one, "its HEAD is what is recorded");
+        assert_eq!(one, worktree_digest(&dir).unwrap(), "stable");
+        std::fs::write(nested.join("x.py"), "x = 2\n").unwrap();
+        git(&nested, &["commit", "-qam", "two"]).unwrap();
+        assert_ne!(one, worktree_digest(&dir).unwrap(), "a new nested commit");
+        // Nothing written into the outer store either.
+        let objects = loose_objects(&dir);
+        worktree_digest(&dir).unwrap();
+        assert_eq!(loose_objects(&dir), objects);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlink, or `None` where the platform refuses to make one (Windows
+    /// without developer mode), in which case the test says so.
+    fn symlink(target: &Path, link: &Path, dir: bool) -> Option<()> {
+        #[cfg(windows)]
+        let r = if dir {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        };
+        #[cfg(unix)]
+        let r = {
+            let _ = dir;
+            std::os::unix::fs::symlink(target, link)
+        };
+        match r {
+            Ok(()) => Some(()),
+            Err(e) => {
+                eprintln!("skipped: cannot create a symlink here: {e}");
+                None
+            }
+        }
+    }
+
+    fn remove_link(p: &Path) {
+        // A directory link is a directory entry on Windows, a file on Unix.
+        std::fs::remove_dir(p)
+            .or_else(|_| std::fs::remove_file(p))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_untracked_symlink_is_digested_by_its_link_text() {
+        // The risk: `git hash-object` reads through a link, so one to a
+        // directory made the digest error (every hooked pass voided), and
+        // one that dangles did too. Git stores a symlink as its link text;
+        // so does the digest.
+        let dir = temp_repo("digest-symlink");
+        std::fs::create_dir_all(dir.join("d")).unwrap();
+        std::fs::write(dir.join("d/f.py"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(dir.join("e")).unwrap();
+        std::fs::write(dir.join("e/f.py"), "x = 1\n").unwrap();
+        let Some(()) = symlink(Path::new("d"), &dir.join("to-dir"), true) else {
+            return;
+        };
+        let first = worktree_digest(&dir).expect("a link to a directory");
+        assert_eq!(first, worktree_digest(&dir).unwrap(), "stable");
+        assert!(first.contains("120000 "), "{first}");
+
+        // Retargeted at identical content: the link text changed, and so
+        // does the digest, as a commit of it would.
+        remove_link(&dir.join("to-dir"));
+        symlink(Path::new("e"), &dir.join("to-dir"), true).unwrap();
+        assert_ne!(first, worktree_digest(&dir).unwrap(), "a retargeted link");
+
+        // One that points nowhere is an entry, not an error.
+        symlink(Path::new("missing"), &dir.join("dangling"), false).unwrap();
+        worktree_digest(&dir).expect("a dangling link");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -92,7 +92,7 @@ fn user_skills_line(root: &Path, dirs: &[PathBuf]) -> String {
     )
 }
 
-fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
+pub(crate) fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
     let fp = tooling::fingerprint(root, cfg);
     if fp.is_empty() {
         return "trust:      nothing declared needs trust (no hooks, custom tools or bash)"
@@ -116,6 +116,9 @@ fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
         }
         Ok(trellis_loop::TrustState::Unknown) => {
             "NOT trusted; they do not load until `trellis trust`".to_string()
+        }
+        Ok(trellis_loop::TrustState::Refused { reason }) => {
+            format!("NOT trusted, and `trellis trust` would refuse: {reason}")
         }
         Err(e) => format!("trust store unreadable ({e}); treated as not trusted"),
     };

@@ -121,6 +121,11 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     // `bash`, custom tool, hook and listing command is spawned here, and its
     // output is an observation the log and the trail both record.
     trellis_core::secrets::scrub(cmd.as_std_mut());
+    // No `__pycache__` from anything trellis runs: under `.trellis/` it is
+    // in the trust digest (bytecode can be code, so it is not skipped), and
+    // where git does not ignore it, it moves the per-call worktree digest
+    // and voids a pass (ADR 0023 §4). Last, so `spec.env` cannot undo it.
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     // Its own process group, so a timeout can kill what it started too
     // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
     #[cfg(unix)]
@@ -390,6 +395,25 @@ mod tests {
             "{}",
             c.stdout.render()
         );
+    }
+
+    #[tokio::test]
+    async fn every_command_starts_with_python_bytecode_writes_off() {
+        // The risk: a Python hook importing code under `.trellis/` wrote
+        // `__pycache__/*.pyc` there, which the trust digest covers (bytecode
+        // can be code: ADR 0023 §4), so running a trusted hook untrusted the
+        // repository; and one written anywhere git does not ignore showed in
+        // the per-call worktree digest and voided the pass.
+        let d = tempfile::tempdir().unwrap();
+        let argv = shell_argv(if cfg!(windows) {
+            "echo [%PYTHONDONTWRITEBYTECODE%]"
+        } else {
+            "echo [$PYTHONDONTWRITEBYTECODE]"
+        });
+        let c = run(spec(&argv, d.path(), Duration::from_secs(20), 1024))
+            .await
+            .unwrap();
+        assert!(c.stdout.render().contains("[1]"), "{}", c.stdout.render());
     }
 
     #[tokio::test]

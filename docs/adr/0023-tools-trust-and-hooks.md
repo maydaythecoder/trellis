@@ -252,6 +252,61 @@ anyone being asked. Now the digest also covers:
   repository needs `trellis trust` run again. That was unavoidable: the
   set of files covered changed too, since a `.gitignore` trellis wrote used
   to be hashed.
+
+  *Amended after the fourth review of PR #1: real paths, three more
+  refusals, bytecode, and a `Refused` state.*
+  - **Recorded paths.** A directory reached through two links was recorded
+    under whichever alias `read_dir` returned first, so the digest depended
+    on directory order. Entries are now walked in name order. Each file is
+    recorded once, under its real path relative to the repository, whichever
+    alias reached it. The three skips above are decided on that real path,
+    relative to the real `.trellis/`, so an alias cannot move a file into a
+    skip or out of one. This changes the recorded path of every file reached
+    through a link (`.trellis/hooks -> ../hooks` now records
+    `hooks/gate.py`, not `.trellis/hooks/gate.py`). **A trust recorded
+    before this amendment, for a repository with a link under `.trellis/`,
+    no longer matches.** A repository with no links is unaffected.
+  - **More links refused.** The walk now also refuses a link that resolves
+    to `.trellis/` itself or to an ancestor of it (`.trellis/src -> ..`).
+    That link resolved inside the repository, so it was followed, and the
+    walk hashed the whole repository, `.git/` included, so every commit
+    untrusted it again. A link resolving into `.git/` is refused too, since
+    git rewrites those files on its own. So is a `.trellis` that is itself
+    a link resolving outside the repository, to its root, or into `.git/`.
+    Before, only links *under* `.trellis/` were checked.
+  - **Bytecode is covered, and trellis does not write it.** The review
+    asked for `__pycache__/` and `*.pyc`/`*.pyo` to be skipped, because
+    running a Python hook under `.trellis/` wrote them and flipped trust to
+    changed. They are not skipped. The request assumed bytecode is always
+    derived from a hashed source, and it is not. `import gate` loads a
+    sourceless `gate.pyc` when no `gate.py` exists. An unchecked-hash pyc
+    (PEP 552) in `__pycache__` is loaded without being compared to its
+    source. Either would be repository code outside the digest. The flip is
+    removed at its source instead: every command trellis starts through
+    `exec::run` (hooks, custom tools, `bash`, listings) and every process
+    agent runs with `PYTHONDONTWRITEBYTECODE=1`. The same variable stops a
+    hook's `__pycache__` in a path git does not ignore from voiding a pass
+    through the per-call worktree digest (§5). Running a hook by hand,
+    outside trellis, can still write bytecode and untrust the repository.
+    That errs toward asking again. `[checks]` commands do not get the
+    variable. They are the repository's own test environment and are not
+    bracketed.
+  - **`TrustState::Refused { reason }`.** A fingerprint that cannot be
+    trusted read `Changed` when a trust was on record and `Unknown` when not.
+    Either way the `repo:` line, `work`'s waiting reason and `doctor` told
+    the person to run `trellis trust`, and that command then refused. The
+    state is now decided from the fingerprint before the store is read. Each
+    of those three places prints the reason, which names the link.
+  Evidence, in `crates/trellis-loop/src/trust.rs`:
+  `a_file_reached_through_two_links_is_recorded_once_under_its_real_path`,
+  `a_link_under_dot_trellis_to_itself_an_ancestor_or_the_git_directory_refuses_trust`
+  and `a_refused_repository_reports_refused_not_changed_or_unknown` each
+  failed before the change. `bytecode_under_dot_trellis_is_covered` is a
+  guard. In `crates/trellis-loop/src/exec.rs`,
+  `every_command_starts_with_python_bytecode_writes_off` failed before the
+  change. In `crates/trellis-cli/src/tooling.rs`,
+  `a_refused_repository_names_the_link_at_every_refusal_site_not_trellis_trust`
+  covers the three places that print the reason.
 - **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
   split on whitespace and shell punctuation, and every token that is a
   regular file in the repository is hashed like an argv path.
@@ -273,7 +328,9 @@ decision of its own.
 Declared in `.trellis/config.toml` as argv arrays, with no reliance on a
 shebang, so a hook is `["python", ".trellis/hooks/pre.py"]` on every
 platform. One per event. Each runs with the repository root as its working
-directory, the same two environment variables as `bash`, and a timeout
+directory, the same two environment variables as `bash` (and, since the
+fourth review of PR #1, `PYTHONDONTWRITEBYTECODE=1`, as every command
+trellis starts has; see §4), and a timeout
 (`[hooks] timeout_s`, default 10).
 
 - **`pre_tool`**: the call as JSON (the flat wire form the model emitted) on
@@ -346,7 +403,12 @@ this amendment a hook that wrote at any of those points left bytes in a
     unchanged counts as a change, which fails closed.
   - An untracked file's mode comes from the filesystem, so on Windows a
     mode-only change to an untracked file is not seen.
-  - A symlink is hashed through its target rather than by its link text.
+  - A symlink is hashed by its link text, as git stores it, through `git
+    hash-object --stdin` (on Windows with separators written `/`).
+  - An untracked nested repository (`status` names it `dir/`) is recorded
+    as `160000 <its HEAD> dir/`, the gitlink `git add -A` would stage, or
+    `(unborn)` before its first commit. An uncommitted edit inside it is
+    not seen, and was not seen by the tree form either.
   - A submodule entry is recorded as its status line.
   - A path containing a newline falls back to the tree form, objects
     included.
@@ -356,6 +418,16 @@ this amendment a hook that wrote at any of those points left bytes in a
   `the_per_call_digest_writes_no_objects_and_sees_every_worktree_change`
   in `crates/trellis-vcs/src/lib.rs`. It saw three loose objects written
   by the tree form, and sees none from the digest.
+
+  *Amended after the fourth review of PR #1: nested repositories and
+  symlinks.* `hash-object --stdin-paths` reads through a path. It failed on
+  an untracked nested repository and on a symlink to a directory or to
+  nothing. The failed digest counted as a change, so with any hook declared
+  every pass was voided and such a repository could never converge. The two
+  bullets above replaced "a symlink is hashed through its target". Evidence:
+  `an_untracked_nested_repository_is_digested_by_its_head_not_hashed_as_a_file`
+  and `an_untracked_symlink_is_digested_by_its_link_text`, both of which
+  failed with `fatal: Unable to hash` before the change.
 - **`after_run`.** The binary fingerprints the worktree around the hook on
   a converged run. A difference, or a fingerprint that could not be taken,
   demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,

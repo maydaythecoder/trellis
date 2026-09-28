@@ -167,6 +167,29 @@ Every rewrite goes through one of three paths. None of them renames a file.
   visible, stuck-but-never-lost state as the two-copies window in ADR 0020
   §3.
 
+  *Amended after the fourth review of PR #1: every reader goes through one
+  rule, and the settle has one owner.* A task left only as its side copy was
+  listed, because the directory listing reports a side copy whose name is
+  missing. But `queue export` copied the missing name and aborted, and
+  `queue list` showed no age for the task. Every read of a record now goes
+  through `files::read_settled`: its bytes, its age and an export's copy.
+  That function tries the name, then the side copy, then the name again,
+  and takes no lock. Evidence:
+  `export_and_list_read_a_task_whose_only_copy_is_its_side_file`, which
+  failed before the change, first on the missing age and then, with that
+  assertion set aside, on export's NotFound.
+  The unfinished swap was settled in three places around one edit: by the
+  task lock, by the locked-replace helper and by `replace`. `replace` now
+  owns the settle for an edit in place. The helper's copy is gone, because
+  the read before it already reads a side copy that is the record.
+  The task lock keeps its settle. The review assumed that settle was
+  redundant, and it is not. `queue requeue`, the removal on import, and an
+  edit that moves a task to another state all act on the name and never
+  call `replace`. A side copy they left behind would bring the task back
+  in its old state. Guards:
+  `a_task_left_only_as_its_side_file_is_moved_or_removed_whole` and
+  `an_overlay_change_cut_short_at_the_swap_is_read_and_finished_by_the_next`.
+
 **The activity log is appended, not published.** `activity.jsonl` is opened
 with `O_APPEND`, and each record is one `write_all` of one line. It is never
 renamed, replaced or truncated. The hard-link rule exists so that a file is

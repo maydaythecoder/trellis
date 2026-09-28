@@ -160,13 +160,17 @@ pub fn export(root: &Path, q: &Queue, dest: &Path) -> Result<Exported, QueueErro
                 n.claimed_skipped += 1;
                 continue;
             }
-            copy(
-                &q.path(s, &id),
-                &dest
-                    .join("tasks")
-                    .join(s.dir_name())
-                    .join(format!("{id}.json")),
-            )?;
+            // Read as `ids()` listed it: a task whose only copy is the side
+            // file of a replacement cut short is still the task.
+            let bytes = crate::files::read_settled(&q.path(s, &id), |p| std::fs::read(p))?;
+            let to = dest
+                .join("tasks")
+                .join(s.dir_name())
+                .join(format!("{id}.json"));
+            if let Some(d) = to.parent() {
+                std::fs::create_dir_all(d).map_err(io(d))?;
+            }
+            std::fs::write(&to, bytes).map_err(io(&to))?;
             n.tasks += 1;
         }
     }
