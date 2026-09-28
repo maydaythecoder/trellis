@@ -4,7 +4,8 @@
 `rm` writes only what changes; the search limit), §5 (`dates --seed` may
 create the file; a BOM changes anchors), §7 (added: `[context] dates` and
 auto-created linked notes are not built), and "Evidence" (how the vectors were produced). Each amendment is
-marked in place.
+marked in place. Integrated afterwards: `[context] dates` (§7) and `vault
+init` outside a repository (Consequences).
 **Date:** 2026-09-27
 **Reference design:** Apex Notes (`boriemannetje/apex-notes`, MIT), commit
 `f449644a459b67c3b5f2d05ea676a48c1f63fe0e`. The behaviour below was read from
@@ -365,7 +366,7 @@ in its binary. Instead, `trellis vault check` prints the exact report line
 that SKILL.md asks an agent to end with, so an agent following Apex's skill
 can use trellis to verify its work. The owner can override this.
 
-### 7. `[context] dates` is not built
+### 7. `[context] dates` is not built (integrated since; see below)
 
 *Added in implementation.* The brief made it optional to annotate compiled
 note headers with each note's created day, behind `[context] dates = true`.
@@ -373,6 +374,26 @@ The annotation is not built. Reading the flag means changing `cmd_run` in
 `main.rs`, and this wave's edits to that file are limited to registering the
 subcommand. Nothing is stubbed: no config key is read, and the goldens are
 unaffected.
+
+*Integrated.* `[context] dates = true` is now read. With it, `cmd_run`
+compiles through `trellis_vault::compile_with_dates`, which annotates each
+lineage and reference heading whose `dates.json` entry has a created day:
+`### Task A (task-a.md, created 2026-03-01) [target]`, with `, estimated`
+when Apex marked the day so. Children lines are not annotated.
+- **The goldens are untouched by construction.** `compile` is
+  `compile_with_dates(…, None)`. Tests hold all three goldens byte-identical
+  with a `dates.json` present and the flag off, and with the flag on and a
+  document that dates none of the notes: a note with no entry, or a null
+  day, gets the plain heading.
+- **`dates.json` absent with the flag on** compiles the plain note, and the
+  `repo:` line says `dates on, but no dates.json; headings not dated`.
+- **Present and invalid with the flag on stops the run before the
+  snapshot**, like an invalid vault: the configuration said the headings
+  would be dated, and sending them undated without a word is the failure
+  ADR 0025 §1 names.
+- The annotation counts toward the cap, since it is sent.
+- `[context] dates` layers from the user config like the other `[context]`
+  fields (ADR 0025 §7).
 
 **Auto-creating linked notes (inventory item 22) is not built either.** ADR
 0021 row 20, 22–26 assigns it to this wave. Apex creates a loose note when an
@@ -418,6 +439,10 @@ vault is in git.
   owner-directed, like ADR 0020.
 - **`trellis vault` requires a repository**, like every command except `init`
   and `model`. So `trellis vault init` outside a repository needs `--root`.
+  *Integrated:* `vault init` is now exempt in `needs_repo`, since it creates
+  a vault a person may make before there is a repository to hold it. Every
+  other `vault` action still refuses outside one
+  (`vault_init_works_outside_a_repository_and_other_vault_actions_still_refuse`).
 - **The gate accepts vaults that ADR 0017 refused**: title-form parents, the
   null forms, and a `notes/` root. The set of files it reads changes in two
   ways:
