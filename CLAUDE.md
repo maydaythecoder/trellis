@@ -78,6 +78,7 @@ trellis-model    adapter tiers, llguidance
 trellis-loop     agent loop, tools, budgets, partitioning
 trellis-trail    the decision trail
 trellis-vcs      git snapshot and rollback
+trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis-model)
 trellis-cli      the binary
 ```
 
@@ -85,7 +86,9 @@ Two of these are not stylistic:
 
 - **`trellis-index` must not depend on `trellis-model`.** The graph has to be
   testable with no model anywhere near it. A graph whose output depends on a
-  sampler is not a graph.
+  sampler is not a graph. The same holds for `trellis-vault`: what the model
+  is shown is a pure function of files on disk, asserted byte for byte against
+  goldens shared with the TypeScript twin (ADR 0017).
 - **`trellis-checks` owns `Verdict`.** That is what makes the grounding contract
   structural rather than advisory.
 
