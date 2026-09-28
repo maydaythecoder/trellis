@@ -533,6 +533,16 @@ scheduled instant) and the id of the last task the routine created.
   instant: its task has no `routine_at`, and two in one second are two
   tasks. The check reads every task file, as `add_task`'s index already
   does, so a fire costs two reads of the queue rather than one.
+  *Amended after the eighth review:* that read was made once per due
+  instant, so a catch-up of `n` instants read every task file `n` times
+  under the routine's lock. It is now made once per tick of a routine
+  with anything due, into a map of this routine's `routine_at` instants,
+  still under the lock and after the state is settled, so the
+  idempotence above holds (its test passes unchanged). Not one read
+  across all routines: each routine's read must be under its own lock,
+  or a concurrent `work` could fire an instant between the read and the
+  lock. Evidence: `a_tick_scans_the_queue_once_however_many_instants_are_due`,
+  which counted five scans for five instants before the change.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
