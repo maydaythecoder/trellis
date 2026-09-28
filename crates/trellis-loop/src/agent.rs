@@ -53,6 +53,36 @@ pub enum ToolCall {
     ReadSkill {
         name: String,
     },
+    /// Create a file that does not exist yet (ADR 0023). Refused for an
+    /// existing path, which is `Edit`'s job.
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    /// `git grep -n -e <pattern> -- <path>`. Read-only.
+    Grep {
+        pattern: String,
+        path: Option<String>,
+    },
+    /// Repository files matching a glob. Read-only.
+    Find {
+        glob: String,
+    },
+    /// One directory's entries. Read-only.
+    Ls {
+        path: String,
+    },
+    /// A shell command. Off unless `[tools] bash = true`, and never a
+    /// verdict whatever it prints or returns.
+    Bash {
+        command: String,
+    },
+    /// A repository's own tool (`[[tools.custom]]`), loaded only when
+    /// trusted. `args` is the flat object the model sent, less `tool`.
+    Custom {
+        name: String,
+        args: serde_json::Value,
+    },
 }
 
 /// The model's move.
@@ -248,6 +278,12 @@ pub struct RepoContext {
     pub skills: Vec<crate::skills::Skill>,
     /// Valid skills left off the list by the cap, stated in the prompt.
     pub skills_omitted: usize,
+    /// The tools this run offers (ADR 0023). Not self-description, so not
+    /// part of `is_empty`: it is carried here because the prompt, the
+    /// schema and the parser all read the transcript, and one value handed
+    /// to all three cannot disagree with itself. The orchestrator holds the
+    /// same set and is what refuses a call outside it.
+    pub tools: crate::registry::ToolSet,
 }
 
 impl RepoContext {
@@ -340,6 +376,7 @@ fn call_label(call: &ToolCall) -> String {
             format!("run_checks {kinds:?} {what}")
         }
         ToolCall::ReadSkill { name } => format!("read_skill {name}"),
+        other => crate::gate::label(other),
     }
 }
 
@@ -760,6 +797,7 @@ fn render(call: &ToolCall, r: &ToolResult) -> String {
             "edited {} (applied: {}, bytes {}..{})",
             e.path, e.applied, e.span.0, e.span.1
         ),
+        ToolResult::Output(s) => s.clone(),
         ToolResult::Error(e) => format!("error: {e}"),
     }
 }

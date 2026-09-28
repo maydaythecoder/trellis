@@ -16,6 +16,7 @@
 //! end work that was going fine.
 
 use crate::agent::{Model, Step, ToolCall, Transcript};
+#[cfg(test)]
 use crate::wire::ToolCallWire;
 use trellis_model::{AdapterTier, Dialect, RuntimeClient};
 
@@ -180,18 +181,10 @@ impl RuntimeModel {
     /// first real error are what a reader acts on, and both sit at the end.
     fn prompt(&self, t: &Transcript) -> String {
         let mut p = String::new();
-        // `read_skill` is named only when there is a skill to read. The
-        // grammar permits it either way, since the schema is static; but
-        // advertising a tool with nothing behind it invites a wasted turn,
-        // and the prompt without skills stays byte-identical to the one the
-        // measurements in this file were taken with.
-        let tools = if t.repo.skills.is_empty() {
-            "blast_radius{symbol}, read_file{path}, edit{path,old,new}, \
-             run_checks{paths,kinds}, done{summary}"
-        } else {
-            "blast_radius{symbol}, read_file{path}, edit{path,old,new}, \
-             run_checks{paths,kinds}, read_skill{name}, done{summary}"
-        };
+        // The run's tool set (ADR 0023); `read_skill` only when there is a
+        // skill to read. The default set renders byte-identically to the
+        // line the measurements in this file were taken with.
+        let tools = t.repo.tools.prompt_line(!t.repo.skills.is_empty());
         p.push_str(
             "You are editing a Python repository. Reply with exactly one JSON tool call.\n\n",
         );
@@ -449,7 +442,7 @@ impl Model for RuntimeModel {
         let prompt = self.prompt(t);
         self.last_prompt_bytes = Some(prompt.len());
         tracing::debug!(prompt_bytes = prompt.len(), turns = t.turns.len());
-        let schema = (self.tier == AdapterTier::RuntimeConstrained).then(ToolCallWire::schema);
+        let schema = (self.tier == AdapterTier::RuntimeConstrained).then(|| t.repo.tools.schema());
         let mut last = String::new();
         // Raised on an empty reply, which is the one failure retrying cannot
         // fix by itself. See `budget` below.
@@ -532,16 +525,10 @@ impl Model for RuntimeModel {
                 tracing::warn!(attempt, error = %last, "malformed tool call; retrying");
                 continue;
             };
-            match serde_json::from_str::<ToolCallWire>(json) {
-                Ok(w) => match w.into_step() {
-                    Ok(s) => return Ok(s),
-                    Err(e) => {
-                        // A well-formed call naming something the loop cannot
-                        // do. Retrying is right: the model may pick a tool it
-                        // can actually use.
-                        last = e;
-                    }
-                },
+            // A call naming something this run cannot do is retried: the
+            // model may pick a tool it can actually use.
+            match t.repo.tools.parse(json) {
+                Ok(s) => return Ok(s),
                 Err(e) => last = format!("{e}; text was {}", truncate(json)),
             }
             tracing::warn!(attempt, error = %last, "invalid tool call; retrying");

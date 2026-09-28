@@ -7,13 +7,20 @@
 mod adapter;
 mod agent;
 mod budget;
+mod exec;
+#[cfg(test)]
+mod extension_tests;
 mod gate;
 mod governance;
+mod hooks;
+mod listing;
 mod orchestrator;
 pub mod partition;
+mod registry;
 mod scripted;
 mod skills;
 mod tools;
+mod trust;
 mod wire;
 
 pub use adapter::RuntimeModel;
@@ -22,16 +29,23 @@ pub use agent::{
     Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
+pub use exec::default_shell;
 pub use gate::{
-    APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, DECLINED, EditPreview, GateDecision,
-    GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
+    APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, BashPolicyGate, DECLINED, EditPreview,
+    GateDecision, GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
 };
 pub use governance::{Governance, Rule};
-pub use orchestrator::{Dispatched, Handle, HumanDecision, Orchestrator, Request};
+pub use hooks::{
+    BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookGate, Hooks,
+    fence_before_run,
+};
+pub use orchestrator::{Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
+pub use registry::{BUILTIN_TOOLS, BashSettings, CustomTool, ToolSelection, ToolSet, call_json};
 pub use scripted::ScriptedModel;
 pub use skills::{
     DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillCatalog, read_body,
 };
 pub use tools::{EditOutcome, ToolResult};
+pub use trust::{Fingerprint, TrustItem, TrustState, TrustStore};
 pub use wire::ToolCallWire;

@@ -17,6 +17,8 @@ mod config;
 mod session;
 #[cfg(test)]
 mod testutil;
+mod tooling;
+mod trust_cmd;
 mod tui_bridge;
 mod tui_run;
 mod vault_cmd;
@@ -244,6 +246,20 @@ enum Command {
     /// Prints Apex's report line; writes notes with exactly two frontmatter
     /// keys and keeps manifest.json, layout.json and dates.json in step.
     Vault(vault_cmd::VaultArgs),
+
+    /// Show what this repository's hooks, custom tools and bash settings
+    /// would execute, and trust them (ADR 0023).
+    ///
+    /// Trust is kept outside the repository and covers a digest of every
+    /// definition and every file they name; any change undoes it.
+    Trust {
+        /// Show what would run and whether it is trusted; record nothing.
+        #[arg(long, conflicts_with = "revoke")]
+        show: bool,
+        /// Forget this repository's trust.
+        #[arg(long)]
+        revoke: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -466,6 +482,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Vault(args) => vault_cmd::run(&root, args),
+        Command::Trust { show, revoke } => trust_cmd::run(&root, show, revoke),
     }
 }
 
@@ -971,7 +988,11 @@ impl Driver {
     /// Takes a [`ModelSpec`] rather than a string: the string form was parsed
     /// here, in `cmd_doctor` and in the session, each deciding for itself what
     /// was valid. Construction is now the only thing this does.
-    fn build(spec: &trellis_model::ModelSpec, unconstrained: bool) -> Result<Self> {
+    fn build(
+        spec: &trellis_model::ModelSpec,
+        unconstrained: bool,
+        tools: &trellis_loop::ToolSet,
+    ) -> Result<Self> {
         match spec {
             trellis_model::ModelSpec::Scripted(path) => {
                 if unconstrained {
@@ -979,7 +1000,9 @@ impl Driver {
                 }
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("cannot read script {}", path.display()))?;
-                let m = trellis_loop::ScriptedModel::from_json(&text)
+                // Against the run's own tool set: a step calling a tool this
+                // run does not offer fails here, before the snapshot.
+                let m = trellis_loop::ScriptedModel::from_json_with(&text, tools)
                     .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
                 Ok(Driver::Scripted(m))
             }
@@ -1176,9 +1199,25 @@ fn cmd_run(
     // mode with nobody to ask would deny every listed call and end looking
     // like a run that tried (ADR 0018). Before the model, before the
     // snapshot, before any file is read.
-    let dial = cfg.control(control.flag)?;
+    let mut dial = cfg.control(control.flag)?;
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);
+    }
+
+    // Tools, hooks and trust (ADR 0023), decided before the model is built
+    // so a script is parsed against the tools this run actually offers, and
+    // before the snapshot so a bad `[tools]` section costs nothing. The id is
+    // stamped now and given to the trail, so `TRELLIS_RUN_ID` names the trail
+    // file this run writes.
+    let stamp = trellis_trail::now();
+    let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
+    let tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    if tooling.tools.bash().is_some()
+        && dial.mode == config::ControlMode::Approve
+        && !dial.approve.iter().any(|t| t == "bash")
+    {
+        // In approve mode every command is put to the person.
+        dial.approve.push("bash".to_string());
     }
 
     // The vault is compiled here, in memory, before the model is contacted
@@ -1205,7 +1244,7 @@ fn cmd_run(
         _ => None,
     };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
-    let mut driver = Driver::build(&spec, unconstrained)?;
+    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools)?;
 
     // Reachability before the snapshot, and the ordering is the whole point.
     //
@@ -1275,7 +1314,7 @@ fn cmd_run(
             // Not a warning and not a failure. The loop already validates and
             // retries; what was wrong was the claim, so the fix is to report
             // the tier that is actually running.
-            driver = Driver::build(&spec, true)?;
+            driver = Driver::build(&spec, true, &tooling.tools)?;
         }
         schema_note = Some(note);
     }
@@ -1285,6 +1324,9 @@ fn cmd_run(
     // matters.
     let _ = writeln!(out, "model:    {}", driver.describe());
     let _ = writeln!(out, "control:  {}", dial.describe());
+    if let Some(line) = tooling.line(dial.mode) {
+        let _ = writeln!(out, "tools:    {line}");
+    }
     if let Some(note) = schema_note {
         let _ = writeln!(out, "{note}");
     }
@@ -1348,10 +1390,11 @@ fn cmd_run(
         || vault.is_some()
         || !skills.valid.is_empty()
         || !skills.invalid.is_empty()
+        || tooling.untrusted.is_some()
     {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}{}",
+            "repo:     {} write rule(s){}{}{}{}",
             governance.rules().len(),
             if notes.is_some() {
                 ", .trellis/context.md loaded"
@@ -1387,6 +1430,10 @@ fn cmd_run(
                         n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
                     }
                 )
+            },
+            match &tooling.untrusted {
+                Some(u) => format!(", {u}"),
+                None => String::new(),
             },
         );
     }
@@ -1435,7 +1482,7 @@ fn cmd_run(
         files.len()
     );
 
-    let seed = trellis_loop::Seed {
+    let mut seed = trellis_loop::Seed {
         prior,
         repo: trellis_loop::RepoContext {
             notes,
@@ -1448,12 +1495,36 @@ fn cmd_run(
             files,
             skills: disclosed.listed,
             skills_omitted: disclosed.omitted,
+            tools: tooling.tools.clone(),
         },
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    // After the snapshot, because a hook can write to the tree and the
+    // rollback has to cover it. Its output joins the notes inside the
+    // repository fence (ADR 0023 §5).
+    if let Some(h) = &tooling.hooks {
+        match rt.block_on(h.before_run()) {
+            Some(Ok(text)) if !text.trim().is_empty() => {
+                let block = trellis_loop::fence_before_run(&text);
+                seed.repo.notes = Some(match seed.repo.notes.take() {
+                    Some(n) => format!("{}\n{block}", n.trim_end()),
+                    None => block,
+                });
+                let _ = writeln!(
+                    out,
+                    "hook:     before_run added {} B of context",
+                    text.len()
+                );
+            }
+            Some(Err(e)) => {
+                let _ = writeln!(out, "hook:     before_run added nothing: {e}");
+            }
+            _ => {}
+        }
+    }
     // The approval gate and whoever answers it. In auto mode there is no
     // gate at all, rather than a gate that allows everything: which gates
     // are installed is the whole difference between the two ends of the
@@ -1480,10 +1551,21 @@ fn cmd_run(
             )
         }
     };
-    let (outcome, transcript) = rt.block_on(async {
+    let (outcome, transcript, gate_log) = rt.block_on(async {
         let mut orchestrator = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
-            .with_rules(rules);
+            .with_rules(rules)
+            .with_tools(tooling.tools.clone())
+            .with_env(tooling.env.clone());
+        if let Some(h) = &tooling.hooks {
+            orchestrator = orchestrator.with_hooks(h.clone());
+        }
+        // Governance first by construction, then the bash policy and the
+        // pre_tool hook, then the person: nobody is asked about a call a
+        // rule or a hook has already refused.
+        for g in tooling.gates(dial.mode) {
+            orchestrator = orchestrator.with_gate(g);
+        }
         if let Some(g) = gate {
             orchestrator = orchestrator.with_gate(Box::new(g));
         }
@@ -1528,7 +1610,18 @@ fn cmd_run(
         // and still knows what this run wrote, which is what the rollback and
         // the trail both need.
         let touched = handle.touched().await;
-        (out, touched)
+        let gate_log = handle.gate_log().await;
+        // Before the rollback, so on a run that did not converge the
+        // rollback also undoes what the hook wrote in the worktree. Not on
+        // an interrupt: Ctrl-C means stop.
+        if let (Some(h), Some((o, _))) = (&tooling.hooks, &out)
+            && let Some(Err(e)) = h
+                .after_run(&tooling::outcome_json(o, &touched, &run_id))
+                .await
+        {
+            tracing::warn!(error = %e, "after_run hook failed; it only observes");
+        }
+        (out, touched, gate_log)
     });
     // Not a plain drop. A line reader blocked on stdin when Ctrl-C arrived
     // is still on the blocking pool, and dropping a runtime waits for that
@@ -1540,6 +1633,8 @@ fn cmd_run(
         base_commit: &snapshot.head,
         model: Some(model_spec),
         control: Some(dial.describe()),
+        gates: &gate_log,
+        stamp: Some(&stamp),
     };
     let Some(outcome) = outcome else {
         return interrupted_run(
@@ -1964,6 +2059,20 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
             ("run_checks", format!("{} on {where_}", kinds.join("+")))
         }
         ToolCall::ReadSkill { name } => ("read_skill", name.clone()),
+        // ADR 0023's tools. A repository's own tool is recorded under its
+        // own name, with the arguments it was sent.
+        ToolCall::WriteFile { path, .. } => ("write_file", path.clone()),
+        ToolCall::Grep { pattern, path } => (
+            "grep",
+            match path {
+                Some(p) => format!("{pattern} in {p}"),
+                None => pattern.clone(),
+            },
+        ),
+        ToolCall::Find { glob } => ("find", glob.clone()),
+        ToolCall::Ls { path } => ("ls", path.clone()),
+        ToolCall::Bash { command } => ("bash", summarise(command)),
+        ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
     };
 
     trellis_trail::Action {
@@ -1971,10 +2080,18 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         tool: tool.to_string(),
         target,
         outcome: summarise(&t.observation),
-        // Only an applied edit changes the tree. A refused one is an action
-        // that happened and wrote nothing, which is exactly what this
-        // distinguishes.
-        wrote: matches!(t.call, ToolCall::Edit { .. }) && t.observation.contains("applied: true"),
+        // Only an applied edit or a created file changes the tree through
+        // the orchestrator. A refused one is an action that happened and
+        // wrote nothing, which is exactly what this distinguishes. What bash
+        // or a custom tool wrote is not known here and not claimed
+        // (ADR 0023 §3).
+        wrote: match &t.call {
+            ToolCall::Edit { .. } => t.observation.contains("applied: true"),
+            ToolCall::WriteFile { path, .. } => {
+                t.observation.starts_with(&format!("created {path} "))
+            }
+            _ => false,
+        },
     }
 }
 
@@ -2009,6 +2126,13 @@ struct TrailFacts<'a> {
     /// Hands-off and fine-grained runs go through one loop, so this is the
     /// only field that says which one the reader is looking at.
     control: Option<String>,
+    /// Calls a named gate refused (ADR 0023 §7), each recorded as an action
+    /// just before the call it refused.
+    gates: &'a [trellis_loop::GateDenial],
+    /// `(timestamp, started_at)` taken when the run began, so the trail's
+    /// run id is the `TRELLIS_RUN_ID` bash and hooks were given. `None`
+    /// stamps it now.
+    stamp: Option<&'a (String, String)>,
 }
 
 fn record_trail(
@@ -2024,6 +2148,8 @@ fn record_trail(
         base_commit,
         model,
         control,
+        gates,
+        stamp,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2085,11 +2211,28 @@ fn record_trail(
                 outcome: if approved { "approved" } else { "declined" }.to_string(),
                 wrote: false,
             });
-            decision.into_iter().chain(std::iter::once(act))
+            // A named gate's refusal, the same way: its own action, under
+            // the turn and before the call it refused. None on a run where
+            // no such gate refused anything, so older trails keep their shape.
+            let denied: Vec<trellis_trail::Action> = gates
+                .iter()
+                .filter(|g| g.call == act.turn)
+                .map(|g| trellis_trail::Action {
+                    turn: act.turn,
+                    tool: g.gate.clone(),
+                    target: summarise(&g.target),
+                    outcome: summarise(&format!("denied: {}", g.reason)),
+                    wrote: false,
+                })
+                .collect();
+            decision
+                .into_iter()
+                .chain(denied)
+                .chain(std::iter::once(act))
         })
         .collect();
 
-    let (timestamp, started_at) = trellis_trail::now();
+    let (timestamp, started_at) = stamp.cloned().unwrap_or_else(trellis_trail::now);
 
     let factual = Factual {
         proposed: touched.to_vec(),
@@ -3241,6 +3384,8 @@ mod interrupt_tests {
             base_commit: &snap.head,
             model: Some("scripted:none"),
             control: None,
+            gates: &[],
+            stamp: None,
         }
     }
 

@@ -15,7 +15,9 @@
 //! call chain.
 
 use crate::agent::ToolCall;
-use crate::gate::{GateDecision, GovernanceGate, ToolGate};
+use crate::gate::{GateDecision, GovernanceGate, ToolGate, tool_name};
+use crate::hooks::Hooks;
+use crate::registry::ToolSet;
 use crate::tools::{EditOutcome, ToolResult};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -66,6 +68,26 @@ pub enum Request {
     /// nothing is not evidence of anything and must not inflate the count a
     /// user reads at the end of a run.
     HasRules { reply: oneshot::Sender<bool> },
+    /// Denials by named gates, for the trail (ADR 0023 §7).
+    GateLog {
+        reply: oneshot::Sender<Vec<GateDenial>>,
+    },
+}
+
+/// A call a named gate refused: the pre_tool hook or the bash policy.
+///
+/// Kept here rather than on the loop's `Turn` because the gate decided it
+/// here. `call` is the model call's position in the run, counted from 1 over
+/// `Request::Call` only; the loop makes exactly one of those per turn and the
+/// convergence audit goes by another door, so it is the turn number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateDenial {
+    pub call: u32,
+    /// The gate's name: `pre_tool` or `bash_policy`.
+    pub gate: String,
+    /// The tool and what it was aimed at, e.g. `bash rm -rf build`.
+    pub target: String,
+    pub reason: String,
 }
 
 /// A tool result, and the human decision that let it run or stopped it.
@@ -189,6 +211,11 @@ impl Handle {
         self.ask(|reply| Request::HasRules { reply }, || false)
             .await
     }
+
+    /// Every call a named gate refused this run, in order.
+    pub async fn gate_log(&self) -> Vec<GateDenial> {
+        self.ask(|reply| Request::GateLog { reply }, Vec::new).await
+    }
 }
 
 /// The owner. Holds the index and the only write path to the working tree.
@@ -208,6 +235,17 @@ pub struct Orchestrator {
     gates: Vec<Box<dyn ToolGate>>,
     /// The repository's rule documents, for the governance audit.
     rules: Vec<trellis_checks::governance::Rule>,
+    /// The tools this run offers. A call outside it is refused before any
+    /// gate is asked: a person should not be asked about a tool the run does
+    /// not have (ADR 0023).
+    tools: ToolSet,
+    /// `TRELLIS_RUN_ID` and `TRELLIS_MODEL`, for `bash` and custom tools.
+    env: Vec<(String, String)>,
+    /// Trusted hooks, for `post_tool`. `pre_tool` is a gate in `gates`.
+    hooks: Option<Hooks>,
+    /// Model calls served, for `GateDenial::call`.
+    calls: u32,
+    gate_log: Vec<GateDenial>,
 }
 
 impl Orchestrator {
@@ -220,7 +258,35 @@ impl Orchestrator {
             governance: GovernanceGate(crate::governance::Governance::default()),
             gates: Vec::new(),
             rules: Vec::new(),
+            tools: ToolSet::default(),
+            env: Vec::new(),
+            hooks: None,
+            calls: 0,
+            gate_log: Vec::new(),
         }
+    }
+
+    /// The tool set this run offers; the same value the prompt was given.
+    #[must_use]
+    pub fn with_tools(mut self, tools: ToolSet) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Variables added to the environment of `bash` and custom tools.
+    #[must_use]
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Trusted hooks, whose `post_tool` observes every dispatched call. The
+    /// `pre_tool` gate is added with [`with_gate`](Self::with_gate), so its
+    /// place in the order is the caller's to see.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Hooks) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// Supplies the rule documents a governance audit evaluates.
@@ -290,7 +356,11 @@ impl Orchestrator {
                     let _ = reply.send(self.gated(call).await.result);
                 }
                 Request::Call { call, reply } => {
+                    self.calls += 1;
                     let _ = reply.send(self.gated(call).await);
+                }
+                Request::GateLog { reply } => {
+                    let _ = reply.send(self.gate_log.clone());
                 }
                 Request::Audit { reply } => {
                     let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance]).await);
@@ -311,6 +381,16 @@ impl Orchestrator {
     /// call a rule has already refused.
     async fn gated(&mut self, call: ToolCall) -> Dispatched {
         let mut human = None;
+        let name = tool_name(&call);
+        if !self.tools.enabled(name) {
+            return Dispatched {
+                result: ToolResult::Error(format!(
+                    "`{name}` is not a tool in this run; the tools are {}",
+                    self.tools.names().join(", ")
+                )),
+                human,
+            };
+        }
         for i in 0..=self.gates.len() {
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
@@ -326,6 +406,14 @@ impl Orchestrator {
                 });
             }
             if let GateDecision::Deny { reason } = decision {
+                if let Some(gate) = gate.name() {
+                    self.gate_log.push(GateDenial {
+                        call: self.calls,
+                        gate: gate.to_string(),
+                        target: crate::gate::label(&call),
+                        reason: reason.clone(),
+                    });
+                }
                 return Dispatched {
                     result: ToolResult::Error(reason),
                     human,
@@ -341,8 +429,184 @@ impl Orchestrator {
                 Ok(body) => ToolResult::FileContent(body),
                 Err(e) => ToolResult::Error(e),
             },
+            ToolCall::WriteFile { path, content } => self.write_file(path, content).await,
+            ToolCall::Grep { pattern, path } => match path.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => match self.resolve_in_repo(p) {
+                    Err(e) => ToolResult::Error(e),
+                    Ok(_) => crate::listing::grep(&self.root, pattern, Some(p)).await,
+                },
+                None => crate::listing::grep(&self.root, pattern, None).await,
+            },
+            ToolCall::Find { glob } => {
+                if glob.starts_with('/') || glob.split(['/', '\\']).any(|s| s == "..") {
+                    ToolResult::Error(format!(
+                        "glob `{glob}` must be relative to the repository root and must not \
+                         contain `..`"
+                    ))
+                } else {
+                    crate::listing::find(&self.root, glob).await
+                }
+            }
+            ToolCall::Ls { path } => match self.resolve_in_repo(path) {
+                Err(e) => ToolResult::Error(e),
+                Ok(full) => crate::listing::ls(&full, path),
+            },
+            ToolCall::Bash { command } => self.bash(command).await,
+            ToolCall::Custom { name, args } => self.custom(name, args).await,
         };
+        // Observe only. The result is already decided and is what the model
+        // receives, whatever the hook prints or returns.
+        if let Some(h) = &self.hooks {
+            let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+            h.post_tool(&call, as_json).await;
+        }
         Dispatched { result, human }
+    }
+
+    /// Creates a file that does not exist (ADR 0023 §2).
+    ///
+    /// Governance has already been consulted as a gate. What is checked here
+    /// is what makes "rollback removes it" true: the path must be new, must
+    /// not be inside `.git`, and must not be ignored by git, because
+    /// rollback's `git clean -fd` leaves ignored files where they are.
+    async fn write_file(&mut self, path: &str, content: &str) -> ToolResult {
+        let full = match self.resolve_in_repo(path) {
+            Ok(f) => f,
+            Err(e) => return ToolResult::Error(e),
+        };
+        if Path::new(path)
+            .components()
+            .any(|c| c.as_os_str() == ".git")
+        {
+            return ToolResult::Error(format!("write_file refused: `{path}` is inside .git"));
+        }
+        if full.exists() {
+            return ToolResult::Error(format!(
+                "{path} already exists. write_file creates new files only; use edit to \
+                 change an existing one."
+            ));
+        }
+        let ignored = tokio::process::Command::new("git")
+            .args(["check-ignore", "-q", "--no-index", "--"])
+            .arg(path)
+            .current_dir(&self.root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|s| s.success());
+        if ignored {
+            return ToolResult::Error(format!(
+                "write_file refused: `{path}` is ignored by git, so a rollback could not \
+                 remove it. Choose a path git tracks."
+            ));
+        }
+        if let Some(dir) = full.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            return ToolResult::Error(format!("cannot create the directory for {path}: {e}"));
+        }
+        // `create_new`, not `write`: a file that appeared since the check
+        // above is not overwritten.
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&full)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()));
+        if let Err(e) = written {
+            return ToolResult::Error(format!("cannot write {path}: {e}"));
+        }
+        if !self.touched.iter().any(|p| p == path) {
+            self.touched.push(path.to_string());
+        }
+        // A new Python file changes the module map, which `try_update`
+        // cannot do, so the session is reopened: a full rebuild, paid so the
+        // next blast radius describes the tree as it now is.
+        if path.ends_with(".py") {
+            self.session = Session::open(&self.root);
+        }
+        ToolResult::Output(format!(
+            "created {path} ({} bytes, {} lines)",
+            content.len(),
+            content.lines().count()
+        ))
+    }
+
+    async fn bash(&self, command: &str) -> ToolResult {
+        let Some(b) = self.tools.bash() else {
+            return ToolResult::Error("bash is not enabled in this run".into());
+        };
+        let mut argv = b.shell.clone();
+        argv.push(command.to_string());
+        let r = crate::exec::run(crate::exec::Spec {
+            argv: &argv,
+            cwd: &self.root,
+            env: &self.env,
+            stdin: None,
+            timeout: b.timeout,
+            cap: crate::exec::OUTPUT_CAP,
+        })
+        .await;
+        match r {
+            Err(e) => ToolResult::Error(e),
+            Ok(c) => {
+                let status = if c.timed_out {
+                    format!("timed out after {}s and was killed", b.timeout.as_secs())
+                } else {
+                    match c.code {
+                        Some(code) => format!("exit {code}"),
+                        None => "ended without an exit code".to_string(),
+                    }
+                };
+                let mut s = format!("{status}\n");
+                if !c.stdout.is_empty() {
+                    s.push_str(&c.stdout.render());
+                }
+                if !c.stderr.is_empty() {
+                    s.push_str("\nstderr:\n");
+                    s.push_str(&c.stderr.render());
+                }
+                // Not a verdict, and said where the model reads it: a
+                // command printing "tests passed" has passed nothing.
+                s.push_str("\n(bash output is an observation, not a check)");
+                ToolResult::Output(s)
+            }
+        }
+    }
+
+    async fn custom(&self, name: &str, args: &serde_json::Value) -> ToolResult {
+        let Some(tool) = self.tools.custom(name) else {
+            return ToolResult::Error(format!("`{name}` is not a tool in this run"));
+        };
+        let r = crate::exec::run(crate::exec::Spec {
+            argv: &tool.command,
+            cwd: &self.root,
+            env: &self.env,
+            stdin: Some(args.to_string().into_bytes()),
+            timeout: CUSTOM_TIMEOUT,
+            cap: crate::exec::OUTPUT_CAP,
+        })
+        .await;
+        match r {
+            Err(e) => ToolResult::Error(e),
+            Ok(c) if c.timed_out => ToolResult::Error(format!(
+                "`{name}` did not finish within {}s and was killed",
+                CUSTOM_TIMEOUT.as_secs()
+            )),
+            Ok(c) if c.code == Some(0) => ToolResult::Output(c.stdout.render()),
+            Ok(c) => ToolResult::Error(format!(
+                "`{name}` exited with {}: {}{}",
+                c.code
+                    .map_or_else(|| "no exit code".to_string(), |c| c.to_string()),
+                c.stdout.render(),
+                if c.stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nstderr:\n{}", c.stderr.render())
+                }
+            )),
+        }
     }
 
     pub fn index(&self) -> &trellis_index::Index {
@@ -634,6 +898,10 @@ impl Orchestrator {
         Ok(self.root.join(p))
     }
 }
+
+/// How long a custom tool may run. The same default as `bash`: a custom
+/// tool is a command the repository wrote, and it is bounded like one.
+const CUSTOM_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How many lines of a file a failed anchor is allowed to quote back.
 ///
