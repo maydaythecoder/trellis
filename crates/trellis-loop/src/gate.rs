@@ -121,6 +121,8 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "find",
     "ls",
     "bash",
+    "search_notes",
+    "read_note",
 ];
 
 /// The tool name a call is listed under in `[control] approve`, `[tools]`,
@@ -137,6 +139,8 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::Find { .. } => "find",
         ToolCall::Ls { .. } => "ls",
         ToolCall::Bash { .. } => "bash",
+        ToolCall::SearchNotes { .. } => "search_notes",
+        ToolCall::ReadNote { .. } => "read_note",
         ToolCall::Custom { name, .. } => name,
     }
 }
@@ -283,6 +287,8 @@ pub(crate) fn label(call: &ToolCall) -> String {
         ToolCall::Find { glob } => format!("find {glob}"),
         ToolCall::Ls { path } => format!("ls {path}"),
         ToolCall::Bash { command } => format!("bash {}", first_line(command)),
+        ToolCall::SearchNotes { query, .. } => format!("search_notes {}", first_line(query)),
+        ToolCall::ReadNote { note } => format!("read_note {note}"),
         ToolCall::Custom { name, args } => format!("{name} {args}"),
     }
 }

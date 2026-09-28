@@ -31,6 +31,8 @@ pub const BUILTIN_TOOLS: &[&str] = &[
     "find",
     "ls",
     "bash",
+    "search_notes",
+    "read_note",
 ];
 
 /// On unless disabled. This is the set the prompt was measured with, so a
@@ -44,7 +46,21 @@ const DEFAULT_ON: &[&str] = &[
 ];
 
 /// Off unless `[tools] enable` names them.
-const OPT_IN: &[&str] = &["write_file", "grep", "find", "ls"];
+///
+/// `search_notes` and `read_note` also need `[context] vault`
+/// ([`ToolSet::with_notes`]); opt-in so a repository that already has a
+/// vault keeps the prompt it was measured with (ADR 0024 §6).
+const OPT_IN: &[&str] = &[
+    "write_file",
+    "grep",
+    "find",
+    "ls",
+    "search_notes",
+    "read_note",
+];
+
+/// The tools that read the note vault.
+const NOTE_TOOLS: &[&str] = &["search_notes", "read_note"];
 
 /// How long a custom tool's description may be. It is printed in the tool
 /// line on every turn, where the window is the scarce resource (S5).
@@ -62,6 +78,8 @@ fn args_hint(name: &str) -> &'static str {
         "find" => "glob",
         "ls" => "path",
         "bash" => "command",
+        "search_notes" => "query,limit",
+        "read_note" => "note",
         _ => "",
     }
 }
@@ -101,12 +119,22 @@ pub struct ToolSelection {
     pub custom: Vec<CustomTool>,
 }
 
+/// Where `search_notes` and `read_note` read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotesSource {
+    /// Absolute.
+    pub dir: std::path::PathBuf,
+    /// As configured, repository-relative, for observations.
+    pub source: String,
+}
+
 /// The tools one run offers.
 #[derive(Debug, Clone)]
 pub struct ToolSet {
     builtins: Vec<&'static str>,
     custom: Vec<CustomTool>,
     bash: Option<BashSettings>,
+    notes: Option<NotesSource>,
 }
 
 impl Default for ToolSet {
@@ -116,6 +144,7 @@ impl Default for ToolSet {
             builtins: DEFAULT_ON.to_vec(),
             custom: Vec::new(),
             bash: None,
+            notes: None,
         }
     }
 }
@@ -128,6 +157,7 @@ impl ToolSet {
             builtins: BUILTIN_TOOLS.to_vec(),
             custom: Vec::new(),
             bash: None,
+            notes: None,
         }
     }
 
@@ -209,7 +239,31 @@ impl ToolSet {
             builtins,
             custom,
             bash,
+            notes: None,
         })
+    }
+
+    /// Attaches the vault the note tools read (ADR 0024 §6).
+    ///
+    /// A note tool enabled with no vault configured is an error rather than
+    /// a tool that fails on every call: the fix is in the config, and a run
+    /// should not spend a turn discovering it.
+    pub fn with_notes(mut self, notes: Option<NotesSource>) -> Result<Self, String> {
+        if notes.is_none()
+            && let Some(t) = NOTE_TOOLS.iter().find(|t| self.builtins.contains(t))
+        {
+            return Err(format!(
+                "[tools] enable lists `{t}`, which reads the note vault, and no vault is \
+                 configured. Set [context] vault = \"<dir>\" or remove it from enable"
+            ));
+        }
+        self.notes = notes;
+        Ok(self)
+    }
+
+    /// The vault the note tools read, when configured.
+    pub fn notes(&self) -> Option<&NotesSource> {
+        self.notes.as_ref()
     }
 
     /// Whether a call to `name` is allowed in this run.
@@ -606,6 +660,10 @@ pub fn call_json(call: &ToolCall) -> Value {
         ToolCall::Find { glob } => json!({ "tool": "find", "glob": glob }),
         ToolCall::Ls { path } => json!({ "tool": "ls", "path": path }),
         ToolCall::Bash { command } => json!({ "tool": "bash", "command": command }),
+        ToolCall::SearchNotes { query, limit } => {
+            json!({ "tool": "search_notes", "query": query, "limit": limit })
+        }
+        ToolCall::ReadNote { note } => json!({ "tool": "read_note", "note": note }),
         ToolCall::Custom { name, args } => {
             let mut m = args.as_object().cloned().unwrap_or_default();
             m.insert("tool".into(), Value::String(name.clone()));
@@ -900,5 +958,61 @@ mod tests {
             let back = t.parse_value(call_json(&call)).unwrap();
             assert_eq!(back, Step::Call(call));
         }
+    }
+}
+
+#[cfg(test)]
+mod note_tool_tests {
+    use super::*;
+
+    fn with(enable: &[&str]) -> ToolSet {
+        ToolSet::build(ToolSelection {
+            enable: enable.iter().map(|s| s.to_string()).collect(),
+            ..ToolSelection::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_note_tool_with_no_vault_fails_when_the_set_is_built() {
+        // The fix is in the config; a run should not spend a turn on a tool
+        // that errors on every call.
+        let e = with(&["search_notes"]).with_notes(None).unwrap_err();
+        assert!(e.contains("[context] vault"), "{e}");
+        // Not asked for, nothing required: the default set is unaffected.
+        assert!(ToolSet::default().with_notes(None).is_ok());
+    }
+
+    #[test]
+    fn a_vault_alone_does_not_change_the_measured_tool_line() {
+        // ADR 0024 §6: opt-in, so a repository that already had a vault sends
+        // the prompt it was measured with.
+        let src = NotesSource {
+            dir: std::path::PathBuf::from("notes"),
+            source: "notes".into(),
+        };
+        let plain = ToolSet::default().with_notes(Some(src.clone())).unwrap();
+        assert_eq!(
+            plain.prompt_line(false),
+            ToolSet::default().prompt_line(false)
+        );
+        assert_eq!(plain.schema(), ToolSet::default().schema());
+
+        let on = with(&["search_notes", "read_note"])
+            .with_notes(Some(src))
+            .unwrap();
+        let line = on.prompt_line(false);
+        assert!(line.contains("search_notes{query,limit}"), "{line}");
+        assert!(line.contains("read_note{note}"), "{line}");
+        let step = on
+            .parse(r#"{"tool":"search_notes","query":"retry"}"#)
+            .unwrap();
+        assert_eq!(
+            step,
+            Step::Call(ToolCall::SearchNotes {
+                query: "retry".into(),
+                limit: None
+            })
+        );
     }
 }
