@@ -90,15 +90,58 @@ struct Candidate {
     path: PathBuf,
     label: String,
     short: String,
+    /// In the repository, so read through [`read_repo_text`]; the user
+    /// directory's files are the user's own and read as they are.
+    repo: bool,
+}
+
+/// Whether `p` is a file, or a link of any kind: a link to a directory, to
+/// nothing, or out of the repository is present and refused by name when
+/// read ([`read_repo_text`]), where `is_file()` alone passed over it in
+/// silence.
+fn present_entry(p: &Path) -> bool {
+    p.is_file() || std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// A repository-supplied prompt input, as UTF-8: `Ok(None)` when there is
+/// nothing at `path`, an error when it resolves outside the repository or
+/// into `.git` (`trellis_core::paths::resolve_repo_input`), is not a file,
+/// or cannot be read. The one reader for every file a repository hands the
+/// prompt — context files, system files, `context.md`, prompt templates and
+/// agent profile instructions — so none of them follows a committed link to
+/// `~/.aws/credentials` into a hosted request body.
+pub(crate) fn read_repo_text(root: &Path, path: &Path) -> Result<Option<String>> {
+    let real = match trellis_core::paths::resolve_repo_input(root, path) {
+        Ok(None) => return Ok(None),
+        Ok(Some(real)) => real,
+        Err(why) => anyhow::bail!("{why}"),
+    };
+    if !real.is_file() {
+        anyhow::bail!("{} is not a file, so it was not read", path.display());
+    }
+    // The resolved path is read, so what was checked is what is read; the
+    // messages name the path as the repository spells it.
+    let bytes = std::fs::read(&real)
+        .with_context(|| format!("{} exists but could not be read", path.display()))?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("{} is not UTF-8", path.display()))
 }
 
 /// The candidates in one directory. `AGENTS.override.md` replaces the other
 /// two in its own directory only, as in pi.
 fn in_dir(dir: &Path, place: &str, short_prefix: &str) -> Vec<Candidate> {
+    // The repository's links are judged by name; the user directory keeps
+    // `is_file()`, so a stale link in the user's own configuration is passed
+    // over as before rather than stopping every run in every repository.
+    let repo = short_prefix.is_empty();
     let present: Vec<&str> = NAMES
         .iter()
         .copied()
-        .filter(|n| dir.join(n).is_file())
+        .filter(|n| {
+            let p = dir.join(n);
+            if repo { present_entry(&p) } else { p.is_file() }
+        })
         .collect();
     let chosen: Vec<&str> = if present.contains(&NAMES[0]) {
         vec![NAMES[0]]
@@ -111,31 +154,41 @@ fn in_dir(dir: &Path, place: &str, short_prefix: &str) -> Vec<Candidate> {
             path: dir.join(n),
             label: format!("`{n}` ({place})"),
             short: format!("{short_prefix}{n}"),
+            repo,
         })
         .collect()
 }
 
-/// The context files and system files a run would consider, with their
-/// sizes on disk, for `trellis doctor`. Nothing is read, so an unreadable
-/// file is listed here and refused by the run, which reads it.
-pub(crate) fn present(root: &Path, user_dir: Option<&Path>) -> Vec<(String, u64)> {
+/// The context files and system files a run would consider, for `trellis
+/// doctor`: each name with its size on disk (`"123 B"`), or with why a run
+/// would refuse it (`"refused: ..."`) when it is a repository file that
+/// resolves outside the repository or into `.git`. Nothing is read, so an
+/// unreadable file is listed here and refused by the run, which reads it.
+pub(crate) fn present(root: &Path, user_dir: Option<&Path>) -> Vec<(String, String)> {
     let mut c = in_dir(root, "", "");
     if let Some(u) = user_dir {
         c.extend(in_dir(u, "", "<user>/"));
     }
-    let mut out: Vec<(String, u64)> = c
+    let size = |p: &Path| format!("{} B", std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+    let judged = |p: &Path| match trellis_core::paths::resolve_repo_input(root, p) {
+        Err(why) => format!("refused: {why}"),
+        Ok(_) => size(p),
+    };
+    let mut out: Vec<(String, String)> = c
         .into_iter()
         .map(|c| {
-            let len = std::fs::metadata(&c.path).map(|m| m.len()).unwrap_or(0);
-            (c.short, len)
+            let said = if c.repo {
+                judged(&c.path)
+            } else {
+                size(&c.path)
+            };
+            (c.short, said)
         })
         .collect();
     for name in ["system.md", "append_system.md"] {
         let p = root.join(".trellis").join(name);
-        if let Ok(m) = std::fs::metadata(&p)
-            && m.is_file()
-        {
-            out.push((format!(".trellis/{name}"), m.len()));
+        if present_entry(&p) {
+            out.push((format!(".trellis/{name}"), judged(&p)));
         }
     }
     out
@@ -170,7 +223,19 @@ fn context_files(root: &Path, user_dir: Option<&Path>, out: &mut Loaded) -> Resu
     let mut loaded: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     for c in candidates {
-        let text = read(&c.path)?;
+        let text = if c.repo {
+            read_repo_text(root, &c.path)
+                .with_context(|| {
+                    format!(
+                        "context file {} could not be loaded; the run did not start and \
+                         nothing was snapshotted",
+                        c.short
+                    )
+                })?
+                .unwrap_or_default()
+        } else {
+            read(&c.path)?
+        };
         if text.trim().is_empty() {
             continue;
         }
@@ -218,10 +283,20 @@ fn context_files(root: &Path, user_dir: Option<&Path>, out: &mut Loaded) -> Resu
 /// context file.
 fn system_file(root: &Path, name: &str) -> Result<Option<String>> {
     let path = root.join(".trellis").join(name);
-    if !path.is_file() {
+    // A real directory by that name is passed over as before; any link is
+    // resolved, and one that leaves the repository stops the run by name.
+    if !present_entry(&path) {
         return Ok(None);
     }
-    let text = read(&path)?;
+    let Some(text) = read_repo_text(root, &path).with_context(|| {
+        format!(
+            ".trellis/{name} could not be loaded; the run did not start and nothing was \
+             snapshotted"
+        )
+    })?
+    else {
+        return Ok(None);
+    };
     if text.trim().is_empty() {
         return Ok(None);
     }
@@ -420,6 +495,136 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join("AGENTS.md"), [0xff, 0xfe, 0x00]).unwrap();
         assert!(load(d.path(), None, true, &[], &[]).is_err());
+    }
+
+    /// A link at `link` to `target`, or `false` with the reason printed
+    /// when this host cannot make one (Windows without Developer Mode).
+    fn link(target: &Path, link: &Path) -> bool {
+        match trellis_core::paths::symlink_for_test(target, link) {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("{why}");
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn a_context_file_linked_outside_the_repository_is_refused_by_name() {
+        // The risk: a committed `AGENTS.md -> ~/.aws/credentials` was read
+        // through the link and went into every hosted request body.
+        let d = dir();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("credentials");
+        std::fs::write(&secret, "aws_secret_access_key = SECRET").unwrap();
+        if !link(&secret, &d.path().join("AGENTS.md")) {
+            return;
+        }
+        let e = load(d.path(), None, true, &[], &[]).unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.contains("AGENTS.md"), "{e}");
+        assert!(e.contains("outside the repository"), "{e}");
+        assert!(!e.contains("SECRET"), "never the contents: {e}");
+    }
+
+    #[test]
+    fn a_context_file_linked_into_git_is_refused() {
+        let d = dir();
+        std::fs::create_dir_all(d.path().join(".git")).unwrap();
+        std::fs::write(
+            d.path().join(".git/config"),
+            "url = https://user:TOKEN@host/x",
+        )
+        .unwrap();
+        if !link(Path::new(".git/config"), &d.path().join("CLAUDE.md")) {
+            return;
+        }
+        let e = format!("{:#}", load(d.path(), None, true, &[], &[]).unwrap_err());
+        assert!(e.contains("CLAUDE.md") && e.contains(".git"), "{e}");
+        assert!(!e.contains("TOKEN"), "{e}");
+    }
+
+    #[test]
+    fn a_dangling_or_directory_context_file_is_named_not_skipped() {
+        // `is_file()` follows links, so both were skipped with nothing said.
+        let d = dir();
+        if !link(Path::new("nowhere.md"), &d.path().join("AGENTS.md")) {
+            return;
+        }
+        let e = format!("{:#}", load(d.path(), None, true, &[], &[]).unwrap_err());
+        assert!(e.contains("AGENTS.md") && e.contains("nothing"), "{e}");
+
+        let d = dir();
+        std::fs::create_dir_all(d.path().join("docs")).unwrap();
+        assert!(link(Path::new("docs"), &d.path().join("CLAUDE.md")));
+        let e = format!("{:#}", load(d.path(), None, true, &[], &[]).unwrap_err());
+        assert!(e.contains("CLAUDE.md") && e.contains("not a file"), "{e}");
+    }
+
+    #[test]
+    fn a_dangling_link_in_the_user_directory_is_passed_over_as_before() {
+        // The repository rule is for what a repository supplies; a stale
+        // link in the user's own directory must not stop every run.
+        let d = dir();
+        let user = tempfile::tempdir().unwrap();
+        if !link(Path::new("gone.md"), &user.path().join("AGENTS.md")) {
+            return;
+        }
+        std::fs::write(d.path().join("CLAUDE.md"), "repo").unwrap();
+        let l = load(d.path(), Some(user.path()), true, &[], &[]).unwrap();
+        assert_eq!(l.extra.files.len(), 1);
+    }
+
+    #[test]
+    fn a_context_file_linked_inside_the_repository_still_loads() {
+        let d = dir();
+        std::fs::create_dir_all(d.path().join("docs")).unwrap();
+        std::fs::write(d.path().join("docs/agents.md"), "Shared guide.").unwrap();
+        if !link(Path::new("docs/agents.md"), &d.path().join("AGENTS.md")) {
+            return;
+        }
+        let l = load(d.path(), None, true, &[], &[]).unwrap();
+        assert_eq!(l.extra.files[0].text, "Shared guide.");
+    }
+
+    #[test]
+    fn a_system_file_linked_outside_the_repository_stops_the_run() {
+        let d = dir();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("id_rsa");
+        std::fs::write(&secret, "PRIVATE KEY").unwrap();
+        if !link(&secret, &d.path().join(".trellis/append_system.md")) {
+            return;
+        }
+        let e = format!("{:#}", load(d.path(), None, true, &[], &[]).unwrap_err());
+        assert!(e.contains(".trellis/append_system.md"), "{e}");
+        assert!(e.contains("outside the repository"), "{e}");
+        // `doctor` lists it as refused rather than by the target's size.
+        let listed = present(d.path(), None);
+        assert!(
+            listed
+                .iter()
+                .any(|(n, said)| n.contains("append_system.md") && said.starts_with("refused")),
+            "{listed:?}"
+        );
+    }
+
+    #[test]
+    fn a_forced_skill_linked_outside_the_repository_is_refused() {
+        let d = dir();
+        let outside = tempfile::tempdir().unwrap();
+        let s = outside.path().join("SKILL.md");
+        std::fs::write(&s, "---\nname: rel\ndescription: r\n---\nOUTSIDE\n").unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis/skills/rel")).unwrap();
+        if !link(&s, &d.path().join(".trellis/skills/rel/SKILL.md")) {
+            return;
+        }
+        let e = format!(
+            "{:#}",
+            load(d.path(), None, true, &["rel".into()], &[]).unwrap_err()
+        );
+        assert!(e.contains("outside the repository"), "{e}");
+        assert!(!e.contains("OUTSIDE"), "{e}");
     }
 
     /// A committed repository with a context file, a system file and a

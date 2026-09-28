@@ -521,3 +521,65 @@ profiles and routines load, or why they do not; and the vault, whether it
 validates, its focus, and whether `[context] dates` is on. Nothing on
 these lines stops `doctor`: a problem is printed on its line
 (`doctor_extra.rs`).
+
+### A repository's prompt inputs are its own files (review round 6)
+
+Every file a repository supplies for the prompt was read by following
+links, with no check of where the link led. A committed
+`AGENTS.md -> ~/.aws/credentials` or `CLAUDE.md -> .git/config` was
+therefore sent in every hosted request body. Now each is resolved through
+one predicate, `trellis_core::paths::resolve_repo_input`, and read from
+the real path it returns. A file whose real path is outside the
+repository's real root, or inside `.git` by any spelling `names_git_dir`
+knows, is refused; so is a link that resolves to nothing, and one to a
+directory where a file is read. The readers: context files at the
+repository root (§1), `.trellis/system.md` and `append_system.md` (§2),
+`.trellis/context.md`, prompt templates (`--prompt`, `/name`, a task's
+`prompt`), an agent profile's `instructions` (ADR 0026), repository
+skills (ADR 0019: the listing and `read_skill`/`--skill`), and the
+configured vault directory (ADR 0017; the walk inside a vault already
+skipped links).
+
+- **Refused is an error, never a silent omission.** Every reader above
+  already stopped the run on an unreadable file, so a refused one does the
+  same, before the snapshot, naming the file as the repository spells it
+  and where it resolves, never its contents. A repository skill that is
+  refused is listed as invalid with the reason, as any invalid skill is.
+  `doctor` lists a refused context or system file as `refused: <why>`
+  instead of the target's size, and the template listing (`rpc`'s
+  `get_commands`, a session's `/` list) shows a refused one the same way.
+- **Presence is decided without following links.** `is_file()` follows
+  them, so a dangling link or a link to a directory named `AGENTS.md` was
+  passed over with nothing said; it is now refused by name. A real
+  directory with that name is still passed over, as before. A skill
+  directory that is a link is now listed (and judged) where before it was
+  invisible to the listing but readable by `read_skill`, whose `is_dir()`
+  followed it.
+- **A link inside the repository still works**: `AGENTS.md ->
+  docs/agents.md` loads `docs/agents.md`.
+- **The user's own files are not subject to it.** `<user>/AGENTS.md` and
+  user-level skills are outside every repository by definition, and the
+  rule is about what a repository hands the prompt.
+- Tests: `a_context_file_linked_outside_the_repository_is_refused_by_name`,
+  `a_context_file_linked_into_git_is_refused`,
+  `a_dangling_or_directory_context_file_is_named_not_skipped`,
+  `a_system_file_linked_outside_the_repository_stops_the_run`,
+  `a_prompt_or_context_md_linked_outside_the_repository_is_refused`,
+  `a_vault_linked_outside_the_repository_or_into_git_is_refused`,
+  `instructions_linked_outside_the_repository_are_refused`,
+  `a_skill_md_linked_outside_the_repository_is_neither_listed_nor_read`,
+  `a_skill_directory_linked_outside_is_reported_not_silently_readable`,
+  and the in-repository link cases. They create their links with
+  `trellis_core::paths::symlink_for_test`, and on a Windows host without
+  Developer Mode or elevation, where no link can be made, each prints why
+  and returns: they then test nothing there, and say so.
+- Not covered, stated: `.trellis/config.toml` and the governance documents
+  are configuration, not prompt text, and are still read through links
+  (a custom tool's `description` from `config.toml` does reach the
+  prompt). When anything needs trust, the trust digest refuses a link
+  under `.trellis/` that leaves the repository (ADR 0023 §4); when nothing
+  does, no such check runs.
+- A prompt-template name also obeys the repository-path rule the loop's
+  tools use (`unsafe_repo_path`, now in `trellis-core`): no `:`, so `C:x`,
+  which Windows resolves against drive C's current directory, is refused
+  (`a_prompt_name_with_a_colon_is_refused`).

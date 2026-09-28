@@ -17,8 +17,14 @@ pub(crate) const OUTPUT_CAP: usize = 8_192;
 /// The last `cap` bytes of a stream, and how many there were in all.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Tail {
-    bytes: Vec<u8>,
+    /// A ring: bytes past the cap leave from the front in O(1), where a
+    /// `Vec` moved all `cap` kept bytes on every read, and at `find`'s
+    /// 64 MiB cap that was a timeout.
+    bytes: std::collections::VecDeque<u8>,
     pub(crate) total: usize,
+    /// Nothing is kept, because the stream passed the cap and the reader
+    /// asked for all of it or none ([`Spec::whole`]); `total` still counts.
+    dropped: bool,
     /// The first `cap` bytes as well, for the one reader that wants the
     /// start of a stream rather than its end: `before_run`, whose output
     /// is context read top down (ADR 0023 §5). Kept only when the
@@ -39,8 +45,15 @@ impl Tail {
     /// The kept bytes as text, with a line saying what was cut. A silent
     /// cut reads as the whole output.
     pub(crate) fn render(&self) -> String {
-        let text = String::from_utf8_lossy(&self.bytes);
-        let mut s = if self.total > self.bytes.len() {
+        let kept: Vec<u8> = self.bytes.iter().copied().collect();
+        let text = String::from_utf8_lossy(&kept);
+        let mut s = if self.dropped {
+            format!(
+                "...({} bytes; none kept: past the cap, and this output is read whole or \
+                 not at all)...",
+                self.total
+            )
+        } else if self.total > self.bytes.len() {
             format!(
                 "...({} earlier bytes cut; the last {} are shown)...\n{}",
                 self.total - self.bytes.len(),
@@ -62,6 +75,11 @@ impl Tail {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.total == 0
+    }
+
+    #[cfg(test)]
+    fn kept(&self) -> Vec<u8> {
+        self.bytes.iter().copied().collect()
     }
 
     /// The first bytes of the stream, up to the cap, as text.
@@ -91,6 +109,11 @@ pub(crate) struct Spec<'a> {
     pub(crate) cap: usize,
     /// Keep the first `cap` bytes of each stream too ([`Tail::head`]).
     pub(crate) head: bool,
+    /// Stdout is wanted whole or not at all: past the cap nothing more is
+    /// stored and what was is let go, and only `total` keeps counting. For
+    /// `find`, which refuses a list past the cap rather than show part of
+    /// one, so storing its tail was work for nothing.
+    pub(crate) whole: bool,
 }
 
 /// Runs `spec`, writing stdin and reading both streams concurrently.
@@ -142,6 +165,7 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
     let input = spec.stdin;
 
     let keep_head = spec.head;
+    let whole = spec.whole;
 
     let finished = {
         let (so, se) = (&mut out.stdout, &mut out.stderr);
@@ -155,8 +179,8 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
         });
         let mut reading = std::pin::pin!(async {
             tokio::join!(
-                read_tail(stdout, so, cap, keep_head),
-                read_tail(stderr, se, cap, keep_head)
+                read_tail(stdout, so, cap, keep_head, whole),
+                read_tail(stderr, se, cap, keep_head, false)
             );
         });
         let (mut written, mut read) = (false, false);
@@ -234,11 +258,16 @@ async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
+/// Reads `stream` to EOF into `into`: the last `cap` bytes, the total, and
+/// the first `cap` when `keep_head`. With `whole`, once the total passes
+/// the cap nothing is stored any more ([`Spec::whole`]). Linear in the
+/// stream's length whatever the cap.
 async fn read_tail<R: AsyncRead + Unpin>(
     stream: Option<R>,
     into: &mut Tail,
     cap: usize,
     keep_head: bool,
+    whole: bool,
 ) {
     let Some(mut s) = stream else { return };
     // Until EOF; a reader dropped before it leaves this set.
@@ -256,11 +285,20 @@ async fn read_tail<R: AsyncRead + Unpin>(
                     let room = cap.saturating_sub(into.head.len());
                     into.head.extend_from_slice(&buf[..n.min(room)]);
                 }
-                into.bytes.extend_from_slice(&buf[..n]);
-                if into.bytes.len() > cap {
-                    let excess = into.bytes.len() - cap;
-                    into.bytes.drain(..excess);
+                if whole && into.total > cap {
+                    if !into.dropped {
+                        into.dropped = true;
+                        into.bytes = Default::default();
+                    }
+                    continue;
                 }
+                // Only the part of this read that can survive is copied in;
+                // then the front goes, which a ring does without moving
+                // what stays.
+                let fresh = &buf[n.saturating_sub(cap)..n];
+                into.bytes.extend(fresh);
+                let excess = into.bytes.len().saturating_sub(cap);
+                into.bytes.drain(..excess);
             }
         }
     }
@@ -324,7 +362,48 @@ mod tests {
             timeout,
             cap,
             head: false,
+            whole: false,
         }
+    }
+
+    #[tokio::test]
+    async fn a_stream_far_past_a_large_cap_is_read_in_linear_time() {
+        // The risk: each read past the cap drained the front of the kept
+        // bytes, moving `cap` bytes per 8 KiB read, so `find`'s 64 MiB cap
+        // turned a long listing into minutes of memmove and a timeout.
+        use tokio::io::AsyncReadExt;
+        let cap = 64 << 20;
+        let total = 192u64 << 20;
+        let stream = tokio::io::repeat(b'x').take(total);
+        let mut t = Tail::default();
+        let read = tokio::time::timeout(
+            Duration::from_secs(10),
+            read_tail(Some(stream), &mut t, cap, false, false),
+        )
+        .await;
+        assert!(
+            read.is_ok(),
+            "reading 192 MiB through a 64 MiB cap took over 10 s"
+        );
+        assert_eq!(t.total, total as usize);
+        assert_eq!(t.kept().len(), cap);
+    }
+
+    #[tokio::test]
+    async fn the_tail_keeps_the_last_bytes_in_order_across_the_wrap() {
+        let bytes: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut t = Tail::default();
+        read_tail(Some(&bytes[..]), &mut t, 1000, false, false).await;
+        assert_eq!(t.total, bytes.len());
+        assert_eq!(t.kept(), &bytes[bytes.len() - 1000..]);
+        // `whole`: kept entire under the cap, nothing kept past it.
+        let mut t = Tail::default();
+        read_tail(Some(&bytes[..]), &mut t, 1000, false, true).await;
+        assert_eq!(t.total, bytes.len());
+        assert!(t.kept().is_empty(), "past the cap nothing is stored");
+        let mut t = Tail::default();
+        read_tail(Some(&bytes[..500]), &mut t, 1000, false, true).await;
+        assert_eq!(t.kept(), &bytes[..500]);
     }
 
     #[tokio::test]

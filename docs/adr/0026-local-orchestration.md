@@ -694,20 +694,66 @@ This is Paperclip's `process` adapter. A profile with
 
    **`.git/` is outside the worktree the rollback restores**, and `git
    status` does not see it, so a command could plant a hook or set
-   `core.hooksPath` and survive any rollback. The bytes of `.git/config`
-   and of every file under the hooks directory (both as `git rev-parse
-   --git-path` names them) are read before the command and compared
-   after. A difference is put back (the old bytes rewritten, a new file
-   removed), named in the output, and makes the run not converged. What
-   is not covered, stated: the rest of `.git/` (`info/exclude`, refs,
-   objects, `packed-refs`, the index), a change the command makes and
-   reverts before it exits, and a file that cannot be written back, which
-   is reported as not put back. A process that outlives the command (see
-   step 2) can still write after the comparison.
+   `core.hooksPath` and survive any rollback. The bytes of `.git/config`,
+   of every file under the hooks directory and (*amended after the sixth
+   review*) of `info/exclude`, each as `git rev-parse --git-path` names
+   it, are read before the command and compared after. `info/exclude`
+   decides what `git status` and the rollback's `git clean` can see: a `*`
+   written there hid every later run's new files from both
+   (`a_process_agent_that_writes_git_info_exclude_has_it_restored`). A
+   difference is put back (the old bytes rewritten, a new file removed),
+   named in the output, and makes the run not converged. What is not
+   covered, stated: the rest of `.git/` (refs, objects, `packed-refs`, the
+   index), a change the command makes and reverts before it exits, and a
+   file that cannot be written back, which is reported as not put back. A
+   process that outlives the command (see step 2) can still write after
+   the comparison.
+
+   *Amended after the sixth review of PR #1: files git ignores.* `git
+   status` does not list them, so a command could write
+   `.venv/.../sitecustomize.py`, an ignored path under `.trellis/` or an
+   ignored path `deny_write` names, and the breach test, governance and the
+   rollback (`git clean -fd` leaves ignored files) all missed it. Now
+   `git ls-files --others --ignored --exclude-standard` is listed just
+   before the command is spawned and again just after it ends (after the
+   `.git/` bytes above are put back, before the checks, which write caches
+   of their own), each file with its `symlink_metadata` length and
+   modification time, and on Unix its inode and change time. The
+   difference is three lists: created, modified, deleted.
+   - All three are named in the output and recorded in the trail as a
+     second `process` action whose target is `files git ignores`. They are
+     not `proposed`: that list is what a commit would carry.
+   - All three are subject to the `.trellis/` breach and `deny_write`,
+     whether or not anything git shows changed
+     (`a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach`).
+     The `forbid` audit is not run over them: it reads contents, and a
+     `pip install` is thousands of files.
+   - On a run that does not converge, every ignored file the command
+     created is removed (a link is removed as a link), and then any
+     directory that removal left empty
+     (`a_process_agent_s_ignored_writes_are_removed_on_rollback`). A
+     created file that cannot be removed makes the tree not restored.
+   - **What cannot be put back, stated.** An ignored file that existed
+     before and was changed or deleted: trellis keeps no copy of ignored
+     files (a `.venv` can be gigabytes), so it is named as not put back.
+     The run's restored status is still git's, so one such file does not
+     stop `work`. A directory that was empty before the command and held
+     only what it created is removed with it.
+   - **What a converged run keeps.** Ignored files the command created,
+     such as a `.pytest_cache`, stay. That includes a `sitecustomize.py` or
+     a `.pth` file written into an ignored `.venv`, which Python runs at
+     start-up, inside the very checks that judged the run. A repository
+     that wants that refused says `deny_write = [".venv/"]`.
+   - **What the comparison misses, stated.** It is by stat, not by
+     content. On Windows, a rewrite that keeps a file's length and sets its
+     modification time back is not seen; on Unix the change time, which a
+     process cannot set, catches it. A listing that fails after the
+     command makes the run not converged and removes nothing.
 4. **Decide.** The run converged if and only if the command changed at least
    one file, both checks pass, the governance audit (when there is one)
-   passes, no changed path is denied or under `.trellis/`, and nothing
-   under `.git/config` or the hooks changed.
+   passes, no changed path (ignored ones included) is denied or under
+   `.trellis/`, and nothing under `.git/config`, the hooks or
+   `info/exclude` changed.
    - A command that changed nothing has nothing to verify, and ends `failed`
      with that reason.
    - On anything other than convergence, the tree is rolled back exactly as

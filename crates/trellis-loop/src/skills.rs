@@ -83,7 +83,7 @@ impl SkillCatalog {
     pub fn discover(root: &Path) -> Self {
         let mut catalog = Self::default();
         for (dir_name, path) in skill_dirs(&root.join(SKILLS_DIR)) {
-            match load(&dir_name, &path) {
+            match load(&dir_name, &path, Some(root)) {
                 Ok(s) => catalog.valid.push(s),
                 Err(reason) => catalog.invalid.push(InvalidSkill {
                     dir: dir_name,
@@ -119,7 +119,9 @@ impl SkillCatalog {
                     continue;
                 }
                 found.push(dir_name.clone());
-                match load(&dir_name, &path) {
+                // A user directory is the user's own, outside any repository
+                // by definition: the repository-input rule does not apply.
+                match load(&dir_name, &path, None) {
                     Ok(s) => {
                         catalog.user.push(s.name.clone());
                         catalog.valid.push(s);
@@ -174,17 +176,28 @@ pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<St
     if let Err(e) = check_name(name) {
         return Err(format!("`{name}` is not a skill name: {e}"));
     }
-    let Some(dir) = std::iter::once(root.join(SKILLS_DIR))
-        .chain(user_dirs.iter().cloned())
-        .map(|base| base.join(name))
-        .find(|d| d.is_dir())
-    else {
-        return Err(format!(
-            "no skill named `{name}`. The skills listed in the prompt are the ones this \
-             run has."
-        ));
+    // The repository's entry counts when it is a directory or any link,
+    // including one that leaves the repository or resolves to nothing: that
+    // is refused below by name, never passed over for a user skill.
+    let repo = root.join(SKILLS_DIR).join(name);
+    let repo_found =
+        repo.is_dir() || std::fs::symlink_metadata(&repo).is_ok_and(|m| m.file_type().is_symlink());
+    let file = if repo_found {
+        repo_skill_md(root, &repo).map_err(|why| format!("skill `{name}` was not read: {why}"))?
+    } else {
+        let Some(dir) = user_dirs
+            .iter()
+            .map(|base| base.join(name))
+            .find(|d| d.is_dir())
+        else {
+            return Err(format!(
+                "no skill named `{name}`. The skills listed in the prompt are the ones this \
+                 run has."
+            ));
+        };
+        dir.join("SKILL.md")
     };
-    let text = std::fs::read_to_string(dir.join("SKILL.md"))
+    let text = std::fs::read_to_string(&file)
         .map_err(|e| format!("skill `{name}` has no readable SKILL.md: {e}"))?;
     let parsed = parse(&text).map_err(|e| format!("skill `{name}` is invalid: {e}"))?;
     if parsed.name != name {
@@ -259,21 +272,46 @@ impl SkillPolicy {
 /// The subdirectories of `base`, sorted, so the list and which skills the
 /// cap leaves out are the same on every machine; `read_dir` order is the
 /// filesystem's. Absent is empty: most repositories have no skills.
+///
+/// A link is included when it leads to a directory or to nothing, so that
+/// `read_body` (whose `is_dir()` follows links) never reads a skill this
+/// listing did not report; `load` then decides whether it may be read.
 fn skill_dirs(base: &Path) -> Vec<(String, PathBuf)> {
     let Ok(read) = std::fs::read_dir(base) else {
         return Vec::new();
     };
     let mut dirs: Vec<(String, PathBuf)> = read
         .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| {
+            e.file_type().is_ok_and(|t| {
+                t.is_dir()
+                    || (t.is_symlink() && std::fs::metadata(e.path()).map_or(true, |m| m.is_dir()))
+            })
+        })
         .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
         .collect();
     dirs.sort();
     dirs
 }
 
-fn load(dir_name: &str, path: &Path) -> Result<Skill, String> {
-    let text = match std::fs::read_to_string(path.join("SKILL.md")) {
+/// `<dir>/SKILL.md` of a repository skill, as its real path, once both the
+/// directory and the file resolve inside the repository and outside `.git`
+/// (`trellis_core::paths::resolve_repo_input`): a skill's description goes
+/// into every prompt and its body into the transcript.
+fn repo_skill_md(root: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let dir = trellis_core::paths::resolve_repo_input(root, dir)?.unwrap_or(dir.to_path_buf());
+    let file = dir.join("SKILL.md");
+    Ok(trellis_core::paths::resolve_repo_input(root, &file)?.unwrap_or(file))
+}
+
+/// `root` is the repository when `path` is one of its skills, and `None`
+/// for a user-level directory.
+fn load(dir_name: &str, path: &Path, root: Option<&Path>) -> Result<Skill, String> {
+    let file = match root {
+        Some(root) => repo_skill_md(root, path)?,
+        None => path.join("SKILL.md"),
+    };
+    let text = match std::fs::read_to_string(&file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err("no SKILL.md in the directory".into());
@@ -435,6 +473,97 @@ mod tests {
 
     fn md(name: &str, description: &str) -> String {
         format!("---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nBODY-{name}\n")
+    }
+
+    /// A link at `link` to `target`, or `false` with the reason printed.
+    fn link(target: &Path, link: &Path) -> bool {
+        match trellis_core::paths::symlink_for_test(target, link) {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("{why}");
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn a_skill_md_linked_outside_the_repository_is_neither_listed_nor_read() {
+        // The risk: `.trellis/skills/x/SKILL.md -> ~/notes/secret.md` put the
+        // target's description in every prompt and its body in the transcript.
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("SKILL.md"), md("leak", "OUTSIDE")).unwrap();
+        let dir = d.path().join(SKILLS_DIR).join("leak");
+        std::fs::create_dir_all(&dir).unwrap();
+        if !link(&outside.path().join("SKILL.md"), &dir.join("SKILL.md")) {
+            return;
+        }
+        let c = SkillCatalog::discover(d.path());
+        assert!(c.valid.is_empty(), "{c:?}");
+        assert!(
+            c.invalid[0].reason.contains("outside the repository"),
+            "{c:?}"
+        );
+        let e = read_body(d.path(), "leak").unwrap_err();
+        assert!(e.contains("outside the repository"), "{e}");
+        assert!(!e.contains("BODY-leak"), "{e}");
+    }
+
+    #[test]
+    fn a_skill_directory_linked_outside_is_reported_not_silently_readable() {
+        // `skill_dirs` did not follow a linked directory, so discover never
+        // listed it, while `read_body`'s `is_dir()` did follow it: a skill
+        // readable by name that nothing reported.
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("leak");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), md("leak", "OUTSIDE")).unwrap();
+        std::fs::create_dir_all(d.path().join(SKILLS_DIR)).unwrap();
+        if !link(&target, &d.path().join(SKILLS_DIR).join("leak")) {
+            return;
+        }
+        let c = SkillCatalog::discover(d.path());
+        assert!(c.valid.is_empty(), "{c:?}");
+        assert_eq!(c.invalid.len(), 1, "named, not skipped: {c:?}");
+        assert!(c.invalid[0].reason.contains("outside the repository"));
+        let e = read_body(d.path(), "leak").unwrap_err();
+        assert!(e.contains("outside the repository"), "{e}");
+    }
+
+    #[test]
+    fn a_skill_linked_inside_the_repository_still_loads() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("docs/shared")).unwrap();
+        std::fs::write(d.path().join("docs/shared/SKILL.md"), md("shared", "s")).unwrap();
+        std::fs::create_dir_all(d.path().join(SKILLS_DIR)).unwrap();
+        if !link(
+            &d.path().join("docs/shared"),
+            &d.path().join(SKILLS_DIR).join("shared"),
+        ) {
+            return;
+        }
+        let c = SkillCatalog::discover(d.path());
+        assert_eq!(c.valid.len(), 1, "{c:?}");
+        assert!(
+            read_body(d.path(), "shared")
+                .unwrap()
+                .contains("BODY-shared")
+        );
+    }
+
+    #[test]
+    fn a_user_skill_outside_the_repository_is_not_refused() {
+        // User-level skills are the user's own files, outside any repository
+        // by definition (ADR 0025); the rule is for what a repository supplies.
+        let d = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let s = user.path().join("mine");
+        std::fs::create_dir_all(&s).unwrap();
+        std::fs::write(s.join("SKILL.md"), md("mine", "m")).unwrap();
+        let dirs = [user.path().to_path_buf()];
+        assert_eq!(SkillCatalog::discover_with(d.path(), &dirs).valid.len(), 1);
+        assert!(read_body_in(d.path(), &dirs, "mine").is_ok());
     }
 
     /// The real-format fixture: `rust-unsafe` from low-level-dev-skills,

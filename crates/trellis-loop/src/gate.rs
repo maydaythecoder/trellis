@@ -210,10 +210,16 @@ impl ToolGate for ApprovalGate {
                 // A path that already exists is refused by the orchestrator
                 // in its own words, so it is not put to the human either.
                 ToolCall::WriteFile { path, content } => {
-                    // The orchestrator's own predicate, so the two cannot
-                    // disagree about which calls go unasked.
+                    // The orchestrator's own predicates, in its order, so
+                    // the two cannot disagree about which calls go unasked:
+                    // the path rules, an existing file, and git's ignore
+                    // rules (one `git check-ignore`, only when the others
+                    // pass, as in `write_file`).
                     let refused = crate::orchestrator::write_refusal(&self.root, path).is_some()
-                        || self.root.join(path).exists();
+                        || self.root.join(path).exists()
+                        || crate::orchestrator::ignored_refusal(&self.root, path)
+                            .await
+                            .is_some();
                     if refused {
                         return GateDecision::Allow;
                     }
@@ -604,6 +610,44 @@ mod tests {
             }
             other => panic!("deny_write must cover created files: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_write_file_git_ignores_is_not_put_to_the_human() {
+        // The risk: the gate predicted every write_file refusal but the
+        // git-ignored one, so a person was asked to approve a write the
+        // orchestrator then refused. The prediction asks git the same
+        // question, the same way.
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        std::fs::write(d.path().join(".gitignore"), "*.log\n").unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut g = ApprovalGate::new(d.path(), vec!["write_file".into()], tx);
+        let call = ToolCall::WriteFile {
+            path: "debug.log".into(),
+            content: "x\n".into(),
+        };
+        // Bounded: a gate that asks waits for a reply nobody sends here.
+        let d2 = tokio::time::timeout(std::time::Duration::from_secs(5), g.check(&call)).await;
+        assert!(rx.try_recv().is_err(), "the person was asked");
+        assert_eq!(d2, Ok(GateDecision::Allow));
+        assert!(!g.human_decided(), "nobody was asked");
+
+        // A path git would track is still put to the human.
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut g = ApprovalGate::new(d.path(), vec!["write_file".into()], tx);
+        let call = ToolCall::WriteFile {
+            path: "new.py".into(),
+            content: "x = 1\n".into(),
+        };
+        let asked = tokio::spawn(async move { rx.recv().await.map(|r| r.question) });
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), g.check(&call)).await;
+        let q = asked.await.unwrap().expect("asked");
+        assert!(q.contains("write_file new.py"), "{q}");
     }
 
     #[tokio::test]

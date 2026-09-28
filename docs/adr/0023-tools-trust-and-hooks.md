@@ -154,6 +154,17 @@ git lists and not only what is shown. Evidence:
 `crates/trellis-loop/src/listing.rs` (with a small cap through
 `find_capped`), which returned the cut subset before the change.
 
+*Amended after the sixth review:* keeping that tail cost more than the
+list. Each read past the cap moved every kept byte to drop the oldest, so
+192 MiB of output through the 64 MiB cap took over 10 s, and a large
+repository's list ran into the listing timeout instead of the refusal. The
+capture is now a ring, which drops from the front without moving what
+stays, and `find` asks for its output whole or not at all: past the cap
+nothing more is stored and only the count goes on
+(`a_stream_far_past_a_large_cap_is_read_in_linear_time`, about 0.3 s
+after; `find_far_past_the_cap_is_refused_with_the_true_size_not_timed_out`
+is a guard at a size a test can build).
+
 ### 3. `bash`, off by default
 
 `[tools] bash = true` enables `bash {command}`. It runs with the repository
@@ -337,6 +348,20 @@ anyone being asked. Now the digest also covers:
     in `crates/trellis-checks/src/lib.rs` failed before the change;
     `a_check_keeps_bytecode_caching_when_dot_trellis_holds_no_python` is a
     guard on the cost side.
+
+    *Amended after the sixth review:* the walk that answers "is there
+    Python under `.trellis/`" was bounded by depth only, so two links back
+    to `.trellis/` itself branched twice per level, 2^32 directory reads
+    before it gave up, on every check spawn. It now keeps the set of
+    canonical directories walked, as the trust walker does, and walks each
+    once
+    (`self_referencing_links_under_dot_trellis_end_the_walk_quickly`: with
+    `.trellis/a -> .` and `.trellis/b -> .` it had not answered after 10 s
+    before the change). A directory whose real path is outside the
+    repository, or is the root or an ancestor of it, is not walked and
+    answers yes: the variable costs a suite its cache, and a wrong no costs
+    the repository its trust. The trust digest refuses such a link anyway
+    (`a_link_out_of_the_repository_is_not_walked_and_answers_yes`).
   - **`TrustState::Refused { reason }`.** A fingerprint that cannot be
     trusted read `Changed` when a trust was on record and `Unknown` when not.
     Either way the `repo:` line, `work`'s waiting reason and `doctor` told
@@ -520,7 +545,13 @@ check configuration and the process-agent profiles.
   `.git` through a link. The approval gate's prediction of these refusals
   (`preview_edit`, and its `write_file` branch) calls the same function,
   `write_refusal`, so a call it lets through unasked is one the
-  orchestrator refuses.
+  orchestrator refuses. *Amended after the sixth review:* the `write_file`
+  branch did not predict the one refusal left, a path git ignores, so a
+  person was asked to approve a write that was then refused. Both now ask
+  `ignored_refusal`, one `git check-ignore` that fails closed the same way
+  in each, and only after the path rules and the existing-file check pass
+  (`a_write_file_git_ignores_is_not_put_to_the_human`). The cost is one
+  `git` process per `write_file` the gate would otherwise have asked about.
 - **What cannot be path-checked is re-checked by fingerprint.** When the
   repository is trusted, `tooling::prepare` builds one `TrustGuard` over the
   fingerprint it trusted, from the same configuration inputs, and hands it
@@ -556,6 +587,41 @@ check configuration and the process-agent profiles.
 - **Cost.** One fingerprint per hook spawn, per custom-tool spawn, and per
   tree-changing call: a hash of every file under `.trellis/` and every
   argv-named file. Only in a trusted run.
+
+  *Amended after the sixth review of PR #1.* That hash ran synchronously,
+  under the guard's lock, on the run's single-threaded runtime, up to three
+  times per call, so a large `.trellis/` held Ctrl-C, `rpc`'s `abort` and
+  approval prompts until it finished. Two changes:
+  - **A stat-keyed cache.** The guard keeps, per real path, the digest and
+    the stat it was taken under: length and modification time, plus the
+    device, inode and change time on Unix and the creation time on
+    Windows. A recheck still walks `.trellis/` in full and still resolves
+    every argv, so a file added or removed is always seen; it re-reads and
+    re-hashes only a file whose stat differs. The stat is taken before the
+    read, so a write landing between them leaves an older stamp and the
+    next recheck hashes again. The trust decision itself (`trellis trust`,
+    the state before a run, `require_trusted`) never uses the cache.
+  - **What the cache can miss, and where that is closed.** A rewrite that
+    keeps a file's length and sets its modification time back: on Unix the
+    change time, which no unprivileged process can set, still differs; on
+    Windows, where std exposes no change time, a cached recheck can pass
+    it. So the recheck when a run converges (above, before `after_run`) is
+    a **full** one, `check_full`: every file hashed afresh, the fresh
+    digests becoming the cache. A run cannot converge on a rewrite the
+    cache missed. What remains, stated: on Windows, a hook or custom tool
+    spawned between such a rewrite and convergence runs the rewritten code;
+    the run then fails at convergence and is rolled back, but the spawn has
+    happened. Evidence: `a_rewrite_keeping_length_and_mtime_is_caught_by_the_full_check`
+    (a guard: it tests the full check the convergence site calls) and
+    `a_cached_recheck_still_sees_a_rewrite_and_an_added_file`.
+  - **Off the runtime.** The orchestrator's and the hooks' rechecks, and
+    the one at convergence, run on tokio's blocking pool
+    (`check_async`, `check_full_async`), so the runtime keeps serving
+    Ctrl-C, `abort` and approvals meanwhile. A recheck that panics there
+    is latched as a breach. Evidence:
+    `a_trust_recheck_leaves_the_runtime_free`, in which a 50 ms timer on
+    the same current-thread runtime fired after 453 ms when the check was
+    called the old, synchronous way.
 - **Untrusted runs** load no hook, custom tool or `bash`, so `edit` and
   `write_file` are their only writers, and those refuse `.trellis/`.
 

@@ -40,6 +40,7 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         timeout: LISTING_TIMEOUT,
         cap: OUTPUT_CAP,
         head: false,
+        whole: false,
     })
     .await;
     match r {
@@ -105,9 +106,10 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         argv.push("--".into());
         argv.push(prefix.join("/"));
     }
-    // The list is filtered after reading, and the capture keeps its tail,
-    // so a list past the cap is refused below rather than shown in part.
-    // A file list is bounded by the repository, so the cap is generous.
+    // The list is filtered after reading, and past the cap the capture
+    // keeps none of it (`whole`), so a list past the cap is refused below
+    // rather than shown in part. A file list is bounded by the repository,
+    // so the cap is generous.
     let r = exec::run(Spec {
         argv: &argv,
         cwd: root,
@@ -116,6 +118,9 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         timeout: LISTING_TIMEOUT,
         cap,
         head: false,
+        // A list past the cap is refused below, whole; its tail is never
+        // shown, so it is not stored.
+        whole: true,
     })
     .await;
     let c = match r {
@@ -286,6 +291,35 @@ mod tests {
             ToolResult::Output(s) => assert_eq!(s, "app/a.py"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn find_far_past_the_cap_is_refused_with_the_true_size_not_timed_out() {
+        // The risk: past the cap the capture kept draining its tail, which
+        // at the real 64 MiB cap cost minutes; `find` only needs the count
+        // there. A guard: at a size a test can build, both versions answer.
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        let mut listed = 0;
+        for i in 0..2000 {
+            let name = format!("module_{i:04}.py");
+            listed += name.len() + 1;
+            std::fs::write(d.path().join(&name), "").unwrap();
+        }
+        let started = std::time::Instant::now();
+        match find_capped(d.path(), "*.py", 1024).await {
+            ToolResult::Error(e) => {
+                assert!(e.contains("narrower"), "{e}");
+                assert!(e.contains(&format!("lists {listed} bytes")), "{e}");
+                assert!(!e.contains("module_"), "no partial list: {e}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(started.elapsed() < LISTING_TIMEOUT / 2);
     }
 
     #[test]
