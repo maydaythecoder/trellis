@@ -189,6 +189,29 @@ loaded only if the user has trusted it.
   with `not trusted: run trellis trust`.
 - **A repository with none of these never opens the store.**
 
+*Amended 2026-09-27: what the digest covers, and what it does not.* Only
+argv elements that were themselves file paths were hashed, so
+`["sh", "-c", "./scripts/check.sh"]` or `["python", "-m", "tools.hook"]`
+hashed nothing that runs, and the code could change after trust without
+anyone being asked. Now the digest also covers:
+
+- **Every file under `.trellis/`**, as one item shown by `trellis trust`,
+  except `.trellis/runs/` (trails) and `.trellis/index.bin` (the index
+  cache), which trellis writes on every run and would otherwise untrust
+  the repository after each one. Added only when something would execute,
+  so a repository that declares nothing still never opens the store. This
+  includes `config.toml` itself, so any edit to it asks again.
+- **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
+  split on whitespace and shell punctuation, and every token that is a
+  regular file in the repository is hashed like an argv path.
+
+**Not covered, plainly:** code reached indirectly from outside `.trellis/`
+and outside any file an argv or code string names — a module imported by
+a hook (`python -m tools.hook` resolving to `tools/hook.py`), a file a
+script reads or sources, a program on `PATH`. A change there does not
+untrust the repository. **Keep hook and tool code under `.trellis/hooks/`
+or `.trellis/tools/`**, where every byte is in the digest.
+
 Not covered, and stated so it is not assumed: `[checks] typecheck` and
 `tests` are repository-supplied argv that trellis has always executed
 without trust. Gating them breaks every existing configuration and needs a
