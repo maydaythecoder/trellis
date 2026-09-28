@@ -703,6 +703,7 @@ impl Orchestrator {
             timeout: b.timeout,
             cap: crate::exec::OUTPUT_CAP,
             head: false,
+            whole: false,
         })
         .await;
         match r {
@@ -751,6 +752,7 @@ impl Orchestrator {
             timeout: CUSTOM_TIMEOUT,
             cap: crate::exec::OUTPUT_CAP,
             head: false,
+            whole: false,
         })
         .await;
         match r {
