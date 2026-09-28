@@ -611,6 +611,20 @@ this amendment a hook that wrote at any of those points left bytes in a
     pre-existing ignored file (mypy removing a stale cache entry) now makes
     a failed run exit 2, where the ledger had hidden it: the direction a
     false alarm may err in.
+  - *Amended after the tenth review of PR #1: HEAD may not move.* The same
+    writers can commit, reset or check out. A committed change is not in
+    `git status`, so it was not in the diff left for review, the write
+    rules never judged it, and a converged run left it on the user's
+    branch. After `.git/` is put back, a converged run whose HEAD is not
+    the snapshot's commit on the snapshot's branch is demoted to
+    `NotConverged::HeadMoved` and rolled back. The check runs for every
+    model run, not only those loading these writers: one without them
+    cannot move HEAD, and the check costs it two `rev-parse` calls. The
+    rollback now puts HEAD back on the recorded branch before its reset
+    (ADR 0009, amended), and says so. Evidence:
+    `a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone`
+    in `tests/cli.rs`, which failed before with "CONVERGED after 2
+    iterations". The process-agent rule is ADR 0026 §11.
 - **`pre_tool` and `post_tool`.** Each declared hook is bracketed on its
   own: the worktree is fingerprinted before and after the gates (which
   hold `pre_tool`; the other gates do not write), and before and after

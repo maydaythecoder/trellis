@@ -213,6 +213,16 @@ pub enum NotConverged {
     GitDirChanged {
         detail: String,
     },
+    /// The run converged, and `HEAD` was no longer the commit and branch
+    /// recorded before it: `bash`, a custom tool or a hook committed,
+    /// reset or checked out. Committed work is invisible to `git status`,
+    /// so the change left for review would not hold it, and the write
+    /// rules never judged it (review round 10). Rolled back, which puts
+    /// `HEAD` back on the recorded branch. Constructed by the binary, which
+    /// holds the snapshot.
+    HeadMoved {
+        detail: String,
+    },
 }
 
 impl NotConverged {
@@ -265,6 +275,15 @@ impl NotConverged {
                     "the checks passed, and the run changed {}, under .git/, where ",
                     "git runs code from at its next command and a diff does not show. ",
                     "A run may not; it was put back and nothing was accepted."
+                ),
+                detail
+            ),
+            NotConverged::HeadMoved { detail } => format!(
+                concat!(
+                    "the checks passed, and {} during the run (a commit, reset or ",
+                    "checkout). A run may not move HEAD: a committed change is not in ",
+                    "the diff left for review, and the write rules never saw it. ",
+                    "HEAD was put back and nothing was accepted."
                 ),
                 detail
             ),

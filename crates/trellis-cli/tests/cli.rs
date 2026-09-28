@@ -2852,6 +2852,60 @@ fn a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback() {
 }
 
 #[test]
+fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
+    // The risk (review round 10, finding 1): `bash`, a custom tool or a
+    // hook can commit. A committed change is invisible to `git status`, so
+    // the run converged with nothing to review and the commit stayed on
+    // the user's branch, past any rollback.
+    let (d, run) = ignored_model_fixture("model-commit");
+    let head = String::from_utf8_lossy(
+        &Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&d)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    let cmd = if cfg!(windows) {
+        r"echo x = 2> b.py && git add b.py && git commit -qm sneak"
+    } else {
+        "echo 'x = 2' > b.py && git add b.py && git commit -qm sneak"
+    };
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("model-commit-script-{}.json", std::process::id()));
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "bash", "command": cmd},
+            {"tool": "run_checks", "paths": ["a.py"], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "committed"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let out = run(&["run", "commit something", "--model", &spec]);
+    let said = combined(&out);
+    assert!(said.contains("NOT CONVERGED"), "{said}");
+    assert!(said.contains("HEAD moved"), "{said}");
+    assert!(!d.join("b.py").exists(), "{said}");
+    let parent = Command::new("git")
+        .args(["rev-parse", "HEAD~1"])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&parent.stdout).trim(),
+        head,
+        "only the trail's commit sits on the snapshot:\n{said}"
+    );
+}
+
+#[test]
 fn a_model_run_that_changed_an_ignored_file_deny_write_names_is_not_restored() {
     // The stricter signal stays where a rule says the file is not to be
     // written: a change there cannot be put back, and the run says the

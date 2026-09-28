@@ -923,11 +923,36 @@ This is Paperclip's `process` adapter. A profile with
      and the removal moved to `trellis_vcs::ignored`, and a model run with
      `bash`, a custom tool or hooks uses them too (ADR 0023, "after a
      pass").
+   *Amended after the tenth review of PR #1: HEAD may not move.* The
+   changed paths were what `git status` named against the current HEAD,
+   so a command that committed part of its change (a `.trellis/` write,
+   say) hid that part from the `.trellis/` breach, `deny_write` and the
+   audit, converged on the part it left uncommitted, and the commit was
+   never rolled back. Now HEAD is compared with the snapshot right after
+   the `.git/` bytes are put back: a different commit or a different
+   branch (a commit, a reset, a checkout, a branch switch) is a breach.
+   The checks are not run, the run does not converge, and the output
+   names the move. The changed paths are now taken against the snapshot's
+   commit (`git diff --name-only --no-renames <snapshot>` plus the
+   untracked files), so what was committed is judged and named with the
+   rest. The rollback puts HEAD back first (ADR 0009, amended): on the
+   recorded branch with `symbolic-ref`, or detached at the recorded commit,
+   then `reset --hard` to it, so the user's branch no longer holds the
+   agent's commit. Evidence, in `tests/orchestration.rs`:
+   `a_process_agent_that_commits_part_of_its_change_is_refused_and_the_commit_undone`
+   (it failed before with "CONVERGED (converged: both checks passed)") and
+   `a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original`
+   (it failed before with "changed nothing", HEAD left on the agent's
+   branch). A model run with `bash`, a custom tool or hooks is held to the
+   same rule (ADR 0023 §5). Not covered, stated: a branch the command
+   created is left in place, and a ref other than HEAD and the snapshot's
+   branch (another branch moved with `git branch -f`, a tag) is not
+   compared.
 4. **Decide.** The run converged if and only if the command changed at least
    one file, both checks pass, the governance audit (when there is one)
    passes, no changed path (ignored ones included) is denied or under
-   `.trellis/`, and nothing under `.git/config`, the hooks or
-   `info/exclude` changed.
+   `.trellis/`, nothing under `.git/config`, the hooks or `info/exclude`
+   changed, and HEAD is the commit and branch the snapshot recorded.
    - A command that changed nothing has nothing to verify, and ends `failed`
      with that reason.
    - On anything other than convergence, the tree is rolled back exactly as

@@ -30,41 +30,40 @@ enum Ended {
     Interrupted,
 }
 
-/// The files the command touched, as `git status` names them: every
-/// untracked file rather than its directory, so each can be audited, and
-/// `-z` so no path is quoted or cut. (Read through `trellis_vcs::pending`
-/// before, whose trimmed lines lost the first character of a modified
-/// tracked file's path.)
-fn changed(root: &Path) -> Result<Vec<String>, String> {
+/// The files the command touched, against the commit recorded before it
+/// (`base`), not the current `HEAD`: a file the command committed is as
+/// touched as one it left, and judged the same (review round 10). The
+/// tracked side is `git diff <base>` (worktree against that commit, so
+/// committed, staged and unstaged changes alike, `--no-renames` so a
+/// rename's source is named too); the untracked side is every untracked
+/// file rather than its directory, so each can be audited. `-z` on both,
+/// so no path is quoted or cut.
+fn changed(root: &Path, base: &str) -> Result<Vec<String>, String> {
     // Run after the git guard has put `.git/` back; `command` turns
     // `core.fsmonitor` and hooks off regardless.
-    let mut git = trellis_vcs::command();
-    git.args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .current_dir(root)
-        .stdin(Stdio::null());
-    let o = git
-        .output()
-        .map_err(|e| format!("git status could not run: {e}"))?;
-    if !o.status.success() {
-        return Err(format!(
-            "git status failed: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        ));
-    }
-    let text = String::from_utf8_lossy(&o.stdout);
-    let mut out = Vec::new();
-    let mut fields = text.split('\0').filter(|f| !f.is_empty());
-    while let Some(f) = fields.next() {
-        let (xy, path) = (f.get(..2).unwrap_or(""), f.get(3..).unwrap_or(""));
-        if !path.is_empty() {
-            out.push(path.to_string());
+    let list = |args: &[&str]| -> Result<Vec<String>, String> {
+        let mut git = trellis_vcs::command();
+        git.args(args).current_dir(root).stdin(Stdio::null());
+        let o = git
+            .output()
+            .map_err(|e| format!("git {} could not run: {e}", args[0]))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git {} failed: {}",
+                args[0],
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
         }
-        // A rename or copy carries its source as the next field; the
-        // source is changed too (it is gone).
-        if (xy.contains('R') || xy.contains('C'))
-            && let Some(src) = fields.next()
-        {
-            out.push(src.to_string());
+        Ok(String::from_utf8_lossy(&o.stdout)
+            .split('\0')
+            .filter(|f| !f.is_empty())
+            .map(str::to_string)
+            .collect())
+    };
+    let mut out = list(&["diff", "--name-only", "-z", "--no-renames", base, "--"])?;
+    for p in list(&["ls-files", "-z", "--others", "--exclude-standard"])? {
+        if !out.contains(&p) {
+            out.push(p);
         }
     }
     Ok(out)
@@ -305,6 +304,20 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     for f in &git_unrestored {
         let _ = writeln!(out, "git:      could NOT be put back: {f}");
     }
+    // After `.git/` is back, before anything is judged: a commit, reset or
+    // checkout is a breach whatever else the command did. What it
+    // committed is invisible to `git status`, so without this the
+    // `.trellis/` breach, `deny_write` and the audit judged only what it
+    // left uncommitted (review round 10). The rollback puts `HEAD` back on
+    // the recorded branch at the recorded commit. A HEAD that cannot be
+    // read counts as moved.
+    let head_moved = match snapshot.head_moved() {
+        Ok(m) => m,
+        Err(e) => Some(format!("HEAD could not be read after the command: {e}")),
+    };
+    if let Some(m) = &head_moved {
+        let _ = writeln!(out, "git:      {m}; a run may not move HEAD");
+    }
 
     // Before the checks, which write caches of their own (`.mypy_cache`).
     // A listing that fails reads as every ignored file deleted: nothing is
@@ -328,7 +341,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     }
     let ignored_denied = judge.denied(root, ignored.all());
 
-    let touched = match changed(root) {
+    let touched = match changed(root, &snapshot.head) {
         Ok(t) => t,
         Err(e) => {
             let restored =
@@ -363,7 +376,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     for d in &denied {
         let _ = writeln!(out, "governance: refused: {d}");
     }
-    if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
+    // A moved HEAD is refused whatever the checks say, so they are not run.
+    if matches!(ended, Ended::Exited(_)) && !touched.is_empty() && head_moved.is_none() {
         let checks = &judge.checks;
         let paths = vec![PathBuf::from(".")];
         match tokio::runtime::Builder::new_current_thread()
@@ -403,11 +417,12 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     }
     // Both checks ran and every verdict passed (the governance audit's too,
     // when there is one); nothing was written where a rule denies it; and
-    // nothing under `.git/` changed.
+    // nothing under `.git/` changed; and HEAD did not move.
     let converged = checked
         && verdicts.iter().all(|v| v.passed())
         && denied.is_empty()
         && git_changed.is_empty()
+        && head_moved.is_none()
         && ignored_unread.is_none();
     let why = if converged {
         "converged: both checks passed"
@@ -417,6 +432,10 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Ended::Interrupted => "interrupted",
             _ if !git_changed.is_empty() => {
                 "not converged: the command changed files under .git/, which a run may not"
+            }
+            _ if head_moved.is_some() => {
+                "not converged: the command moved HEAD (a commit, reset or checkout), which \
+                 a run may not; a change is left uncommitted for review"
             }
             _ if ignored_unread.is_some() => {
                 "not converged: what the command did to ignored files could not be read"
@@ -529,7 +548,18 @@ fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {
     }
     match snapshot.is_restored() {
         Ok(true) => {
-            let _ = writeln!(out, "rolled back to {}", snapshot.head);
+            // The branch too: after a checkout, putting HEAD back on it is
+            // part of what the rollback did.
+            let _ = writeln!(
+                out,
+                "rolled back to {}{}",
+                snapshot.head,
+                snapshot
+                    .branch
+                    .as_deref()
+                    .map(|b| format!(" on {}", b.trim_start_matches("refs/heads/")))
+                    .unwrap_or_else(|| " (detached)".into())
+            );
             true
         }
         _ => {
