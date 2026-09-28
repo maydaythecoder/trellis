@@ -1982,10 +1982,12 @@ fn run_body(
         // after every call that may change the tree, and a check is not one,
         // though a checker can write under `.trellis/` (a coverage file
         // configured there). So a converged run is checked once more, before
-        // `after_run` would spawn.
+        // `after_run` would spawn, and in full: the guard's earlier checks
+        // reuse the digest of a file whose stat is unchanged, and a rewrite
+        // that keeps length and mtime is only certain to be seen here.
         if let (Some(g), Some((o, _))) = (&tooling.guard, &mut out)
             && o.converged()
-            && let Err(detail) = g.check()
+            && let Err(detail) = g.check_full_async().await
         {
             let iterations = match o {
                 trellis_loop::Outcome::Converged { iterations, .. }

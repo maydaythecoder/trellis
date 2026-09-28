@@ -570,6 +570,41 @@ check configuration and the process-agent profiles.
 - **Cost.** One fingerprint per hook spawn, per custom-tool spawn, and per
   tree-changing call: a hash of every file under `.trellis/` and every
   argv-named file. Only in a trusted run.
+
+  *Amended after the sixth review of PR #1.* That hash ran synchronously,
+  under the guard's lock, on the run's single-threaded runtime, up to three
+  times per call, so a large `.trellis/` held Ctrl-C, `rpc`'s `abort` and
+  approval prompts until it finished. Two changes:
+  - **A stat-keyed cache.** The guard keeps, per real path, the digest and
+    the stat it was taken under: length and modification time, plus the
+    device, inode and change time on Unix and the creation time on
+    Windows. A recheck still walks `.trellis/` in full and still resolves
+    every argv, so a file added or removed is always seen; it re-reads and
+    re-hashes only a file whose stat differs. The stat is taken before the
+    read, so a write landing between them leaves an older stamp and the
+    next recheck hashes again. The trust decision itself (`trellis trust`,
+    the state before a run, `require_trusted`) never uses the cache.
+  - **What the cache can miss, and where that is closed.** A rewrite that
+    keeps a file's length and sets its modification time back: on Unix the
+    change time, which no unprivileged process can set, still differs; on
+    Windows, where std exposes no change time, a cached recheck can pass
+    it. So the recheck when a run converges (above, before `after_run`) is
+    a **full** one, `check_full`: every file hashed afresh, the fresh
+    digests becoming the cache. A run cannot converge on a rewrite the
+    cache missed. What remains, stated: on Windows, a hook or custom tool
+    spawned between such a rewrite and convergence runs the rewritten code;
+    the run then fails at convergence and is rolled back, but the spawn has
+    happened. Evidence: `a_rewrite_keeping_length_and_mtime_is_caught_by_the_full_check`
+    (a guard: it tests the full check the convergence site calls) and
+    `a_cached_recheck_still_sees_a_rewrite_and_an_added_file`.
+  - **Off the runtime.** The orchestrator's and the hooks' rechecks, and
+    the one at convergence, run on tokio's blocking pool
+    (`check_async`, `check_full_async`), so the runtime keeps serving
+    Ctrl-C, `abort` and approvals meanwhile. A recheck that panics there
+    is latched as a breach. Evidence:
+    `a_trust_recheck_leaves_the_runtime_free`, in which a 50 ms timer on
+    the same current-thread runtime fired after 453 ms when the check was
+    called the old, synchronous way.
 - **Untrusted runs** load no hook, custom tool or `bash`, so `edit` and
   `write_file` are their only writers, and those refuse `.trellis/`.
 

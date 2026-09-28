@@ -459,7 +459,7 @@ impl Orchestrator {
         if let Some(g) = &self.guard {
             if d.may_have_changed_tree {
                 // Latches on failure; the reason is read below.
-                let _ = g.check();
+                let _ = g.check_async().await;
             }
             d.trust_breach = g.breach();
         }
@@ -739,7 +739,7 @@ impl Orchestrator {
         // Its command is trusted code, and a script it names may have been
         // rewritten since (ADR 0023 §5).
         if let Some(g) = &self.guard
-            && let Err(why) = g.check()
+            && let Err(why) = g.check_async().await
         {
             return ToolResult::Error(format!("`{name}` was not started, because {why}"));
         }

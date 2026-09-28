@@ -55,9 +55,22 @@ impl TrustItem {
     /// a script reads — is covered only if it lives under `.trellis/`,
     /// which [`Fingerprint`] hashes whole (ADR 0023 §4).
     pub fn command(root: &Path, label: String, argv: &[String], detail: String) -> Self {
+        Self::command_cached(root, label, argv, detail, &HashCache::default())
+    }
+
+    /// [`command`](Self::command), hashing through `cache`: a file whose
+    /// stat is unchanged since `cache` last hashed it is not read again.
+    /// For [`TrustGuard`]'s rechecks only; a trust decision hashes afresh.
+    pub fn command_cached(
+        root: &Path,
+        label: String,
+        argv: &[String],
+        detail: String,
+        cache: &HashCache,
+    ) -> Self {
         let mut files: Vec<(String, String)> = Vec::new();
         let mut add = |candidate: &str| {
-            if let Some(f) = repo_file(root, candidate)
+            if let Some(f) = repo_file(root, candidate, cache)
                 && !files.iter().any(|(p, _)| *p == f.0)
             {
                 files.push(f);
@@ -89,7 +102,7 @@ impl TrustItem {
 /// inside `root`: a relative path with no `..`, or an absolute one under
 /// `root`. A program found on `PATH` is not repository code and is not
 /// hashed; a script the repository ships is.
-fn repo_file(root: &Path, arg: &str) -> Option<(String, String)> {
+fn repo_file(root: &Path, arg: &str, cache: &HashCache) -> Option<(String, String)> {
     let p = Path::new(arg);
     let full = if p.is_absolute() {
         if !p.starts_with(root) {
@@ -105,8 +118,7 @@ fn repo_file(root: &Path, arg: &str) -> Option<(String, String)> {
     if !full.is_file() {
         return None;
     }
-    let bytes = std::fs::read(&full).ok()?;
-    Some((rel(root, &full), hex(&Sha256::digest(&bytes))))
+    Some((rel(root, &full), cache.digest(&full)?))
 }
 
 fn rel(root: &Path, full: &Path) -> String {
@@ -149,8 +161,9 @@ fn rel(root: &Path, full: &Path) -> String {
 /// without being compared to its source. Trellis starts the commands it
 /// runs with `PYTHONDONTWRITEBYTECODE=1`, so its own hook runs write none
 /// (ADR 0023 §4).
-fn dot_trellis_files(root: &Path) -> Result<Vec<(String, String)>, String> {
-    struct Walk {
+fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, String)>, String> {
+    struct Walk<'c> {
+        cache: &'c HashCache,
         real_root: PathBuf,
         real_dot: PathBuf,
         real_git: Option<PathBuf>,
@@ -158,7 +171,7 @@ fn dot_trellis_files(root: &Path) -> Result<Vec<(String, String)>, String> {
         seen: std::collections::HashSet<PathBuf>,
         out: BTreeMap<String, String>,
     }
-    impl Walk {
+    impl Walk<'_> {
         /// `real` is canonical; the skips apply to it relative to the real
         /// `.trellis/`, so an alias cannot move a file in or out of them.
         fn skipped(&self, real: &Path) -> bool {
@@ -234,8 +247,8 @@ fn dot_trellis_files(root: &Path) -> Result<Vec<(String, String)>, String> {
                 if self.out.contains_key(&key) || self.skipped(&real) {
                     continue;
                 }
-                if let Ok(bytes) = std::fs::read(&path) {
-                    self.out.insert(key, hex(&Sha256::digest(&bytes)));
+                if let Some(digest) = self.cache.digest(&real) {
+                    self.out.insert(key, digest);
                 }
             }
             Ok(())
@@ -258,6 +271,7 @@ fn dot_trellis_files(root: &Path) -> Result<Vec<(String, String)>, String> {
         ));
     }
     let mut w = Walk {
+        cache,
         real_git,
         real_root,
         real_dot,
@@ -311,29 +325,47 @@ impl Fingerprint {
         bash: Option<(Vec<String>, String)>,
         extra: Vec<TrustItem>,
     ) -> Self {
+        Self::of_cached(root, hooks, custom, bash, extra, &HashCache::default())
+    }
+
+    /// [`of_with`](Self::of_with), hashing through `cache`, for
+    /// [`TrustGuard`]'s rechecks. The walk of `.trellis/` is made in full
+    /// every time, so an added or removed file is always seen; only the
+    /// reading and hashing of a file whose stat has not changed is saved.
+    pub fn of_cached(
+        root: &Path,
+        hooks: &HookConfig,
+        custom: &[CustomTool],
+        bash: Option<(Vec<String>, String)>,
+        extra: Vec<TrustItem>,
+        cache: &HashCache,
+    ) -> Self {
         let mut items = Vec::new();
         for (event, argv) in hooks.declared() {
-            items.push(TrustItem::command(
+            items.push(TrustItem::command_cached(
                 root,
                 format!("hook {event}"),
                 argv,
                 format!("timeout_s = {:?}", hooks.timeout_s),
+                cache,
             ));
         }
         for c in custom {
-            items.push(TrustItem::command(
+            items.push(TrustItem::command_cached(
                 root,
                 format!("custom tool {}", c.name),
                 &c.command,
                 format!("description = {:?}\nschema = {}", c.description, c.schema),
+                cache,
             ));
         }
         if let Some((shell, settings)) = bash {
-            items.push(TrustItem::command(
+            items.push(TrustItem::command_cached(
                 root,
                 "bash".to_string(),
                 &shell,
                 settings,
+                cache,
             ));
         }
         items.extend(extra);
@@ -341,7 +373,7 @@ impl Fingerprint {
         // nothing still has nothing to trust, whatever `.trellis/` holds.
         let mut refused = None;
         if !items.is_empty() {
-            let (files, detail) = match dot_trellis_files(root) {
+            let (files, detail) = match dot_trellis_files(root, cache) {
                 Ok(files) => (files, String::new()),
                 Err(why) => {
                     refused = Some(why.clone());
@@ -384,12 +416,87 @@ impl Fingerprint {
 /// refused too, and the run does not converge. The latch is shared by every
 /// clone, so the `pre_tool` gate's copy of the hooks and the orchestrator's
 /// see one breach.
+///
+/// A recheck hashes through a [`HashCache`], so a file whose stat has not
+/// changed is not read again; the tree is still walked every time, so an
+/// added or removed file is always seen. A rewrite that keeps a file's
+/// length and modification time (possible on Windows, where no change time
+/// is exposed) can pass a cached recheck, so a converged run is checked
+/// once more with [`check_full`](Self::check_full), which hashes every file
+/// afresh (ADR 0023 §5). The async forms run the recheck on the blocking
+/// pool, so the runtime still answers Ctrl-C, `abort` and approvals while a
+/// large `.trellis/` is hashed.
 #[derive(Clone)]
 pub struct TrustGuard(std::sync::Arc<GuardInner>);
 
+type Recheck = Box<dyn Fn(&HashCache) -> Result<(), String> + Send + Sync>;
+
 struct GuardInner {
-    recheck: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
+    recheck: Recheck,
+    /// Replaced whole by each full check, so it never holds a digest older
+    /// than the last full hash of the file.
+    cache: Mutex<std::sync::Arc<HashCache>>,
     breach: Mutex<Option<String>>,
+}
+
+/// Digests of files by real path, each kept with the stat it was taken
+/// under: length and modification time, plus the change time and inode on
+/// Unix and the creation time on Windows. A file whose stat differs is
+/// read and hashed again.
+#[derive(Debug, Default)]
+pub struct HashCache(Mutex<std::collections::HashMap<PathBuf, (FileStamp, String)>>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    changed: (u64, u64, i64, i64),
+    #[cfg(windows)]
+    created: u64,
+}
+
+impl FileStamp {
+    fn of(m: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::MetadataExt;
+        Self {
+            len: m.len(),
+            modified: m.modified().ok(),
+            #[cfg(unix)]
+            changed: (m.dev(), m.ino(), m.ctime(), m.ctime_nsec()),
+            #[cfg(windows)]
+            created: m.creation_time(),
+        }
+    }
+}
+
+impl HashCache {
+    /// The sha256 of the file at `path`, links followed, or `None` when it
+    /// cannot be read. The stat is taken before the read, so a write that
+    /// lands between them leaves a stamp older than the bytes, and the next
+    /// call hashes again.
+    pub fn digest(&self, path: &Path) -> Option<String> {
+        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let stamp = FileStamp::of(&std::fs::metadata(&key).ok()?);
+        {
+            let map = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((s, d)) = map.get(&key)
+                && *s == stamp
+            {
+                return Some(d.clone());
+            }
+        }
+        let bytes = std::fs::read(&key).ok()?;
+        let digest = hex(&Sha256::digest(&bytes));
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, (stamp, digest.clone()));
+        Some(digest)
+    }
 }
 
 impl std::fmt::Debug for TrustGuard {
@@ -403,40 +510,95 @@ impl std::fmt::Debug for TrustGuard {
 impl TrustGuard {
     /// A guard whose check is `recheck`: `Err` names what changed.
     pub fn new(recheck: impl Fn() -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self::with_cache(Box::new(move |_: &HashCache| recheck()))
+    }
+
+    fn with_cache(recheck: Recheck) -> Self {
         Self(std::sync::Arc::new(GuardInner {
-            recheck: Box::new(recheck),
+            recheck,
+            cache: Mutex::new(Default::default()),
             breach: Mutex::new(None),
         }))
     }
 
-    /// A guard over `trusted`, recomputed by `now`. The error names the
-    /// files whose hashes differ, so the trail says what was rewritten.
+    /// A guard over `trusted`, recomputed by `now` through the cache it is
+    /// handed ([`Fingerprint::of_cached`]). The error names the files whose
+    /// hashes differ, so the trail says what was rewritten.
     pub fn over(
         trusted: Fingerprint,
-        now: impl Fn() -> Fingerprint + Send + Sync + 'static,
+        now: impl Fn(&HashCache) -> Fingerprint + Send + Sync + 'static,
     ) -> Self {
-        Self::new(move || {
-            let current = now();
+        Self::with_cache(Box::new(move |cache: &HashCache| {
+            let current = now(cache);
             if current.sha256 == trusted.sha256 && current.refused.is_none() {
                 return Ok(());
             }
             Err(describe_change(&trusted, &current))
-        })
+        }))
     }
 
     /// `Ok` while what runs is what was trusted. Once it has failed it
     /// fails for the rest of the run, even if the files are put back: a
     /// hook that ran rewritten, or was refused, is already in this run.
+    ///
+    /// Hashes through the guard's cache: see the type's documentation for
+    /// what that can miss, and [`check_full`](Self::check_full).
     pub fn check(&self) -> Result<(), String> {
+        self.check_with(false)
+    }
+
+    /// [`check`](Self::check), with every file hashed afresh. The fresh
+    /// digests become the cache later checks use.
+    pub fn check_full(&self) -> Result<(), String> {
+        self.check_with(true)
+    }
+
+    fn check_with(&self, full: bool) -> Result<(), String> {
         let mut b = self.0.breach.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(why) = b.as_ref() {
             return Err(why.clone());
         }
-        if let Err(why) = (self.0.recheck)() {
+        let cache = if full {
+            std::sync::Arc::new(HashCache::default())
+        } else {
+            self.0
+                .cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        };
+        if let Err(why) = (self.0.recheck)(&cache) {
             *b = Some(why.clone());
             return Err(why);
         }
+        if full {
+            *self.0.cache.lock().unwrap_or_else(|p| p.into_inner()) = cache;
+        }
         Ok(())
+    }
+
+    /// [`check`](Self::check) on tokio's blocking pool, so the runtime is
+    /// free while the tree is walked and hashed. A check that panicked is a
+    /// breach: what it would have said is not known.
+    pub async fn check_async(&self) -> Result<(), String> {
+        self.off_runtime(false).await
+    }
+
+    /// [`check_full`](Self::check_full) on tokio's blocking pool.
+    pub async fn check_full_async(&self) -> Result<(), String> {
+        self.off_runtime(true).await
+    }
+
+    async fn off_runtime(&self, full: bool) -> Result<(), String> {
+        let g = self.clone();
+        match tokio::task::spawn_blocking(move || g.check_with(full)).await {
+            Ok(r) => r,
+            Err(e) => {
+                let why = format!("the trust recheck did not finish ({e})");
+                let mut b = self.0.breach.lock().unwrap_or_else(|p| p.into_inner());
+                Err(b.get_or_insert(why).clone())
+            }
+        }
     }
 
     /// The first failed check's reason, if any check has failed.
@@ -1080,5 +1242,100 @@ mod tests {
     fn nothing_declared_is_nothing_to_trust() {
         let repo = tempfile::tempdir().unwrap();
         assert!(Fingerprint::of(repo.path(), &HookConfig::default(), &[], None).is_empty());
+    }
+
+    /// A guard over `hooks(["python", "hook.py"])` in `root`, built as the
+    /// binary builds one.
+    fn guard(root: &Path) -> TrustGuard {
+        let root = root.to_path_buf();
+        let h = hooks(&["python", "hook.py"]);
+        let now = move |c: &HashCache| Fingerprint::of_cached(&root, &h, &[], None, Vec::new(), c);
+        TrustGuard::over(now(&HashCache::default()), now)
+    }
+
+    #[test]
+    fn a_cached_recheck_still_sees_a_rewrite_and_an_added_file() {
+        // The risk in caching: a digest reused for a file that changed. The
+        // stat differs here (length), so the file is hashed again; and the
+        // tree is walked every time, so a new file under `.trellis/` is seen.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
+        std::fs::write(repo.path().join("hook.py"), "print('ok')\n").unwrap();
+        let g = guard(repo.path());
+        g.check().unwrap();
+        g.check().unwrap();
+        std::fs::write(repo.path().join("hook.py"), "import os; os.system('x')\n").unwrap();
+        let e = g.check().unwrap_err();
+        assert!(e.contains("hook.py"), "{e}");
+
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
+        std::fs::write(repo.path().join("hook.py"), "print('ok')\n").unwrap();
+        let g = guard(repo.path());
+        g.check().unwrap();
+        std::fs::write(repo.path().join(".trellis/sitecustomize.py"), "x").unwrap();
+        let e = g.check().unwrap_err();
+        assert!(e.contains(".trellis/sitecustomize.py"), "{e}");
+    }
+
+    #[test]
+    fn a_rewrite_keeping_length_and_mtime_is_caught_by_the_full_check() {
+        // What the cache can miss, where no change time is exposed
+        // (Windows): same length, modification time set back. The full
+        // check, which the binary runs at convergence, hashes afresh.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".trellis")).unwrap();
+        let hook = repo.path().join("hook.py");
+        std::fs::write(&hook, "print('aa')\n").unwrap();
+        let g = guard(repo.path());
+        g.check().unwrap();
+        let mtime = std::fs::metadata(&hook).unwrap().modified().unwrap();
+        std::fs::write(&hook, "print('zz')\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&hook)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(std::fs::metadata(&hook).unwrap().len(), 12);
+        let e = g.check_full().unwrap_err();
+        assert!(e.contains("hook.py"), "{e}");
+    }
+
+    #[test]
+    fn a_trust_recheck_leaves_the_runtime_free() {
+        // The risk: the recheck walked and hashed `.trellis/` on the
+        // single-threaded runtime, so Ctrl-C, `abort` and approvals waited
+        // for it. Run as the call sites run it, a timer on the same runtime
+        // fires while the check is still going.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let g = TrustGuard::new(|| {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                Ok(())
+            });
+            let started = std::time::Instant::now();
+            let timer = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                started.elapsed()
+            });
+            g.check_async().await.unwrap();
+            let fired = timer.await.unwrap();
+            assert!(
+                fired < std::time::Duration::from_millis(300),
+                "the timer waited for the check: {fired:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_full_check_after_a_breach_still_fails() {
+        // The latch holds whichever check found the breach.
+        let g = TrustGuard::new(|| Err("changed".into()));
+        assert!(g.check().is_err());
+        assert_eq!(g.check_full().unwrap_err(), "changed");
     }
 }
