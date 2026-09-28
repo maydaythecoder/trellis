@@ -214,6 +214,7 @@ mod tests {
                 mode_counts: ModeCounts::default(),
                 context: None,
                 actions: Vec::new(),
+                control: None,
             },
             factual_sha256: String::new(),
             judgment: Judgment::default(),

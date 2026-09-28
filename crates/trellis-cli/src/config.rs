@@ -31,6 +31,43 @@ pub(crate) struct RepoConfig {
     pub model: Option<ModelSection>,
     #[serde(default)]
     pub context: Option<ContextSection>,
+    #[serde(default)]
+    pub control: Option<ControlSection>,
+}
+
+/// Where a run sits between hands-off and asking about each step (ADR 0018).
+#[derive(Debug, Deserialize)]
+pub(crate) struct ControlSection {
+    /// `"auto"` or `"approve"`.
+    pub mode: Option<String>,
+    /// Tools that need a human yes in approve mode. Default `["edit"]`.
+    pub approve: Option<Vec<String>>,
+}
+
+/// The two ends of the dial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ControlMode {
+    /// No human gate. Budgets, governance and the checks still apply.
+    Auto,
+    /// Each listed tool call waits for a person's yes.
+    Approve,
+}
+
+/// The dial as configured, validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Control {
+    pub mode: ControlMode,
+    pub approve: Vec<String>,
+}
+
+impl Control {
+    /// How the trail and the run's banner name the mode.
+    pub(crate) fn describe(&self) -> String {
+        match self.mode {
+            ControlMode::Auto => "auto".to_string(),
+            ControlMode::Approve => format!("approve ({})", self.approve.join(", ")),
+        }
+    }
 }
 
 /// A note vault to compile one focus note from (ADR 0017).
@@ -150,6 +187,37 @@ impl RepoConfig {
             .as_ref()
             .and_then(|m| m.unconstrained)
             .unwrap_or(false)
+    }
+
+    /// The `[control]` dial, validated, with `--approve`/`--auto` over it.
+    ///
+    /// An unknown mode or tool is an error, not a fallback. A typo in
+    /// `approve = ["edits"]` that silently meant "approve nothing" would run
+    /// hands-off in a repository whose owner asked to be consulted.
+    pub(crate) fn control(&self, flag: Option<ControlMode>) -> Result<Control> {
+        let section = self.control.as_ref();
+        let configured = match section.and_then(|c| c.mode.as_deref()) {
+            None | Some("auto") => ControlMode::Auto,
+            Some("approve") => ControlMode::Approve,
+            Some(other) => anyhow::bail!(
+                "[control] mode = \"{other}\" is not a mode; use \"auto\" or \"approve\""
+            ),
+        };
+        let approve = section
+            .and_then(|c| c.approve.clone())
+            .unwrap_or_else(|| vec!["edit".to_string()]);
+        for t in &approve {
+            if !trellis_loop::APPROVABLE_TOOLS.contains(&t.as_str()) {
+                anyhow::bail!(
+                    "[control] approve lists `{t}`, which is not a tool; the tools are {}",
+                    trellis_loop::APPROVABLE_TOOLS.join(", ")
+                );
+            }
+        }
+        Ok(Control {
+            mode: flag.unwrap_or(configured),
+            approve,
+        })
     }
 
     /// The repository's write rules, or none.
@@ -584,5 +652,66 @@ deny_write = [\"vendor/\", \"*.lock\"]
         assert_eq!(b.max_wall_clock, Duration::from_secs(90));
         assert_eq!(b.max_tokens, Budget::default().max_tokens);
         assert_eq!(b.regime, Budget::default().regime);
+    }
+
+    #[test]
+    fn control_defaults_to_auto_with_edit_listed_for_approval() {
+        let d = tempfile::tempdir().unwrap();
+        let c = RepoConfig::load(d.path()).unwrap().control(None).unwrap();
+        assert_eq!(c.mode, ControlMode::Auto);
+        assert_eq!(c.approve, vec!["edit".to_string()]);
+    }
+
+    #[test]
+    fn the_run_flag_overrides_the_configured_mode_for_that_run_only() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[control]\nmode = \"approve\"\n");
+        let cfg = RepoConfig::load(d.path()).unwrap();
+        assert_eq!(cfg.control(None).unwrap().mode, ControlMode::Approve);
+        assert_eq!(
+            cfg.control(Some(ControlMode::Auto)).unwrap().mode,
+            ControlMode::Auto
+        );
+    }
+
+    #[test]
+    fn an_unknown_mode_or_tool_is_refused_rather_than_run_hands_off() {
+        // `approve = ["edits"]` silently meaning "approve nothing" would run
+        // hands-off in a repository whose owner asked to be consulted.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[control]\nmode = \"ask\"\n");
+        let e = RepoConfig::load(d.path())
+            .unwrap()
+            .control(None)
+            .unwrap_err();
+        assert!(format!("{e}").contains("\"ask\" is not a mode"), "{e}");
+
+        write(
+            d.path(),
+            "[control]\nmode = \"approve\"\napprove = [\"edits\"]\n",
+        );
+        let e = RepoConfig::load(d.path())
+            .unwrap()
+            .control(None)
+            .unwrap_err();
+        assert!(
+            format!("{e}").contains("`edits`, which is not a tool"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn every_tool_the_adr_names_may_be_listed() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "[control]\nmode = \"approve\"\napprove = [\"edit\", \"read_file\", \"run_checks\", \"blast_radius\"]\n",
+        );
+        let c = RepoConfig::load(d.path()).unwrap().control(None).unwrap();
+        assert_eq!(c.approve.len(), 4);
+        assert_eq!(
+            c.describe(),
+            "approve (edit, read_file, run_checks, blast_radius)"
+        );
     }
 }

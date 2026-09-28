@@ -469,9 +469,14 @@ impl Session {
             task,
             &model,
             self.unconstrained,
-            "1",
             // No resume, and no focus override: `[context] focus` applies.
             crate::RunSeeding::default(),
+            // `[control] mode` applies. In approve mode each listed call is
+            // asked about here, on the line, with the diff shown first.
+            crate::RunControl {
+                flag: None,
+                human: crate::Human::terminal(),
+            },
             &mut std::io::stdout(),
         );
 

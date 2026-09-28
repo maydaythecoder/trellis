@@ -118,6 +118,9 @@ pub struct UntrustedFactual {
     /// it came from.
     #[serde(default)]
     pub actions: Vec<super::Action>,
+    /// Where the control dial stood (ADR 0018), when the writer recorded it.
+    #[serde(default)]
+    pub control: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -374,6 +377,7 @@ mod tests {
                 mode_counts: crate::ModeCounts::default(),
                 context: None,
                 actions: Vec::new(),
+                control: None,
             },
             judgment: crate::Judgment::default(),
         }

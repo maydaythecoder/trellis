@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 pub async fn run<B>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut AppState,
-    mut work_rx: mpsc::Receiver<Message>,
+    work_rx: mpsc::Receiver<Message>,
     task_tx: mpsc::Sender<String>,
 ) -> anyhow::Result<()>
 where
@@ -32,6 +32,23 @@ where
     // `?` on `terminal.draw` needs the backend's error to cross into
     // `anyhow`, which the concrete crossterm backend satisfies and a
     // bare `Backend` does not state.
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    run_with_answers(terminal, state, work_rx, task_tx, None).await
+}
+
+/// As [`run`], and each answer to the approval modal goes out on `answer_tx`
+/// to whatever asked (ADR 0018). The mock has nobody to answer, so it uses
+/// [`run`]; a real run in approve mode is waiting on this channel.
+pub async fn run_with_answers<B>(
+    terminal: &mut ratatui::Terminal<B>,
+    state: &mut AppState,
+    mut work_rx: mpsc::Receiver<Message>,
+    task_tx: mpsc::Sender<String>,
+    answer_tx: Option<mpsc::Sender<bool>>,
+) -> anyhow::Result<()>
+where
+    B: ratatui::backend::Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let mut term_events = EventStream::new();
@@ -86,6 +103,14 @@ where
                 .into(),
             ));
             state.update(Message::RunFinished);
+        }
+
+        // Drained the same way, and before quitting is considered: an
+        // answer given in the same batch as a quit still reaches the run.
+        if let Some(yes) = state.answered.take()
+            && let Some(tx) = &answer_tx
+        {
+            let _ = tx.send(yes).await;
         }
 
         if state.should_quit {
@@ -158,5 +183,41 @@ mod tests {
         let line = state.transcript.join("");
         assert!(line.contains("tok0"), "the first token survived: {line}");
         assert!(line.contains("tok19"), "and so did the last: {line}");
+    }
+
+    /// The answer to the approval modal leaves the loop for whoever asked.
+    ///
+    /// A modal whose answer went nowhere would leave a real run waiting on
+    /// its gate forever while the screen said the question was settled.
+    #[tokio::test]
+    async fn a_modal_answer_is_sent_to_the_asker() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = AppState::default();
+        let (tx, rx) = mpsc::channel(16);
+        let (task_tx, _task_rx) = mpsc::channel(8);
+        let (answer_tx, mut answer_rx) = mpsc::channel(1);
+
+        tx.send(Message::ApprovalRequested {
+            diff: "- a\n+ b".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(Message::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
+        tx.send(Message::Quit).await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_answers(&mut terminal, &mut state, rx, task_tx, Some(answer_tx)),
+        )
+        .await
+        .expect("must not hang")
+        .unwrap();
+        assert_eq!(answer_rx.try_recv().ok(), Some(true));
     }
 }

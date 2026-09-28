@@ -47,6 +47,10 @@ pub struct AppState {
     pub radius: Radius,
     pub budget: Budget,
     pub modal: Option<Modal>,
+    /// The answer to the modal, set by `update` and drained by the event
+    /// loop, which sends it to whoever asked. The same shape as `submitted`,
+    /// for the same reason: `update` records the decision and does no IO.
+    pub answered: Option<bool>,
     pub scroll: u16,
     pub should_quit: bool,
 }
@@ -233,6 +237,7 @@ impl AppState {
                         }
                     }
                     self.modal = None;
+                    self.answered = Some(true);
                 }
                 KeyCode::Char('n') => {
                     for e in &mut self.edits {
@@ -241,6 +246,7 @@ impl AppState {
                         }
                     }
                     self.modal = None;
+                    self.answered = Some(false);
                 }
                 _ => {}
             }
@@ -773,6 +779,11 @@ mod tests {
         s.update(press(KeyCode::Char('y')));
         assert!(s.modal.is_none(), "y must clear the modal");
         assert_eq!(s.edits[0].status, EditStatus::Applied);
+        assert_eq!(
+            s.answered,
+            Some(true),
+            "and the answer is kept for the asker"
+        );
 
         let mut s = AppState::default();
         s.update(Message::EditProposed {
@@ -784,6 +795,7 @@ mod tests {
         s.update(press(KeyCode::Char('n')));
         assert!(s.modal.is_none(), "n must clear the modal");
         assert_eq!(s.edits[0].status, EditStatus::Rejected);
+        assert_eq!(s.answered, Some(false));
     }
 
     #[test]
