@@ -314,7 +314,9 @@ fn braced(inner: &str, args: &[String]) -> Option<String> {
             None => (number(slice)?, None),
         };
         let start = from.saturating_sub(1).min(args.len());
-        let end = len.map_or(args.len(), |l| (start + l).min(args.len()));
+        // Saturating: a length near `usize::MAX` is "to the end", not a
+        // panic (review round 10).
+        let end = len.map_or(args.len(), |l| start.saturating_add(l).min(args.len()));
         return Some(args[start..end].join(" "));
     }
     None
@@ -326,6 +328,21 @@ mod tests {
 
     fn v(xs: &[&str]) -> Vec<String> {
         xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_slice_length_near_usize_max_is_clamped_not_overflowed() {
+        // The risk (review round 10, finding 6): `start + l` overflowed on
+        // `${@:2:<usize::MAX>}`, a panic in debug builds and a wrapped
+        // (empty) slice in release, from text in a prompt template.
+        let a = v(&["one", "two", "three"]);
+        let max = usize::MAX.to_string();
+        assert_eq!(substitute(&format!("${{@:2:{max}}}"), &a).0, "two three");
+        assert_eq!(substitute(&format!("${{@:{max}:{max}}}"), &a).0, "");
+        assert_eq!(
+            substitute(&format!("${{@:1:{max}}}"), &a).0,
+            "one two three"
+        );
     }
 
     #[test]

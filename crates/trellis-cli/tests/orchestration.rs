@@ -729,6 +729,90 @@ fn a_process_agent_that_writes_git_config_or_a_hook_has_it_restored() {
     }
 }
 
+/// A shell argv, as a TOML array of literal strings, running `script`:
+/// `cmd /C` on Windows, `sh -c` elsewhere. The script is written in the
+/// syntax both accept (`&&`, `echo x> f`, forward slashes to git).
+fn shell_argv(script: &str) -> String {
+    if cfg!(windows) {
+        format!("['cmd', '/C', '{script}']")
+    } else {
+        format!("['sh', '-c', '{script}']")
+    }
+}
+
+fn branch(d: &Path) -> String {
+    git(d, &["rev-parse", "--symbolic-full-name", "HEAD"])
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn a_process_agent_that_commits_part_of_its_change_is_refused_and_the_commit_undone() {
+    // The risk (review round 10, finding 1): touched paths came from `git
+    // status` against the current HEAD, so an agent that committed its
+    // `.trellis/` write hid it from the breach test, `deny_write` and the
+    // governance audit, converged on the part it left uncommitted, and the
+    // commit was never rolled back.
+    let script = if cfg!(windows) {
+        r"echo x> .trellis\sneak.txt && git add .trellis/sneak.txt && git commit -qm sneak && echo y> app\made.txt"
+    } else {
+        "echo x > .trellis/sneak.txt && git add .trellis/sneak.txt && git commit -qm sneak && echo y > app/made.txt"
+    };
+    let d = process_fixture("proc-commit", &shell_argv(script), PASSES);
+    let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    let on = branch(&d);
+    let id = queued_id(&ok(
+        &d,
+        &["queue", "add", "commit a part", "--assignee", "maker"],
+    ));
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("NOT CONVERGED"), "{s}");
+    assert!(s.contains("moved HEAD"), "the report says why:\n{s}");
+    assert!(
+        s.contains(".trellis/sneak.txt"),
+        "the committed path is judged too:\n{s}"
+    );
+    assert_eq!(ids(&d, "failed"), vec![id], "{s}");
+    assert!(!d.join(".trellis/sneak.txt").exists(), "rolled back:\n{s}");
+    assert!(!d.join("app/made.txt").exists(), "rolled back:\n{s}");
+    assert_eq!(branch(&d), on, "{s}");
+    // The trail's commit sits on top of the snapshot, not of the agent's.
+    assert_eq!(
+        git(&d, &["rev-parse", "HEAD~1"]).trim(),
+        head,
+        "the agent's commit is gone:\n{s}"
+    );
+    assert_eq!(porcelain(&d), "", "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original() {
+    // The same rule for a checkout: the agent commits everything on a new
+    // branch, so `git status` shows nothing. Before, that read as "changed
+    // nothing", and the rollback's `reset --hard` moved the agent's branch
+    // and left HEAD on it, where the trail's commit then landed.
+    let script = if cfg!(windows) {
+        r"git checkout -qb elsewhere && echo y> app\made.txt && git add -A && git commit -qm sneak"
+    } else {
+        "git checkout -qb elsewhere && echo y > app/made.txt && git add -A && git commit -qm sneak"
+    };
+    let d = process_fixture("proc-branch", &shell_argv(script), PASSES);
+    let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    let on = branch(&d);
+    ok(&d, &["queue", "add", "switch", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("NOT CONVERGED") && s.contains("moved HEAD"),
+        "{s}"
+    );
+    assert_eq!(branch(&d), on, "back on the original branch:\n{s}");
+    assert_eq!(git(&d, &["rev-parse", "HEAD~1"]).trim(), head, "{s}");
+    assert!(!d.join("app/made.txt").exists(), "{s}");
+    assert_eq!(porcelain(&d), "", "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// `process_fixture`, with `*.cfg` ignored by a committed `.gitignore`
 /// and `config` as `.trellis/config.toml`; trusted afterwards.
 fn ignored_fixture(name: &str, command: &str, config: &str) -> PathBuf {

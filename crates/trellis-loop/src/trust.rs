@@ -47,13 +47,14 @@ impl TrustItem {
     /// file is there. A program found on `PATH` is not repository code and is
     /// not hashed; a script the repository ships is.
     ///
-    /// The string after `-c` or `-e` (`sh -c`, `python -c`, `node -e`) or
-    /// `/C` (`cmd /C`) is code, not a path, so it is also split into
-    /// shell-ish tokens and every token that is a file in the repository is
-    /// hashed: `["sh", "-c", "./scripts/check.sh"]` covers the script.
-    /// Code reached any other way — an import, `python -m pkg.mod`, a file
-    /// a script reads — is covered only if it lives under `.trellis/`,
-    /// which [`Fingerprint`] hashes whole (ADR 0023 §4).
+    /// Every argument is also split into shell-ish tokens (whitespace,
+    /// `; & | ( ) < > =`, quotes trimmed) and every token that is a file in
+    /// the repository is hashed, whatever flag precedes it:
+    /// `["bash", "-lc", "python scripts/gate.py"]` and `--file=x.py` cover
+    /// their scripts. Code reached any other way — an import,
+    /// `python -m pkg.mod`, a file a script reads — is covered only if it
+    /// lives under `.trellis/`, which [`Fingerprint`] hashes whole (ADR
+    /// 0023 §4); keep hook and tool code in `.trellis/hooks/`.
     pub fn command(root: &Path, label: String, argv: &[String], detail: String) -> Self {
         Self::command_cached(root, label, argv, detail, &HashCache::default())
     }
@@ -76,16 +77,18 @@ impl TrustItem {
                 files.push(f);
             }
         };
-        for (i, arg) in argv.iter().enumerate() {
+        // Every element, and every token of every element: which flag
+        // introduces code is the interpreter's business (`-c`, `-lc`,
+        // `-ec`, `-Command`, `--file=`), and a list of them is a list of
+        // the ones not yet missed (review round 10). Splitting where no
+        // code is only adds hashes of files that exist, the safe direction.
+        for arg in argv {
             add(arg);
-            let is_code = i > 0 && matches!(argv[i - 1].as_str(), "-c" | "-e" | "/C" | "/c");
-            if is_code {
-                for tok in arg.split(|c: char| {
-                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
-                }) {
-                    let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
-                    add(tok);
-                }
+            for tok in arg.split(|c: char| {
+                c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>' | '=')
+            }) {
+                let tok = tok.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
+                add(tok);
             }
         }
         Self {
@@ -543,20 +546,20 @@ impl TrustGuard {
     ///
     /// Hashes through the guard's cache: see the type's documentation for
     /// what that can miss, and [`check_full`](Self::check_full).
-    pub fn check(&self) -> Result<(), String> {
+    pub fn check(&self) -> Result<(), TrustChanged> {
         self.check_with(false)
     }
 
     /// [`check`](Self::check), with every file hashed afresh. The fresh
     /// digests become the cache later checks use.
-    pub fn check_full(&self) -> Result<(), String> {
+    pub fn check_full(&self) -> Result<(), TrustChanged> {
         self.check_with(true)
     }
 
-    fn check_with(&self, full: bool) -> Result<(), String> {
+    fn check_with(&self, full: bool) -> Result<(), TrustChanged> {
         let mut b = self.0.breach.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(why) = b.as_ref() {
-            return Err(why.clone());
+            return Err(TrustChanged(why.clone()));
         }
         let cache = if full {
             std::sync::Arc::new(HashCache::default())
@@ -569,7 +572,7 @@ impl TrustGuard {
         };
         if let Err(why) = (self.0.recheck)(&cache) {
             *b = Some(why.clone());
-            return Err(why);
+            return Err(TrustChanged(why));
         }
         if full {
             *self.0.cache.lock().unwrap_or_else(|p| p.into_inner()) = cache;
@@ -580,23 +583,23 @@ impl TrustGuard {
     /// [`check`](Self::check) on tokio's blocking pool, so the runtime is
     /// free while the tree is walked and hashed. A check that panicked is a
     /// breach: what it would have said is not known.
-    pub async fn check_async(&self) -> Result<(), String> {
+    pub async fn check_async(&self) -> Result<(), TrustChanged> {
         self.off_runtime(false).await
     }
 
     /// [`check_full`](Self::check_full) on tokio's blocking pool.
-    pub async fn check_full_async(&self) -> Result<(), String> {
+    pub async fn check_full_async(&self) -> Result<(), TrustChanged> {
         self.off_runtime(true).await
     }
 
-    async fn off_runtime(&self, full: bool) -> Result<(), String> {
+    async fn off_runtime(&self, full: bool) -> Result<(), TrustChanged> {
         let g = self.clone();
         match tokio::task::spawn_blocking(move || g.check_with(full)).await {
             Ok(r) => r,
             Err(e) => {
                 let why = format!("the trust recheck did not finish ({e})");
                 let mut b = self.0.breach.lock().unwrap_or_else(|p| p.into_inner());
-                Err(b.get_or_insert(why).clone())
+                Err(TrustChanged(b.get_or_insert(why).clone()))
             }
         }
     }
@@ -675,6 +678,51 @@ struct Entry {
     trusted_at: u64,
 }
 
+/// Why the trust store could not be read or written, or would not record a
+/// decision. The messages are the ones these returned as strings before
+/// (review round 10).
+#[derive(Debug, thiserror::Error)]
+pub enum TrustStoreError {
+    #[error("no user configuration directory (APPDATA, XDG_CONFIG_HOME or HOME) to keep trust in")]
+    NoConfigDir,
+    #[error("{} is not a trust store: {source}", path.display())]
+    NotAStore {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("cannot read {}: {source}", path.display())]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot create {}: {source}", path.display())]
+    CreateDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot write {}: {source}", path.display())]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot replace {}: {source}", path.display())]
+    Replace {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// [`Fingerprint::refused`]: the repository cannot be trusted as it
+    /// stands.
+    #[error("cannot trust this repository: {0}")]
+    Refused(String),
+}
+
+/// A [`TrustGuard`] check that failed: what trusted code changed, or why it
+/// can no longer be trusted. Prose composed from the fingerprints (which
+/// files differ), not a closed set of cases, so one variant carrying it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct TrustChanged(pub String);
+
 /// Where trust is recorded.
 #[derive(Debug, Clone)]
 pub struct TrustStore {
@@ -703,7 +751,7 @@ impl TrustStore {
 
     /// The user's store: `%APPDATA%\trellis\trust.json` on Windows, else
     /// `$XDG_CONFIG_HOME/trellis/trust.json` or `~/.config/trellis/trust.json`.
-    pub fn user() -> Result<Self, String> {
+    pub fn user() -> Result<Self, TrustStoreError> {
         if let Some(p) = OVERRIDE.get() {
             return Ok(Self::at(p.clone()));
         }
@@ -716,39 +764,47 @@ impl TrustStore {
                 .or_else(|| non_empty("HOME").map(|h| PathBuf::from(h).join(".config")))
         };
         dir.map(|d| Self::at(d.join("trellis").join("trust.json")))
-            .ok_or_else(|| {
-                "no user configuration directory (APPDATA, XDG_CONFIG_HOME or HOME) to keep \
-                 trust in"
-                    .to_string()
-            })
+            .ok_or(TrustStoreError::NoConfigDir)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    fn read(&self) -> Result<StoreFile, String> {
+    fn read(&self) -> Result<StoreFile, TrustStoreError> {
         match std::fs::read_to_string(&self.path) {
-            Ok(s) => serde_json::from_str(&s)
-                .map_err(|e| format!("{} is not a trust store: {e}", self.path.display())),
+            Ok(s) => serde_json::from_str(&s).map_err(|source| TrustStoreError::NotAStore {
+                path: self.path.clone(),
+                source,
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StoreFile::default()),
-            Err(e) => Err(format!("cannot read {}: {e}", self.path.display())),
+            Err(source) => Err(TrustStoreError::Read {
+                path: self.path.clone(),
+                source,
+            }),
         }
     }
 
-    fn write(&self, f: &StoreFile) -> Result<(), String> {
+    fn write(&self, f: &StoreFile) -> Result<(), TrustStoreError> {
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            std::fs::create_dir_all(dir).map_err(|source| TrustStoreError::CreateDir {
+                path: dir.to_path_buf(),
+                source,
+            })?;
         }
         let tmp = self.path.with_extension("json.tmp");
         let body = serde_json::to_vec_pretty(f).expect("the store always serializes");
-        std::fs::write(&tmp, body).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|e| format!("cannot replace {}: {e}", self.path.display()))
+        std::fs::write(&tmp, body).map_err(|source| TrustStoreError::Write {
+            path: tmp.clone(),
+            source,
+        })?;
+        std::fs::rename(&tmp, &self.path).map_err(|source| TrustStoreError::Replace {
+            path: self.path.clone(),
+            source,
+        })
     }
 
-    pub fn state(&self, root: &Path, fp: &Fingerprint) -> Result<TrustState, String> {
+    pub fn state(&self, root: &Path, fp: &Fingerprint) -> Result<TrustState, TrustStoreError> {
         if let Some(reason) = &fp.refused {
             return Ok(TrustState::Refused {
                 reason: reason.clone(),
@@ -762,9 +818,9 @@ impl TrustStore {
         })
     }
 
-    pub fn trust(&self, root: &Path, fp: &Fingerprint) -> Result<(), String> {
+    pub fn trust(&self, root: &Path, fp: &Fingerprint) -> Result<(), TrustStoreError> {
         if let Some(why) = &fp.refused {
-            return Err(format!("cannot trust this repository: {why}"));
+            return Err(TrustStoreError::Refused(why.clone()));
         }
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut f = self.read()?;
@@ -783,7 +839,7 @@ impl TrustStore {
     }
 
     /// Removes the entry. `Ok(false)` when there was none.
-    pub fn revoke(&self, root: &Path) -> Result<bool, String> {
+    pub fn revoke(&self, root: &Path) -> Result<bool, TrustStoreError> {
         let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut f = self.read()?;
         let had = f.repos.remove(&key(root)).is_some();
@@ -921,6 +977,36 @@ mod tests {
             fp.sha256,
             Fingerprint::of(repo.path(), &h, &[], None).sha256
         );
+    }
+
+    #[test]
+    fn a_script_named_in_any_argv_element_is_hashed_whatever_flag_precedes_it() {
+        // The risk (review round 10, finding 3): only the string after
+        // exactly `-c`, `-e`, `/C` or `/c` was split into tokens, so
+        // `bash -lc`, `sh -ec`, `pwsh -Command`, `python -c` spelled
+        // otherwise, or `--file=...` left the script they run unhashed, and
+        // it could change after trust with nobody asked again.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("scripts")).unwrap();
+        std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        for argv in [
+            &["bash", "-lc", "python scripts/gate.py"][..],
+            &["sh", "-ec", "python scripts/gate.py --fast"],
+            &["pwsh", "-Command", "& python scripts/gate.py"],
+            &["runner", "--file=scripts/gate.py"],
+        ] {
+            let h = hooks(argv);
+            let fp = Fingerprint::of(repo.path(), &h, &[], None);
+            let files: Vec<&str> = fp.items[0].files.iter().map(|f| f.0.as_str()).collect();
+            assert_eq!(files, ["scripts/gate.py"], "{argv:?}");
+            std::fs::write(repo.path().join("scripts/gate.py"), "print('changed')\n").unwrap();
+            assert_ne!(
+                fp.sha256,
+                Fingerprint::of(repo.path(), &h, &[], None).sha256,
+                "editing the script untrusts: {argv:?}"
+            );
+            std::fs::write(repo.path().join("scripts/gate.py"), "print('ok')\n").unwrap();
+        }
     }
 
     #[test]
@@ -1084,7 +1170,7 @@ mod tests {
         );
         let home = tempfile::tempdir().unwrap();
         let store = TrustStore::at(home.path().join("trust.json"));
-        let e = store.trust(repo.path(), &fp).unwrap_err();
+        let e = store.trust(repo.path(), &fp).unwrap_err().to_string();
         assert!(e.contains("outside the repository"), "{e}");
         assert_ne!(store.state(repo.path(), &fp).unwrap(), TrustState::Trusted);
     }
@@ -1265,7 +1351,7 @@ mod tests {
         g.check().unwrap();
         g.check().unwrap();
         std::fs::write(repo.path().join("hook.py"), "import os; os.system('x')\n").unwrap();
-        let e = g.check().unwrap_err();
+        let e = g.check().unwrap_err().to_string();
         assert!(e.contains("hook.py"), "{e}");
 
         let repo = tempfile::tempdir().unwrap();
@@ -1274,7 +1360,7 @@ mod tests {
         let g = guard(repo.path());
         g.check().unwrap();
         std::fs::write(repo.path().join(".trellis/sitecustomize.py"), "x").unwrap();
-        let e = g.check().unwrap_err();
+        let e = g.check().unwrap_err().to_string();
         assert!(e.contains(".trellis/sitecustomize.py"), "{e}");
     }
 
@@ -1298,7 +1384,7 @@ mod tests {
             .set_modified(mtime)
             .unwrap();
         assert_eq!(std::fs::metadata(&hook).unwrap().len(), 12);
-        let e = g.check_full().unwrap_err();
+        let e = g.check_full().unwrap_err().to_string();
         assert!(e.contains("hook.py"), "{e}");
     }
 
@@ -1336,6 +1422,6 @@ mod tests {
         // The latch holds whichever check found the breach.
         let g = TrustGuard::new(|| Err("changed".into()));
         assert!(g.check().is_err());
-        assert_eq!(g.check_full().unwrap_err(), "changed");
+        assert_eq!(g.check_full().unwrap_err().to_string(), "changed");
     }
 }

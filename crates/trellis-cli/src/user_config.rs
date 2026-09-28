@@ -292,9 +292,17 @@ impl RepoConfig {
     /// would drop a restriction the user believes is in force.
     pub(crate) fn load_with_user(root: &Path, user: Option<&Path>) -> Result<Self> {
         let path = root.join(".trellis").join("config.toml");
+        // Only a file that is not there is "no configuration". Any other
+        // failure (not UTF-8, a permission, a directory by that name) read
+        // as absent dropped `deny_write`, `approve` and `[checks]` without a
+        // word (review round 10), as the user's file below never did.
         let repo = match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse_checked(&text, &path)?,
-            Err(_) => Self::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => {
+                return Err(anyhow::Error::from(e))
+                    .with_context(|| format!("{} exists but could not be read", path.display()));
+            }
         };
         // ADR 0024 §3: the variable a key is read from is the user's choice.
         // A repository that could name it could send any variable in the
@@ -489,6 +497,45 @@ mod tests {
         let dial = c.control(None).unwrap();
         assert_eq!(dial.mode, ControlMode::Approve);
         assert_eq!(dial.approve, ["edit", "run_checks"]);
+    }
+
+    #[test]
+    fn a_repository_config_that_cannot_be_read_is_refused_not_taken_as_absent() {
+        // The risk (review round 10, finding 5): any read error on
+        // `.trellis/config.toml` meant "no config", so a file that is not
+        // UTF-8 (or unreadable, or a directory) dropped its `deny_write`,
+        // `approve` and `[checks]` and the run went ahead on defaults.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        let path = d.path().join(".trellis/config.toml");
+        std::fs::write(&path, b"[governance]\ndeny_write = [\"\xff\xfe\"]\n").unwrap();
+        let e = RepoConfig::load_with_user(d.path(), None)
+            .expect_err("an unreadable config is refused");
+        let msg = format!("{e:#}");
+        assert!(msg.contains("config.toml"), "{msg}");
+        assert!(msg.contains("could not be read"), "{msg}");
+        // Absent is still the defaults.
+        std::fs::remove_file(&path).unwrap();
+        assert!(RepoConfig::load_with_user(d.path(), None).is_ok());
+    }
+
+    #[test]
+    fn a_profile_s_approve_list_adds_to_the_user_s_and_drops_nothing() {
+        // The risk (review round 10, finding 4): a profile is repository
+        // content, and its `[control] approve` replaced the layered list, so
+        // `approve = ["read_file"]` in `.trellis/agents/x.toml` dropped the
+        // user's `run_checks` and the repository's default `edit`. A
+        // profile can only add restrictions.
+        let c = load(
+            "[control]\nmode = \"approve\"\n",
+            "[control]\napprove = [\"run_checks\"]\n",
+        );
+        let mut dial = c.control(None).unwrap();
+        dial.add_profile_approvals(&["read_file".to_string(), "edit".to_string()]);
+        assert_eq!(dial.approve, ["edit", "run_checks", "read_file"]);
+        // An empty list is no approvals added, not every approval removed.
+        dial.add_profile_approvals(&[]);
+        assert_eq!(dial.approve, ["edit", "run_checks", "read_file"]);
     }
 
     #[test]

@@ -110,3 +110,169 @@ fn the_guard_would_actually_catch_something() {
     let code = fixed.split("//").next().unwrap_or("");
     assert!(code.contains("plain("), "and recognises the corrected form");
 }
+
+/// Non-test source lines of `text`, 0-based: everything outside an item
+/// marked `#[cfg(test)]` (a module or a function). The same naive brace
+/// count as `child_env.rs`'s scan, which holds for this workspace's test
+/// code.
+fn non_test_lines(text: &str) -> Vec<(usize, &str)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "#[cfg(test)]" {
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim_start().starts_with("#[") {
+                j += 1;
+            }
+            // An item with no body (`mod extension_tests;`, a `use`) ends
+            // at its `;`; counting braces past it hid the production code
+            // that follows.
+            let item = lines.get(j).copied().unwrap_or("");
+            if let Some(semi) = item.find(';')
+                && item.find('{').is_none_or(|brace| semi < brace)
+            {
+                i = j + 1;
+                continue;
+            }
+            // Otherwise skip the item it marks, to the end of its first
+            // balanced brace block.
+            let mut depth = 0i64;
+            let mut opened = false;
+            while j < lines.len() {
+                depth += lines[j].matches('{').count() as i64;
+                depth -= lines[j].matches('}').count() as i64;
+                opened |= lines[j].contains('{');
+                j += 1;
+                if opened && depth <= 0 {
+                    break;
+                }
+            }
+            i = j;
+            continue;
+        }
+        out.push((i, lines[i]));
+        i += 1;
+    }
+    out
+}
+
+fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            rust_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+/// Where shipped code may name `git` itself, how many lines do, and why.
+/// Counted exactly, so a new site in an allowed file is a deliberate edit
+/// here rather than a pass.
+const GIT_ALLOWED: &[(&str, usize, &str)] = &[
+    (
+        "trellis-vcs/src/lib.rs",
+        3,
+        "`command`, `command_with_hooks`, `git_argv`: the constructors",
+    ),
+    (
+        "chat/src/lib.rs",
+        1,
+        "`git_command`: chat depends on nothing in the workspace, so it carries a copy",
+    ),
+    (
+        "chat/src/commands/mod.rs",
+        2,
+        "`/git` is a slash command's name there, not a spawn",
+    ),
+];
+
+/// Whether `line` names `git` as a program: `Command::new("git")` of
+/// either kind, or `"git"` as an argv's first element, both of which
+/// contain the literal.
+fn names_git(line: &str) -> bool {
+    let code = line.split("//").next().unwrap_or("");
+    code.contains("\"git\"")
+}
+
+#[test]
+fn every_git_spawn_goes_through_trellis_vcs() {
+    // The risk (review round 10, finding 2): `grep` and `find` started
+    // plain `git`, without `trellis_vcs::OVERRIDES`, so a `core.fsmonitor`
+    // that `bash` planted ran at the model's next listing. Every `git`
+    // shipped code starts comes from `trellis_vcs::command`,
+    // `command_with_hooks` or `git_argv`, which carry the overrides; a new
+    // one that names `git` itself fails here.
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let mut files = Vec::new();
+    for c in std::fs::read_dir(crates).unwrap().flatten() {
+        // `examples/` too: the measurement tooling is run against real
+        // repositories.
+        for d in ["src", "examples"] {
+            let dir = c.path().join(d);
+            if dir.is_dir() {
+                rust_files(&dir, &mut files);
+            }
+        }
+    }
+    // Test-only modules kept in files of their own.
+    let test_file = |p: &std::path::Path| {
+        let n = p.file_name().unwrap().to_string_lossy();
+        n == "tests.rs" || n.ends_with("_tests.rs") || n == "testutil.rs"
+    };
+    let mut allowed_seen: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut bare = Vec::new();
+    for f in files.iter().filter(|f| !test_file(f)) {
+        let rel = f
+            .strip_prefix(crates)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(f).unwrap();
+        for (i, line) in non_test_lines(&text) {
+            if !names_git(line) {
+                continue;
+            }
+            if let Some((p, _, _)) = GIT_ALLOWED.iter().find(|(p, _, _)| *p == rel) {
+                *allowed_seen.entry(p).or_default() += 1;
+                continue;
+            }
+            bare.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+        }
+    }
+    let expected: std::collections::BTreeMap<&str, usize> =
+        GIT_ALLOWED.iter().map(|(p, n, _)| (*p, *n)).collect();
+    assert_eq!(
+        allowed_seen, expected,
+        "the allowed files name git on a different number of lines than listed: a \
+         new site there, or the scan is not reading the source"
+    );
+    assert!(
+        bare.is_empty(),
+        "git started without trellis_vcs::command or git_argv, so a planted \
+         core.fsmonitor or hook would run (ADR 0023 §5):\n{}",
+        bare.join("\n")
+    );
+}
+
+#[test]
+fn the_git_scan_would_catch_a_bare_spawn() {
+    // A hygiene test that cannot fail is decoration.
+    assert!(names_git(
+        r#"    let mut c = tokio::process::Command::new("git");"#
+    ));
+    assert!(names_git(r#"    let argv = ["git", "grep", "-n"];"#));
+    assert!(!names_git(r#"    let mut git = trellis_vcs::command();"#));
+    assert!(!names_git(r#"    // Command::new("git") in a comment"#));
+    let src = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() { x(\"git\"); }\n}\nfn c() {}\n";
+    let kept: Vec<&str> = non_test_lines(src).into_iter().map(|(_, l)| l).collect();
+    assert_eq!(kept, ["fn a() {}", "fn c() {}"]);
+    // A bodiless test item ends at its `;`: what follows is shipped code.
+    let src = "fn a() {}\n#[cfg(test)]\nmod t;\nfn c() { x(\"git\"); }\n";
+    let kept: Vec<&str> = non_test_lines(src).into_iter().map(|(_, l)| l).collect();
+    assert_eq!(kept, ["fn a() {}", "fn c() { x(\"git\"); }"]);
+}

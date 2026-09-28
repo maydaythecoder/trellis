@@ -402,6 +402,19 @@ anyone being asked. Now the digest also covers:
 - **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
   split on whitespace and shell punctuation, and every token that is a
   regular file in the repository is hashed like an argv path.
+  *Amended after the tenth review of PR #1: every argument.* A list of
+  flags that introduce code is a list of the ones not yet missed:
+  `bash -lc`, `sh -ec`, `pwsh -Command` and `--file=x.py` all named a
+  script no token was taken from. Now every argv element is split (on
+  whitespace, `; & | ( ) < > =`, quotes trimmed), whatever precedes it,
+  and every token naming a regular file in the repository is hashed.
+  Splitting an argument that is not code only hashes files that exist,
+  which can only make the digest move more often. A repository whose
+  commands carry such a token reads as changed once after this and needs
+  `trellis trust` again. Evidence:
+  `a_script_named_in_any_argv_element_is_hashed_whatever_flag_precedes_it`
+  in `crates/trellis-loop/src/trust.rs`, which failed before on
+  `["bash", "-lc", "python scripts/gate.py"]` with no file hashed.
 
 **Not covered, plainly:** code reached indirectly from outside `.trellis/`
 and outside any file an argv or code string names — a module imported by
@@ -558,6 +571,25 @@ this amendment a hook that wrote at any of those points left bytes in a
       `core.sshCommand`, credential helpers) are not overridden.
     - A partition worktree's `git worktree add` runs no `post-checkout`
       hook now; its checkout still applies the user's filters.
+
+    *Amended after the tenth review of PR #1: "every" was not every.* The
+    `grep` and `find` tools built their own argv starting `git` and ran
+    it without the overrides, so a `core.fsmonitor` that `bash` planted
+    ran at the model's next listing. Every git the workspace starts outside
+    tests now comes from one place: `trellis_vcs::command` (or
+    `command_with_hooks` for the trail's commit and the guard's hooks
+    path), `tokio::process::Command::from(command())` for an async one, and
+    `trellis_vcs::git_argv` for `exec::run`'s argv. The one copy is
+    `chat::git_command`, since the `chat` crate depends on nothing in the
+    workspace (as its key scrub already is a copy). A source scan,
+    `every_git_spawn_goes_through_trellis_vcs` in
+    `crates/trellis-cli/tests/hygiene.rs`, fails on any non-test line
+    naming `"git"` outside those; run against the sources before this
+    change it named all four sites (`listing.rs` twice, the orchestrator's
+    `check-ignore`, `chat`'s status). Evidence for the behaviour:
+    `grep_and_find_run_no_planted_fsmonitor` in `trellis-loop`'s
+    `listing.rs`, which failed before with the marker written, and whose
+    control runs plain `git status` and sees it.
   - **A changed pre-existing ignored file is a tree not restored.** The
     rollback said "NOT put back" and exited 1 as restored; it exits 2
     now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
@@ -611,6 +643,20 @@ this amendment a hook that wrote at any of those points left bytes in a
     pre-existing ignored file (mypy removing a stale cache entry) now makes
     a failed run exit 2, where the ledger had hidden it: the direction a
     false alarm may err in.
+  - *Amended after the tenth review of PR #1: HEAD may not move.* The same
+    writers can commit, reset or check out. A committed change is not in
+    `git status`, so it was not in the diff left for review, the write
+    rules never judged it, and a converged run left it on the user's
+    branch. After `.git/` is put back, a converged run whose HEAD is not
+    the snapshot's commit on the snapshot's branch is demoted to
+    `NotConverged::HeadMoved` and rolled back. The check runs for every
+    model run, not only those loading these writers: one without them
+    cannot move HEAD, and the check costs it two `rev-parse` calls. The
+    rollback now puts HEAD back on the recorded branch before its reset
+    (ADR 0009, amended), and says so. Evidence:
+    `a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone`
+    in `tests/cli.rs`, which failed before with "CONVERGED after 2
+    iterations". The process-agent rule is ADR 0026 §11.
 - **`pre_tool` and `post_tool`.** Each declared hook is bracketed on its
   own: the worktree is fingerprinted before and after the gates (which
   hold `pre_tool`; the other gates do not write), and before and after

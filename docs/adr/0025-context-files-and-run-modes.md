@@ -300,6 +300,22 @@ on stderr.
     override, because a flag is a person at the terminal deciding for one
     run. `trellis work` still forces auto (ADR 0020 §5), so a user-level
     `approve` never reaches the heartbeat.
+  - *Amended after the tenth review of PR #1:* **a file that cannot be
+    read is not an absent one.** Any error reading `.trellis/config.toml`
+    meant the defaults, so a file that was not UTF-8, could not be opened
+    or was a directory dropped its `deny_write`, `approve` and `[checks]`
+    without a word. Only "not found" means no repository file now; any
+    other error refuses, naming the path and the reason, as the user's own
+    file already did. Evidence:
+    `a_repository_config_that_cannot_be_read_is_refused_not_taken_as_absent`
+    in `crates/trellis-cli/src/user_config.rs`, which failed before (the
+    invalid UTF-8 file loaded as defaults). The same held one level over for
+    the rule documents: a `.trellis/governance` that could not be listed
+    read as no rules, and now refuses
+    (`a_rules_directory_that_cannot_be_read_is_an_error_not_no_rules` in
+    `trellis-checks`, which failed before with an empty list).
+  - A profile's `[control] approve` adds to the layered list and does not
+    replace it (ADR 0026 §4, amended after the same review).
 - **Budget ceilings take the lower value** (`max_iterations`,
   `max_wall_clock_s`, `max_tokens`). This departs from "repo wins" on
   purpose. ADR 0008: a runaway loop spends the user's money. A user who
