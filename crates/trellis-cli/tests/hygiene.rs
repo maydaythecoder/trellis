@@ -236,6 +236,8 @@ const GIT_ALLOWED: &[(&str, usize, &str)] = &[
 /// Best effort, line by line, and its limits are stated rather than
 /// assumed away. It does not see: a name built at run time
 /// (`concat!("gi", "t")`, `format!`, bytes), a literal spanning lines, a
+/// raw string holding a `"` (the line is misread from there), a command
+/// after a newline escape inside one literal (`"cd x\ngit add ."`), a
 /// program named in a file or the environment, `git` reached through
 /// another program's own spawn (`xargs` with the name in a variable), or a
 /// literal inside a `//` comment's tail after code that contains `//` in a
