@@ -416,7 +416,9 @@ fn write_tools() -> ToolSet {
 
 #[tokio::test]
 async fn write_file_creates_only_new_files_and_records_them_for_rollback() {
-    let d = repo();
+    // Under git: write_file asks git whether a path is ignored, and refuses
+    // when it cannot ask (see the fail-closed test below).
+    let d = git_repo();
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(write_tools())
         .with_governance(crate::governance::Governance::new(&["vendor/".into()]))
@@ -692,6 +694,29 @@ async fn read_skill_by_exact_name_is_refused_when_the_profile_denies_it() {
         matches!(r, ToolResult::FileContent(ref b) if b.contains("SECRET-BODY")),
         "{r:?}"
     );
+}
+
+#[tokio::test]
+async fn write_file_refuses_when_git_cannot_say_whether_the_path_is_ignored() {
+    // Fail closed. The risk: `git check-ignore` failing (not a repository,
+    // no git, a broken index) read as "not ignored", so a file was written
+    // that a rollback's `git clean` might never remove.
+    let d = repo(); // not a git repository: check-ignore exits 128
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    let r = orch
+        .call(&ToolCall::WriteFile {
+            path: "app/new.py".into(),
+            content: "x = 1\n".into(),
+        })
+        .await
+        .result;
+    match r {
+        ToolResult::Error(e) => assert!(e.contains("could not ask git"), "{e}"),
+        other => panic!("an unanswered ignore check must refuse: {other:?}"),
+    }
+    assert!(!d.path().join("app/new.py").exists());
 }
 
 #[tokio::test]

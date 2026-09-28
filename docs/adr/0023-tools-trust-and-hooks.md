@@ -110,7 +110,10 @@ which read outside the repository on Windows before.
   check let `.GIT/hooks/pre-commit` create a git hook on a case-insensitive
   filesystem (observed on Windows), and `edit` had no check, so
   `.git/config` could be edited. Both survive a rollback, which is git's
-  own reset. Creating a `.py` file reopens the index
+  own reset. *Also amended 2026-09-27:* the ignore check fails closed. Only
+  `git check-ignore` exiting 1 ("not ignored") lets the write proceed; a
+  failure to start git, an exit of 128, or a signal refuses it with the
+  reason, where it used to be read as "not ignored". Creating a `.py` file reopens the index
   session (a full rebuild), because `Session::try_update` only knows files
   present at open, and a graph that disagrees with the tree is the failure
   the refusal in `apply_edit` exists to prevent.
