@@ -88,7 +88,7 @@ Two of these are not stylistic:
   testable with no model anywhere near it. A graph whose output depends on a
   sampler is not a graph. The same holds for `trellis-vault`: what the model
   is shown is a pure function of files on disk, asserted byte for byte against
-  goldens shared with the TypeScript twin (ADR 0017).
+  committed goldens (ADR 0017).
 - **`trellis-checks` owns `Verdict`.** That is what makes the grounding contract
   structural rather than advisory.
 
