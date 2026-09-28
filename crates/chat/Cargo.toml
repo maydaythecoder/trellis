@@ -20,9 +20,10 @@ publish = false
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 # The workspace decides the feature set. Declaring `features = ["full"]`
-# here silently gave the whole shipped binary every tokio feature -
+# here gives every crate in a workspace build every tokio feature -
 # fs, io-std, net, signal, rt-multi-thread - because feature unification
-# applies across the graph, and `trellis-cli` depends on this crate.
+# applies across one workspace build, not per crate.
+# No other workspace crate depends on chat.
 tokio.workspace = true
 # `futures-util` rather than the `futures` facade. The only thing used is
 # `StreamExt`, and the facade additionally pulls futures-executor,
