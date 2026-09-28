@@ -40,6 +40,9 @@ pub enum ToolCallWire {
         #[serde(default = "default_kinds")]
         kinds: Vec<String>,
     },
+    /// Read one of the repository's skills, by the name it is listed under.
+    /// Reference material; it informs and cannot stand in for a check.
+    ReadSkill { name: String },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
@@ -78,6 +81,7 @@ impl ToolCallWire {
                     .collect::<Result<Vec<_>, _>>()?;
                 Step::Call(ToolCall::RunChecks { paths, kinds })
             }
+            ToolCallWire::ReadSkill { name } => Step::Call(ToolCall::ReadSkill { name }),
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }
@@ -121,7 +125,14 @@ mod tests {
         // This schema is what constrains a real model, so a tool missing here
         // is a tool the model can never call.
         let s = ToolCallWire::schema().to_string();
-        for tool in ["blast_radius", "read_file", "edit", "run_checks", "done"] {
+        for tool in [
+            "blast_radius",
+            "read_file",
+            "edit",
+            "run_checks",
+            "read_skill",
+            "done",
+        ] {
             assert!(s.contains(tool), "schema omits `{tool}`: {s}");
         }
     }

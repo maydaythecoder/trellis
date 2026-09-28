@@ -12,6 +12,7 @@ mod governance;
 mod orchestrator;
 pub mod partition;
 mod scripted;
+mod skills;
 mod tools;
 mod wire;
 
@@ -29,5 +30,8 @@ pub use governance::{Governance, Rule};
 pub use orchestrator::{Dispatched, Handle, HumanDecision, Orchestrator, Request};
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use scripted::ScriptedModel;
+pub use skills::{
+    DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillCatalog, read_body,
+};
 pub use tools::{EditOutcome, ToolResult};
 pub use wire::ToolCallWire;

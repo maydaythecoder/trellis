@@ -1272,10 +1272,19 @@ fn cmd_run(
     deny.extend(trellis_checks::governance::deny_write_paths(&rules));
     let governance = trellis_loop::Governance::new(&deny);
     let notes = config::RepoConfig::notes(root)?;
-    if !governance.is_empty() || notes.is_some() || vault.is_some() {
+    // Skills (ADR 0019): names and descriptions to the prompt, capped. Read
+    // before the snapshot like everything else the run is seeded with.
+    let skills = trellis_loop::SkillCatalog::discover(root);
+    let disclosed = skills.disclosed();
+    if !governance.is_empty()
+        || notes.is_some()
+        || vault.is_some()
+        || !skills.valid.is_empty()
+        || !skills.invalid.is_empty()
+    {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}",
+            "repo:     {} write rule(s){}{}{}",
             governance.rules().len(),
             if notes.is_some() {
                 ", .trellis/context.md loaded"
@@ -1295,9 +1304,26 @@ fn cmd_run(
                     }
                 ),
                 None => String::new(),
-            }
+            },
+            // Said whenever there are skills, with both numbers: the cap
+            // leaves skills out, and a list that was cut must not read as
+            // the library.
+            if skills.valid.is_empty() && skills.invalid.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", skills: {} listed, {} omitted (cap){}",
+                    disclosed.listed.len(),
+                    disclosed.omitted,
+                    match skills.invalid.len() {
+                        0 => String::new(),
+                        n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
+                    }
+                )
+            },
         );
     }
+
     // Configured and silently unused is the failure this line prevents: a
     // user who set up a vault would otherwise assume the model saw it.
     if let Some(v) = &vault_setting
@@ -1353,6 +1379,8 @@ fn cmd_run(
             }),
             rules: prompt_rules,
             files,
+            skills: disclosed.listed,
+            skills_omitted: disclosed.omitted,
         },
     };
 
@@ -1868,6 +1896,7 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
             };
             ("run_checks", format!("{} on {where_}", kinds.join("+")))
         }
+        ToolCall::ReadSkill { name } => ("read_skill", name.clone()),
     };
 
     trellis_trail::Action {
@@ -2999,6 +3028,34 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
         )),
     }
 
+    // Skills (ADR 0019): what was found, what a run would list and leave out,
+    // and every directory skipped with the reason. A skill that is silently
+    // not loaded is one its author believes the model can read.
+    let skills = trellis_loop::SkillCatalog::discover(root);
+    let found = skills.valid.len() + skills.invalid.len();
+    if found == 0 {
+        out.push(format!(
+            "skills:     none under {}",
+            trellis_loop::SKILLS_DIR
+        ));
+    } else {
+        let d = skills.disclosed();
+        out.push(format!(
+            "skills:     {found} found · {} listed · {} omitted (cap {} B) · {} invalid",
+            d.listed.len(),
+            d.omitted,
+            trellis_loop::DISCLOSURE_CAP,
+            skills.invalid.len()
+        ));
+        for i in &skills.invalid {
+            out.push(format!(
+                "            skipped {}: {}",
+                plain(&i.dir),
+                plain(&i.reason)
+            ));
+        }
+    }
+
     // The control dial (ADR 0018). Said here because approve mode refuses to
     // start without a terminal, and that is better learned from `doctor`
     // than from a CI job.
@@ -3634,6 +3691,26 @@ mod init_tests {
         );
         assert!(!a.wrote, "only an edit can write");
         assert_eq!(a.tool, "read_file");
+    }
+
+    #[test]
+    fn reading_a_skill_is_recorded_by_name_and_writes_nothing() {
+        // ADR 0019 adds one closed-enum variant; the trail has to name it
+        // rather than fold it into `read_file`, or a reader cannot tell which
+        // procedure the model consulted.
+        let a = action_from(
+            2,
+            &turn(
+                trellis_loop::ToolCall::ReadSkill {
+                    name: "rust-unsafe".into(),
+                },
+                "skill `rust-unsafe`, from .trellis/skills. applied: true",
+            ),
+        );
+        assert_eq!(
+            (a.turn, a.tool.as_str(), a.target.as_str(), a.wrote),
+            (3, "read_skill", "rust-unsafe", false)
+        );
     }
 
     #[test]

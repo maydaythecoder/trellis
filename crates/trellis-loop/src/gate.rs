@@ -92,7 +92,16 @@ impl ToolGate for GovernanceGate {
 }
 
 /// The tool names a `[control] approve` list may contain.
-pub const APPROVABLE_TOOLS: &[&str] = &["edit", "read_file", "run_checks", "blast_radius"];
+///
+/// `read_skill` is here because ADR 0019 added the tool after ADR 0018 listed
+/// the approvable ones. It is read-only, like `read_file`.
+pub const APPROVABLE_TOOLS: &[&str] = &[
+    "edit",
+    "read_file",
+    "run_checks",
+    "blast_radius",
+    "read_skill",
+];
 
 /// The tool name a call is listed under in `[control] approve`.
 pub fn tool_name(call: &ToolCall) -> &'static str {
@@ -101,6 +110,7 @@ pub fn tool_name(call: &ToolCall) -> &'static str {
         ToolCall::ReadFile { .. } => "read_file",
         ToolCall::Edit { .. } => "edit",
         ToolCall::RunChecks { .. } => "run_checks",
+        ToolCall::ReadSkill { .. } => "read_skill",
     }
 }
 
@@ -213,6 +223,7 @@ fn label(call: &ToolCall) -> String {
                 format!("run_checks {} on {}", kinds.join("+"), paths.join(", "))
             }
         }
+        ToolCall::ReadSkill { name } => format!("read_skill {name}"),
     }
 }
 

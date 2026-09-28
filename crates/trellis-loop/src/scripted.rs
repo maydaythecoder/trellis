@@ -79,11 +79,12 @@ mod tests {
                 {"tool":"read_file","path":"a.py"},
                 {"tool":"edit","path":"a.py","old":"x","new":"y"},
                 {"tool":"run_checks","paths":["a.py"],"kinds":["typecheck","tests"]},
+                {"tool":"read_skill","name":"rust-unsafe"},
                 {"tool":"done","summary":"ok"}
             ]}"#,
         )
         .expect("valid script");
-        assert_eq!(m.len(), 5);
+        assert_eq!(m.len(), 6);
     }
 
     #[test]

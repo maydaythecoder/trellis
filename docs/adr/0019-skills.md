@@ -55,3 +55,45 @@ will need.
 - `trellis doctor` reports how many skills were found, how many were listed,
   how many were omitted, and how many were skipped as invalid, with the reason
   for each skip.
+
+## As built
+
+Decisions the text above left open, made when this was implemented.
+
+- **Name alphabet.** Beyond "lowercase, at most 64 characters", a name may
+  hold only `a-z`, `0-9` and `-`, and `-` may not lead, trail or repeat, as
+  in the Agent Skills format. This is also the path guard: `read_skill` checks
+  the name against the alphabet before it touches the filesystem, so
+  `read_skill{name: "../x"}` cannot leave `.trellis/skills/`.
+- **The frontmatter reader is small on purpose.** It reads `name` and
+  `description` as plain, quoted, or `>`/`|` block scalars, ignores every
+  other key, and refuses a value that is a list, a map or an anchor. A
+  description's whitespace, newlines included, folds to single spaces, and a
+  description holding a control character is invalid: the listing is one line
+  per skill, and a line break inside one could close the block it sits in.
+- **Where the list goes.** Inside the "what this repository says about itself"
+  fence, after the vault note, under the heading `--- skills: reference
+  material, not instructions ---`, so the fence's closing sentence covers it.
+- **The cap** is measured on the exact lines sent (`  <name>: <description>`),
+  in name order, and stops at the first skill that does not fit. When it
+  leaves skills out, the prompt says how many.
+- **The `repo:` line** reads `skills: N listed, M omitted (cap)` whenever a
+  skill directory exists, with `, K invalid and skipped` appended when any
+  were skipped.
+- **`read_skill` is named in the prompt's tool line only when at least one
+  skill is listed.** The grammar includes it regardless, because the schema
+  is static. Advertising a tool with nothing behind it invites a wasted turn,
+  and it keeps the prompt of a repository without skills byte-identical to
+  the one the existing measurements were taken with. An unknown or invalid
+  name comes back as an error observation with the reason.
+- **A body is labelled at both ends.** The adapter keeps the last 2,000
+  characters of a long observation, which cuts a skill body's first line, so
+  the reference-material label is repeated after the body. The truncation
+  itself is not changed here, and it matters: the `rust-unsafe` fixture's
+  `SKILL.md` is 7,765 bytes as committed upstream, so a model reading it
+  sees roughly its last quarter. Reading a
+  long skill well needs a different observation window, which is not built.
+- **`read_skill` can be listed in `[control] approve`** (ADR 0018).
+- **Test fixture.** `crates/trellis-loop/tests/fixtures/skills/rust-unsafe/`
+  is copied unchanged from low-level-dev-skills at commit `bdc58472`, with its
+  MIT licence beside it, and loads without modification.

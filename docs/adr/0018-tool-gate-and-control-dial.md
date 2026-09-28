@@ -168,3 +168,5 @@ tested; the test names are in `docs/STATUS.md`.
   the key out of the pure state transition to the gate. The interface always
   has a human, so it never takes the no-terminal refusal.
 - **`trellis doctor`** prints the configured mode, or the configuration error.
+- **`read_skill` is approvable too.** ADR 0019 added the tool after this ADR
+  listed the four above; it is read-only, like `read_file`.
