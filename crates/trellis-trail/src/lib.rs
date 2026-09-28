@@ -88,6 +88,30 @@ pub struct Factual {
     /// per worktree and dies with it, and the trail is what outlives both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// What the run was given beyond the task and the repository's own
+    /// `.trellis/` files (ADR 0025): context files, the system prompt files
+    /// and skills the person forced, each by name and size. Never contents:
+    /// a trail is committed, and a user-level file is not the repository's
+    /// to publish.
+    ///
+    /// Two runs from one commit can differ by the user's own files, and this
+    /// is what says so afterwards. Omitted when empty, so a trail with none
+    /// keeps its shape and its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Input>,
+}
+
+/// One file a run was given, as `Factual::inputs` records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Input {
+    /// `context_file`, `system_file` or `forced_skill`.
+    pub kind: String,
+    /// As the run's `repo:` line names it: `CLAUDE.md`,
+    /// `<user>/AGENTS.md`, `.trellis/system.md`, or a skill's name. Never an
+    /// absolute path, which would put the user's home layout in the trail.
+    pub name: String,
+    /// Bytes of content sent, the unit the caps are measured in.
+    pub bytes: u64,
 }
 
 /// One thing the agent did, and what came back.
@@ -430,6 +454,7 @@ mod tests {
                 control: None,
                 tokens: None,
                 agent: None,
+                inputs: Vec::new(),
             },
 
             factual_sha256: String::new(),

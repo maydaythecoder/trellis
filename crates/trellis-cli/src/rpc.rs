@@ -277,11 +277,16 @@ impl Server {
                                "argument_hint": t.argument_hint})
                     })
                     .collect();
-                let skills: Vec<Value> = trellis_loop::SkillCatalog::discover(&self.root)
-                    .valid
-                    .into_iter()
-                    .map(|s| json!({"name": s.name, "description": s.description}))
-                    .collect();
+                // The same catalog a run lists, user-level skills included,
+                // since `prompt {skill}` can force either.
+                let skills: Vec<Value> = trellis_loop::SkillCatalog::discover_with(
+                    &self.root,
+                    &crate::user_config::skill_dirs(),
+                )
+                .valid
+                .into_iter()
+                .map(|s| json!({"name": s.name, "description": s.description}))
+                .collect();
                 self.respond(
                     id,
                     kind,

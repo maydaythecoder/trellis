@@ -321,6 +321,8 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         // An external process's tokens are not visible to trellis.
         tokens: None,
         agent: Some(t.profile.to_string()),
+        // A process agent is given its task on stdin and nothing else.
+        inputs: Vec::new(),
     };
     let (timestamp, started_at) = trellis_trail::now();
     let slug = trellis_trail::slugify(t.task);

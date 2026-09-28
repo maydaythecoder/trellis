@@ -8,6 +8,7 @@
 //! lineage.
 
 use crate::VaultError;
+use crate::dates::Document;
 use crate::graph::Resolved;
 use crate::js;
 use crate::validate::{Note, parse};
@@ -79,12 +80,33 @@ fn match_link(s: &str) -> Option<(&str, usize)> {
     Some((capture, len))
 }
 
-fn section(note: &Note, marker: &str) -> String {
+/// A note's heading line, without its newline.
+///
+/// With `dates`, a note whose `dates.json` entry has a created day carries
+/// it inside the parentheses, and `estimated` when Apex marked it so. A note
+/// with no entry, or a null day, gets the plain heading: nothing is guessed.
+/// Without `dates` this is the ADR 0017 heading, byte for byte.
+fn heading(note: &Note, marker: &str, dates: Option<&Document>) -> String {
+    let created = dates
+        .and_then(|d| d.notes.get(&note.path))
+        .and_then(|e| e.created.day.as_deref().map(|d| (d, e.created.estimated)));
+    match created {
+        None => format!("### {} ({}){marker}", note.title, note.path),
+        Some((day, estimated)) => format!(
+            "### {} ({}, created {day}{}){marker}",
+            note.title,
+            note.path,
+            if estimated { ", estimated" } else { "" }
+        ),
+    }
+}
+
+fn section(note: &Note, marker: &str, dates: Option<&Document>) -> String {
     let body = note
         .body
         .trim_start_matches('\n')
         .trim_end_matches(js::is_ws);
-    format!("### {} ({}){marker}\n\n{body}\n", note.title, note.path)
+    format!("{}\n\n{body}\n", heading(note, marker, dates))
 }
 
 /// Compiles the context block for the note whose stem is `stem`.
@@ -94,6 +116,22 @@ fn section(note: &Note, marker: &str) -> String {
 /// visible reason. Nothing is written anywhere; the caller decides what to do
 /// with the text.
 pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultError> {
+    compile_with_dates(root, stem, cap, None)
+}
+
+/// [`compile`], with each lineage and reference heading annotated with the
+/// note's created day from `dates` (`[context] dates = true`, ADR 0022 §7).
+///
+/// `None` is exactly [`compile`], which is how the goldens stay the
+/// specification of the selection rule: the annotation adds bytes to
+/// headings and changes nothing about which notes are selected. It does
+/// count toward the cap, since it is sent.
+pub fn compile_with_dates(
+    root: &Path,
+    stem: &str,
+    cap: usize,
+    dates: Option<&Document>,
+) -> Result<Compiled, VaultError> {
     let v = parse(root)?;
     if !v.violations.is_empty() {
         return Err(VaultError::Invalid {
@@ -162,7 +200,7 @@ pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultErr
         notes[target].title,
         lineage
             .iter()
-            .map(|&i| section(&notes[i], if i == target { " [target]" } else { "" }))
+            .map(|&i| section(&notes[i], if i == target { " [target]" } else { "" }, dates))
             .collect::<Vec<_>>()
             .join("\n")
     );
@@ -197,9 +235,9 @@ pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultErr
                 .enumerate()
                 .map(|(i, n)| {
                     if i < keep_bodies {
-                        section(n, "")
+                        section(n, "", dates)
                     } else {
-                        format!("### {} ({})\n", n.title, n.path)
+                        format!("{}\n", heading(n, "", dates))
                     }
                 })
                 .collect();

@@ -59,6 +59,12 @@ pub struct InvalidSkill {
 pub struct SkillCatalog {
     pub valid: Vec<Skill>,
     pub invalid: Vec<InvalidSkill>,
+    /// Names in `valid` that came from a user-level directory rather than the
+    /// repository, for the `repo:` line.
+    pub user: Vec<String>,
+    /// User-level skills not loaded because a skill of the same name was
+    /// found first (the repository's, or an earlier user directory's).
+    pub shadowed: Vec<String>,
 }
 
 /// What goes into the prompt: the skills that fit under the cap, and how many
@@ -75,21 +81,8 @@ impl SkillCatalog {
     /// Reads `<root>/.trellis/skills`. Absent is an empty catalog, not an
     /// error: most repositories have no skills.
     pub fn discover(root: &Path) -> Self {
-        let dir = root.join(SKILLS_DIR);
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            return Self::default();
-        };
-        let mut dirs: Vec<(String, PathBuf)> = read
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
-            .collect();
-        // Sorted, so the list and which skills the cap leaves out are the same
-        // on every machine; `read_dir` order is the filesystem's.
-        dirs.sort();
-
         let mut catalog = Self::default();
-        for (dir_name, path) in dirs {
+        for (dir_name, path) in skill_dirs(&root.join(SKILLS_DIR)) {
             match load(&dir_name, &path) {
                 Ok(s) => catalog.valid.push(s),
                 Err(reason) => catalog.invalid.push(InvalidSkill {
@@ -98,6 +91,47 @@ impl SkillCatalog {
                 }),
             }
         }
+        catalog
+    }
+
+    /// The repository's skills, then each user-level directory's, in order.
+    ///
+    /// The first directory holding a name wins, and `read_body_in` looks in
+    /// the same order, so the body read is the one whose description was
+    /// listed. A repository's skill is never replaced by one from the user's
+    /// machine: the repository's is the one its contributors can review. A
+    /// directory counts as found even when its skill is invalid, so which
+    /// skill a model reads never depends on whether an earlier one parsed.
+    /// The merged list is re-sorted by name, so the cap cuts by name as it
+    /// does for a repository alone.
+    pub fn discover_with(root: &Path, user_dirs: &[PathBuf]) -> Self {
+        let mut catalog = Self::discover(root);
+        let mut found: Vec<String> = catalog
+            .valid
+            .iter()
+            .map(|s| s.name.clone())
+            .chain(catalog.invalid.iter().map(|i| i.dir.clone()))
+            .collect();
+        for base in user_dirs {
+            for (dir_name, path) in skill_dirs(base) {
+                if found.contains(&dir_name) {
+                    catalog.shadowed.push(dir_name);
+                    continue;
+                }
+                found.push(dir_name.clone());
+                match load(&dir_name, &path) {
+                    Ok(s) => {
+                        catalog.user.push(s.name.clone());
+                        catalog.valid.push(s);
+                    }
+                    Err(reason) => catalog.invalid.push(InvalidSkill {
+                        dir: format!("{}/{dir_name}", base.display()),
+                        reason,
+                    }),
+                }
+            }
+        }
+        catalog.valid.sort_by(|a, b| a.name.cmp(&b.name));
         catalog
     }
 
@@ -131,16 +165,25 @@ impl SkillCatalog {
 /// directory. A skill that is present but invalid is refused with its reason,
 /// the same one `trellis doctor` gives.
 pub fn read_body(root: &Path, name: &str) -> Result<String, String> {
+    read_body_in(root, &[], name)
+}
+
+/// [`read_body`], looking in the user-level directories after the
+/// repository, in the order [`SkillCatalog::discover_with`] uses.
+pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<String, String> {
     if let Err(e) = check_name(name) {
         return Err(format!("`{name}` is not a skill name: {e}"));
     }
-    let dir = root.join(SKILLS_DIR).join(name);
-    if !dir.is_dir() {
+    let Some(dir) = std::iter::once(root.join(SKILLS_DIR))
+        .chain(user_dirs.iter().cloned())
+        .map(|base| base.join(name))
+        .find(|d| d.is_dir())
+    else {
         return Err(format!(
             "no skill named `{name}`. The skills listed in the prompt are the ones this \
-             repository has."
+             run has."
         ));
-    }
+    };
     let text = std::fs::read_to_string(dir.join("SKILL.md"))
         .map_err(|e| format!("skill `{name}` has no readable SKILL.md: {e}"))?;
     let parsed = parse(&text).map_err(|e| format!("skill `{name}` is invalid: {e}"))?;
@@ -151,6 +194,82 @@ pub fn read_body(root: &Path, name: &str) -> Result<String, String> {
         ));
     }
     Ok(parsed.body)
+}
+
+/// Where `read_skill` looks, and which names an agent profile may read.
+///
+/// Held by the orchestrator, because that is where `read_skill` is served: a
+/// filter applied only to the listing leaves a model that already knows a
+/// name free to read it (ADR 0026 §4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillAccess {
+    /// User-level skill directories, each holding `<name>/SKILL.md`, after
+    /// the repository's in precedence.
+    pub user_dirs: Vec<PathBuf>,
+    /// The agent profile's `[skills]`, when the run executes as one.
+    pub policy: Option<SkillPolicy>,
+}
+
+impl SkillAccess {
+    /// The body `read_skill` returns, or why it may not.
+    pub fn read(&self, root: &Path, name: &str) -> Result<String, String> {
+        if let Some(p) = &self.policy {
+            p.check(name)?;
+        }
+        read_body_in(root, &self.user_dirs, name)
+    }
+}
+
+/// An agent profile's `[skills]` allow and deny lists (ADR 0026 §4).
+///
+/// Defined here rather than read from `trellis-queue`, so the loop does not
+/// depend on the queue. One predicate serves both the listing and
+/// `read_skill`; two would drift.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillPolicy {
+    pub profile: String,
+    /// `None` is every skill.
+    pub allow: Option<Vec<String>>,
+    pub deny: Vec<String>,
+}
+
+impl SkillPolicy {
+    /// `Err` names the profile and the list that excludes the skill, so the
+    /// model is told it is a rule, not a missing file.
+    pub fn check(&self, name: &str) -> Result<(), String> {
+        if self.deny.iter().any(|d| d == name) {
+            return Err(format!(
+                "skill `{name}` is denied to agent profile `{}`: its [skills] deny = {:?}",
+                self.profile, self.deny
+            ));
+        }
+        if let Some(a) = &self.allow
+            && !a.iter().any(|x| x == name)
+        {
+            return Err(format!(
+                "skill `{name}` is not available to agent profile `{}`: its [skills] \
+                 allow = {a:?}",
+                self.profile
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The subdirectories of `base`, sorted, so the list and which skills the
+/// cap leaves out are the same on every machine; `read_dir` order is the
+/// filesystem's. Absent is empty: most repositories have no skills.
+fn skill_dirs(base: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(read) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<(String, PathBuf)> = read
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .collect();
+    dirs.sort();
+    dirs
 }
 
 fn load(dir_name: &str, path: &Path) -> Result<Skill, String> {
@@ -472,6 +591,85 @@ mod tests {
             let e = read_body(d.path(), bad).unwrap_err();
             assert!(e.contains("is not a skill name"), "{bad}: {e}");
         }
+    }
+
+    fn user_skill(base: &Path, name: &str, text: &str) {
+        let d = base.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), text).unwrap();
+    }
+
+    #[test]
+    fn a_user_skill_loads_beside_the_repositorys_and_reads_back_from_its_own_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        skill(d.path(), "zeta", &md("zeta", "Repo."));
+        user_skill(user.path(), "alpha", &md("alpha", "User."));
+        let dirs = [user.path().to_path_buf()];
+        let c = SkillCatalog::discover_with(d.path(), &dirs);
+        let names: Vec<&str> = c.valid.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "zeta"], "sorted by name across sources");
+        assert_eq!(c.user, ["alpha"]);
+        assert!(
+            read_body_in(d.path(), &dirs, "alpha")
+                .unwrap()
+                .contains("BODY-alpha")
+        );
+        // Without the user directory the repository alone is what it was.
+        assert!(read_body(d.path(), "alpha").is_err());
+    }
+
+    #[test]
+    fn a_repository_skill_shadows_a_user_skill_of_the_same_name_in_listing_and_reading() {
+        // The risk: the listing shows the repository's description while
+        // `read_skill` serves the user's body, or the reverse. Both must
+        // resolve the same name to the same directory.
+        let d = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        skill(d.path(), "refactor", &md("refactor", "Repo."));
+        user_skill(user.path(), "refactor", &md("refactor", "User."));
+        let dirs = [user.path().to_path_buf()];
+        let c = SkillCatalog::discover_with(d.path(), &dirs);
+        assert_eq!(c.valid.len(), 1);
+        assert_eq!(c.valid[0].description, "Repo.");
+        assert_eq!(c.shadowed, ["refactor"]);
+        assert!(c.user.is_empty());
+        let body = read_body_in(d.path(), &dirs, "refactor").unwrap();
+        assert!(body.contains("BODY-refactor"));
+    }
+
+    #[test]
+    fn a_profile_deny_list_refuses_read_skill_by_exact_name_and_says_whose_list() {
+        // The gap ADR 0026 §4 recorded: the listing was filtered but an exact
+        // name still read the body. The refusal has to be at the read.
+        let d = tempfile::tempdir().unwrap();
+        skill(d.path(), "refactor", &md("refactor", "R."));
+        skill(d.path(), "triage", &md("triage", "T."));
+        let access = SkillAccess {
+            user_dirs: Vec::new(),
+            policy: Some(SkillPolicy {
+                profile: "reviewer".into(),
+                allow: None,
+                deny: vec!["refactor".into()],
+            }),
+        };
+        let e = access.read(d.path(), "refactor").unwrap_err();
+        assert!(
+            e.contains("agent profile `reviewer`") && e.contains(r#"deny = ["refactor"]"#),
+            "{e}"
+        );
+        assert!(access.read(d.path(), "triage").is_ok());
+
+        let allow = SkillAccess {
+            policy: Some(SkillPolicy {
+                profile: "reviewer".into(),
+                allow: Some(vec!["triage".into()]),
+                deny: Vec::new(),
+            }),
+            ..SkillAccess::default()
+        };
+        let e = allow.read(d.path(), "refactor").unwrap_err();
+        assert!(e.contains(r#"allow = ["triage"]"#), "{e}");
     }
 
     #[test]

@@ -129,6 +129,11 @@ pub struct UntrustedFactual {
     /// The agent profile the run executed as, when recorded.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Context files, system files and forced skills the run was given, by
+    /// name and size (ADR 0025), as the writer recorded them. Names only;
+    /// data, never instruction.
+    #[serde(default)]
+    pub inputs: Vec<super::Input>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -388,6 +393,7 @@ mod tests {
                 control: None,
                 tokens: None,
                 agent: None,
+                inputs: Vec::new(),
             },
             judgment: crate::Judgment::default(),
         }
@@ -483,6 +489,41 @@ mod tests {
         );
         let read = UntrustedTrail::from_json(&json).unwrap();
         assert_eq!(read.integrity(&json), Integrity::Intact);
+    }
+
+    #[test]
+    fn a_trail_without_inputs_keeps_its_bytes_and_recorded_inputs_are_under_the_digest() {
+        // The risk on one side: the new field changes the bytes, and so the
+        // digest, of every trail already committed. On the other: a record
+        // of what the run saw that can be edited without the digest noticing.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        assert!(!json.contains("inputs"), "{json}");
+
+        let mut t = a_trail("app/core.py");
+        t.factual.inputs = vec![
+            crate::Input {
+                kind: "context_file".into(),
+                name: "<user>/AGENTS.md".into(),
+                bytes: 4321,
+            },
+            crate::Input {
+                kind: "forced_skill".into(),
+                name: "refactor".into(),
+                bytes: 88,
+            },
+        ];
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.factual.inputs, t.factual.inputs);
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        let edited = json.replace("4321", "1");
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
+        );
     }
 
     #[test]
