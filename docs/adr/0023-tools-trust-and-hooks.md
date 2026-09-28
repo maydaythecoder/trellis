@@ -291,6 +291,24 @@ anyone being asked. Now the digest also covers:
     That errs toward asking again. `[checks]` commands do not get the
     variable. They are the repository's own test environment and are not
     bracketed.
+
+    *Amended after the fifth review of PR #1:* they do now, when
+    `.trellis/` holds any `*.py` file (links followed, as the digest
+    follows them). A test suite that imports code under `.trellis/` wrote
+    `__pycache__` there and untrusted the repository, and once the trust
+    recheck before every hook spawn landed (§5, "trusted code cannot be
+    rewritten mid-run") that would have voided the run at the next hook:
+    trellis's own checker breaking trust, not the model. Only then, because
+    the variable has a cost: a suite run without it recompiles every module
+    it imports on every check, and a check runs many times a run. With no
+    Python under `.trellis/`, nothing a check imports can write there, and
+    the suite keeps its bytecode cache. Set in `trellis_checks::run`, so
+    `typecheck`, `tests` and the import check get it, in a model run and in
+    a process agent's checks alike. Evidence:
+    `a_check_runs_without_bytecode_writes_when_dot_trellis_holds_python`
+    in `crates/trellis-checks/src/lib.rs` failed before the change;
+    `a_check_keeps_bytecode_caching_when_dot_trellis_holds_no_python` is a
+    guard on the cost side.
   - **`TrustState::Refused { reason }`.** A fingerprint that cannot be
     trusted read `Changed` when a trust was on record and `Unknown` when not.
     Either way the `repo:` line, `work`'s waiting reason and `doctor` told
