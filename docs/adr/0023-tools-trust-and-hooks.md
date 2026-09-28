@@ -46,6 +46,17 @@ binds; the others keep the model from asking.
 - **The composed schema is compiled by llguidance when the set is built**,
   before the snapshot. A custom schema llguidance cannot compile is a run that
   cannot start as configured and costs nothing.
+
+  *Amended at implementation.* It is not. `trellis-model`'s `grammar`
+  feature, which is what links llguidance, is off in the shipped binary on
+  purpose (its `Cargo.toml` says why), and the serving runtime compiles the
+  schema itself. What runs before the snapshot instead is a check that a
+  custom schema uses only a keyword subset (`type`, `description`, `title`,
+  `enum`, `const`, `default`, `items`, `properties`, `required`,
+  `additionalProperties`, `minimum`, `maximum`, `minLength`, `maxLength`,
+  `minItems`, `maxItems`) with known type names. A test compiles, with
+  llguidance, a composed schema using every keyword in the subset, so the
+  subset is what the grammar engine accepts rather than a guess about it.
 - **The default set is the measured one**: `blast_radius`, `read_file`,
   `edit`, `run_checks`, `read_skill` (named in the prompt only when there are
   skills, as before) and `done`. With no `[tools]` section the tool line and
@@ -83,9 +94,9 @@ relative, no `..`, no absolute paths.
   present at open, and a graph that disagrees with the tree is the failure
   the refusal in `apply_edit` exists to prevent.
 
-Output from `grep`, `find`, `ls`, `bash` and custom tools is capped at the
-tail (8 KiB, with a line saying how much was cut) before it becomes an
-observation. The adapter's own tail window then applies as it does to every
+Output from `grep`, `bash` and custom tools is capped at the tail (8 KiB,
+with a line saying how much was cut) before it becomes an observation;
+`find` and `ls` name at most 500 paths and say how many they left out. The adapter's own tail window then applies as it does to every
 observation.
 
 ### 3. `bash`, off by default
@@ -237,3 +248,66 @@ so older trails keep their shape and their digest.
   after the last change to that code.
 - `[checks]` remains the one repository-supplied execution path outside the
   trust store.
+
+## As built
+
+Decisions the text above left open, made when this was implemented. Test
+names are in the code beside each.
+
+- **The tool set rides on `RepoContext`.** `Transcript` and `Turn` are built
+  as struct literals in the adapter's tests, and `RepoContext` is the one
+  seed type everything builds with `..Default::default()`. Its default is the
+  measured set. The adapter's changes are four lines: the tool line, the
+  schema, the parser, and a `#[cfg(test)]` on the `ToolCallWire` import its
+  tests still use.
+- **Scripts are parsed against the run's set.** `ScriptedModel::from_json_with`
+  goes through the same parser as the runtime adapter; `cmd_run` builds the
+  set before the driver, so a script step calling a tool the run does not
+  offer fails before the snapshot. `from_json` alone parses every built-in
+  and no custom tool.
+- **A call outside the set is refused by the orchestrator before any gate
+  is asked**, so a person is never asked about a tool the run does not have.
+- **Gate order** is governance, the bash policy (auto mode only), the
+  `pre_tool` hook, then the approval gate. `ToolGate` gained a defaulted
+  `name()`; gates that return one (`pre_tool`, `bash_policy`) have their
+  denials logged by the orchestrator against the model call's position,
+  which is the turn number because the loop makes exactly one
+  `Request::Call` per turn and the convergence audit uses its own request.
+  `Handle::gate_log()` returns them; they are not carried on `Turn`.
+- **In the trail** a denial is an action with tool `pre_tool` or
+  `bash_policy`, target `<tool> <target>`, outcome `denied: <reason>`, cut at
+  120 characters like every outcome. The bash policy's reason names
+  `bash_allow` and `bash_unattended` first, so the cut keeps them.
+  `write_file` sets `wrote` when the file was created; `bash` and custom
+  tools never set it.
+- **`TRELLIS_RUN_ID` is the trail's run id.** The timestamp is taken when
+  the run starts and handed to the trail, so a hook can find the trail by
+  the id it was given. A consequence: `started_at` in a `cmd_run` trail is
+  now the start of the run rather than the moment the trail was written.
+- **What hooks receive.** `pre_tool`: the call's flat wire JSON.
+  `post_tool`: `{"call": <wire JSON>, "result": <the ToolResult as
+  serialized>}`. `before_run`: `{}`. `after_run`: `{"run_id", "converged",
+  "iterations", "reason", "touched"}`. `before_run` output is indented line
+  by line inside its fence, so no line it prints can be the fence's closing
+  line, and control characters other than newline and tab are dropped. It is
+  appended to `.trellis/context.md`'s notes, inside the repository fence. A
+  `before_run` that fails or times out adds nothing and the run says so and
+  continues; what failed was a source of context, not a check.
+- **Custom tools have a fixed 120-second timeout**, the same as bash's
+  default. Not configurable yet.
+- **Untrusted is per repository, not per item.** One digest covers every
+  hook, custom tool and the bash settings together; changing any of them
+  untrusts all of them. `disable` or `enable` naming an untrusted custom tool
+  is dropped rather than reported as unknown.
+- **The bash policy applies to every auto-mode run**, `trellis tui` included:
+  someone may be watching the interface, but nobody is asked.
+- **`[control] approve`** accepts the new built-ins and any declared custom
+  tool's name; in approve mode `bash` is appended to the list when bash is
+  loaded, and the trail's `control` field shows it.
+- **The `tools:` line** prints the set, the shell and its policy, and the
+  loaded hooks, whenever the set is not the measured default or hooks are
+  loaded. An unconfigured run prints what it printed before.
+
+Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust, a
+configurable custom-tool timeout, hooks for events other than the four
+above, and tracking of what `bash` or a custom tool wrote in the worktree.
