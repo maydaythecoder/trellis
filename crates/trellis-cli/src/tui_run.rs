@@ -233,7 +233,14 @@ async fn relay_approvals(
     }
 }
 
-pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>) -> Result<()> {
+/// `model_from_user`: the spec came from `--model`, not `[model] spec`
+/// (ADR 0024 §3).
+pub(crate) fn run(
+    root: &Path,
+    task: Option<String>,
+    model_spec: Option<String>,
+    model_from_user: bool,
+) -> Result<()> {
     // Refused rather than attempted when there is no terminal to drive.
     // `EventStream` waits on console input, which never arrives from a pipe,
     // so the interface would paint one frame and hang — and a hang that has
@@ -417,7 +424,10 @@ pub(crate) fn run(root: &Path, task: Option<String>, model_spec: Option<String>)
                                 &task,
                                 &spec,
                                 false,
-                                crate::RunSeeding::default(),
+                                crate::RunSeeding {
+                                    model_from_user,
+                                    ..crate::RunSeeding::default()
+                                },
                                 // `[control] mode` applies. In auto mode no
                                 // gate is installed and nothing is asked.
                                 crate::RunControl {

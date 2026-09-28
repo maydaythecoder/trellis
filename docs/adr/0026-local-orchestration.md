@@ -370,7 +370,11 @@ area = "parser"
 - month names `jan`–`dec` and day names `sun`–`sat`
 - day-of-week 0–7, where both 0 and 7 are Sunday
 - the usual rule that when day-of-month and day-of-week are both restricted,
-  a day matches if either one does
+  a day matches if either one does. *Amended 2026-09-27:* "restricted" is
+  Vixie cron's test, a field whose first character is not `*`. A field
+  starting with `*` (including `*/2`) makes the two AND, so
+  `0 9 */2 * mon` is odd-numbered Mondays; it had been read as restricted
+  and ORed, firing every Monday and every odd day.
 
 It does not support `L`, `W`, `#`, `?` or `@daily`-style names.
 
@@ -533,6 +537,15 @@ would create an invalid set is refused as a whole.
 This is Paperclip's `process` adapter. A profile with
 `command = ["prog", "arg", …]` instead of `model` runs its tasks like this:
 
+0. **Trust** (*amended 2026-09-27*, ADR 0023 §4). The command is
+   repository code, and before this amendment `work` ran it in a cloned
+   repository with no trust decision, where a hook or a custom tool would
+   not have loaded. Each process agent's argv, and the files it names, is
+   now an item in the trust fingerprint (`process agent <name>`, shown by
+   `trellis trust`). A task assigned to an untrusted process agent is not
+   claimed: it stays pending with the reason `agent <name> runs a
+   repository command; not trusted: run trellis trust`, and the runner
+   checks again before it spawns.
 1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
    model run.
 2. **Run** the command in the worktree root. Its stdin is the task text,

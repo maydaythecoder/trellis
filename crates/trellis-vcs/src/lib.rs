@@ -163,6 +163,60 @@ pub fn git_dir(root: &Path) -> Result<PathBuf, VcsError> {
     Ok(PathBuf::from(out.trim()))
 }
 
+/// A digest of what a commit of the whole worktree would hold right now:
+/// the tree id `git add -A && git write-tree` would give, computed in a
+/// throwaway copy of the index so the user's index is never touched.
+///
+/// Content-complete for everything git does not ignore — tracked files and
+/// untracked ones alike, bytes included. `git status --porcelain` is not: a
+/// file rewritten after it was first created keeps the same `??` line. Two
+/// equal fingerprints mean nothing a converged change could carry differs.
+/// Ignored files are outside it, as they are outside every change trellis
+/// proposes (ADR 0023, "after a pass").
+///
+/// Costs one index copy, one `add -A` (stat-cached, so it rehashes only
+/// what changed) and one `write-tree`. Writes blob objects into the object
+/// store as a side effect, which `git gc` collects.
+pub fn worktree_fingerprint(root: &Path) -> Result<String, VcsError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let index = PathBuf::from(git(root, &["rev-parse", "--git-path", "index"])?.trim());
+    let index = if index.is_absolute() {
+        index
+    } else {
+        root.join(index)
+    };
+    let tmp = index.with_file_name(format!(
+        "trellis-fingerprint-{}-{}.index",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    // A repository with no commits and nothing staged has no index yet;
+    // an empty one is what git would start from.
+    if index.is_file() {
+        std::fs::copy(&index, &tmp)?;
+    }
+    let run = |args: &[&str]| -> Result<String, VcsError> {
+        let mut git = Command::new("git");
+        git.args(args).current_dir(root).env("GIT_INDEX_FILE", &tmp);
+        // `git add -A` runs the repository's filters (clean/smudge drivers),
+        // which are repository-supplied commands (ADR 0024 §3).
+        trellis_core::secrets::scrub(&mut git);
+        let out = git.output()?;
+        if !out.status.success() {
+            return Err(VcsError::GitFailed {
+                command: format!("git {}", args.join(" ")),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let tree = run(&["add", "-A"]).and_then(|_| run(&["write-tree"]));
+    let _ = std::fs::remove_file(&tmp);
+    Ok(tree?.trim().to_string())
+}
+
 /// Commits exactly the given paths, and nothing else.
 ///
 /// Used for the decision trail. The brief calls for the trail to be
@@ -403,6 +457,36 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-qm", "init"]).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_fingerprint_sees_a_rewritten_untracked_file_and_leaves_the_index_alone() {
+        // The risk: `status --porcelain` says `?? new.py` before and after a
+        // rewrite of that file, so a guard built on it would miss a hook
+        // changing a file the run created.
+        let dir = temp_repo("fingerprint");
+        let clean = worktree_fingerprint(&dir).unwrap();
+        assert_eq!(clean, worktree_fingerprint(&dir).unwrap(), "stable");
+        std::fs::write(dir.join("new.py"), "x = 1\n").unwrap();
+        let created = worktree_fingerprint(&dir).unwrap();
+        assert_ne!(clean, created);
+        std::fs::write(dir.join("new.py"), "x = 2\n").unwrap();
+        assert_ne!(created, worktree_fingerprint(&dir).unwrap());
+        assert_eq!(
+            git(&dir, &["status", "--porcelain"]).unwrap().trim(),
+            "?? new.py",
+            "the user's index was not written"
+        );
+        std::fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        let ignored_before = worktree_fingerprint(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/x"), "y").unwrap();
+        assert_eq!(
+            ignored_before,
+            worktree_fingerprint(&dir).unwrap(),
+            "ignored files are outside it, as documented"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

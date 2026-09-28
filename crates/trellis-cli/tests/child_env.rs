@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const MARKER: (&str, &str) = ("TRELLIS_TEST_VISIBLE", "visible-marker-61c0a2");
-/// Built-in names, a repository provider's `key_env`, and a user-level
-/// provider's `key_env`: every way a key reaches trellis's environment.
+/// Built-in names and two user-level providers' `key_env`s: every way a key
+/// reaches trellis's environment. (A repository may no longer name a
+/// `key_env` at all, ADR 0024 §3, so both custom names are the user's.)
 const KEYS: [(&str, &str); 4] = [
     ("OPENAI_API_KEY", "canary-openai"),
     ("ANTHROPIC_API_KEY", "canary-anthropic"),
@@ -96,14 +97,7 @@ fn fixture(name: &str, config: &str, extra: &[(&str, String)]) -> Fixture {
     git(&repo, &["config", "core.autocrlf", "false"]);
     std::fs::create_dir_all(repo.join(".trellis")).unwrap();
     std::fs::write(repo.join("a.py"), "def f():\n    return 1\n").unwrap();
-    std::fs::write(
-        repo.join(".trellis/config.toml"),
-        format!(
-            "{config}\n[[providers]]\nname = \"repo\"\nprotocol = \"openai\"\n\
-             base_url = \"https://repo.invalid\"\nkey_env = \"TRELLIS_TEST_REPO_KEY\"\n"
-        ),
-    )
-    .unwrap();
+    std::fs::write(repo.join(".trellis/config.toml"), format!("{config}\n")).unwrap();
     for (path, body) in extra {
         let p = repo.join(path);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -118,7 +112,9 @@ fn fixture(name: &str, config: &str, extra: &[(&str, String)]) -> Fixture {
     std::fs::write(
         home.join("trellis/config.toml"),
         "[[providers]]\nname = \"user\"\nprotocol = \"anthropic\"\n\
-         base_url = \"https://user.invalid\"\nkey_env = \"TRELLIS_TEST_USER_KEY\"\n",
+         base_url = \"https://user.invalid\"\nkey_env = \"TRELLIS_TEST_USER_KEY\"\n\
+         [[providers]]\nname = \"second\"\nprotocol = \"openai\"\n\
+         base_url = \"https://second.invalid\"\nkey_env = \"TRELLIS_TEST_REPO_KEY\"\n",
     )
     .unwrap();
     Fixture { repo, home, dumps }
@@ -291,6 +287,11 @@ fn a_process_agent_inherits_no_key_unless_its_profile_passes_that_one() {
         );
         assert!(o.status.success(), "{}", combined(&o));
     }
+    // A process agent's command is repository code, so it runs only once
+    // the person has trusted it (ADR 0023 §4); the trust store is the
+    // fixture's, never the developer's.
+    let trust = trellis(&f, &["trust"]);
+    assert!(trust.status.success(), "trust: {}", combined(&trust));
     let out = trellis(&f, &["work"]);
     let said = combined(&out);
 

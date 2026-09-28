@@ -19,6 +19,10 @@ pub(crate) const OUTPUT_CAP: usize = 8_192;
 pub(crate) struct Tail {
     bytes: Vec<u8>,
     pub(crate) total: usize,
+    /// The first `cap` bytes as well, for the one reader that wants the
+    /// start of a stream rather than its end: `before_run`, whose output
+    /// is context read top down (ADR 0023 §5).
+    head: Vec<u8>,
 }
 
 impl Tail {
@@ -40,6 +44,11 @@ impl Tail {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.total == 0
+    }
+
+    /// The first bytes of the stream, up to the cap, as text.
+    pub(crate) fn head(&self) -> String {
+        String::from_utf8_lossy(&self.head).into_owned()
     }
 }
 
@@ -141,6 +150,8 @@ async fn read_tail<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut Tail, cap
             Ok(0) | Err(_) => return,
             Ok(n) => {
                 into.total += n;
+                let room = cap.saturating_sub(into.head.len());
+                into.head.extend_from_slice(&buf[..n.min(room)]);
                 into.bytes.extend_from_slice(&buf[..n]);
                 if into.bytes.len() > cap {
                     let excess = into.bytes.len() - cap;

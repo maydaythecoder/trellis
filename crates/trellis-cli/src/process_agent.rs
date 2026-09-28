@@ -66,6 +66,14 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             .unwrap_or(trellis_queue::profile::DEFAULT_TIMEOUT_S),
     );
 
+    // Trusted first (ADR 0023 §4): `work` already waits on this, and the
+    // runner checks again rather than assume every caller did.
+    if let Err(why) = crate::tooling::require_trusted(root) {
+        return RunEnd::Error {
+            run_id: None,
+            error: format!("agent `{}` runs a repository command; {why}", profile.name),
+        };
+    }
     // A clean tree first, exactly as a model run requires (ADR 0009).
     let snapshot = match trellis_vcs::snapshot(root) {
         Ok(s) => s,

@@ -31,9 +31,14 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 fn trellis(root: &Path, args: &[&str]) -> Output {
+    // The trust store is resolved from these (ADR 0023 §4); pointed beside
+    // the fixture so `trellis trust` here never writes the developer's own.
+    let home = root.with_extension("home");
     Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
         .current_dir(root)
+        .env("APPDATA", &home)
+        .env("XDG_CONFIG_HOME", &home)
         .env("NO_COLOR", "1")
         .env_remove("RUST_LOG")
         .output()
@@ -467,6 +472,11 @@ fn process_fixture(name: &str, command: &str, typecheck: &str) -> PathBuf {
     )
     .unwrap();
     git(&d, &["commit", "-qam", "checks", "--allow-empty"]);
+    // A process agent runs only once trusted (ADR 0023 §4, 0026 §11). The
+    // store is beside the fixture, cleared first so a stale one from an
+    // earlier run cannot stand in for this decision.
+    let _ = std::fs::remove_dir_all(d.with_extension("home"));
+    ok(&d, &["trust"]);
     d
 }
 
@@ -533,6 +543,34 @@ fn a_process_agent_whose_checks_fail_is_rolled_back_whatever_its_exit_code() {
         "",
         "the trail is committed, the change is gone"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_untrusted_process_agent_is_not_run_and_waits_for_trust() {
+    // ADR 0023 §4 / 0026 §11. The risk: a cloned repository's
+    // `.trellis/agents/*.toml` `command` ran on `trellis work` with no
+    // trust decision at all, where a hook or custom tool would not.
+    let d = process_fixture("proc-untrusted", MAKES_A_FILE, PASSES);
+    let _ = std::fs::remove_dir_all(d.with_extension("home"));
+    let id = queued_id(&ok(
+        &d,
+        &["queue", "add", "make a file", "--assignee", "maker"],
+    ));
+    let s = ok(&d, &["work"]);
+    assert!(!d.join("app/made.cfg").exists(), "it ran untrusted:\n{s}");
+    assert_eq!(ids(&d, "pending"), vec![id.clone()], "{s}");
+    let listed = ok(&d, &["queue", "list"]);
+    assert!(
+        format!("{s}{listed}").contains("not trusted: run trellis trust"),
+        "{s}\n{listed}"
+    );
+
+    // `trellis trust` names the command, and then it runs.
+    let t = ok(&d, &["trust"]);
+    assert!(t.contains("process agent maker"), "{t}");
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("CONVERGED"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

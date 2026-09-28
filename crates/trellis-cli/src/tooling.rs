@@ -45,7 +45,48 @@ pub(crate) fn fingerprint(root: &Path, cfg: &RepoConfig) -> Fingerprint {
         );
         (shell, settings)
     });
-    Fingerprint::of(root, &cfg.hook_config(), cfg.custom_tools(), bash)
+    Fingerprint::of_with(
+        root,
+        &cfg.hook_config(),
+        cfg.custom_tools(),
+        bash,
+        process_agents(root),
+    )
+}
+
+/// Each process agent's `command` (ADR 0026 §11), as a trust item: an argv
+/// from `.trellis/agents/*.toml` that `work` runs in the worktree, which is
+/// repository code as much as a hook is. A profile set that does not load
+/// contributes nothing here; `work` refuses it before anything runs.
+fn process_agents(root: &Path) -> Vec<trellis_loop::TrustItem> {
+    trellis_queue::profile::load_all(root)
+        .unwrap_or_default()
+        .into_values()
+        .filter_map(|p| {
+            let argv = p.file.command.clone()?;
+            Some(trellis_loop::TrustItem::command(
+                root,
+                format!("process agent {}", p.name),
+                &argv,
+                format!("timeout_s = {:?}", p.file.timeout_s),
+            ))
+        })
+        .collect()
+}
+
+/// `Ok(())` when the repository's executable configuration is trusted,
+/// else the sentence a waiting task shows. For `work`, before it runs a
+/// process agent, and for the process runner itself, before it spawns.
+pub(crate) fn require_trusted(root: &Path) -> std::result::Result<(), String> {
+    const WHY: &str = "not trusted: run trellis trust";
+    let cfg = RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
+    let fp = fingerprint(root, &cfg);
+    match TrustStore::user().and_then(|s| s.state(root, &fp)) {
+        Ok(TrustState::Trusted) => Ok(()),
+        Ok(TrustState::Changed) => Err(format!("{WHY} (changed since it was trusted)")),
+        Ok(TrustState::Unknown) => Err(WHY.to_string()),
+        Err(e) => Err(format!("{WHY} (the trust store could not be read: {e})")),
+    }
 }
 
 /// Decides what this run loads.
@@ -136,6 +177,14 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
         }
         if cfg.bash_requested() {
             parts.push("bash: requested".to_string());
+        }
+        let agents = fp
+            .items
+            .iter()
+            .filter(|i| i.label.starts_with("process agent "))
+            .count();
+        if agents > 0 {
+            parts.push(format!("process agents: {agents} present"));
         }
         format!("{}, not trusted (run trellis trust)", parts.join(", "))
     });
@@ -544,6 +593,57 @@ mod run_tests {
             (a[0].0.as_str(), a[0].1.as_str(), a[0].3),
             ("write_file", "pkg/new.py", true)
         );
+    }
+
+    #[test]
+    fn an_after_run_hook_that_writes_cannot_leave_bytes_in_a_converged_change() {
+        // The risk: after_run runs after the last check, so a file it writes
+        // sat in a "converged" change that no check had seen. The guard
+        // fingerprints the worktree around it, demotes the run, and the
+        // rollback takes the hook's bytes with the run's.
+        let script = r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
+            {"tool":"done","summary":"checked"}
+        ]}"#;
+        let config = format!(
+            "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
+            sh("exit 0"),
+            sh("echo late> late.py")
+        );
+        let (dir, spec) = fixture("after-run-writes", &config, script);
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("NOT CONVERGED"), "{said}");
+        assert!(said.contains("after_run hook changed"), "{said}");
+        assert!(
+            !dir.join("late.py").exists(),
+            "the hook's file must not survive:\n{said}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n",
+            "the run's own edit is rolled back with it"
+        );
+    }
+
+    #[test]
+    fn an_after_run_hook_that_only_observes_leaves_a_converged_run_alone() {
+        let script = r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
+            {"tool":"done","summary":"checked"}
+        ]}"#;
+        let config = format!(
+            "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
+            sh("exit 0"),
+            sh("exit 0")
+        );
+        let (dir, spec) = fixture("after-run-observes", &config, script);
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("CONVERGED after"), "{said}");
+        assert!(!said.contains("NOT CONVERGED"), "{said}");
     }
 
     // ---- ADR 0026 × 0023 / 0019, integrated: a profile narrows the run ----

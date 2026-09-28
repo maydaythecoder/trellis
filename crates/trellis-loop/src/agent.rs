@@ -139,6 +139,14 @@ pub struct Turn {
     /// the same reason as `radius_counts`: the trail records it as a fact,
     /// and a fact re-parsed from text rendered for a model is not one.
     pub human: Option<bool>,
+    /// Whether this turn may have changed the working tree: an applied
+    /// edit, a created file, any `bash` or custom tool that ran, or a hook
+    /// around the call that changed the worktree. A pass earlier than such a
+    /// turn describes a tree that no longer exists, so
+    /// [`Transcript::last_check_passed`] stops at it. Decided by the
+    /// orchestrator ([`crate::orchestrator::may_change_tree`]), which is
+    /// conservative: anything not known to be read-only counts.
+    pub may_have_changed_tree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +176,19 @@ pub enum NotConverged {
     GovernanceViolation {
         detail: String,
     },
+    /// A check passed, and then something that may have changed the tree
+    /// ran: an edit, a created file, `bash`, a custom tool, or a hook. The
+    /// pass describes a tree that no longer exists. Separate from
+    /// `StoppedWithoutPassingChecks` because the next move differs: run the
+    /// check again, rather than make it pass.
+    ChangedAfterLastCheck {
+        summary: String,
+    },
+    /// The run converged, and the `after_run` hook then changed the
+    /// worktree. The hook's bytes were never checked, so the change as a
+    /// whole is not a converged one (ADR 0023, "after a pass"). Constructed
+    /// by the binary, which is what runs `after_run`.
+    AfterRunChangedTree,
 }
 
 impl NotConverged {
@@ -186,6 +207,22 @@ impl NotConverged {
                 "could be served. Nothing was accepted, and the working tree is ",
                 "untouched: the orchestrator owns the only write path, so an ",
                 "orchestrator that is gone has written nothing."
+            )
+            .to_string(),
+            NotConverged::ChangedAfterLastCheck { summary } => format!(
+                concat!(
+                    "a check passed, and then the tree changed (an edit, a new file, ",
+                    "a command or a hook) with no check after it. Its own summary was: ",
+                    "{}. Nothing was accepted: a pass describes the tree it ran ",
+                    "against, and that tree no longer exists."
+                ),
+                summary
+            ),
+            NotConverged::AfterRunChangedTree => concat!(
+                "the run converged, and then the after_run hook changed the working ",
+                "tree. No check saw those bytes, so nothing was accepted and the ",
+                "whole change was rolled back. An after_run hook observes; it must ",
+                "not write in the worktree."
             )
             .to_string(),
             NotConverged::GovernanceViolation { detail } => format!(
@@ -359,16 +396,43 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    /// Whether the most recent executed check passed.
+    /// Whether the most recent executed check passed **and nothing that may
+    /// have changed the tree happened after it**.
     ///
     /// Deliberately "most recent" rather than "any": a check that passed
     /// before the last edit says nothing about the tree as it stands now.
+    /// Walking back from the end, a verdict answers; a turn that may have
+    /// changed the tree before any verdict is reached answers `false`. The
+    /// first version skipped every verdict-less turn, so pass, edit, done
+    /// converged on bytes no check had seen.
     pub fn last_check_passed(&self) -> bool {
-        self.turns
-            .iter()
-            .rev()
-            .find_map(|t| t.verdict_passed)
-            .unwrap_or(false)
+        for t in self.turns.iter().rev() {
+            // Before the verdict, on purpose: on a check's own turn the flag
+            // can only have come from a hook around it, and `post_tool` runs
+            // after the check. One flag cannot say which side of the verdict
+            // a hook wrote on, so a hook that writes on a check's turn
+            // voids that check. Hooks observe and gate; they do not write.
+            if t.may_have_changed_tree {
+                return false;
+            }
+            if let Some(v) = t.verdict_passed {
+                return v;
+            }
+        }
+        false
+    }
+
+    /// Whether a pass exists that a later tree-changing turn invalidated.
+    /// Only for the explanation: the user's next move is "run the check
+    /// again", not "make it pass".
+    fn pass_went_stale(&self) -> bool {
+        let Some(last_verdict) = self.turns.iter().rposition(|t| t.verdict_passed.is_some()) else {
+            return false;
+        };
+        self.turns[last_verdict].verdict_passed == Some(true)
+            && self.turns[last_verdict..]
+                .iter()
+                .any(|t| t.may_have_changed_tree)
     }
 }
 
@@ -584,6 +648,7 @@ pub async fn run_seeded<M: Model>(
                             radius_counts: None,
                             prompt_bytes: None,
                             human: None,
+                            may_have_changed_tree: false,
                         });
                         if !v.passed() {
                             return (
@@ -606,13 +671,12 @@ pub async fn run_seeded<M: Model>(
                         t,
                     )
                 } else {
-                    (
-                        Outcome::NotConverged {
-                            reason: NotConverged::StoppedWithoutPassingChecks { summary },
-                            iterations,
-                        },
-                        t,
-                    )
+                    let reason = if t.pass_went_stale() {
+                        NotConverged::ChangedAfterLastCheck { summary }
+                    } else {
+                        NotConverged::StoppedWithoutPassingChecks { summary }
+                    };
+                    (Outcome::NotConverged { reason, iterations }, t)
                 };
             }
             Step::Call(call) => {
@@ -620,7 +684,11 @@ pub async fn run_seeded<M: Model>(
                 // Read before dispatch: it describes the prompt that produced
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
-                let crate::orchestrator::Dispatched { result, human } = orch.call(&call).await;
+                let crate::orchestrator::Dispatched {
+                    result,
+                    human,
+                    may_have_changed_tree,
+                } = orch.call(&call).await;
                 if let Some(h) = human {
                     waited_on_human += h.waited;
                 }
@@ -722,6 +790,7 @@ pub async fn run_seeded<M: Model>(
                     radius_counts,
                     prompt_bytes,
                     human,
+                    may_have_changed_tree,
                 });
 
                 if repeats >= NO_PROGRESS_REPEATS {
@@ -2036,6 +2105,7 @@ rank = \"non-negotiable\"
                     radius_counts: None,
                     prompt_bytes: None,
                     human: None,
+                    may_have_changed_tree: false,
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -2045,6 +2115,7 @@ rank = \"non-negotiable\"
                     radius_counts: None,
                     prompt_bytes: None,
                     human: None,
+                    may_have_changed_tree: false,
                 },
             ],
             final_notice: false,

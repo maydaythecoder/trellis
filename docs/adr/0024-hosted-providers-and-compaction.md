@@ -76,14 +76,15 @@ provider:<name>#<model>            # a [[providers]] entry
 
 `llamacpp:`, `vllm:`, `openai:`, `sglang:` and `scripted:` are unchanged.
 The `#<model>` is required for a hosted spec. `provider:` is resolved by the
-binary against `.trellis/config.toml`:
+binary against `.trellis/config.toml` and the user's own `config.toml`
+(ADR 0025 §7):
 
 ```toml
 [[providers]]
 name = "groq"
 protocol = "openai"                 # or "anthropic"
 base_url = "https://api.groq.com/openai/v1"
-key_env = "GROQ_API_KEY"
+key_env = "GROQ_API_KEY"            # the user's file only; see §3, amended
 ```
 
 **The tool list is the run's `ToolSet`** (ADR 0023), one native tool per
@@ -227,6 +228,51 @@ Not covered: a process a child starts after reading the key from somewhere
 other than its environment (a file, a keychain) is outside what trellis
 passes to it.
 
+*Amended 2026-09-27: a key goes only where the user chose to send it.*
+Review of PR #1 found that a cloned repository's `.trellis/config.toml`
+could choose both halves of a key's journey: `[model] spec` named a hosted
+base URL, and `[[providers]]` named a `base_url` **and** a `key_env`, with
+the repository's entry winning a name over the user's. A plain `trellis run`
+then sent the user's key, or any variable the repository named
+(`AWS_SECRET_ACCESS_KEY`), to a host the repository chose. Now:
+
+- **`key_env` comes only from the user's file** (ADR 0025 §7). A
+  repository `[[providers]]` entry that sets it refuses the load, naming
+  the file and the entry. An entry without it uses the protocol's own
+  variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). This makes `key_env`
+  optional in the schema (`#[serde(default)]`, empty meaning the protocol's
+  variable), a non-append change to `config.rs`.
+- **On a provider name both files define, the user's entry wins.**
+- **A hosted endpoint the repository chose, not on this machine, is refused
+  before any snapshot or request** unless the pair (origin, key variable) is
+  one the user already sends that key to: `(https://api.openai.com,
+  OPENAI_API_KEY)`, `(https://api.anthropic.com, ANTHROPIC_API_KEY)`, or the
+  origin and variable of an entry in the user's own `[[providers]]`. The
+  pair, not the origin alone, so a repository cannot point OPENAI_API_KEY
+  at the origin of the user's groq entry. Origin is scheme, lowercased host
+  and port with the default filled in; an authority the transport might
+  read differently (userinfo, `?`, `#`, `\`, whitespace) is refused rather
+  than interpreted.
+- **"The repository chose"** means: the repository's `[model] spec`, an
+  agent profile's `model` (ADR 0026), or any `[[providers]]` entry the
+  repository defined, *whoever named the entry*: `--model provider:x#m`
+  names the entry, not its host. **The user chose** `--model` (on `run`,
+  `tui`, `doctor`, `work`), `/model` typed in a session, the model in an
+  RPC request or `set_model` (the operator's program), and a spec written
+  in the user's own file. Loopback endpoints are allowed from either side:
+  a key is sent there only when its variable is set.
+- `doctor` applies the same rule and refuses with the same message.
+
+Evidence: `hosted::tests` (the allowlist, the pairing, the user's own
+entries, `--model`, loopback, and the ambiguous authorities),
+`user_config::tests::a_repository_file_may_not_name_the_variable_a_key_is_read_from`
+and `..._the_user_s_entry_wins`, and two binary tests in
+`tests/hosted_keys.rs` that run a plain `trellis run` in a hostile
+repository with the variables set to a canary and assert a refusal before
+the snapshot with the canary nowhere in the output. The existing key-leak
+tests now define their provider in a user config directory, since the
+repository may no longer name `key_env`.
+
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
@@ -301,6 +347,19 @@ without a budget against the same replies and compares outcomes.
   produced `done` there is no such model turn; if the governance audit then
   appends one, the compaction sits just before the audit's action, which is
   also the order they happened in. Otherwise it is the trail's last action.
+- *Amended 2026-09-27.* **How the fit is found.** It used to render the
+  whole request once per candidate number of elided turns, which for a
+  hosted body is one JSON serialization of the conversation per extra
+  elided turn. The answer is unchanged (the smallest count at or above the
+  current one that fits, else all but the newest), but it is now computed
+  from per-turn sizes: eliding a turn changes the request by the size of
+  its note minus the size of its observation (plain length on the
+  completion tiers, JSON-escaped length for a hosted body). The chosen
+  count is rendered and its size checked against the prediction; on a
+  mismatch the old scan runs. Not a binary search, because the size is not
+  monotone: a note can be longer than a short observation. Tests assert
+  the same answer as the scan on a non-monotone transcript, and a bounded
+  number of renders.
 - **Model-written summaries are not built.** A summary is text a model wrote
   about the run, entering the context as though it were a record — judgment
   text in the place observations go. Elision loses detail and invents none.

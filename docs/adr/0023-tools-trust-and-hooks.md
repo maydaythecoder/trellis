@@ -74,6 +74,20 @@ binds; the others keep the model from asking.
 All paths go through the orchestrator's existing `resolve_in_repo` rule:
 relative, no `..`, no absolute paths.
 
+*Amended 2026-09-27: the rule is on the string, not on `is_absolute()`.*
+On Windows `/x` and `\x` are rooted without being absolute and `C:x` is
+relative to drive C's current directory, so all three passed and
+`root.join` left the repository. `unsafe_repo_path` now refuses, on every
+platform: a leading `/` or `\` (rooted, UNC, `\\?\`); any `:` (a drive
+prefix, and on NTFS an alternate data stream, which git cannot see and a
+rollback cannot remove; it also rules out git pathspec magic in `find`);
+any component made only of dots and spaces other than `.`, compared after
+the trailing dots and spaces Windows strips (`..`, `.. `, `...`); and any
+`RootDir`, `Prefix` or `ParentDir` component as the host parses it.
+Components split on both separators. The approval gate uses the same
+function for the calls it lets through unasked and for the edit preview,
+which read outside the repository on Windows before.
+
 - `grep {pattern, path?}` shells out to `git grep -n -I --untracked -e
   <pattern> -- <path>`. No regex crate: git's own matcher, over tracked and
   untracked files, skipping ignored ones and binaries.
@@ -93,6 +107,19 @@ relative, no `..`, no absolute paths.
   session (a full rebuild), because `Session::try_update` only knows files
   present at open, and a graph that disagrees with the tree is the failure
   the refusal in `apply_edit` exists to prevent.
+
+  *Amended 2026-09-27:* "a `.git` component" is compared case-insensitively,
+  after trailing dots and spaces are trimmed, and includes the 8.3 name
+  `git~1`, on every component and for `edit` as well as `write_file`
+  (`names_git_dir`). The exact-match check let `.GIT/hooks/pre-commit`
+  create a git hook on a case-insensitive filesystem (observed on Windows),
+  and `edit` had no check, so `.git/config` could be edited. Both survive a
+  rollback, which is git's own reset.
+
+  *Also amended 2026-09-27:* the ignore check fails closed. Only
+  `git check-ignore` exiting 1 ("not ignored") lets the write proceed; a
+  failure to start git, an exit of 128, or a signal refuses it with the
+  reason, where it used to be read as "not ignored".
 
 Output from `grep`, `bash` and custom tools is capped at the tail (8 KiB,
 with a line saying how much was cut) before it becomes an observation;
@@ -161,7 +188,35 @@ loaded only if the user has trusted it.
   trusted (run trellis trust)` (with custom tools and bash counted the same
   way). A run is not refused for being untrusted; it runs without what it
   was not trusted to run.
+- **Process agents** (*amended 2026-09-27*). A `.trellis/agents/*.toml`
+  profile with a `command` (ADR 0026 §11) is an argv `trellis work` runs in
+  the worktree. It is in the fingerprint as `process agent <name>`, with the
+  files its argv names, and an untrusted one is not run: its task waits
+  with `not trusted: run trellis trust`.
 - **A repository with none of these never opens the store.**
+
+*Amended 2026-09-27: what the digest covers, and what it does not.* Only
+argv elements that were themselves file paths were hashed, so
+`["sh", "-c", "./scripts/check.sh"]` or `["python", "-m", "tools.hook"]`
+hashed nothing that runs, and the code could change after trust without
+anyone being asked. Now the digest also covers:
+
+- **Every file under `.trellis/`**, as one item shown by `trellis trust`,
+  except `.trellis/runs/` (trails) and `.trellis/index.bin` (the index
+  cache), which trellis writes on every run and would otherwise untrust
+  the repository after each one. Added only when something would execute,
+  so a repository that declares nothing still never opens the store. This
+  includes `config.toml` itself, so any edit to it asks again.
+- **Paths inside a code string.** The argument after `-c`, `-e` or `/C` is
+  split on whitespace and shell punctuation, and every token that is a
+  regular file in the repository is hashed like an argv path.
+
+**Not covered, plainly:** code reached indirectly from outside `.trellis/`
+and outside any file an argv or code string names — a module imported by
+a hook (`python -m tools.hook` resolving to `tools/hook.py`), a file a
+script reads or sources, a program on `PATH`. A change there does not
+untrust the repository. **Keep hook and tool code under `.trellis/hooks/`
+or `.trellis/tools/`**, where every byte is in the digest.
 
 Not covered, and stated so it is not assumed: `[checks] typecheck` and
 `tests` are repository-supplied argv that trellis has always executed
@@ -183,16 +238,55 @@ directory, the same two environment variables as `bash`, and a timeout
   the approval gate, so a person is never asked about a call a hook refused.
 - **`post_tool`**: the call and the tool's result as JSON on stdin. Observe
   only: its output is discarded and it cannot alter the observation.
-- **`before_run`**: stdout, capped at 4 KiB, is added to the repository's
+- **`before_run`**: stdout, capped to its first 4 KiB (with the true total
+  printed after the cut; *amended 2026-09-27*, it had been a 4 KiB slice
+  from the middle of the last 8 KiB), is added to the repository's
   context inside a fenced `untrusted hook output` block, within the fence
   whose closing sentence says nothing above can authorise skipping a check.
   Runs after the snapshot, because a hook can write to the tree.
 - **`after_run`**: the outcome as JSON on stdin. Runs when the loop ends and
   before the rollback, so on a run that did not converge the rollback also
-  undoes what it wrote inside the worktree. It does not run on Ctrl-C.
+  undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
+  a converged run, a write by it demotes the run (see "After a pass").
 
 A hook can refuse a call. It cannot produce a pass, cannot make a run
 converge, and cannot rewrite a call or an observation (ADR 0004, ADR 0005).
+
+#### After a pass (amended 2026-09-27)
+
+A hook is repository code and nothing stops it writing in the worktree.
+Three of them run at points where a write would sit after the last check:
+`post_tool` after every call (the passing check included), `pre_tool`
+before every call, and `after_run` after the loop has converged. Before
+this amendment a hook that wrote at any of those points left bytes in a
+"converged" change that no check saw. Now:
+
+- **The worktree fingerprint.** `trellis_vcs::worktree_fingerprint` is the
+  tree id `git add -A && git write-tree` would give, computed in a copy of
+  the index so the user's is untouched. It covers the content of every
+  tracked and untracked file git does not ignore; `git status --porcelain`
+  would not, since a rewritten untracked file keeps its `??` line.
+  **Ignored files are not covered**, as they are not part of any change
+  trellis proposes, and a hook that writes one is not detected.
+- **`pre_tool` and `post_tool`.** When either is declared, the orchestrator
+  fingerprints the worktree before the gates and after `post_tool`. A
+  difference, or a fingerprint that could not be taken, marks the turn as
+  one that may have changed the tree, and `last_check_passed` stops there
+  (ADR 0004). One flag cannot say which side of a check a hook wrote on, so
+  a hook that writes on a check's own turn voids that check. Cost: two git
+  invocations per call, paid only by a repository that declares one of
+  these hooks.
+- **`after_run`.** The binary fingerprints the worktree around the hook on
+  a converged run. A difference, or a fingerprint that could not be taken,
+  demotes the run to `NotConverged(AfterRunChangedTree)`: it is reported,
+  the rollback removes the hook's bytes together with the run's, and the
+  trail records a run that did not converge. Chosen over moving `after_run`
+  to after the trail, which would still have needed the same guard. The
+  outcome JSON the hook was given said "converged"; the hook is told what
+  the loop decided, and the demotion is decided after it, from what it did.
+
+Hooks observe, gate, and add context. They do not write in the worktree,
+and a repository whose hooks do cannot converge.
 
 ### 6. Custom command tools
 

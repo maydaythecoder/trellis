@@ -96,6 +96,40 @@ pub struct Dispatched {
     pub result: ToolResult,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
+    /// Whether this call may have changed the working tree. See
+    /// [`may_change_tree`] for the tool's part; a `pre_tool` or `post_tool`
+    /// hook that changed the worktree (or whose effect could not be
+    /// compared) also sets it, because a hook runs around every call — the
+    /// passing check included — and would otherwise leave bytes behind that
+    /// no check saw (ADR 0023, "after a pass").
+    pub may_have_changed_tree: bool,
+}
+
+/// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
+/// that ran. `wrote` is whether `edit` or `write_file` reached the point of
+/// writing bytes, which is not the same as succeeding: a write that failed
+/// half way, or an edit written and then refused by the index, still
+/// changed the file.
+///
+/// Exhaustive on purpose, like `tool_result_variants_are_accounted_for`: a
+/// new tool does not compile until someone decides here whether it writes,
+/// and the answer for "not sure" is yes.
+pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
+    match call {
+        ToolCall::Edit { .. } | ToolCall::WriteFile { .. } => wrote,
+        // A process that ran may have written anything, whatever it
+        // printed and however it exited.
+        ToolCall::Bash { .. } | ToolCall::Custom { .. } => true,
+        ToolCall::BlastRadius { .. }
+        | ToolCall::ReadFile { .. }
+        | ToolCall::RunChecks { .. }
+        | ToolCall::ReadSkill { .. }
+        | ToolCall::Grep { .. }
+        | ToolCall::Find { .. }
+        | ToolCall::Ls { .. }
+        | ToolCall::SearchNotes { .. }
+        | ToolCall::ReadNote { .. } => false,
+    }
 }
 
 /// What a person said about one call, and how long they took to say it.
@@ -179,6 +213,8 @@ impl Handle {
             || Dispatched {
                 result: ToolResult::Error("orchestrator stopped".into()),
                 human: None,
+                // A stopped actor owns the only write path and wrote nothing.
+                may_have_changed_tree: false,
             },
         )
         .await
@@ -250,6 +286,9 @@ pub struct Orchestrator {
     /// `[skills]` lists, enforced here because this is where the body is
     /// served (ADR 0026 §4).
     skills: crate::skills::SkillAccess,
+    /// Whether the call being served reached a write, for
+    /// [`may_change_tree`]. Reset at the start of every gated call.
+    wrote: bool,
 }
 
 impl Orchestrator {
@@ -268,6 +307,7 @@ impl Orchestrator {
             calls: 0,
             gate_log: Vec::new(),
             skills: crate::skills::SkillAccess::default(),
+            wrote: false,
         }
     }
 
@@ -403,8 +443,32 @@ impl Orchestrator {
                     self.tools.names().join(", ")
                 )),
                 human,
+                may_have_changed_tree: false,
             };
         }
+        self.wrote = false;
+        // `pre_tool` and `post_tool` are repository code that runs around
+        // every call, the passing check included, and nothing stops either
+        // writing. The worktree is compared across both, so a hook that
+        // writes marks the turn as one that may have changed the tree and
+        // the pass before it stops counting (ADR 0023, "after a pass").
+        // Only when such a hook is declared: two git calls per turn is a
+        // cost only a repository with hooks pays.
+        let watched = self.hooks.as_ref().is_some_and(|h| {
+            let c = h.config();
+            c.pre_tool.is_some() || c.post_tool.is_some()
+        });
+        let before = watched.then(|| trellis_vcs::worktree_fingerprint(&self.root).ok());
+        let root = self.root.clone();
+        // An unreadable fingerprint on either side counts as a change: the
+        // guard fails closed, because "could not tell" is not "unchanged".
+        let changed_since = move |before: &Option<Option<String>>| match before {
+            None => false,
+            Some(None) => true,
+            Some(Some(b)) => trellis_vcs::worktree_fingerprint(&root)
+                .ok()
+                .is_none_or(|a| a != *b),
+        };
         for i in 0..=self.gates.len() {
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
@@ -431,6 +495,7 @@ impl Orchestrator {
                 return Dispatched {
                     result: ToolResult::Error(reason),
                     human,
+                    may_have_changed_tree: changed_since(&before),
                 };
             }
         }
@@ -452,10 +517,12 @@ impl Orchestrator {
                 None => crate::listing::grep(&self.root, pattern, None).await,
             },
             ToolCall::Find { glob } => {
-                if glob.starts_with('/') || glob.split(['/', '\\']).any(|s| s == "..") {
+                // The same predicate as every path: a `:` also rules out
+                // git's pathspec magic (`:/`, `:(top)`).
+                if unsafe_repo_path(glob).is_some() {
                     ToolResult::Error(format!(
-                        "glob `{glob}` must be relative to the repository root and must not \
-                         contain `..`"
+                        "glob `{glob}` must be relative to the repository root, with no \
+                         leading `/` or `\\`, no drive letter or `:`, and no `..`"
                     ))
                 } else {
                     crate::listing::find(&self.root, glob).await
@@ -482,7 +549,11 @@ impl Orchestrator {
             let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
             h.post_tool(&call, as_json).await;
         }
-        Dispatched { result, human }
+        Dispatched {
+            result,
+            human,
+            may_have_changed_tree: may_change_tree(&call, self.wrote) || changed_since(&before),
+        }
     }
 
     /// Creates a file that does not exist (ADR 0023 §2).
@@ -496,10 +567,7 @@ impl Orchestrator {
             Ok(f) => f,
             Err(e) => return ToolResult::Error(e),
         };
-        if Path::new(path)
-            .components()
-            .any(|c| c.as_os_str() == ".git")
-        {
+        if names_git_dir(path) {
             return ToolResult::Error(format!("write_file refused: `{path}` is inside .git"));
         }
         if full.exists() {
@@ -508,6 +576,10 @@ impl Orchestrator {
                  change an existing one."
             ));
         }
+        // `check-ignore` exits 0 for ignored, 1 for not ignored, and 128 on
+        // a fatal error. Only a 1 lets the write go ahead: a check that could
+        // not be made is not a "no", and reading it as one wrote files a
+        // rollback's `git clean` might never remove. Fail closed.
         let mut git = tokio::process::Command::new("git");
         git.args(["check-ignore", "-q", "--no-index", "--"])
             .arg(path)
@@ -516,12 +588,27 @@ impl Orchestrator {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         trellis_core::secrets::scrub(git.as_std_mut());
-        let ignored = git.status().await.is_ok_and(|s| s.success());
-        if ignored {
-            return ToolResult::Error(format!(
-                "write_file refused: `{path}` is ignored by git, so a rollback could not \
-                 remove it. Choose a path git tracks."
-            ));
+        let status = git.status().await;
+        match status.as_ref().map(|s| s.code()) {
+            Ok(Some(1)) => {}
+            Ok(Some(0)) => {
+                return ToolResult::Error(format!(
+                    "write_file refused: `{path}` is ignored by git, so a rollback could not \
+                     remove it. Choose a path git tracks."
+                ));
+            }
+            other => {
+                let why = match other {
+                    Err(e) => format!("git could not be started: {e}"),
+                    Ok(Some(c)) => format!("`git check-ignore` exited {c}"),
+                    Ok(None) => "`git check-ignore` was ended by a signal".to_string(),
+                };
+                return ToolResult::Error(format!(
+                    "write_file refused: could not ask git whether `{path}` is ignored \
+                     ({why}), and a file git ignores would survive a rollback. Nothing \
+                     was written."
+                ));
+            }
         }
         if let Some(dir) = full.parent()
             && let Err(e) = std::fs::create_dir_all(dir)
@@ -529,7 +616,9 @@ impl Orchestrator {
             return ToolResult::Error(format!("cannot create the directory for {path}: {e}"));
         }
         // `create_new`, not `write`: a file that appeared since the check
-        // above is not overwritten.
+        // above is not overwritten. `wrote` is set first, because a write
+        // that fails part way still leaves a file.
+        self.wrote = true;
         let written = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -694,6 +783,12 @@ impl Orchestrator {
             Ok(f) => f,
             Err(e) => return ToolResult::Error(e),
         };
+        // `.git/config` exists, so without this an edit could set
+        // `core.hooksPath` or rewrite a hook, and rollback — git's own
+        // reset — does not restore git's own directory.
+        if names_git_dir(path) {
+            return ToolResult::Error(format!("edit refused: `{path}` is inside .git"));
+        }
         let src = match std::fs::read_to_string(&full) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -813,6 +908,9 @@ impl Orchestrator {
             updated
         };
 
+        // Set before the write, not after it succeeds: a write that fails
+        // part way has still changed the file.
+        self.wrote = true;
         if let Err(e) = std::fs::write(&full, &updated) {
             return ToolResult::Error(format!("cannot write {path}: {e}"));
         }
@@ -909,15 +1007,79 @@ impl Orchestrator {
     /// they are well-formed strings (S7 metric 3). `..` is the cheap way a
     /// well-formed path becomes a write outside the tree the rollback covers.
     fn resolve_in_repo(&self, rel: &str) -> Result<PathBuf, String> {
-        let p = Path::new(rel);
-        if p.is_absolute() || p.components().any(|c| c.as_os_str() == "..") {
-            return Err(format!(
-                "path `{rel}` must be relative to the repository root and must not \
-                 contain `..`"
-            ));
+        if let Some(why) = unsafe_repo_path(rel) {
+            return Err(why);
         }
-        Ok(self.root.join(p))
+        Ok(self.root.join(rel))
     }
+}
+
+/// Whether any component of `rel` names git's own directory, by any
+/// spelling a filesystem this runs on would resolve to it: compared
+/// case-insensitively (NTFS, APFS), after the trailing dots and spaces
+/// Windows strips (`.git.`, `.git `), and including the 8.3 short name
+/// `git~1` — the list git itself checks since CVE-2014-9390. Every
+/// component, so `app/.GIT/x` is caught as well: a nested `.git` is a
+/// repository git would honour.
+pub(crate) fn names_git_dir(rel: &str) -> bool {
+    rel.split(['/', '\\']).any(|seg| {
+        let s = seg.trim_end_matches(['.', ' ']).to_ascii_lowercase();
+        s == ".git" || s == "git~1"
+    })
+}
+
+/// Why `rel` cannot be used as a path inside the repository, or `None`.
+///
+/// Shared with the approval gate, which lets through (unasked) any call it
+/// predicts the orchestrator will refuse: a gate and an orchestrator that
+/// disagreed would skip the person on a call that then ran.
+///
+/// `is_absolute()` alone is not the rule: on Windows `/x` and `\x` are
+/// rooted but not absolute, `C:x` is relative to drive C's current
+/// directory, and `root.join` of any of them leaves the repository. So the
+/// rule is on the string, the same on every platform:
+///
+/// - no leading `/` or `\` (rooted, UNC, `\\?\`), and no drive prefix `X:`;
+/// - no `:` anywhere: on NTFS `a.py:s` is an alternate data stream, a write
+///   git cannot see and a rollback cannot remove;
+/// - no component that is only dots and spaces other than `.`, compared
+///   after the trailing dots and spaces Windows strips, so `..`, `.. ` and
+///   `...` are all parent references here;
+/// - and, belt and braces, no `RootDir` or `Prefix` component as this host
+///   parses it.
+///
+/// Components are split on both `/` and `\`, since Windows accepts either.
+pub(crate) fn unsafe_repo_path(rel: &str) -> Option<String> {
+    let refuse = || {
+        Some(format!(
+            "path `{rel}` must be relative to the repository root, with no leading \
+             `/` or `\\`, no drive letter or `:`, and no `..`"
+        ))
+    };
+    if rel.starts_with(['/', '\\']) || rel.contains(':') {
+        return refuse();
+    }
+    let parentish = |seg: &str| {
+        let t = seg.trim_end_matches(['.', ' ']);
+        t.is_empty() && seg != "." && !seg.is_empty()
+    };
+    if rel.split(['/', '\\']).any(parentish) {
+        return refuse();
+    }
+    let p = Path::new(rel);
+    if p.is_absolute()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+                    | std::path::Component::ParentDir
+            )
+        })
+    {
+        return refuse();
+    }
+    None
 }
 
 /// How long a custom tool may run. The same default as `bash`: a custom
@@ -1561,5 +1723,46 @@ scope = [\"{scope}\"]
 
         // A `.` component is not an escape.
         assert!(o.resolve_in_repo("./app/util.py").is_ok());
+    }
+
+    #[test]
+    fn rooted_and_drive_relative_paths_are_refused_on_every_platform() {
+        // The risk: on Windows `/x`, `\x` and `C:x` are not `is_absolute()`,
+        // and `root.join` of any of them leaves the repository — `/x` and
+        // `\x` to the root of the drive, `C:x` to drive C's current
+        // directory. Asserted on every platform, because the rule is on the
+        // string, not on how this host happens to read it.
+        let d = repo();
+        let o = Orchestrator::new(d.path(), CheckConfig::default());
+        for bad in [
+            "/x",
+            r"\x",
+            "C:x",
+            r"C:\x",
+            "c:/x",
+            r"\\server\share\x",
+            r"\\?\C:\x",
+            "app\\..\\..\\x",
+            "app/.. /x",
+            "app/../x",
+            "a.py:stream",
+        ] {
+            assert!(
+                o.resolve_in_repo(bad).is_err(),
+                "`{bad}` must be refused as a repository path"
+            );
+            assert!(
+                unsafe_repo_path(bad).is_some(),
+                "`{bad}`: the predicate the approval gate shares must agree"
+            );
+        }
+        for ok in [
+            "app/util.py",
+            "./app/util.py",
+            "a/b.c/d.py",
+            "..hidden/x.py",
+        ] {
+            assert!(unsafe_repo_path(ok).is_none(), "`{ok}` is ordinary");
+        }
     }
 }
