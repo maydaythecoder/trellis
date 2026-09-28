@@ -316,6 +316,12 @@ pub struct Task {
     /// The routine that created this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<String>,
+    /// The scheduled instant (Unix seconds) it was created for. With
+    /// `routine`, what makes a fire idempotent: a tick that fails after the
+    /// task was published and before the routine's state was saved finds
+    /// this task on the next tick instead of enqueuing the instant again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine_at: Option<i64>,
 }
 
 impl Task {
@@ -388,6 +394,7 @@ pub struct NewTask {
     /// Start in `backlog` rather than `todo`.
     pub backlog: bool,
     pub routine: Option<String>,
+    pub routine_at: Option<i64>,
 }
 
 /// Every task's state and status by id: what blockers and wakes are decided
@@ -529,6 +536,7 @@ impl Queue {
             blockers: new.blockers,
             needs_approval: new.needs_approval,
             routine: new.routine,
+            routine_at: new.routine_at,
             ..Task::default()
         };
         t.status = Some(if new.backlog {
