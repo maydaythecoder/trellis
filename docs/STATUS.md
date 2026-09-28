@@ -1725,9 +1725,9 @@ name the test that would fail if it were reverted.
   full-screen interface — both are exercised through the same channel with
   the answer supplied by the test — and Ctrl-C while a question is open.
   Executable hooks are not built (ADR 0018 §3). Known edge: whether there
-  is a person to ask is decided by stdin alone, so `trellis run` with a
-  terminal on stdin and stdout redirected to a file still asks, and the
-  question goes into the file.
+  is a person to ask needs both stdin and stdout to be a terminal, so
+  `trellis run > log` in approve mode refuses rather than asking a question
+  nobody can see.
 - **Skills (ADR 0019).** `.trellis/skills/<name>/SKILL.md` is discovered,
   names and descriptions are listed inside the repository fence under a
   reference-material heading, capped at 4,096 bytes with the omitted count on
@@ -1739,8 +1739,10 @@ name the test that would fail if it were reverted.
   skills directory; `read_skill` round-trips through the scripted model; the
   schema includes it; a skill cannot make a run converge. Not measured:
   whether any model reads a skill when one applies, or does better for it.
-  Known limit: the prompt keeps the last 2,000 characters of an observation,
-  so a long skill body is mostly cut; not changed here.
+  A `read_skill` observation is shown from its head, up to 8,000
+  characters, with the path and closing label restated past a cut; every
+  other observation keeps the 2,000-character tail window unchanged (both
+  asserted in `adapter.rs` tests).
 - **Local work queue (ADR 0020).** `trellis-queue` stores tasks as JSON files
   under `<git-dir>/trellis/queue/{pending,claimed,done,failed}`. The new
   commands are `trellis queue add|list|requeue` and

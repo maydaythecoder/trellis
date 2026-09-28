@@ -86,13 +86,16 @@ Decisions the text above left open, made when this was implemented.
   and it keeps the prompt of a repository without skills byte-identical to
   the one the existing measurements were taken with. An unknown or invalid
   name comes back as an error observation with the reason.
-- **A body is labelled at both ends.** The adapter keeps the last 2,000
-  characters of a long observation, which cuts a skill body's first line, so
-  the reference-material label is repeated after the body. The truncation
-  itself is not changed here, and it matters: the `rust-unsafe` fixture's
-  `SKILL.md` is 7,765 bytes as committed upstream, so a model reading it
-  sees roughly its last quarter. Reading a
-  long skill well needs a different observation window, which is not built.
+- **A body is labelled at both ends**, and **a skill has its own window.**
+  Every other observation keeps its last 2,000 characters, the window every
+  existing prompt measurement was taken with. That window showed the
+  `rust-unsafe` fixture (7,765 bytes upstream) from roughly its last quarter,
+  which is a procedure with its instructions cut off. A `read_skill`
+  observation is shown from its *head*, up to 8,000 characters (about 2,000
+  tokens, once per skill per run). Past that it is cut at the end with the
+  path to the full file and the closing label restated, so the
+  reference-material label survives either cut. Other observations are
+  unchanged byte for byte; `adapter.rs` tests assert both.
 - **`read_skill` can be listed in `[control] approve`** (ADR 0018).
 - **Test fixture.** `crates/trellis-loop/tests/fixtures/skills/rust-unsafe/`
   is copied unchanged from low-level-dev-skills at commit `bdc58472`, with its

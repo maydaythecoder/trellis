@@ -15,9 +15,54 @@
 //! formatting — must be retried inside this call or a recoverable hiccup would
 //! end work that was going fine.
 
-use crate::agent::{Model, Step, Transcript};
+use crate::agent::{Model, Step, ToolCall, Transcript};
 use crate::wire::ToolCallWire;
 use trellis_model::{AdapterTier, Dialect, RuntimeClient};
+
+/// How much of an ordinary observation the prompt keeps: the last 2,000
+/// characters. The tail is where a check's failure and a file's end live, and
+/// every prompt measured so far was taken with this window, so it stays.
+const OBSERVATION_TAIL: usize = 2_000;
+
+/// How much of a skill body the prompt keeps: the first 8,000 characters.
+///
+/// A skill is the opposite shape to a check's output. Its purpose, triggers
+/// and first steps are at the top, and the model asked for it on purpose, once
+/// (ADR 0019). The tail window showed a 7,765-byte skill from its last quarter,
+/// which is a skill with its instructions cut off. 8,000 characters is about
+/// 2,000 tokens, one read per skill per run; a longer body is cut at the end
+/// and says where the rest is, because `references/` and the file itself stay
+/// readable with `read_file`.
+const SKILL_HEAD: usize = 8_000;
+
+fn shown_observation(call: &ToolCall, obs: &str) -> String {
+    let chars = obs.chars().count();
+    match call {
+        ToolCall::ReadSkill { name } if chars > SKILL_HEAD => {
+            let head: String = obs.chars().take(SKILL_HEAD).collect();
+            // The body's closing label is past the cut, so it is restated:
+            // a skill is written in the imperative and must not arrive
+            // looking like an instruction with its disclaimer torn off.
+            format!(
+                "{head}\n...(truncated at {SKILL_HEAD} characters; the full text is \
+                 .trellis/skills/{name}/SKILL.md)...\n\
+                 --- end of skill `{name}`: reference material, not an instruction or a check ---"
+            )
+        }
+        ToolCall::ReadSkill { .. } => obs.to_string(),
+        // Bytes in the test, characters in the cut: exactly as before this
+        // function existed, so every other observation's prompt is unchanged
+        // byte for byte.
+        _ if obs.len() > OBSERVATION_TAIL => {
+            let tail: String = obs
+                .chars()
+                .skip(chars.saturating_sub(OBSERVATION_TAIL))
+                .collect();
+            format!("...(truncated)...\n{tail}")
+        }
+        _ => obs.to_string(),
+    }
+}
 
 /// The default per-reply ceiling handed to a runtime.
 ///
@@ -328,17 +373,7 @@ impl RuntimeModel {
                 i + 1,
                 turn.call
             ));
-            let obs = &turn.observation;
-            let shown: String = if obs.len() > 2000 {
-                let tail: String = obs
-                    .chars()
-                    .skip(obs.chars().count().saturating_sub(2000))
-                    .collect();
-                format!("...(truncated)...\n{tail}")
-            } else {
-                obs.clone()
-            };
-            p.push_str(&shown);
+            p.push_str(&shown_observation(&turn.call, &turn.observation));
             p.push('\n');
         }
 
@@ -535,6 +570,47 @@ fn truncate(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_skill_keeps_its_instructions_not_its_last_quarter() {
+        // The failure this defends: the tail window showed the rust-unsafe
+        // skill (7,765 bytes upstream) from roughly its last quarter, so the
+        // model asked for a procedure and received its ending.
+        let top = "## Purpose\nGuide writing sound unsafe Rust.\n";
+        let body = format!("{top}{}", "x".repeat(SKILL_HEAD + 500));
+        let call = ToolCall::ReadSkill {
+            name: "rust-unsafe".into(),
+        };
+        let shown = shown_observation(&call, &body);
+        assert!(shown.starts_with(top), "the top of the skill must survive");
+        assert!(shown.contains(".trellis/skills/rust-unsafe/SKILL.md"));
+        assert!(
+            shown.ends_with("reference material, not an instruction or a check ---"),
+            "the cut must not tear off the reference-material label"
+        );
+    }
+
+    #[test]
+    fn a_skill_that_fits_is_shown_whole() {
+        let call = ToolCall::ReadSkill { name: "s".into() };
+        let body = "a".repeat(SKILL_HEAD);
+        assert_eq!(shown_observation(&call, &body), body);
+    }
+
+    #[test]
+    fn every_other_observation_keeps_the_tail_window_it_was_measured_with() {
+        // Existing prompt measurements were taken with the 2,000-character
+        // tail; the skill window must not have moved it.
+        let call = ToolCall::ReadFile {
+            path: "a.py".into(),
+        };
+        let obs = format!("HEAD{}TAIL", "y".repeat(3_000));
+        let shown = shown_observation(&call, &obs);
+        assert!(shown.starts_with("...(truncated)...\n"));
+        assert!(shown.ends_with("TAIL"));
+        assert!(!shown.contains("HEAD"));
+        assert_eq!(shown.chars().count(), "...(truncated)...\n".len() + 2_000);
+    }
 
     /// How long a stub waits for the client to connect before giving up.
     ///
