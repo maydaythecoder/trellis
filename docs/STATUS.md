@@ -1705,6 +1705,37 @@ name the test that would fail if it were reverted.
 
 ## Recently closed
 
+- **pi, Apex and Paperclip inherited (ADR 0021; waves 0022–0026).** Each
+  capability of the three projects has a disposition in ADR 0021: built,
+  deferred, or excluded, with the clause it rests on. The waves built what
+  fits:
+  - **0022:** Apex vault parity, including `dates.json` anchors that match
+    Apex's own code bit for bit (tested against Apex's TypeScript run
+    unmodified).
+  - **0023:** a composable tool set, including opt-in `bash` with an
+    unattended allow-list, a trust store outside the repository, executable
+    hooks, and custom tools.
+  - **0024:** OpenAI-compatible and Anthropic hosted providers with native
+    tool calling over TLS (a default feature; +1,328,128 bytes, measured),
+    plus compaction and note tools.
+  - **0025:** context files, system files, prompt-template arguments,
+    `--json` and `trellis rpc`.
+  - **0026:** the task model, agent profiles, routines, approvals, a token
+    budget ledger, an activity log, export/import, and process agents that
+    trellis's own checks judge.
+
+  Tested: `cargo test --workspace` gives 1,093 passed and 0 failed on the
+  merged branch, and the local-only build passes 315. Each wave's ADR names
+  its tests.
+
+  Not tested:
+  - any hosted provider except through loopback stubs;
+  - approval with a person at a real terminal;
+  - whether a model does better with a vault note, a skill or a context
+    file.
+
+  The not-built items are listed at the top of ADR 0021.
+
 - **Tool gate and control dial (ADR 0018).** The orchestrator consults an
   ordered gate list before every model-originated call; governance
   `deny_write` is the first gate, and the existing governance tests pass

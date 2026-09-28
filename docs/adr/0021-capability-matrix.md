@@ -8,6 +8,31 @@
 are MIT-licensed. Each inventory was read from its project's own source and
 docs, not from memory.
 
+## Where this stands (2026-09-27)
+
+Every wave has landed on branch `inherit` (PR #1): W-A `2aa7b72`, W-B
+`749e5a0`, W-C `69f585b`, W-D `8147c7f`, W-E `773abb0`, and the cross-wave
+integration `cf68b00`. A row below marked W-x means **built under that
+wave's ADR**, except where the ADR says otherwise. Each of ADRs 0022–0026
+has an "As built" or "Not built" section, and it overrides this table
+wherever the two disagree. The items those sections name as not built are:
+
+- **W-A (0022):** auto-creating a note for a newly typed link (row 22).
+  There is no typing event on a command line; `vault new` is the explicit
+  form.
+- **W-B (0023):** per-item trust (one digest covers hooks, custom tools and
+  bash together); a configurable timeout for custom tools; tracking what
+  bash writes in the worktree; `after_run` on Ctrl-C.
+- **W-C (0024):** streaming, `HTTPS_PROXY`, a `Retry-After` given as a date,
+  summaries written by the model, OAuth/Bedrock/Vertex/Azure, and the `ask`
+  classifier on hosted models. Hosted runs have been exercised only against
+  loopback stubs, never a real provider.
+- **W-D (0025):** `/new`, `/name`, `/copy`, RPC `compact`, and a user-level
+  `system.md`.
+- **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),
+  `@profile` mentions, prompt-token and dollar accounting, and webhook or API
+  triggers. Routines fire only while `work` runs.
+
 ## Context
 
 The owner directed that trellis inherit every capability of the three
