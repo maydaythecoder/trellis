@@ -203,24 +203,73 @@ pub(crate) fn glob_match(pat: &str, path: &str) -> bool {
     segments(&p, &s)
 }
 
+// Both levels are the classic greedy wildcard match: on a mismatch, go back
+// to just after the most recent star and let it absorb one more unit. That
+// is exact, not a heuristic, because what lies between two stars matches
+// from a given start in exactly one way (each token consumes a fixed amount:
+// a segment, a byte, or one UTF-8 character for `?`), so the earliest place
+// it fits is never worse than a later one. Work is O(|pattern| × |path|)
+// token steps. The recursive form it replaces tried every split and was
+// exponential in the number of stars, with the glob the model's to choose
+// (review round 10).
+
+/// `**` over whole segments; each other pattern segment matches one path
+/// segment through [`segment`].
 fn segments(p: &[&str], s: &[&str]) -> bool {
-    match p.split_first() {
-        None => s.is_empty(),
-        Some((&"**", rest)) => (0..=s.len()).any(|i| segments(rest, &s[i..])),
-        Some((head, rest)) => match s.split_first() {
-            Some((seg, srest)) => segment(head.as_bytes(), seg.as_bytes()) && segments(rest, srest),
-            None => false,
-        },
+    let (mut pi, mut si) = (0, 0);
+    // (pattern index after the last `**`, path index it has absorbed up to)
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        if p.get(pi) == Some(&"**") {
+            pi += 1;
+            star = Some((pi, si));
+        } else if pi < p.len() && segment(p[pi].as_bytes(), s[si].as_bytes()) {
+            pi += 1;
+            si += 1;
+        } else if let Some((after, absorbed)) = star {
+            pi = after;
+            si = absorbed + 1;
+            star = Some((after, si));
+        } else {
+            return false;
+        }
     }
+    p[pi..].iter().all(|x| *x == "**")
 }
 
+/// `*` over bytes within one segment, `?` over one character.
 fn segment(p: &[u8], s: &[u8]) -> bool {
-    match p.split_first() {
-        None => s.is_empty(),
-        Some((b'*', rest)) => (0..=s.len()).any(|i| segment(rest, &s[i..])),
-        Some((b'?', rest)) => !s.is_empty() && segment(rest, &s[utf8_len(s[0]).min(s.len())..]),
-        Some((c, rest)) => s.first() == Some(c) && segment(rest, &s[1..]),
+    let (mut pi, mut si) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        match p.get(pi) {
+            Some(b'*') => {
+                pi += 1;
+                star = Some((pi, si));
+                continue;
+            }
+            Some(b'?') => {
+                pi += 1;
+                si += utf8_len(s[si]).min(s.len() - si);
+                continue;
+            }
+            Some(c) if *c == s[si] => {
+                pi += 1;
+                si += 1;
+                continue;
+            }
+            _ => {}
+        }
+        match star {
+            Some((after, absorbed)) => {
+                pi = after;
+                si = absorbed + 1;
+                star = Some((after, si));
+            }
+            None => return false,
+        }
     }
+    p[pi..].iter().all(|c| *c == b'*')
 }
 
 /// Byte length of the UTF-8 character that starts with `b`, so `?` means one
@@ -250,6 +299,56 @@ mod tests {
         assert!(!glob_match("app/?.py", "app/ab.py"));
         assert!(glob_match("tests/test_*.py", "tests/test_x.py"));
         assert!(glob_match("?.py", "é.py"), "one character, not one byte");
+    }
+
+    #[test]
+    fn pathological_globs_finish_in_linear_time() {
+        // The risk (review round 10, finding 7): `*` and `**` were matched
+        // by trying every split recursively, exponential in the number of
+        // stars, and the glob is the model's to choose: `find` with a dozen
+        // stars over one long name held the tool for as long as it liked.
+        // Run on a thread so a regression fails here instead of hanging.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let name = "a".repeat(60);
+            let star = format!("{}b", "*a".repeat(14));
+            let deep = format!("{}c", "a/".repeat(60));
+            let dstar = format!("{}b", "**/a/".repeat(14));
+            let _ = tx.send((glob_match(&star, &name), glob_match(&dstar, &deep)));
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the matcher did not finish in 2 s");
+        assert_eq!(got, (false, false));
+    }
+
+    #[test]
+    fn the_linear_matcher_agrees_with_the_documented_meaning() {
+        // What the old recursive matcher said on these, kept.
+        let cases = [
+            ("*", "", true),
+            ("*", "a", true),
+            ("a*b*c", "axxbyyc", true),
+            ("a*b*c", "axxbyy", false),
+            ("*a", "ba", true),
+            ("*a", "ab", false),
+            ("?", "", false),
+            ("??", "é", false),
+            ("*?", "é", true),
+            ("**", "", true),
+            ("**", "a/b/c", true),
+            ("a/**/b", "a/b", true),
+            ("a/**/b", "a/x/y/b", true),
+            ("a/**/b", "a/x/y/c", false),
+            ("**/b/**/c", "b/c", true),
+            ("**/b/**/c", "x/b/y/z/c", true),
+            ("**/b/**/c", "x/c/b", false),
+            ("*/*.py", "app/a.py", true),
+            ("*/*.py", "app/deep/a.py", false),
+        ];
+        for (p, s, want) in cases {
+            assert_eq!(glob_match(p, s), want, "{p} against {s}");
+        }
     }
 
     #[tokio::test]
