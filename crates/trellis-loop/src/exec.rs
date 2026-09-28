@@ -86,6 +86,10 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // After `envs`, so nothing in `spec.env` can put a key back. Every
+    // `bash`, custom tool, hook and listing command is spawned here, and its
+    // output is an observation the log and the trail both record.
+    trellis_core::secrets::scrub(cmd.as_std_mut());
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start `{program}`: {e}"))?;

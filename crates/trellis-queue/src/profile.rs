@@ -48,6 +48,12 @@ pub struct ProfileFile {
     pub model: Option<String>,
     /// A process agent (ADR 0026 §11): argv, run in the worktree.
     pub command: Option<Vec<String>>,
+    /// Environment variables a process agent inherits although trellis
+    /// removes them from every other child: the hosted keys (ADR 0024 §3).
+    /// Default none. Skipped when empty so a profile without it serializes
+    /// exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pass_env: Vec<String>,
     pub timeout_s: Option<u64>,
     pub reports_to: Option<String>,
     #[serde(default)]
@@ -164,6 +170,23 @@ pub fn validate(set: &BTreeMap<String, Profile>) -> Result<(), QueueError> {
                  tools, so the list could never be enforced (ADR 0026 §4)"
                     .into(),
             );
+        }
+        if f.command.is_none() && !f.pass_env.is_empty() {
+            // A model profile spawns nothing to pass a variable to; ignoring
+            // the field would read as a pass-through that happened.
+            return bad(
+                n,
+                "`pass_env` applies to a process agent (`command`); a model run's \
+                 children never receive a key"
+                    .into(),
+            );
+        }
+        if let Some(v) = f
+            .pass_env
+            .iter()
+            .find(|v| v.trim().is_empty() || v.contains('=') || v.contains('\0'))
+        {
+            return bad(n, format!("`pass_env` entry {v:?} is not a variable name"));
         }
         if f.command.is_none() && f.timeout_s.is_some() {
             return bad(
