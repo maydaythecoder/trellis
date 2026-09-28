@@ -149,6 +149,17 @@ fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The absolute git directory for the worktree at `root`.
+///
+/// In a linked worktree `.git` is a file, and this is the per-worktree
+/// directory it names (`<main>/.git/worktrees/<name>`), not the common one.
+/// Shelled out for the same reason as everything else here; the local work
+/// queue (ADR 0020) is what needs it.
+pub fn git_dir(root: &Path) -> Result<PathBuf, VcsError> {
+    let out = git(root, &["rev-parse", "--absolute-git-dir"])?;
+    Ok(PathBuf::from(out.trim()))
+}
+
 /// Commits exactly the given paths, and nothing else.
 ///
 /// Used for the decision trail. The brief calls for the trail to be

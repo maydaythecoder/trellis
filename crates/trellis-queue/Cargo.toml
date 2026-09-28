@@ -1,0 +1,26 @@
+[package]
+name = "trellis-queue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Internal to this workspace: the deliverable is the `trellis` binary.
+publish = false
+
+# The queue is file operations and a loop over a `Runner` the binary supplies.
+# It must not depend on trellis-loop or trellis-model: what it decides —
+# claim, stop, continue — is a function of how a run ended, not of how the
+# run was driven, and the tests prove that with a fake runner (ADR 0020).
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# For the git directory, by shelling out to `git` as trellis-vcs does for
+# everything else. git2 was cut from the build deliberately (6b5db2a).
+trellis-vcs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
