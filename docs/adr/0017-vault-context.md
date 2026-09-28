@@ -14,9 +14,11 @@ starts without it.
 
 The owner keeps such notes in an Apex-format vault, and a TypeScript
 implementation that compiles one note's context from such a vault already
-exists for another harness (pi). That implementation now lives beside this
-one as a twin in `integrations/pi`, and both are tested against the same
-fixture and golden outputs in `crates/trellis-vault/tests/fixtures/`.
+exists for another harness (pi). It is to live beside this one as a twin in
+`integrations/pi`, which had not landed when this ADR was written; the fixture
+and golden outputs both are to be tested against are already committed in
+`crates/trellis-vault/tests/fixtures/`, and the Rust side is tested against
+them.
 
 ## Decision
 
