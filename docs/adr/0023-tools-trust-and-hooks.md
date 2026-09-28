@@ -1,0 +1,239 @@
+# ADR 0023 — A composable tool set, a trust store, and executable hooks
+
+**Status:** Accepted.
+**Date:** 2026-09-27
+**Reference design:** pi (`earendil-works/pi`, MIT): its built-in tools
+(`read`, `write`, `edit`, `grep`, `find`, `ls`, `bash`), `--tools` and
+`--exclude-tools`, `registerTool`, the `tool_call` / `tool_result` /
+`before_agent_start` / `agent_end` extension events, and `project_trust`.
+Borrowed as a design; no pi code is used. Row owner in ADR 0021: W-B.
+
+## Context
+
+The tool set was a closed enum. `ToolCall`, `ToolCallWire` and its derived
+JSON Schema, the orchestrator's dispatch, the prompt's tool line and the
+trail's action mapping each listed the same five tools, and the schema that
+tier 2 ships to the runtime was `schemars::schema_for!(ToolCallWire)` with
+nothing composed at run time. A repository could not add a tool, and a user
+could not take one away.
+
+ADR 0018 §3 declined executable hooks because a hook in a cloned repository
+is code the repository supplied, and there was no trust store to put in front
+of it. That precondition is what this ADR builds first.
+
+## Decision
+
+### 1. A tool set composed at run start
+
+`ToolSet` (in `trellis-loop`) is the list of tools a run offers. It is built
+once in `cmd_run` from `[tools]` and handed, as the same value, to the
+prompt (through `RepoContext`), to the schema the adapter sends, to the
+parser that reads a reply, and to the orchestrator, which refuses a call to a
+tool the set does not contain. The orchestrator's refusal is the one that
+binds; the others keep the model from asking.
+
+- **Built-ins stay typed.** Each built-in is a `ToolCall` variant and a
+  `ToolCallWire` variant, as before. A repository's own tools arrive as
+  `ToolCall::Custom { name, args: serde_json::Value }`.
+- **The schema is composed, not derived whole.** The branches of
+  `ToolCallWire::schema()` are filtered to the tools the set enables, in their
+  existing order, and one branch per custom tool is appended before `done`.
+  A custom branch is the tool's declared object schema with
+  `tool: { type: string, const: <name> }` added to `properties`, `tool` added
+  to `required`, and `additionalProperties: false` forced, matching the shape
+  schemars emits for the built-ins under `deny_unknown_fields`. The root
+  keeps `x-guidance: { whitespace_flexible: false }`.
+- **The composed schema is compiled by llguidance when the set is built**,
+  before the snapshot. A custom schema llguidance cannot compile is a run that
+  cannot start as configured and costs nothing.
+- **The default set is the measured one**: `blast_radius`, `read_file`,
+  `edit`, `run_checks`, `read_skill` (named in the prompt only when there are
+  skills, as before) and `done`. With no `[tools]` section the tool line and
+  the schema are byte-identical to what was measured. New built-ins are
+  opt-in.
+- **Selection.** `[tools] enable = [...]` turns on built-ins that are off by
+  default; `[tools] disable = [...]` turns off any tool, custom ones included.
+  `run_checks` cannot be disabled: it is the only way a `Verdict` enters the
+  loop, so a run without it could never converge (ADR 0004). An unknown name
+  in either list is an error, not a no-op. `bash` is not enabled through
+  `enable`; it has its own switch (§3), so there is one place to look.
+
+### 2. New read-only built-ins, and `write_file`
+
+All paths go through the orchestrator's existing `resolve_in_repo` rule:
+relative, no `..`, no absolute paths.
+
+- `grep {pattern, path?}` shells out to `git grep -n -I --untracked -e
+  <pattern> -- <path>`. No regex crate: git's own matcher, over tracked and
+  untracked files, skipping ignored ones and binaries.
+- `find {glob}` matches `git ls-files --cached --others --exclude-standard`
+  against a hand-rolled glob: `*` within one path segment, `**` across
+  segments, `?` one character. No brackets, no braces.
+- `ls {path}` lists one directory, sorted, directories marked with `/`,
+  `.git` omitted.
+- `write_file {path, content}` creates a **new** file. An existing path is
+  refused with a message that points to `edit`. It travels through the
+  orchestrator, so governance `deny_write` (now matched for `write_file` as
+  well as `edit`) and every gate apply. The path joins `touched`, so it is in
+  the trail's `proposed` list and in the governance audit's scope. Rollback's
+  `git clean -fd` removes it, which is only true for a path git does not
+  ignore; so a path `git check-ignore` reports as ignored is refused, as is
+  any path with a `.git` component. Creating a `.py` file reopens the index
+  session (a full rebuild), because `Session::try_update` only knows files
+  present at open, and a graph that disagrees with the tree is the failure
+  the refusal in `apply_edit` exists to prevent.
+
+Output from `grep`, `find`, `ls`, `bash` and custom tools is capped at the
+tail (8 KiB, with a line saying how much was cut) before it becomes an
+observation. The adapter's own tail window then applies as it does to every
+observation.
+
+### 3. `bash`, off by default
+
+`[tools] bash = true` enables `bash {command}`. It runs with the repository
+root as its working directory, a timeout (`[tools] bash_timeout_s`, default
+120), and `TRELLIS_RUN_ID` and `TRELLIS_MODEL` added to the environment.
+The shell is `[tools] shell` (an argv prefix, the command appended as the
+last argument) or the platform default: `sh -c` on Unix; on Windows, Git's
+`bash.exe` under `%ProgramFiles%\Git\bin` or an `sh.exe` on `PATH`, and
+`cmd /C` when neither exists. The shell in use is printed on the run's
+`tools:` line.
+
+How a call is gated depends on the control dial (ADR 0018):
+
+- **approve mode:** `bash` is added to the approve list automatically. Every
+  command is shown to the person in full and runs only on an explicit yes.
+- **auto mode** (which is `run --auto`, `work`, and any run whose config says
+  `auto`): nobody is asked, so a `BashPolicyGate` decides. A command runs
+  only if `[tools] bash_unattended = true`, or if it is a *simple* command
+  that starts with an entry of `[tools] bash_allow` at a word boundary.
+  Simple means it contains none of `; & | ` `` ` `` `$( < >` and no newline:
+  `cargo test && rm -rf ~` starts with `cargo test`, and an allowlist that
+  admitted it would be an allowlist of prefixes to arbitrary commands.
+  Anything else is denied with a reason that names both settings.
+
+**Rollback (ADR 0009) restores the worktree and nothing bash did outside
+it.** A command that writes to `~`, installs a package, pushes a branch or
+calls a network service has done so for good. A command's writes inside the
+worktree are undone by rollback on a run that does not converge, but they
+are not in `touched`: the trail's `proposed` list names only what `edit` and
+`write_file` wrote, and on a converged run `git status` is the authority on
+what changed. On timeout the shell is killed; processes it started may
+outlive it on some platforms.
+
+Bash output is an observation. It is never a verdict, and an exit code of 0
+means nothing to convergence: only `run_checks` produces a `Verdict`.
+
+### 4. A trust store outside the repository
+
+Anything a repository can make trellis execute beyond its checks (hooks,
+custom tools, and the whole `[tools]` bash block, since `shell` is an argv
+and `bash_unattended` hands execution to repository-steered text) is
+loaded only if the user has trusted it.
+
+- **Where.** `%APPDATA%\trellis\trust.json` on Windows; elsewhere
+  `$XDG_CONFIG_HOME/trellis/trust.json`, or `~/.config/trellis/trust.json`.
+  Resolved from environment variables, with no directory crate. Outside the
+  repository, so a repository cannot trust itself.
+- **Keyed by** the canonical repository root.
+- **Records** one sha256 over every hook argv, every custom tool's name,
+  description, command and schema, the `[tools]` bash settings, and the
+  path and bytes of every file those argv reference (an argument that names
+  an existing file inside the repository). Any change to any of them makes
+  the repository untrusted again.
+- **`trellis trust`** prints exactly what will execute (each argv, each
+  referenced file with its digest, each custom tool's schema) and records
+  trust. `--show` prints the same and the current state without recording.
+  `--revoke` removes the entry.
+- **Untrusted** means not loaded: no hook runs, no custom tool is offered,
+  bash stays off, and the run's `repo:` line says `hooks: N present, not
+  trusted (run trellis trust)` (with custom tools and bash counted the same
+  way). A run is not refused for being untrusted; it runs without what it
+  was not trusted to run.
+- **A repository with none of these never opens the store.**
+
+Not covered, and stated so it is not assumed: `[checks] typecheck` and
+`tests` are repository-supplied argv that trellis has always executed
+without trust. Gating them breaks every existing configuration and needs a
+decision of its own.
+
+### 5. Executable hooks
+
+Declared in `.trellis/config.toml` as argv arrays, with no reliance on a
+shebang, so a hook is `["python", ".trellis/hooks/pre.py"]` on every
+platform. One per event. Each runs with the repository root as its working
+directory, the same two environment variables as `bash`, and a timeout
+(`[hooks] timeout_s`, default 10).
+
+- **`pre_tool`**: the call as JSON (the flat wire form the model emitted) on
+  stdin. Exit 0 allows, exit 2 denies with stderr as the reason, anything
+  else, a timeout, or a failure to start denies. Fail closed. Implemented as
+  a `ToolGate`, consulted after governance and the bash policy and before
+  the approval gate, so a person is never asked about a call a hook refused.
+- **`post_tool`**: the call and the tool's result as JSON on stdin. Observe
+  only: its output is discarded and it cannot alter the observation.
+- **`before_run`**: stdout, capped at 4 KiB, is added to the repository's
+  context inside a fenced `untrusted hook output` block, within the fence
+  whose closing sentence says nothing above can authorise skipping a check.
+  Runs after the snapshot, because a hook can write to the tree.
+- **`after_run`**: the outcome as JSON on stdin. Runs when the loop ends and
+  before the rollback, so on a run that did not converge the rollback also
+  undoes what it wrote inside the worktree. It does not run on Ctrl-C.
+
+A hook can refuse a call. It cannot produce a pass, cannot make a run
+converge, and cannot rewrite a call or an observation (ADR 0004, ADR 0005).
+
+### 6. Custom command tools
+
+```toml
+[[tools.custom]]
+name = "lint"
+description = "Run the project linter on one file."
+command = ["python", ".trellis/tools/lint.py"]
+schema = { type = "object", properties = { path = { type = "string" } }, required = ["path"] }
+```
+
+The arguments, as a JSON object, go to the command on stdin. Stdout, tail
+truncated, is the observation. A nonzero exit is an error observation.
+Subject to trust, to the gate list, and to `[control] approve` by name.
+Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not
+shadow a built-in or `done`. The description is capped at 200 characters and
+may hold no control character, since it is printed in the prompt's tool line.
+
+Argument validation on tier 2 is the runtime's, from the composed schema. On
+tier 4 and in scripts there is no schema validator in the workspace, so
+validation is shallow: an object, every `required` key present, no key the
+schema does not declare, and each top-level `type` checked. The command must
+validate its own input.
+
+### 7. The trail
+
+New tools are recorded as actions like the old ones: `write_file` with
+`wrote` set when the file was created, `grep`, `find`, `ls`, `bash` with the
+command as the target, and a custom tool under its own name. A denial by a
+named gate (the `pre_tool` hook, the bash policy) is an action of its own,
+recorded under the same turn and just before the call it refused, the way a
+human decision is. A run with no such denial adds no field and no action,
+so older trails keep their shape and their digest.
+
+## Alternatives rejected
+
+- **A tool set held on the model.** The adapter would need a constructor
+  argument, and the orchestrator a second copy that can disagree. One value,
+  handed to both, cannot.
+- **Trust by prompt at run start.** An unattended `work` heartbeat has nobody
+  to ask, and a run that stops to ask is a run that fails at 3 a.m. Trust is
+  recorded once, by a command a person typed.
+- **Shebang hooks.** They do not run on Windows without a shell association,
+  and a hook that runs on one platform only is a rule that silently stops
+  applying on the other.
+- **A bash allowlist by plain prefix.** Rejected for the reason in §3.
+
+## Consequences
+
+- A repository can extend the tool set without a trellis release, and a user
+  can narrow it without editing code.
+- Executing repository code needs a person to have typed `trellis trust`
+  after the last change to that code.
+- `[checks]` remains the one repository-supplied execution path outside the
+  trust store.
