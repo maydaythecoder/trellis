@@ -1,6 +1,7 @@
 # ADR 0020 — A local work queue and a heartbeat
 
-**Status:** Accepted.
+**Status:** Accepted. Amended in implementation: §1, §2, §3 (the checkout is a
+hard link, not a rename), §5 and §7. Each amendment is marked in place.
 **Date:** 2026-09-27
 **Reference design:** Paperclip (`paperclipai/paperclip`, MIT). Five of its
 ideas are borrowed as designs, and no Paperclip code or server is used:
@@ -32,6 +33,22 @@ makes the worktree dirty, which blocks every run (ADR 0009), and rollback's
 `git clean -fd` would delete it. The git directory is untracked by
 construction and survives rollback.
 
+*Amended in implementation.* In a linked worktree, `Repository::path()` is
+`<main>/.git/worktrees/<name>/`, not the common directory. So **each worktree
+has its own queue**, and `git worktree remove` deletes that worktree's queue
+along with it. Because execution is serial and one run per worktree (§4), this
+is the intended behaviour.
+
+`git2` is used with default features off. Its defaults are the HTTPS and SSH
+transports, and this lookup needs neither. It was declared in the workspace
+but unused before this ADR, so it and its build-time dependencies are new to
+the tree: `git2`, `libgit2-sys`, `libz-sys`, `jobserver`, `pkg-config`,
+`vcpkg`. `cargo deny check licenses` passes. The bundled libgit2 C library is
+GPL-2.0 with the linking exception, which permits linking it into a binary
+under another licence. `git rev-parse --absolute-git-dir` would have added no
+dependency. It was not chosen because this ADR names `git2`, and ADR 0009
+already kept `git2` for worktree management.
+
 ### 2. One task, one file
 
 Each task is one JSON file, `<ulid-or-timestamp>-<slug>.json`:
@@ -41,11 +58,38 @@ Each task is one JSON file, `<ulid-or-timestamp>-<slug>.json`:
   "added_at": "...", "attempts": 0 }
 ```
 
+*As implemented:*
+- The name is `YYYYMMDD-HHMMSS-<9-digit nanoseconds>-<slug>.json`, in UTC.
+  The width is fixed, so sorting by name sorts by age, and oldest-first
+  ordering is deterministic. The id is the file stem.
+- The file is written under a dot-name and then hard-linked into `pending/`.
+  A claimer therefore never reads half a file, and a name collision fails
+  instead of overwriting.
+- As the task moves, the queue appends three things:
+  - `claimed_at` and `claimed_by_pid` while the task is in `claimed/`.
+  - `outcome: { run_id, exit, finished_at }` when it leaves.
+- `attempts` counts runs started. A task put back before its run started is
+  not counted.
+
 ### 3. Atomic checkout is a rename
 
 Moving `pending/x.json` to `claimed/x.json` is one `rename` within one
 filesystem. It either succeeds or fails, and whoever loses the race gets an
 error and moves on. This is Paperclip's atomic checkout without a database.
+
+*Amended in implementation: the checkout is a hard link, not a rename.* On
+Windows, `std::fs::rename` opens the source and renames it through that
+handle. If two claimers both open the file before either moves it, both
+renames succeed, because the second one moves the file to where it already
+is. The race test (`two_claimers_one_file_exactly_one_wins`) produced
+`[true, true]`. The claim is now `hard_link(pending/x, claimed/x)`, which
+fails when the target exists, followed by removing `pending/x`. Exactly one
+claimer creates the claimed name. Every other claimer gets `AlreadyExists`, or
+`NotFound` if the winner has already unlinked the source. Losing is `Ok(None)`
+to the caller, not an error. Every later move is made by the one process
+holding the claim, so it stays a `rename`. Windows can briefly refuse to
+replace a file that another process is touching (`PermissionDenied`), so file
+operations retry for up to half a second before reporting an error.
 
 ### 4. Execution is serial
 
@@ -72,6 +116,87 @@ task file to `done/` or `failed/` with the run id and exit reason appended.
 - `--max-tasks` bounds how many tasks one invocation runs. The per-run budget
   (ADR 0008) bounds each run. Nothing multiplies.
 
+*Settled in implementation. This ADR left these open:*
+
+**Flags**
+- **With neither `--once` nor `--every`**, `work` runs tasks back to back
+  until the queue is empty or a stop condition below fires.
+- **`--once`** is `--max-tasks 1` and conflicts with both other flags.
+- **`--every S`** sleeps only while the queue is empty. While tasks remain,
+  they run back to back.
+- **`--model`** falls back to `[model] spec`, as `run` does. It is parsed
+  before anything is claimed, so a typo cannot fail the task at the head of
+  the queue.
+- **"auto mode"** is `cmd_run` exactly as `trellis run` calls it, with
+  `--resume` off and `[model] unconstrained` taken from config, as the
+  session does. At the time of writing, `run` has no approval step to switch
+  off.
+
+**Refusing up front**
+- **Nothing is claimed while the worktree is dirty.** Before each claim,
+  `work` runs the same `git status --porcelain` check as the snapshot
+  (`trellis_vcs::pending`). If it fails, `work` prints the paths and exits 1.
+  A task that is claimed and then cannot start would be stranded.
+- **`queue add` checks `--prompt` and `--focus` when the task is added**, the
+  same way the run will: the template must exist and the note must compile. A
+  bad name is refused on the spot instead of hours later.
+
+**What each run outcome does**
+
+| Run outcome | Task moves to | `work` then |
+| --- | --- | --- |
+| Converged | `done/` | stops, exit 0 |
+| Rolled back, tree restored | `failed/` | continues |
+| Not restored | `failed/` | stops, exit 2 |
+| `cmd_run` returned an error | `failed/` (outcome records the error) | stops, exit 1 |
+| Interrupted, tree restored | `pending/`, `attempts + 1` | stops, exit 130 |
+| Interrupted, not restored | `failed/` | stops, exit 130 |
+
+- **A rolled-back run** did not converge, so its task goes to `failed/`, not
+  `done/`. The tree is clean afterwards because `record_trail` commits the
+  trail. If that commit fails, the next tick's cleanliness check refuses.
+- **An error from `cmd_run`** means an unreachable runtime, a vault that will
+  not compile, or a missing template. `work` stops because, from where it
+  sits, a bad task and a dead runtime look the same, and a dead runtime would
+  fail every task after it.
+- **An interrupted run whose tree was restored** goes back to `pending/`
+  because the run's own rollback applied and the task produced no outcome, so
+  running it again is safe.
+- **An interrupted run whose tree was not restored** goes to `failed/`
+  because the tree is in a state nobody has looked at, and retrying would be
+  a guess.
+- The **run id** is the stem of the trail file this run wrote in
+  `.trellis/runs/`, found by comparing the newest name before and after the
+  run. It is `null` when no trail was written.
+
+**Ctrl-C.** `cmd_run` races each run against `tokio::signal::ctrl_c()`. Once
+that has been called, tokio owns the process's SIGINT handler for the rest of
+the process. After the first task, a plain `sleep` would therefore swallow
+Ctrl-C and `--every` could not be stopped. So `work` also listens for Ctrl-C
+on its own thread and sets a flag. The flag is checked:
+- before each claim
+- immediately after a claim (the task is put back untouched, not counted)
+- every 100 ms while idle
+
+During a run, both listeners fire: `cmd_run` rolls back, and the flag stops
+the loop after it. On every path, no task that this process claimed is left
+in `claimed/`. This is not covered by an automated test. The loop's handling
+of each outcome is, against a fake runner, but delivering a real SIGINT or
+console Ctrl-C to a child process is not portable across the platforms the
+suite runs on.
+
+**Stale claims.** A task left in `claimed/` by a process that crashed is
+never re-run automatically, because `work` cannot tell a dead claimant from a
+live one in another terminal. It is still made visible:
+- `work` names every task already in `claimed/` when it starts.
+- `queue list` shows the claim's age and pid.
+- `trellis queue requeue <id>` moves it, or a task in `failed/`, back to
+  `pending/` and keeps its `attempts`.
+
+**Not enforced.** Two `work` processes in one worktree at the same time.
+`trellis run` does not lock either. The snapshot's clean-tree check catches
+the second run once the first has written anything, but not before.
+
 ### 6. Goal ancestry is the vault lineage
 
 Paperclip traces every task to the company mission. Here a task's `focus`
@@ -85,6 +210,16 @@ hierarchy to keep in sync.
 JSON formatter to the existing `tracing` subscriber. It is the same event
 path, sent to a second destination, so ADR 0008's rule against a second
 telemetry path holds. This covers what pi's `--mode json` offers.
+
+*As implemented:*
+- `--log-json` is a global flag, next to `--root`, rather than a field on
+  `run` and `work`. It is accepted by every command and logs whatever that
+  command emits.
+- The file is opened in append mode. The JSON layer sits under the same
+  `Targets` filter as the terminal layer, so by default it records the INFO
+  per-turn events from `trellis_loop`.
+- This needs `tracing-subscriber`'s `json` feature, which adds `tracing-serde`.
+  `serde` and `serde_json` were already in the tree.
 
 ## Alternatives rejected
 
