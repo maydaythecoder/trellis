@@ -22,7 +22,7 @@ failures on one gate, or a ticket that needs a person (G7), and reports.
 
 | Part | Where | Does | Cannot |
 |---|---|---|---|
-| orchestrator | `.claude/agents/orchestrator.md` | picks tickets, dispatches, runs gates, merges into `inherit` | write or edit files; merge into `v0.1-resolver` |
+| orchestrator | `.claude/agents/orchestrator.md` | picks tickets, dispatches, runs gates, merges into `drain` | write or edit files; push to `v0.1-resolver` |
 | architect | `.claude/agents/architect.md` | ADRs, `## Done when` / `## Verify` on tickets | write application code |
 | implementer | `.claude/agents/implementer.md` | one ticket, on its branch, with tests | decide architecture; add deps, `#[allow]`, `unsafe` without an ADR |
 | verifier | `.claude/agents/verifier.md` | runs gates, reports output verbatim | edit anything; give an opinion |
@@ -37,8 +37,8 @@ Subagents cannot spawn subagents, so only the orchestrator dispatches.
 
 `scripts/gates/run-all.sh [<issue>]` runs them in order and stops at the first
 failure, printing `GATE / COMMAND / EXIT / OUTPUT`. `--only <id>` runs one.
-"This change" means `$GATE_BASE...HEAD`: `origin/inherit` on a ticket branch,
-`origin/v0.1-resolver` on `inherit` itself (PR #1's own diff).
+"This change" means `$GATE_BASE...HEAD`: `origin/drain` on a ticket branch
+(`t<n>-*`), `origin/v0.1-resolver` otherwise (`drain`'s own PR diff).
 
 | Gate | Script | Proves |
 |---|---|---|
@@ -84,14 +84,17 @@ this file; the output is in the commit message.
 1. `scripts/tickets/next.sh` → the next ready ticket (`--why` explains every
    exclusion).
 2. G0. Failing → architect makes it workable → G0 again.
-3. Branch `t<n>-<slug>` off `inherit`; dispatch per the routing table.
+3. Branch `t<n>-<slug>` off `drain`; dispatch per the routing table.
 4. `run-all.sh <n>`. A failure becomes a fix ticket quoting the output; three
    failures on one gate stops the run.
-5. Green (and G7 approved) → `git merge --no-ff` into `inherit`, push, close the
+5. Green (and G7 approved) → `git merge --no-ff` into `drain`, push, close the
    issue with the gate summary.
 
-`v0.1-resolver` moves only when the owner merges PR #1; the local pre-push hook
-refuses any push that would advance it past `origin/inherit`.
+`v0.1-resolver` moves only when the owner merges a pull request on GitHub.
+Agent work collects on the integration branch `drain`, which has an open
+draft PR into `v0.1-resolver`. The local pre-push hook refuses every push to
+`v0.1-resolver` from this clone (GitHub branch protection needs Pro on a
+private repository; issue #22).
 
 ## Where a person is needed
 
