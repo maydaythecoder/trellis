@@ -19,6 +19,7 @@ mod session;
 mod testutil;
 mod tui_bridge;
 mod tui_run;
+mod vault_cmd;
 mod work;
 
 use anyhow::{Context, Result};
@@ -237,6 +238,12 @@ enum Command {
     /// Stops at the first converged change, which waits for review; never
     /// claims a task while the worktree is dirty.
     Work(work::WorkArgs),
+
+    /// Check, search, inspect and edit an Apex-format note vault (ADR 0022).
+    ///
+    /// Prints Apex's report line; writes notes with exactly two frontmatter
+    /// keys and keeps manifest.json, layout.json and dates.json in step.
+    Vault(vault_cmd::VaultArgs),
 }
 
 #[derive(Subcommand)]
@@ -458,6 +465,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Vault(args) => vault_cmd::run(&root, args),
     }
 }
 

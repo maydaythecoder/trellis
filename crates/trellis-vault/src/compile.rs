@@ -8,6 +8,7 @@
 //! lineage.
 
 use crate::VaultError;
+use crate::graph::Resolved;
 use crate::js;
 use crate::validate::{Note, parse};
 use std::path::Path;
@@ -116,29 +117,37 @@ pub fn compile(root: &Path, stem: &str, cap: usize) -> Result<Compiled, VaultErr
     // that there are no cycles, so this terminates.
     let mut lineage = vec![target];
     let mut cur = target;
-    while let Some(parent) = &notes[cur].parent {
-        cur = v.lookup(parent)[0];
+    while let Some(p) = v.parents[cur] {
+        cur = p;
         lineage.insert(0, cur);
     }
-    let in_lineage = |s: &str| lineage.iter().any(|&i| notes[i].stem == s);
 
-    let mut children: Vec<&Note> = notes
-        .iter()
-        .filter(|n| n.parent.as_deref() == Some(notes[target].stem.as_str()))
+    // Children and references resolve as Apex resolves them, so a parent or
+    // a link written as `[[Title]]` counts (ADR 0022 §1). Membership is by
+    // index, not by stem: `[[Root]]` must not add a second copy of a note
+    // already in the lineage.
+    let mut children: Vec<&Note> = (0..notes.len())
+        .filter(|&i| v.parents[i] == Some(target))
+        .map(|i| &notes[i])
         .collect();
     children.sort_by(|a, b| js::cmp(&a.stem, &b.stem).then_with(|| js::cmp(&a.path, &b.path)));
 
     let mut references: Vec<&Note> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
     let mut unresolved: Vec<String> = Vec::new();
     for s in link_stems(&notes[target].body) {
-        // Already present with its body.
-        if in_lineage(&s) {
-            continue;
-        }
-        match v.lookup(&s) {
-            [one] => references.push(&notes[*one]),
-            [] => unresolved.push(format!("- [[{s}]]")),
-            many => unresolved.push(format!(
+        match v.resolver.resolve(&s) {
+            Resolved::Note(one) => {
+                // Already present with its body, or already referenced under
+                // another spelling.
+                if lineage.contains(&one) || seen.contains(&one) {
+                    continue;
+                }
+                seen.push(one);
+                references.push(&notes[one]);
+            }
+            Resolved::Missing => unresolved.push(format!("- [[{s}]]")),
+            Resolved::Ambiguous(many) => unresolved.push(format!(
                 "- [[{s}]] (ambiguous: {})",
                 many.iter()
                     .map(|&i| notes[i].path.as_str())
