@@ -374,7 +374,7 @@ pub fn plan_import(root: &Path, q: &Queue, src: &Path, on: OnConflict) -> Result
                         task_map.insert(id.clone(), fresh.clone());
                         Action::Rename(fresh)
                     }
-                }
+                },
             };
             plan.items.push(Item {
                 kind: Kind::Task,

@@ -176,6 +176,15 @@ pub fn enforce(
         })?;
         if lifted {
             q.log(Event::new(actor, "agent.resume", entity.clone()).detail(why.clone()))?;
+            // The request this pause opened asks about a pause that no
+            // longer exists; left pending, a later pause would have reused
+            // it with this one's window, month and figures.
+            approval::close_open_requests(
+                q,
+                &p.name,
+                &format!("the pause was lifted: {why}"),
+                actor,
+            )?;
             done.resumed = Some(why);
             o = profile::overlay(q, &p.name)?;
         }
