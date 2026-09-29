@@ -176,6 +176,11 @@ pub struct Turn {
     /// orchestrator ([`crate::orchestrator::may_change_tree`]), which is
     /// conservative: anything not known to be read-only counts.
     pub may_have_changed_tree: bool,
+    /// The repository paths a `bash` or custom-tool call changed, as the
+    /// orchestrator carried them back from the command's clone
+    /// ([`crate::orchestrator::Dispatched::changed`]). Empty for every other
+    /// tool. Whole here; the trail cuts it to its cap and keeps the count.
+    pub changed: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -864,6 +869,7 @@ pub async fn run_seeded<M: Model>(
                             prompt_bytes: None,
                             human: None,
                             may_have_changed_tree: false,
+                            changed: Vec::new(),
                         });
                         if !v.passed() {
                             break 'run Outcome::NotConverged {
@@ -899,6 +905,7 @@ pub async fn run_seeded<M: Model>(
                     human,
                     may_have_changed_tree,
                     trust_breach,
+                    changed,
                 } = orch
                     .call_within(
                         &call,
@@ -1012,6 +1019,7 @@ pub async fn run_seeded<M: Model>(
                     prompt_bytes,
                     human,
                     may_have_changed_tree,
+                    changed,
                 });
 
                 // After the turn is recorded, so the trail shows the call
@@ -2649,6 +2657,7 @@ rank = \"non-negotiable\"
                     prompt_bytes: None,
                     human: None,
                     may_have_changed_tree: false,
+                    changed: Vec::new(),
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -2660,6 +2669,7 @@ rank = \"non-negotiable\"
                     prompt_bytes: None,
                     human: None,
                     may_have_changed_tree: false,
+                    changed: Vec::new(),
                 },
             ],
             final_notice: false,
