@@ -68,6 +68,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             reached_ambiguous: 3,
             widest_unbound_in_touched_files: 2,
             radius_queries: 1,
+            summarised: 0,
         },
         checks: vec![],
         check_outcomes: vec![
@@ -122,6 +123,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
         ],
         control: Some("approve (edit)".into()),
         tokens: Some(812),
+        prompt_tokens: Some(9_400),
         agent: Some("builder".into()),
         inputs: vec![
             Input {
@@ -165,6 +167,7 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         actions: vec![],
         control: None,
         tokens: None,
+        prompt_tokens: None,
         agent: None,
         inputs: vec![],
     };
