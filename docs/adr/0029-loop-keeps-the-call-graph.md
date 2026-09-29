@@ -1,15 +1,16 @@
 # ADR 0029 — `trellis-loop` keeps a hard dependency on trellis-index
 
 **Status:** Accepted.
-**Date:** 2026-09-28
+**Date:** 2026-09-29
 **Decided by:** the owner, via the coordinator, on issue #7.
 **Does not amend:** ADR 0002, 0005, 0011, 0014 or 0016. It records why the
 crate graph stays as those ADRs already assume.
 
 ## Context
 
-The direction brief (`history/TRELLIS-direction.md`, "graph as an optional
-tool crate") made the index optional, so that the harness would survive a
+The direction brief that issue #7 cites (`history/TRELLIS-direction.md`,
+"graph as an optional tool crate"; the owner's prompt history, not in this
+repository) made the index optional, so that the harness would survive a
 resolver whose recall disappointed. The crate graph never followed:
 `trellis-loop` names `trellis-index` as an ordinary dependency in its
 `Cargo.toml`, with no cargo feature around it, and no ADR recorded the choice.
