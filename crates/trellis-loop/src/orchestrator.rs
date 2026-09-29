@@ -16,7 +16,7 @@
 
 use crate::agent::ToolCall;
 use crate::gate::{GateDecision, GovernanceGate, ToolGate, tool_name};
-use crate::hooks::Hooks;
+use crate::hooks::{Hooks, TurnOutcome};
 use crate::registry::ToolSet;
 use crate::tools::{EditOutcome, ToolResult};
 use std::path::{Path, PathBuf};
@@ -308,7 +308,8 @@ pub struct Orchestrator {
     tools: ToolSet,
     /// `TRELLIS_RUN_ID` and `TRELLIS_MODEL`, for `bash` and custom tools.
     env: Vec<(String, String)>,
-    /// Trusted hooks, for `post_tool`. `pre_tool` is a gate in `gates`.
+    /// Trusted hooks, for `post_tool` and `turn_end`. `pre_tool` is a gate
+    /// in `gates`.
     hooks: Option<Hooks>,
     /// Model calls served, for `GateDenial::call`.
     calls: u32,
@@ -320,6 +321,9 @@ pub struct Orchestrator {
     /// Whether the call being served reached a write, for
     /// [`may_change_tree`]. Reset at the start of every gated call.
     wrote: bool,
+    /// Whether a gate refused the call being served, for `turn_end`'s
+    /// `outcome`. Reset at the start of every gated call.
+    denied: bool,
     /// Re-checks trust before a custom tool starts and after any call that
     /// may have changed the tree (ADR 0023 §5). The same latch the hooks
     /// hold, so a breach found by either ends the run.
@@ -344,6 +348,7 @@ impl Orchestrator {
             gate_log: Vec::new(),
             skills: crate::skills::SkillAccess::default(),
             wrote: false,
+            denied: false,
             guard: None,
         }
     }
@@ -433,11 +438,11 @@ impl Orchestrator {
             match req {
                 Request::BlastRadius { symbol, reply } => {
                     let call = ToolCall::BlastRadius { symbol };
-                    let _ = reply.send(self.gated(call, None).await.result);
+                    let _ = reply.send(self.gated(call, None, false).await.result);
                 }
                 Request::ReadFile { path, reply } => {
                     let call = ToolCall::ReadFile { path };
-                    let _ = reply.send(self.gated(call, None).await.result);
+                    let _ = reply.send(self.gated(call, None, false).await.result);
                 }
                 Request::ApplyEdit {
                     path,
@@ -446,7 +451,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::Edit { path, old, new };
-                    let _ = reply.send(self.gated(call, None).await.result);
+                    let _ = reply.send(self.gated(call, None, false).await.result);
                 }
                 Request::RunChecks {
                     paths,
@@ -454,7 +459,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::RunChecks { paths, kinds };
-                    let _ = reply.send(self.gated(call, None).await.result);
+                    let _ = reply.send(self.gated(call, None, false).await.result);
                 }
                 Request::Call {
                     call,
@@ -462,7 +467,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     self.calls += 1;
-                    let _ = reply.send(self.gated(call, budget_left).await);
+                    let _ = reply.send(self.gated(call, budget_left, true).await);
                 }
                 Request::GateLog { reply } => {
                     let _ = reply.send(self.gate_log.clone());
@@ -481,12 +486,27 @@ impl Orchestrator {
         self
     }
 
-    /// [`gated_inner`](Self::gated_inner), with the trust guard read on the
-    /// way out, whichever way the call ended: a `pre_tool` hook refused by
-    /// the guard returns early as a denial, and that is a breach as much as
-    /// a `bash` command that rewrote a hook.
-    async fn gated(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+    /// [`gated_inner`](Self::gated_inner), then `turn_end` when `turn`, then
+    /// the trust guard, read on the way out whichever way the call ended: a
+    /// `pre_tool` hook refused by the guard returns early as a denial, and
+    /// that is a breach as much as a `bash` command that rewrote a hook.
+    ///
+    /// Only a model's call is a turn; the audit at convergence and the
+    /// direct requests are not, so `turn_end` does not run for them. One
+    /// function rather than a wrapper around this one: in a debug build
+    /// another layer of future between `serve` and `gated_inner` took the
+    /// main thread past its stack on Windows (`tests/child_env.rs`).
+    async fn gated(
+        &mut self,
+        call: ToolCall,
+        budget_left: Option<Duration>,
+        turn: bool,
+    ) -> Dispatched {
+        let tool = turn.then(|| tool_name(&call).to_string());
         let mut d = self.gated_inner(call, budget_left).await;
+        if let Some(tool) = tool {
+            d.may_have_changed_tree |= self.turn_end(&tool, &d.result).await;
+        }
         if let Some(g) = &self.guard {
             if d.may_have_changed_tree {
                 // Latches on failure; the reason is read below.
@@ -495,6 +515,31 @@ impl Orchestrator {
             d.trust_breach = g.breach();
         }
         d
+    }
+
+    /// Runs `turn_end`, when one is declared, and says whether the worktree
+    /// changed across it. Bracketed on its own, as `post_tool` is: a write
+    /// here lands after the turn's check, so it marks the turn as one that
+    /// may have changed the tree and the pass stops counting (ADR 0023,
+    /// "after a pass").
+    async fn turn_end(&self, tool: &str, result: &ToolResult) -> bool {
+        let Some(h) = self
+            .hooks
+            .as_ref()
+            .filter(|h| h.config().turn_end.is_some())
+        else {
+            return false;
+        };
+        let outcome = match result {
+            _ if self.denied => TurnOutcome::Denied,
+            ToolResult::Error(_) => TurnOutcome::Error,
+            ToolResult::Checks(v) if v.passed() => TurnOutcome::CheckPassed,
+            ToolResult::Checks(_) => TurnOutcome::CheckFailed,
+            _ => TurnOutcome::Ok,
+        };
+        let before = Some(worktree_digest(&self.root).await);
+        h.turn_end(self.calls, tool, outcome).await;
+        changed_since(&self.root, before).await
     }
 
     /// Consults the gates in order, then dispatches. The first `Deny` wins
@@ -517,6 +562,7 @@ impl Orchestrator {
             };
         }
         self.wrote = false;
+        self.denied = false;
         // `pre_tool` and `post_tool` are repository code that runs around
         // every call, the passing check included, and nothing stops either
         // writing. The worktree is compared across each hook on its own,
@@ -554,6 +600,7 @@ impl Orchestrator {
                 });
             }
             if let GateDecision::Deny { reason } = decision {
+                self.denied = true;
                 if let Some(gate) = gate.name() {
                     self.gate_log.push(GateDenial {
                         call: self.calls,

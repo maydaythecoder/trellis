@@ -546,12 +546,12 @@ impl Transcript {
             // Before the verdict, on purpose. A check is not a tree-changing
             // kind, and the worktree is fingerprinted around each hook
             // alone, never around the check itself, so on a check's own
-            // turn the flag comes only from `pre_tool` or `post_tool`
-            // having changed the tree; what the checker itself leaves
-            // (`.coverage`, `__pycache__`) does not set it. `post_tool` runs
-            // after the check, and one flag cannot say which side of the
-            // verdict a hook wrote on, so a hook that writes on a check's
-            // turn voids that check. Hooks observe and gate; they do not
+            // turn the flag comes only from `pre_tool`, `post_tool` or
+            // `turn_end` having changed the tree; what the checker itself
+            // leaves (`.coverage`, `__pycache__`) does not set it.
+            // `post_tool` and `turn_end` run after the check, and one flag
+            // cannot say which side of the verdict a hook wrote on, so a
+            // hook that writes on a check's turn voids that check. Hooks observe and gate; they do not
             // write.
             if t.may_have_changed_tree {
                 return false;

@@ -1375,3 +1375,198 @@ async fn a_custom_tool_does_not_start_once_trusted_code_has_changed() {
     }
     assert!(d2.trust_breach.is_some());
 }
+
+/// A hook that appends its stdin to `log`, which is outside the repository
+/// so the append is not a tree write.
+fn stdin_to(log: &Path) -> Option<Vec<String>> {
+    if cfg!(windows) {
+        opt(&format!("more >> {}", log.display()))
+    } else {
+        opt(&format!(
+            "cat >> '{}'; echo >> '{}'",
+            log.display(),
+            log.display()
+        ))
+    }
+}
+
+/// Every JSON value in `log`, in order.
+fn payloads(log: &Path) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(log).unwrap_or_default();
+    serde_json::Deserializer::from_str(&raw)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|e| panic!("{e}: {raw:?}"))
+}
+
+#[tokio::test]
+async fn hook_turn_end_receives_run_id_turn_tool_and_outcome_after_every_turn() {
+    // The schema ADR 0023 §5 states is public contract: a hook reading a
+    // field that is renamed or dropped breaks without a word. And the
+    // outcome is a label, never the result: nothing a model saw reaches it.
+    let d = git_repo();
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("turns.log");
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            turn_end: stdin_to(&log),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_hooks(h)
+        .spawn();
+    let mut m = script(
+        &ToolSet::default(),
+        &format!(
+            r#"{{"steps":[
+                {{"tool":"read_file","path":"app/util.py"}},
+                {{"tool":"read_file","path":"app/missing.py"}},
+                {CHECK},
+                {{"tool":"done","summary":"passed"}}
+            ]}}"#
+        ),
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(
+        payloads(&log),
+        [
+            serde_json::json!({"run_id": "run-42", "turn": 1, "tool": "read_file", "outcome": "ok"}),
+            serde_json::json!({"run_id": "run-42", "turn": 2, "tool": "read_file", "outcome": "error"}),
+            serde_json::json!({"run_id": "run-42", "turn": 3, "tool": "run_checks", "outcome": "check_passed"}),
+        ],
+        "one payload per turn, and none for `done`, which is not a call"
+    );
+    // A turn_end that only observes changes nothing about the run.
+    assert!(
+        t.turns.iter().all(|t| !t.may_have_changed_tree),
+        "{:?}",
+        t.turns
+    );
+    assert!(converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn hook_turn_end_that_writes_after_the_pass_marks_the_turn_and_prevents_convergence() {
+    // turn_end runs after the turn's check, so a write there leaves bytes
+    // no check saw: the turn is flagged as post_tool's would be, and the
+    // pass before it stops counting (ADR 0004, ADR 0023 "after a pass").
+    let d = git_repo();
+    let write = if cfg!(windows) {
+        "echo hooked>> app\\util.py"
+    } else {
+        "echo hooked >> app/util.py"
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            turn_end: opt(write),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_hooks(h)
+        .spawn();
+    let mut m = script(
+        &ToolSet::default(),
+        &format!(r#"{{"steps":[{CHECK},{{"tool":"done","summary":"passed"}}]}}"#),
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(t.turns[0].verdict_passed, Some(true));
+    assert!(t.turns[0].may_have_changed_tree, "{:?}", t.turns[0]);
+    assert!(
+        std::fs::read_to_string(d.path().join("app/util.py"))
+            .unwrap()
+            .contains("hooked"),
+        "the hook wrote"
+    );
+    assert!(!converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn hook_input_exit_two_refuses_the_task_with_stderr_as_the_reason() {
+    // The hook reads the task and the run id as JSON on stdin, and exit 2
+    // is a refusal whose reason is stderr. What it prints on stdout is not
+    // a task: `input` can refuse, never rewrite.
+    let d = git_repo();
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("input.log");
+    let script = if cfg!(windows) {
+        format!(
+            "more >> {} & echo rewritten task & echo no deploys on friday 1>&2 & exit 2",
+            log.display()
+        )
+    } else {
+        format!(
+            "cat >> '{}'; echo rewritten task; echo no deploys on friday >&2; exit 2",
+            log.display()
+        )
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            input: opt(&script),
+            ..Default::default()
+        },
+    );
+    match h.input("deploy the service").await {
+        Some(crate::hooks::InputDecision::Refuse(why)) => {
+            assert!(why.contains("no deploys on friday"), "{why}");
+            assert!(!why.contains("rewritten task"), "{why}");
+        }
+        other => panic!("exit 2 must refuse: {other:?}"),
+    }
+    assert_eq!(
+        payloads(&log),
+        [serde_json::json!({"run_id": "run-42", "task": "deploy the service"})]
+    );
+}
+
+#[tokio::test]
+async fn hook_input_other_exits_proceed() {
+    // Only exit 2 refuses. A hook that crashes, times out or cannot start
+    // has not refused anything, and reading that as a refusal would make a
+    // broken hook stop every run; the caller says why and goes on.
+    use crate::hooks::InputDecision;
+    let d = git_repo();
+    assert!(
+        hooks(d.path(), HookConfig::default())
+            .input("t")
+            .await
+            .is_none(),
+        "no input hook, nothing to decide"
+    );
+    let ok = hooks(
+        d.path(),
+        HookConfig {
+            input: opt("exit 0"),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(ok.input("t").await, Some(InputDecision::Proceed)));
+    let slow = if cfg!(windows) {
+        "ping -n 30 127.0.0.1 >NUL"
+    } else {
+        "sleep 30"
+    };
+    for argv in [
+        shell_argv("exit 1"),
+        shell_argv("exit 3"),
+        vec!["trellis-no-such-hook-x".into()],
+        shell_argv(slow),
+    ] {
+        let h = hooks(
+            d.path(),
+            HookConfig {
+                input: Some(argv.clone()),
+                timeout_s: Some(1),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(h.input("t").await, Some(InputDecision::ProceedDespite(_))),
+            "{argv:?} must let the run proceed"
+        );
+    }
+}
