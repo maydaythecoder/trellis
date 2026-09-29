@@ -325,6 +325,12 @@ pub(crate) fn run(
     // behind every letter typed.
     let at_paths = at_file_paths(root);
 
+    // What a hosted spec is resolved against before the classifier sends the
+    // key anywhere (ADR 0024 §3). Loaded with `?`, as `Session::open` loads
+    // it: a default in its place would refuse the user's own provider as the
+    // repository's choice and name the wrong cause.
+    let ask_cfg = crate::config::RepoConfig::load(root)?;
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -376,12 +382,6 @@ pub(crate) fn run(
         // list until the next one - which is the right trade for a list whose
         // job is to stop the model inventing names.
         let inventory = trellis_index::discover_relative(&root);
-        // What a hosted spec is resolved against before the classifier sends
-        // the key anywhere (ADR 0024 §3). Read once with the inventory; a
-        // config that does not load leaves the default, under which a
-        // repository-chosen endpoint is refused rather than trusted, and the
-        // run reports the load failure itself.
-        let ask_cfg = crate::config::RepoConfig::load(&root).unwrap_or_default();
 
         let driver = tokio::spawn({
             let tx = tx.clone();
