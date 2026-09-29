@@ -477,6 +477,7 @@ mod tests {
             tokens: None,
             prompt_tokens: None,
             agent: None,
+            label: None,
             inputs: Vec::new(),
             steering: Vec::new(),
         };

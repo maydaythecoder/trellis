@@ -37,6 +37,15 @@ pub(crate) struct Session {
     model_from_user: bool,
     /// Tasks run this session, for `/status`.
     tasks_run: u32,
+    /// `/name`: recorded as `Factual::label` in the trail of every run
+    /// started afterwards. Never sent to the model.
+    label: Option<String>,
+    /// The `done` summary of the most recent run this session that ended on
+    /// one, for `/copy`. The model's own words, not a verdict.
+    last_done: Option<String>,
+    /// What `/copy` tries, in order. A field so a test can name a program
+    /// that does not exist rather than overwrite a real clipboard.
+    clipboards: &'static [crate::session_extra::Clipboard],
 }
 
 /// What a passing run claims about its callers, given what was measured.
@@ -109,6 +118,9 @@ impl Session {
             unconstrained: cfg.unconstrained(),
             model_from_user,
             tasks_run: 0,
+            label: None,
+            last_done: None,
+            clipboards: crate::session_extra::CLIPBOARDS,
         };
         s.banner(elapsed);
         Ok(s)
@@ -298,6 +310,18 @@ impl Session {
                 self.model_from_user = true;
                 Ok(())
             }
+            "/name" if rest.is_empty() => {
+                println!("{}", self.label_line());
+                Ok(())
+            }
+            "/name" => {
+                let label = crate::session_extra::check_label(rest).map_err(anyhow::Error::msg)?;
+                self.label = Some(label);
+                println!("{}", self.label_line());
+                println!("         recorded in the trail of each run started from here on");
+                Ok(())
+            }
+            "/copy" => self.copy_to(&mut std::io::stdout()),
             "/unconstrained" => {
                 self.unconstrained = !self.unconstrained;
                 println!(
@@ -524,6 +548,7 @@ impl Session {
             anyhow::bail!("no model set. /model <spec> first; /models lists what is configured");
         };
         self.tasks_run += 1;
+        let done = crate::output::DoneSlot::default();
         let outcome = crate::cmd_run_with(
             &self.root,
             task,
@@ -544,10 +569,18 @@ impl Session {
             },
             crate::output::RunExtras {
                 skills,
+                label: self.label.clone(),
+                done: Some(done.clone()),
                 ..crate::output::RunExtras::default()
             },
             &mut std::io::stdout(),
         );
+        // Only replaced by a run that ended on `done`: a run that stopped
+        // any other way has no summary, and the previous one is still the
+        // most recent there is.
+        if let Some(summary) = done.lock().ok().and_then(|mut d| d.take()) {
+            self.last_done = Some(summary);
+        }
 
         // A run writes to the tree, so the session's index is now behind it.
         // Rebuilding here rather than lazily means the next `/radius` answers
@@ -845,6 +878,19 @@ impl Session {
         );
     }
 
+    /// What `/name` with no argument prints.
+    fn label_line(&self) -> String {
+        match &self.label {
+            Some(l) => format!("label    {}", crate::plain(l)),
+            None => "label    none. /name <label> sets one".to_string(),
+        }
+    }
+
+    /// `/copy`, writing its report to `out`.
+    fn copy_to(&self, out: &mut dyn std::io::Write) -> Result<()> {
+        crate::session_extra::copy(self.last_done.as_deref(), self.clipboards, out)
+    }
+
     fn revert(&self) -> Result<()> {
         let pending = trellis_vcs::pending(&self.root)?;
         if pending.is_empty() {
@@ -968,6 +1014,9 @@ const HELP: &str = concat!(
     "  !<cmd>            run a shell command in the repository root;\n",
     "                    its output is shown, never sent to a model\n",
     "                    (`!!` is the same: nothing is carried to a run)\n",
+    "\n",
+    "  /name [label]     set or show a label; each later run's trail records it\n",
+    "  /copy             copy the last run's done summary to the clipboard\n",
     "\n",
     "  /model [spec]     set or show the model\n",
     "  /models           the catalog and the configured specs\n",
@@ -1941,5 +1990,99 @@ def other():
         s.dispatch("!!git status --short").expect("runs");
         assert_eq!(s.tasks_run, 0);
         assert!(trellis_trail::query::all(d.path()).is_empty());
+    }
+
+    // `/name` and `/copy` (#109) --------------------------------------------
+
+    /// The raw JSON of the only trail under `.trellis/runs/`.
+    fn only_trail_json(root: &Path) -> String {
+        let dir = root.join(".trellis/runs");
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(files.len(), 1, "one run, one trail");
+        std::fs::read_to_string(files[0].path()).unwrap()
+    }
+
+    #[test]
+    fn slash_name_is_recorded_in_the_trail_of_a_later_run() {
+        // The risk: a label set and shown at the prompt that never reaches
+        // the record it exists to find a run by.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("/name release prep").expect("sets");
+        s.dispatch("/name").expect("shows");
+        assert_eq!(s.label.as_deref(), Some("release prep"));
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        let trails = trellis_trail::query::all(d.path());
+        assert_eq!(trails.len(), 1);
+        assert_eq!(
+            trails[0].trail.factual.label.as_deref(),
+            Some("release prep")
+        );
+        assert_eq!(
+            trails[0].trail.integrity(&only_trail_json(d.path())),
+            trellis_trail::Integrity::Intact,
+            "the label sits under the digest"
+        );
+    }
+
+    #[test]
+    fn slash_name_unset_leaves_no_label_key_in_the_trail() {
+        // The risk: an unnamed session writing `"label": null`, which changes
+        // the shape and the digest of every trail that has no label.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        let json = only_trail_json(d.path());
+        assert!(!json.contains("\"label\""), "{json}");
+    }
+
+    #[test]
+    fn slash_name_refused_label_leaves_the_old_one() {
+        // The risk: a refusal that still clears or truncates the label, so a
+        // typo silently unnames the runs that follow.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.dispatch("/name first").expect("sets");
+        let long = format!("/name {}", "x".repeat(81));
+        let e = s.dispatch(&long).expect_err("81 characters is refused");
+        assert!(e.to_string().contains("unchanged"), "{e}");
+        assert!(
+            s.dispatch("/name a\u{1b}[2Jb").is_err(),
+            "control character"
+        );
+        assert_eq!(s.label.as_deref(), Some("first"));
+        assert!(s.label_line().contains("first"));
+    }
+
+    #[test]
+    fn slash_copy_before_any_run_has_nothing_to_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.clipboards = &[("trellis-no-such-clipboard-program-109", &[])];
+        s.dispatch("/copy").expect("reports rather than failing");
+        let mut out = Vec::new();
+        s.copy_to(&mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap().trim(),
+            "nothing to copy yet"
+        );
+    }
+
+    #[test]
+    fn slash_copy_holds_the_done_summary_of_the_last_run() {
+        // The risk: the summary dropped between the loop and the session,
+        // since the loop's outcome does not carry it. The scripted model
+        // ends on `done` with summary "x"; with no check passing the run does
+        // not converge, and the summary is still the model's last word.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.clipboards = &[("trellis-no-such-clipboard-program-109", &[])];
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        assert_eq!(s.last_done.as_deref(), Some("x"));
+        let mut out = Vec::new();
+        s.copy_to(&mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.contains("no clipboard was reached"), "{said}");
+        assert_eq!(said.lines().last(), Some("x"), "{said}");
     }
 }

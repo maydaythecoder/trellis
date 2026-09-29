@@ -748,6 +748,9 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         tokens: None,
         prompt_tokens: None,
         agent: Some(t.profile.to_string()),
+        // A label is a session's (`/name`), and a process agent runs from
+        // `work`, never from a session.
+        label: None,
         // A process agent is given its task on stdin and nothing else.
         inputs: Vec::new(),
         // Nothing reaches a process agent after it starts, so nothing
