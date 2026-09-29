@@ -2896,6 +2896,10 @@ fn record_trail(
             radius.widest_unbound_in_touched_files = radius.widest_unbound_in_touched_files.max(u);
             radius.radius_queries += 1;
         }
+        // A sum, like the reach counts: each query summarised its own sites,
+        // and a site summarised in two queries was shown only as a count
+        // twice (ADR 0033).
+        radius.summarised += t.radius_summarised.unwrap_or(0);
     }
 
     // Context fill, from the turns that carried a prompt. A scripted run
@@ -4167,6 +4171,74 @@ mod interrupt_tests {
         dir
     }
 
+    /// The trail records how many radius call sites the model saw only as
+    /// counts (ADR 0033). Without it a reader of the trail cannot tell a run
+    /// that was shown every caller from one shown twenty and a per-file
+    /// tally, and the second knew less than its radius counts suggest.
+    #[test]
+    fn selector_budget_trail_records_summarised_count() {
+        let radius_turn = |summarised: Option<u32>, prompt: usize| trellis_loop::Turn {
+            call: trellis_loop::ToolCall::BlastRadius { symbol: "f".into() },
+            observation: String::new(),
+            verdict_passed: None,
+            check_kind: None,
+            prompt_bytes: Some(prompt),
+            radius_counts: Some((30, 4, 2)),
+            radius_summarised: summarised,
+            human: None,
+            may_have_changed_tree: false,
+        };
+        let transcript = |turns| trellis_loop::Transcript {
+            task: "a wide radius".to_string(),
+            turns,
+            final_notice: false,
+            prior: None,
+            repo: trellis_loop::RepoContext::default(),
+        };
+        let written = |dir: &Path, t: &trellis_loop::Transcript, stamp: &(String, String)| {
+            let snap = trellis_vcs::snapshot(dir).unwrap();
+            let mut facts = facts_for(&snap);
+            facts.stamp = Some(stamp);
+            let path = record_trail(dir, &t.task, t, &[], facts, &mut std::io::sink()).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            v
+        };
+
+        let dir = temp_repo("selector-budget");
+        let summarised = transcript(vec![
+            radius_turn(Some(12), 4_000),
+            radius_turn(Some(0), 5_000),
+            radius_turn(Some(7), 6_000),
+        ]);
+        let stamp = (
+            "20260929T000001Z".to_string(),
+            "2026-09-29T00:00:01Z".to_string(),
+        );
+        let v = written(&dir, &summarised, &stamp);
+        assert_eq!(v["factual"]["radius"]["summarised"], 19, "{v}");
+        assert_eq!(v["factual"]["radius"]["radius_queries"], 3);
+        assert!(
+            !v["factual"]["context"].is_null(),
+            "prompt bytes are recorded beside it: {v}"
+        );
+        assert_eq!(v["factual"]["context"]["peak_prompt_bytes"], 6_000);
+
+        // Nothing summarised: the field is absent, so the trail has the
+        // shape, and the factual digest, it had before the field existed.
+        let whole = transcript(vec![radius_turn(Some(0), 4_000), radius_turn(None, 4_500)]);
+        let stamp = (
+            "20260929T000002Z".to_string(),
+            "2026-09-29T00:00:02Z".to_string(),
+        );
+        let v = written(&dir, &whole, &stamp);
+        let radius = v["factual"]["radius"].as_object().unwrap();
+        assert!(!radius.contains_key("summarised"), "{v}");
+        assert_eq!(radius["radius_queries"], 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// v1.0 injection point 6: SIGINT mid-run.
     ///
     /// Whether `tokio::signal::ctrl_c()` fires is tokio's contract. What
@@ -4512,6 +4584,7 @@ mod init_tests {
             check_kind: None,
             prompt_bytes: Some(1_000),
             radius_counts: None,
+            radius_summarised: None,
             human: None,
             may_have_changed_tree: false,
         }
