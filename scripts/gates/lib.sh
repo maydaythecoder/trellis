@@ -9,25 +9,26 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# What "this change" is measured against. While PR #1 is open, a ticket
-# branch is cut from `inherit` and answers only for what it adds to it;
-# `inherit` itself answers to the PR base. Measuring a ticket against the PR
-# base would fail it on PR #1's debt, which it did not add.
+# What "this change" is measured against. Agent work lands on the
+# integration branch `drain`, which reaches `v0.1-resolver` only through a PR
+# the owner merges. A ticket branch is cut from `drain` and answers only for
+# what it adds to it; `drain` itself answers to `v0.1-resolver` (its PR's
+# diff). Measuring a ticket against main would fail it on work it did not add.
 #
 # `--base <ref>` as a gate's first argument sets it for that run, so a ticket
-# whose work is cleaning up PR #1 itself (issue #13) can have a Verify line
-# that measures against the PR base; G6 allows no `VAR=` prefix. Sourcing
-# shares the caller's arguments, so the shift here is the caller's.
+# whose work is cleaning up an older change (issue #13) can have a Verify line
+# that measures against that change's base; G6 allows no `VAR=` prefix.
+# Sourcing shares the caller's arguments, so the shift here is the caller's.
+INTEGRATION_BRANCH="drain"
 if [ "${1:-}" = "--base" ]; then
   GATE_BASE="${2:?--base needs a ref}"
   shift 2
 fi
 if [ -z "${GATE_BASE:-}" ]; then
-  if [ "$(git rev-parse --abbrev-ref HEAD)" = "inherit" ]; then
-    GATE_BASE="origin/v0.1-resolver"
-  else
-    GATE_BASE="origin/inherit"
-  fi
+  case "$(git rev-parse --abbrev-ref HEAD)" in
+    t[0-9]*-*) GATE_BASE="origin/$INTEGRATION_BRANCH" ;;
+    *) GATE_BASE="origin/v0.1-resolver" ;;
+  esac
 fi
 
 # Gates run commands a ticket or a repository names; none of them needs a

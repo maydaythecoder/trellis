@@ -15,6 +15,7 @@
 mod ask;
 mod config;
 mod hosted;
+mod liveness;
 mod orchestrate;
 mod process_agent;
 mod session;
@@ -199,8 +200,15 @@ enum Command {
         model: Option<String>,
     },
 
-    /// Continue from the last trail entry.
-    Resume,
+    /// Continue from the last trail entry, or from a named run.
+    Resume {
+        /// A run id as `trellis log` prints it. Omit it for the newest run.
+        ///
+        /// Owner-directed growth beyond brief 4.12 (ADR 0038). The named
+        /// trail is read back as data exactly as the newest one is.
+        #[arg(value_name = "RUN_ID")]
+        run_id: Option<String>,
+    },
 
     /// Run the grounded checks standalone.
     Check {
@@ -520,22 +528,8 @@ fn main() -> Result<()> {
                     "do not exist yet. Use --agents 1."
                 ));
             }
-            let task = match &prompt {
-                Some(name) => {
-                    // ADR 0025 §3: frontmatter stripped, `--args` substituted.
-                    let template = templates::render(&root, name, args.as_deref())?;
-                    if task.trim().is_empty() {
-                        template
-                    } else {
-                        format!(
-                            "{template}
-
-{task}"
-                        )
-                    }
-                }
-                None => task,
-            };
+            // ADR 0025 §3: frontmatter stripped, `--args` substituted.
+            let task = templates::task_text(&root, prompt.as_deref(), args.as_deref(), &task)?;
             let model_from_user = model.is_some();
             // A config that fails to load says why, rather than reading as
             // "no model": the refusal may be the point (ADR 0024 §3).
@@ -554,8 +548,10 @@ fn main() -> Result<()> {
             let exit = cmd_run_with(
                 &root,
                 &task,
-                &model,
-                unconstrained,
+                ModelChoice {
+                    spec: &model,
+                    unconstrained,
+                },
                 RunSeeding {
                     resume,
                     focus: focus.as_deref(),
@@ -586,7 +582,7 @@ fn main() -> Result<()> {
             let spec = model.or_else(|| config::RepoConfig::load(&root).ok()?.model());
             tui_run::run(&root, task, spec, from_user)
         }
-        Command::Resume => cmd_resume(&root),
+        Command::Resume { run_id } => cmd_resume(&root, run_id.as_deref()),
         Command::Log { limit, .. } if output::json() => {
             output::log_json(&root, limit, &mut std::io::stdout())
         }
@@ -1206,6 +1202,28 @@ impl Driver {
         }
     }
 
+    /// Every compaction a client asked for over RPC (ADR 0025 §5).
+    fn requested_compactions(&self) -> Vec<trellis_loop::RequestedCompaction> {
+        use trellis_loop::Model;
+        match self {
+            Driver::Scripted(m) => m.requested_compactions().to_vec(),
+            Driver::Runtime(m) => m.requested_compactions().to_vec(),
+            Driver::Hosted(m) => m.requested_compactions().to_vec(),
+        }
+    }
+
+    /// Hands RPC's `compact` requests to the driver that will answer them.
+    fn compact_on_request(&mut self, requests: std::sync::Arc<trellis_loop::CompactRequests>) {
+        match self {
+            Driver::Scripted(_) => requests.close(
+                "this run's model is scripted: it is sent no prompt, so there is nothing \
+                 to compact",
+            ),
+            Driver::Runtime(m) => m.compact_on_request(requests),
+            Driver::Hosted(m) => m.compact_on_request(requests),
+        }
+    }
+
     fn describe(&self) -> String {
         match self {
             Driver::Scripted(m) => format!(
@@ -1370,6 +1388,43 @@ async fn answer_on_the_line(
     }
 }
 
+/// `input` (ADR 0023 §5), for [`cmd_run_with`]: `Err` when it refused the
+/// task. Its own function, not inline, on purpose: `cmd_run_with` is one
+/// stack frame that lives for the whole run, and a debug build keeps every
+/// future it creates in that frame. Inline, this one took the main thread
+/// past its stack on Windows once the loop was running
+/// (`tests/child_env.rs`).
+#[inline(never)]
+fn input_hook(
+    rt: &tokio::runtime::Runtime,
+    hooks: &trellis_loop::Hooks,
+    task: &str,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    match rt.block_on(hooks.input(task)) {
+        None | Some(trellis_loop::InputDecision::Proceed) => Ok(()),
+        Some(trellis_loop::InputDecision::ProceedDespite(e)) => {
+            let _ = writeln!(
+                out,
+                "hook:     input did not refuse the task ({e}); going on"
+            );
+            Ok(())
+        }
+        Some(trellis_loop::InputDecision::Refuse(why)) => {
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", why.replace('\n', " "))
+            };
+            anyhow::bail!(
+                "the input hook refused the task (exit {}){why}. Nothing was \
+                 snapshotted; the run did not start.",
+                trellis_loop::DENY_EXIT
+            )
+        }
+    }
+}
+
 /// Runs the agent loop, and rolls back anything that did not converge.
 ///
 /// The ordering matters and is the whole safety story: snapshot before the
@@ -1383,13 +1438,15 @@ fn cmd_run(
     unconstrained: bool,
     seeding: RunSeeding<'_>,
     control: RunControl,
-    out: &mut dyn std::io::Write,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
     cmd_run_with(
         root,
         task,
-        model_spec,
-        unconstrained,
+        ModelChoice {
+            spec: model_spec,
+            unconstrained,
+        },
         seeding,
         control,
         output::RunExtras::default(),
@@ -1397,47 +1454,49 @@ fn cmd_run(
     )
 }
 
+/// The model a run drives, and `--unconstrained`: send no schema and
+/// validate the reply instead (tier 4). Grouped because the two are read
+/// together to build the driver and to choose the tier, and are never
+/// passed apart.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModelChoice<'a> {
+    /// The model spec as given: `--model`, `/model`, `[model] spec`, a profile.
+    pub(crate) spec: &'a str,
+    pub(crate) unconstrained: bool,
+}
+
 /// `cmd_run` with what ADR 0025 adds: forced skills and JSON framing.
 ///
 /// A second entry point rather than a new parameter, so every existing
 /// caller (`work`, `session`, `tui`) keeps calling `cmd_run` unchanged.
-#[allow(clippy::too_many_arguments)]
 fn cmd_run_with(
     root: &Path,
     task: &str,
-    model_spec: &str,
-    unconstrained: bool,
+    model: ModelChoice<'_>,
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: output::RunExtras,
-    out: &mut dyn std::io::Write,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
-    output::framed(root, task, model_spec, &extras, || {
-        run_body(
-            root,
-            task,
-            model_spec,
-            unconstrained,
-            seeding,
-            control,
-            &extras,
-            out,
-        )
+    output::framed(root, task, model.spec, &extras, || {
+        run_body(root, task, model, seeding, control, &extras, out)
     })
 }
 
 /// The body of a run; see `cmd_run`.
-#[allow(clippy::too_many_arguments)]
 fn run_body(
     root: &Path,
     task: &str,
-    model_spec: &str,
-    unconstrained: bool,
+    model: ModelChoice<'_>,
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: &output::RunExtras,
-    out: &mut dyn std::io::Write,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
+    let ModelChoice {
+        spec: model_spec,
+        unconstrained,
+    } = model;
     let RunSeeding {
         resume,
         focus,
@@ -1607,6 +1666,12 @@ fn run_body(
     if let Driver::Hosted(m) = &mut driver {
         m.require_usage(profile.is_some_and(|p| p.file.budget.is_some()));
     }
+    // After the last rebuild above, so the driver that runs is the one that
+    // answers. A scripted driver is sent no prompt, so there is nothing for
+    // a `compact` to shrink; it is refused now rather than left waiting.
+    if let Some(c) = &extras.compact {
+        driver.compact_on_request(c.clone());
+    }
 
     // Printed after reachability, not before. Describing the tier of a
     // runtime that is not listening is noise ahead of the only line that
@@ -1666,6 +1731,15 @@ fn run_body(
         &skill_dirs,
     )?;
 
+    // `input` (ADR 0023 §5): the last thing before the snapshot, so a task
+    // it refuses costs nothing and leaves no trail. It is handed the task
+    // and can only refuse it; nothing it prints becomes the task. It runs
+    // in the repository, so a write here dirties the worktree and the
+    // snapshot below refuses the run.
+    if let Some(h) = &tooling.hooks {
+        input_hook(&probe_rt, h, task, out)?;
+    }
+
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
     // (ADR 0009).
@@ -1702,7 +1776,16 @@ fn run_body(
         .map(|r| r.as_written())
         .collect();
     deny.extend(trellis_checks::governance::deny_write_paths(&rules));
-    let governance = trellis_loop::Governance::new(&deny);
+    let mut governance = trellis_loop::Governance::new(&deny);
+    // A profile's `allow_write` narrows the run's writes (ADR 0026 §4). It
+    // is kept out of `deny_write`, so the writer guards cloned below still
+    // protect exactly what the repository's rules name, and a cache a check
+    // writes outside the scope is not a tree left unrestored.
+    if let Some(p) = profile
+        && let Some(allow) = &p.file.allow_write
+    {
+        governance = governance.with_allow_write(&p.name, allow);
+    }
     let writers = if tooling.tools.bash().is_some()
         || !tooling.tools.customs().is_empty()
         || tooling.hooks.is_some()
@@ -1833,6 +1916,30 @@ fn run_body(
         .iter()
         .map(|r| format!("{} (no writes)", r.as_written()))
         .collect();
+    // Told, not only enforced, for the reason the rules are: a model that
+    // does not know the scope spends turns on refusals. Phrased for the
+    // prompt's heading, which lists the files the model may not edit, and
+    // written as the rules parse, as the `deny_write` lines above are.
+    if let Some(p) = profile
+        && let Some(allow) = &p.file.allow_write
+    {
+        prompt_rules.push(if allow.is_empty() {
+            format!(
+                "every path (agent `{}` has an empty allow_write: no writes)",
+                p.name
+            )
+        } else {
+            let written: Vec<String> = allow
+                .iter()
+                .map(|a| trellis_loop::Rule::parse(a).as_written())
+                .collect();
+            format!(
+                "every path except {} (agent `{}`'s allow_write)",
+                written.join(", "),
+                p.name
+            )
+        });
+    }
     for r in &rules {
         let rank = match r.rank {
             trellis_checks::governance::Rank::NonNegotiable => "non-negotiable",
@@ -1873,6 +1980,9 @@ fn run_body(
             tools: tooling.tools.clone(),
             extra: added.extra,
         },
+        // Nothing here sends input while the run is in progress, so there is
+        // no steering channel and the run is exactly the one before #113.
+        steering: None,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1927,7 +2037,15 @@ fn run_body(
             )
         }
     };
-    let (outcome, transcript, gate_log) = rt.block_on(async {
+    // Read here, on the caller's thread, which is the one a test set it on.
+    #[cfg(test)]
+    let panic_in_run = PANIC_IN_RUN.with(std::cell::Cell::get);
+    #[cfg(test)]
+    let polled_on = std::sync::OnceLock::<Option<String>>::new();
+    let (outcome, transcript, gate_log) = on_run_stack(|| {
+        rt.block_on(async {
+        #[cfg(test)]
+        let _ = polled_on.set(std::thread::current().name().map(str::to_owned));
         let mut orchestrator = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
             .with_rules(rules)
@@ -2002,7 +2120,7 @@ fn run_body(
         // tree, where a real one (a provider value that overflows, an index
         // bug) would unwind out of `block_on`.
         #[cfg(test)]
-        if PANIC_IN_RUN.with(std::cell::Cell::get) {
+        if panic_in_run {
             panic!("injected: a panic inside the run");
         }
         // Asked after the race either way: the orchestrator is still alive
@@ -2091,7 +2209,10 @@ fn run_body(
             }
         }
         (out, touched, gate_log)
-    });
+    })
+    })?;
+    #[cfg(test)]
+    RUN_POLLED_ON.with(|c| *c.borrow_mut() = polled_on.into_inner().flatten());
     // Not a plain drop. A line reader blocked on stdin when Ctrl-C arrived
     // is still on the blocking pool, and dropping a runtime waits for that
     // pool — so an interrupted run would hang until someone pressed Enter.
@@ -2110,6 +2231,7 @@ fn run_body(
         Driver::Hosted(m) => m.tokens_measured(),
     };
     let compactions = driver.compactions();
+    let requested = driver.requested_compactions();
     let facts = |approved| TrailFacts {
         approved,
         base_commit: &snapshot.head,
@@ -2121,6 +2243,7 @@ fn run_body(
         agent: profile.map(|p| p.name.clone()),
         inputs: added.inputs.clone(),
         compactions: &compactions,
+        requested: &requested,
     };
     let Some(outcome) = outcome else {
         // The interrupt path rolls back itself and then commits a trail; a
@@ -2211,6 +2334,9 @@ fn run_body(
         );
     }
     if let Some(line) = hosted::compaction_line(&compactions) {
+        let _ = writeln!(out, "{line}");
+    }
+    if let Some(line) = hosted::requested_compaction_line(&requested) {
         let _ = writeln!(out, "{line}");
     }
 
@@ -2385,17 +2511,33 @@ fn run_body(
     }
 }
 
-/// Continues from the last trail entry.
+/// Continues from the last trail entry, or from the run `run_id` names.
 ///
 /// This is the wedge the product exists for: reopen a repository, and the
 /// previous session's decisions are already there. The trail is read back as
 /// `UntrustedTrail` — a repository may take contributions, so reading a trail
 /// is reading attacker-influenceable text into an agent's context (S10).
-fn cmd_resume(root: &Path) -> Result<()> {
-    let Some((path, trail)) = trellis_trail::latest(root)? else {
-        println!("No trail under .trellis/runs/. Nothing to resume from.");
-        println!("`trellis run` writes one, and the next session starts from it.");
-        return Ok(());
+fn cmd_resume(root: &Path, run_id: Option<&str>) -> Result<()> {
+    let (path, trail, newest) = match run_id {
+        None => {
+            let Some((path, trail)) = trellis_trail::latest(root)? else {
+                println!("No trail under .trellis/runs/. Nothing to resume from.");
+                println!("`trellis run` writes one, and the next session starts from it.");
+                return Ok(());
+            };
+            (path, trail, true)
+        }
+        Some(id) => {
+            let entries = trellis_trail::query::all(root);
+            // Exact match only. A prefix or substring match would let a short
+            // or mistyped id quietly pick some other run, and resuming from
+            // the wrong run is worse than refusing.
+            let Some(pos) = entries.iter().position(|e| e.run_id() == id) else {
+                anyhow::bail!("{}", unknown_run_id(id, &entries));
+            };
+            let e = entries.into_iter().nth(pos).expect("position is in range");
+            (e.path, e.trail, pos == 0)
+        }
     };
 
     println!("resuming from {}", path.display());
@@ -2411,17 +2553,61 @@ fn cmd_resume(root: &Path) -> Result<()> {
         "section is the previous run's opinion and is fenced accordingly (S10, S11)."
     ));
     println!();
-    println!(concat!(
-        "To carry this into a run rather than only read it, pass --resume:
+    if newest {
+        println!(concat!(
+            "To carry this into a run rather than only read it, pass --resume:
 ",
-        "  trellis run --resume --model <spec> \"<task>\"
+            "  trellis run --resume --model <spec> \"<task>\"
 ",
-        "The lines above are then fenced into the model's prompt as data. They ",
-        "cannot
+            "The lines above are then fenced into the model's prompt as data. They ",
+            "cannot
 make the run converge — only a check executed in that session ",
-        "can do that."
-    ));
+            "can do that."
+        ));
+    } else {
+        // `run --resume` takes the newest trail and nothing else (ADR 0038),
+        // so the hint above would name a different run than the one shown.
+        println!(concat!(
+            "This is not the newest run. `trellis run --resume` carries the newest ",
+            "trail,
+not this one; the lines above are for reading."
+        ));
+    }
     Ok(())
+}
+
+/// The error for a run id no trail carries: the ten newest ids, so the user
+/// can pick one without a second command.
+///
+/// Ids come from trails, which are untrusted text (S10), so each goes through
+/// `plain` before it reaches a terminal — the same reason `log` does it.
+fn unknown_run_id(id: &str, entries: &[trellis_trail::query::Entry]) -> String {
+    if entries.is_empty() {
+        return format!(
+            "no run `{}`: there are no trails under .trellis/runs/. `trellis run` writes one.",
+            plain(id)
+        );
+    }
+    let mut msg = format!(
+        "no run `{}`. The {} most recent run id(s), newest first:",
+        plain(id),
+        entries.len().min(10)
+    );
+    for e in entries.iter().take(10) {
+        msg.push_str(
+            "
+  ",
+        );
+        msg.push_str(&plain(&e.run_id()));
+    }
+    if entries.len() > 10 {
+        msg.push_str(&format!(
+            "
+  ... {} older, `trellis log --limit` lists them",
+            entries.len() - 10
+        ));
+    }
+    msg
 }
 
 /// Ctrl-C during a run.
@@ -2475,7 +2661,60 @@ thread_local! {
     pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+thread_local! {
+    /// The name of the thread the run's `block_on` polled on, recorded on
+    /// the caller's thread once the run returns, so a test can see that the
+    /// loop ran on [`RUN_THREAD`] and not on the caller's stack.
+    pub(crate) static RUN_POLLED_ON: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The thread a run's futures are polled on.
+const RUN_THREAD: &str = "trellis-run";
+
+/// Its stack: 8 MiB, the size of a Linux main thread.
+///
+/// The run used to be polled on whichever thread called `cmd_run`, which
+/// for the binary is the main thread, and a Windows main thread has 1 MiB.
+/// Measured on a debug build on Windows (#180), with this constant
+/// temporarily read from the environment and
+/// `tests/child_env.rs::checks_bash_custom_tools_and_hooks_inherit_no_key`
+/// run three times per size: 896 KiB overflowed 3/3 and 928 KiB passed 3/3
+/// (sizes between were not tried). The run's root future was 21,064 B,
+/// and #137 measured `gated` at 20,448 B. So the main thread had less than
+/// 128 KiB to spare, less the
+/// frames above `run_body`, and #19 and #137 each had to box a future to
+/// fit. Here the same run has about eight times its measured demand, for
+/// every caller and every future, without any of them boxing. The stack is
+/// reserved address space: pages are committed only as they are touched.
+const RUN_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Runs `f` on [`RUN_THREAD`], with [`RUN_STACK_BYTES`] of stack, and waits.
+///
+/// A panic in `f` continues on the caller's thread, so `RollbackOnPanic`
+/// in the caller's frame still sees `std::thread::panicking()` and the
+/// process still fails as it did when `f` ran inline.
+///
+/// The caller's `tracing` dispatcher goes with it. A default set with
+/// `with_default` is per thread, and the full-screen interface sets one
+/// around `cmd_run` to show the loop's events; without this the loop would
+/// emit them where nothing listens.
+fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    std::thread::scope(|s| {
+        let h = std::thread::Builder::new()
+            .name(RUN_THREAD.into())
+            .stack_size(RUN_STACK_BYTES)
+            .spawn_scoped(s, move || tracing::dispatcher::with_default(&dispatch, f))
+            .context("starting the thread the run is polled on")?;
+        match h.join() {
+            Ok(v) => Ok(v),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
+}
+
 fn interrupted_run(
     root: &Path,
     task: &str,
@@ -2526,6 +2765,7 @@ fn handle_interrupt(
         task: task.to_string(),
         turns: Vec::new(),
         final_notice: false,
+        steering: trellis_loop::SteeringLog::default(),
         prior: None,
         repo: trellis_loop::RepoContext::default(),
     };
@@ -2848,6 +3088,9 @@ struct TrailFacts<'a> {
     /// request was compacted. Empty on a run that never compacted, so older
     /// trails keep their shape.
     compactions: &'a [trellis_loop::Compacted],
+    /// Compactions a client asked for over RPC (ADR 0025 §5), filed the
+    /// same way. Empty outside RPC.
+    requested: &'a [trellis_loop::RequestedCompaction],
 }
 
 fn record_trail(
@@ -2869,6 +3112,7 @@ fn record_trail(
         agent,
         inputs,
         compactions,
+        requested,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2891,6 +3135,10 @@ fn record_trail(
             radius.widest_unbound_in_touched_files = radius.widest_unbound_in_touched_files.max(u);
             radius.radius_queries += 1;
         }
+        // A sum, like the reach counts: each query summarised its own sites,
+        // and a site summarised in two queries was shown only as a count
+        // twice (ADR 0033).
+        radius.summarised += t.radius_summarised.unwrap_or(0);
     }
 
     // Context fill, from the turns that carried a prompt. A scripted run
@@ -2945,10 +3193,18 @@ fn record_trail(
                 })
                 .collect();
             let at = act.turn;
+            // A turn has one compacted request: fitted to the budget, or
+            // folded on request, never both.
             let compacted: Vec<trellis_trail::Action> = compactions
                 .iter()
                 .filter(|c| c.turn == at)
                 .map(hosted::compaction_action)
+                .chain(
+                    requested
+                        .iter()
+                        .filter(|c| c.turn == at)
+                        .map(hosted::requested_compaction_action),
+                )
                 .collect();
             compacted
                 .into_iter()
@@ -2966,6 +3222,12 @@ fn record_trail(
             .filter(|c| c.turn as usize > turns.turns.len())
             .map(hosted::compaction_action),
     );
+    actions.extend(
+        requested
+            .iter()
+            .filter(|c| c.turn as usize > turns.turns.len())
+            .map(hosted::requested_compaction_action),
+    );
 
     let (timestamp, started_at) = stamp.cloned().unwrap_or_else(trellis_trail::now);
 
@@ -2982,6 +3244,9 @@ fn record_trail(
         actions,
         control,
         tokens,
+        // No adapter reports prompt tokens to the loop, so there is no figure
+        // to record; absent reads as unknown, where a zero would be a claim.
+        prompt_tokens: None,
         agent,
         inputs,
     };
@@ -3270,6 +3535,9 @@ pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
 fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
     // `index` always rebuilds — it is the command whose job is to refresh
     // the cache, so reading the cache here would make it a no-op.
+    // Read before the build, so a misspelt `[index] backstop` stops here
+    // rather than after a long index that ran without the help it asked for.
+    let backstop = config::RepoConfig::load(root)?.pyright_backstop()?;
     let started = std::time::Instant::now();
     let sources = trellis_index::read_sources(root);
     let index = trellis_index::build_from_sources(&sources);
@@ -3350,6 +3618,11 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
          hand-audited sample measures recall."
     );
 
+    println!();
+    for line in backstop_lines(&index, root, backstop) {
+        println!("{line}");
+    }
+
     if graph {
         println!();
         for line in graph_lines(&trellis_index::module_graph(&index), limit) {
@@ -3357,6 +3630,74 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The recall backstop's part of `trellis index` (ADR 0031).
+///
+/// Its counts stand beside the resolver's and are never added to `resolved`
+/// or divided by anything (rule 3). It runs after `index.bin` is written and
+/// its edges are not stored there: they depend on the server's version, which
+/// the file does not record. So the version is printed here instead.
+fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> Vec<String> {
+    if !enabled {
+        return vec![
+            "backstop: off (no `[index] backstop` in .trellis/config.toml);              the figures above are the resolver's alone"
+                .to_string(),
+        ];
+    }
+    let sites = trellis_index::doubt_sites(index);
+    let r = trellis_index::run_backstop(
+        index,
+        root,
+        &sites,
+        &trellis_index::BackstopServer::pyright(),
+    );
+    let mut out = Vec::new();
+    match &r.status {
+        trellis_index::BackstopStatus::NotRun { reason } => {
+            out.push(format!("backstop: pyright did not run ({reason})"));
+            out.push(format!(
+                "  {} Unresolved or Candidates site(s) keep the resolver's verdict",
+                r.not_queried
+            ));
+            return out;
+        }
+        trellis_index::BackstopStatus::Ran { server, stopped } => {
+            out.push(format!(
+                "backstop: pyright ran ({})",
+                server
+                    .as_deref()
+                    .unwrap_or("the server did not report its version")
+            ));
+            if let Some(why) = stopped {
+                out.push(format!("  stopped part way: {why}"));
+            }
+        }
+    }
+    out.push(format!(
+        "  queried          {:>6}  Unresolved or Candidates sites only",
+        r.queried
+    ));
+    out.push(format!(
+        "  bound by pyright {:>6}  counted apart: not in `resolved`, not in the graph",
+        r.edges.len()
+    ));
+    out.push(format!(
+        "  left alone       {:>6}  no answer, or one this backstop would not bind",
+        r.left
+    ));
+    if r.not_queried > 0 {
+        out.push(format!(
+            "  not queried      {:>6}  keep the resolver's verdict",
+            r.not_queried
+        ));
+    }
+    out.push(
+        "  A pyright-bound edge is the server's reading of the annotations, not a          verified callee;
+  those sites stay unpartitionable."
+            .to_string(),
+    );
+    out
 }
 
 /// The codebase as a graph of modules.
@@ -4145,6 +4486,7 @@ mod interrupt_tests {
             agent: None,
             inputs: Vec::new(),
             compactions: &[],
+            requested: &[],
         }
     }
 
@@ -4160,6 +4502,75 @@ mod interrupt_tests {
                 .unwrap();
         }
         dir
+    }
+
+    /// The trail records how many radius call sites the model saw only as
+    /// counts (ADR 0033). Without it a reader of the trail cannot tell a run
+    /// that was shown every caller from one shown twenty and a per-file
+    /// tally, and the second knew less than its radius counts suggest.
+    #[test]
+    fn selector_budget_trail_records_summarised_count() {
+        let radius_turn = |summarised: Option<u32>, prompt: usize| trellis_loop::Turn {
+            call: trellis_loop::ToolCall::BlastRadius { symbol: "f".into() },
+            observation: String::new(),
+            verdict_passed: None,
+            check_kind: None,
+            prompt_bytes: Some(prompt),
+            radius_counts: Some((30, 4, 2)),
+            radius_summarised: summarised,
+            human: None,
+            may_have_changed_tree: false,
+        };
+        let transcript = |turns| trellis_loop::Transcript {
+            task: "a wide radius".to_string(),
+            turns,
+            final_notice: false,
+            steering: trellis_loop::SteeringLog::default(),
+            prior: None,
+            repo: trellis_loop::RepoContext::default(),
+        };
+        let written = |dir: &Path, t: &trellis_loop::Transcript, stamp: &(String, String)| {
+            let snap = trellis_vcs::snapshot(dir).unwrap();
+            let mut facts = facts_for(&snap);
+            facts.stamp = Some(stamp);
+            let path = record_trail(dir, &t.task, t, &[], facts, &mut std::io::sink()).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            v
+        };
+
+        let dir = temp_repo("selector-budget");
+        let summarised = transcript(vec![
+            radius_turn(Some(12), 4_000),
+            radius_turn(Some(0), 5_000),
+            radius_turn(Some(7), 6_000),
+        ]);
+        let stamp = (
+            "20260929T000001Z".to_string(),
+            "2026-09-29T00:00:01Z".to_string(),
+        );
+        let v = written(&dir, &summarised, &stamp);
+        assert_eq!(v["factual"]["radius"]["summarised"], 19, "{v}");
+        assert_eq!(v["factual"]["radius"]["radius_queries"], 3);
+        assert!(
+            !v["factual"]["context"].is_null(),
+            "prompt bytes are recorded beside it: {v}"
+        );
+        assert_eq!(v["factual"]["context"]["peak_prompt_bytes"], 6_000);
+
+        // Nothing summarised: the field is absent, so the trail has the
+        // shape, and the factual digest, it had before the field existed.
+        let whole = transcript(vec![radius_turn(Some(0), 4_000), radius_turn(None, 4_500)]);
+        let stamp = (
+            "20260929T000002Z".to_string(),
+            "2026-09-29T00:00:02Z".to_string(),
+        );
+        let v = written(&dir, &whole, &stamp);
+        let radius = v["factual"]["radius"].as_object().unwrap();
+        assert!(!radius.contains_key("summarised"), "{v}");
+        assert_eq!(radius["radius_queries"], 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// v1.0 injection point 6: SIGINT mid-run.
@@ -4507,6 +4918,7 @@ mod init_tests {
             check_kind: None,
             prompt_bytes: Some(1_000),
             radius_counts: None,
+            radius_summarised: None,
             human: None,
             may_have_changed_tree: false,
         }
@@ -4953,5 +5365,107 @@ mod approval_tests {
         let a = actions(&trail(&dir));
         assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "declined"));
         assert!(!a[1].3);
+    }
+
+    /// The run's futures are polled on `RUN_THREAD`, not on the caller's
+    /// stack. Moving `block_on` back inline would leave the binary's run on
+    /// a 1 MiB Windows main thread that a debug build had all but used up
+    /// (#180), and nothing else would fail until a future grew past it.
+    #[test]
+    fn loop_stack_a_run_is_polled_on_the_run_thread_not_the_callers() {
+        let (dir, spec) = fixture("loop-stack", EDIT_THEN_STOP);
+        crate::RUN_POLLED_ON.with(|c| *c.borrow_mut() = None);
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding::default(),
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+            },
+            &mut out,
+        );
+        assert!(r.is_ok(), "{r:?}");
+        let polled_on = crate::RUN_POLLED_ON.with(|c| c.borrow_mut().take());
+        assert_eq!(polled_on.as_deref(), Some(crate::RUN_THREAD));
+        assert_ne!(std::thread::current().name(), Some(crate::RUN_THREAD));
+    }
+}
+
+#[cfg(test)]
+mod loop_stack_tests {
+    use super::{RUN_STACK_BYTES, RUN_THREAD, on_run_stack};
+
+    /// Uses about `frames` x 16 KiB of stack. The work after the recursive
+    /// call keeps it from becoming a loop, and `black_box` keeps the buffer.
+    fn burn(frames: usize) -> u8 {
+        let mut buf = [0u8; 16 * 1024];
+        std::hint::black_box(&mut buf);
+        if frames == 0 {
+            buf[0]
+        } else {
+            burn(frames - 1).wrapping_add(std::hint::black_box(buf[1]))
+        }
+    }
+
+    /// The stack size is applied, not only declared. 3 MiB is more than a
+    /// Windows main thread (1 MiB) and more than a thread spawned without a
+    /// size (2 MiB), so if `stack_size` is dropped this overflows. An
+    /// overflow aborts the test process rather than failing one test; that
+    /// is how a lost stack shows here.
+    #[test]
+    fn loop_stack_the_run_thread_holds_three_mib_of_frames() {
+        const _: () = assert!(RUN_STACK_BYTES >= 4 * 1024 * 1024);
+        let (name, got) = on_run_stack(|| {
+            let name = std::thread::current().name().map(str::to_owned);
+            (name, burn(192))
+        })
+        .unwrap();
+        assert_eq!(name.as_deref(), Some(RUN_THREAD));
+        assert_eq!(got, 0);
+    }
+
+    /// Counts the events it sees.
+    struct Count(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+        fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// An event emitted on the run thread reaches a subscriber the caller
+    /// set for its own thread only. `tui_run` sets one around `cmd_run` to
+    /// show the loop's turns; if the run thread did not inherit it, those
+    /// events would go to the global subscriber and the screen would show
+    /// no turns while the run went on.
+    #[test]
+    fn loop_stack_the_callers_thread_scoped_subscriber_sees_the_run() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sub = tracing_subscriber::registry().with(Count(seen.clone()));
+        tracing::subscriber::with_default(sub, || {
+            on_run_stack(|| tracing::info!("emitted on the run thread")).unwrap();
+        });
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A panic on the run thread continues on the caller's. `RollbackOnPanic`
+    /// lives in the caller's frame and only rolls back while that thread is
+    /// unwinding, so a panic that stopped at the thread boundary would leave
+    /// the run's edits in the tree.
+    #[test]
+    fn loop_stack_a_panic_on_the_run_thread_unwinds_the_caller() {
+        let caught = std::panic::catch_unwind(|| {
+            let _ = on_run_stack(|| -> () { panic!("injected on the run thread") });
+        })
+        .expect_err("the panic reaches the caller");
+        assert_eq!(
+            caught.downcast_ref::<&str>(),
+            Some(&"injected on the run thread")
+        );
     }
 }

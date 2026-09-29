@@ -71,6 +71,48 @@ bodies and do not always close promptly.
 Without the feature an `https://` base is refused with a message naming the
 feature. The local tiers are untouched either way.
 
+*Amended 2026-09-29 (#150): `HTTPS_PROXY` as a CONNECT tunnel.* The owner's
+decision on #150 fixes the scope, and this is all of it:
+- **Only `https://` is proxied, only through `CONNECT`.** For an https
+  endpoint trellis reads `HTTPS_PROXY`, then `https_proxy` (an empty value
+  is unset), connects to that proxy, sends `CONNECT host:port`, requires a
+  200, and runs the TLS handshake with the provider over the tunnel. The
+  proxy is told the provider's host and port and nothing else: the key,
+  the transcript and the reply are inside TLS end to end, so ADR 0010's
+  "no proxy in the key's path" still holds in the sense that matters,
+  which is that no proxy can read it. The proxy is the user's, named in
+  the user's environment. A refusal (anything but 200) is a connection
+  error naming the proxy and the status, and is not retried.
+- **Plain `http://` is never proxied**, and `HTTP_PROXY` and `ALL_PROXY`
+  are not read: a proxy forwarding a plain request reads it, headers
+  included, and plain http goes only to this machine (above).
+- **Loopback is always direct**, whatever the variables say.
+- **`NO_PROXY` / `no_proxy`** is a comma-separated list: `*` for every
+  host, `.example.com` for that domain and every name under it, and a bare
+  `example.com` the same (curl's and Go's reading). Case is ignored and an
+  IPv6 literal may be bracketed. An entry with a `:port`, or a CIDR range,
+  is compared as written and so matches nothing; the request then goes
+  through the proxy, which is the failure a user can see and correct.
+- **No proxy credentials.** A `HTTPS_PROXY` with `user:pass@` is refused
+  when the client is built, before a run's snapshot, with a message that
+  does not repeat the value; a proxy answering 407 is reported as asking
+  for credentials. A `https://` or `socks5://` proxy URL is refused the
+  same way: only an http proxy that accepts `CONNECT` is spoken to.
+- The variables are read only for an endpoint that would be proxied, so a
+  proxy URL trellis refuses does not break a run against a local server.
+
+Evidence: the four `https_proxy_*` tests in
+`crates/trellis-cli/tests/hosted_keys.rs`, through the real binary against
+a loopback CONNECT proxy: the CONNECT line names the provider, the first
+bytes in the tunnel are a TLS ClientHello naming it, and neither the
+CONNECT head nor the output holds the key; nothing reaches the proxy with
+only `HTTP_PROXY`/`ALL_PROXY` set or with the host in `NO_PROXY`; and a
+credentialed URL is refused before the snapshot without printing the
+password. There is no TLS server in those tests, because the client trusts
+only the compiled-in roots, so a completed handshake through the tunnel is
+not exercised; `transport::tests` covers the tunnel carrying bytes after
+the 200 and the matching rules. No run through a real proxy has been made.
+
 Whether `trellis-cli` turns `hosted` on by default is decided by measurement
 (release binary size and crate count, with and without); the figures and the
 method are in "Measurements" below.
@@ -158,9 +200,20 @@ the protocol already states. Streaming is not built; replies are read whole.
   after the second review of PR #1.
 - **A format retry resends the same request**, as the completion tiers do;
   the model is not told why its previous reply was refused.
-- **`trellis ask`'s intent classifier** treats a hosted spec as it treats a
-  scripted one (everything is a task); the TUI labels it "tier 1, native
-  tool calls".
+- **`trellis ask`'s intent classifier** sends one classification request
+  per input on a hosted spec, as it does on a local runtime; the TUI labels
+  the spec "tier 1, native tool calls". *Amended 2026-09-29 (#41), by the
+  owner's decision:* it previously treated a hosted spec as a scripted one
+  (everything is a task), so every question snapshotted the worktree, ran
+  the loop and rolled back. The spec is resolved as a run resolves it, so
+  the §3 refusal of a repository-chosen endpoint applies before the
+  request, and the key is read from the user's environment as for a run.
+  The request carries no tool list and no `tool_choice` (the loop's
+  `"required"` would have nothing to choose from) and no system prompt, is sent with
+  thinking off whatever `[model] thinking` says, and its reply is read as
+  text. A provider failure is reported under the same context as the local
+  path's ("asking the model what this input is"). Tested against a loopback
+  stub only.
 
 ### 3. Keys (ADR 0010, narrowed)
 
@@ -257,6 +310,8 @@ for its own requests.
 - **The `chat` crate** depends on nothing in the workspace by design, so it
   removes the two default names itself (`chat::scrub_keys`) at its four
   spawns. It reads no `[[providers]]`, so it has no other names to remove.
+  *[2026-09-29, #16: `crates/chat` was deleted (Q-19); `chat::scrub_keys`
+  went with it and is recoverable from git history.]*
 
 Evidence is `crates/trellis-cli/tests/child_env.rs`. The binary is run with
 four canary keys in its environment: both defaults, a repository provider's
@@ -356,9 +411,15 @@ repository may no longer name `key_env`.
 ### 4. Backoff, and thinking
 
 - **429, 500, 502, 503, 504 and 529** are retried with backoff: `Retry-After`
-  in seconds when the response has one, capped at 60 s (the cap applied
-  to the number before it becomes a duration, so `1e20` waits 60 s rather
-  than panicking), otherwise 1, 2, 4 s.
+  when the response has one, capped at 60 s, otherwise 1, 2, 4 s. The
+  header is honoured in seconds (the cap applied to the number before it
+  becomes a duration, so `1e20` waits 60 s rather than panicking) or as an
+  IMF-fixdate HTTP date (`Sun, 06 Nov 1994 08:49:37 GMT`, the form RFC 9110
+  §5.6.7 says senders must use), parsed by hand rather than with a new
+  dependency: a future date waits until then, a date at or before now
+  waits zero. The obsolete RFC 850 and asctime date forms, a zone other
+  than `GMT`, and a date that does not exist (`31 Feb`) are not honoured
+  and fall back to the fixed backoff.
   At most four attempts per model call. A transport failure mid-request is
   retried the same way; a refused connection is not. A malformed reply keeps
   the existing format-retry path, which is separate.
@@ -459,6 +520,23 @@ without a budget against the same replies and compares outcomes.
   elidable observation still exceeds the provider's window" rather than
   paying for the same refusal again
   (`an_overflow_that_elision_cannot_shrink_is_not_resent_unchanged`).
+  *Amended by ADR 0033:* the smallest supported window is now named, as
+  4,096 tokens; its byte conversion is pending #170, and `[model]
+  context_bytes` still has no default.
+  *Amended 2026-09-29 (#152), on the owner's decision of 2026-09-28:* a
+  **hosted** spec with no `[model] context_bytes` uses **400,000 bytes**
+  (`HOSTED_CONTEXT_BYTES`, `crates/trellis-cli/src/hosted.rs`), applied when
+  the driver is built. The figure is about 100,000 tokens at roughly 4
+  bytes per token, and that ratio is a **heuristic, not a measurement**:
+  #170 measures it on trails carrying both prompt bytes and prompt tokens,
+  and per-model input limits (split from #45) replace this default when
+  they exist. An explicit value always wins, larger or smaller. A local
+  spec is unchanged: unset still means nothing is elided and its prompt is
+  byte for byte what it was. Config parsing is unchanged; `[model]
+  context_bytes` still reads as unset when it is absent. The overflow retry
+  above still applies, now shrinking from 400,000 bytes or less. Held by
+  `hosted_context_default_elides_an_unconfigured_run_below_400000_bytes` and
+  `hosted_context_default_yields_to_an_explicit_value_above_or_below_it`.
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
@@ -495,6 +573,18 @@ without a budget against the same replies and compares outcomes.
   monotone: a note can be longer than a short observation. Tests assert
   the same answer as the scan on a non-monotone transcript, and a bounded
   number of renders.
+- *Amended 2026-09-29 (#110).* **Compaction on request.** `compact` over
+  `trellis rpc` (ADR 0025 §5) elides, at the run's next model request,
+  every observation but the newest: the most this section ever elides, so
+  what a requested compaction produces is a function of the transcript
+  alone. "Deterministic and monotone" therefore reads: the number of
+  elided turns is a function of the transcript, the budget and the turns
+  at which a client asked, and never decreases. With no budget set, a run
+  keeps what a request elided, so its later prompts are no longer
+  byte-identical to an uncompacted run's; a run nobody asks is unchanged.
+  Recorded as above, with the outcome naming the request instead of a
+  budget. The owner declined model-written summaries for this command as
+  well (#153).
 - **Model-written summaries are not built.** A summary is text a model wrote
   about the run, entering the context as though it were a record — judgment
   text in the place observations go. Elision loses detail and invents none.
@@ -572,20 +662,33 @@ trellis-cli --no-default-features`). `release.yml` passes no feature flags,
 so it is left as it is and **the released binary includes TLS**. CI does not
 build the local-only configuration; it was run by hand for this ADR.
 
+*Amended 2026-09-28 (#62):* the `local-only` job in `.github/workflows/ci.yml`
+now builds and tests this configuration (`cargo build` and `cargo test -p
+trellis-cli --no-default-features`) on Linux and Windows on every push and
+pull request.
+
 ## Not built
 
-- Streaming.
-- A proxy from `HTTPS_PROXY` / `HTTP_PROXY` (row 2.13). A run behind a proxy
-  cannot reach a hosted provider.
-- `Retry-After` given as an HTTP date; it falls back to the fixed backoff.
+- Streaming. *Amended 2026-09-29 (#151), by the owner's decision of
+  2026-09-28:* it stays out, for two reasons. The loop acts on a complete
+  tool call and never on a partial one, so streaming a hosted reply would
+  buy only a progress display. And it would put two SSE event grammars
+  (OpenAI's `data:` chunks and Anthropic's typed events) into the
+  hand-rolled client that §1 hardened against unframed bodies, adding a
+  class of partial-reply failure on the one path that carries the key. The
+  chat interface already streams from local runtimes
+  (`qa/REPORT-2026-09-21.md`). Revisit when a hosted turn's wait is
+  measured as a problem.
+- `Retry-After` given as an obsolete HTTP date (RFC 850 or asctime form);
+  it falls back to the fixed backoff. IMF-fixdate is honoured (§4).
 - OAuth, Bedrock, Vertex and Azure request signing.
 - Model-written summaries (§5).
 - Parallel tool calls (ADR 0005).
-- A byte default for `[model] context_bytes` (§5).
-- The intent classifier in `trellis ask` for a hosted model (§2).
+- A byte default for `[model] context_bytes` on a local runtime (§5). A
+  hosted spec has one since #152; it rests on a heuristic bytes-per-token
+  ratio, and a measured one is pending #170.
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
-- A CI job for the local-only build.
 - Model overrides beyond `[model] context_bytes` and `thinking` (row 2.6):
   per-model input limits, cache lifetimes and cost tables are not read.
 - Stripping the key from child processes' environments (§3).

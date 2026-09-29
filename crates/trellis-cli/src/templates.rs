@@ -119,6 +119,30 @@ pub(crate) fn render(root: &Path, name: &str, args: Option<&str>) -> Result<Stri
     Ok(render_text(&raw, split.as_deref()))
 }
 
+/// The task text `run --prompt <name> --args <s> [task]` sends: the
+/// rendered template, then any task text after a blank line. Without a
+/// template, the task text as given.
+///
+/// One function for `run` and for a queued task (`queue add --prompt
+/// --args`), so the queue cannot drift from `run` in how it splits,
+/// substitutes or joins.
+pub(crate) fn task_text(
+    root: &Path,
+    prompt: Option<&str>,
+    args: Option<&str>,
+    task: &str,
+) -> Result<String> {
+    let Some(name) = prompt else {
+        return Ok(task.to_string());
+    };
+    let template = render(root, name, args)?;
+    Ok(if task.trim().is_empty() {
+        template
+    } else {
+        format!("{template}\n\n{task}")
+    })
+}
+
 /// The file as written, through `RepoConfig::prompt_raw`'s name check and
 /// real-path check: one reader, so a link refused there is refused here.
 fn raw(root: &Path, name: &str) -> Result<String> {

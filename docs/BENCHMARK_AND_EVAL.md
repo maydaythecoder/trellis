@@ -485,6 +485,37 @@ trigger, and cross-file type propagation, could move recall on the two audited
 samples is bounded in [`bench/backstop-ceiling.md`](bench/backstop-ceiling.md)
 (ceilings, not recall figures).
 
+**Decided 2026-09-28: [ADR 0031](adr/0031-pyright-recall-backstop.md).** Pyright
+over LSP is the recall backstop, queried only on `Unresolved` and `Candidates`
+sites, because cross-file propagation's ceiling (74.8%, 78.0%; model-read upper
+bounds, A-34) is under 85% on both samples. The `Reason` distribution the
+paragraph below asks for was measured (§2: `DecoratorIndirection` 63 of 6,737
+unresolved sites, `MethodDispatchUntyped` 6,090), and `DecoratorIndirection`
+does not dominate. Its "try first" condition is therefore false. The paragraph
+is kept as the record of what was proposed.
+
+**First slice built (#168).** `trellis index` runs the backstop when
+`.trellis/config.toml` sets `[index] backstop = "pyright"`. It prints whether
+the backstop ran, the server's reported version, and the counts it queried,
+bound and left alone, beside the resolver's counts and never added to
+`resolved`. Its edges are not written to `.trellis/index.bin` or into the
+graph, so every site it binds stays unpartitionable (rule 6). With Node or
+Pyright absent the index completes and says the backstop did not run. What
+recall it produces: pending, measured by the human audit (#3).
+
+**Run against Pyright 1.1.414 on poetry 2.5.0 (#177, 2026-09-29):
+[`bench/pyright-backstop-poetry-20260929.md`](bench/pyright-backstop-poetry-20260929.md).**
+7,580 doubt sites queried, 1,859 bound, 5,721 left alone, 22 not queried;
+`trellis index` took 59.3 s wall time, with a 677.5 MiB peak working set for
+Pyright's Node process (one run, sampled `PeakWorkingSet64`, no Python
+environment installed; method and caveats in the file). Memory on a large
+repository: still pending, v1.0. Two findings recorded there: Pyright does not
+send `serverInfo`, so its version is not printed; and 813 of the 857 edges
+bound on `Candidates` sites name a method a first-party subclass overrides
+(a text proxy over `class` lines, described in the file), because Pyright answers with the declared type's member, which ADR 0012 treats
+as an upper bound. The 1,859 is therefore not a count of sites narrowed to
+their runtime callee.
+
 **Cheaper intermediate, to try first.** If the `Reason` distribution shows
 `DecoratorIndirection` dominating — the prediction, supported by the 20–41%
 decorated-definition density across all three candidate repos — then a decorator
@@ -696,14 +727,18 @@ reading for *this* configuration and does not generalise to a stronger one.
 
 ### 5.4 Deviations from the design above, each with its reason
 
+The status of metrics 3, 5 and 6 is decided in ADR 0028: metric 3
+replaced by a per-call audit, metric 5 waived at temperature 0 only, metric 6
+kept.
+
 | Design | What was done | Why |
 |---|---|---|
 | 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
-| 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 |
+| 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 (ADR 0028) |
 | Floor as a configuration | One configuration, below the floor | The second was still downloading. Reported as a lower bound, not a floor |
-| Metric 3, argument correctness against a gold trace | Not measured | No gold trace, per the first row. Partly substituted by the verbatim calls in §5.3 |
-| Metric 5, run-to-run variance | Not measured | Nothing varies at temperature 0 |
-| Metric 6, context degradation at 25/50/75% fill | Not measured | Needs a configuration that succeeds at low fill, so degradation has something to degrade from |
+| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028); **pending** — no script computes it yet; it is to be applied to #144's trails first, and can re-score the two in §5.2 from their committed trails | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file. Until the two measured configurations are re-scored, their argument evidence is the verbatim calls in §5.3 and §5.6 |
+| Metric 5, run-to-run variance | **Waived for temperature-0 configurations only** (ADR 0028) | Nothing varies at temperature 0. A configuration sampled above 0 still needs the five repetitions per task designed above |
+| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. Neither measured configuration repaired a task |
 
 ### 5.5 Cost, and what the figure is a property of
 

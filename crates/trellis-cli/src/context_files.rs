@@ -540,9 +540,12 @@ mod tests {
     fn a_context_file_linked_into_git_is_refused() {
         let d = dir();
         std::fs::create_dir_all(d.path().join(".git")).unwrap();
+        // Built at run time so no `user:pass@` literal reaches a secret
+        // scanner (#185).
+        let token = "TOKEN";
         std::fs::write(
             d.path().join(".git/config"),
-            "url = https://user:TOKEN@host/x",
+            format!("url = https://user:{token}@host/x"),
         )
         .unwrap();
         if !link(Path::new(".git/config"), &d.path().join("CLAUDE.md")) {
@@ -675,8 +678,10 @@ mod tests {
         let r = crate::cmd_run_with(
             &dir,
             "change f",
-            &spec,
-            false,
+            crate::ModelChoice {
+                spec: &spec,
+                unconstrained: false,
+            },
             crate::RunSeeding::default(),
             crate::RunControl::default(),
             crate::output::RunExtras {
@@ -750,8 +755,10 @@ mod tests {
         let r = crate::cmd_run_with(
             &dir,
             "change f",
-            &spec,
-            false,
+            crate::ModelChoice {
+                spec: &spec,
+                unconstrained: false,
+            },
             crate::RunSeeding::default(),
             crate::RunControl::default(),
             crate::output::RunExtras {

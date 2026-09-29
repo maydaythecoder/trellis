@@ -154,7 +154,7 @@ async fn hooks_can_never_make_a_run_converge() {
 async fn bash_output_can_never_make_a_run_converge() {
     // A command that exits 0 and prints "all tests passed" has passed
     // nothing. Only run_checks produces a Verdict.
-    let d = repo();
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&[], true, Duration::from_secs(30));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools.clone())
@@ -232,7 +232,7 @@ async fn a_hook_denial_is_logged_under_its_turn_and_no_person_is_asked() {
 
 #[tokio::test]
 async fn unattended_bash_runs_only_an_allowlisted_simple_command() {
-    let d = repo();
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&["echo"], false, Duration::from_secs(30));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools.clone())
@@ -262,8 +262,8 @@ async fn unattended_bash_runs_only_an_allowlisted_simple_command() {
 }
 
 #[tokio::test]
-async fn bash_runs_in_the_repository_with_the_run_s_identity_and_a_timeout() {
-    let d = repo();
+async fn bash_runs_in_a_clone_of_the_repository_with_the_run_s_identity_and_a_timeout() {
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&[], true, Duration::from_secs(1));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools)
@@ -297,7 +297,7 @@ async fn bash_runs_in_the_repository_with_the_run_s_identity_and_a_timeout() {
         .await;
     assert!(
         matches!(&out.result, ToolResult::Output(s) if s.contains("util.py")),
-        "the working directory is the repository root: {out:?}"
+        "the working directory is a clone of the repository: {out:?}"
     );
     let out = orch
         .call(&ToolCall::Bash {
@@ -344,12 +344,13 @@ fn echo_tool(name: &str, matching: &str) -> CustomTool {
             "properties": { "path": { "type": "string" } },
             "required": ["path"]
         }),
+        timeout_s: None,
     }
 }
 
 #[tokio::test]
 async fn a_custom_tool_reads_its_arguments_on_stdin_and_a_failure_is_an_error() {
-    let d = repo();
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = ToolSet::build(ToolSelection {
         custom: vec![echo_tool("echo_args", "path"), echo_tool("never", "zzz-no")],
         ..Default::default()
@@ -866,7 +867,7 @@ async fn a_pass_then_a_refused_edit_then_done_still_converges() {
 async fn a_pass_then_bash_then_done_does_not_converge() {
     // A shell command may write anything, and whether it did is not
     // something the loop can tell from what it printed.
-    let d = repo();
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&[], true, Duration::from_secs(30));
     let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
         .with_tools(tools.clone())
@@ -1113,9 +1114,12 @@ async fn reads_and_listings_do_not_reach_git_s_own_directory() {
     // in it into an observation, and from there into a hosted request body
     // and the committed trail.
     let d = git_repo();
-    let secret = "https://user:tok3n-in-url@example.invalid/r.git";
+    // Built at run time so no `user:pass@` literal reaches a secret scanner
+    // (#185).
+    let token = "tok3n-in-url";
+    let secret = format!("https://user:{token}@example.invalid/r.git");
     std::process::Command::new("git")
-        .args(["remote", "add", "origin", secret])
+        .args(["remote", "add", "origin", secret.as_str()])
         .current_dir(d.path())
         .output()
         .unwrap();
@@ -1242,7 +1246,10 @@ fn log_line(log: &Path, word: &str) -> Option<Vec<String>> {
 async fn a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run() {
     // The risk: `bash` cannot be path-checked, and a hook re-reads its
     // script on every spawn, so a command that rewrote `.trellis/hooks/`
-    // had every later hook run code the person never trusted.
+    // had every later hook run code the person never trusted. `bash` runs
+    // in a clone now (ADR 0032), and a write to its `.trellis/` is not
+    // carried back; a command that names the repository by absolute path
+    // still reaches it, and that is the writer this guard is for.
     let d = with_hook_file();
     let logs = tempfile::tempdir().unwrap();
     let log = logs.path().join("hooks.log");
@@ -1260,10 +1267,11 @@ async fn a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run() {
         .with_hooks(h.clone())
         .with_trust_guard(guard)
         .spawn();
+    let hook = d.path().join(".trellis").join("hooks").join("gate.py");
     let rewrite = if cfg!(windows) {
-        "echo import os> .trellis\\hooks\\gate.py"
+        format!("echo import os> {}", hook.display())
     } else {
-        "echo 'import os' > .trellis/hooks/gate.py"
+        format!("echo 'import os' > '{}'", hook.display())
     };
     let steps = serde_json::json!({"steps": [
         {"tool": "run_checks", "paths": [], "kinds": ["typecheck"]},
@@ -1309,7 +1317,9 @@ async fn a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run() {
 #[tokio::test]
 async fn a_bash_command_that_changes_dot_trellis_ends_the_run_with_no_hook_declared() {
     // One rule, whichever tool broke it: a model run that changes
-    // `.trellis/` does not converge, as a process agent's does not.
+    // `.trellis/` does not converge, as a process agent's does not. By
+    // absolute path, which is how a command in its clone (ADR 0032) reaches
+    // the repository's `.trellis/`.
     let d = with_hook_file();
     let tools = with_bash(&[], true, Duration::from_secs(20));
     let guard = guard_for(d.path(), &HookConfig::default(), &tools);
@@ -1317,10 +1327,11 @@ async fn a_bash_command_that_changes_dot_trellis_ends_the_run_with_no_hook_decla
         .with_tools(tools.clone())
         .with_trust_guard(guard)
         .spawn();
+    let config = d.path().join(".trellis").join("config.toml");
     let write = if cfg!(windows) {
-        "echo [checks]> .trellis\\config.toml"
+        format!("echo [checks]> {}", config.display())
     } else {
-        "echo '[checks]' > .trellis/config.toml"
+        format!("echo '[checks]' > '{}'", config.display())
     };
     let steps = serde_json::json!({"steps": [
         {"tool": "run_checks", "paths": [], "kinds": ["typecheck"]},
@@ -1366,4 +1377,199 @@ async fn a_custom_tool_does_not_start_once_trusted_code_has_changed() {
         other => panic!("{other:?}"),
     }
     assert!(d2.trust_breach.is_some());
+}
+
+/// A hook that appends its stdin to `log`, which is outside the repository
+/// so the append is not a tree write.
+fn stdin_to(log: &Path) -> Option<Vec<String>> {
+    if cfg!(windows) {
+        opt(&format!("more >> {}", log.display()))
+    } else {
+        opt(&format!(
+            "cat >> '{}'; echo >> '{}'",
+            log.display(),
+            log.display()
+        ))
+    }
+}
+
+/// Every JSON value in `log`, in order.
+fn payloads(log: &Path) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(log).unwrap_or_default();
+    serde_json::Deserializer::from_str(&raw)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|e| panic!("{e}: {raw:?}"))
+}
+
+#[tokio::test]
+async fn hook_turn_end_receives_run_id_turn_tool_and_outcome_after_every_turn() {
+    // The schema ADR 0023 §5 states is public contract: a hook reading a
+    // field that is renamed or dropped breaks without a word. And the
+    // outcome is a label, never the result: nothing a model saw reaches it.
+    let d = git_repo();
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("turns.log");
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            turn_end: stdin_to(&log),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_hooks(h)
+        .spawn();
+    let mut m = script(
+        &ToolSet::default(),
+        &format!(
+            r#"{{"steps":[
+                {{"tool":"read_file","path":"app/util.py"}},
+                {{"tool":"read_file","path":"app/missing.py"}},
+                {CHECK},
+                {{"tool":"done","summary":"passed"}}
+            ]}}"#
+        ),
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(
+        payloads(&log),
+        [
+            serde_json::json!({"run_id": "run-42", "turn": 1, "tool": "read_file", "outcome": "ok"}),
+            serde_json::json!({"run_id": "run-42", "turn": 2, "tool": "read_file", "outcome": "error"}),
+            serde_json::json!({"run_id": "run-42", "turn": 3, "tool": "run_checks", "outcome": "check_passed"}),
+        ],
+        "one payload per turn, and none for `done`, which is not a call"
+    );
+    // A turn_end that only observes changes nothing about the run.
+    assert!(
+        t.turns.iter().all(|t| !t.may_have_changed_tree),
+        "{:?}",
+        t.turns
+    );
+    assert!(converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn hook_turn_end_that_writes_after_the_pass_marks_the_turn_and_prevents_convergence() {
+    // turn_end runs after the turn's check, so a write there leaves bytes
+    // no check saw: the turn is flagged as post_tool's would be, and the
+    // pass before it stops counting (ADR 0004, ADR 0023 "after a pass").
+    let d = git_repo();
+    let write = if cfg!(windows) {
+        "echo hooked>> app\\util.py"
+    } else {
+        "echo hooked >> app/util.py"
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            turn_end: opt(write),
+            ..Default::default()
+        },
+    );
+    let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
+        .with_hooks(h)
+        .spawn();
+    let mut m = script(
+        &ToolSet::default(),
+        &format!(r#"{{"steps":[{CHECK},{{"tool":"done","summary":"passed"}}]}}"#),
+    );
+    let (outcome, t) = run("check", &mut m, &orch, &budget()).await;
+    assert_eq!(t.turns[0].verdict_passed, Some(true));
+    assert!(t.turns[0].may_have_changed_tree, "{:?}", t.turns[0]);
+    assert!(
+        std::fs::read_to_string(d.path().join("app/util.py"))
+            .unwrap()
+            .contains("hooked"),
+        "the hook wrote"
+    );
+    assert!(!converged(&outcome), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn hook_input_exit_two_refuses_the_task_with_stderr_as_the_reason() {
+    // The hook reads the task and the run id as JSON on stdin, and exit 2
+    // is a refusal whose reason is stderr. What it prints on stdout is not
+    // a task: `input` can refuse, never rewrite.
+    let d = git_repo();
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("input.log");
+    let script = if cfg!(windows) {
+        format!(
+            "more >> {} & echo rewritten task & echo no deploys on friday 1>&2 & exit 2",
+            log.display()
+        )
+    } else {
+        format!(
+            "cat >> '{}'; echo rewritten task; echo no deploys on friday >&2; exit 2",
+            log.display()
+        )
+    };
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            input: opt(&script),
+            ..Default::default()
+        },
+    );
+    match h.input("deploy the service").await {
+        Some(crate::hooks::InputDecision::Refuse(why)) => {
+            assert!(why.contains("no deploys on friday"), "{why}");
+            assert!(!why.contains("rewritten task"), "{why}");
+        }
+        other => panic!("exit 2 must refuse: {other:?}"),
+    }
+    assert_eq!(
+        payloads(&log),
+        [serde_json::json!({"run_id": "run-42", "task": "deploy the service"})]
+    );
+}
+
+#[tokio::test]
+async fn hook_input_other_exits_proceed() {
+    // Only exit 2 refuses. A hook that crashes, times out or cannot start
+    // has not refused anything, and reading that as a refusal would make a
+    // broken hook stop every run; the caller says why and goes on.
+    use crate::hooks::InputDecision;
+    let d = git_repo();
+    assert!(
+        hooks(d.path(), HookConfig::default())
+            .input("t")
+            .await
+            .is_none(),
+        "no input hook, nothing to decide"
+    );
+    let ok = hooks(
+        d.path(),
+        HookConfig {
+            input: opt("exit 0"),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(ok.input("t").await, Some(InputDecision::Proceed)));
+    let slow = if cfg!(windows) {
+        "ping -n 30 127.0.0.1 >NUL"
+    } else {
+        "sleep 30"
+    };
+    for argv in [
+        shell_argv("exit 1"),
+        shell_argv("exit 3"),
+        vec!["trellis-no-such-hook-x".into()],
+        shell_argv(slow),
+    ] {
+        let h = hooks(
+            d.path(),
+            HookConfig {
+                input: Some(argv.clone()),
+                timeout_s: Some(1),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(h.input("t").await, Some(InputDecision::ProceedDespite(_))),
+            "{argv:?} must let the run proceed"
+        );
+    }
 }

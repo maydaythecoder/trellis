@@ -14,6 +14,7 @@ mod extra_context;
 mod gate;
 mod governance;
 mod hooks;
+mod isolate;
 mod listing;
 mod notes;
 mod orchestrator;
@@ -25,10 +26,10 @@ mod tools;
 mod trust;
 mod wire;
 
-pub use adapter::{Compacted, HostedModel, RuntimeModel};
+pub use adapter::{CompactRequests, Compacted, HostedModel, RequestedCompaction, RuntimeModel};
 pub use agent::{
-    Model, NotConverged, Outcome, PriorContext, RepoContext, Seed, Step, ToolCall, Transcript,
-    Turn, VaultContext, run, run_seeded,
+    Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Steer, Steering,
+    SteeringLog, SteeringRx, Step, ToolCall, Transcript, Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
 pub use exec::{ExecError, default_shell};
@@ -42,15 +43,15 @@ pub use gate::{
 pub use governance::{Governance, Rule};
 pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
-    fence_before_run,
+    InputDecision, fence_before_run,
 };
 pub use orchestrator::{
     Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request, names_trellis_dir,
 };
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use registry::{
-    BUILTIN_TOOLS, BashSettings, CustomTool, NotesSource, ToolCallError, ToolConfigError,
-    ToolSelection, ToolSet, call_json,
+    BUILTIN_TOOLS, BashSettings, CustomTool, DEFAULT_CUSTOM_TIMEOUT_S, NotesSource, ToolCallError,
+    ToolConfigError, ToolSelection, ToolSet, call_json,
 };
 pub use scripted::{ScriptError, ScriptedModel};
 pub use skills::{

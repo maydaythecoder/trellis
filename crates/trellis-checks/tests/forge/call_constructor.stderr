@@ -1,7 +1,7 @@
 error[E0624]: associated function `from_typecheck` is private
-  --> tests/forge/call_constructor.rs:15:38
+  --> tests/forge/call_constructor.rs:17:38
    |
-15 |     let _ = trellis_checks::Verdict::from_typecheck(out);
+17 |     let _ = trellis_checks::Verdict::from_typecheck(out);
    |                                      ^^^^^^^^^^^^^^ private associated function
    |
   ::: src/verdict.rs

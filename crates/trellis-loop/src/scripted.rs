@@ -146,6 +146,7 @@ mod tests {
                 "properties": { "path": { "type": "string" } },
                 "required": ["path"]
             }),
+            timeout_s: None,
         };
         let tools = ToolSet::build(crate::registry::ToolSelection {
             custom: vec![lint],
@@ -183,6 +184,7 @@ mod tests {
             task: "t".into(),
             turns: vec![],
             final_notice: false,
+            steering: Default::default(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };

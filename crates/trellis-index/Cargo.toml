@@ -24,9 +24,12 @@ rayon.workspace = true
 walkdir.workspace = true
 postcard.workspace = true
 tracing.workspace = true
+# The Pyright backstop's LSP messages (ADR 0031). Already a workspace
+# dependency used at run time by seven crates; no crate added to Cargo.lock.
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+insta.workspace = true
 
 [lints]
 workspace = true

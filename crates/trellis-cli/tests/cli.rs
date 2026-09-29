@@ -191,6 +191,49 @@ fn index_says_its_percentage_is_a_lower_bound_and_not_recall() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn index_with_the_pyright_backstop_absent_completes_and_says_it_did_not_run() {
+    // ADR 0031: with Node or Pyright missing, the index does not fail, every
+    // site keeps the resolver's verdict, and the output says the backstop did
+    // not run, so it cannot be read as "Pyright ran and found nothing". PATH
+    // points at an empty directory so the result does not depend on whether
+    // the machine running the suite has Pyright.
+    let d = repo("index-backstop");
+    let off = stdout(&run(&d, &["index"]));
+    assert!(off.contains("backstop: off"), "{off}");
+
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[index]
+backstop = \"pyright\"
+",
+    )
+    .unwrap();
+    let empty = scratch("index-backstop-path");
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("index")
+        .current_dir(&d)
+        .env("NO_COLOR", "1")
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(s.contains("backstop: pyright did not run"), "{s}");
+    assert!(s.contains("keep the resolver's verdict"), "{s}");
+    assert!(
+        s.contains("first-party call sites resolved"),
+        "the resolver's figures still print: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
 // ---------------------------------------------------------------------------
 // radius
 // ---------------------------------------------------------------------------
@@ -442,6 +485,99 @@ fn resume_with_no_trail_says_so_and_names_what_writes_one() {
         s.contains("trellis run"),
         "it must name what writes one: {s}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Writes a minimal trail as `<run_id>.json`. Ids begin with a sortable
+/// timestamp, so the order they are written in does not matter: `log` and
+/// `resume` both order by name.
+fn plant_trail(root: &Path, run_id: &str, task: &str) {
+    let dir = root.join(".trellis/runs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{run_id}.json")),
+        format!(r#"{{"run_id":"{run_id}","task":"{task}","factual":{{"proposed":[]}}}}"#),
+    )
+    .unwrap();
+}
+
+#[test]
+fn resume_run_id_known_loads_that_run_rather_than_the_newest() {
+    // The risk: an id that is accepted and then ignored, so the user reads
+    // the newest run's facts believing they are the named run's.
+    let d = repo("resume-id-known");
+    plant_trail(&d, "20260101-000000-000-older", "the older task");
+    plant_trail(&d, "20260102-000000-000-newer", "the newer task");
+    let out = run(&d, &["resume", "20260101-000000-000-older"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(s.contains("previous task: the older task"), "{s}");
+    assert!(
+        !s.contains("the newer task"),
+        "the newest run leaked in: {s}"
+    );
+    // `run --resume` carries the newest trail only, so offering it here
+    // would name a different run than the one just shown.
+    assert!(
+        !s.contains("pass --resume"),
+        "an older run must not be offered to `run --resume`: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn resume_run_id_unknown_fails_naming_the_ten_most_recent_ids() {
+    // The risk: an unknown id falling back to some other run. Resuming from
+    // the wrong run is worse than refusing, so it fails, and names what
+    // exists so the user need not run a second command to find out.
+    let d = repo("resume-id-unknown");
+    for i in 0..11 {
+        plant_trail(&d, &format!("202601{:02}-000000-000-run", i + 1), "t");
+    }
+    // A prefix of a real id is still unknown: a partial match could pick
+    // either of two runs sharing it.
+    let out = run(&d, &["resume", "20260111"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    let s = combined(&out);
+    assert!(s.contains("no run `20260111`"), "{s}");
+    for i in 2..=11 {
+        let id = format!("202601{i:02}-000000-000-run");
+        assert!(s.contains(&id), "{id} is one of the ten newest: {s}");
+    }
+    assert!(
+        !s.contains("20260101-000000-000-run"),
+        "the eleventh-newest id must not be listed: {s}"
+    );
+    assert!(!s.contains("previous task"), "nothing may be loaded: {s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn resume_run_id_bare_resume_still_loads_the_newest() {
+    // The risk: making the id optional changed what bare `resume` does.
+    let d = repo("resume-id-bare");
+    plant_trail(&d, "20260101-000000-000-older", "the older task");
+    plant_trail(&d, "20260102-000000-000-newer", "the newer task");
+    let out = run(&d, &["resume"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(s.contains("previous task: the newer task"), "{s}");
+    assert!(!s.contains("the older task"), "{s}");
+    assert!(s.contains("pass --resume"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn resume_run_id_session_passes_the_id_through() {
+    // `/resume <run_id>` is the session spelling of the same command; an id
+    // dropped between the prompt and `cmd_resume` would show the newest run.
+    let d = repo("resume-id-session");
+    plant_trail(&d, "20260101-000000-000-older", "the older task");
+    plant_trail(&d, "20260102-000000-000-newer", "the newer task");
+    let out = session_with(&d, "/resume 20260101-000000-000-older\n/exit\n");
+    let s = combined(&out);
+    assert!(s.contains("previous task: the older task"), "{s}");
+    assert!(!s.contains("the newer task"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -2809,10 +2945,17 @@ fn a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback() {
     // clean -fd` leaves ignored files, and the next check that starts the
     // repository's Python runs it.
     let (d, run) = ignored_model_fixture("model-ignored");
+    // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
+    // command that names the repository is the writer this guard is still for.
+    let p = d.display();
     let cmd = if cfg!(windows) {
-        r"mkdir .venv\lib\site && echo import os > .venv\lib\site\sitecustomize.py && echo y = 2 >> .venv\old.py"
+        format!(
+            r"mkdir {p}\.venv\lib\site && echo import os > {p}\.venv\lib\site\sitecustomize.py && echo y = 2 >> {p}\.venv\old.py"
+        )
     } else {
-        "mkdir -p .venv/lib/site && echo 'import os' > .venv/lib/site/sitecustomize.py && echo 'y = 2' >> .venv/old.py"
+        format!(
+            "mkdir -p '{p}/.venv/lib/site' && echo 'import os' > '{p}/.venv/lib/site/sitecustomize.py' && echo 'y = 2' >> '{p}/.venv/old.py'"
+        )
     };
     let script = d
         .parent()
@@ -2868,10 +3011,15 @@ fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
     )
     .trim()
     .to_string();
+    // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
+    // command that names the repository is the writer this guard is still for.
+    let p = d.display();
     let cmd = if cfg!(windows) {
-        r"echo x = 2> b.py && git add b.py && git commit -qm sneak"
+        format!(r"echo x = 2> {p}\b.py && git -C {p} add b.py && git -C {p} commit -qm sneak")
     } else {
-        "echo 'x = 2' > b.py && git add b.py && git commit -qm sneak"
+        format!(
+            "echo 'x = 2' > '{p}/b.py' && git -C '{p}' add b.py && git -C '{p}' commit -qm sneak"
+        )
     };
     let script = d
         .parent()
@@ -2917,10 +3065,13 @@ fn a_model_run_that_changed_an_ignored_file_deny_write_names_is_not_restored() {
     std::fs::write(&cfg, text).unwrap();
     git(&d, &["commit", "-qam", "deny"]);
     assert!(run(&["trust"]).status.success());
+    // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
+    // command that names the repository is the writer this guard is still for.
+    let p = d.display();
     let cmd = if cfg!(windows) {
-        r"echo y = 2 >> .venv\old.py"
+        format!(r"echo y = 2 >> {p}\.venv\old.py")
     } else {
-        "echo 'y = 2' >> .venv/old.py"
+        format!("echo 'y = 2' >> '{p}/.venv/old.py'")
     };
     let spec = script_beside(
         &d,
@@ -2969,10 +3120,17 @@ fn a_model_run_s_bash_writes_to_git_config_and_hooks_are_put_back_on_rollback() 
     // does not show `.git/`, the rollback's reset does not restore it, and
     // trellis's next git call runs the command (review round 8, finding 2).
     let (d, run) = ignored_model_fixture("model-git-guard-rb");
+    // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
+    // command that names the repository is the writer this guard is still for.
+    let p = d.display();
     let cmd = if cfg!(windows) {
-        r"git config core.fsmonitor ./evil.sh && echo x> .git\hooks\post-checkout"
+        format!(
+            r"git -C {p} config core.fsmonitor ./evil.sh && echo x> {p}\.git\hooks\post-checkout"
+        )
     } else {
-        "git config core.fsmonitor ./evil.sh && echo x > .git/hooks/post-checkout"
+        format!(
+            "git -C '{p}' config core.fsmonitor ./evil.sh && echo x > '{p}/.git/hooks/post-checkout'"
+        )
     };
     let spec = script_beside(
         &d,
@@ -3033,7 +3191,9 @@ fn a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run() 
         &d,
         "model-fsmonitor-marker",
         serde_json::json!([
-            {"tool": "bash", "command": format!("git config core.fsmonitor {}", slash(&fsm))},
+            // By absolute path (`-C`): `bash` runs in a throwaway clone
+            // (ADR 0032), and this is the writer that still reaches it.
+            {"tool": "bash", "command": format!("git -C {} config core.fsmonitor {}", slash(&d), slash(&fsm))},
             {"tool": "bash", "command": "echo x> a.txt"},
             {"tool": "done", "summary": "set it"},
         ]),
@@ -3066,11 +3226,13 @@ fn a_model_run_that_changed_git_config_does_not_converge() {
     // set would run at the reviewer's next `git status`. A change there is
     // never part of a converged run: it fails the run and is put back.
     let (d, run) = ignored_model_fixture("model-git-guard-cv");
+    // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
+    // command that names the repository is the writer this guard is still for.
     let spec = script_beside(
         &d,
         "model-git-guard-cv",
         serde_json::json!([
-            {"tool": "bash", "command": "git config core.fsmonitor ./evil.sh"},
+            {"tool": "bash", "command": format!("git -C {} config core.fsmonitor ./evil.sh", d.display())},
             {"tool": "run_checks", "paths": [], "kinds": ["typecheck", "tests"]},
             {"tool": "done", "summary": "set it"},
         ]),

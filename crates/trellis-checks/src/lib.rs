@@ -12,7 +12,21 @@ pub use verdict::{AuditMode, CheckDetail, CheckKind, Verdict};
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncRead, AsyncReadExt};
+
+/// The default for [`CheckConfig::timeout_s`]: thirty minutes, well past a
+/// large suite's normal run and short of leaving a hung one to hold a run
+/// for good (ADR 0004).
+pub const DEFAULT_CHECK_TIMEOUT_S: u64 = 1_800;
+
+/// How many bytes of each of a check's output streams are held: 8 MiB, the
+/// last ones written. The checker is the repository's own command, and one
+/// that prints without end would otherwise be read into memory until the
+/// host ran out (#171). The tail, because a type checker's summary and a
+/// test runner's failures come last. The exit code is read apart from the
+/// output, so a cut never changes a verdict.
+pub const CHECK_OUTPUT_CAP: usize = 8 * 1024 * 1024;
 
 /// Raw result of a process that ran to completion (or failed to start).
 ///
@@ -28,6 +42,13 @@ pub struct ProcessOutput {
     pub failure_count: Option<u32>,
     pub stdout: String,
     pub stderr: String,
+    /// `Some(n)` when stdout wrote `n` bytes, more than
+    /// [`CHECK_OUTPUT_CAP`]: only its last bytes were kept, and `stdout`
+    /// opens with a line saying how many were dropped. `None` when it was
+    /// kept whole.
+    pub stdout_truncated: Option<u64>,
+    /// As `stdout_truncated`, for stderr.
+    pub stderr_truncated: Option<u64>,
     pub duration_ms: u64,
 }
 
@@ -50,6 +71,21 @@ pub struct CheckConfig {
     /// it describes the tree at run start, not the repository's settings.
     #[serde(skip)]
     pub dot_trellis_python: Option<bool>,
+    /// Seconds a check may run before its process tree is killed and the
+    /// check fails. `[checks] timeout_s`; without it a hung mypy or pytest
+    /// held a run with no end (ADR 0004).
+    #[serde(default = "default_timeout_s")]
+    pub timeout_s: u64,
+    /// When the run's wall-clock budget runs out, if a run set one: a check
+    /// is bounded by the earlier of this and `timeout_s`, so a check cannot
+    /// carry a run past its budget. `None` for `trellis check`, which has no
+    /// run budget. Set per call by the loop; never read from a file.
+    #[serde(skip)]
+    pub deadline: Option<Instant>,
+}
+
+fn default_timeout_s() -> u64 {
+    DEFAULT_CHECK_TIMEOUT_S
 }
 
 impl CheckConfig {
@@ -90,6 +126,8 @@ impl Default for CheckConfig {
             tests: vec!["pytest".into(), "-q".into()],
             python: "python".into(),
             dot_trellis_python: None,
+            timeout_s: DEFAULT_CHECK_TIMEOUT_S,
+            deadline: None,
         }
     }
 }
@@ -99,7 +137,7 @@ impl Default for CheckConfig {
 pub async fn typecheck(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Verdict {
     let mut argv = cfg.typecheck.clone();
     argv.extend(paths.iter().map(|p| p.display().to_string()));
-    Verdict::from_typecheck(run(root, cfg, &argv).await)
+    Verdict::from_typecheck(Box::pin(run(root, cfg, &argv)).await)
 }
 
 /// Runs the configured test runner over `paths`.
@@ -110,7 +148,7 @@ pub async fn typecheck(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Verdict {
     let mut argv = cfg.tests.clone();
     argv.extend(paths.iter().map(|p| p.display().to_string()));
-    Verdict::from_tests(run(root, cfg, &argv).await)
+    Verdict::from_tests(Box::pin(run(root, cfg, &argv)).await)
 }
 
 /// Imports `module` in a fresh subprocess.
@@ -121,7 +159,7 @@ pub async fn run_tests(root: &Path, cfg: &CheckConfig, paths: &[PathBuf]) -> Ver
 #[tracing::instrument(skip(cfg))]
 pub async fn import_check(root: &Path, cfg: &CheckConfig, module: &str) -> Verdict {
     let argv = vec![cfg.python.clone(), "-c".into(), format!("import {module}")];
-    Verdict::from_import(run(root, cfg, &argv).await)
+    Verdict::from_import(Box::pin(run(root, cfg, &argv)).await)
 }
 
 /// Audits the repository's own governance rules.
@@ -212,6 +250,8 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
         failure_count: Some(failing.len() as u32),
         stdout: out,
         stderr: String::new(),
+        stdout_truncated: None,
+        stderr_truncated: None,
         duration_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -282,6 +322,10 @@ fn dot_trellis_holds_python(root: &Path) -> bool {
     any_py(&dot, &real_root, runs.as_deref(), &mut Default::default())
 }
 
+/// Awaited boxed by its callers: its state (two pipe readers, the wait and
+/// the timer) is large, and inline it made the orchestrator's future deep
+/// enough that a debug build overflowed the main thread's 1 MiB stack on
+/// Windows (`child_env.rs`), as `trellis-loop`'s `exec::run` once did.
 async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
     let started = Instant::now();
     let command = argv.join(" ");
@@ -292,15 +336,26 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             failure_count: None,
             stdout: String::new(),
             stderr: "empty command".into(),
+            stdout_truncated: None,
+            stderr_truncated: None,
             duration_ms: 0,
         };
     };
+    let limit = bound(cfg, started);
 
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(root)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // A run that is dropped (interrupted, or its task cancelled) takes
+        // its check with it rather than leaving a mypy running unowned.
+        .kill_on_drop(true);
+    // Its own process group, so a timeout reaches what the checker started
+    // (pytest workers, a shell's children) and not only the checker.
+    #[cfg(unix)]
+    cmd.process_group(0);
     // A check's output becomes a verdict's detail, and from there a trail:
     // a checker that prints its environment must find no key in it.
     trellis_core::secrets::scrub(cmd.as_std_mut());
@@ -316,26 +371,207 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
     {
         cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     }
-    let result = cmd.output().await;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        // A check that could not run is not a check that passed.
+        Err(e) => {
+            return ProcessOutput {
+                command,
+                exit_code: None,
+                failure_count: None,
+                stdout: String::new(),
+                stderr: format!("failed to spawn: {e}"),
+                stdout_truncated: None,
+                stderr_truncated: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+            };
+        }
+    };
 
-    match result {
-        Ok(o) => ProcessOutput {
+    let (mut out, mut err) = (Captured::default(), Captured::default());
+    let (so, se) = (child.stdout.take(), child.stderr.take());
+    let (exited, drained) = {
+        // Read while waiting: a checker that fills a pipe nobody reads
+        // blocks, and would then look hung when it is not.
+        let mut reading = std::pin::pin!(async {
+            tokio::join!(read_all(so, &mut out), read_all(se, &mut err));
+        });
+        let mut read = false;
+        let exited = tokio::time::timeout(limit, async {
+            loop {
+                tokio::select! {
+                    s = child.wait() => break s,
+                    _ = &mut reading, if !read => read = true,
+                }
+            }
+        })
+        .await;
+        // What is left in the pipes, within what remains of the bound: a
+        // process the checker backgrounded may hold them after it exits.
+        let drained = match &exited {
+            Ok(Ok(_)) if !read => {
+                let left = limit.saturating_sub(started.elapsed());
+                tokio::time::timeout(left, &mut reading).await.is_ok()
+            }
+            _ => true,
+        };
+        (exited, drained)
+    };
+    let (out, stdout_truncated) = out.into_text();
+    let (err, stderr_truncated) = err.into_text();
+    match exited {
+        Ok(Ok(status)) if drained => ProcessOutput {
             command,
-            exit_code: o.status.code(),
-            failure_count: None, // TODO(v0.2): parse structured output per tool.
-            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+            exit_code: status.code(),
+            // Unparsed: a count read from a tool's text is a guess about
+            // its format, and the exit code is what the verdict rests on.
+            failure_count: None,
+            stdout: out,
+            stderr: err,
+            stdout_truncated,
+            stderr_truncated,
             duration_ms: started.elapsed().as_millis() as u64,
         },
-        // A check that could not run is not a check that passed.
-        Err(e) => ProcessOutput {
+        // Exited, but something it left running held its output open past
+        // the bound. Not a pass, whatever the exit code: the verdict would
+        // rest on output that was cut. Nothing is killed, because the
+        // checker has been reaped and its group id may no longer be ours.
+        Ok(Ok(status)) => ProcessOutput {
             command,
             exit_code: None,
             failure_count: None,
-            stdout: String::new(),
-            stderr: format!("failed to spawn: {e}"),
+            stdout: out,
+            stderr: format!(
+                "exited ({status}), but its output was still held open after {} s by a \
+                 process it left running, which was not killed; the output is incomplete\n{err}",
+                seconds(limit),
+            ),
+            stdout_truncated,
+            stderr_truncated,
             duration_ms: started.elapsed().as_millis() as u64,
         },
+        Ok(Err(e)) => ProcessOutput {
+            command,
+            exit_code: None,
+            failure_count: None,
+            stdout: out,
+            stderr: format!("could not wait for the check: {e}\n{err}"),
+            stdout_truncated,
+            stderr_truncated,
+            duration_ms: started.elapsed().as_millis() as u64,
+        },
+        Err(_) => {
+            // Unreaped until this arm reaps it, so its pid and its group
+            // are still its own when the tree is signalled.
+            if let Some(pid) = child.id() {
+                let _ = tokio::task::spawn_blocking(move || {
+                    trellis_core::process::kill_tree(pid);
+                })
+                .await;
+            }
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+            ProcessOutput {
+                command,
+                exit_code: None,
+                failure_count: None,
+                stdout: out,
+                stderr: format!(
+                    "timed out after {} s; the check's process tree was killed\n{err}",
+                    seconds(limit),
+                ),
+                stdout_truncated,
+                stderr_truncated,
+                duration_ms: started.elapsed().as_millis() as u64,
+            }
+        }
+    }
+}
+
+/// How long a check may run: `timeout_s`, or less when the run's budget
+/// ends sooner. A `Duration`, never an `Instant` sum: `timeout_s` comes from
+/// a repository's file, and `now + u64::MAX s` overflows.
+fn bound(cfg: &CheckConfig, now: Instant) -> Duration {
+    let own = Duration::from_secs(cfg.timeout_s);
+    match cfg.deadline {
+        Some(d) => own.min(d.saturating_duration_since(now)),
+        None => own,
+    }
+}
+
+/// `d` as a reader would write it: whole seconds when it is whole.
+fn seconds(d: Duration) -> String {
+    if d.subsec_nanos() == 0 {
+        d.as_secs().to_string()
+    } else {
+        format!("{:.1}", d.as_secs_f64())
+    }
+}
+
+/// One output stream as read: at most [`CHECK_OUTPUT_CAP`] bytes, the last
+/// ones, and how many were written in all.
+///
+/// A `VecDeque` so dropping the head is cheap: trimming a `Vec` from the
+/// front moves the whole 8 MiB for every 8 KiB read once the cap is
+/// reached, and a checker printing gigabytes would pay that many times over.
+#[derive(Default)]
+struct Captured {
+    tail: std::collections::VecDeque<u8>,
+    total: u64,
+}
+
+impl Captured {
+    fn push(&mut self, bytes: &[u8]) {
+        self.total = self.total.saturating_add(bytes.len() as u64);
+        // Only the last `CHECK_OUTPUT_CAP` of one read can survive it.
+        let bytes = &bytes[bytes.len().saturating_sub(CHECK_OUTPUT_CAP)..];
+        // Dropped before the new bytes go in, so the buffer never holds (or
+        // grows its allocation for) more than the cap.
+        let over = (self.tail.len() + bytes.len()).saturating_sub(CHECK_OUTPUT_CAP);
+        self.tail.drain(..over);
+        self.tail.extend(bytes);
+    }
+
+    /// The kept bytes as text, and the stream's true length when some were
+    /// dropped. A cut stream opens with a line that says so, because what
+    /// reads this downstream (the model, the trail) sees only the text, and
+    /// a log that begins mid-run would otherwise read as the whole of it.
+    fn into_text(self) -> (String, Option<u64>) {
+        let mut tail = Vec::from(self.tail);
+        if self.total == tail.len() as u64 {
+            return (String::from_utf8_lossy(&tail).into_owned(), None);
+        }
+        // The cut can land inside a UTF-8 sequence: its continuation bytes
+        // (at most three) are dropped too, rather than shown as U+FFFD.
+        let partial = tail
+            .iter()
+            .take(3)
+            .take_while(|b| (**b & 0xC0) == 0x80)
+            .count();
+        tail.drain(..partial);
+        let text = format!(
+            "[trellis: output cut to its last {CHECK_OUTPUT_CAP} bytes: {} written, the first {} \
+             dropped, {} kept]\n{}",
+            self.total,
+            self.total - tail.len() as u64,
+            tail.len(),
+            String::from_utf8_lossy(&tail)
+        );
+        (text, Some(self.total))
+    }
+}
+
+/// Reads `stream` to its end into `into`, keeping what was read if the read
+/// is abandoned part way: a timed-out check's partial output is still worth
+/// showing.
+async fn read_all<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut Captured) {
+    let Some(mut s) = stream else { return };
+    let mut buf = [0u8; 8192];
+    loop {
+        match s.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => into.push(&buf[..n]),
+        }
     }
 }
 
@@ -758,5 +994,251 @@ mod bytecode_tests {
         };
         let v = run_tests(d.path(), &cfg, &[]).await;
         assert!(!v.detail().stdout.contains("[1]"), "{}", v.detail().stdout);
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// A checker that sleeps 30 s. On Unix a shell that starts the sleep in
+    /// the background and records its pid, so the test can ask whether the
+    /// grandchild survived; on Windows `ping` under `cmd`, a grandchild too.
+    fn sleeper() -> Vec<String> {
+        if cfg!(windows) {
+            ["cmd", "/C", "ping -n 31 127.0.0.1 >NUL"]
+        } else {
+            ["sh", "-c", "sleep 30 & echo $! > bg.pid; wait"]
+        }
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    fn quick() -> Vec<String> {
+        if cfg!(windows) {
+            ["cmd", "/C", "echo ok"]
+        } else {
+            ["sh", "-c", "echo ok"]
+        }
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    /// The risk: a hung mypy or pytest had no deadline, and held the run
+    /// (and `trellis check`) for as long as it hung. Under a 2 s bound a
+    /// 30 s checker must fail, say why, and return well inside 10 s.
+    #[tokio::test]
+    async fn check_timeout_a_sleeping_checker_fails_naming_the_timeout() {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = CheckConfig {
+            tests: sleeper(),
+            timeout_s: 2,
+            ..CheckConfig::default()
+        };
+        let started = Instant::now();
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        let took = started.elapsed();
+        assert!(!v.passed(), "a check that never finished must not pass");
+        assert_eq!(v.detail().exit_code, None);
+        assert!(
+            v.detail()
+                .stderr
+                .starts_with("timed out after 2 s; the check's process tree was killed"),
+            "{:?}",
+            v.detail().stderr
+        );
+        assert!(took < Duration::from_secs(10), "took {took:?}");
+        #[cfg(unix)]
+        {
+            let pid = std::fs::read_to_string(d.path().join("bg.pid")).unwrap();
+            assert!(
+                gone(pid.trim()),
+                "the checker's background sleep {} survived the timeout",
+                pid.trim()
+            );
+        }
+    }
+
+    /// `min(timeout_s, remaining budget)`: a run whose budget ends in 2 s
+    /// does not wait out a 30 s `timeout_s`.
+    #[tokio::test]
+    async fn check_timeout_the_run_budget_bounds_a_check_below_timeout_s() {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = CheckConfig {
+            tests: sleeper(),
+            timeout_s: 30,
+            deadline: Some(Instant::now() + Duration::from_secs(2)),
+            ..CheckConfig::default()
+        };
+        let started = Instant::now();
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(!v.passed());
+        assert!(
+            v.detail().stderr.starts_with("timed out after "),
+            "{:?}",
+            v.detail().stderr
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A check that finishes is untouched by the bound, and a repository's
+    /// `timeout_s = u64::MAX` is a long bound, not an `Instant` overflow
+    /// that panics the run.
+    #[tokio::test]
+    async fn check_timeout_a_quick_check_passes_under_any_bound() {
+        let d = tempfile::tempdir().unwrap();
+        for timeout_s in [2, u64::MAX] {
+            let cfg = CheckConfig {
+                tests: quick(),
+                timeout_s,
+                ..CheckConfig::default()
+            };
+            let v = run_tests(d.path(), &cfg, &[]).await;
+            assert!(v.passed(), "{:?}", v.detail());
+            assert!(v.detail().stdout.contains("ok"), "{:?}", v.detail().stdout);
+        }
+    }
+
+    /// `[checks] timeout_s` is optional and defaults to thirty minutes.
+    #[test]
+    fn check_timeout_defaults_to_1800_s() {
+        assert_eq!(CheckConfig::default().timeout_s, 1_800);
+        let cfg: CheckConfig =
+            toml::from_str("typecheck = [\"mypy\"]\ntests = [\"pytest\"]\npython = \"python\"\n")
+                .unwrap();
+        assert_eq!(cfg.timeout_s, DEFAULT_CHECK_TIMEOUT_S);
+    }
+
+    /// Whether `pid` is gone or a zombie, polled for two seconds: a killed
+    /// process nobody reaps stays a zombie, which `kill -0` reports alive.
+    #[cfg(unix)]
+    fn gone(pid: &str) -> bool {
+        for _ in 0..20 {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .stderr(Stdio::null())
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&out.stdout);
+            if stat.trim().is_empty() || stat.trim_start().starts_with('Z') {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod output_cap_tests {
+    use super::*;
+
+    const WRITTEN: usize = 20 * 1024 * 1024;
+
+    /// A checker that prints `big.txt` (20 MiB, no newline, every byte
+    /// placed by its offset) to stdout, one line to stderr, and exits `code`.
+    /// Returns its argv and the bytes it prints.
+    fn printer(dir: &Path, code: i32) -> (Vec<String>, Vec<u8>) {
+        let big: Vec<u8> = (0..WRITTEN)
+            .map(|i| b"abcdefghijklmnopqrstuvwxyz0123456789"[i % 36])
+            .collect();
+        std::fs::write(dir.join("big.txt"), &big).unwrap();
+        let argv = if cfg!(windows) {
+            vec![
+                "cmd".to_string(),
+                "/C".into(),
+                format!("type big.txt & echo small 1>&2 & exit {code}"),
+            ]
+        } else {
+            vec![
+                "sh".to_string(),
+                "-c".into(),
+                format!("cat big.txt; echo small >&2; exit {code}"),
+            ]
+        };
+        (argv, big)
+    }
+
+    /// What `stdout` holds after the truncation line.
+    fn body(stdout: &str) -> &str {
+        let (note, body) = stdout.split_once('\n').expect("a truncation line");
+        assert!(note.starts_with("[trellis: output cut"), "{note:?}");
+        body
+    }
+
+    /// The risk (#171): a checker printing without end was read whole into
+    /// memory. 20 MiB in leaves no more than the cap held, and what is held
+    /// is exactly the last bytes written, where a summary sits.
+    #[tokio::test]
+    async fn check_output_cap_a_20_mib_checker_leaves_at_most_the_cap_with_the_tail_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let (argv, big) = printer(d.path(), 0);
+        let cfg = CheckConfig::default();
+        let o = run(d.path(), &cfg, &argv).await;
+        let kept = body(&o.stdout);
+        assert_eq!(kept.len(), CHECK_OUTPUT_CAP);
+        assert!(
+            kept.as_bytes() == &big[WRITTEN - CHECK_OUTPUT_CAP..],
+            "the kept bytes are not the last {CHECK_OUTPUT_CAP} written"
+        );
+        assert_eq!(o.stderr.trim(), "small", "the other stream is untouched");
+    }
+
+    /// A cut that is not recorded reads as the whole log. The true length
+    /// is on `ProcessOutput`, the note reaches the verdict's detail (what
+    /// the model and the trail see), and a stream under the cap records
+    /// nothing. A cut inside a UTF-8 sequence drops its stray continuation
+    /// bytes rather than showing U+FFFD.
+    #[tokio::test]
+    async fn check_output_cap_the_truncation_is_recorded() {
+        let d = tempfile::tempdir().unwrap();
+        let (argv, _) = printer(d.path(), 0);
+        let cfg = CheckConfig {
+            tests: argv.clone(),
+            ..CheckConfig::default()
+        };
+        let o = run(d.path(), &cfg, &argv).await;
+        assert_eq!(o.stdout_truncated, Some(WRITTEN as u64));
+        assert_eq!(o.stderr_truncated, None);
+        let note = format!(
+            "[trellis: output cut to its last {CHECK_OUTPUT_CAP} bytes: {WRITTEN} written, \
+             the first {} dropped, {CHECK_OUTPUT_CAP} kept]\n",
+            WRITTEN - CHECK_OUTPUT_CAP
+        );
+        assert!(o.stdout.starts_with(&note), "{:?}", &o.stdout[..200]);
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(v.detail().stdout.starts_with(&note));
+
+        let mut c = Captured::default();
+        c.push("é".as_bytes());
+        c.push(&vec![b'x'; CHECK_OUTPUT_CAP - 1]);
+        let (text, total) = c.into_text();
+        assert_eq!(total, Some(CHECK_OUTPUT_CAP as u64 + 1));
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "a split sequence shown as U+FFFD"
+        );
+        assert_eq!(body(&text).len(), CHECK_OUTPUT_CAP - 1);
+    }
+
+    /// The verdict rests on the exit code, never on the output: a cut
+    /// passing check still passes and a cut failing one still fails, with
+    /// its own code.
+    #[tokio::test]
+    async fn check_output_cap_the_exit_code_is_unchanged() {
+        let d = tempfile::tempdir().unwrap();
+        for (code, passes) in [(0, true), (3, false)] {
+            let (argv, _) = printer(d.path(), code);
+            let cfg = CheckConfig {
+                tests: argv,
+                ..CheckConfig::default()
+            };
+            let v = run_tests(d.path(), &cfg, &[]).await;
+            assert_eq!(v.detail().exit_code, Some(code));
+            assert_eq!(v.passed(), passes, "exit {code}");
+            assert!(v.detail().stdout.starts_with("[trellis: output cut"));
+        }
     }
 }

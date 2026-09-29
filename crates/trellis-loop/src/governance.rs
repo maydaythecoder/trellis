@@ -93,13 +93,60 @@ pub struct Governance {
     deny_write: Vec<Rule>,
     /// Each rule's [`Rule::folded`] pattern, in the same order.
     folded: Vec<String>,
+    /// An agent profile's `allow_write` (ADR 0026 §4), or `None` when the
+    /// run has no profile or its profile has none: then nothing here
+    /// narrows, which is the behaviour before the field existed.
+    scope: Option<WriteScope>,
+}
+
+/// A profile's `allow_write`: the only paths its runs may write. Kept apart
+/// from `deny_write` rather than folded into it, because `deny_write` also
+/// decides which changed ignored files count as unrestorable, and a scope
+/// there would make every cache a tool writes outside it (`.mypy_cache/`)
+/// a tree not restored.
+#[derive(Debug, Clone)]
+struct WriteScope {
+    /// The profile's name, for a refusal that points at its file.
+    profile: String,
+    rules: Vec<Rule>,
+    folded: Vec<String>,
+}
+
+impl WriteScope {
+    fn admits(&self, path: &str) -> bool {
+        let norm = fold(path);
+        self.rules
+            .iter()
+            .zip(&self.folded)
+            .any(|(r, f)| r.matches(f, &norm))
+    }
 }
 
 impl Governance {
     pub fn new(deny_write: &[String]) -> Self {
         let deny_write: Vec<Rule> = deny_write.iter().map(|s| Rule::parse(s)).collect();
         let folded = deny_write.iter().map(Rule::folded).collect();
-        Self { deny_write, folded }
+        Self {
+            deny_write,
+            folded,
+            scope: None,
+        }
+    }
+
+    /// Narrows the run to `allow` (profile `profile`'s `allow_write`, in
+    /// the rule syntax `deny_write` uses). It only narrows: `deny_write`
+    /// is consulted first everywhere a write is judged, so a path the
+    /// repository denies stays denied whatever `allow` names. An empty
+    /// `allow` admits no write at all.
+    pub fn with_allow_write(mut self, profile: &str, allow: &[String]) -> Self {
+        let rules: Vec<Rule> = allow.iter().map(|s| Rule::parse(s)).collect();
+        let folded = rules.iter().map(Rule::folded).collect();
+        self.scope = Some(WriteScope {
+            profile: profile.to_string(),
+            rules,
+            folded,
+        });
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -137,6 +184,34 @@ impl Governance {
         self.denies_write(rel).or_else(|| {
             let real = crate::orchestrator::real_rel(root, rel).ok()?;
             self.denies_write(&real)
+        })
+    }
+
+    /// Why a write to `rel` under `root` is outside the profile's
+    /// `allow_write`, or `None` when it is inside or there is no scope.
+    ///
+    /// Inside means the spelling **and** the path the write really lands
+    /// on are both admitted: `deny_write` refuses when either matches, and
+    /// the narrowing direction of that is both. A path whose landing place
+    /// cannot be worked out is outside, since "unknown" is not "admitted".
+    /// Callers ask [`denies_write_at`](Self::denies_write_at) first, so a
+    /// refusal names the repository's rule when there is one.
+    pub fn outside_allow_write_at(&self, root: &std::path::Path, rel: &str) -> Option<String> {
+        let scope = self.scope.as_ref()?;
+        let inside = scope.admits(rel)
+            && crate::orchestrator::real_rel(root, rel).is_ok_and(|real| scope.admits(&real));
+        (!inside).then(|| {
+            let written: Vec<String> = scope
+                .rules
+                .iter()
+                .map(|r| format!("`{}`", r.as_written()))
+                .collect();
+            format!(
+                "outside the allow_write [{}] of agent `{}` in .trellis/agents/{}.toml",
+                written.join(", "),
+                scope.profile,
+                scope.profile
+            )
         })
     }
 }

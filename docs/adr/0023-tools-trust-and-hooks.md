@@ -167,8 +167,9 @@ is a guard at a size a test can build).
 
 ### 3. `bash`, off by default
 
-`[tools] bash = true` enables `bash {command}`. It runs with the repository
-root as its working directory, a timeout (`[tools] bash_timeout_s`, default
+`[tools] bash = true` enables `bash {command}`. It runs with the root of a
+throwaway clone of the repository as its working directory (ADR 0032; its
+edits to tracked files are carried back), a timeout (`[tools] bash_timeout_s`, default
 120), and `TRELLIS_RUN_ID` and `TRELLIS_MODEL` added to the environment.
 The shell is `[tools] shell` (an argv prefix, the command appended as the
 last argument) or the platform default: `sh -c` on Unix; on Windows, Git's
@@ -232,7 +233,14 @@ running `bash` command, custom tool, hook or listing. It ends when trellis
 drops it (`kill_on_drop`, SIGKILL) during the interrupt's shutdown, with no
 chance to clean up. (Amended after the second review of PR #1: before it, the run
 waited for EOF on both pipes, so `sleep 30 & exit 0` read as a timeout,
-and a timeout killed only the shell.)
+and a timeout killed only the shell.) *Amended by ADR 0035:* on Windows the
+command is spawned into a Job Object with kill-on-close and no breakaway
+(through the `process-wrap` dependency; no `unsafe` in this workspace),
+and the job is terminated however the command ends, before its pipes are
+drained. What it backgrounded is ended after a normal exit too, and
+`taskkill /T` is no longer used here. ADR 0035 lists what a job still
+does not hold (a process started for the command by a service, WMI or the
+Task Scheduler).
 
 Bash output is an observation. It is never a verdict, and an exit code of 0
 means nothing to convergence: only `run_checks` produces a `Verdict`.
@@ -250,7 +258,8 @@ loaded only if the user has trusted it.
   repository, so a repository cannot trust itself.
 - **Keyed by** the canonical repository root.
 - **Records** one sha256 over every hook argv, every custom tool's name,
-  description, command and schema, the `[tools]` bash settings, and the
+  description, command and schema (and its `timeout_s` when declared, #135),
+  the `[tools]` bash settings, and the
   path and bytes of every file those argv reference (an argument that names
   an existing file inside the repository). Any change to any of them makes
   the repository untrusted again.
@@ -516,9 +525,51 @@ trellis starts has; see §4), and a timeout
   before the rollback, so on a run that did not converge the rollback also
   undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
   a converged run, a write by it demotes the run (see "After a pass").
+- **`turn_end`** (*amended 2026-09-29, #137; the owner decided the schema
+  on 2026-09-28*): after each model turn, that is after each call the
+  model made (a denied one too) and after that call's `post_tool`; never
+  for `done` or the convergence-time governance audit. Stdin is
+  `{"run_id": <TRELLIS_RUN_ID>, "turn": <1-based turn number>, "tool":
+  <tool name>, "outcome": <label>}`, where the label is one of `denied` (a
+  gate refused the call and the tool did not run), `error` (the tool
+  failed), `check_passed`, `check_failed`, or `ok` (any other result). The
+  result itself is not passed; `post_tool` has it. Observe only: output
+  and exit code are discarded, a failure is logged. The worktree is
+  fingerprinted around it as around `post_tool`, so a write by it marks the
+  turn as one that may have changed the tree and a pass on that turn stops
+  counting (see "After a pass").
+- **`input`** (*amended 2026-09-29, #137*): once, before the snapshot,
+  with stdin `{"run_id": <TRELLIS_RUN_ID>, "task": <the task as given>}`.
+  Exit 2 refuses the run with stderr (its first 500 bytes) as the reason:
+  nothing is snapshotted and no trail is written. Every other end (exit 0,
+  another code, a timeout, a failure to start) lets the run go on, and a
+  non-zero one is printed as a `hook:` line. That is the opposite of
+  `pre_tool`, deliberately: `input` is not a gate in front of a write, and
+  a hook that crashes on every task would otherwise stop every run; exit 2
+  is the one deliberate refusal. It can refuse a task and never rewrite
+  one: its stdout is discarded. It runs in the repository like every hook,
+  before the snapshot, so a write by it leaves the worktree dirty and the
+  snapshot refuses the run (ADR 0009).
 
-A hook can refuse a call. It cannot produce a pass, cannot make a run
-converge, and cannot rewrite a call or an observation (ADR 0004, ADR 0005).
+Both are declared, trusted and timed out like the other four: argv arrays
+in `[hooks]`, under `[hooks] timeout_s`, part of the trust digest (so
+adding or changing either asks for `trellis trust` again), and re-checked
+against trust before each spawn. A trust recorded before this amendment
+still matches for a repository that declares neither: the digest is built
+from the declared hooks only, and the four earlier events keep their order
+in it. Evidence, in
+`crates/trellis-loop/src/extension_tests.rs`:
+`hook_turn_end_receives_run_id_turn_tool_and_outcome_after_every_turn`,
+`hook_turn_end_that_writes_after_the_pass_marks_the_turn_and_prevents_convergence`,
+`hook_input_exit_two_refuses_the_task_with_stderr_as_the_reason` and
+`hook_input_other_exits_proceed`; in `crates/trellis-loop/src/hooks.rs`,
+`turn_end_and_input_are_in_the_trust_digest`; and in
+`crates/trellis-cli/src/tooling.rs`,
+`hook_input_refusal_comes_before_the_snapshot_and_leaves_no_trail`.
+
+A hook can refuse a call, and `input` can refuse a task. It cannot produce
+a pass, cannot make a run converge, and cannot rewrite a call, a task or an
+observation (ADR 0004, ADR 0005).
 
 #### After a pass (amended 2026-09-27)
 
@@ -651,6 +702,10 @@ this amendment a hook that wrote at any of those points left bytes in a
     `grep_and_find_run_no_planted_fsmonitor` in `trellis-loop`'s
     `listing.rs`, which failed before with the marker written, and whose
     control runs plain `git status` and sees it.
+    *[2026-09-29, #16: `crates/chat` was deleted (Q-19), so
+    `chat::git_command` and the test tying its copy of the overrides to
+    `trellis_vcs` are gone; every `git` spawn now comes from
+    `trellis_vcs`. The crate is recoverable from git history.]*
   - **A changed pre-existing ignored file is a tree not restored.** The
     rollback said "NOT put back" and exited 1 as restored; it exits 2
     now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
@@ -942,6 +997,11 @@ are not assumed closed:
   the rollback (ADR 0023 §3; ADR 0026 §11 step 2). On Unix a process that leaves
   its group (`setsid`) is not reached, and a process agent runs in
   trellis's own group, so nothing is killed after its normal exit.
+  *Amended by ADR 0035:* on Windows, commands and process agents now run
+  in a Job Object that is terminated however they end, so this route is
+  closed there except for a process started on the command's behalf by
+  something outside the job (a service, WMI, the Task Scheduler). The Unix
+  half is unchanged.
 - **`.git/` writes outside the guarded files.** The git guard restores
   `config`, `config.worktree`, include targets under the git directory,
   the hooks, `info/exclude` and `info/attributes`. The rest of `.git/`
@@ -977,17 +1037,29 @@ are not assumed closed:
   0023 §4, amended after the eleventh review), but code a hook or tool imports from
   elsewhere in the repository is an ordinary file a run may edit.
 
-**What holds.** For trellis's own edits (`edit`, `write_file`), the
-rollback's guarantee is exact, as ADR 0009 states. A run with none of
+**What holds.** For trellis's own edits (`edit`, `write_file`), and for
+the edits a `bash` or custom-tool command makes inside its clone and that
+are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
+0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
-**The real fix is sandboxing**: running these writers where they cannot
-reach `.git/`, the user's other files or processes that outlive them.
-That decision is deferred in ADR 0021 (1.6 swappable tool backends,
-13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
-the limit rather than adding another guard. `trellis trust` prints one line
-saying so when it records trust for any of these writers.
+**The real fix is isolation**, and the first step is built (ADR 0032,
+*amended 2026-09-29*): `bash` and custom tools run in a throwaway `git
+clone` of the repository (copy-in/diff-out), and only their edits to files
+trellis tracks come back, through the orchestrator's write path, where the
+rollback covers them exactly. Against a `bash` or custom-tool command that
+writes where it runs, every item in the list above is closed: its
+`.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
+in the clone, and what it started writes into a directory that is removed.
+The list still holds, in full, for **hooks and process agents**, which are
+not isolated yet, and for any writer that reaches the repository by
+absolute path, which a clone does not stop (ADR 0032, "Limits": no network
+isolation, reads and writes outside the clone still possible). The guards
+above are kept for those writers. Containers or an OS sandbox, for network
+and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
+`trellis trust` prints one line stating the limit when it records trust for
+any of these writers.
 
 ### 6. Custom command tools
 
@@ -999,12 +1071,15 @@ command = ["python", ".trellis/tools/lint.py"]
 schema = { type = "object", properties = { path = { type = "string" } }, required = ["path"] }
 ```
 
-The arguments, as a JSON object, go to the command on stdin. Stdout, tail
+The arguments, as a JSON object, go to the command on stdin. It runs in a
+throwaway clone of the repository, as `bash` does (ADR 0032). Stdout, tail
 truncated, is the observation. A nonzero exit is an error observation.
 Subject to trust, to the gate list, and to `[control] approve` by name.
 Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not
 shadow a built-in or `done`. The description is capped at 200 characters and
 may hold no control character, since it is printed in the prompt's tool line.
+An optional `timeout_s` bounds how long the command may run (default 120;
+see "As built", #135).
 
 Argument validation on tier 2 is the runtime's, from the composed schema. On
 tier 4 and in scripts there is no schema validator in the workspace, so
@@ -1082,14 +1157,21 @@ names are in the code beside each.
 - **What hooks receive.** `pre_tool`: the call's flat wire JSON.
   `post_tool`: `{"call": <wire JSON>, "result": <the ToolResult as
   serialized>}`. `before_run`: `{}`. `after_run`: `{"run_id", "converged",
-  "iterations", "reason", "touched"}`. `before_run` output is indented line
+  "iterations", "reason", "touched"}`. `turn_end` and `input` (added by
+  #137): the schemas in §5. `before_run` output is indented line
   by line inside its fence, so no line it prints can be the fence's closing
   line, and control characters other than newline and tab are dropped. It is
   appended to `.trellis/context.md`'s notes, inside the repository fence. A
   `before_run` that fails or times out adds nothing and the run says so and
   continues; what failed was a source of context, not a check.
-- **Custom tools have a fixed 120-second timeout**, the same as bash's
-  default. Not configurable yet.
+- **A custom tool's timeout is its declaration's `timeout_s`**, default
+  120, the same as bash's (#135). It is read as `bash_timeout_s` is: a
+  non-negative integer, with a value that key refuses refused here in the
+  same words, and 0 taken as 1 second. Neither key has an upper bound. The
+  key is part of the tool's trust item only when declared, so a declaration
+  without it keeps the digest it was trusted under, and adding or changing
+  it needs `trellis trust` again (`custom_tool_timeout_*` in
+  `crates/trellis-cli/src/tooling.rs`).
 - **Untrusted is per repository, not per item.** One digest covers every
   hook, custom tool and the bash settings together; changing any of them
   untrusts all of them. `disable` or `enable` naming an untrusted custom tool
@@ -1103,9 +1185,9 @@ names are in the code beside each.
   loaded hooks, whenever the set is not the measured default or hooks are
   loaded. An unconfigured run prints what it printed before.
 
-Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust, a
-configurable custom-tool timeout, hooks for events other than the four
-above, and tracking of what `bash` or a custom tool wrote in the worktree.
+Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust,
+hooks for events other than the six in §5 (`turn_end` and `input` were
+added by #137), and tracking of what `bash` or a custom tool wrote in the worktree.
 
 ## Integrated
 

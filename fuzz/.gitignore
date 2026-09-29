@@ -1,0 +1,6 @@
+# cargo-fuzz working state. A crashing input is kept by committing it as a
+# regression test in the crate that owns the parser, not by tracking these.
+/target
+/corpus
+/artifacts
+/coverage
