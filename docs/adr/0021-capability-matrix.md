@@ -115,7 +115,7 @@ override any row.
 | 1.15 prompt-cache warming | excluded: a dollar heuristic for hosted APIs; COST_MODEL.md owns cost. **Amended 2026-09-29 (#67):** deferred to v1.x. Its trigger is a dollar estimate, and no dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted. |
 | 2.1–2.4 30+ providers, OAuth, cloud platforms | **W-C covers the two wire protocols most of them speak** (OpenAI-compatible chat completions, Anthropic Messages) over HTTPS with keys from environment variables. OAuth and device login are excluded because ADR 0010 says a key never goes in a file trellis reads. Bedrock, Vertex and Azure request signing are deferred. **Amended 2026-09-29 (#45):** the owner kept signing deferred on 2026-09-28 and took per-model input limits first (#162). A signing scheme must keep ADR 0010 (credentials come from the environment or the platform's own ambient chain, never a file trellis writes), and is accepted only with its signing tested against recorded vectors and a loopback stub. |
 | 2.5 credential precedence | W-C, environment only (ADR 0010) |
-| 2.6 `models.json` endpoints and overrides | built (`[model] spec`, catalog); overrides → W-C |
+| 2.6 `models.json` endpoints and overrides | built (`[model] spec`, catalog); overrides → W-C. **Amended 2026-09-29 (#162):** per-model input limits built, as `[[providers]] input_bytes` (ADR 0024 §5); cache lifetimes and cost tables not built. |
 | 2.7 catalog overlay | built (`trellis model`) |
 | 2.8 thinking levels | W-C, where the provider protocol carries it |
 | 2.9 scoped model cycling | W-D (`session` `/model` already switches; add a list) |
