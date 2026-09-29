@@ -777,6 +777,13 @@ This is Paperclip's `process` adapter. A profile with
      Windows host: `a_process_agent_runs_in_trellis_s_own_process_group`
      in `tests/orchestration.rs`, which compares the agent's process group
      with the test's; a stopped background job needs a terminal to stage.
+     *Amended by ADR 0035:* on Windows the command runs in a Job Object
+     with kill-on-close and no breakaway, and the job is terminated however
+     the command ends (exit, timeout or interrupt), before `.git/config`
+     is restored and the tree compared, so a backgrounded writer cannot
+     land after either. `taskkill /T` is no longer used here. Guarded by
+     `job_object_kills_a_process_agent_s_tree` in
+     `tests/orchestration.rs` (Windows only). Unix is unchanged.
    - Ctrl-C kills the child and rolls back.
 
    *Amended (wave K): the environment has no keys unless the profile
