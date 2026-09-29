@@ -13,7 +13,7 @@
 
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
-use crate::transport::{self, Auth, Endpoint, SendError};
+use crate::transport::{self, Auth, Endpoint, Proxy, SendError};
 use serde_json::{Map, Value, json};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -548,6 +548,9 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 pub struct HostedClient {
     protocol: Protocol,
     endpoint: Endpoint,
+    /// Resolved once, at construction, so a proxy URL that is refused
+    /// fails before a run's snapshot rather than on its first turn.
+    proxy: Option<Proxy>,
     base: String,
     model: String,
     key: Option<ApiKey>,
@@ -562,6 +565,7 @@ impl std::fmt::Debug for HostedClient {
             .field("protocol", &self.protocol)
             .field("base", &self.base)
             .field("model", &self.model)
+            .field("proxy", &self.proxy.as_ref().map(ToString::to_string))
             .field("key", &self.key.as_ref().map(ApiKey::source))
             .finish()
     }
@@ -582,13 +586,28 @@ impl HostedClient {
     }
 
     /// As [`new`](Self::new) with the key supplied, so tests need not touch
-    /// the process environment.
+    /// the process environment for it. The proxy is still read from the
+    /// environment (`HTTPS_PROXY`, `NO_PROXY`), which for the loopback
+    /// endpoints tests use is never consulted.
     pub fn with_key(
         protocol: Protocol,
         base: &str,
         model: &str,
         key_env: &str,
         key: Option<ApiKey>,
+    ) -> Result<Self, RuntimeError> {
+        Self::with_key_and_env(protocol, base, model, key_env, key, &|k| {
+            std::env::var(k).ok()
+        })
+    }
+
+    fn with_key_and_env(
+        protocol: Protocol,
+        base: &str,
+        model: &str,
+        key_env: &str,
+        key: Option<ApiKey>,
+        env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self, RuntimeError> {
         let endpoint = Endpoint::parse(base)?;
         if endpoint.tls && !cfg!(feature = "hosted") {
@@ -602,9 +621,11 @@ impl HostedClient {
                 protocol.describe()
             )));
         }
+        let proxy = transport::proxy_for(&endpoint, env)?;
         Ok(Self {
             protocol,
             endpoint,
+            proxy,
             base: base.to_string(),
             model: model.to_string(),
             key,
@@ -677,6 +698,7 @@ impl HostedClient {
         loop {
             let sent = transport::post(
                 &self.endpoint,
+                self.proxy.as_ref(),
                 path,
                 &headers,
                 self.key.as_ref().map(|k| (auth, k)),
@@ -1102,6 +1124,39 @@ mod tests {
         } else {
             assert!(e.contains("hosted"), "{e}");
         }
+    }
+
+    #[test]
+    fn a_refused_proxy_fails_at_construction_before_any_request() {
+        // The risk: a proxy URL with credentials refused only on the first
+        // turn, after the run's snapshot, instead of before it.
+        let env =
+            |k: &str| (k == "HTTPS_PROXY").then(|| "http://u:p@proxy.example:3128".to_string());
+        let e = HostedClient::with_key_and_env(
+            Protocol::OpenAiChat,
+            "https://api.openai.com/v1",
+            "m",
+            "OPENAI_API_KEY",
+            Some(ApiKey::for_test("sk-x", "OPENAI_API_KEY")),
+            &env,
+        )
+        .unwrap_err()
+        .to_string();
+        if cfg!(feature = "hosted") {
+            assert!(e.contains("credentials"), "{e}");
+        }
+        // A local endpoint never reads it.
+        assert!(
+            HostedClient::with_key_and_env(
+                Protocol::OpenAiChat,
+                "http://127.0.0.1:9/v1",
+                "m",
+                "OPENAI_API_KEY",
+                None,
+                &env,
+            )
+            .is_ok()
+        );
     }
 
     #[test]

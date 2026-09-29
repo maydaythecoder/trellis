@@ -71,6 +71,48 @@ bodies and do not always close promptly.
 Without the feature an `https://` base is refused with a message naming the
 feature. The local tiers are untouched either way.
 
+*Amended 2026-09-29 (#150): `HTTPS_PROXY` as a CONNECT tunnel.* The owner's
+decision on #150 fixes the scope, and this is all of it:
+- **Only `https://` is proxied, only through `CONNECT`.** For an https
+  endpoint trellis reads `HTTPS_PROXY`, then `https_proxy` (an empty value
+  is unset), connects to that proxy, sends `CONNECT host:port`, requires a
+  200, and runs the TLS handshake with the provider over the tunnel. The
+  proxy is told the provider's host and port and nothing else: the key,
+  the transcript and the reply are inside TLS end to end, so ADR 0010's
+  "no proxy in the key's path" still holds in the sense that matters,
+  which is that no proxy can read it. The proxy is the user's, named in
+  the user's environment. A refusal (anything but 200) is a connection
+  error naming the proxy and the status, and is not retried.
+- **Plain `http://` is never proxied**, and `HTTP_PROXY` and `ALL_PROXY`
+  are not read: a proxy forwarding a plain request reads it, headers
+  included, and plain http goes only to this machine (above).
+- **Loopback is always direct**, whatever the variables say.
+- **`NO_PROXY` / `no_proxy`** is a comma-separated list: `*` for every
+  host, `.example.com` for that domain and every name under it, and a bare
+  `example.com` the same (curl's and Go's reading). Case is ignored and an
+  IPv6 literal may be bracketed. An entry with a `:port`, or a CIDR range,
+  is compared as written and so matches nothing; the request then goes
+  through the proxy, which is the failure a user can see and correct.
+- **No proxy credentials.** A `HTTPS_PROXY` with `user:pass@` is refused
+  when the client is built, before a run's snapshot, with a message that
+  does not repeat the value; a proxy answering 407 is reported as asking
+  for credentials. A `https://` or `socks5://` proxy URL is refused the
+  same way: only an http proxy that accepts `CONNECT` is spoken to.
+- The variables are read only for an endpoint that would be proxied, so a
+  proxy URL trellis refuses does not break a run against a local server.
+
+Evidence: the four `https_proxy_*` tests in
+`crates/trellis-cli/tests/hosted_keys.rs`, through the real binary against
+a loopback CONNECT proxy: the CONNECT line names the provider, the first
+bytes in the tunnel are a TLS ClientHello naming it, and neither the
+CONNECT head nor the output holds the key; nothing reaches the proxy with
+only `HTTP_PROXY`/`ALL_PROXY` set or with the host in `NO_PROXY`; and a
+credentialed URL is refused before the snapshot without printing the
+password. There is no TLS server in those tests, because the client trusts
+only the compiled-in roots, so a completed handshake through the tunnel is
+not exercised; `transport::tests` covers the tunnel carrying bytes after
+the 200 and the matching rules. No run through a real proxy has been made.
+
 Whether `trellis-cli` turns `hosted` on by default is decided by measurement
 (release binary size and crate count, with and without); the figures and the
 method are in "Measurements" below.
@@ -625,8 +667,6 @@ pull request.
   chat interface already streams from local runtimes
   (`qa/REPORT-2026-09-21.md`). Revisit when a hosted turn's wait is
   measured as a problem.
-- A proxy from `HTTPS_PROXY` / `HTTP_PROXY` (row 2.13). A run behind a proxy
-  cannot reach a hosted provider.
 - `Retry-After` given as an obsolete HTTP date (RFC 850 or asctime form);
   it falls back to the fixed backoff. IMF-fixdate is honoured (§4).
 - OAuth, Bedrock, Vertex and Azure request signing.

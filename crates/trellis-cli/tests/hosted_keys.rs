@@ -516,3 +516,243 @@ fn ask_hosted_classify_a_question_takes_no_snapshot() {
         assert!(!text.contains(canary()), "{name} contains the key");
     }
 }
+
+// HTTPS_PROXY (#150, ADR 0024 amended). The provider's host is `.invalid`,
+// so a request that went direct instead of through the proxy fails to
+// resolve rather than reaching anything.
+#[cfg(feature = "hosted")]
+const PROXIED_HOST: &str = "api.proxytest.invalid";
+
+/// What one connection to the stub proxy carried: the CONNECT head, and the
+/// first bytes sent into the tunnel after the 200.
+#[cfg(feature = "hosted")]
+struct Tunnel {
+    head: String,
+    inner: Vec<u8>,
+}
+
+/// A loopback CONNECT proxy that accepts until `stop` is set. The first
+/// CONNECT gets a 200 and the proxy reads what the client sends into the
+/// tunnel, a TLS ClientHello, before closing; there is no TLS server with a
+/// certificate the client's compiled-in roots would accept, so this is the
+/// TLS end of the stub. Later CONNECTs get a 403, which the client does not
+/// retry, so a run ends in a second rather than after the backoff.
+#[cfg(feature = "hosted")]
+fn connect_proxy() -> (
+    u16,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::thread::JoinHandle<Vec<Tunnel>>,
+) {
+    use std::sync::atomic::Ordering;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let h = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !flag.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            let mut s = match l.accept() {
+                Ok((s, _)) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
+                Err(_) => break,
+            };
+            s.set_nonblocking(false).ok();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .ok();
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match s.read(&mut b) {
+                    Ok(1) => head.push(b[0]),
+                    _ => break,
+                }
+            }
+            let mut inner = Vec::new();
+            if seen.is_empty() {
+                s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    .ok();
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = s.read(&mut buf) {
+                    inner.extend_from_slice(&buf[..n]);
+                }
+            } else {
+                s.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    .ok();
+            }
+            seen.push(Tunnel {
+                head: String::from_utf8_lossy(&head).into_owned(),
+                inner,
+            });
+        }
+        seen
+    });
+    (port, stop, h)
+}
+
+/// A hosted run against `https://PROXIED_HOST/v1` with every proxy variable
+/// cleared and then `vars` set, `{port}` in a value standing for the stub
+/// proxy's port. Returns whether it succeeded, stdout plus stderr, and every
+/// connection the stub proxy saw.
+#[cfg(feature = "hosted")]
+fn proxied_run(name: &str, vars: &[(&str, String)]) -> (bool, String, Vec<Tunnel>) {
+    let (port, stop, proxy) = connect_proxy();
+    let d = repo(name, "openai", &format!("https://{PROXIED_HOST}/v1"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    cmd.arg("--root")
+        .arg(&d)
+        .args(["run", "make helper return 2", "--model", "provider:stub#m"])
+        .env("TRELLIS_CONFIG_DIR", user_dir(&d))
+        .env("RUST_LOG", "trace")
+        .env(KEY_ENV, canary());
+    // On Windows the names are case-insensitive, so `HTTPS_PROXY` and
+    // `https_proxy` are one variable; removing both and setting one form
+    // is right on every platform.
+    for v in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ] {
+        cmd.env_remove(v);
+    }
+    for (k, v) in vars {
+        cmd.env(k, v.replace("{port}", &port.to_string()));
+    }
+    let out = cmd.output().unwrap();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let seen = proxy.join().unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Whatever else happened, the key was not printed or logged.
+    assert!(
+        !all.contains(canary()),
+        "the output contains the key: {all}"
+    );
+    (out.status.success(), all, seen)
+}
+
+#[cfg(feature = "hosted")]
+#[test]
+fn https_proxy_set_carries_a_connect_tunnel_with_tls_inside() {
+    // The risk: a run behind a proxy cannot reach its provider, or reaches
+    // it with the key visible to the proxy.
+    let (_, all, seen) = proxied_run(
+        "proxy-set",
+        &[("HTTPS_PROXY", "http://127.0.0.1:{port}".to_string())],
+    );
+    let first = seen
+        .first()
+        .unwrap_or_else(|| panic!("the proxy saw no connection: {all}"));
+    assert!(
+        first
+            .head
+            .starts_with(&format!("CONNECT {PROXIED_HOST}:443 HTTP/1.1\r\n")),
+        "{}",
+        first.head
+    );
+    // TLS runs over the tunnel: a handshake record (0x16, version 3.x)
+    // whose ClientHello names the provider, not the proxy.
+    assert!(
+        first.inner.len() > 5 && first.inner[0] == 0x16 && first.inner[1] == 0x03,
+        "the first bytes in the tunnel are not a TLS handshake: {:?}",
+        &first.inner[..first.inner.len().min(16)]
+    );
+    assert!(
+        first
+            .inner
+            .windows(PROXIED_HOST.len())
+            .any(|w| w == PROXIED_HOST.as_bytes()),
+        "the ClientHello does not name {PROXIED_HOST}"
+    );
+    for t in &seen {
+        assert!(!t.head.contains(canary()), "the proxy was sent the key");
+        assert!(
+            !t.inner
+                .windows(canary().len())
+                .any(|w| w == canary().as_bytes()),
+            "the key crossed the tunnel in the clear"
+        );
+        assert!(
+            !t.head.to_ascii_lowercase().contains("proxy-authorization"),
+            "{}",
+            t.head
+        );
+    }
+    // The 403 on the retry is reported as the proxy's refusal.
+    assert!(all.contains("refused CONNECT"), "{all}");
+}
+
+#[cfg(feature = "hosted")]
+#[test]
+fn https_proxy_unset_sends_nothing_to_a_proxy_named_for_plain_http() {
+    // The risk: `HTTP_PROXY` or `ALL_PROXY` read for an https endpoint. Only
+    // `HTTPS_PROXY` names a proxy for it (the owner's decision on #150).
+    let (ok, all, seen) = proxied_run(
+        "proxy-unset",
+        &[
+            ("HTTP_PROXY", "http://127.0.0.1:{port}".to_string()),
+            ("ALL_PROXY", "http://127.0.0.1:{port}".to_string()),
+        ],
+    );
+    assert!(!ok, "{all}");
+    assert!(
+        seen.is_empty(),
+        "the proxy saw {} connection(s): {all}",
+        seen.len()
+    );
+}
+
+#[cfg(feature = "hosted")]
+#[test]
+fn https_proxy_bypassed_for_a_host_no_proxy_lists() {
+    let (ok, all, seen) = proxied_run(
+        "proxy-noproxy",
+        &[
+            ("HTTPS_PROXY", "http://127.0.0.1:{port}".to_string()),
+            ("NO_PROXY", "localhost, .proxytest.invalid".to_string()),
+        ],
+    );
+    assert!(!ok, "{all}");
+    assert!(
+        seen.is_empty(),
+        "the proxy saw {} connection(s): {all}",
+        seen.len()
+    );
+}
+
+#[cfg(feature = "hosted")]
+#[test]
+fn https_proxy_with_credentials_is_refused_before_the_snapshot() {
+    // The risk: credentials sent to the proxy, or printed in the refusal.
+    let password = format!("pw-{}-canary", std::process::id());
+    let (ok, all, seen) = proxied_run(
+        "proxy-creds",
+        &[(
+            "HTTPS_PROXY",
+            format!("http://someone:{password}@127.0.0.1:{{port}}"),
+        )],
+    );
+    assert!(!ok, "{all}");
+    assert!(all.contains("credentials"), "{all}");
+    assert!(
+        !all.contains(&password),
+        "the refusal printed the password: {all}"
+    );
+    assert!(
+        !all.contains("snapshot at"),
+        "refused before the snapshot: {all}"
+    );
+    assert!(seen.is_empty(), "the proxy was contacted: {all}");
+}
