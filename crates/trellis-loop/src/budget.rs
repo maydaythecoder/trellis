@@ -104,6 +104,60 @@ impl Budget {
             regime: self.regime,
         }
     }
+
+    /// This budget's iterations and tokens dealt out across `n` partitions,
+    /// exactly.
+    ///
+    /// [`Budget::split`] floors, so three partitions of a 40-iteration run
+    /// get 13 each and a 40th iteration nobody may spend; and it clamps to
+    /// one, so sixteen partitions of a 2-iteration run get sixteen between
+    /// them. The second is ADR 0008's "multiply" by another route. Here the
+    /// remainder goes to the first partitions in plan order, so the shares
+    /// sum to the run's ceiling, and a plan wider than the ceiling is
+    /// refused rather than granted more than the user set.
+    ///
+    /// Wall-clock is copied whole, as in `split`: partitions in one stage
+    /// run concurrently. The supervisor narrows it for a later stage.
+    pub fn shares(&self, n: u32) -> Result<Vec<Budget>, BudgetTooSmall> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        if self.max_iterations < n || self.max_tokens < u64::from(n) {
+            return Err(BudgetTooSmall {
+                partitions: n,
+                iterations: self.max_iterations,
+                tokens: self.max_tokens,
+            });
+        }
+        let (it_each, it_rest) = (self.max_iterations / n, self.max_iterations % n);
+        let (tok_each, tok_rest) = (
+            self.max_tokens / u64::from(n),
+            self.max_tokens % u64::from(n),
+        );
+        Ok((0..n)
+            .map(|i| Budget {
+                max_iterations: it_each + u32::from(i < it_rest),
+                max_wall_clock: self.max_wall_clock,
+                max_tokens: tok_each + u64::from(u64::from(i) < tok_rest),
+                regime: self.regime,
+            })
+            .collect())
+    }
+}
+
+/// A plan with more partitions than the run has iterations or tokens.
+///
+/// Every partition needs at least one of each to do anything, and granting
+/// that past the ceiling would spend more than the user set.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "{partitions} partitions cannot share a budget of {iterations} iterations and {tokens} tokens \
+     without exceeding it; raise the budget or run fewer partitions"
+)]
+pub struct BudgetTooSmall {
+    pub partitions: u32,
+    pub iterations: u32,
+    pub tokens: u64,
 }
 
 #[cfg(test)]
