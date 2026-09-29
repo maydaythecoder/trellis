@@ -117,3 +117,8 @@ Its composition, as a sizing preview: of 1,000 sites the resolver judged 284
 `Resolved`, 34 `Candidates`, 296 `Unresolved` and 386 external. The auditor
 decides the denominator, so that is a hint about the shape of the work and not
 a prediction of the result.
+
+Seed for the v1.0 audit: 20260929, drawn at commit 9608f9a. The commit is the
+resolver that produced `answers.json`; if `resolve.rs` has changed since,
+regenerate the answers at this seed and size before scoring. The draw's
+composition is deliberately not recorded here: the auditor reads this file.
