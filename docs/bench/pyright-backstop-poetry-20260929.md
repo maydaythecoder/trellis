@@ -60,8 +60,12 @@ Command, from PowerShell 7, via
 pyright_backstop_measure.ps1 -Exe target/release/trellis.exe -Root <copy> -Out run1.txt -PyrightBin C:/w/pyright-tool/node_modules/.bin
 ```
 
-which runs `trellis --root <copy> index`. Output, verbatim (the whitespace
-inside two of the backstop lines is how #168's CLI prints them):
+which runs `trellis --root <copy> index`. The committed script is the one
+that was run, with the Pyright bin directory made a parameter (the run had it
+written in). Output: the first lines and the backstop section verbatim, the
+resolver's reason and shape tables elided as `...` (the counts match
+`BENCHMARK_AND_EVAL.md` §2). The whitespace inside two of the backstop lines
+is how #168's CLI prints them:
 
 ```
 indexed 451 files in 2.4623855s
@@ -99,8 +103,10 @@ symbol, outside a `Candidates` set); `BackstopReport` has one count for both.
 Of the 1,859 bound: 1,002 were `Unresolved` sites and 857 were `Candidates`
 sites (from the edge listing below).
 
-The same counts (7,580 / 1,859 / 5,721 / 22) came back on three further runs
-through the example below, and two of those listings are byte-identical.
+The same counts (7,580 / 1,859 / 5,721 / 22) came back on four further runs
+through the example below. The second and third listings are byte-identical;
+the fourth differs from them only where a carriage return inside a call's
+text is now printed as a space; the first was not kept.
 
 ## Wall time and peak memory
 
@@ -171,9 +177,10 @@ lines, not the resolver's hierarchy; classes matched by bare name):
 | from `Candidates` sites | 857 | 840 | 813 |
 | from `Unresolved` sites | 1,002 | 953 | 150 |
 
-A stricter count, callees that are `@abstractmethod` or have a stub body
-(`...`, `pass`, `raise NotImplementedError`), and so cannot be the runtime
-callee at all: 8 from `Candidates` sites and 30 from `Unresolved` sites.
+A stricter count by the same script, callees that are `@abstractmethod` or
+have a stub body (`...`, `pass`, `raise NotImplementedError`), and so cannot
+be the runtime callee at all: 8 from `Candidates` sites and 30 from
+`Unresolved` sites.
 
 What this does and does not show: an edge to an overridden method is not
 necessarily wrong for that site (the receiver may really be the base class),
