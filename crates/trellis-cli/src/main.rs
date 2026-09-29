@@ -15,6 +15,7 @@
 mod ask;
 mod config;
 mod hosted;
+mod image_input;
 mod install;
 mod liveness;
 mod orchestrate;
@@ -176,6 +177,15 @@ enum Command {
         /// and the checks still apply.
         #[arg(long)]
         auto: bool,
+        /// Attach an image (PNG, JPEG, GIF or WebP, at most 5 MiB) to the
+        /// task. Repeatable. Hosted tier-1 models only; any other model
+        /// refuses the run before the snapshot.
+        ///
+        /// Owner-directed growth beyond brief 4.12 (ADR 0041). Not resized.
+        /// Its base64 counts against `[model] context_bytes`, and the trail
+        /// records its name, size and SHA-256, never its bytes.
+        #[arg(long, value_name = "PATH")]
+        image: Vec<PathBuf>,
     },
 
     /// The line-based session: one command at a time, scrollback kept.
@@ -547,6 +557,7 @@ fn main() -> Result<()> {
             focus,
             approve,
             auto,
+            image,
         } => {
             // Checked here rather than in `cmd_run`: the session and the
             // interface always run one agent, and this is the only caller
@@ -596,6 +607,7 @@ fn main() -> Result<()> {
                 },
                 output::RunExtras {
                     skills: skill,
+                    images: image,
                     ..output::RunExtras::default()
                 },
                 &mut output::human(),
@@ -1711,6 +1723,44 @@ fn run_body(
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
     let mut driver = Driver::build(&spec, unconstrained, &tooling.tools, &cfg, model_from_user)?;
 
+    // `--image` (ADR 0041): refused for anything but hosted tier 1 before the
+    // reachability probe, so the refusal is about the model and not about a
+    // runtime that happens to be down; then read, checked and counted
+    // against the context budget, all before the snapshot.
+    image_input::refuse_unless_hosted(
+        &extras.images,
+        matches!(driver, Driver::Hosted(_)),
+        &match &driver {
+            Driver::Scripted(_) => format!("`{model_spec}` is a scripted model"),
+            Driver::Runtime(m) => format!(
+                "`{model_spec}` is a local {:?} runtime, adapter tier {:?}",
+                m.dialect(),
+                m.tier()
+            ),
+            Driver::Hosted(_) => String::new(),
+        },
+    )?;
+    let images = if extras.images.is_empty() {
+        image_input::Loaded::default()
+    } else {
+        // The budget the hosted run elides to (ADR 0024 §5), so an image is
+        // measured against the same ceiling as every other input. Resolved
+        // again rather than read off the driver: it is a pure function of the
+        // spec, the config and the environment, and `refuse_unless_hosted`
+        // above means it names a hosted model.
+        let budget = match hosted::resolve(&spec, &cfg, model_from_user)? {
+            Some(r) => hosted::hosted_context_bytes(&r, &cfg)?,
+            None => anyhow::bail!(
+                "--image: `{model_spec}` passed the hosted-model check but does not \
+                 resolve to a hosted model; nothing was snapshotted"
+            ),
+        };
+        image_input::load(root, &extras.images, budget)?
+    };
+    if let Driver::Hosted(m) = driver {
+        driver = Driver::Hosted(Box::new(m.with_images(images.images.clone())));
+    }
+
     // Reachability before the snapshot, and the ordering is the whole point.
     //
     // `Driver::build` parses a URL; it does not connect. So a runtime that
@@ -1804,6 +1854,9 @@ fn run_body(
         && let Some(n) = hosted::thinking_ignored(&cfg, &format!("{:?}", m.dialect()))
     {
         let _ = writeln!(out, "{n}");
+    }
+    for line in image_input::lines(&images) {
+        let _ = writeln!(out, "{line}");
     }
     let _ = writeln!(out, "control:  {}", dial.describe());
     if let Some(line) = tooling.line(dial.mode) {
@@ -2420,7 +2473,7 @@ fn run_body(
         prompt_tokens,
         agent: profile.map(|p| p.name.clone()),
         label: extras.label.clone(),
-        inputs: added.inputs.clone(),
+        inputs: added.inputs.iter().chain(&images.inputs).cloned().collect(),
         compactions: &compactions,
         requested: &requested,
     };

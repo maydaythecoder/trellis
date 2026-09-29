@@ -260,7 +260,7 @@ pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
 /// layering: on a name both files define the user's entry wins whole, so a
 /// repository cannot raise a limit the user set (ADR 0024 §3), and under
 /// the minimum its `context_bytes` can only lower one.
-fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usize> {
+pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usize> {
     let limit = match &r.provider {
         Some(name) => cfg
             .provider(name)?

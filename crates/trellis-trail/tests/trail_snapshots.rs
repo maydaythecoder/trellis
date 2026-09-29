@@ -138,11 +138,13 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 kind: "context_file".into(),
                 name: "CLAUDE.md".into(),
                 bytes: 2_048,
+                sha256: None,
             },
             Input {
                 kind: "forced_skill".into(),
                 name: "refactor".into(),
                 bytes: 512,
+                sha256: None,
             },
         ],
         steering: vec![Steer::new(

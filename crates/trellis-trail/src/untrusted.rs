@@ -663,14 +663,19 @@ mod tests {
                 kind: "context_file".into(),
                 name: "<user>/AGENTS.md".into(),
                 bytes: 4321,
+                sha256: None,
             },
             crate::Input {
                 kind: "forced_skill".into(),
                 name: "refactor".into(),
                 bytes: 88,
+                sha256: None,
             },
         ];
         let json = written(&mut t);
+        // An input without a hash has no `sha256` key: the kinds that
+        // predate it keep the bytes, and so the digest, they had.
+        assert!(!json.contains("\"sha256\""), "{json}");
         let read = UntrustedTrail::from_json(&json).unwrap();
         assert_eq!(read.factual.inputs, t.factual.inputs);
         assert_eq!(read.integrity(&json), Integrity::Intact);
@@ -680,6 +685,34 @@ mod tests {
                 .unwrap()
                 .integrity(&edited),
             Integrity::Altered
+        );
+    }
+
+    #[test]
+    fn an_image_input_is_its_name_size_and_hash_and_the_hash_is_under_the_digest() {
+        // The risk: an image's bytes in a committed trail, or a hash that
+        // can be edited to name a different image without the digest
+        // noticing.
+        let pixels = b"GIF89a-pixels-that-stay-out-of-the-trail";
+        let mut t = a_trail("app/core.py");
+        t.factual.inputs = vec![crate::Input::hashed("image", "docs/shot.gif", pixels)];
+        let json = written(&mut t);
+        assert!(!json.contains("pixels-that-stay"), "{json}");
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        let got = &read.factual.inputs[0];
+        assert_eq!(
+            (got.kind.as_str(), got.bytes),
+            ("image", pixels.len() as u64)
+        );
+        let hash = got.sha256.clone().unwrap();
+        assert_eq!(hash.len(), 64);
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        let edited = json.replace(&hash, &"0".repeat(64));
+        assert_ne!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Intact
         );
     }
 
