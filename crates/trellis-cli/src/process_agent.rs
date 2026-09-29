@@ -249,8 +249,9 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     // is the user's command on the user's terminal. In a group of its own
     // (round 8) it was a background job, stopped by SIGTTOU or SIGTTIN the
     // moment it touched the terminal (review round 9). What that costs is
-    // in `end_command`.
-    let child = cmd.spawn();
+    // in `Running::end`. On Windows it is spawned into a Job Object
+    // (ADR 0035).
+    let child = Running::spawn(cmd);
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
@@ -261,7 +262,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             };
         }
     };
-    if let Some(mut stdin) = child.stdin.take() {
+    if let Some(mut stdin) = child.take_stdin() {
         let body = text.to_string();
         // On its own thread: a command that never reads stdin must not
         // block the wait below once the pipe buffer is full.
@@ -276,15 +277,19 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             Err(_) => break Ended::Exited(None),
         }
         if stop.load(Ordering::SeqCst) {
-            end_command(&mut child);
+            child.end();
             break Ended::Interrupted;
         }
         if started.elapsed() >= timeout {
-            end_command(&mut child);
+            child.end();
             break Ended::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // However it ended, before anything is restored, judged or rolled back:
+    // on Windows what the command left running ends here, so a backgrounded
+    // writer cannot land after the comparison (ADR 0035).
+    child.finish();
     let secs = started.elapsed().as_secs();
     let exit_text = match &ended {
         Ended::Exited(Some(c)) => format!("exited {c} after {secs}s"),
@@ -524,26 +529,111 @@ fn undo(
     rollback(snapshot, out) && removed
 }
 
-/// Ends the command on a timeout or an interrupt, while it is still alive
-/// and unreaped. On Windows `taskkill /T` walks the tree from it. On Unix
-/// the command shares trellis's process group, so there is no group of its
-/// own to signal, and signalling trellis's would end trellis: the command
-/// itself is killed, and what it started may outlive it and write after
-/// the comparison (ADR 0026 §11). Ctrl-C at the terminal reaches the whole
-/// foreground group, the command's children included, as it reaches
-/// trellis. After a normal exit nothing is signalled on either platform.
-fn end_command(child: &mut std::process::Child) {
-    if cfg!(windows) {
-        let mut k = Command::new("taskkill");
-        k.args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        trellis_core::secrets::scrub(&mut k);
-        let _ = k.status();
+/// The running command. On Unix a plain child in trellis's own process
+/// group (ADR 0026 §11); on Windows a child in a Job Object of its own,
+/// with kill-on-close and no breakaway (ADR 0035).
+#[cfg(unix)]
+struct Running(std::process::Child);
+
+#[cfg(unix)]
+impl Running {
+    /// Spawns `cmd`, which the caller has already scrubbed.
+    fn spawn(mut cmd: Command) -> std::io::Result<Running> {
+        cmd.spawn().map(Running)
     }
-    let _ = child.kill();
-    let _ = child.wait();
+
+    fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.0.stdin.take()
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.0.try_wait()
+    }
+
+    /// Ends the command on a timeout or an interrupt, while it is still
+    /// alive and unreaped. It shares trellis's process group, so there is no
+    /// group of its own to signal, and signalling trellis's would end
+    /// trellis: the command itself is killed, and what it started may
+    /// outlive it and write after the comparison (ADR 0026 §11). Ctrl-C at
+    /// the terminal reaches the whole foreground group, the command's
+    /// children included, as it reaches trellis.
+    fn end(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+
+    /// After the command has ended: nothing is signalled on Unix, for the
+    /// reason `end` gives.
+    fn finish(&mut self) {}
+}
+
+#[cfg(windows)]
+struct Running {
+    child: Box<dyn process_wrap::tokio::ChildWrapper>,
+    stdin: Option<std::fs::File>,
+    /// The wrapper is tokio's; its pipes and its wait need a runtime. Last,
+    /// so it outlives the child when both drop.
+    rt: tokio::runtime::Runtime,
+}
+
+#[cfg(windows)]
+impl Running {
+    /// Spawns `cmd`, which the caller has already scrubbed, into a Job
+    /// Object of its own: created suspended, assigned, then resumed, so
+    /// nothing it starts runs outside the job. The job allows no breakaway,
+    /// so a `CREATE_BREAKAWAY_FROM_JOB` child fails to start rather than
+    /// escape, and it is kill-on-close, so the tree also ends if trellis
+    /// does. A job that cannot be made or joined kills the child and is an
+    /// error, as a command that cannot start is.
+    fn spawn(cmd: Command) -> std::io::Result<Running> {
+        use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let _entered = rt.enter();
+        let mut wrapped = CommandWrap::from(tokio::process::Command::from(cmd));
+        wrapped.wrap(KillOnDrop).wrap(JobObject);
+        let mut child = wrapped.spawn()?;
+        // A plain file handle, so the existing writer thread can write it
+        // with no runtime.
+        let stdin = match child.stdin().take().map(|s| s.into_owned_handle()) {
+            Some(Ok(h)) => Some(std::fs::File::from(h)),
+            Some(Err(e)) => {
+                tracing::warn!("the command's stdin could not be taken; it gets none: {e}");
+                None
+            }
+            None => None,
+        };
+        Ok(Running { child, stdin, rt })
+    }
+
+    fn take_stdin(&mut self) -> Option<std::fs::File> {
+        self.stdin.take()
+    }
+
+    /// The command itself, not the job: the wrapper's own wait would wait
+    /// for everything the command started.
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.inner_mut().try_wait()
+    }
+
+    /// Ends the command and everything in its job on a timeout or an
+    /// interrupt, then reaps the command.
+    fn end(&mut self) {
+        self.finish();
+        let rt = &self.rt;
+        let wait = self.child.inner_mut().wait();
+        let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), wait).await });
+    }
+
+    /// Ends whatever is still in the command's job (`TerminateJobObject`),
+    /// however the command ended. The job handle names the tree, not a pid,
+    /// so this is safe after the command has been reaped.
+    fn finish(&mut self) {
+        if let Err(e) = self.child.start_kill() {
+            tracing::warn!("could not end the command's job: {e}");
+        }
+    }
 }
 
 fn rollback(snapshot: &trellis_vcs::Snapshot, out: &mut dyn Write) -> bool {

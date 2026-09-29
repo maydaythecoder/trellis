@@ -233,7 +233,14 @@ running `bash` command, custom tool, hook or listing. It ends when trellis
 drops it (`kill_on_drop`, SIGKILL) during the interrupt's shutdown, with no
 chance to clean up. (Amended after the second review of PR #1: before it, the run
 waited for EOF on both pipes, so `sleep 30 & exit 0` read as a timeout,
-and a timeout killed only the shell.)
+and a timeout killed only the shell.) *Amended by ADR 0035:* on Windows the
+command is spawned into a Job Object with kill-on-close and no breakaway
+(through the `process-wrap` dependency; no `unsafe` in this workspace),
+and the job is terminated however the command ends, before its pipes are
+drained. What it backgrounded is ended after a normal exit too, and
+`taskkill /T` is no longer used here. ADR 0035 lists what a job still
+does not hold (a process started for the command by a service, WMI or the
+Task Scheduler).
 
 Bash output is an observation. It is never a verdict, and an exit code of 0
 means nothing to convergence: only `run_checks` produces a `Verdict`.
@@ -947,6 +954,11 @@ are not assumed closed:
   the rollback (ADR 0023 §3; ADR 0026 §11 step 2). On Unix a process that leaves
   its group (`setsid`) is not reached, and a process agent runs in
   trellis's own group, so nothing is killed after its normal exit.
+  *Amended by ADR 0035:* on Windows, commands and process agents now run
+  in a Job Object that is terminated however they end, so this route is
+  closed there except for a process started on the command's behalf by
+  something outside the job (a service, WMI, the Task Scheduler). The Unix
+  half is unchanged.
 - **`.git/` writes outside the guarded files.** The git guard restores
   `config`, `config.worktree`, include targets under the git directory,
   the hooks, `info/exclude` and `info/attributes`. The rest of `.git/`
