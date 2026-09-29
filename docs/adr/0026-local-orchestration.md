@@ -52,6 +52,7 @@ written under ADR 0020 still loads unchanged.
 | `needs_approval`, `approval` | §6 |
 | `notes` | `[{at, actor, text}]`, appended by `queue note` and by the queue |
 | `routine` | The routine that created the task, if any (§7) |
+| `args` | Arguments for the task's `prompt` template, the one unsplit string `run --args` takes (§3). Omitted from the file when absent |
 
 The goal is the vault stem already stored as `focus` (ADR 0020 §6).
 `queue add --goal` is an alias of `--focus`.
@@ -204,6 +205,21 @@ goes out in one write, and a reader skips a last line that does not parse.
   and `--backlog`. The parent, the blockers and the assignee must exist when
   the task is added. This follows ADR 0020's rule that anything checkable is
   checked at add time.
+- *Amended by the owner, 2026-09-28 (#112):* `queue add --prompt <name>
+  --args "<string>"`, which ADR 0025 left to this ADR. The string is stored
+  unsplit as the task's `args` and, when the task runs, expanded by the same
+  function `trellis run` uses (`templates::task_text`: one splitter, one
+  substitution, one join), so a queued template expands byte for byte as
+  the equivalent `run --prompt --args` would. `--args` requires `--prompt`,
+  as on `run`. The string is split once at add time as well, so an unclosed
+  quote is refused then rather than when the heartbeat reaches the task.
+  The field has a serde default and is not written when absent, so older
+  task files load and rewrite unchanged; a binary older than this reads a
+  file that has it by ignoring the key, and runs the template without its
+  arguments. Routines do not take `args`. Evidence:
+  `queue_add_args_expand_byte_for_byte_as_run_args` and
+  `queue_add_args_an_older_task_file_reads_back_unchanged` in
+  `crates/trellis-cli/src/work.rs`.
 - `queue list` shows priority, status, labels, assignee, blockers, parent
   and the reason a pending task is not claimable. It filters with
   `--status`, `--label`, `--assignee` and `--priority`.

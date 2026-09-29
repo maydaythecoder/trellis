@@ -527,22 +527,8 @@ fn main() -> Result<()> {
                     "do not exist yet. Use --agents 1."
                 ));
             }
-            let task = match &prompt {
-                Some(name) => {
-                    // ADR 0025 §3: frontmatter stripped, `--args` substituted.
-                    let template = templates::render(&root, name, args.as_deref())?;
-                    if task.trim().is_empty() {
-                        template
-                    } else {
-                        format!(
-                            "{template}
-
-{task}"
-                        )
-                    }
-                }
-                None => task,
-            };
+            // ADR 0025 §3: frontmatter stripped, `--args` substituted.
+            let task = templates::task_text(&root, prompt.as_deref(), args.as_deref(), &task)?;
             let model_from_user = model.is_some();
             // A config that fails to load says why, rather than reading as
             // "no model": the refusal may be the point (ADR 0024 §3).

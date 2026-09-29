@@ -278,6 +278,14 @@ pub struct Task {
     pub task: String,
     pub focus: Option<String>,
     pub prompt: Option<String>,
+    /// Arguments for the `prompt` template, as the one string `run --args`
+    /// takes. Stored unsplit and split at run time by the same splitter, so
+    /// a queued task expands exactly as the equivalent `run` would.
+    /// Omitted when absent, unlike `prompt`: a file without it is what
+    /// every task written before `queue add --args` looks like, and an
+    /// older reader of a file that has it ignores the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
     pub added_at: String,
     /// How many runs this task has started. A run that was interrupted and
     /// put back counts, so a task that keeps being interrupted says so.
@@ -385,6 +393,8 @@ pub struct NewTask {
     pub task: String,
     pub focus: Option<String>,
     pub prompt: Option<String>,
+    /// With `prompt`: its arguments, unsplit (`Task::args`).
+    pub args: Option<String>,
     pub priority: Priority,
     pub labels: Vec<String>,
     pub parent: Option<String>,
@@ -528,6 +538,7 @@ impl Queue {
             task: new.task,
             focus: new.focus,
             prompt: new.prompt,
+            args: new.args,
             added_at: iso_now(),
             priority: new.priority,
             labels: new.labels,
