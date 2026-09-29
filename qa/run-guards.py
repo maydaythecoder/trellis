@@ -23,6 +23,12 @@ import subprocess
 import sys
 import tempfile
 
+# qa/demo_fixture.py is imported from qa/; a __pycache__ left beside it would
+# be an untracked directory in this repository after every run.
+sys.dont_write_bytecode = True
+
+from demo_fixture import fixture_repo, resolve_model
+
 HERE = pathlib.Path(__file__).resolve().parent
 
 
@@ -89,13 +95,19 @@ def reset(repo, commit):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default=r"C:\Users\mayda\documents\dev\trellis-demo")
+    # Default: a fresh clone of qa/fixtures/trellis-demo.bundle, removed at
+    # exit (qa/demo_fixture.py). A path given here is used as it is.
+    ap.add_argument("--repo", default=None)
     ap.add_argument("--fixture", default=str(HERE / "fixtures" / "behaviour.json"))
     args = ap.parse_args()
 
     spec = json.loads(pathlib.Path(args.fixture).read_text(encoding="utf-8"))
-    repo, commit = pathlib.Path(args.repo), spec["_baseline_commit"]
+    commit = spec["_baseline_commit"]
+    with fixture_repo(args.repo, commit) as repo:
+        return run(spec, repo, commit)
 
+
+def run(spec, repo, commit):
     print(f"fixture   {repo}")
     print(f"baseline  {commit}")
     print(f"guards    {len(spec['guards'])}\n")
@@ -117,7 +129,8 @@ def main():
             # as untrusted data (S10) — so the one thing `trellis log` must not
             # do is present an altered record as an intact one.
             if g.get("setup") == "tampered_trail":
-                sh(["trellis", "run", "--model", g["seed_model"], "seed a trail"], repo)
+                sh(["trellis", "run", "--model", resolve_model(g["seed_model"]),
+                    "seed a trail"], repo)
                 newest = max(
                     (repo / ".trellis" / "runs").glob("*.json"),
                     key=lambda f: f.stat().st_mtime,
@@ -131,13 +144,14 @@ def main():
             # A converged run's trail, with the worktree put back clean so the
             # next run may start. The trail commit survives; the edits do not.
             if g.get("setup") == "resumable":
-                sh(["trellis", "run", "--model", g["seed_model"], "fix the annotation"], repo)
+                sh(["trellis", "run", "--model", resolve_model(g["seed_model"]),
+                    "fix the annotation"], repo)
                 sh(["git", "checkout", "--", "."], repo)
 
             before = trails(repo)
             cmd = ["trellis"] + g.get("command", ["run"])
             if g.get("model"):
-                cmd += ["--model", g["model"]]
+                cmd += ["--model", resolve_model(g["model"])]
             if g.get("task"):
                 cmd.append(g["task"])
             p = sh(cmd, repo)
