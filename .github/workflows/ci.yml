@@ -152,6 +152,14 @@ jobs:
       - name: No machine-specific paths under qa/, bundle verifies
         run: bash scripts/checks/qa-portable.sh
 
+      # history/TRELLIS-direction.md keeps a skill at 500 lines or fewer; this
+      # holds the repository's own committed SKILL.md files to it (ADR 0019).
+      # The self-test runs first so a check that cannot fail cannot pass.
+      - name: No committed SKILL.md over 500 lines
+        run: |
+          bash scripts/checks/skill-lines.sh --self-test
+          bash scripts/checks/skill-lines.sh
+
       - name: Build trellis-cli
         run: cargo build -p trellis-cli
 
