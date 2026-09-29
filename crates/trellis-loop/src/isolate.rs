@@ -704,6 +704,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn allow_write_is_enforced_where_a_command_s_clone_is_carried_back() {
+        // The risk (#182): `allow_write` checked at the `edit` gate only, so
+        // a `bash` command, whose writes reach the repository through the
+        // carry-back and not through an `edit` call, wrote outside it.
+        let d = committed();
+        let root = d.path();
+        let mut shell = shell_argv("");
+        shell.pop();
+        let tools = ToolSet::build(ToolSelection {
+            bash: Some(BashSettings {
+                shell,
+                timeout: Duration::from_secs(60),
+                allow: Vec::new(),
+                unattended: true,
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let orch = Orchestrator::new(root, CheckConfig::default())
+            .with_governance(
+                crate::governance::Governance::new(&[]).with_allow_write("docs", &["docs/".into()]),
+            )
+            .with_tools(tools)
+            .spawn()
+            .0;
+        let command = if cfg!(windows) {
+            "echo def helper(): return 3 > app\\util.py"
+        } else {
+            "echo 'def helper(): return 3' > app/util.py"
+        };
+        let (said, _) = bash(&orch, command).await;
+        assert!(
+            said.contains(
+                "`app/util.py` is outside the allow_write [`docs/`] of agent `docs` \
+                 in .trellis/agents/docs.toml"
+            ),
+            "the refusal is named in the output: {said}"
+        );
+        let now = std::fs::read_to_string(root.join("app/util.py")).unwrap();
+        assert!(!now.contains("return 3"), "not carried back: {now}");
+        assert!(orch.touched().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn isolated_clone_edit_carried_back_is_undone_by_rollback() {
         // The point of carrying back through the edit path: the change is
         // an ordinary edit to a tracked file, which ADR 0009's rollback
