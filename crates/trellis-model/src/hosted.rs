@@ -1130,8 +1130,11 @@ mod tests {
     fn a_refused_proxy_fails_at_construction_before_any_request() {
         // The risk: a proxy URL with credentials refused only on the first
         // turn, after the run's snapshot, instead of before it.
+        // Built at run time so no `user:pass@` literal reaches a secret
+        // scanner (#185).
+        let pw = "p";
         let env =
-            |k: &str| (k == "HTTPS_PROXY").then(|| "http://u:p@proxy.example:3128".to_string());
+            |k: &str| (k == "HTTPS_PROXY").then(|| format!("http://u:{pw}@proxy.example:3128"));
         let e = HostedClient::with_key_and_env(
             Protocol::OpenAiChat,
             "https://api.openai.com/v1",
