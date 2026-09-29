@@ -336,7 +336,7 @@ on stderr.
   `max_wall_clock_s`, `max_tokens`). This departs from "repo wins" on
   purpose. ADR 0008: a runaway loop spends the user's money. A user who
   caps spend at 1M tokens must not have a cloned repository raise the cap to
-  2M.
+  2M. `[checks] timeout_s` layers the same way (ADR 0004, amended for #19).
 - **Neither file may hold a key.** Both files are scanned before they are
   used. Loading is refused, naming the file and the key path but never the
   value, when a key is named:
