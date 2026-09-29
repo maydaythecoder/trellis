@@ -1,0 +1,34 @@
+# Fuzz targets for the parsers that see untrusted input (issue #18).
+#
+# Its own workspace, excluded from the root one, so `cargo build --workspace`
+# and the root Cargo.lock never see libfuzzer-sys: it needs nightly and a
+# sanitizer runtime, and the shipped binary needs neither. Its lock is
+# audited by G5 (scripts/gates/security.sh) alongside the root one.
+#
+# Run through scripts/checks/fuzz.sh, which finds the ASan runtime on Windows.
+[package]
+name = "trellis-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# The one dependency the owner approved for fuzzing (issue #95, ## Decision).
+libfuzzer-sys = "0.4"
+trellis-trail = { path = "../crates/trellis-trail" }
+
+[[bin]]
+name = "trail_from_json"
+path = "fuzz_targets/trail_from_json.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace root, so cargo does not look upward and try to join it to
+# the root workspace, which excludes it.
+[workspace]
+members = ["."]
