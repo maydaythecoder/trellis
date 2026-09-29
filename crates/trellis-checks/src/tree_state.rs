@@ -17,10 +17,11 @@
 //! is not seen there.
 //!
 //! A directory is recorded by its kind and its entries, not by its own
-//! times: what it holds is what a check reads, and on Windows a listing
-//! reports a directory's times as NTFS last copied them into the parent,
-//! which can move later with no change under it (seen on `.git/logs/refs`
-//! in `child_env.rs`, where it failed a check nothing had written after).
+//! times, which carry nothing its entries do not. Its times were seen to
+//! differ between the two walks on `.git/logs/refs` in `child_env.rs`,
+//! where nothing this crate could see had written under it; the likely
+//! cause is the parent's cached copy of a directory's times in a Windows
+//! listing, not established.
 //!
 //! `.git/` at the root is not walked. The working tree is what a check
 //! judges, as the loop's worktree digest defines it; trellis's own git
