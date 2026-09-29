@@ -620,24 +620,27 @@ mod tests {
         // Waiting for EOF on both pipes before `wait()` made a command that
         // had finished look timed out: the backgrounded process inherited
         // stdout and held it open for its whole life.
+        //
+        // Three numbers, and only their order is fixed: prompt < timeout <
+        // the background child's life. A run that waits for EOF lasts
+        // min(timeout, child), so it fails the timeout assertion or the
+        // elapsed one. The prompt bound was 10 s, and a loaded host took
+        // about 11.4 s to spawn and reap the shell (issues #140, #184).
+        let prompt = Duration::from_secs(30);
+        let timeout = Duration::from_secs(60);
         let d = tempfile::tempdir().unwrap();
+        // The child lives about 120 s, past `timeout`.
         let script = if cfg!(windows) {
-            "echo before& start /B ping -n 30 127.0.0.1 >NUL & exit 0"
+            "echo before& start /B ping -n 121 127.0.0.1 >NUL & exit 0"
         } else {
-            "echo before; sleep 30 & exit 0"
+            "echo before; sleep 120 & exit 0"
         };
         let argv = shell_argv(script);
         let started = std::time::Instant::now();
-        let c = run(spec(&argv, d.path(), Duration::from_secs(20), 1024))
-            .await
-            .unwrap();
+        let c = run(spec(&argv, d.path(), timeout, 1024)).await.unwrap();
         assert!(!c.timed_out, "the command finished: {c:?}");
         assert_eq!(c.code, Some(0));
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "{:?}",
-            started.elapsed()
-        );
+        assert!(started.elapsed() < prompt, "{:?}", started.elapsed());
         assert!(
             c.stdout.render().contains("before"),
             "{}",
