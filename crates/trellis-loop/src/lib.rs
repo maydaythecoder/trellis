@@ -14,6 +14,7 @@ mod extra_context;
 mod gate;
 mod governance;
 mod hooks;
+mod isolate;
 mod listing;
 mod notes;
 mod orchestrator;

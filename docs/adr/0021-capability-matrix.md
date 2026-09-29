@@ -140,7 +140,7 @@ override any row.
 | 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |
-| 13.3 containers | deferred (sandbox decision) |
+| 13.3 containers | first step built: `bash` and custom tools run in a throwaway git clone (ADR 0032); containers, for network and home-directory isolation, still deferred |
 | 13.4 guard examples | built in effect: `permission-gate` = ADR 0018, `protected-paths` = `deny_write`, `dirty-repo-guard` = ADR 0009, `git-checkpoint` = snapshot and rollback |
 | 14 telemetry / durability | built (`tracing`, trail, queue) |
 | 15 experimental (chord, pi-protocol, pi-server) | excluded: networked/multi-attach (brief Part 1) |
