@@ -98,6 +98,11 @@ pub struct GateDenial {
 #[derive(Debug)]
 pub struct Dispatched {
     pub result: ToolResult,
+    /// For a radius, its call sites resolved to paths, lines and enclosing
+    /// symbols, which only this side can do: the index and the files are
+    /// here. Empty for every other result. Carried beside `result` rather
+    /// than inside it, so what a `post_tool` hook receives is unchanged.
+    pub radius_sites: Vec<crate::agent::RadiusSite>,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
     /// Whether this call may have changed the working tree. See
@@ -236,6 +241,7 @@ impl Handle {
             },
             || Dispatched {
                 result: ToolResult::Error("orchestrator stopped".into()),
+                radius_sites: Vec::new(),
                 human: None,
                 // A stopped actor owns the only write path and wrote nothing.
                 may_have_changed_tree: false,
@@ -504,6 +510,7 @@ impl Orchestrator {
                     "`{name}` is not a tool in this run; the tools are {}",
                     self.tools.names().join(", ")
                 )),
+                radius_sites: Vec::new(),
                 human,
                 may_have_changed_tree: false,
                 trust_breach: None,
@@ -557,6 +564,7 @@ impl Orchestrator {
                 }
                 return Dispatched {
                     result: ToolResult::Error(reason),
+                    radius_sites: Vec::new(),
                     human,
                     may_have_changed_tree: changed_since(&self.root, before_gates).await,
                     trust_breach: None,
@@ -616,6 +624,14 @@ impl Orchestrator {
             },
             ToolCall::Custom { name, args } => self.custom(name, args).await,
         };
+        // Read now, before `post_tool` runs: a hook that rewrites a file would
+        // otherwise shift the bytes the line numbers are counted from.
+        let radius_sites = match &result {
+            ToolResult::Radius(report) => {
+                crate::agent::radius_sites(self.session.index(), &self.root, report)
+            }
+            _ => Vec::new(),
+        };
         // Observe only. The result is already decided and is what the model
         // receives, whatever the hook prints or returns.
         let mut post_changed = false;
@@ -631,6 +647,7 @@ impl Orchestrator {
         }
         Dispatched {
             result,
+            radius_sites,
             human,
             may_have_changed_tree: may_change_tree(&call, self.wrote)
                 || gates_changed
