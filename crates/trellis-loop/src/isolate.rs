@@ -1,5 +1,5 @@
 //! Running a writer trellis does not control in a throwaway clone
-//! (ADR 0034): copy-in/diff-out.
+//! (ADR 0032): copy-in/diff-out.
 //!
 //! `bash` and custom tools used to run in the repository itself, with
 //! write access to the whole worktree and to `.git/`, and eleven review
@@ -134,7 +134,7 @@ impl Sandbox {
         // The remote and the reflog both hold the repository's path, which
         // is all a command would need to write there instead. Removing them
         // hides the path from a casual `git remote -v`; it does not stop a
-        // command that finds it another way (ADR 0034).
+        // command that finds it another way (ADR 0032).
         git_in(
             &sb.dir,
             &["remote".into(), "remove".into(), "origin".into()],
@@ -255,7 +255,7 @@ impl Sandbox {
     /// file git tracks, and `a.py -> ~/.ssh/id_rsa` read through would
     /// carry a key into a tracked file by accident. A command that copies
     /// such a file's bytes on purpose can; that is the "reads outside the
-    /// clone" limit (ADR 0034), not something this refusal closes.
+    /// clone" limit (ADR 0032), not something this refusal closes.
     fn read_regular(&self, rel: &str) -> Result<Option<Vec<u8>>, String> {
         inside(&self.dir, rel)?;
         let at = self.dir.join(rel);

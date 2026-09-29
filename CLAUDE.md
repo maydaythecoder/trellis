@@ -147,10 +147,10 @@ of them.
 - **Rollback is complete only for trellis's own writes.** `bash` and custom
   tools run in a throwaway clone and their tracked-file edits come back
   through the orchestrator's write path, so those are trellis's writes too
-  (ADR 0034). With hooks or process agents enabled, or a command that
+  (ADR 0032). With hooks or process agents enabled, or a command that
   reaches the repository by absolute path, it is best-effort, and the ADRs
   list the known ways around it. Do not add another post-hoc git check to
-  close one more of those; the fix is isolation (ADR 0034, "What is not
+  close one more of those; the fix is isolation (ADR 0032, "What is not
   built").
 
 ## Rules that need an ADR to change

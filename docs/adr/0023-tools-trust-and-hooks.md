@@ -168,7 +168,7 @@ is a guard at a size a test can build).
 ### 3. `bash`, off by default
 
 `[tools] bash = true` enables `bash {command}`. It runs with the root of a
-throwaway clone of the repository as its working directory (ADR 0034; its
+throwaway clone of the repository as its working directory (ADR 0032; its
 edits to tracked files are carried back), a timeout (`[tools] bash_timeout_s`, default
 120), and `TRELLIS_RUN_ID` and `TRELLIS_MODEL` added to the environment.
 The shell is `[tools] shell` (an argv prefix, the command appended as the
@@ -984,12 +984,12 @@ are not assumed closed:
 
 **What holds.** For trellis's own edits (`edit`, `write_file`), and for
 the edits a `bash` or custom-tool command makes inside its clone and that
-are carried back (ADR 0034), the rollback's guarantee is exact, as ADR
+are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
 0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
-**The real fix is isolation**, and the first step is built (ADR 0034,
+**The real fix is isolation**, and the first step is built (ADR 0032,
 *amended 2026-09-29*): `bash` and custom tools run in a throwaway `git
 clone` of the repository (copy-in/diff-out), and only their edits to files
 trellis tracks come back, through the orchestrator's write path, where the
@@ -999,7 +999,7 @@ writes where it runs, every item in the list above is closed: its
 in the clone, and what it started writes into a directory that is removed.
 The list still holds, in full, for **hooks and process agents**, which are
 not isolated yet, and for any writer that reaches the repository by
-absolute path, which a clone does not stop (ADR 0034, "Limits": no network
+absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network
 and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
@@ -1017,7 +1017,7 @@ schema = { type = "object", properties = { path = { type = "string" } }, require
 ```
 
 The arguments, as a JSON object, go to the command on stdin. It runs in a
-throwaway clone of the repository, as `bash` does (ADR 0034). Stdout, tail
+throwaway clone of the repository, as `bash` does (ADR 0032). Stdout, tail
 truncated, is the observation. A nonzero exit is an error observation.
 Subject to trust, to the gate list, and to `[control] approve` by name.
 Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not
