@@ -424,7 +424,9 @@ Partial. Property tests exist (`partition_invariants`, `bidirectional`). The
 parser is the obvious fuzz candidate and it is tree-sitter's, not ours — a
 fuzzer there would test tree-sitter. The first-party candidate is
 `UntrustedTrail::from_json`, which by construction parses
-attacker-influenced input, and it now has a target (issue #95).
+attacker-influenced input, and it now has a target (issue #95). The hosted client's
+HTTP response parser, whose bytes a provider or proxy controls, has one
+too (issue #97).
 
 ### `trail_from_json`, at `6424bb4`
 
@@ -450,6 +452,35 @@ What this does not establish: one minute on one seed (3204973389) is a
 smoke run, not a campaign. It covers panics and memory errors ASan sees; it
 says nothing about whether a parsed trail's *content* is handled safely
 downstream, which is ADR 0007's fencing and is tested there.
+
+### `http_response`, at `91c270c`
+
+`fuzz/fuzz_targets/http_response.rs` feeds raw bytes to
+`trellis_model::fuzz_parse_response`, which passes them to
+`transport::parse_response` (head parsing, `Content-Length`, `dechunk`) and
+discards the result. A provider or a proxy on the path controls those bytes.
+The function exists only under `cfg(fuzzing)`, which cargo-fuzz sets; the
+ordinary build keeps `parse_response` crate-private (issue #97, ADR 0027).
+
+Method: `scripts/checks/fuzz.sh http_response 300` at `91c270c`, empty
+starting corpus, no dictionary, libFuzzer's default `-max_len` of 4096 bytes.
+cargo-fuzz 0.13.2, rustc 1.100.0-nightly (1303417c4 2026-09-21),
+AddressSanitizer, Windows x86_64, one process, seed 3725562845.
+
+```
+Done 1637261 runs in 301 second(s)
+#1637261  DONE   cov: 424 ft: 1990 corp: 652/192Kb ... exec/s: 5439
+```
+
+**No crash and no timeout** (LeakSanitizer does not run on Windows). So there
+is no crashing input to commit as a `fuzz_regression_http_response_<n>` test
+in `trellis-model`.
+
+What this does not establish: five minutes on one seed is a smoke run, not a
+campaign. Inputs stop at 4096 bytes, so nothing near `MAX_RESPONSE` (32 MiB)
+was tried; that cap is enforced by the reader in `post`, not by
+`parse_response`, and the incremental `Framer` the reader uses to decide when a
+response is whole is not exercised by this target.
 
 ## Tier 8 — Undefined behaviour
 
