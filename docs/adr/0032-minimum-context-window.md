@@ -23,9 +23,10 @@ the header exists to prevent.
 
 The owner decided on 2026-09-28 that 4,096 tokens is the smallest supported
 window, with the bytes-per-token ratio measured on existing trails. It cannot
-be measured on them: all 46 committed floor trails under `docs/bench/floor-*`
-predate the prompt-bytes field (commit 7e61fbf), so `factual.context` is null
-in every one, and no trail records prompt tokens (#105 and #106 add them).
+be measured on them. Per the issue's split note of 2026-09-29, all 46
+committed floor trails under `docs/bench/floor-*` predate the prompt-bytes
+field (commit 7e61fbf), so `factual.context` is null in every one, and no
+trail records prompt tokens (#105 and #106 add them).
 
 ## Decision
 
