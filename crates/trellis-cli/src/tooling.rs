@@ -620,7 +620,7 @@ mod run_tests {
         // `.trellis/hooks/`, which every later hook spawn would have run
         // under the person's trust. `prepare` must hand the one guard to
         // both the hooks and the orchestrator. `bash` runs in a clone (ADR
-        // 0034) and a `.trellis/` write there is not carried back, so the
+        // 0032) and a `.trellis/` write there is not carried back, so the
         // command names the repository's file by absolute path: the writer
         // the clone does not stop, and this guard does.
         let shell = if cfg!(windows) {
