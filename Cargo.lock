@@ -3067,6 +3067,7 @@ dependencies = [
 name = "trellis-loop"
 version = "0.0.1"
 dependencies = [
+ "insta",
  "schemars",
  "serde",
  "serde_json",
