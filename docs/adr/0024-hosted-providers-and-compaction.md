@@ -573,6 +573,18 @@ without a budget against the same replies and compares outcomes.
   monotone: a note can be longer than a short observation. Tests assert
   the same answer as the scan on a non-monotone transcript, and a bounded
   number of renders.
+- *Amended 2026-09-29 (#110).* **Compaction on request.** `compact` over
+  `trellis rpc` (ADR 0025 §5) elides, at the run's next model request,
+  every observation but the newest: the most this section ever elides, so
+  what a requested compaction produces is a function of the transcript
+  alone. "Deterministic and monotone" therefore reads: the number of
+  elided turns is a function of the transcript, the budget and the turns
+  at which a client asked, and never decreases. With no budget set, a run
+  keeps what a request elided, so its later prompts are no longer
+  byte-identical to an uncompacted run's; a run nobody asks is unchanged.
+  Recorded as above, with the outcome naming the request instead of a
+  budget. The owner declined model-written summaries for this command as
+  well (#153).
 - **Model-written summaries are not built.** A summary is text a model wrote
   about the run, entering the context as though it were a record — judgment
   text in the place observations go. Elision loses detail and invents none.

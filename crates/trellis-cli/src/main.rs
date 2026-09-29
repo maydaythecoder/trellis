@@ -1202,6 +1202,28 @@ impl Driver {
         }
     }
 
+    /// Every compaction a client asked for over RPC (ADR 0025 §5).
+    fn requested_compactions(&self) -> Vec<trellis_loop::RequestedCompaction> {
+        use trellis_loop::Model;
+        match self {
+            Driver::Scripted(m) => m.requested_compactions().to_vec(),
+            Driver::Runtime(m) => m.requested_compactions().to_vec(),
+            Driver::Hosted(m) => m.requested_compactions().to_vec(),
+        }
+    }
+
+    /// Hands RPC's `compact` requests to the driver that will answer them.
+    fn compact_on_request(&mut self, requests: std::sync::Arc<trellis_loop::CompactRequests>) {
+        match self {
+            Driver::Scripted(_) => requests.close(
+                "this run's model is scripted: it is sent no prompt, so there is nothing \
+                 to compact",
+            ),
+            Driver::Runtime(m) => m.compact_on_request(requests),
+            Driver::Hosted(m) => m.compact_on_request(requests),
+        }
+    }
+
     fn describe(&self) -> String {
         match self {
             Driver::Scripted(m) => format!(
@@ -1606,6 +1628,12 @@ fn run_body(
     // nothing can count (ADR 0026 §5).
     if let Driver::Hosted(m) = &mut driver {
         m.require_usage(profile.is_some_and(|p| p.file.budget.is_some()));
+    }
+    // After the last rebuild above, so the driver that runs is the one that
+    // answers. A scripted driver is sent no prompt, so there is nothing for
+    // a `compact` to shrink; it is refused now rather than left waiting.
+    if let Some(c) = &extras.compact {
+        driver.compact_on_request(c.clone());
     }
 
     // Printed after reachability, not before. Describing the tier of a
@@ -2157,6 +2185,7 @@ fn run_body(
         Driver::Hosted(m) => m.tokens_measured(),
     };
     let compactions = driver.compactions();
+    let requested = driver.requested_compactions();
     let facts = |approved| TrailFacts {
         approved,
         base_commit: &snapshot.head,
@@ -2168,6 +2197,7 @@ fn run_body(
         agent: profile.map(|p| p.name.clone()),
         inputs: added.inputs.clone(),
         compactions: &compactions,
+        requested: &requested,
     };
     let Some(outcome) = outcome else {
         // The interrupt path rolls back itself and then commits a trail; a
@@ -2258,6 +2288,9 @@ fn run_body(
         );
     }
     if let Some(line) = hosted::compaction_line(&compactions) {
+        let _ = writeln!(out, "{line}");
+    }
+    if let Some(line) = hosted::requested_compaction_line(&requested) {
         let _ = writeln!(out, "{line}");
     }
 
@@ -3009,6 +3042,9 @@ struct TrailFacts<'a> {
     /// request was compacted. Empty on a run that never compacted, so older
     /// trails keep their shape.
     compactions: &'a [trellis_loop::Compacted],
+    /// Compactions a client asked for over RPC (ADR 0025 §5), filed the
+    /// same way. Empty outside RPC.
+    requested: &'a [trellis_loop::RequestedCompaction],
 }
 
 fn record_trail(
@@ -3030,6 +3066,7 @@ fn record_trail(
         agent,
         inputs,
         compactions,
+        requested,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -3110,10 +3147,18 @@ fn record_trail(
                 })
                 .collect();
             let at = act.turn;
+            // A turn has one compacted request: fitted to the budget, or
+            // folded on request, never both.
             let compacted: Vec<trellis_trail::Action> = compactions
                 .iter()
                 .filter(|c| c.turn == at)
                 .map(hosted::compaction_action)
+                .chain(
+                    requested
+                        .iter()
+                        .filter(|c| c.turn == at)
+                        .map(hosted::requested_compaction_action),
+                )
                 .collect();
             compacted
                 .into_iter()
@@ -3130,6 +3175,12 @@ fn record_trail(
             .iter()
             .filter(|c| c.turn as usize > turns.turns.len())
             .map(hosted::compaction_action),
+    );
+    actions.extend(
+        requested
+            .iter()
+            .filter(|c| c.turn as usize > turns.turns.len())
+            .map(hosted::requested_compaction_action),
     );
 
     let (timestamp, started_at) = stamp.cloned().unwrap_or_else(trellis_trail::now);
@@ -4389,6 +4440,7 @@ mod interrupt_tests {
             agent: None,
             inputs: Vec::new(),
             compactions: &[],
+            requested: &[],
         }
     }
 

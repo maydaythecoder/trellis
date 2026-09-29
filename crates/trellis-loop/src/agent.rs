@@ -644,6 +644,12 @@ pub trait Model {
     fn compactions(&self) -> &[crate::adapter::Compacted] {
         &[]
     }
+
+    /// Every compaction a client asked for (ADR 0025 §5), for the trail.
+    /// Empty for a driver that renders no prompt, and outside RPC.
+    fn requested_compactions(&self) -> &[crate::adapter::RequestedCompaction] {
+        &[]
+    }
 }
 
 /// Drives the loop until it converges, the model stops, or a budget runs out.

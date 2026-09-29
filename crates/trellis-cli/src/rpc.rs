@@ -47,6 +47,11 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("approve", "answer an approval request: {id, yes}"),
     (
+        "compact",
+        "elide every observation but the newest from the run's next model request; \
+         answers with what was folded",
+    ),
+    (
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
@@ -115,6 +120,8 @@ struct Running {
     /// Set by the run's thread as it finishes.
     done: Arc<AtomicBool>,
     id: Option<String>,
+    /// `compact` requests, answered by the driver at its next request.
+    compact: Arc<trellis_loop::CompactRequests>,
 }
 
 struct Server {
@@ -131,6 +138,9 @@ struct Server {
     /// Set, under the `approvals` lock, when input ends: no `approve` can
     /// arrive after it, so a question asked from then on is declined.
     input_closed: Arc<AtomicBool>,
+    /// Threads waiting to answer a `compact`. Joined before `serve`
+    /// returns, so no answer is lost to the process exiting.
+    waiters: Vec<std::thread::JoinHandle<()>>,
 }
 
 /// Reads commands until `quit` or end of input.
@@ -155,6 +165,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         approvals: Arc::default(),
         next_approval: Arc::default(),
         input_closed: Arc::default(),
+        waiters: Vec::new(),
     };
     // A read error is the end of input, not a return: `?` here left `serve`
     // with a run in flight, and the process exited with no rollback and no
@@ -209,6 +220,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
     if let Some(r) = s.running.take() {
         let _ = r.thread.join();
     }
+    s.join_waiters();
     match broke {
         Some(e) => Err(anyhow::Error::new(e).context("reading commands from stdin failed")),
         None => Ok(()),
@@ -217,26 +229,49 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
 
 impl Server {
     fn respond(&self, id: Option<&str>, command: &str, result: Result<Value, String>) {
-        let mut v = json!({"type": "response", "command": command});
-        if let Some(id) = id {
-            v["id"] = json!(id);
+        respond_on(&self.sink, id, command, result);
+    }
+
+    fn join_waiters(&mut self) {
+        for w in self.waiters.drain(..) {
+            let _ = w.join();
         }
-        match result {
-            Ok(data) => {
-                v["success"] = json!(true);
-                if !data.is_null() {
-                    v["data"] = data;
-                }
-            }
-            Err(e) => {
-                v["success"] = json!(false);
-                v["error"] = json!(e);
-            }
+    }
+
+    /// `compact`: refused with no run in flight; otherwise answered from
+    /// another thread once the run's next model request has been compacted,
+    /// or once the run has closed the requests without one.
+    fn compact(&mut self, id: Option<&str>) {
+        if !self.in_flight() {
+            self.respond(id, "compact", Err("no run in flight".into()));
+            return;
         }
-        frame(&self.sink, &v);
+        let Some(r) = &self.running else {
+            return;
+        };
+        let requests = r.compact.clone();
+        let rx = requests.request();
+        let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        self.waiters.push(std::thread::spawn(move || {
+            let result = match rx.blocking_recv() {
+                Ok(c) => Ok(json!({
+                    "turn": c.turn,
+                    "turns_folded": c.turns_folded,
+                    "elided_turns": c.elided_turns,
+                    "elided_bytes": c.elided_bytes,
+                    "bytes_before": c.bytes_before,
+                    "bytes_after": c.bytes_after,
+                })),
+                Err(_) => Err(requests
+                    .closed()
+                    .unwrap_or_else(|| "the run ended before its next model request".into())),
+            };
+            respond_on(&sink, id.as_deref(), "compact", result);
+        }));
     }
 
     fn in_flight(&mut self) -> bool {
+        self.waiters.retain(|w| !w.is_finished());
         match &self.running {
             Some(r) if !r.thread.is_finished() => true,
             Some(_) => {
@@ -340,14 +375,13 @@ impl Server {
                 if let Some(r) = self.running.take() {
                     let _ = r.thread.join();
                 }
+                // After the join: the run closed its requests as it ended,
+                // so every waiter has its answer to write.
+                self.join_waiters();
                 self.respond(id, kind, Ok(Value::Null));
                 return false;
             }
-            "compact" => self.respond(
-                id,
-                kind,
-                Err("not built: compaction is W-C (ADR 0024); each prompt is a fresh run".into()),
-            ),
+            "compact" => self.compact(id),
             other => self.respond(
                 id,
                 if other.is_empty() { "unknown" } else { other },
@@ -480,6 +514,8 @@ impl Server {
             self.input_closed.clone(),
         );
         let run_abort = abort.clone();
+        let compact = Arc::new(trellis_loop::CompactRequests::default());
+        let run_compact = compact.clone();
         let rid = request_id.clone();
         let thread = std::thread::spawn(move || {
             // Approval questions become records on the stream; answers come
@@ -522,6 +558,7 @@ impl Server {
                 request_id: rid.clone(),
                 frames: Some(sink),
                 abort: Some(run_abort),
+                compact: Some(run_compact.clone()),
             };
             let r = crate::cmd_run_with(
                 &root,
@@ -546,6 +583,8 @@ impl Server {
                 &mut human,
             );
             let _ = fwd.join();
+            // A `compact` still waiting will get no model request to act on.
+            run_compact.close("the run ended before its next model request; nothing was compacted");
             // Questions still open when the run ended are dropped, which the
             // gate reads as a no; none can be answered now.
             if let Ok(mut a) = approvals.lock() {
@@ -561,9 +600,30 @@ impl Server {
             abort,
             done,
             id: request_id,
+            compact,
         });
         Ok(())
     }
+}
+
+fn respond_on(sink: &Sink, id: Option<&str>, command: &str, result: Result<Value, String>) {
+    let mut v = json!({"type": "response", "command": command});
+    if let Some(id) = id {
+        v["id"] = json!(id);
+    }
+    match result {
+        Ok(data) => {
+            v["success"] = json!(true);
+            if !data.is_null() {
+                v["data"] = data;
+            }
+        }
+        Err(e) => {
+            v["success"] = json!(false);
+            v["error"] = json!(e);
+        }
+    }
+    frame(sink, &v);
 }
 
 /// `get_state`'s view of how the last run ended.
@@ -934,7 +994,7 @@ mod tests {
         let by = |id: &str| rs.iter().find(|r| r["id"] == id).unwrap().clone();
         assert_eq!(rs[0]["command"], "parse");
         assert_eq!(by("a")["success"], false);
-        assert!(by("b")["error"].as_str().unwrap().contains("not built"));
+        assert_eq!(by("b")["error"], "no run in flight");
         assert_eq!(by("c")["success"], false, "no such approval is open");
         assert_eq!(by("d")["success"], false);
         let cmds = by("e");
@@ -943,6 +1003,24 @@ mod tests {
             COMMANDS.len()
         );
         assert_eq!(by("f")["success"], false, "nothing to abort");
+    }
+
+    #[test]
+    fn compact_during_a_scripted_run_is_refused_rather_than_left_waiting() {
+        // The risk: a scripted driver renders no request, so a `compact`
+        // handed to it would wait for one that never comes, and the client
+        // with it. It is answered while the run is still paused.
+        let (dir, spec) = fixture("compact-scripted", "[control]\nmode = \"approve\"\n");
+        let c = Client::start(&dir);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        c.send(json!({"id": "c", "type": "compact"}));
+        let r = c.wait_for(|r| r["id"] == "c");
+        assert_eq!(r["success"], false);
+        assert!(r["error"].as_str().unwrap().contains("scripted"), "{r}");
+        c.send(json!({"id": "approval-1", "type": "approve", "yes": false}));
+        let rs = c.finish();
+        assert!(!of_type(&rs, "run_end").is_empty());
     }
 
     #[test]

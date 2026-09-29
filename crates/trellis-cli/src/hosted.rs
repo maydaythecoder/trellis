@@ -8,7 +8,7 @@
 
 use crate::config::RepoConfig;
 use anyhow::{Result, anyhow};
-use trellis_loop::{Compacted, HostedModel};
+use trellis_loop::{Compacted, HostedModel, RequestedCompaction};
 use trellis_model::{AdapterTier, HostedClient, ModelSpec, Protocol, Thinking};
 
 /// A hosted spec with its provider resolved.
@@ -361,6 +361,35 @@ pub(crate) fn compaction_action(e: &Compacted) -> trellis_trail::Action {
             e.request_bytes,
             e.budget,
             if e.fits { "" } else { ", still over" }
+        ),
+        wrote: false,
+    }
+}
+
+/// The run's `context:` line for compactions a client asked for, when any
+/// folded a turn.
+pub(crate) fn requested_compaction_line(events: &[RequestedCompaction]) -> Option<String> {
+    let last = events.last()?;
+    Some(format!(
+        "context:  compacted {} time(s) on request over rpc; from turn {} on, the \
+         observations of turns 1-{} were elided ({} B)",
+        events.len(),
+        last.turn,
+        last.elided_turns,
+        last.elided_bytes,
+    ))
+}
+
+/// A compaction a client asked for, as a trail action (ADR 0024 §5, ADR
+/// 0025 §5). No budget is named, because none was in force for it.
+pub(crate) fn requested_compaction_action(e: &RequestedCompaction) -> trellis_trail::Action {
+    trellis_trail::Action {
+        turn: e.turn,
+        tool: "compaction".to_string(),
+        target: format!("turns 1-{}", e.elided_turns),
+        outcome: format!(
+            "requested over rpc: elided {} B of observations; request {} B, was {} B",
+            e.elided_bytes, e.bytes_after, e.bytes_before
         ),
         wrote: false,
     }
