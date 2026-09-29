@@ -13,6 +13,13 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 /// without bound on a long one.
 const TRANSCRIPT_CAP: usize = 2000;
 
+/// How many `@` path candidates are offered at once.
+///
+/// The list is drawn under the input line, and every row it takes comes out
+/// of the transcript. Ten is enough to pick from and small enough that a bare
+/// `@` in a large repository does not push the transcript off the screen.
+const AT_FILE_LIMIT: usize = 10;
+
 #[derive(Debug, Default)]
 pub struct AppState {
     /// What the status bar says about the model, set by whoever is driving
@@ -53,6 +60,13 @@ pub struct AppState {
     pub answered: Option<bool>,
     pub scroll: u16,
     pub should_quit: bool,
+    /// Repository paths `@` completion may offer, supplied by the driver.
+    ///
+    /// Filled from outside rather than read here: `update` does no IO, so
+    /// the list is whatever the driver chose to hand over — for `trellis
+    /// tui`, what git lists as tracked or untracked-and-not-ignored. An
+    /// empty list means no completion, not an empty repository.
+    pub paths: Vec<String>,
 }
 
 /// One thing the agent did.
@@ -207,6 +221,67 @@ impl AppState {
         self
     }
 
+    /// The paths `@` completion may offer.
+    #[must_use]
+    pub fn with_paths(mut self, paths: Vec<String>) -> Self {
+        self.paths = paths;
+        self
+    }
+
+    /// The `@fragment` being typed, without its `@`, if there is one.
+    ///
+    /// Only the word at the very end of the line: Tab replaces it, so a
+    /// fragment the cursor has moved past (the line ends in a space) is
+    /// finished and is not offered again.
+    fn at_fragment(&self) -> Option<&str> {
+        self.input
+            .rsplit(char::is_whitespace)
+            .next()
+            .and_then(|w| w.strip_prefix('@'))
+    }
+
+    /// The paths offered for the `@fragment` at the end of the input.
+    ///
+    /// A path matches when it contains the fragment, ignoring case. Shortest
+    /// first, because the fragment is most often the tail of a name and the
+    /// shortest match is the least nested one; then lexicographic, so the
+    /// order does not depend on the order the driver listed them in.
+    pub fn at_file_candidates(&self) -> Vec<&str> {
+        let Some(fragment) = self.at_fragment() else {
+            return Vec::new();
+        };
+        let needle = fragment.to_lowercase();
+        let mut hits: Vec<&str> = self
+            .paths
+            .iter()
+            .map(String::as_str)
+            .filter(|p| p.to_lowercase().contains(&needle))
+            .collect();
+        hits.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+        hits.truncate(AT_FILE_LIMIT);
+        hits
+    }
+
+    /// Replaces the `@fragment` with the first candidate and a space.
+    ///
+    /// With nothing offered the line is left exactly as typed: a Tab that
+    /// deleted the fragment, or inserted a literal tab, would change a task
+    /// the user can no longer see the reason for.
+    fn complete_at_file(&mut self) {
+        let Some(first) = self.at_file_candidates().first().map(|p| p.to_string()) else {
+            return;
+        };
+        let Some(fragment_len) = self.at_fragment().map(str::len) else {
+            return;
+        };
+        // The fragment is a suffix of `input` and `@` is one byte, so the
+        // cut lands on a char boundary.
+        let keep = self.input.len() - fragment_len - 1;
+        self.input.truncate(keep);
+        self.input.push_str(&first);
+        self.input.push(' ');
+    }
+
     /// A complete line, which the next streamed token may not continue.
     pub fn push_line(&mut self, line: String) {
         self.transcript.push(line);
@@ -259,6 +334,7 @@ impl AppState {
             KeyCode::Esc if self.input.is_empty() => self.should_quit = true,
             KeyCode::Esc => self.input.clear(),
             KeyCode::Enter => self.submit(),
+            KeyCode::Tab => self.complete_at_file(),
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -349,6 +425,7 @@ impl AppState {
                 "  /codebase which modules call which, and how much is unbound".into(),
                 "  /clear    empty the transcript".into(),
                 "  /help     this".into(),
+                "  @<text>   repository paths containing it; tab inserts the first".into(),
                 "  esc       clear the line; again to leave".into(),
                 "  ^c        interrupt a run".into(),
                 "  ↑ ↓       scroll the transcript".into(),
@@ -871,6 +948,103 @@ mod input_tests {
         for c in text.chars() {
             s.update(press(KeyCode::Char(c)));
         }
+    }
+
+    fn with_paths(paths: &[&str]) -> AppState {
+        AppState::default().with_paths(paths.iter().map(|p| (*p).to_string()).collect())
+    }
+
+    #[test]
+    fn at_file_offers_matches_case_insensitively_shortest_first() {
+        let mut s = with_paths(&[
+            "src/deep/nested/Models.py",
+            "README.md",
+            "src/models.py",
+            "app/models.py",
+            "tests/test_views.py",
+        ]);
+        type_in(&mut s, "fix @MODEL");
+        assert_eq!(
+            s.at_file_candidates(),
+            vec![
+                "app/models.py",
+                "src/models.py",
+                "src/deep/nested/Models.py"
+            ],
+            "a match ignores case, and equal lengths fall back to byte order              so the list does not depend on the order the driver gave it"
+        );
+    }
+
+    #[test]
+    fn at_file_offers_nothing_unless_the_last_word_starts_with_at() {
+        let mut s = with_paths(&["src/models.py"]);
+        type_in(&mut s, "fix models");
+        assert!(s.at_file_candidates().is_empty(), "no `@`, no list");
+
+        s.input = "fix @models then".into();
+        assert!(
+            s.at_file_candidates().is_empty(),
+            "an `@` word the line has moved past is finished"
+        );
+
+        s.input = "mail me@models".into();
+        assert!(
+            s.at_file_candidates().is_empty(),
+            "`@` inside a word is not a path request"
+        );
+    }
+
+    #[test]
+    fn at_file_offers_at_most_ten() {
+        // A bare `@` in a large repository matches every path; the list is
+        // drawn under the input line and takes its rows from the transcript.
+        let many: Vec<String> = (0..50).map(|i| format!("f{i:02}.py")).collect();
+        let mut s = AppState::default().with_paths(many);
+        type_in(&mut s, "@");
+        let got = s.at_file_candidates();
+        assert_eq!(got.len(), AT_FILE_LIMIT);
+        assert_eq!(got[0], "f00.py");
+    }
+
+    #[test]
+    fn at_file_tab_inserts_the_first_candidate_and_a_space() {
+        let mut s = with_paths(&["src/models.py", "app/models.py"]);
+        type_in(&mut s, "fix @models");
+        s.update(press(KeyCode::Tab));
+        assert_eq!(
+            s.input, "fix app/models.py ",
+            "the `@` goes with the fragment"
+        );
+        assert!(
+            s.at_file_candidates().is_empty(),
+            "and the inserted path is not offered again"
+        );
+        assert!(s.submitted.is_none(), "Tab completes; it never submits");
+    }
+
+    #[test]
+    fn at_file_tab_with_no_candidate_changes_nothing() {
+        // A Tab that ate the fragment, or typed a literal tab, would alter a
+        // task the user can no longer see the reason for.
+        let mut s = with_paths(&["src/models.py"]);
+        type_in(&mut s, "fix @nosuch");
+        s.update(press(KeyCode::Tab));
+        assert_eq!(s.input, "fix @nosuch");
+
+        let mut s = AppState::default();
+        type_in(&mut s, "fix @models");
+        s.update(press(KeyCode::Tab));
+        assert_eq!(s.input, "fix @models", "no paths supplied, no completion");
+    }
+
+    #[test]
+    fn at_file_enter_submits_the_line_as_typed() {
+        // Completion is offered, never applied on the user's behalf: Enter
+        // sends the `@fragment` exactly as it stands.
+        let mut s = with_paths(&["src/models.py"]);
+        type_in(&mut s, "fix @models");
+        s.update(press(KeyCode::Enter));
+        assert_eq!(s.submitted.as_deref(), Some("fix @models"));
     }
 
     #[test]
