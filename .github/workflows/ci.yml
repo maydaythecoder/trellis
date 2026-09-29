@@ -44,7 +44,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -74,7 +77,10 @@ jobs:
         run: git config --global core.autocrlf false
 
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Build without default features
         run: cargo build -p trellis-cli --no-default-features
@@ -89,7 +95,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Git identity for the test fixtures
         run: |
@@ -126,7 +135,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       # The fixture's `.trellis/config.toml` runs `python -m mypy` and
       # `python -m pytest`. Pinned to the versions the suite last held 11/11
@@ -175,7 +187,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       # Caches ~/.cargo/bin, so the pinned tools are not recompiled per run.
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       # Pinned so a new tool release cannot change what passes: these are the
       # versions the checks were last run with locally. RUSTFLAGS is cleared
@@ -207,7 +222,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Bidirectionality of forward/reverse adjacency
         run: cargo test -p trellis-index --test bidirectional
@@ -237,7 +255,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Fetch the benchmark corpus at its recorded hash
         run: |

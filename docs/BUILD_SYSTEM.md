@@ -45,7 +45,7 @@ failure, printing `GATE / COMMAND / EXIT / OUTPUT`. `--only <id>` runs one.
 | G0 | `ticket-ready.sh <n>` | the issue is open, has `## Done when` and a fenced `## Verify`, is not blocked, needs-human, or split |
 | G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds |
 | G2 | `test.sh` | full workspace suite, and the local-only CLI suite |
-| G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary; needs Ollama at 127.0.0.1:11434 |
+| G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
 | G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
 | G5 | `security.sh` | `cargo deny check`, `cargo audit`, no key-shaped literal added |
@@ -143,9 +143,13 @@ while GitHub-hosted jobs were blocked (run 36507327810).
   (repository variables holding a JSON label list) and falls back to
   `ubuntu-latest` / `windows-latest` when unset. Back to GitHub-hosted:
   `gh variable delete LINUX_RUNNER` and `gh variable delete WINDOWS_RUNNER`.
-- `ci.yml` runs `git config --global`; each runner's `.env` points
-  `GIT_CONFIG_GLOBAL` at a runner-owned file, so the owner's git config is
-  never written. Each launcher strips the provider-key variables.
+- Each runner's `.env` gives jobs their own `CARGO_HOME`, `RUSTUP_HOME` and
+  `GIT_CONFIG_GLOBAL` under the runner's directory. Without them a job runs as
+  the owner with the owner's homes: on 2026-09-28 `Swatinem/rust-cache`'s
+  post-job cleanup of `$CARGO_HOME/bin` deleted rustup and every installed
+  cargo tool on both machines, and `ci.yml`'s `git config --global` steps
+  would have rewritten the owner's git config (#158). rust-cache now runs on
+  GitHub-hosted runners only. Each launcher strips the provider-key variables.
 - The runners are processes, not services: they stop on logout or reboot and
   are restarted with the commands above. One job runs per runner at a time.
 - WSL runs its own Ollama on 127.0.0.1:11434, so the `guards` job's stand-in
