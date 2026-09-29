@@ -420,11 +420,36 @@ have moved is the one missing.
 
 ## Tier 7 — Property and fuzz
 
-Partial. Property tests exist (`partition_invariants`, `bidirectional`); there
-are no fuzz targets. The parser is the obvious fuzz candidate and it is
-tree-sitter's, not ours — a fuzzer there would test tree-sitter. The
-first-party candidate is `UntrustedTrail::from_json`, which by construction
-parses attacker-influenced input; noted, not built.
+Partial. Property tests exist (`partition_invariants`, `bidirectional`). The
+parser is the obvious fuzz candidate and it is tree-sitter's, not ours — a
+fuzzer there would test tree-sitter. The first-party candidate is
+`UntrustedTrail::from_json`, which by construction parses
+attacker-influenced input, and it now has a target (issue #95).
+
+### `trail_from_json`, at `6424bb4`
+
+`fuzz/fuzz_targets/trail_from_json.rs` feeds UTF-8 input to
+`UntrustedTrail::from_json` and, when it parses, to `integrity` and
+`context_lines` on the same bytes — what a resumed session does with a trail.
+`fuzz/` is a cargo-fuzz workspace excluded from the root one, with its own
+lock, which G5 audits.
+
+Method: `scripts/checks/fuzz.sh trail_from_json 60` at `6424bb4`, empty
+starting corpus, no dictionary. cargo-fuzz 0.13.2, rustc 1.100.0-nightly
+(1303417c4 2026-09-21), AddressSanitizer, Windows x86_64, one process.
+
+```
+Done 1608601 runs in 61 second(s)
+#1608311  REDUCE cov: 1577 ft: 4117 corp: 1744/85Kb ... exec/s: 26805
+```
+
+**No crash and no timeout** (LeakSanitizer does not run on Windows). So there is no crashing input to
+commit as a regression test in `trellis-trail`.
+
+What this does not establish: one minute on one seed (3204973389) is a
+smoke run, not a campaign. It covers panics and memory errors ASan sees; it
+says nothing about whether a parsed trail's *content* is handled safely
+downstream, which is ADR 0007's fencing and is tested there.
 
 ## Tier 8 — Undefined behaviour
 
