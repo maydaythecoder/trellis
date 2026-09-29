@@ -126,9 +126,7 @@ of them.
 
 - **Every `git` spawn goes through `trellis_vcs` (`command()`/`git_argv`)**,
   so a `core.fsmonitor` or hooks path planted in `.git/config` never runs
-  under trellis. `tests/hygiene.rs` fails on a bare spawn. `chat` keeps a
-  copy of the overrides, and a test ties that copy to `trellis_vcs`.
-  (ADR 0023)
+  under trellis. `tests/hygiene.rs` fails on a bare spawn. (ADR 0023)
 - **Every child process drops the provider-key variables**
   (`trellis_core::secrets::scrub`). `tests/child_env.rs` fails on an
   unscrubbed spawn. A process agent gets back only the variables its profile
@@ -146,10 +144,14 @@ of them.
 - **A pass stops counting once the tree changes.** So does a run whose HEAD
   moved, or whose trusted code or `.git/` changed during the run.
   (ADR 0004, 0009, 0023)
-- **Rollback is complete only for trellis's own writes.** With `bash`,
-  hooks, custom tools or process agents enabled, it is best-effort, and the
-  ADRs list the known ways around it. Do not add another post-hoc git check
-  to close one more of those; the fix is a sandbox (ADR 0021, row 13.3).
+- **Rollback is complete only for trellis's own writes.** `bash` and custom
+  tools run in a throwaway clone and their tracked-file edits come back
+  through the orchestrator's write path, so those are trellis's writes too
+  (ADR 0032). With hooks or process agents enabled, or a command that
+  reaches the repository by absolute path, it is best-effort, and the ADRs
+  list the known ways around it. Do not add another post-hoc git check to
+  close one more of those; the fix is isolation (ADR 0032, "What is not
+  built").
 
 ## Rules that need an ADR to change
 

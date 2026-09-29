@@ -325,6 +325,12 @@ pub(crate) fn run(
     // behind every letter typed.
     let at_paths = at_file_paths(root);
 
+    // What a hosted spec is resolved against before the classifier sends the
+    // key anywhere (ADR 0024 §3). Loaded with `?`, as `Session::open` loads
+    // it: a default in its place would refuse the user's own provider as the
+    // repository's choice and name the wrong cause.
+    let ask_cfg = crate::config::RepoConfig::load(root)?;
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -421,7 +427,15 @@ pub(crate) fn run(
                     // expensively. The model is asked once what the input
                     // is; a question is answered here, and only a request to
                     // change the code reaches `cmd_run` untouched.
-                    match crate::ask::classify(&spec_for_ask, &task, &inventory).await {
+                    match crate::ask::classify(
+                        &spec_for_ask,
+                        &task,
+                        &inventory,
+                        &ask_cfg,
+                        model_from_user,
+                    )
+                    .await
+                    {
                         Ok(crate::ask::Intent::Answer(text)) => {
                             for line in text.lines() {
                                 let _ = tx

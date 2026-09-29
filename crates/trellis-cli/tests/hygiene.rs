@@ -214,16 +214,6 @@ const GIT_ALLOWED: &[(&str, usize, &str)] = &[
         2,
         "`GuardError` labels naming the command (`what: \"git ls-files\"`)",
     ),
-    (
-        "chat/src/lib.rs",
-        1,
-        "`git_command`: chat depends on nothing in the workspace, so it carries a copy",
-    ),
-    (
-        "chat/src/commands/mod.rs",
-        2,
-        "`/git` is a slash command's name there, not a spawn",
-    ),
 ];
 
 /// Whether `line` names `git` as a program in a string literal: `"git"`
@@ -461,48 +451,4 @@ fn the_git_scan_would_catch_a_bare_spawn() {
     let src = "fn a() {}\n#[cfg(test)]\nmod t;\nfn c() { x(\"git\"); }\n";
     let kept: Vec<&str> = non_test_lines(src).into_iter().map(|(_, l)| l).collect();
     assert_eq!(kept, ["fn a() {}", "fn c() { x(\"git\"); }"]);
-}
-
-/// The overrides a source file defines, as text: the array's elements and
-/// each `NO_HOOKS` value with the `#[cfg(...)]` above it. `array` is the
-/// constant's name (`OVERRIDES` in `trellis-vcs`, `GIT_OVERRIDES` in chat).
-fn overrides_in(text: &str, array: &str) -> (String, Vec<(String, String)>) {
-    let decl = format!("pub const {array}: [&str; 4] = [");
-    let elements = text
-        .lines()
-        .find_map(|l| l.trim().strip_prefix(decl.as_str()))
-        .and_then(|rest| rest.strip_suffix("];"))
-        .unwrap_or_else(|| panic!("`{decl}...];` on one line"))
-        .to_string();
-    let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let no_hooks = lines
-        .windows(2)
-        .filter_map(|w| {
-            let value = w[1].strip_prefix("const NO_HOOKS: &str = ")?;
-            Some((w[0].to_string(), value.to_string()))
-        })
-        .collect();
-    (elements, no_hooks)
-}
-
-#[test]
-fn chat_s_git_overrides_are_trellis_vcs_s() {
-    // The risk (review round 11): chat depends on nothing in the workspace,
-    // so it carries a copy of `trellis_vcs::OVERRIDES`, and nothing tied
-    // the copy to the original. One edited without the other leaves chat's
-    // `git` running a planted `core.fsmonitor` or hook. Compared as source
-    // text, since chat cannot name the constant.
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
-    let vcs = std::fs::read_to_string(crates.join("trellis-vcs/src/lib.rs")).unwrap();
-    let chat = std::fs::read_to_string(crates.join("chat/src/lib.rs")).unwrap();
-    let want = overrides_in(&vcs, "OVERRIDES");
-    assert_eq!(want.1.len(), 2, "one value per platform: {want:?}");
-    assert_eq!(overrides_in(&chat, "GIT_OVERRIDES"), want);
-    // And the comparison can fail: a copy with one value changed differs.
-    let drifted = chat.replace("core.hooksPath=NUL", "core.hooksPath=.git/hooks");
-    assert_ne!(overrides_in(&drifted, "GIT_OVERRIDES"), want);
-    let drifted = chat.replace("\"core.fsmonitor=\"", "\"core.fsmonitor=false\"");
-    assert_ne!(overrides_in(&drifted, "GIT_OVERRIDES"), want);
 }

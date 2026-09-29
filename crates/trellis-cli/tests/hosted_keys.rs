@@ -384,3 +384,135 @@ fn a_repository_that_names_the_key_variable_is_refused_at_load() {
     assert!(!all.contains("snapshot at"), "{all}");
     assert!(!all.contains(canary()), "{all}");
 }
+
+// ---------------------------------------------------------------------------
+// The intent classifier on a hosted spec (#41, ADR 0024 §2 as amended)
+// ---------------------------------------------------------------------------
+
+fn openai_text(text: &str) -> String {
+    serde_json::json!({"choices":[{"message":{"role":"assistant","content":text}}],
+        "usage":{"completion_tokens":3}})
+    .to_string()
+}
+
+/// `trellis session` over a pipe, with the user's config beside `d` and the
+/// user's key in the environment, typing `/model provider:stub#m` and then
+/// `input`. `/model` typed at the prompt is the user's choice (ADR 0024 §3).
+fn session_ask(d: &Path, input: &str) -> (String, String) {
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(d)
+        .arg("session")
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user_dir(d))
+        .env(KEY_ENV, canary())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("/model provider:stub#m\n{input}\n/exit\n").as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn head(d: &Path) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The JSON body of a raw request the stub recorded.
+fn body_of(raw: &str) -> serde_json::Value {
+    let (_, body) = raw.split_once("\r\n\r\n").expect("a request has a body");
+    serde_json::from_str(body).expect("the body is JSON")
+}
+
+#[test]
+fn ask_hosted_classify_the_stub_receives_the_request() {
+    // The risk: on a hosted spec every input went straight to a run, so
+    // the classifier was never asked. Now the first request is the
+    // classification, keyed from the user's environment as a run is, with
+    // no tool list and no `tool_choice` (the loop's `"required"` would have
+    // nothing to choose from, and a stub would never object). The marker makes it a task, and
+    // the run that follows still converges.
+    let (base, server) = stub(vec![
+        openai_text("<<TRELLIS_TASK>>"),
+        openai(
+            "c1",
+            "run_checks",
+            r#"{"paths":["app/util.py"],"kinds":["typecheck"]}"#,
+        ),
+        openai("c2", "done", r#"{"summary":"checked"}"#),
+    ]);
+    let d = repo("ask-task", "openai", &base);
+    let (stdout, stderr) = session_ask(&d, "make helper return 2");
+    let requests = server.join().unwrap();
+
+    let first = requests.first().expect("the classifier sent a request");
+    assert!(
+        first.contains(&format!("Authorization: Bearer {}", canary())),
+        "the classification request carries the key from the user's environment: \
+         {first}\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let b = body_of(first);
+    let prompt = b.to_string();
+    assert!(prompt.contains("make helper return 2"), "{prompt}");
+    assert!(
+        prompt.contains("<<TRELLIS_TASK>>"),
+        "the classification prompt: {prompt}"
+    );
+    for key in ["tools", "tool_choice", "parallel_tool_calls"] {
+        assert!(b.get(key).is_none(), "{key} was sent: {prompt}");
+    }
+    // The run's own requests do carry tools: this is what tells the two apart.
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(body_of(&requests[1]).get("tools").is_some());
+    assert!(
+        stdout.contains("CONVERGED"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    for (name, text) in [("stdout", &stdout), ("stderr", &stderr)] {
+        assert!(!text.contains(canary()), "{name} contains the key");
+    }
+}
+
+#[test]
+fn ask_hosted_classify_a_question_takes_no_snapshot() {
+    // The failure `classify` exists to prevent, left live on hosted specs:
+    // a question snapshotted the worktree, ran the loop, rolled back and
+    // wrote a trail. Answered now with one request and nothing else.
+    let answer = "helper returns 1.";
+    let (base, server) = stub(vec![openai_text(answer)]);
+    let d = repo("ask-question", "openai", &base);
+    let before = head(&d);
+    let (stdout, stderr) = session_ask(&d, "what does helper return?");
+    let requests = server.join().unwrap();
+
+    assert_eq!(requests.len(), 1, "one classification request and no run");
+    assert!(
+        stdout.contains(answer),
+        "the answer is shown: {stdout}\nstderr: {stderr}"
+    );
+    assert!(!stdout.contains("snapshot at"), "no snapshot: {stdout}");
+    assert!(
+        !d.join(".trellis/runs").exists(),
+        "no trail for an input that was not a run"
+    );
+    assert_eq!(head(&d), before, "HEAD did not move");
+    for (name, text) in [("stdout", &stdout), ("stderr", &stderr)] {
+        assert!(!text.contains(canary()), "{name} contains the key");
+    }
+}

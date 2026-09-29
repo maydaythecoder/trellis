@@ -619,19 +619,10 @@ mod run_tests {
         // snapshot, and a `bash` command then rewrote a file under
         // `.trellis/hooks/`, which every later hook spawn would have run
         // under the person's trust. `prepare` must hand the one guard to
-        // both the hooks and the orchestrator.
-        let rewrite = if cfg!(windows) {
-            "echo exit 0> .trellis\\\\hooks\\\\gate.txt"
-        } else {
-            "echo exit 0 > .trellis/hooks/gate.txt"
-        };
-        let script = format!(
-            r#"{{"steps":[
-                {{"tool":"bash","command":"{rewrite}"}},
-                {{"tool":"edit","path":"a.py","old":"return 1","new":"return 2"}},
-                {{"tool":"done","summary":"changed it"}}
-            ]}}"#
-        );
+        // both the hooks and the orchestrator. `bash` runs in a clone (ADR
+        // 0032) and a `.trellis/` write there is not carried back, so the
+        // command names the repository's file by absolute path: the writer
+        // the clone does not stop, and this guard does.
         let shell = if cfg!(windows) {
             "['cmd', '/C']"
         } else {
@@ -644,10 +635,23 @@ mod run_tests {
                  [hooks]\npre_tool = {}\n",
                 sh("exit 0")
             ),
-            &script,
+            "",
         );
+        let hook = dir.join(".trellis").join("hooks").join("gate.txt");
+        let rewrite = if cfg!(windows) {
+            format!("echo exit 0> {}", hook.display())
+        } else {
+            format!("echo exit 0 > '{}'", hook.display())
+        };
+        let script = serde_json::json!({"steps": [
+            {"tool": "bash", "command": rewrite},
+            {"tool": "edit", "path": "a.py", "old": "return 1", "new": "return 2"},
+            {"tool": "done", "summary": "changed it"}
+        ]});
+        let script_path = spec.strip_prefix("scripted:").unwrap();
+        std::fs::write(script_path, script.to_string()).unwrap();
         std::fs::create_dir_all(dir.join(".trellis/hooks")).unwrap();
-        std::fs::write(dir.join(".trellis/hooks/gate.txt"), "exit 2\n").unwrap();
+        std::fs::write(&hook, "exit 2\n").unwrap();
         crate::testutil::git_commit_all(&dir, "a hook file");
         trust(&dir);
         let said = run(&dir, &spec);
