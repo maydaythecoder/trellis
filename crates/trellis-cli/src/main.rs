@@ -15,6 +15,7 @@
 mod ask;
 mod config;
 mod hosted;
+mod install;
 mod liveness;
 mod orchestrate;
 mod process_agent;
@@ -303,6 +304,30 @@ enum Command {
         revoke: bool,
     },
 
+    /// Copy skills and prompt templates from a package source into the user
+    /// config directory's packages/ (ADR 0039).
+    ///
+    /// `<git-url|path>@<ref>`: the ref is required and recorded with the
+    /// commit it resolved to, in packages/packages.toml. Only
+    /// skills/<name>/ text files and prompts/<name>.md are copied; hooks,
+    /// tools and anything else in the source are skipped and named. Runs do
+    /// not read packages/ yet.
+    Install {
+        /// `<git-url|path>@<ref>`.
+        #[arg(
+            value_name = "SOURCE@REF",
+            required_unless_present_any = ["list", "remove"],
+            conflicts_with_all = ["list", "remove"]
+        )]
+        source: Option<String>,
+        /// Print each installed package's source, ref and commit.
+        #[arg(long, conflicts_with = "remove")]
+        list: bool,
+        /// Delete one installed package and its manifest entry.
+        #[arg(long, value_name = "NAME")]
+        remove: Option<String>,
+    },
+
     /// Agent profiles in .trellis/agents/: list, show, pause, resume
     /// (ADR 0026).
     Agents {
@@ -437,8 +462,11 @@ fn main() -> Result<()> {
     // `vault init` joins them for the same reason (ADR 0022 §3, integrated):
     // it creates a vault, possibly before there is a repository to hold it.
     // Every other `vault` action still reads one.
-    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }))
-        && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
+    // `install` joins them too: packages are user state (ADR 0039).
+    let needs_repo = !matches!(
+        cli.command,
+        Some(Command::Init | Command::Model { .. } | Command::Install { .. })
+    ) && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -625,6 +653,11 @@ fn main() -> Result<()> {
         }
         Command::Vault(args) => vault_cmd::run(&root, args),
         Command::Trust { show, revoke } => trust_cmd::run(&root, show, revoke),
+        Command::Install {
+            source,
+            list,
+            remove,
+        } => install::run(source, list, remove),
         Command::Rpc => rpc::serve(
             &root,
             std::io::stdin().lock(),
