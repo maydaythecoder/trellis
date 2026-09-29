@@ -258,7 +258,7 @@ fn at_file_paths(root: &Path) -> Result<Vec<String>> {
         .output()?;
     if !out.status.success() {
         anyhow::bail!(
-            "git ls-files exited {}: {}",
+            "listing repository paths exited {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         );
