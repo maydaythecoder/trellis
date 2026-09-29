@@ -199,8 +199,15 @@ enum Command {
         model: Option<String>,
     },
 
-    /// Continue from the last trail entry.
-    Resume,
+    /// Continue from the last trail entry, or from a named run.
+    Resume {
+        /// A run id as `trellis log` prints it. Omit it for the newest run.
+        ///
+        /// Owner-directed growth beyond brief 4.12 (ADR 0038). The named
+        /// trail is read back as data exactly as the newest one is.
+        #[arg(value_name = "RUN_ID")]
+        run_id: Option<String>,
+    },
 
     /// Run the grounded checks standalone.
     Check {
@@ -588,7 +595,7 @@ fn main() -> Result<()> {
             let spec = model.or_else(|| config::RepoConfig::load(&root).ok()?.model());
             tui_run::run(&root, task, spec, from_user)
         }
-        Command::Resume => cmd_resume(&root),
+        Command::Resume { run_id } => cmd_resume(&root, run_id.as_deref()),
         Command::Log { limit, .. } if output::json() => {
             output::log_json(&root, limit, &mut std::io::stdout())
         }
@@ -2391,17 +2398,33 @@ fn run_body(
     }
 }
 
-/// Continues from the last trail entry.
+/// Continues from the last trail entry, or from the run `run_id` names.
 ///
 /// This is the wedge the product exists for: reopen a repository, and the
 /// previous session's decisions are already there. The trail is read back as
 /// `UntrustedTrail` — a repository may take contributions, so reading a trail
 /// is reading attacker-influenceable text into an agent's context (S10).
-fn cmd_resume(root: &Path) -> Result<()> {
-    let Some((path, trail)) = trellis_trail::latest(root)? else {
-        println!("No trail under .trellis/runs/. Nothing to resume from.");
-        println!("`trellis run` writes one, and the next session starts from it.");
-        return Ok(());
+fn cmd_resume(root: &Path, run_id: Option<&str>) -> Result<()> {
+    let (path, trail, newest) = match run_id {
+        None => {
+            let Some((path, trail)) = trellis_trail::latest(root)? else {
+                println!("No trail under .trellis/runs/. Nothing to resume from.");
+                println!("`trellis run` writes one, and the next session starts from it.");
+                return Ok(());
+            };
+            (path, trail, true)
+        }
+        Some(id) => {
+            let entries = trellis_trail::query::all(root);
+            // Exact match only. A prefix or substring match would let a short
+            // or mistyped id quietly pick some other run, and resuming from
+            // the wrong run is worse than refusing.
+            let Some(pos) = entries.iter().position(|e| e.run_id() == id) else {
+                anyhow::bail!("{}", unknown_run_id(id, &entries));
+            };
+            let e = entries.into_iter().nth(pos).expect("position is in range");
+            (e.path, e.trail, pos == 0)
+        }
     };
 
     println!("resuming from {}", path.display());
@@ -2417,17 +2440,61 @@ fn cmd_resume(root: &Path) -> Result<()> {
         "section is the previous run's opinion and is fenced accordingly (S10, S11)."
     ));
     println!();
-    println!(concat!(
-        "To carry this into a run rather than only read it, pass --resume:
+    if newest {
+        println!(concat!(
+            "To carry this into a run rather than only read it, pass --resume:
 ",
-        "  trellis run --resume --model <spec> \"<task>\"
+            "  trellis run --resume --model <spec> \"<task>\"
 ",
-        "The lines above are then fenced into the model's prompt as data. They ",
-        "cannot
+            "The lines above are then fenced into the model's prompt as data. They ",
+            "cannot
 make the run converge — only a check executed in that session ",
-        "can do that."
-    ));
+            "can do that."
+        ));
+    } else {
+        // `run --resume` takes the newest trail and nothing else (ADR 0038),
+        // so the hint above would name a different run than the one shown.
+        println!(concat!(
+            "This is not the newest run. `trellis run --resume` carries the newest ",
+            "trail,
+not this one; the lines above are for reading."
+        ));
+    }
     Ok(())
+}
+
+/// The error for a run id no trail carries: the ten newest ids, so the user
+/// can pick one without a second command.
+///
+/// Ids come from trails, which are untrusted text (S10), so each goes through
+/// `plain` before it reaches a terminal — the same reason `log` does it.
+fn unknown_run_id(id: &str, entries: &[trellis_trail::query::Entry]) -> String {
+    if entries.is_empty() {
+        return format!(
+            "no run `{}`: there are no trails under .trellis/runs/. `trellis run` writes one.",
+            plain(id)
+        );
+    }
+    let mut msg = format!(
+        "no run `{}`. The {} most recent run id(s), newest first:",
+        plain(id),
+        entries.len().min(10)
+    );
+    for e in entries.iter().take(10) {
+        msg.push_str(
+            "
+  ",
+        );
+        msg.push_str(&plain(&e.run_id()));
+    }
+    if entries.len() > 10 {
+        msg.push_str(&format!(
+            "
+  ... {} older, `trellis log --limit` lists them",
+            entries.len() - 10
+        ));
+    }
+    msg
 }
 
 /// Ctrl-C during a run.

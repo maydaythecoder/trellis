@@ -34,6 +34,7 @@ cargo run -p trellis-cli -- run "<task>" --model anthropic:https://api.anthropic
 cargo run -p trellis-cli -- run "<task>" --json            # JSONL on stdout (ADR 0025)
 cargo run -p trellis-cli -- rpc                            # JSONL commands on stdin (ADR 0025)
 cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
+cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail, as data (ADR 0038)
 cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
 
 # ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
