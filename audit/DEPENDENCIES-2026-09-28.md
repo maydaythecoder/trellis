@@ -195,6 +195,230 @@ answered (yes, at `d79b55c`); the unused-dependency-feature question is still no
 answered by any tool, only by hand checks such as the predecessor's of
 `smallvec`, `rustyline` and `tui-logger`.
 
+## Threads versus tokio
+
+The predecessor (`audit/DEPENDENCIES-2026-09-22.md`, "Is async needed at
+all?") did not build the threads version and listed that as a gap. This
+section builds both event loops as standalone prototypes and measures them.
+It measures the cost of the TUI loop's shape only. It is not a proposal to
+remove tokio (see the last paragraph).
+
+**Measured on:** Windows 11 Home 10.0.26200, target `x86_64-pc-windows-msvc`,
+rustc 1.93.0 / cargo 1.93.0 (picked up from the repository's
+`rust-toolchain.toml`), 16 logical CPUs, default `-j`. Date 2026-09-28, tree at
+`aeef233`. No `.cargo/config.toml` exists in the repository or the user
+profile, so no rustflags apply.
+
+**The prototypes.** Two packages, `.bench/t38/threads/` and
+`.bench/t38/tokio/`, under the git-ignored `.bench/`. They are not committed
+and are not workspace members: each manifest has its own empty `[workspace]`
+table. Both mirror the workspace's `[profile.release]` (`lto = "fat"`,
+`codegen-units = 1`, `strip = "symbols"`), so sizes are in the same units as the
+Numbers section. Each draws a `ratatui` frame and has one background worker
+that sends a counter to the UI every 250 ms over a channel.
+
+- **threads**: `crossterm`'s blocking `event::poll`/`event::read` (through
+  `ratatui::crossterm`), a `std::thread` worker, `std::sync::mpsc`.
+  Dependencies: `ratatui = "0.30"` only.
+- **tokio**: `crossterm`'s `EventStream` on a current-thread runtime
+  (`Builder::new_current_thread().enable_all()`), a `spawn_blocking` worker
+  using `blocking_send` (the shape trellis's TUI uses for a run), `tokio::sync::mpsc`,
+  `tokio::select!`. Dependencies: `ratatui = "0.30"`,
+  `crossterm = { version = "0.29", features = ["event-stream"] }`,
+  `futures-util = { version = "0.3", default-features = false }` (as
+  `tui-demo` has it), and `tokio = "1.53.1"` with the workspace's feature list
+  verbatim: `rt, macros, sync, time, process, net, io-util, signal`. The loop
+  itself needs only `rt`, `macros`, `sync` and `time`. The ticket asks for the
+  workspace's features, and those inflate the tokio side's figures. `net`
+  accounts for `mio` and `socket2`.
+
+**Versions pinned to the workspace.** The root `Cargo.lock` was copied into
+each prototype and pruned by one `cargo tree --offline`. Every build then ran
+with `--locked --offline`. The pruned locks resolve `ratatui` 0.30.2,
+`crossterm` 0.29.0, `futures-util` 0.3.34 and, on the tokio side,
+`tokio` 1.53.1, which are the root lock's versions. `cargo tree -e features -i crossterm`
+confirms that `event-stream` is enabled only on the tokio side. The threads
+side gets `crossterm`'s defaults through `ratatui-crossterm` and nothing more.
+
+| File | SHA-256 |
+|---|---|
+| `.bench/t38/threads/src/main.rs` (44 lines) | `fcffa91cfc0cdbd79a33450405f7d7b2913b31dcf3c10e1d4e2025891685e484` |
+| `.bench/t38/tokio/src/main.rs` (54 lines) | `7b42615756eb4afdf5cd324b81776b473efb8edf6672658c4a8077e2166841ef` |
+| `.bench/t38/threads/Cargo.toml` | `c3c6d52531062b4a67975ed0f23a014230a2e183c5b5379604b8fd7328e8379c` |
+| `.bench/t38/tokio/Cargo.toml` | `796fab5b3235d51f1caff18075c7fae0ce4ae25aee9f11e311bceb0ceb7f5613` |
+
+Both sources are under 80 lines and are given inline so the figures can be
+reproduced without the untracked directory:
+
+```rust
+// .bench/t38/threads/src/main.rs
+// Threads: crossterm's blocking poll/read, one std::thread worker, std mpsc.
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::widgets::Paragraph;
+
+fn main() -> std::io::Result<()> {
+    let (tx, rx) = mpsc::channel::<u64>();
+    // The worker does blocking work and reports each result to the UI.
+    thread::spawn(move || {
+        for i in 0u64.. {
+            thread::sleep(Duration::from_millis(250));
+            if tx.send(i).is_err() {
+                break;
+            }
+        }
+    });
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal, &rx);
+    ratatui::restore();
+    result
+}
+
+fn run(terminal: &mut ratatui::DefaultTerminal, rx: &mpsc::Receiver<u64>) -> std::io::Result<()> {
+    let mut last = None;
+    loop {
+        while let Ok(v) = rx.try_recv() {
+            last = Some(v);
+        }
+        terminal.draw(|f| {
+            f.render_widget(Paragraph::new(format!("worker: {last:?}  (q quits)")), f.area())
+        })?;
+        // The poll timeout is what bounds how late a worker result is drawn.
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(k) = event::read()?
+            && k.kind == KeyEventKind::Press
+            && k.code == KeyCode::Char('q')
+        {
+            return Ok(());
+        }
+    }
+}
+```
+
+```rust
+// .bench/t38/tokio/src/main.rs
+// Tokio: crossterm's EventStream on a current-thread runtime, one
+// spawn_blocking worker (the shape trellis uses for a run), tokio mpsc.
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
+use ratatui::widgets::Paragraph;
+use tokio::sync::mpsc;
+
+fn main() -> std::io::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel::<u64>(16);
+        // The worker does blocking work and reports each result to the UI.
+        tokio::task::spawn_blocking(move || {
+            for i in 0u64.. {
+                std::thread::sleep(Duration::from_millis(250));
+                if tx.blocking_send(i).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut terminal = ratatui::init();
+        let result = run(&mut terminal, &mut rx).await;
+        ratatui::restore();
+        result
+    })
+}
+
+async fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    rx: &mut mpsc::Receiver<u64>,
+) -> std::io::Result<()> {
+    let mut events = EventStream::new();
+    let mut last = None;
+    loop {
+        terminal.draw(|f| {
+            f.render_widget(Paragraph::new(format!("worker: {last:?}  (q quits)")), f.area())
+        })?;
+        tokio::select! {
+            Some(v) = rx.recv() => last = Some(v),
+            ev = events.next() => match ev {
+                Some(Ok(Event::Key(k)))
+                    if k.kind == KeyEventKind::Press && k.code == KeyCode::Char('q') =>
+                {
+                    return Ok(())
+                }
+                Some(Err(e)) => return Err(e),
+                None => return Ok(()),
+                _ => {}
+            },
+        }
+    }
+}
+```
+
+**Method.** Each prototype had its own target directory
+(`.bench/t38/target-threads`, `.bench/t38/target-tokio`). Builds ran one at a
+time in the foreground with nothing else building. From the prototype's
+directory, three times each:
+
+```
+cargo clean --target-dir ../target-<p>
+time cargo build --release --locked --offline --target-dir ../target-<p>
+stat -c %s ../target-<p>/release/t38-<p>.exe
+cargo tree -p t38-<p> --edges normal --prefix none | sed 's/ (\*)//' | awk '{print $1}' | sort -u | wc -l
+```
+
+The last line is the predecessor's "release graph" command with the package
+name substituted. As for `trellis-cli`, it counts the root package itself.
+Build time is Git Bash `time`'s wall clock for the build alone. The clean is
+not timed. `--offline` means no network. Every source was already in the local
+registry cache, so the figures exclude download and extraction.
+
+| | threads | tokio | tokio − threads |
+|---|---|---|---|
+| Clean release build, wall clock (3 runs) | 9.890, 9.701, 9.619 s | 11.584, 11.729, 11.638 s | — |
+| Clean release build, median | **9.70 s** | **11.64 s** | +1.94 s |
+| Release binary (`t38-<p>.exe`) | **400,896 B** | **593,408 B** | +192,512 B |
+| Unique crates, release graph (names) | **62** | **72** | +10 |
+| Duplicate versions, release graph | 2 pairs (`hashbrown` 0.16/0.17, `syn` 2/3) | 2 pairs, the same | 0 |
+
+- Binary sizes were identical across the three builds of each.
+- An earlier set of three builds per prototype, which cleaned with `rm -rf` of
+  the target directory rather than `cargo clean`, gave 9.65/9.57/9.61 s and
+  13.19/11.69/11.66 s. The table uses the `cargo clean` set because the
+  ticket names that step. The first tokio build of the earlier set was the one
+  outlier.
+- **The 11 crates only the tokio side has** (`comm -13` of the sorted name
+  lists, so 10 net once each side's own root package is excluded): `tokio`,
+  `tokio-macros`, `mio`, `socket2`, `bytes`, `pin-project-lite`,
+  `futures-core`, `futures-task`, `futures-util`, `windows-sys` and the root
+  `t38-tokio`. The threads side has no crate the tokio side lacks, apart from its
+  root.
+
+**What these figures do and do not say about the workspace.** They measure
+one event-loop shape in isolation, with the workspace's tokio feature set. On
+this machine the async shape costs about 2 s of clean release build, 188 KiB of
+binary and 10 crates over the threads shape. They do not say that trellis
+would save that by switching. Tokio is in the workspace for more than the TUI
+loop. `trellis-checks` runs its processes on it, `trellis-model`'s HTTP
+client is built on `tokio::net`, and the `hosted` feature's `tokio-rustls` runs
+TLS over that same `TcpStream`, so tokio stays regardless of how the TUI reads
+its terminal. Tokio's features are unified across the graph, so dropping one
+consumer does not change what the binary gets while another consumer enables
+the same features. What the TUI loop alone brings in is the part no other
+crate uses. `cargo tree -p trellis-cli -e normal -i` at `aeef233` shows
+`futures-util` reached only through `tui-demo`, `futures-core` only through
+`crossterm` (its `event-stream` feature) and `futures-util`, and
+`futures-task` only through `futures-util`. Three of the tokio side's ten
+crates would therefore leave the release graph with a threads loop. The other
+seven stay, because the rest of the workspace pulls them in through tokio.
+The prototypes do not measure the byte or build-time share of those three
+crates, and they say nothing about latency, CPU use while idle, or the size of the
+rewrite. The predecessor put the rewrite at both interfaces' event loops. So
+this closes the predecessor's "threads version not built" gap with figures,
+and the reason not to switch is still the same one: nearly all of the tokio
+side's cost is already paid by other crates.
+
 ## Unverified
 
 - **Per-crate size attribution was not produced.** `CARGO_PROFILE_RELEASE_STRIP=none
