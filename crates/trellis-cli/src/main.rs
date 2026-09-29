@@ -203,7 +203,7 @@ enum Command {
     Resume {
         /// A run id as `trellis log` prints it. Omit it for the newest run.
         ///
-        /// Owner-directed growth beyond brief 4.12 (ADR 0033). The named
+        /// Owner-directed growth beyond brief 4.12 (ADR 0038). The named
         /// trail is read back as data exactly as the newest one is.
         #[arg(value_name = "RUN_ID")]
         run_id: Option<String>,
@@ -2452,7 +2452,7 @@ make the run converge — only a check executed in that session ",
             "can do that."
         ));
     } else {
-        // `run --resume` takes the newest trail and nothing else (ADR 0033),
+        // `run --resume` takes the newest trail and nothing else (ADR 0038),
         // so the hint above would name a different run than the one shown.
         println!(concat!(
             "This is not the newest run. `trellis run --resume` carries the newest ",
