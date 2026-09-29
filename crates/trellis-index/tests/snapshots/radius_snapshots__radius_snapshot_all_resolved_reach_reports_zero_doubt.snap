@@ -1,0 +1,22 @@
+---
+source: crates/trellis-index/tests/radius_snapshots.rs
+expression: out
+---
+root: core.greet
+partitionable: true
+certain (3):
+  app.py:4  greet("a")
+  app.py:7  hello()
+  app.py:8  greet("b")
+ambiguous (0):
+symbols reached (2):
+  app.hello
+  app.main
+coverage:
+  reached_resolved: 3
+  reached_ambiguous: 0
+  unbound_in_touched_files: 0
+  touched_files: 2
+  by_reason:
+  by_file:
+  summary: 3 call sites reach this symbol (3 resolved, 0 ambiguous). Separately, 0 call sites across the 2 files this radius touches could not be bound to any definition; any of them may also reach it.
