@@ -44,6 +44,10 @@ rustyline.workspace = true
 jiff = "0.2.37"
 tui-demo = { path = "../tui-demo", default-features = false }
 
+# Windows Job Objects for what this crate spawns (ADR 0035).
+[target.'cfg(windows)'.dependencies]
+process-wrap.workspace = true
+
 # HTTPS to hosted providers (ADR 0024). On by default: the release binary
 # is built with default features, so this is what ships. `--no-default-features`
 # builds the local-only binary, which refuses an https endpoint with a message
