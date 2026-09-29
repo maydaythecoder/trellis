@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# no-auth-urls.sh: no tracked source line holds a `scheme://user:pass@host`
-# literal.
+# no-auth-urls.sh: no tracked source line holds a URL literal with
+# `user:pass@` before its host.
 #
 #   scripts/checks/no-auth-urls.sh [--self-test | --pattern]
 #
@@ -63,4 +63,4 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits" | cut -d: -f1-2 | sed 's/^/  /'
   exit 1
 fi
-echo "OK: no scheme://user:pass@host literal in tracked source"
+echo "OK: no URL literal with user:pass@ before its host in tracked source"
