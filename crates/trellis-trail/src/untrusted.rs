@@ -955,10 +955,7 @@ mod tests {
         assert_eq!(read.factual.label.as_deref(), Some(label));
         assert_eq!(read.integrity(&json), Integrity::Intact);
 
-        let lines = read.context_lines().join(
-            "
-",
-        );
+        let lines = read.context_lines().join("\n");
         assert!(
             !lines.contains(label),
             "the label reached the prior context: {lines}"
