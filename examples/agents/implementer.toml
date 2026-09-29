@@ -1,0 +1,15 @@
+# A starter profile (ADR 0026 §4). Copy this directory's contents into
+# .trellis/agents/ to use it: the `instructions` path below is resolved
+# under .trellis/, so it names .trellis/agents/instructions/implementer.md.
+#
+# No `tools` list: the run uses whatever tools the repository enabled and
+# trusted. No `reports_to`: this profile does not hand its work to another
+# agent for judgment, because no agent issues a verdict on another agent's
+# output (ADR 0005). trellis's own checks decide whether a change passes.
+role = "implementer"
+instructions = "agents/instructions/implementer.md"
+
+[control]
+# Every edit is shown to you before it is written. `work` can claim this
+# profile's tasks only when it runs attached to a terminal (ADR 0026 §4).
+mode = "approve"
