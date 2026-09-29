@@ -2,7 +2,7 @@
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
-was closed. Each amendment is marked in place. §4's `tools` list and skill deny
+was closed. §7 amended again for IANA zone names (#47). Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
