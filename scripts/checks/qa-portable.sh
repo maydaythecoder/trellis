@@ -13,7 +13,7 @@
 # was recorded.
 #
 # Exit 0: holds. Exit 1: does not, with the offending lines or the bundle
-# failure printed.
+# failure printed. Also exit 1 if the bundle does not clone.
 set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)" || { echo "FAIL: not in a git repository"; exit 1; }
@@ -55,6 +55,17 @@ else
   # list-heads prints full object names; the fixture is named by its prefix.
   if ! git bundle list-heads "$BUNDLE" 2>/dev/null | grep -q "^$COMMIT"; then
     echo "FAIL: $BUNDLE does not list $COMMIT as a head"
+    fails=1
+  fi
+  # `bundle verify` reads the header and checks prerequisites; it passed a
+  # bundle cut off at 20 KB of its 34 KB. Cloning it is what the runners do,
+  # so that is the check that the pack is whole.
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  if ! out=$(git clone -q --bare "$BUNDLE" "$tmp/fixture.git" 2>&1) \
+    || ! git -C "$tmp/fixture.git" rev-parse -q --verify "$COMMIT^{commit}" >/dev/null; then
+    echo "FAIL: $BUNDLE does not clone to a repository containing $COMMIT:"
+    printf '%s\n' "$out"
     fails=1
   fi
 fi
