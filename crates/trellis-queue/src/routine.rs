@@ -234,6 +234,8 @@ impl Routine {
             task: self.render(at),
             focus: t.focus.clone(),
             prompt: t.prompt.clone(),
+            // A routine's `[task]` names no template arguments (ADR 0026 §7).
+            args: None,
             priority: self.priority,
             labels: t.labels.clone(),
             parent: t.parent.clone(),

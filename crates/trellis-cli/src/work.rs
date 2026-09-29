@@ -50,6 +50,10 @@ pub(crate) enum QueueAction {
         /// A template in `.trellis/prompts/<name>.md`, as `run --prompt`.
         #[arg(long)]
         prompt: Option<String>,
+        /// Arguments for the `--prompt` template, as `run --args`: one
+        /// string, split shell-style when the task runs.
+        #[arg(long, requires = "prompt", value_name = "STRING")]
+        args: Option<String>,
         #[arg(long, value_parser = PRIORITIES, default_value = "medium")]
         priority: String,
         /// Repeatable.
@@ -204,6 +208,7 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             task,
             focus,
             prompt,
+            args,
             priority,
             labels,
             parent,
@@ -220,6 +225,11 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             if let Some(name) = &prompt {
                 config::RepoConfig::prompt(root, name)?;
             }
+            // An unclosed quote would otherwise fail the run, not the add.
+            if let Some(a) = &args {
+                crate::templates::split_args(a)
+                    .with_context(|| format!("--args `{}`", plain(a)))?;
+            }
             if let Some(stem) = &focus {
                 check_focus(root, stem)?;
             }
@@ -234,6 +244,7 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                     task,
                     focus,
                     prompt,
+                    args,
                     priority: parse_priority(&priority),
                     labels,
                     parent,
@@ -679,6 +690,9 @@ fn list_line(e: &trellis_queue::Entry, ix: &trellis_queue::Index) -> String {
     if let Some(p) = &t.prompt {
         line.push_str(&format!(" [prompt {}]", plain(p)));
     }
+    if let Some(a) = &t.args {
+        line.push_str(&format!(" [args {}]", plain(a)));
+    }
     if let Some(a) = &t.assignee {
         line.push_str(&format!(" [agent {}]", plain(a)));
     }
@@ -833,17 +847,12 @@ impl CliRunner<'_> {
     /// The task text as `trellis run --prompt` builds it, with the
     /// profile's instructions ahead of it.
     fn text(&self, t: &trellis_queue::Task, profile: Option<&Profile>) -> Result<String> {
-        let mut text = match &t.prompt {
-            Some(name) => {
-                let template = config::RepoConfig::prompt(self.root, name)?;
-                if t.task.trim().is_empty() {
-                    template
-                } else {
-                    format!("{template}\n\n{}", t.task)
-                }
-            }
-            None => t.task.clone(),
-        };
+        let mut text = crate::templates::task_text(
+            self.root,
+            t.prompt.as_deref(),
+            t.args.as_deref(),
+            &t.task,
+        )?;
         if let Some(p) = profile
             && let Some(instructions) = instructions(self.root, p)?
         {
@@ -1272,5 +1281,142 @@ mod trust_per_tick_tests {
         );
         assert_eq!(r.gate("b", &task, &mut out), None);
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[cfg(test)]
+mod queue_add_args_tests {
+    use super::*;
+
+    fn trusted(_: &Path) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    fn runner(root: &Path, queue: Queue) -> CliRunner<'_> {
+        CliRunner {
+            root,
+            model: None,
+            model_from_user: false,
+            unconstrained: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            profiles: BTreeMap::new(),
+            queue,
+            routines: BTreeMap::new(),
+            current: None,
+            said: BTreeSet::new(),
+            trust_check: trusted,
+            trust: None,
+        }
+    }
+
+    fn add(root: &Path, task: &str, prompt: &str, args: &str) -> Result<()> {
+        queue(
+            root,
+            QueueAction::Add {
+                task: task.into(),
+                focus: None,
+                prompt: Some(prompt.into()),
+                args: Some(args.into()),
+                priority: "medium".into(),
+                labels: Vec::new(),
+                parent: None,
+                assignee: None,
+                blocked_by: Vec::new(),
+                needs_approval: false,
+                backlog: false,
+            },
+        )
+    }
+
+    #[test]
+    fn queue_add_args_expand_byte_for_byte_as_run_args() {
+        // The risk: a queued template run hours later with its arguments
+        // split, substituted or joined differently from the `run` a person
+        // would have typed, so the same command means two things depending
+        // on whether it went through the queue. And the one before it: the
+        // queue storing the arguments but `work` never passing them on.
+        let root = crate::testutil::scratch("queue-add-args");
+        crate::testutil::git_init(&root);
+        let prompts = root.join(".trellis").join("prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(
+            prompts.join("fix.md"),
+            "---\ndescription: fix one file\nargument-hint: <file> [mode]\n---\n\
+             Fix $1 in ${2:-lenient} mode. All: $@\n",
+        )
+        .unwrap();
+        // Uses no argument, so the arguments are appended, as `run` does.
+        std::fs::write(prompts.join("review.md"), "Review the module.\n").unwrap();
+
+        let cases = [
+            (
+                "fix",
+                r#""app/x y.py" strict"#,
+                "then run the tests",
+                "Fix app/x y.py in strict mode. All: app/x y.py strict\n\nthen run the tests",
+            ),
+            (
+                "fix",
+                "app/z.py",
+                "",
+                "Fix app/z.py in lenient mode. All: app/z.py",
+            ),
+            ("review", "a 'b c'", "", "Review the module.\n\na b c"),
+        ];
+        let q = Queue::for_repo(&root).unwrap();
+        for (prompt, args, task, expected) in cases {
+            add(&root, task, prompt, args).unwrap();
+            let t = q
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| e.task.ok())
+                .find(|t| t.prompt.as_deref() == Some(prompt) && t.args.as_deref() == Some(args))
+                .expect("the task is queued with its arguments unsplit");
+            let r = runner(&root, q.clone());
+            let queued = r.text(&t, None).unwrap();
+            assert_eq!(queued, expected, "{prompt} {args}");
+            // What `trellis run --prompt <p> --args <a> <task>` sends.
+            let run = crate::templates::task_text(&root, Some(prompt), Some(args), task).unwrap();
+            assert_eq!(queued.as_bytes(), run.as_bytes(), "{prompt} {args}");
+        }
+
+        // Checked at add time, not when the heartbeat reaches it.
+        let before = q.list().unwrap().len();
+        let e = format!("{:#}", add(&root, "", "fix", "\"unclosed").unwrap_err());
+        assert!(e.contains("--args"), "{e}");
+        assert_eq!(q.list().unwrap().len(), before, "nothing was queued");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn queue_add_args_an_older_task_file_reads_back_unchanged() {
+        // The risk: `args` made required on disk, so every task queued
+        // before it no longer loads, or written as `"args": null`, so a
+        // rewritten older task stops being byte-identical to what an older
+        // binary wrote and reads.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let prompts = root.join(".trellis").join("prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        // No frontmatter and no arguments: the `$1` survives verbatim, as
+        // it did before templates took arguments.
+        std::fs::write(prompts.join("old.md"), "Check $1 by hand.\n").unwrap();
+        let q = Queue::at(root.join("queue"));
+        let pending = q.dir().join("pending");
+        std::fs::create_dir_all(&pending).unwrap();
+        let old = r#"{"task":"and the docs","focus":null,"prompt":"old","added_at":"2026-01-01T00:00:00Z","attempts":0}"#;
+        let id = "20260101-000000-000000001-old";
+        std::fs::write(pending.join(format!("{id}.json")), old).unwrap();
+
+        let (_, t) = q.find(id).unwrap();
+        assert_eq!(t.args, None);
+        assert_eq!(t.prompt.as_deref(), Some("old"));
+        assert_eq!(serde_json::to_string(&t).unwrap(), old);
+        let r = runner(root, q.clone());
+        assert_eq!(
+            r.text(&t, None).unwrap(),
+            "Check $1 by hand.\n\nand the docs"
+        );
     }
 }

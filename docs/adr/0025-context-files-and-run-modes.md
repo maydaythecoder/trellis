@@ -375,7 +375,8 @@ on stderr.
 - `/new`, `/name` and `/copy`. `/new` means nothing when each task is
   already a fresh run. `/name` and `/copy` are deferred.
 - `compact` over RPC: W-C.
-- `queue add --args`: the queue is W-E's, and ADR 0026 decides it.
+- `queue add --args`: the queue is W-E's, and ADR 0026 decides it. Built
+  since: ADR 0026 §3 records it.
 - The trail does not record which context files or system files a run saw.
   That would be a factual-field change under ADR 0007's digest, and belongs
   in its own change. Until then the `repo:` line is the record, and two runs
