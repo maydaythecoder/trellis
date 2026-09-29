@@ -1378,7 +1378,7 @@ fn cmd_run(
     unconstrained: bool,
     seeding: RunSeeding<'_>,
     control: RunControl,
-    out: &mut dyn std::io::Write,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
     cmd_run_with(
         root,
@@ -1416,7 +1416,7 @@ fn cmd_run_with(
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: output::RunExtras,
-    out: &mut dyn std::io::Write,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
     output::framed(root, task, model.spec, &extras, || {
         run_body(root, task, model, seeding, control, &extras, out)
@@ -1431,7 +1431,7 @@ fn run_body(
     seeding: RunSeeding<'_>,
     control: RunControl,
     extras: &output::RunExtras,
-    out: &mut dyn std::io::Write,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<RunExit> {
     let ModelChoice {
         spec: model_spec,
@@ -1929,7 +1929,15 @@ fn run_body(
             )
         }
     };
-    let (outcome, transcript, gate_log) = rt.block_on(async {
+    // Read here, on the caller's thread, which is the one a test set it on.
+    #[cfg(test)]
+    let panic_in_run = PANIC_IN_RUN.with(std::cell::Cell::get);
+    #[cfg(test)]
+    let polled_on = std::sync::OnceLock::<Option<String>>::new();
+    let (outcome, transcript, gate_log) = on_run_stack(|| {
+        rt.block_on(async {
+        #[cfg(test)]
+        let _ = polled_on.set(std::thread::current().name().map(str::to_owned));
         let mut orchestrator = trellis_loop::Orchestrator::new(root, cfg.checks())
             .with_governance(governance)
             .with_rules(rules)
@@ -2004,7 +2012,7 @@ fn run_body(
         // tree, where a real one (a provider value that overflows, an index
         // bug) would unwind out of `block_on`.
         #[cfg(test)]
-        if PANIC_IN_RUN.with(std::cell::Cell::get) {
+        if panic_in_run {
             panic!("injected: a panic inside the run");
         }
         // Asked after the race either way: the orchestrator is still alive
@@ -2093,7 +2101,10 @@ fn run_body(
             }
         }
         (out, touched, gate_log)
-    });
+    })
+    })?;
+    #[cfg(test)]
+    RUN_POLLED_ON.with(|c| *c.borrow_mut() = polled_on.into_inner().flatten());
     // Not a plain drop. A line reader blocked on stdin when Ctrl-C arrived
     // is still on the blocking pool, and dropping a runtime waits for that
     // pool — so an interrupted run would hang until someone pressed Enter.
@@ -2535,6 +2546,54 @@ thread_local! {
     /// has written. Per thread, because `cmd_run` drives the loop on the
     /// calling thread and tests run in parallel.
     pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The name of the thread the run's `block_on` polled on, recorded on
+    /// the caller's thread once the run returns, so a test can see that the
+    /// loop ran on [`RUN_THREAD`] and not on the caller's stack.
+    pub(crate) static RUN_POLLED_ON: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The thread a run's futures are polled on.
+const RUN_THREAD: &str = "trellis-run";
+
+/// Its stack: 8 MiB, the size of a Linux main thread.
+///
+/// The run used to be polled on whichever thread called `cmd_run`, which
+/// for the binary is the main thread, and a Windows main thread has 1 MiB.
+/// Measured on a debug build on Windows (#180), with this constant
+/// temporarily read from the environment and
+/// `tests/child_env.rs::checks_bash_custom_tools_and_hooks_inherit_no_key`
+/// run three times per size: 896 KiB overflowed 3/3 and 928 KiB passed 3/3
+/// (Windows reserves in 64 KiB steps, so the demand is at most 960 KiB).
+/// The run's root future was 21,064 B, and #137 measured `gated` at
+/// 20,448 B. So the main thread had well under 128 KiB to spare, less the
+/// frames above `run_body`, and #19 and #137 each had to box a future to
+/// fit. Here the same run has about eight times its measured demand, for
+/// every caller and every future, without any of them boxing. The stack is
+/// reserved address space: pages are committed only as they are touched.
+const RUN_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Runs `f` on [`RUN_THREAD`], with [`RUN_STACK_BYTES`] of stack, and waits.
+///
+/// A panic in `f` continues on the caller's thread, so `RollbackOnPanic`
+/// in the caller's frame still sees `std::thread::panicking()` and the
+/// process still fails as it did when `f` ran inline.
+fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
+    std::thread::scope(|s| {
+        let h = std::thread::Builder::new()
+            .name(RUN_THREAD.into())
+            .stack_size(RUN_STACK_BYTES)
+            .spawn_scoped(s, f)
+            .context("starting the thread the run is polled on")?;
+        match h.join() {
+            Ok(v) => Ok(v),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
 }
 
 fn interrupted_run(
@@ -5168,5 +5227,82 @@ mod approval_tests {
         let a = actions(&trail(&dir));
         assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "declined"));
         assert!(!a[1].3);
+    }
+
+    /// The run's futures are polled on `RUN_THREAD`, not on the caller's
+    /// stack. Moving `block_on` back inline would leave the binary's run on
+    /// a 1 MiB Windows main thread that a debug build had all but used up
+    /// (#180), and nothing else would fail until a future grew past it.
+    #[test]
+    fn loop_stack_a_run_is_polled_on_the_run_thread_not_the_callers() {
+        let (dir, spec) = fixture("loop-stack", EDIT_THEN_STOP);
+        crate::RUN_POLLED_ON.with(|c| *c.borrow_mut() = None);
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding::default(),
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+            },
+            &mut out,
+        );
+        assert!(r.is_ok(), "{r:?}");
+        let polled_on = crate::RUN_POLLED_ON.with(|c| c.borrow_mut().take());
+        assert_eq!(polled_on.as_deref(), Some(crate::RUN_THREAD));
+        assert_ne!(std::thread::current().name(), Some(crate::RUN_THREAD));
+    }
+}
+
+#[cfg(test)]
+mod loop_stack_tests {
+    use super::{RUN_STACK_BYTES, RUN_THREAD, on_run_stack};
+
+    /// Uses about `frames` x 16 KiB of stack. The work after the recursive
+    /// call keeps it from becoming a loop, and `black_box` keeps the buffer.
+    fn burn(frames: usize) -> u8 {
+        let mut buf = [0u8; 16 * 1024];
+        std::hint::black_box(&mut buf);
+        if frames == 0 {
+            buf[0]
+        } else {
+            burn(frames - 1).wrapping_add(std::hint::black_box(buf[1]))
+        }
+    }
+
+    /// The stack size is applied, not only declared. 3 MiB is more than a
+    /// Windows main thread (1 MiB) and more than a thread spawned without a
+    /// size (2 MiB), so if `stack_size` is dropped this overflows. An
+    /// overflow aborts the test process rather than failing one test; that
+    /// is how a lost stack shows here.
+    #[test]
+    fn loop_stack_the_run_thread_holds_three_mib_of_frames() {
+        const _: () = assert!(RUN_STACK_BYTES >= 4 * 1024 * 1024);
+        let (name, got) = on_run_stack(|| {
+            let name = std::thread::current().name().map(str::to_owned);
+            (name, burn(192))
+        })
+        .unwrap();
+        assert_eq!(name.as_deref(), Some(RUN_THREAD));
+        assert_eq!(got, 0);
+    }
+
+    /// A panic on the run thread continues on the caller's. `RollbackOnPanic`
+    /// lives in the caller's frame and only rolls back while that thread is
+    /// unwinding, so a panic that stopped at the thread boundary would leave
+    /// the run's edits in the tree.
+    #[test]
+    fn loop_stack_a_panic_on_the_run_thread_unwinds_the_caller() {
+        let caught = std::panic::catch_unwind(|| {
+            let _ = on_run_stack(|| -> () { panic!("injected on the run thread") });
+        })
+        .expect_err("the panic reaches the caller");
+        assert_eq!(
+            caught.downcast_ref::<&str>(),
+            Some(&"injected on the run thread")
+        );
     }
 }
