@@ -178,6 +178,11 @@ pub struct UntrustedFactual {
     /// a cost guard over untrusted data, never a correctness claim.
     #[serde(default)]
     pub tokens: Option<u64>,
+    /// Prompt tokens, when the writer recorded them; kept apart from
+    /// `tokens` and never added to it. Absent means unknown, not zero, and
+    /// like `tokens` it is untrusted data read from a committed file.
+    #[serde(default)]
+    pub prompt_tokens: Option<u64>,
     /// The agent profile the run executed as, when recorded.
     #[serde(default)]
     pub agent: Option<String>,
@@ -507,6 +512,7 @@ mod tests {
                 actions: Vec::new(),
                 control: None,
                 tokens: None,
+                prompt_tokens: None,
                 agent: None,
                 inputs: Vec::new(),
             },
@@ -654,6 +660,77 @@ mod tests {
         assert_eq!(read.factual.agent.as_deref(), Some("reviewer"));
         assert_eq!(read.integrity(&json), Integrity::Intact);
         let edited = json.replace("1234", "12");
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
+        );
+    }
+
+    /// A trail as `cmd_run` wrote it before `prompt_tokens` existed: produced
+    /// by the unmodified writer, with completion tokens recorded, and its
+    /// digest as that writer computed it. Literal bytes, so a change to how
+    /// `Factual` serializes cannot regenerate the fixture along with itself.
+    const BEFORE_PROMPT_TOKENS: &str = r#"{"schema":1,"run_id":"20260921-053000-rename-installer-run","task":"rename Installer.run","base_commit":"abc1234","started_at":"2026-09-21T05:30:00Z","provenance":{"trellis_version":"0.0.1","model":null,"tier":null},"factual":{"proposed":["app/core.py"],"radius":{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0},"checks":[],"check_outcomes":[{"kind":"Tests","passed":true}],"approved_by":"Human","mode_counts":{"verified":0,"reviewed":0},"context":null,"actions":[],"tokens":4096},"factual_sha256":"e9b798cd7d63525132bab09644b0d9c68dbb88d22fcf298566d17af72b86f2af","judgment":{"tech_debt_projection":null,"rationale":null}}"#;
+    const BEFORE_PROMPT_TOKENS_DIGEST: &str =
+        "e9b798cd7d63525132bab09644b0d9c68dbb88d22fcf298566d17af72b86f2af";
+
+    #[test]
+    fn prompt_tokens_absent_in_a_trail_written_before_the_field_and_its_digest_unchanged() {
+        // The risk: the new field changes the bytes of `factual` for every
+        // trail that lacks it, so each committed trail would read as altered
+        // (or quietly re-hash to a new digest) and a reader could no longer
+        // tell tampering from an upgrade. Absent must also stay absent, not
+        // become a zero that reads as a free prompt.
+        let read = UntrustedTrail::from_json(BEFORE_PROMPT_TOKENS).expect("old trail must parse");
+        assert_eq!(read.factual.prompt_tokens, None);
+        assert_eq!(
+            read.factual.tokens,
+            Some(4096),
+            "`tokens` still carries completion tokens"
+        );
+        assert_eq!(read.integrity(BEFORE_PROMPT_TOKENS), Integrity::Intact);
+
+        // `integrity` hashes the bytes on disk and would pass whatever the
+        // writer now does. The same run written today, with the field
+        // absent, must produce the digest the old writer did: that is what
+        // fails if `prompt_tokens: None` starts to serialize. (`Factual` has
+        // no `Deserialize`, since `Verdict` has none, so the old bytes cannot
+        // be re-parsed into it; the writer side is rebuilt instead.)
+        let mut t = a_trail("app/core.py");
+        t.factual.tokens = Some(4096);
+        assert_eq!(t.factual.prompt_tokens, None);
+        let json = written(&mut t);
+        assert_eq!(t.factual_sha256, BEFORE_PROMPT_TOKENS_DIGEST);
+        assert_eq!(
+            json, BEFORE_PROMPT_TOKENS,
+            "an old-shaped run keeps its bytes"
+        );
+        assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
+    }
+
+    #[test]
+    fn prompt_tokens_round_trip_apart_from_tokens_and_under_the_digest() {
+        // The risk on one side: the two counts merged into one number, which
+        // would read as generated output that never happened. On the other:
+        // a recorded prompt figure that can be edited without the digest
+        // noticing.
+        let mut t = a_trail("app/core.py");
+        t.factual.tokens = Some(321);
+        t.factual.prompt_tokens = Some(98_765);
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.factual.tokens, Some(321));
+        assert_eq!(read.factual.prompt_tokens, Some(98_765));
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["factual"]["prompt_tokens"], 98_765);
+        assert_eq!(v["factual"]["tokens"], 321);
+
+        let edited = json.replace("98765", "1");
+        assert_ne!(edited, json);
         assert_eq!(
             UntrustedTrail::from_json(&edited)
                 .unwrap()

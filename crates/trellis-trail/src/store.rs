@@ -217,6 +217,7 @@ mod tests {
                 actions: Vec::new(),
                 control: None,
                 tokens: None,
+                prompt_tokens: None,
                 agent: None,
                 inputs: Vec::new(),
             },

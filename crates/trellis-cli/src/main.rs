@@ -2991,6 +2991,9 @@ fn record_trail(
         actions,
         control,
         tokens,
+        // No adapter reports prompt tokens to the loop, so there is no figure
+        // to record; absent reads as unknown, where a zero would be a claim.
+        prompt_tokens: None,
         agent,
         inputs,
     };
