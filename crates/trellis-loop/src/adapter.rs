@@ -26,7 +26,11 @@ use trellis_model::{
 /// How much of an ordinary observation the prompt keeps: the last 2,000
 /// characters. The tail is where a check's failure and a file's end live, and
 /// every prompt measured so far was taken with this window, so it stays.
-const OBSERVATION_TAIL: usize = 2_000;
+///
+/// Crate-visible because the radius selector is sized against it
+/// (`agent::RADIUS_OBSERVATION_BYTES`, ADR 0032): a radius cut from the top
+/// here would lose its coverage header without saying so.
+pub(crate) const OBSERVATION_TAIL: usize = 2_000;
 
 /// How much of a skill body the prompt keeps: the first 8,000 characters.
 ///
@@ -39,7 +43,7 @@ const OBSERVATION_TAIL: usize = 2_000;
 /// readable with `read_file`.
 const SKILL_HEAD: usize = 8_000;
 
-fn shown_observation(call: &ToolCall, obs: &str) -> String {
+pub(crate) fn shown_observation(call: &ToolCall, obs: &str) -> String {
     let chars = obs.chars().count();
     match call {
         ToolCall::ReadSkill { name } if chars > SKILL_HEAD => {
@@ -1340,6 +1344,7 @@ mod tests {
                 verdict_passed: None,
                 check_kind: None,
                 radius_counts: None,
+                radius_summarised: None,
                 prompt_bytes: None,
                 human: None,
                 may_have_changed_tree: false,
@@ -1379,6 +1384,7 @@ mod tests {
                 verdict_passed: None,
                 check_kind: None,
                 radius_counts: None,
+                radius_summarised: None,
                 prompt_bytes: None,
                 human: None,
                 may_have_changed_tree: false,
@@ -1680,6 +1686,7 @@ mod compaction_and_hosted_tests {
             check_kind: verdict.map(|_| "Typecheck".to_string()),
             prompt_bytes: None,
             radius_counts: None,
+            radius_summarised: None,
             human: None,
             may_have_changed_tree: false,
         }

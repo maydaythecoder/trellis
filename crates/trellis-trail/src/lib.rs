@@ -202,6 +202,19 @@ pub struct RadiusCounts {
     /// difference between one query and twenty.
     #[serde(default)]
     pub radius_queries: u32,
+    /// Call sites the radius observations summarised by file instead of
+    /// listing one per line, summed over the run's queries (ADR 0032).
+    ///
+    /// The model saw a count for these, not a location, so a reader weighing
+    /// what the run knew needs the figure. Omitted when zero, so a trail with
+    /// nothing summarised keeps the shape and the factual digest it had
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub summarised: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Counts of the two audit modes, never collapsed into one number.
@@ -412,6 +425,7 @@ mod tests {
                     reached_ambiguous: 3,
                     widest_unbound_in_touched_files: 2,
                     radius_queries: 1,
+                    summarised: 0,
                 },
                 checks: vec![],
                 check_outcomes: vec![CheckOutcome {

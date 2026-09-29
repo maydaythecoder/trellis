@@ -255,6 +255,15 @@ impl UntrustedTrail {
             self.factual.radius.reached_ambiguous,
             self.factual.radius.widest_unbound_in_touched_files
         ));
+        // Only when there were some, so a resumed session's context is byte
+        // for byte what it was for every trail that predates the field.
+        if self.factual.radius.summarised > 0 {
+            out.push(format!(
+                "recorded radius: {} of those call sites were summarised by file \
+                 rather than listed",
+                self.factual.radius.summarised
+            ));
+        }
         out.push(format!(
             "recorded audit: {} verified, {} reviewed only",
             self.factual.mode_counts.verified, self.factual.mode_counts.reviewed
@@ -321,6 +330,38 @@ mod tests {
         // The compile-time half of this test is that there is no
         // `impl From<RecordedCheck> for Verdict` anywhere, and no
         // `Deserialize` on `Verdict` to route around it.
+    }
+
+    #[test]
+    fn a_summarised_radius_count_reads_back_and_its_absence_changes_nothing() {
+        // The count is what tells a resumed session that the previous run
+        // saw some of its call sites only as per-file counts (ADR 0032).
+        // A trail without it must read back to the same context lines as
+        // before the field existed.
+        let before = UntrustedTrail::from_json(TRAIL).unwrap();
+        assert_eq!(before.factual.radius.summarised, 0);
+        assert!(
+            !before
+                .context_lines()
+                .iter()
+                .any(|l| l.contains("summarised")),
+            "{:?}",
+            before.context_lines()
+        );
+
+        let with = TRAIL.replace(
+            r#""unresolved": 2 }"#,
+            r#""unresolved": 2, "summarised": 12 }"#,
+        );
+        let t = UntrustedTrail::from_json(&with).unwrap();
+        assert_eq!(t.factual.radius.summarised, 12);
+        assert!(
+            t.context_lines()
+                .iter()
+                .any(|l| l.contains("12 of those call sites were summarised")),
+            "{:?}",
+            t.context_lines()
+        );
     }
 
     #[test]
