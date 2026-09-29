@@ -1,4 +1,4 @@
-//! Five-field cron and fixed-offset timezones, by hand (ADR 0026 §7).
+//! Five-field cron by hand, and the zone it is read in (ADR 0026 §7).
 //!
 //! `minute hour day-of-month month day-of-week`, each `*`, a number, a
 //! range `a-b`, a step (`*/n`, `a-b/n`, `a/n`) or a comma list of those.
@@ -10,11 +10,15 @@
 //! Not supported: `L`, `W`, `#`, `?`, `@daily`-style names. Each is refused
 //! with its name rather than misread.
 //!
-//! Timezones are `UTC` or a fixed offset. An IANA name needs the tz
-//! database, which is a dependency and a dataset that goes stale; a fixed
-//! offset does not follow daylight saving, and the ADR says so.
+//! Timezones are `UTC`, a fixed offset, or an IANA name resolved through
+//! `jiff::tz::db()` (ADR 0026 §7, amended for #47). A named zone follows
+//! daylight saving: a wall-clock time that does not exist on a spring-forward
+//! day fires at the first instant after the gap, and one that occurs twice on
+//! a fall-back day fires once, at the earlier instant.
 
 use crate::stamp::civil_from_secs;
+use jiff::Timestamp;
+use jiff::tz::{AmbiguousOffset, Offset, TimeZone};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cron {
@@ -73,16 +77,19 @@ pub enum FieldError {
     Backwards(String),
 }
 
-/// Why a timezone was refused. Each message is the string [`Tz::parse`]
-/// returned before (review round 11).
+/// Why a timezone was refused. The offset messages are the strings
+/// [`Tz::parse`] returned before (review round 11).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TzError {
+    /// Neither `UTC`, an offset, nor a name the zone database has. Names
+    /// the database, since a name missing from a stale or absent one reads
+    /// the same as a misspelling.
     #[error(
-        "timezone `{0}`: only `UTC` and fixed offsets like `+02:00` are supported. IANA names \
-         would need the tz database, a dependency that goes stale; a fixed offset does not \
-         follow daylight saving (ADR 0026 §7)"
+        "timezone `{tz}`: not `UTC`, a fixed offset like `+02:00`, or an IANA name in the tz \
+         database ({db}); fixed offsets do not follow daylight saving, IANA names do \
+         (ADR 0026 §7)"
     )]
-    Unsupported(String),
+    Unknown { tz: String, db: String },
     #[error("timezone `{0}`: write the offset as `+HH:MM`")]
     NoColon(String),
     #[error("timezone `{tz}`: bad {what}; write the offset as `+HH:MM`")]
@@ -249,11 +256,16 @@ impl Cron {
     /// The first scheduled instant strictly after `t` (seconds since the
     /// epoch), evaluated in `tz`. `None` if nothing matches within about
     /// eight years, which is what `0 0 31 2 *` (never) comes to.
-    pub fn next_after(&self, t: i64, tz: Tz) -> Option<i64> {
-        let off = tz.offset_secs();
-        // Work in local wall-clock seconds; the offset is fixed, so local
-        // minus the offset is the instant.
-        let local = t + off;
+    ///
+    /// Candidates are walked in local wall-clock order and each is mapped to
+    /// an instant by [`Tz::instant`]. That mapping never decreases as the
+    /// wall clock advances, so the first candidate past `t` is the earliest
+    /// one. It can fall at or before `t`: after the first pass through a
+    /// repeated hour, `t` lies in the second pass and the hour's candidates
+    /// map to its first; those are skipped, which is what makes a repeated
+    /// time fire once.
+    pub fn next_after(&self, t: i64, tz: &Tz) -> Option<i64> {
+        let local = t + tz.offset_at(t);
         let start = local.div_euclid(60) * 60 + 60;
         let mut day = start.div_euclid(86_400);
         let (mut h0, mut m0) = {
@@ -269,10 +281,14 @@ impl Cron {
                     }
                     let from = if h == h0 { m0 } else { 0 };
                     for m in from..60 {
-                        if self.minutes & (1 << m) != 0 {
-                            return Some(
-                                day * 86_400 + i64::from(h) * 3600 + i64::from(m) * 60 - off,
-                            );
+                        if self.minutes & (1 << m) == 0 {
+                            continue;
+                        }
+                        let wall = day * 86_400 + i64::from(h) * 3600 + i64::from(m) * 60;
+                        match tz.instant(wall) {
+                            Some(at) if at > t => return Some(at),
+                            Some(_) => {}
+                            None => return None,
                         }
                     }
                 }
@@ -285,12 +301,31 @@ impl Cron {
     }
 }
 
-/// UTC or a fixed offset from it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// UTC, a fixed offset from it, or a named zone that follows daylight
+/// saving.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tz {
     Utc,
     /// Seconds east of UTC.
     Fixed(i32),
+    /// An IANA zone from `jiff::tz::db()`.
+    Named(TimeZone),
+}
+
+/// Where IANA names are resolved from: the OS zoneinfo directory, or the
+/// data bundled into the binary where the OS has none (Windows). `doctor`
+/// prints it, because bundled data is as old as the build.
+pub fn tz_source() -> String {
+    format!("{:?}", jiff::tz::db())
+}
+
+/// jiff's timestamps span years -9999..=9999. Every instant a schedule
+/// reaches is inside that (now plus eight years at most), so the clamp only
+/// matters for a clock wrong by millennia, and `from_second` cannot fail
+/// after it.
+fn stamp(t: i64) -> Timestamp {
+    let t = t.clamp(Timestamp::MIN.as_second(), Timestamp::MAX.as_second());
+    Timestamp::from_second(t).unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
 impl Tz {
@@ -302,7 +337,7 @@ impl Tz {
         let sign = match t.as_bytes().first() {
             Some(b'+') => 1,
             Some(b'-') => -1,
-            _ => return Err(TzError::Unsupported(t.to_string())),
+            _ => return Tz::named(t),
         };
         let (h, m) = t[1..]
             .split_once(':')
@@ -330,16 +365,60 @@ impl Tz {
         Ok(Tz::Fixed(sign * (h * 3600 + m * 60)))
     }
 
-    pub fn offset_secs(self) -> i64 {
+    fn named(t: &str) -> Result<Tz, TzError> {
+        let unknown = || TzError::Unknown {
+            tz: t.to_string(),
+            db: tz_source(),
+        };
+        let z = jiff::tz::db().get(t).map_err(|_| unknown())?;
+        // jiff answers `Etc/Unknown` with a zone that behaves as UTC. A
+        // routine is never read as UTC because its zone was not understood.
+        if z.is_unknown() || z.iana_name().is_none() {
+            return Err(unknown());
+        }
+        Ok(Tz::Named(z))
+    }
+
+    /// Seconds east of UTC at the instant `t`.
+    pub fn offset_at(&self, t: i64) -> i64 {
         match self {
             Tz::Utc => 0,
-            Tz::Fixed(s) => i64::from(s),
+            Tz::Fixed(s) => i64::from(*s),
+            Tz::Named(z) => i64::from(z.to_offset(stamp(t)).seconds()),
+        }
+    }
+
+    /// The instant a wall-clock time (seconds since the epoch, read as local)
+    /// names. A time inside a spring-forward gap does not exist and names the
+    /// first instant after the gap; a time inside a fall-back fold exists
+    /// twice and names the earlier. `None` only if the zone reports a gap it
+    /// has no transition for.
+    fn instant(&self, wall: i64) -> Option<i64> {
+        let z = match self {
+            Tz::Utc => return Some(wall),
+            Tz::Fixed(s) => return Some(wall - i64::from(*s)),
+            Tz::Named(z) => z,
+        };
+        let dt = Offset::UTC.to_datetime(stamp(wall));
+        let secs = |o: Offset| i64::from(o.seconds());
+        match z.to_ambiguous_timestamp(dt).offset() {
+            AmbiguousOffset::Unambiguous { offset } => Some(wall - secs(offset)),
+            AmbiguousOffset::Fold { before, .. } => Some(wall - secs(before)),
+            // Read with the later offset the wall time falls before the
+            // transition, so the first transition after that is the one
+            // that skipped it. jiff's `compatible` choice would move the
+            // time forward by the gap's length (02:30 to 03:30), a time
+            // nobody wrote.
+            AmbiguousOffset::Gap { after, .. } => z
+                .following(stamp(wall - secs(after)))
+                .next()
+                .map(|tr| tr.timestamp().as_second()),
         }
     }
 
     /// `YYYY-MM-DD` and `HH:MM` of an instant, on this zone's wall clock.
-    pub fn date_time(self, t: i64) -> (String, String) {
-        let (y, mo, d, h, mi, _) = civil_from_secs(t + self.offset_secs());
+    pub fn date_time(&self, t: i64) -> (String, String) {
+        let (y, mo, d, h, mi, _) = civil_from_secs(t + self.offset_at(t));
         (format!("{y:04}-{mo:02}-{d:02}"), format!("{h:02}:{mi:02}"))
     }
 }
@@ -353,6 +432,9 @@ impl std::fmt::Display for Tz {
                 let a = s.abs();
                 write!(f, "{sign}{:02}:{:02}", a / 3600, a % 3600 / 60)
             }
+            // `named` refuses a zone without one, so this is the canonical
+            // spelling (`europe/amsterdam` shows as `Europe/Amsterdam`).
+            Tz::Named(z) => f.write_str(z.iana_name().unwrap_or("")),
         }
     }
 }
@@ -387,7 +469,7 @@ mod tests {
     fn next(c: &str, after: &str, tz: &str) -> String {
         let c = Cron::parse(c).unwrap();
         secs_to_iso(
-            c.next_after(parse_iso(after).unwrap(), Tz::parse(tz).unwrap())
+            c.next_after(parse_iso(after).unwrap(), &Tz::parse(tz).unwrap())
                 .unwrap(),
         )
     }
@@ -486,7 +568,7 @@ mod tests {
     fn what_is_not_supported_is_refused_by_name() {
         // The risk: a schedule silently read as something else fires at
         // times nobody asked for, unattended.
-        let e = Tz::parse("Europe/Amsterdam").unwrap_err().to_string();
+        let e = Tz::parse("Europe/Atlantis").unwrap_err().to_string();
         assert!(e.contains("fixed offsets") && e.contains("daylight"), "{e}");
         assert!(
             Cron::parse("@daily")
@@ -538,6 +620,119 @@ mod tests {
     #[test]
     fn a_schedule_that_never_fires_says_none_rather_than_looping() {
         let c = Cron::parse("0 0 31 2 *").unwrap();
-        assert_eq!(c.next_after(0, Tz::Utc), None);
+        assert_eq!(c.next_after(0, &Tz::Utc), None);
+    }
+
+    // Europe/Amsterdam in 2026: clocks go 02:00 -> 03:00 at 01:00Z on Sunday
+    // 29 March, and 03:00 -> 02:00 at 01:00Z on Sunday 25 October (the last
+    // Sundays of those months, as EU rules have it since 1996).
+    #[test]
+    fn iana_zone_fires_at_local_nine_on_both_sides_of_each_transition() {
+        // The risk this ticket exists for: a fixed offset fires at 09:00 on
+        // one side of a transition and at 08:00 or 10:00 on the other.
+        let ams = "Europe/Amsterdam";
+        assert_eq!(
+            next("0 9 * * *", "2026-03-27T12:00:00Z", ams),
+            "2026-03-28T08:00:00Z"
+        );
+        assert_eq!(
+            next("0 9 * * *", "2026-03-28T12:00:00Z", ams),
+            "2026-03-29T07:00:00Z"
+        );
+        assert_eq!(
+            next("0 9 * * *", "2026-10-23T12:00:00Z", ams),
+            "2026-10-24T07:00:00Z"
+        );
+        assert_eq!(
+            next("0 9 * * *", "2026-10-24T12:00:00Z", ams),
+            "2026-10-25T08:00:00Z"
+        );
+        // `{{date}}`/`{{time}}` are read on the zone's own wall clock, and
+        // the name prints as the database spells it.
+        let z = Tz::parse("europe/amsterdam").unwrap();
+        assert_eq!(z.to_string(), "Europe/Amsterdam");
+        let t = parse_iso("2026-03-29T07:00:00Z").unwrap();
+        assert_eq!(z.date_time(t), ("2026-03-29".into(), "09:00".into()));
+        let t = parse_iso("2026-10-25T08:00:00Z").unwrap();
+        assert_eq!(z.date_time(t), ("2026-10-25".into(), "09:00".into()));
+    }
+
+    #[test]
+    fn iana_zone_spring_gap_fires_at_the_first_instant_after_it() {
+        // 02:30 does not exist on 29 March. The risk: skipping the day (a
+        // daily routine that silently does not run), or jiff's `compatible`
+        // reading, 03:30, a time nobody wrote.
+        let ams = "Europe/Amsterdam";
+        assert_eq!(
+            next("30 2 * * *", "2026-03-28T12:00:00Z", ams),
+            "2026-03-29T01:00:00Z"
+        );
+        let z = Tz::parse(ams).unwrap();
+        let t = parse_iso("2026-03-29T01:00:00Z").unwrap();
+        assert_eq!(z.date_time(t).1, "03:00");
+        // The next day 02:30 exists again, at +02:00.
+        assert_eq!(
+            next("30 2 * * *", "2026-03-29T01:00:00Z", ams),
+            "2026-03-30T00:30:00Z"
+        );
+        // Every gap minute names the same instant; it fires once, and the
+        // schedule then resumes after the gap (03:30 local).
+        assert_eq!(
+            next("*/30 * * * *", "2026-03-29T00:30:00Z", ams),
+            "2026-03-29T01:00:00Z"
+        );
+        assert_eq!(
+            next("*/30 * * * *", "2026-03-29T01:00:00Z", ams),
+            "2026-03-29T01:30:00Z"
+        );
+    }
+
+    #[test]
+    fn iana_zone_autumn_overlap_fires_once_at_the_earlier_instant() {
+        // 02:30 happens twice on 25 October: 00:30Z (+02:00), 01:30Z
+        // (+01:00). The risk: a routine that fires twice in one night, or
+        // whose second firing is picked up as a missed fire by catch-up.
+        let ams = "Europe/Amsterdam";
+        assert_eq!(
+            next("30 2 * * *", "2026-10-24T12:00:00Z", ams),
+            "2026-10-25T00:30:00Z"
+        );
+        // After the first, the next is the following day, not 01:30Z.
+        assert_eq!(
+            next("30 2 * * *", "2026-10-25T00:30:00Z", ams),
+            "2026-10-26T01:30:00Z"
+        );
+        // From inside the second pass the repeated hour is already spent.
+        assert_eq!(
+            next("30 2 * * *", "2026-10-25T01:10:00Z", ams),
+            "2026-10-26T01:30:00Z"
+        );
+        assert_eq!(
+            next("*/30 * * * *", "2026-10-25T00:59:00Z", ams),
+            "2026-10-25T02:00:00Z"
+        );
+    }
+
+    #[test]
+    fn iana_zone_unknown_name_is_refused_not_read_as_utc() {
+        // The risk: an unrecognised zone fires on UTC, hours off, unattended.
+        // jiff returns a UTC-behaving zone for `Etc/Unknown`; that is refused
+        // too. A path is refused because it is not a name the database has.
+        for bad in [
+            "Europe/Atlantis",
+            "Etc/Unknown",
+            "",
+            "../../etc/passwd",
+            "Amsterdam",
+        ] {
+            let e = Tz::parse(bad).expect_err(bad).to_string();
+            assert!(
+                e.contains("IANA name") && e.contains(&tz_source()),
+                "{bad}: {e}"
+            );
+        }
+        // Fixed offsets and UTC are untouched by the name lookup.
+        assert_eq!(Tz::parse("+02:00").unwrap(), Tz::Fixed(2 * 3600));
+        assert_eq!(Tz::parse("utc").unwrap(), Tz::Utc);
     }
 }
