@@ -174,8 +174,8 @@ fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 const GIT_ALLOWED: &[(&str, usize, &str)] = &[
     (
         "trellis-vcs/src/lib.rs",
-        14,
-        "`command`, `command_with_hooks`, `git_argv`: the constructors; the other 11 are \
+        13,
+        "`command`, `command_with_hooks`, `git_argv`: the constructors; the other 10 are \
          `GitFailed` messages naming the command that failed (`\"git {}\"`, \
          `\"git hash-object ...\"`), which the shell-line rule reads as a spawn",
     ),
