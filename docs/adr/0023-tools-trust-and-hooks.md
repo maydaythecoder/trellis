@@ -258,7 +258,8 @@ loaded only if the user has trusted it.
   repository, so a repository cannot trust itself.
 - **Keyed by** the canonical repository root.
 - **Records** one sha256 over every hook argv, every custom tool's name,
-  description, command and schema, the `[tools]` bash settings, and the
+  description, command and schema (and its `timeout_s` when declared, #135),
+  the `[tools]` bash settings, and the
   path and bytes of every file those argv reference (an argument that names
   an existing file inside the repository). Any change to any of them makes
   the repository untrusted again.
@@ -1035,6 +1036,8 @@ Subject to trust, to the gate list, and to `[control] approve` by name.
 Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not
 shadow a built-in or `done`. The description is capped at 200 characters and
 may hold no control character, since it is printed in the prompt's tool line.
+An optional `timeout_s` bounds how long the command may run (default 120;
+see "As built", #135).
 
 Argument validation on tier 2 is the runtime's, from the composed schema. On
 tier 4 and in scripts there is no schema validator in the workspace, so
