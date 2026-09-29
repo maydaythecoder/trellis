@@ -184,6 +184,7 @@ mod tests {
             task: "t".into(),
             turns: vec![],
             final_notice: false,
+            steering: Default::default(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };

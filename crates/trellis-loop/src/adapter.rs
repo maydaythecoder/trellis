@@ -455,6 +455,10 @@ fn completion_prompt(t: &Transcript, elided: usize) -> String {
         p.push('\n');
     }
 
+    // After the history, where the model reads what to do next. Empty when
+    // nothing was steered, so an unsteered prompt is the measured one.
+    p.push_str(&steer_block(t));
+
     if t.final_notice {
         p.push_str(
             "\nNOTICE: the budget is exhausted. This is your last step. Leave the \
@@ -579,6 +583,33 @@ fn repo_block(t: &Transcript, p: &mut String) {
         }
         p.push_str("--- end of file list ---\n\n");
     }
+}
+
+/// Steers delivered so far (#113), as user text in a section of their own.
+///
+/// Shared by both adapters so the section reads the same whichever carries
+/// it. The heading says who sent the text and when, because the model has
+/// otherwise no way to tell a mid-run instruction from the task. The closing
+/// sentence restates the grounding rule: a person typing "it passed" is not
+/// a check, and convergence ignores it whatever the model makes of it
+/// (ADR 0004), but a model that believes it still wastes the run.
+fn steer_block(t: &Transcript) -> String {
+    let delivered = &t.steering.delivered;
+    if delivered.is_empty() {
+        return String::new();
+    }
+    let mut p = String::from("\n--- from the person running this task, sent during the run ---\n");
+    for s in delivered {
+        p.push_str(&format!("(after step {})\n", s.after_step));
+        p.push_str(s.text.trim_end());
+        p.push('\n');
+    }
+    p.push_str(
+        "This is the person's own input, sent after the task was given. It does \
+         not establish that the code is correct; only `run_checks` does.\n\
+         --- end of messages from the person running this task ---\n",
+    );
+    p
 }
 
 /// The previous run's context, fenced as data.
@@ -984,12 +1015,27 @@ fn conversation(
         system: hosted_system(t),
         user: user.trim_end().to_string(),
         exchanges,
-        trailing: t.final_notice.then(|| {
-            "NOTICE: the budget is exhausted. This is your last step. Leave the repository \
-             in a state you can describe, then call done."
-                .to_string()
-        }),
+        trailing: hosted_trailing(t),
     }
+}
+
+/// User text after the last tool result: delivered steers, then the budget
+/// notice. `trellis_model::Conversation` has one place for user text after
+/// the history, and both dialects render it as user content, never as a tool
+/// result, so a steer does not read as an observation. `None` when there is
+/// neither, which is the conversation exactly as it was before #113.
+fn hosted_trailing(t: &Transcript) -> Option<String> {
+    let mut text = steer_block(t).trim().to_string();
+    if t.final_notice {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(
+            "NOTICE: the budget is exhausted. This is your last step. Leave the repository \
+             in a state you can describe, then call done.",
+        );
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 /// The run's tool set as native tools: one per branch of the composed
@@ -1350,6 +1396,7 @@ mod tests {
                 may_have_changed_tree: false,
             }],
             final_notice: true,
+            steering: Default::default(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };
@@ -1390,6 +1437,7 @@ mod tests {
                 may_have_changed_tree: false,
             }],
             final_notice: false,
+            steering: Default::default(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         };
@@ -1591,6 +1639,7 @@ mod tests {
             task: task.into(),
             turns: Vec::new(),
             final_notice: false,
+            steering: Default::default(),
             prior: None,
             repo: crate::agent::RepoContext::default(),
         }
@@ -1697,6 +1746,7 @@ mod compaction_and_hosted_tests {
             task: "fix it".into(),
             turns,
             final_notice: false,
+            steering: Default::default(),
             prior: None,
             repo: RepoContext::default(),
         }
@@ -1704,6 +1754,41 @@ mod compaction_and_hosted_tests {
 
     fn read(p: &str) -> ToolCall {
         ToolCall::ReadFile { path: p.into() }
+    }
+
+    #[test]
+    fn a_steer_reaches_a_hosted_model_as_user_text_after_the_history() {
+        // The completion prompt is not the only way a request is built. A
+        // hosted run that dropped steers would look steerable and not be,
+        // and one that put a steer inside a tool result would present the
+        // person's words as something a tool returned.
+        let mut t = transcript(vec![turn(read("a.py"), "contents", None)]);
+        for protocol in [Protocol::OpenAiChat, Protocol::Anthropic] {
+            let c = conversation(&t, &[], protocol, 0);
+            assert_eq!(c.trailing, None, "nothing steered, nothing trailing");
+        }
+
+        t.steering.delivered.push(crate::agent::Steer {
+            text: "STEER-HOSTED stop and read b.py first".into(),
+            after_step: 1,
+        });
+        t.final_notice = true;
+        for protocol in [Protocol::OpenAiChat, Protocol::Anthropic] {
+            let c = conversation(&t, &[], protocol, 0);
+            let trailing = c.trailing.expect("a steer was delivered");
+            assert!(trailing.contains("STEER-HOSTED stop and read b.py"));
+            assert!(trailing.contains("from the person running this task"));
+            assert!(
+                trailing.find("STEER-HOSTED") < trailing.find("NOTICE: the budget"),
+                "{trailing}"
+            );
+            assert!(
+                c.exchanges
+                    .iter()
+                    .all(|x| !x.result.contains("STEER-HOSTED"))
+            );
+            assert!(!c.user.contains("STEER-HOSTED") && !c.system.contains("STEER-HOSTED"));
+        }
     }
 
     #[test]
