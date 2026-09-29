@@ -45,9 +45,9 @@ wherever the two disagree. The items those sections name as not built are:
   bash together); a configurable timeout for custom tools; tracking what
   bash writes in the worktree; `after_run` on Ctrl-C.
 - **W-C (0024):** streaming, `HTTPS_PROXY`, a `Retry-After` given as a date,
-  summaries written by the model, OAuth/Bedrock/Vertex/Azure, and the `ask`
-  classifier on hosted models. Hosted runs have been exercised only against
-  loopback stubs, never a real provider.
+  summaries written by the model, and OAuth/Bedrock/Vertex/Azure. (The
+  `ask` classifier on hosted models was built by #41.) Hosted runs have
+  been exercised only against loopback stubs, never a real provider.
 - **W-D (0025):** `/new`, `/name`, `/copy`, RPC `compact`, and a user-level
   `system.md`.
 - **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),

@@ -490,7 +490,16 @@ impl Session {
                 .enable_all()
                 .build()?;
             let inventory = trellis_index::discover_relative(&self.root);
-            match rt.block_on(crate::ask::classify(&spec, task, &inventory)) {
+            // Loaded as the run loads it, because on a hosted spec this call
+            // sends the key as well, under the same rule (ADR 0024 §3).
+            let cfg = crate::config::RepoConfig::load(&self.root)?;
+            match rt.block_on(crate::ask::classify(
+                &spec,
+                task,
+                &inventory,
+                &cfg,
+                self.model_from_user,
+            )) {
                 Ok(crate::ask::Intent::Answer(text)) => {
                     println!("{}", crate::plain(&text));
                     println!();
