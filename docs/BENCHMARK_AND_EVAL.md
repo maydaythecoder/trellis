@@ -494,6 +494,17 @@ unresolved sites, `MethodDispatchUntyped` 6,090), and `DecoratorIndirection`
 does not dominate. Its "try first" condition is therefore false. The paragraph
 is kept as the record of what was proposed.
 
+**First slice built (#168).** `trellis index` runs the backstop when
+`.trellis/config.toml` sets `[index] backstop = "pyright"`. It prints whether
+the backstop ran, the server's reported version, and the counts it queried,
+bound and left alone, beside the resolver's counts and never added to
+`resolved`. Its edges are not written to `.trellis/index.bin` or into the
+graph, so every site it binds stays unpartitionable (rule 6). With Node or
+Pyright absent the index completes and says the backstop did not run. What
+recall it produces: pending, measured by the human audit (#3). Its memory on
+the corpus: pending, v1.0. The client was tested against a scripted language
+server, not against Pyright.
+
 **Cheaper intermediate, to try first.** If the `Reason` distribution shows
 `DecoratorIndirection` dominating — the prediction, supported by the 20–41%
 decorated-definition density across all three candidate repos — then a decorator
