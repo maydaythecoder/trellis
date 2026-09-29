@@ -771,7 +771,7 @@ file stood at the corpus plus the task's defect for the whole run.
 
 Method:
 
-- **Command**, at commit `9ad11da`, once per directory
+- **Command**, at commit `d19a2d0`, once per directory
   (`floor-qwen2.5-0.5b-q4km`, `floor-qwen2.5-0.5b-q4km-fixed-harness`,
   `floor-qwen2.5-coder-3b-q4km`):
   ```
