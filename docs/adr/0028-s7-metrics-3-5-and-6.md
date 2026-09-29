@@ -39,8 +39,14 @@ machine, §5.5) and no information.
 The waiver is scoped to the decoding setting, not to the model or the
 runtime. **Any configuration sampled at a temperature above 0 still needs the
 five repetitions per task that §5 designed**, and its floor is set on the
-worst case or p25 of those five, as §5 states. A report that does not name its
-temperature is treated as sampled, not as greedy.
+worst case or p25 of those five, as §5 states.
+
+The temperature is read from what the adapter sends, not assumed from the
+model. `RuntimeModel` (`trellis-model/src/runtime.rs`) sends `temperature: 0.0`
+in every dialect it speaks, which is how both configurations in §5.2 were
+driven. The hosted adapter (`hosted.rs`) sends no temperature, so the
+provider's default applies; a hosted configuration is treated as sampled and
+gets the five repetitions.
 
 What would reopen it: evidence that a temperature-0 configuration is not
 deterministic on the runtime used (for example batched inference changing
@@ -77,10 +83,13 @@ guarantees the call parses, never that its arguments refer to anything real,
 and this audit is the direct measure of that gap.
 
 The audit is computed from each task's trail, which records every call with
-its arguments. It is applied from the next measured configuration (#144)
-onward. The two configurations already in §5.2 were not re-scored under it;
-until they are, their argument evidence is the verbatim calls quoted in §5.3
-and §5.6, not an audit figure.
+its arguments (the per-task files under `docs/bench/floor-*/`). **No script
+computes it yet**, and #144's scope does not include one: writing it is its
+own ticket. Until then metric 3 is pending. The trails of #144's run are the
+first it is to be applied to, and the two configurations already in §5.2 can
+be re-scored from their committed trails by the same script; until they are,
+their argument evidence is the verbatim calls quoted in §5.3 and §5.6, not an
+audit figure.
 
 What would reopen it: a corpus with real history, so that a gold trace exists
 again. Then the gold-trace comparison is the stronger measure and returns.
@@ -98,11 +107,12 @@ low fill. Until then it is pending, and S7 is not resolved.
   temperature-0 configurations. It cannot be resolved while metric 6 is
   pending, and it cannot be resolved without a configuration that passes,
   which the floor needed anyway.
-- A floor report states its decoding temperature. Without it the metric 5
-  waiver cannot be applied.
-- Metric 3's figure is a lower bound on argument error, not argument
-  correctness in the gold-trace sense, and must be labelled as the per-call
-  audit wherever it is quoted.
+- A floor report states its decoding temperature, read from the adapter as
+  above. The metric 5 waiver applies only where that is 0.
+- Metric 3's counts are not argument correctness in the gold-trace sense. The
+  failing calls are a lower bound on argument error; the passing calls are an
+  upper bound on argument correctness, since a pass can still name the wrong
+  line. Either must be labelled as the per-call audit wherever it is quoted.
 
 ## Alternatives rejected
 
