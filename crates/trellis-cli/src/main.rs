@@ -1843,19 +1843,25 @@ fn run_body(
         .map(|r| format!("{} (no writes)", r.as_written()))
         .collect();
     // Told, not only enforced, for the reason the rules are: a model that
-    // does not know the scope spends turns on refusals.
+    // does not know the scope spends turns on refusals. Phrased for the
+    // prompt's heading, which lists the files the model may not edit, and
+    // written as the rules parse, as the `deny_write` lines above are.
     if let Some(p) = profile
         && let Some(allow) = &p.file.allow_write
     {
         prompt_rules.push(if allow.is_empty() {
             format!(
-                "no path at all (agent `{}` has an empty allow_write)",
+                "every path (agent `{}` has an empty allow_write: no writes)",
                 p.name
             )
         } else {
+            let written: Vec<String> = allow
+                .iter()
+                .map(|a| trellis_loop::Rule::parse(a).as_written())
+                .collect();
             format!(
-                "only {} may be written (agent `{}`'s allow_write); everything else is refused",
-                allow.join(", "),
+                "every path except {} (agent `{}`'s allow_write)",
+                written.join(", "),
                 p.name
             )
         });
