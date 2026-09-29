@@ -135,7 +135,9 @@ different surfaces is not, because the brief is what a reader is told to trust.
 
 Owner's call. Found by auditing `--help` against the brief, 2026-09-22.
 
-**Q-19 — Two interfaces exist. Which one is the product?**
+**Q-19 — Two interfaces exist. Which one is the product? — ANSWERED**
+*Resolved 2026-09-28 by the owner (#16): `tui-demo` is the product; `chat` is archived in git history. `crates/chat` was deleted on 2026-09-29; the paths below name it as it was, and `git log -- crates/chat` recovers it.*
+
 The workspace ships two Ratatui front-ends:
 
 | | `crates/tui-demo` | `crates/chat` |
