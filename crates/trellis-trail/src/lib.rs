@@ -244,7 +244,46 @@ pub struct Action {
     /// files a run ended up touching, not which of its actions did the
     /// touching. A run whose every edit was refused has an empty `proposed`
     /// and a full list of actions, and those are different stories.
+    ///
+    /// Set by `edit` and `write_file` only. A `bash` or custom-tool call
+    /// leaves it false; what one of those changed is in `changed`.
     pub wrote: bool,
+    /// For a `bash` or custom-tool call: the repository paths trellis
+    /// carried back from the command's throwaway clone and wrote (ADR 0023
+    /// §7, ADR 0032), at most [`CHANGED_CAP`] of them, in the order they
+    /// were written.
+    ///
+    /// Best-effort, and the ADR names what it cannot see: a command that
+    /// writes into the repository by its absolute path, a hook's writes
+    /// around the call, and anything not carried back (new files,
+    /// deletions, refused paths) because the repository did not change.
+    ///
+    /// Omitted when empty, so a trail written before the field, and every
+    /// action that changed nothing, keeps its bytes and its digest. Read
+    /// back, these are paths a repository chose, and data only (ADR 0007).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+    /// How many paths the call changed, which is more than `changed` holds
+    /// when the list was cut at [`CHANGED_CAP`]. Omitted when zero, for the
+    /// same reason as `changed`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub changed_count: u32,
+}
+
+/// The most paths one action's `changed` lists. A command that rewrites a
+/// whole tree would otherwise put thousands of paths into a committed
+/// file; the true count is kept beside the cut list.
+pub const CHANGED_CAP: usize = 50;
+
+impl Action {
+    /// Records `paths` as what this action changed: the first
+    /// [`CHANGED_CAP`] of them, and how many there were.
+    #[must_use]
+    pub fn with_changed(mut self, paths: &[String]) -> Self {
+        self.changed = paths.iter().take(CHANGED_CAP).cloned().collect();
+        self.changed_count = u32::try_from(paths.len()).unwrap_or(u32::MAX);
+        self
+    }
 }
 
 /// How much prompt a run consumed, and how fast it grew.
@@ -552,6 +591,8 @@ mod tests {
                         target: "Installer.run".into(),
                         outcome: "47 resolved, 3 candidates, 2 unresolved".into(),
                         wrote: false,
+                        changed: Vec::new(),
+                        changed_count: 0,
                     },
                     Action {
                         turn: 2,
@@ -559,6 +600,8 @@ mod tests {
                         target: "src/poetry/installation/installer.py".into(),
                         outcome: "applied".into(),
                         wrote: true,
+                        changed: Vec::new(),
+                        changed_count: 0,
                     },
                     Action {
                         turn: 3,
@@ -566,6 +609,8 @@ mod tests {
                         target: "Tests".into(),
                         outcome: "Tests: passed".into(),
                         wrote: false,
+                        changed: Vec::new(),
+                        changed_count: 0,
                     },
                 ],
                 control: None,

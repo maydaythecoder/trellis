@@ -1598,6 +1598,7 @@ mod tests {
                 prompt_bytes: None,
                 human: None,
                 may_have_changed_tree: false,
+                changed: Vec::new(),
             }],
             final_notice: true,
             steering: Default::default(),
@@ -1639,6 +1640,7 @@ mod tests {
                 prompt_bytes: None,
                 human: None,
                 may_have_changed_tree: false,
+                changed: Vec::new(),
             }],
             final_notice: false,
             steering: Default::default(),
@@ -1972,6 +1974,7 @@ mod compaction_and_hosted_tests {
             radius_summarised: None,
             human: None,
             may_have_changed_tree: false,
+            changed: Vec::new(),
         }
     }
 
