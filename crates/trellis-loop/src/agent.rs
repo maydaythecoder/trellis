@@ -134,7 +134,7 @@ pub struct Turn {
     pub radius_counts: Option<(u32, u32, u32)>,
     /// How many of a radius's call sites the observation summarised by file
     /// instead of listing, because the listing would not fit
-    /// [`RADIUS_OBSERVATION_BYTES`]. `None` for every turn that was not a
+    /// `RADIUS_OBSERVATION_BYTES`. `None` for every turn that was not a
     /// radius. A number, for the same reason as `radius_counts`.
     pub radius_summarised: Option<u32>,
     /// What a person said about this call, when approve mode asked one:
@@ -3418,7 +3418,9 @@ mod selector_tests {
         // listing label, the summarised total and the collapsed line fit
         // together for any counts. The header's length is bounded: fixed
         // prose, three reason names and their counts, and five numbers.
-        // Every reason at u32::MAX, and every count widened to 20 digits.
+        // Every reason at u32::MAX (three names chosen by the tie-break,
+        // each within a few bytes of the longest, against a margin of well
+        // over a thousand), and every count widened to 20 digits.
         let mut c = RadiusCoverage {
             unbound_in_touched_files: u32::MAX,
             touched_files: u32::MAX,
