@@ -126,9 +126,7 @@ of them.
 
 - **Every `git` spawn goes through `trellis_vcs` (`command()`/`git_argv`)**,
   so a `core.fsmonitor` or hooks path planted in `.git/config` never runs
-  under trellis. `tests/hygiene.rs` fails on a bare spawn. `chat` keeps a
-  copy of the overrides, and a test ties that copy to `trellis_vcs`.
-  (ADR 0023)
+  under trellis. `tests/hygiene.rs` fails on a bare spawn. (ADR 0023)
 - **Every child process drops the provider-key variables**
   (`trellis_core::secrets::scrub`). `tests/child_env.rs` fails on an
   unscrubbed spawn. A process agent gets back only the variables its profile

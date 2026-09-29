@@ -1,7 +1,7 @@
 //! Source-level guards, as tests rather than as a CI grep.
 //!
-//! Chat has the same guard over its own `src/tui/`. This crate's TUI is a
-//! separate tree, and a guard in one crate does not read the other's files.
+//! A guard in one crate does not read another's files, so a TUI added in
+//! another crate needs its own copy of this scan.
 
 use std::path::Path;
 
