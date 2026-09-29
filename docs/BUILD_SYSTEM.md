@@ -100,7 +100,7 @@ this file; the output is in the commit message.
 Agent work collects on the integration branch `drain`, which has an open
 draft PR into `v0.1-resolver`. The local pre-push hook refuses every push to
 `v0.1-resolver` from this clone (GitHub branch protection needs Pro on a
-private repository; issue #22).
+private repository; ADR 0036 records the gap and the ruleset to apply later).
 
 ## Where a person is needed
 
