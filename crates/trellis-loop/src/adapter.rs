@@ -374,15 +374,15 @@ impl Compaction {
             bytes_before: before,
             bytes_after: after,
         };
-        tracing::info!(
-            turn = rec.turn,
-            turns_folded = rec.turns_folded,
-            elided_turns = rec.elided_turns,
-            bytes_before = rec.bytes_before,
-            bytes_after = rec.bytes_after,
-            "compacted on request"
-        );
         if k > k0 {
+            tracing::info!(
+                turn = rec.turn,
+                turns_folded = rec.turns_folded,
+                elided_turns = rec.elided_turns,
+                bytes_before = rec.bytes_before,
+                bytes_after = rec.bytes_after,
+                "compacted on request"
+            );
             self.requested.push(rec.clone());
             self.elided = k;
         }
