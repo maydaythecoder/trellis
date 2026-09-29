@@ -38,7 +38,11 @@ Subagents cannot spawn subagents, so only the orchestrator dispatches.
 ## Gates
 
 `scripts/gates/run-all.sh [<issue>]` runs them in order and stops at the first
-failure, printing `GATE / COMMAND / EXIT / OUTPUT`. `--only <id>` runs one.
+failure, printing `GATE / COMMAND / EXIT / LOG / OUTPUT`. `--only <id>` runs one.
+`OUTPUT` is the last 40 lines; `LOG` is the gate's full output, in
+`$GATE_LOG_DIR` (default `${TMPDIR:-/tmp}/trellis-gates/<HEAD sha>/<gate>.log`,
+and never inside the repository). A G2 failure also prints every
+`---- <test> stdout ----` block and `panicked at` line from the full log (#178).
 "This change" means `$GATE_BASE...HEAD`: `origin/drain` on a ticket branch
 (`t<n>-*`), `origin/v0.1-resolver` otherwise (`drain`'s own PR diff).
 
