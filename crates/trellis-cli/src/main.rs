@@ -1388,6 +1388,43 @@ async fn answer_on_the_line(
     }
 }
 
+/// `input` (ADR 0023 §5), for [`cmd_run_with`]: `Err` when it refused the
+/// task. Its own function, not inline, on purpose: `cmd_run_with` is one
+/// stack frame that lives for the whole run, and a debug build keeps every
+/// future it creates in that frame. Inline, this one took the main thread
+/// past its stack on Windows once the loop was running
+/// (`tests/child_env.rs`).
+#[inline(never)]
+fn input_hook(
+    rt: &tokio::runtime::Runtime,
+    hooks: &trellis_loop::Hooks,
+    task: &str,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    match rt.block_on(hooks.input(task)) {
+        None | Some(trellis_loop::InputDecision::Proceed) => Ok(()),
+        Some(trellis_loop::InputDecision::ProceedDespite(e)) => {
+            let _ = writeln!(
+                out,
+                "hook:     input did not refuse the task ({e}); going on"
+            );
+            Ok(())
+        }
+        Some(trellis_loop::InputDecision::Refuse(why)) => {
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", why.replace('\n', " "))
+            };
+            anyhow::bail!(
+                "the input hook refused the task (exit {}){why}. Nothing was \
+                 snapshotted; the run did not start.",
+                trellis_loop::DENY_EXIT
+            )
+        }
+    }
+}
+
 /// Runs the agent loop, and rolls back anything that did not converge.
 ///
 /// The ordering matters and is the whole safety story: snapshot before the
@@ -1693,6 +1730,15 @@ fn run_body(
         &extras.skills,
         &skill_dirs,
     )?;
+
+    // `input` (ADR 0023 §5): the last thing before the snapshot, so a task
+    // it refuses costs nothing and leaves no trail. It is handed the task
+    // and can only refuse it; nothing it prints becomes the task. It runs
+    // in the repository, so a write here dirties the worktree and the
+    // snapshot below refuses the run.
+    if let Some(h) = &tooling.hooks {
+        input_hook(&probe_rt, h, task, out)?;
+    }
 
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
