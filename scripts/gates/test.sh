@@ -19,7 +19,7 @@ bounded() {
   timeout --kill-after=30 "$limit" "$@" || code=$?
   case "$code" in
     0) ;;
-    124 | 137) fail "\`$*\` did not finish within GATE_TEST_TIMEOUT_S=${limit}s; a test is waiting on something (#173)" ;;
+    124 | 137) fail "\`$*\` did not finish within GATE_TEST_TIMEOUT_S=${limit}s: a test waiting on something, or a host too loaded to finish (#173)" ;;
     *) exit "$code" ;;
   esac
 }
