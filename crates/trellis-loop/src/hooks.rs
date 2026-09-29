@@ -302,9 +302,10 @@ impl Hooks {
             "outcome": outcome.as_str(),
         });
         // Boxed: a spawn's future is about 19 KB, and this one is held by
-        // the orchestrator's per-call future, which a debug build polls on
-        // the main thread's stack with little to spare
-        // (`tests/child_env.rs` overflowed it with this inline).
+        // the orchestrator's per-call future. That is polled on the run
+        // thread (`trellis-run`, 8 MiB since #180); before #180 a debug
+        // build polled it on the 1 MiB Windows main thread, and
+        // `tests/child_env.rs` overflowed it with this inline.
         match Box::pin(self.call(argv, payload.to_string().into_bytes())).await {
             Ok(c) if c.code == Some(0) => {}
             Ok(c) => tracing::warn!(
