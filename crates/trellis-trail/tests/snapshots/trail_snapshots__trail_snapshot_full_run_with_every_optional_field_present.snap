@@ -76,6 +76,7 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
     ],
     "control": "approve (edit)",
     "tokens": 812,
+    "prompt_tokens": 9400,
     "agent": "builder",
     "inputs": [
       {
@@ -90,7 +91,7 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
       }
     ]
   },
-  "factual_sha256": "dde60fa729a5deabc49a41497dbd6c52ed7677f43e360ea6812b300fd080e203",
+  "factual_sha256": "f8cb38ac4275706e286c6b990587c910b1de1bd511fa538cb59a68f4c5505375",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"
