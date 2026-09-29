@@ -337,6 +337,14 @@ For each profile, the ledger sums the tokens recorded in trails (§8) whose
 There are no dollars. COST_MODEL.md does not price tokens, and ADR 0021
 excludes dollars until it does.
 
+*Amended 2026-09-29 (#67), by the owner's decision of 2026-09-28:* dollars
+are deferred to v1.x, not excluded. Runs are token-only through v1.0. In
+v1.x dollars arrive only beside tokens, never replacing them, and only once
+COST_MODEL.md carries a per-provider, per-model price table with its source
+and retrieval date and prompt tokens are counted, since hosted providers
+bill both and a price without its method is a number CLAUDE.md does not
+allow.
+
 **What is counted, stated plainly.** The count is **completion tokens as the
 runtime adapter reported them**. It is `Model::tokens_used()`, which the
 runtime adapter sums from each completion's reported count. No figure for
@@ -570,6 +578,21 @@ scheduled instant) and the id of the last task the routine created.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
+
+*Amended 2026-09-29 (#68), by the owner's decision of 2026-09-28:* the
+long-lived watcher stays excluded, and ADR 0020's no-daemon decision
+stands. The OS scheduler (cron, systemd timers, Task Scheduler) can start
+`trellis work --once` on a schedule with no trellis daemon: each start is
+one tick, which evaluates routines and runs at most one task, and the fires
+missed between starts go to the routine's catch-up policy as above. Two
+limits follow from `work` itself. A tick on a dirty worktree stops before
+routines are evaluated, so while a converged change waits for the human
+nothing fires and the fires accumulate as missed. And a scheduled start
+usually has no terminal, and without one a task assigned to a profile in
+approve mode is not claimed. A
+trellis-owned daemon was not taken because it would be a process with
+repository write access and no terminal attached, which is where ADR 0023's
+limits on unsandboxed writers matter most.
 
 **Subcommands:**
 - `trellis routines list` shows the schedule, timezone, policies, next due
