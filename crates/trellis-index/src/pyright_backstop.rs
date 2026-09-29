@@ -806,13 +806,17 @@ def use(obj, cb):
     }
 
     fn fixture(name: &str) -> Fixture {
+        fixture_of(name, REPO)
+    }
+
+    fn fixture_of(name: &str, text: &str) -> Fixture {
         let root = std::env::temp_dir().join(format!(
             "trellis-pyright-backstop-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("a.py"), REPO).unwrap();
+        std::fs::write(root.join("a.py"), text).unwrap();
         let sources = read_sources(&root);
         let index = build_from_sources(&sources);
         Fixture {
@@ -1026,6 +1030,62 @@ def use(obj, cb):
         assert!(report.edges.is_empty());
         assert_eq!(report.queried, 0);
         assert_eq!(report.not_queried, u32::try_from(doubt.len()).unwrap());
+    }
+
+    #[test]
+    fn pyright_backstop_binds_a_candidates_site_only_inside_the_resolver_s_set() {
+        // A declared type makes `a.run()` a `Candidates` site over `Base.run`
+        // and every override (ADR 0012). That set is an upper bound over
+        // first-party code, so an answer outside it is a disagreement and is
+        // left alone; one inside it is bound, tagged as the server's.
+        let text = "class Base:
+    def run(self):
+        return 1
+
+
+class Sub(Base):
+    def run(self):
+        return 2
+
+
+def helper():
+    return 3
+
+
+def use(a: Base, b: Base):
+    a.run()
+    b.run()
+";
+        let f = fixture_of("candidates", text);
+        let (a_site, b_site) = (f.site("a.run()"), f.site("b.run()"));
+        for s in [a_site, b_site] {
+            assert!(
+                matches!(f.target(s), Target::Candidates(_)),
+                "fixture: {s:?} must be Candidates, got {:?}",
+                f.target(s)
+            );
+        }
+        let sub_start = text.find("class Sub").unwrap();
+        let sub_run = f
+            .index
+            .symbols
+            .iter()
+            .position(|s| f.index.interner.resolve(s.name) == "run" && s.span.0 > sub_start)
+            .map(SymbolId::from_index)
+            .unwrap();
+        let answers = json!({"15:6": f.location(10, 4), "16:6": f.location(6, 8)});
+        let server = f.server(answers, "");
+        let report = run(&f.index, &f.root, &[a_site, b_site], &server);
+
+        assert_eq!(
+            report.edges,
+            vec![BackstopEdge {
+                from: b_site,
+                callee: sub_run,
+                source: EdgeSource::Pyright,
+            }]
+        );
+        assert_eq!((report.queried, report.left), (2, 1));
     }
 
     #[test]
