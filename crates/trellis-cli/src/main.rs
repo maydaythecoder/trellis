@@ -2568,9 +2568,9 @@ const RUN_THREAD: &str = "trellis-run";
 /// temporarily read from the environment and
 /// `tests/child_env.rs::checks_bash_custom_tools_and_hooks_inherit_no_key`
 /// run three times per size: 896 KiB overflowed 3/3 and 928 KiB passed 3/3
-/// (Windows reserves in 64 KiB steps, so the demand is at most 960 KiB).
-/// The run's root future was 21,064 B, and #137 measured `gated` at
-/// 20,448 B. So the main thread had well under 128 KiB to spare, less the
+/// (sizes between were not tried). The run's root future was 21,064 B,
+/// and #137 measured `gated` at 20,448 B. So the main thread had less than
+/// 128 KiB to spare, less the
 /// frames above `run_body`, and #19 and #137 each had to box a future to
 /// fit. Here the same run has about eight times its measured demand, for
 /// every caller and every future, without any of them boxing. The stack is
@@ -2582,12 +2582,18 @@ const RUN_STACK_BYTES: usize = 8 * 1024 * 1024;
 /// A panic in `f` continues on the caller's thread, so `RollbackOnPanic`
 /// in the caller's frame still sees `std::thread::panicking()` and the
 /// process still fails as it did when `f` ran inline.
+///
+/// The caller's `tracing` dispatcher goes with it. A default set with
+/// `with_default` is per thread, and the full-screen interface sets one
+/// around `cmd_run` to show the loop's events; without this the loop would
+/// emit them where nothing listens.
 fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
     std::thread::scope(|s| {
         let h = std::thread::Builder::new()
             .name(RUN_THREAD.into())
             .stack_size(RUN_STACK_BYTES)
-            .spawn_scoped(s, f)
+            .spawn_scoped(s, move || tracing::dispatcher::with_default(&dispatch, f))
             .context("starting the thread the run is polled on")?;
         match h.join() {
             Ok(v) => Ok(v),
@@ -5288,6 +5294,31 @@ mod loop_stack_tests {
         .unwrap();
         assert_eq!(name.as_deref(), Some(RUN_THREAD));
         assert_eq!(got, 0);
+    }
+
+    /// Counts the events it sees.
+    struct Count(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+        fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// An event emitted on the run thread reaches a subscriber the caller
+    /// set for its own thread only. `tui_run` sets one around `cmd_run` to
+    /// show the loop's turns; if the run thread did not inherit it, those
+    /// events would go to the global subscriber and the screen would show
+    /// no turns while the run went on.
+    #[test]
+    fn loop_stack_the_callers_thread_scoped_subscriber_sees_the_run() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sub = tracing_subscriber::registry().with(Count(seen.clone()));
+        tracing::subscriber::with_default(sub, || {
+            on_run_stack(|| tracing::info!("emitted on the run thread")).unwrap();
+        });
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// A panic on the run thread continues on the caller's. `RollbackOnPanic`
