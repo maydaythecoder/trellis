@@ -501,9 +501,20 @@ bound and left alone, beside the resolver's counts and never added to
 `resolved`. Its edges are not written to `.trellis/index.bin` or into the
 graph, so every site it binds stays unpartitionable (rule 6). With Node or
 Pyright absent the index completes and says the backstop did not run. What
-recall it produces: pending, measured by the human audit (#3). Its memory on
-the corpus: pending, v1.0. The client was tested against a scripted language
-server, not against Pyright.
+recall it produces: pending, measured by the human audit (#3).
+
+**Run against Pyright 1.1.414 on poetry 2.5.0 (#177, 2026-09-29):
+[`bench/pyright-backstop-poetry-20260929.md`](bench/pyright-backstop-poetry-20260929.md).**
+7,580 doubt sites queried, 1,859 bound, 5,721 left alone, 22 not queried;
+`trellis index` took 59.3 s wall time, with a 677.5 MiB peak working set for
+Pyright's Node process (one run, sampled `PeakWorkingSet64`, no Python
+environment installed; method and caveats in the file). Memory on a large
+repository: still pending, v1.0. Two findings recorded there: Pyright does not
+send `serverInfo`, so its version is not printed; and 813 of the 857 edges
+bound on `Candidates` sites name a method a first-party subclass overrides,
+because Pyright answers with the declared type's member, which ADR 0012 treats
+as an upper bound. The 1,859 is therefore not a count of sites narrowed to
+their runtime callee.
 
 **Cheaper intermediate, to try first.** If the `Reason` distribution shows
 `DecoratorIndirection` dominating — the prediction, supported by the 20–41%
