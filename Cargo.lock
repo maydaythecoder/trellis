@@ -3050,6 +3050,7 @@ dependencies = [
 name = "trellis-index"
 version = "0.0.1"
 dependencies = [
+ "insta",
  "postcard",
  "rayon",
  "serde",
