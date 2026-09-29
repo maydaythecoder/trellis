@@ -460,8 +460,10 @@ impl Task {
 
     /// Appends a note a person wrote with `trellis queue note`, and returns
     /// its id. The only notes an `@name` mention in may wake a profile
-    /// (`mention.rs`). Ids count up from `n1` within the task; notes are
-    /// never removed, so a position names the same note for good.
+    /// (`mention.rs`). The id is `n` and the note's 1-based position in
+    /// the task's list, so ids have gaps where the queue wrote its own
+    /// notes; notes are never removed, so a position names one note for
+    /// good.
     pub fn note_from_person(&mut self, text: impl Into<String>) -> String {
         let id = format!("n{}", self.notes.len() + 1);
         self.notes.push(Note {

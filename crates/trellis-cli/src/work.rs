@@ -477,13 +477,12 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
         QueueAction::Note { id, text } => {
             // The one writer of a person's note: an `@name` in it wakes that
             // profile's task on the next `work` tick (trellis_queue::mention).
-            let mut nid = String::new();
             q.edit(&id, |t, _| {
-                nid = t.note_from_person(text.clone());
+                t.note_from_person(text.clone());
                 Ok(None)
             })?;
             q.log(Event::new(Actor::Human, "task.note", format!("task:{id}")).detail(text))?;
-            println!("noted:    {id} (note {nid})");
+            println!("noted:    {id}");
             Ok(())
         }
         QueueAction::Cancel { id, reason } => {
