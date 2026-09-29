@@ -1172,12 +1172,15 @@ mod tests {
         // The risk: credentials either sent somewhere the user did not
         // expect, or printed in the refusal that names the problem.
         let ep = Endpoint::parse("https://api.openai.com/v1").unwrap();
-        let e = proxy_for(
-            &ep,
-            &env(&[("HTTPS_PROXY", "http://alice:s3cret-pw@proxy.example:3128")]),
-        )
-        .unwrap_err()
-        .to_string();
+        // Built at run time: a `user:pass@` literal reads as a leaked
+        // basic-auth string to the secret scanner on every push (#185).
+        // Leaked because `env` takes `'static` pairs; two short strings in a
+        // test.
+        let proxy =
+            |pw: &str| -> &'static str { format!("http://alice:{pw}@proxy.example:3128").leak() };
+        let e = proxy_for(&ep, &env(&[("HTTPS_PROXY", proxy("s3cret-pw"))]))
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("credentials"), "{e}");
         assert!(!e.contains("s3cret-pw") && !e.contains("alice"), "{e}");
         // A host NO_PROXY exempts never reads the proxy, so a proxy URL it
@@ -1185,10 +1188,7 @@ mod tests {
         assert_eq!(
             proxy_for(
                 &ep,
-                &env(&[
-                    ("HTTPS_PROXY", "http://alice:pw@proxy.example:3128"),
-                    ("NO_PROXY", "openai.com")
-                ])
+                &env(&[("HTTPS_PROXY", proxy("pw")), ("NO_PROXY", "openai.com")])
             )
             .unwrap(),
             None

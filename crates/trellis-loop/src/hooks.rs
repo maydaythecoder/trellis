@@ -4,11 +4,12 @@
 //! exit code and output come back. Loaded only for a repository the user has
 //! trusted (`trust.rs`); this module assumes that decision was made.
 //!
-//! What a hook can do is deliberately narrow. `pre_tool` can refuse a call.
-//! `before_run` can add text to the prompt, fenced as untrusted. `post_tool`
-//! and `after_run` observe. None of them can produce a pass, rewrite a call
-//! or an observation, or make a run converge: they return exit codes and
-//! bytes, and neither is a `Verdict` (ADR 0004).
+//! What a hook can do is deliberately narrow. `pre_tool` can refuse a call,
+//! and `input` can refuse a task. `before_run` can add text to the prompt,
+//! fenced as untrusted. `post_tool`, `turn_end` and `after_run` observe.
+//! None of them can produce a pass, rewrite a call, a task or an
+//! observation, or make a run converge: they return exit codes and bytes,
+//! and neither is a `Verdict` (ADR 0004).
 
 use crate::agent::ToolCall;
 use crate::exec::{self, OUTPUT_CAP, Spec};
@@ -50,6 +51,9 @@ pub enum HookError {
     BeforeRunExited { code: String, stderr: String },
     #[error("after_run exited with {code}")]
     AfterRunExited { code: String },
+    /// Any exit from `input` but 0 or 2: not a refusal, so the run goes on.
+    #[error("input exited with {code}, which is neither 0 nor a refusal (2)")]
+    InputExited { code: String },
 }
 
 /// `[hooks]` as written. Each hook is an argv array, so it runs the same way
@@ -61,17 +65,28 @@ pub struct HookConfig {
     pub post_tool: Option<Vec<String>>,
     pub before_run: Option<Vec<String>>,
     pub after_run: Option<Vec<String>>,
+    /// After each model turn, observe only.
+    pub turn_end: Option<Vec<String>>,
+    /// Before the snapshot, with the task; exit 2 refuses the run.
+    pub input: Option<Vec<String>>,
     pub timeout_s: Option<u64>,
 }
 
 impl HookConfig {
     /// Each declared hook with its event name, in a fixed order.
+    ///
+    /// The trust digest is built from this list (`Fingerprint::of`), so an
+    /// event missing here would run code nobody was asked to trust. The two
+    /// later events go last, so a repository that declares neither keeps
+    /// the digest it was trusted under.
     pub fn declared(&self) -> Vec<(&'static str, &[String])> {
         [
             ("pre_tool", &self.pre_tool),
             ("post_tool", &self.post_tool),
             ("before_run", &self.before_run),
             ("after_run", &self.after_run),
+            ("turn_end", &self.turn_end),
+            ("input", &self.input),
         ]
         .into_iter()
         .filter_map(|(n, a)| a.as_deref().map(|a| (n, a)))
@@ -231,6 +246,117 @@ impl Hooks {
                 Ok(c) => Err(HookError::AfterRunExited { code: code(c.code) }),
             },
         )
+    }
+    /// The run id every hook's environment carries, for the events whose
+    /// payload names it. Read from the environment `new` was given rather
+    /// than held twice, so the payload and `TRELLIS_RUN_ID` cannot differ.
+    fn run_id(&self) -> Option<&str> {
+        self.env
+            .iter()
+            .find(|(k, _)| k == "TRELLIS_RUN_ID")
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Runs `input` with the task, before the snapshot. `None` when no
+    /// `input` is declared.
+    ///
+    /// Exit 2 refuses the run, with stderr as the reason. Every other end
+    /// (exit 0, another code, a timeout, a failure to start) lets it go on:
+    /// unlike `pre_tool`, this is not a gate in front of a write, and a
+    /// hook that crashes on every task would otherwise stop every run. What
+    /// it prints is never read as a task: it can refuse, not rewrite.
+    pub async fn input(&self, task: &str) -> Option<InputDecision> {
+        let argv = self.cfg.input.as_ref()?;
+        let payload = serde_json::json!({ "run_id": self.run_id(), "task": task });
+        Some(
+            match self.call(argv, payload.to_string().into_bytes()).await {
+                Err(e) => InputDecision::ProceedDespite(e),
+                Ok(c) if c.timed_out => InputDecision::ProceedDespite(HookError::TimedOut {
+                    event: "input",
+                    secs: self.timeout.as_secs(),
+                }),
+                Ok(c) if c.code == Some(0) => InputDecision::Proceed,
+                Ok(c) if c.code == Some(DENY_EXIT) => {
+                    let why = c.stderr.render();
+                    InputDecision::Refuse(cap_head(why.trim(), 500))
+                }
+                Ok(c) => {
+                    InputDecision::ProceedDespite(HookError::InputExited { code: code(c.code) })
+                }
+            },
+        )
+    }
+
+    /// Runs `turn_end` after a model turn. Observe only: its output is
+    /// discarded and its exit changes nothing. The caller brackets it with
+    /// the worktree fingerprint, as it does `post_tool`, because a write
+    /// here lands after the turn's check.
+    pub(crate) async fn turn_end(&self, turn: u32, tool: &str, outcome: TurnOutcome) {
+        let Some(argv) = &self.cfg.turn_end else {
+            return;
+        };
+        let payload = serde_json::json!({
+            "run_id": self.run_id(),
+            "turn": turn,
+            "tool": tool,
+            "outcome": outcome.as_str(),
+        });
+        // Boxed: a spawn's future is about 19 KB, and this one is held by
+        // the orchestrator's per-call future. That is polled on the run
+        // thread (`trellis-run`, 8 MiB since #180); before #180 a debug
+        // build polled it on the 1 MiB Windows main thread, and
+        // `tests/child_env.rs` overflowed it with this inline.
+        match Box::pin(self.call(argv, payload.to_string().into_bytes())).await {
+            Ok(c) if c.code == Some(0) => {}
+            Ok(c) => tracing::warn!(
+                hook = "turn_end",
+                code = ?c.code,
+                timed_out = c.timed_out,
+                "hook did not exit 0; ignored, it only observes"
+            ),
+            Err(e) => tracing::warn!(hook = "turn_end", error = %e, "hook did not start"),
+        }
+    }
+}
+
+/// What `input` decided about a task.
+#[derive(Debug)]
+pub enum InputDecision {
+    /// Exit 0.
+    Proceed,
+    /// The hook did not refuse, and did not succeed either; the caller says
+    /// why and the run goes on.
+    ProceedDespite(HookError),
+    /// Exit 2, with stderr (capped) as the reason. Possibly empty.
+    Refuse(String),
+}
+
+/// What `turn_end` is told about the turn: a label, never the result.
+///
+/// `CheckPassed` is a fact about a process the hook can log, and nothing
+/// more: the hook's answer is discarded, so it cannot turn this into a
+/// pass (ADR 0004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnOutcome {
+    /// A gate refused the call and the tool did not run.
+    Denied,
+    /// The tool ran, or was refused inside, and failed.
+    Error,
+    CheckPassed,
+    CheckFailed,
+    /// Any other result.
+    Ok,
+}
+
+impl TurnOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Denied => "denied",
+            Self::Error => "error",
+            Self::CheckPassed => "check_passed",
+            Self::CheckFailed => "check_failed",
+            Self::Ok => "ok",
+        }
     }
 }
 
@@ -519,10 +645,15 @@ mod tests {
         } else {
             "i=1; while [ $i -le 1500 ]; do echo line $i; i=$((i+1)); done"
         };
+        // What this defends is which part of the output is kept, not how
+        // fast the hook runs: 1500 `echo`s under cmd on a loaded host took
+        // longer than the 10 s default and the hook timed out (issue #184).
+        // 120 s is the outer bound #173 chose for its gate.
         let h = Hooks::new(
             d.path(),
             HookConfig {
                 before_run: Some(shell_argv(script)),
+                timeout_s: Some(120),
                 ..Default::default()
             },
             vec![],
@@ -545,6 +676,51 @@ mod tests {
         assert!(
             printed > 12_000,
             "1500 lines is more than 12 KB; {printed} is the size of what was kept"
+        );
+    }
+
+    #[test]
+    fn turn_end_and_input_are_in_the_trust_digest() {
+        // The risk: the digest is built from `declared()`, and an event left
+        // out of it would run code no one was asked to trust. Adding either
+        // hook, or changing its argv, must ask for `trellis trust` again.
+        let d = tempfile::tempdir().unwrap();
+        let fp = |cfg: HookConfig| crate::trust::Fingerprint::of(d.path(), &cfg, &[], None);
+        let base = fp(HookConfig::default());
+        for (cfg, other) in [
+            (
+                HookConfig {
+                    turn_end: Some(vec!["a".into()]),
+                    ..Default::default()
+                },
+                HookConfig {
+                    turn_end: Some(vec!["b".into()]),
+                    ..Default::default()
+                },
+            ),
+            (
+                HookConfig {
+                    input: Some(vec!["a".into()]),
+                    ..Default::default()
+                },
+                HookConfig {
+                    input: Some(vec!["b".into()]),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            assert_eq!(cfg.count(), 1);
+            let (one, two) = (fp(cfg), fp(other));
+            assert_ne!(one, base, "adding the hook must change the digest");
+            assert_ne!(one, two, "changing its argv must change the digest");
+        }
+        assert!(
+            HookConfig {
+                input: Some(vec![]),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
         );
     }
 
