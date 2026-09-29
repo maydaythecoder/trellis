@@ -569,8 +569,9 @@ pub trait Model {
     }
 
     /// Every compaction so far (ADR 0024 §5), for the trail and the run's
-    /// output. Empty for a driver that never elides, which is every driver
-    /// with no `[model] context_bytes` and every scripted one.
+    /// output. Empty for a driver that never elides: a local driver with no
+    /// `[model] context_bytes` (a hosted one defaults to a budget, #152) and
+    /// every scripted one.
     fn compactions(&self) -> &[crate::adapter::Compacted] {
         &[]
     }
