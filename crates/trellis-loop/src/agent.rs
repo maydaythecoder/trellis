@@ -3209,8 +3209,9 @@ rank = \"non-negotiable\"
     /// checker's life. Unbounded by the budget, the check runs until the
     /// checker exits 0 (`timeout_s` is thirty minutes), which fails both the
     /// elapsed assertion and the verdict one. The bound was 10 s against a
-    /// 30 s checker, and a loaded host took 11.6 s to kill the check and
-    /// finish the run (issue #184).
+    /// 30 s checker, and a loaded Windows host took 11.6 s to finish the
+    /// run although the check itself exited at once (see the `rem` below;
+    /// issue #184).
     #[tokio::test]
     async fn a_hung_check_ends_when_the_run_budget_does() {
         let d = repo();
