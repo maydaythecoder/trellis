@@ -94,11 +94,12 @@
     }
   ],
   "_guards_comment": "Cases that need no model, or a scripted one. They are deterministic, so these rows pin behaviour that cannot drift with a weight - the refusals the whole design rests on, and one full loop with the judgement removed.",
+  "_scripted_comment": "A `scripted:` path here is relative to qa/fixtures/; the runners make it absolute at run time (qa/demo_fixture.py resolve_model), so this file names no machine's directories.",
   "guards": [
     {
       "id": "scripted",
       "why": "The real loop, real files, real checks and real rollback with the judgement removed. A row that cannot drift. Never a model floor (S7).",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-annotate.json",
+      "model": "scripted:scripted-annotate.json",
       "task": "fix the describe annotation",
       "expect": {
         "converges": true,
@@ -133,7 +134,7 @@
     {
       "id": "done_only",
       "why": "The model says it is finished, immediately, having done nothing and run no check. ADR 0004: a model never issues a correctness verdict and `done` is not one. This must not converge. It is the most load-bearing claim in the project and needs no model to test.",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-done-only.json",
+      "model": "scripted:scripted-done-only.json",
       "task": "check whether the annotation is right",
       "expect": {
         "converges": false,
@@ -143,7 +144,7 @@
     {
       "id": "done_after_edit",
       "why": "A correct edit, then `done`, with no check run. The edit really is right; the claim that it is right is the model's, and nothing executed to establish it. Constraint 2 says a correctness verdict comes only from a process that executed, so this must not converge either - the harder half of the same claim, because here the work was genuinely done.",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-done-after-edit.json",
+      "model": "scripted:scripted-done-after-edit.json",
       "task": "fix the describe annotation",
       "expect": {
         "converges": false
@@ -152,7 +153,7 @@
     {
       "id": "governance_write",
       "why": "An edit inserting print( under app/, which no-print.toml forbids as non-negotiable. Expected the write path to refuse it. It does not, and that is the design: deny_write_paths returns None for Mechanism::Forbid, so a content pattern is an audit rule checked at the convergence gate, not a write-path rule. The edit lands in the worktree and the run then cannot converge, so forbidden content never reaches accepted work - a rollback removes it. The expectation was wrong. Worse, this case never reached the gate at all, because the typecheck failed first on an unrelated defect; governance_audit is the case that actually exercises the rule. Corrected 2026-09-22.",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-governance.json",
+      "model": "scripted:scripted-governance.json",
       "task": "add logging to describe",
       "expect": {
         "converges": false,
@@ -164,7 +165,7 @@
     {
       "id": "path_escape",
       "why": "An edit aimed outside the repository. A harness that can be talked into writing through `../` can write anything the user can.",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-path-escape.json",
+      "model": "scripted:scripted-path-escape.json",
       "task": "edit a file outside the repo",
       "expect": {
         "converges": false,
@@ -175,7 +176,7 @@
     {
       "id": "noop_edit",
       "why": "An edit replacing text with itself. It would otherwise succeed: the anchor occurs once, identical bytes are written back, and the model is told `applied: true` about a change that did not happen - so it believes it acted, the file joins the trail as proposed, and an iteration is spent on nothing.",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-noop-edit.json",
+      "model": "scripted:scripted-noop-edit.json",
       "task": "make total return the sum",
       "expect": {
         "converges": false,
@@ -186,7 +187,7 @@
     {
       "id": "governance_audit",
       "why": "Fixes the annotation so the typecheck passes, then inserts print( and declares done. The run reaches the convergence gate, where the governance audit must refuse it. This is what a non-negotiable forbid rule is for, and the only case here that reaches it.",
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-governance-audit.json",
+      "model": "scripted:scripted-governance-audit.json",
       "task": "add logging to describe",
       "expect": {
         "converges": false,
@@ -197,7 +198,7 @@
       "id": "tampered_trail",
       "why": "A trail is committed to the repository and read back as untrusted data (S10); its factual section carries a digest (ADR 0007). Someone edits one by hand - or a merge mangles it - and the one thing `trellis log` must not do is present an altered record as an intact one. Later agents read trails as context, so a false fact here propagates with the authority of a record (S11).",
       "setup": "tampered_trail",
-      "seed_model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-annotate.json",
+      "seed_model": "scripted:scripted-annotate.json",
       "command": [
         "log",
         "--limit",
@@ -211,12 +212,12 @@
       "id": "resume_not_a_verdict",
       "why": "The hazard the whole seeding design is shaped around. A previous run's trail records that its checks passed. Seed that as a turn and the first thing a resumed run could do is emit `done` - and the loop would call that converged, on the strength of a check executed against a tree that may no longer exist and may never have existed on this branch (S11, Constraint 2). Prior context is deliberately not `turns`. This resumes from a genuinely converged run and immediately says done: it must not converge. Verified to reach what it tests rather than passing trivially: the run reports `5 lines of prior context, fenced as data` before declining to converge, so the context really was loaded and really did not count as a check.",
       "setup": "resumable",
-      "seed_model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-annotate.json",
+      "seed_model": "scripted:scripted-annotate.json",
       "command": [
         "run",
         "--resume"
       ],
-      "model": "scripted:C:/Users/mayda/Documents/dev/trellis/qa/fixtures/scripted-done-only.json",
+      "model": "scripted:scripted-done-only.json",
       "task": "carry on from before",
       "expect": {
         "converges": false

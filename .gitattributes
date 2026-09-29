@@ -13,3 +13,8 @@
 # rewrote them would move a measurement.
 *.json text eol=lf
 docs/bench/** text eol=lf
+
+# The vendored trellis-demo fixture (qa/fixtures/trellis-demo.bundle) is a
+# packfile. `text=auto` would sniff it as binary today, but a line-ending
+# rewrite of one byte makes `git bundle verify` fail, so it is stated.
+*.bundle binary

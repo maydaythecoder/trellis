@@ -33,6 +33,12 @@ import sys
 import tempfile
 import time
 
+# qa/demo_fixture.py is imported from qa/; a __pycache__ left beside it would
+# be an untracked directory in this repository after every run.
+sys.dont_write_bytecode = True
+
+from demo_fixture import fixture_repo
+
 HERE = pathlib.Path(__file__).resolve().parent
 
 
@@ -121,18 +127,24 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--only", default="")
-    ap.add_argument("--repo", default=r"C:\Users\mayda\documents\dev\trellis-demo")
+    # Default: a fresh clone of qa/fixtures/trellis-demo.bundle, removed at
+    # exit (qa/demo_fixture.py). A path given here is used as it is.
+    ap.add_argument("--repo", default=None)
     ap.add_argument("--fixture", default=str(HERE / "fixtures" / "behaviour.json"))
     args = ap.parse_args()
 
     spec = json.loads(pathlib.Path(args.fixture).read_text(encoding="utf-8"))
-    repo = pathlib.Path(args.repo)
     commit = spec["_baseline_commit"]
     cases = spec["cases"]
     if args.only:
         wanted = {c.strip() for c in args.only.split(",")}
         cases = [c for c in cases if c["id"] in wanted]
 
+    with fixture_repo(args.repo, commit) as repo:
+        return run(args, cases, repo, commit)
+
+
+def run(args, cases, repo, commit):
     print(f"fixture   {repo}")
     print(f"baseline  {commit}")
     print(f"cases     {len(cases)} x {args.repeat}")
