@@ -41,6 +41,13 @@ a Job Object of their own with kill-on-close and no breakaway.**
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` only when the command also carries
   the `KillOnDrop` wrapper, which exists only under this feature. It adds no
   crate.
+- **The default `tracing` feature is off.** With it, `process-wrap`
+  instruments its spawn hooks at debug level with the `Command` as a field.
+  Nothing here needs those events. Checked, in case it is turned on: on
+  Windows, the only platform that compiles the crate, a `Command`'s `Debug`
+  output (`{:?}` and `{:#?}`) shows the program and arguments and not the
+  environment, so a `pass_env` key (ADR 0026 §11) would not reach the log
+  through it.
 - **`unsafe_code = "forbid"` stays.** No workspace crate contains `unsafe`.
   The unsafe calls are in `process-wrap`'s `src/windows.rs`:
   `CreateJobObjectW`, `CreateIoCompletionPort`, `SetInformationJobObject`,
