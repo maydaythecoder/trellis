@@ -736,9 +736,86 @@ kept.
 | 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
 | 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 (ADR 0028) |
 | Floor as a configuration | One configuration, below the floor | The second was still downloading. Reported as a lower bound, not a floor |
-| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028); **pending** — no script computes it yet; it is to be applied to #144's trails first, and can re-score the two in §5.2 from their committed trails | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file. Until the two measured configurations are re-scored, their argument evidence is the verbatim calls in §5.3 and §5.6 |
+| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; the three runs in §5.2 are re-scored below. #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
 | Metric 5, run-to-run variance | **Waived for temperature-0 configurations only** (ADR 0028) | Nothing varies at temperature 0. A configuration sampled above 0 still needs the five repetitions per task designed above |
 | Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. Neither measured configuration repaired a task |
+
+#### Metric 3: the per-call audit of the runs in §5.2
+
+Each cell is `calls · path exists / calls with a path · anchor present / edit
+calls`, per task. These are the **per-call audit** of ADR 0028, not argument
+correctness against a gold trace: a failing call is a lower bound on argument
+error, a passing one an upper bound on argument correctness. The counts are
+not summed into a rate across tasks.
+
+| Task | 0.5B, harness at `24bba3d` | 0.5B, with the §5.3 fixes | Coder-3B, with the no-progress stop |
+|---|---|---|---|
+| t00 | 9 · 0/8 · 0/8 | 9 · 0/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t01 | 9 · 0/8 · 0/8 | 9 · 0/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t02 | 9 · 0/8 · 0/8 | 9 · 0/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t03 | 9 · 0/8 · 0/8 | 9 · 0/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t04 | 3 · 1/2 · 0/2 | 9 · 1/6 · 0/6 | 3 · 0/3 · 0/3 |
+| t05 | 9 · 9/9 · 0/8 | 9 · 9/9 · 0/8 | 3 · 0/3 · 0/3 |
+| t06 | 9 · 1/8 · 0/8 | 9 · 1/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t07 | 9 · 1/8 · 0/8 | 9 · 1/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t08 | 9 · 0/8 · 0/8 | 9 · 0/8 · 0/8 | 3 · 0/3 · 0/3 |
+| t09 | 9 · 1/7 · 0/7 | — | 3 · 0/3 · 0/3 |
+| t10 | 9 · 1/6 · 0/6 | — | 3 · 0/3 · 0/3 |
+| t11 | 9 · 1/8 · 0/8 | — | 3 · 0/3 · 0/3 |
+| t12 | 9 · 9/9 · 0/9 | — | 9 · 0/9 · 0/9 |
+| t13 | 9 · 9/9 · 0/9 | — | 9 · 0/9 · 0/9 |
+| t14 | 8 · 8/8 · 0/8 | — | 3 · 0/3 · 0/3 |
+| t15 | 9 · 1/8 · 0/8 | — | 3 · 0/3 · 0/3 |
+| t16 | 1 · 1/1 · 0/0 | — | 9 · 0/9 · 0/9 |
+| t17 | 1 · 1/1 · 0/0 | — | 9 · 0/9 · 0/9 |
+| t18 | 9 · 5/9 · 0/8 | — | — |
+| t19 | 9 · 1/8 · 0/8 | — | — |
+
+**No `edit` call in any of the three runs named an anchor that was in its
+file.** The 3B's paths exist in none of its tasks (`src/poeetry/`, §5.6), so
+none of its edits had a file for an anchor to be in. The 0.5B's paths exist
+where it copied the task's path, and there its anchors are of the kinds
+§5.3 quotes (line numbers, placeholders, the path itself); none occurs in the
+file.
+No check came out `unknown`: every `files written:` line is empty, so each
+file stood at the corpus plus the task's defect for the whole run.
+
+Method:
+
+- **Command**, at commit `d19a2d0`, once per directory
+  (`floor-qwen2.5-0.5b-q4km`, `floor-qwen2.5-0.5b-q4km-fixed-harness`,
+  `floor-qwen2.5-coder-3b-q4km`):
+  ```
+  pip download poetry==2.5.0 --no-deps --no-binary :all: -d .bench
+  py -3 docs/bench/metric3_audit.py docs/bench/<dir> \
+      --tasks docs/bench/floor_tasks.json --corpus .bench/poetry-2.5.0.tar.gz
+  ```
+  The script printed the sdist's SHA-256 as the pinned
+  `e73b8738…81336f` (§1). Its self-test is
+  `scripts/checks/metric3-audit-selftest.sh`.
+- **Source of the calls.** The committed `.json` trails record no calls, so
+  the audit reads each task's `tNN.log`: the run's numbered turns, each call
+  printed in full with its arguments.
+- **Repository at each call**: the sdist, plus the two files `run_floor.py`
+  adds, with the task's defect applied from `floor_tasks.json`. A file named
+  on the log's `files written:` line would make later anchor checks on it
+  `unknown`; none was.
+- **Path**: relative to the repository root, `/` and `\` both separators
+  (the runs were on Windows), exact case; an absolute path or a directory is
+  not a file in the repository. Control characters in a path are kept as they
+  were sent, so `tests\u{11}installation\u{11}test_chef.py` does not exist.
+- **Anchor**: at least one occurrence of `old` in the file, both
+  LF-normalised, as the edit tool matches. An `old == new` edit, which the
+  tool refuses, is still audited.
+- **Excluded**: format failures (§5.2's column). A call the grammar or the
+  adapter rejected got no numbered turn, so it is not in the log's list. In
+  the first 0.5B run t04, t16 and t17 ended on one; the turns before it are
+  counted.
+- **3B t17** is in the run's report (`budget-exhausted`, nine turns) but has
+  no `.json` trail, because its rollback failed (the log ends on a failed
+  `git reset`), and §5.2 counts the 3B at 17 tasks without it. Its calls are
+  audited from the log, so the 3B column has 18 tasks. t18 and t19 are
+  `skipped` in the report and have no log.
 
 ### 5.5 Cost, and what the figure is a property of
 
