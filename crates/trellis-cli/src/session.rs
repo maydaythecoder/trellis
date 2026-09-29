@@ -263,7 +263,7 @@ impl Session {
                 let spec = self.model.as_ref().map(ToString::to_string);
                 crate::cmd_doctor(&self.root, spec.as_deref(), self.model_from_user)
             }
-            "/resume" => crate::cmd_resume(&self.root),
+            "/resume" => crate::cmd_resume(&self.root, (!rest.is_empty()).then_some(rest)),
             "/diff" => self.show_pending(),
             "/accept" => self.accept(rest),
             "/revert" => self.revert(),
@@ -956,7 +956,7 @@ const HELP: &str = concat!(
     "  /radius <symbol>  who calls it, with the doubt beside it\n",
     "  /check [paths]    run the repository's checks\n",
     "  /doctor           probe runtime, tier, checkers\n",
-    "  /resume           what the last recorded run established\n",
+    "  /resume [run_id]  what the last run, or the named one, established\n",
     "\n",
     "  /diff             what the last run left uncommitted\n",
     "  /accept [msg]     commit it\n",
