@@ -601,7 +601,16 @@ pull request.
 
 ## Not built
 
-- Streaming.
+- Streaming. *Amended 2026-09-29 (#151), by the owner's decision of
+  2026-09-28:* it stays out, for two reasons. The loop acts on a complete
+  tool call and never on a partial one, so streaming a hosted reply would
+  buy only a progress display. And it would put two SSE event grammars
+  (OpenAI's `data:` chunks and Anthropic's typed events) into the
+  hand-rolled client that §1 hardened against unframed bodies, adding a
+  class of partial-reply failure on the one path that carries the key. The
+  chat interface already streams from local runtimes
+  (`qa/REPORT-2026-09-21.md`). Revisit when a hosted turn's wait is
+  measured as a problem.
 - A proxy from `HTTPS_PROXY` / `HTTP_PROXY` (row 2.13). A run behind a proxy
   cannot reach a hosted provider.
 - `Retry-After` given as an obsolete HTTP date (RFC 850 or asctime form);
