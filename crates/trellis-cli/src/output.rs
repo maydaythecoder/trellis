@@ -107,6 +107,9 @@ pub(crate) struct RunExtras {
     /// way past and hands it back here; the session's `/copy` reads it.
     /// Left untouched by a run that ended any other way.
     pub done: Option<DoneSlot>,
+    /// `trellis run --image`: files for a hosted tier-1 model's first user
+    /// message (ADR 0041). Refused, before the snapshot, for any other.
+    pub images: Vec<std::path::PathBuf>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -123,6 +126,7 @@ impl Default for RunExtras {
             compact: None,
             label: None,
             done: None,
+            images: Vec::new(),
         }
     }
 }

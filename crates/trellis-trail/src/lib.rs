@@ -228,14 +228,35 @@ impl Steer {
 /// One file a run was given, as `Factual::inputs` records it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
-    /// `context_file`, `system_file` or `forced_skill`.
+    /// `context_file`, `system_file`, `forced_skill` or `image`.
     pub kind: String,
     /// As the run's `repo:` line names it: `CLAUDE.md`,
-    /// `<user>/AGENTS.md`, `.trellis/system.md`, or a skill's name. Never an
-    /// absolute path, which would put the user's home layout in the trail.
+    /// `<user>/AGENTS.md`, `.trellis/system.md`, or a skill's name; for an
+    /// image, its repository-relative path, or `<outside>/<file name>` for
+    /// one outside the repository. Never an absolute path, which would put
+    /// the user's home layout in the trail.
     pub name: String,
-    /// Bytes of content sent, the unit the caps are measured in.
+    /// Bytes of content sent, the unit the caps are measured in; for an
+    /// image, the file's size before encoding.
     pub bytes: u64,
+    /// SHA-256 of the content, lowercase hex, for an input whose contents
+    /// the trail may not hold but whose identity it must: an image
+    /// (ADR 0041). Omitted when absent, so the other kinds keep their shape
+    /// and every trail already committed keeps its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl Input {
+    /// An input recorded by name, size and hash, never by content.
+    pub fn hashed(kind: &str, name: &str, content: &[u8]) -> Self {
+        Self {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            bytes: content.len() as u64,
+            sha256: Some(sha256_hex(content)),
+        }
+    }
 }
 
 /// One thing the agent did, and what came back.
