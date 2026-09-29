@@ -3249,6 +3249,10 @@ fn record_trail(
         prompt_tokens: None,
         agent,
         inputs,
+        // The loop's `Transcript` carries no steering channel yet (#113 adds
+        // it), so a run has no mid-run input to record. Empty is omitted on
+        // disk, so a trail written now has the bytes it had before the field.
+        steering: Vec::new(),
     };
 
     let slug = trellis_trail::slugify(task);
