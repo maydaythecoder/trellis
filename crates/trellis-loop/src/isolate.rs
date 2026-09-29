@@ -172,6 +172,13 @@ impl Sandbox {
         self.copy_in(&host, &files)
     }
 
+    /// Every file copied in, with the sha256 it was given: a process
+    /// agent's carry-back (`agent_clone`) tells a new file from an edited
+    /// one by it, and checks a deletion against it.
+    pub(crate) fn copied_in(&self) -> &[(String, [u8; 32])] {
+        &self.baseline
+    }
+
     /// Writes each listed file's bytes from `host` into the clone, where
     /// the checkout left different ones or none, and records what it was
     /// given. A file that is not a regular file in `host` (a link, a

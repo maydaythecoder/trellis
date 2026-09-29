@@ -821,12 +821,14 @@ fn a_process_agent_that_rewrites_its_own_checks_does_not_converge() {
 fn a_process_agent_that_writes_git_config_or_a_hook_has_it_restored() {
     // `.git/` is invisible to `git status` and untouched by the rollback, so
     // a command could plant a hook or rewrite `core.hooksPath` and the run
-    // would roll back the worktree and leave both in place.
+    // would roll back the worktree and leave both in place. By absolute
+    // path: a relative write lands in the agent's clone (ADR 0032), and
+    // this guard is for the command that finds the repository anyway.
     for (name, target) in [
         ("proc-git-config", ".git/config"),
         ("proc-git-hook", ".git/hooks/pre-commit"),
     ] {
-        let cmd = format!(r#"["git", "config", "--file", "{target}", "evil.x", "y"]"#);
+        let cmd = format!(r#"["git", "config", "--file", "{{ROOT}}/{target}", "evil.x", "y"]"#);
         let d = process_fixture(name, &cmd, PASSES);
         let before = std::fs::read(d.join(".git/config")).unwrap();
         ok(&d, &["queue", "add", "touch git", "--assignee", "maker"]);
@@ -860,6 +862,20 @@ fn shell_argv(script: &str) -> String {
     }
 }
 
+/// `script`, run from the repository rather than from the agent's clone:
+/// the command that finds the repository and writes there by absolute
+/// path, which the clone does not stop and the guards on the repository
+/// are kept for (ADR 0032, "Limits"). `{ROOT}` is the fixture's root,
+/// unquoted under `cmd`: Rust passes an inner `"` to it as `\"`, which
+/// `cmd` does not read, and the test's temporary directory has no space.
+fn in_repo(script: &str) -> String {
+    if cfg!(windows) {
+        format!("cd /d {{ROOT}} && {script}")
+    } else {
+        format!(r#"cd "{{ROOT}}" && {script}"#)
+    }
+}
+
 fn branch(d: &Path) -> String {
     git(d, &["rev-parse", "--symbolic-full-name", "HEAD"])
         .trim()
@@ -878,7 +894,7 @@ fn a_process_agent_that_commits_part_of_its_change_is_refused_and_the_commit_und
     } else {
         "echo x > .trellis/sneak.txt && git add .trellis/sneak.txt && git commit -qm sneak && echo y > app/made.txt"
     };
-    let d = process_fixture("proc-commit", &shell_argv(script), PASSES);
+    let d = process_fixture("proc-commit", &shell_argv(&in_repo(script)), PASSES);
     let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
     let on = branch(&d);
     let id = queued_id(&ok(
@@ -917,7 +933,7 @@ fn a_process_agent_that_switches_branch_is_refused_and_put_back_on_the_original(
     } else {
         "git checkout -qb elsewhere && echo y > app/made.txt && git add -A && git commit -qm sneak"
     };
-    let d = process_fixture("proc-branch", &shell_argv(script), PASSES);
+    let d = process_fixture("proc-branch", &shell_argv(&in_repo(script)), PASSES);
     let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
     let on = branch(&d);
     ok(&d, &["queue", "add", "switch", "--assignee", "maker"]);
@@ -952,7 +968,7 @@ fn a_process_agent_that_writes_git_info_exclude_has_it_restored() {
     // and nothing in the worktree changes to say so.
     let d = process_fixture(
         "proc-git-exclude",
-        r#"["git", "config", "--file", ".git/info/exclude", "evil.x", "y"]"#,
+        r#"["git", "config", "--file", "{ROOT}/.git/info/exclude", "evil.x", "y"]"#,
         PASSES,
     );
     let before = std::fs::read(d.join(".git/info/exclude")).ok();
@@ -974,6 +990,10 @@ fn a_process_agent_that_writes_git_info_exclude_has_it_restored() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// [`MAKES_A_FILE`], written in the repository by absolute path.
+const MAKES_A_FILE_IN_REPO: &str =
+    r#"["git", "config", "--file", "{ROOT}/app/made.cfg", "a.b", "c"]"#;
+
 const PASSING_CHECKS: &str =
     "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n";
 
@@ -982,8 +1002,9 @@ fn a_process_agent_s_ignored_writes_are_removed_on_rollback() {
     // The risk: `git status` does not list ignored files, so a command that
     // wrote only ignored paths "changed nothing", was rolled back, and left
     // what it wrote in place (`.venv/.../sitecustomize.py` runs in the next
-    // check). What the command created is removed.
-    let d = ignored_fixture("proc-ignored", MAKES_A_FILE, PASSING_CHECKS);
+    // check). What the command created is removed. By absolute path: in
+    // the agent's clone an ignored file is never carried back at all.
+    let d = ignored_fixture("proc-ignored", MAKES_A_FILE_IN_REPO, PASSING_CHECKS);
     ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
     let s = ok(&d, &["work"]);
     assert!(s.contains("NOT CONVERGED"), "{s}");
@@ -1003,7 +1024,7 @@ fn a_process_agent_that_changed_a_pre_existing_ignored_file_is_reported_and_work
     // promises, and an agent that runs the tests itself rewrites their
     // caches on every run, so counting it stopped `work` with exit 2 on
     // every failed run of such an agent (review round 9, finding 2).
-    let cmd = r#"["git", "config", "--file", "app/old.cfg", "a.b", "c"]"#;
+    let cmd = r#"["git", "config", "--file", "{ROOT}/app/old.cfg", "a.b", "c"]"#;
     let d = ignored_fixture("proc-ignored-old", cmd, PASSING_CHECKS);
     std::fs::write(d.join("app/old.cfg"), "[x]\n\ty = 1\n").unwrap();
     ok(&d, &["trust"]);
@@ -1022,15 +1043,16 @@ fn a_changed_or_deleted_ignored_file_the_rules_protect_leaves_the_tree_not_resto
     // ignored file `deny_write` names that the command changed, or one it
     // deleted, is not a restored tree, and `work` stops.
     let deny = format!("{PASSING_CHECKS}[governance]\ndeny_write = [\"app/old.cfg\"]\n");
+    // By absolute path: the agent's clone holds no ignored file to change.
     let rm = if cfg!(windows) {
-        r#"["cmd", "/C", "del app\\gone.cfg"]"#
+        r#"["cmd", "/C", "cd /d {ROOT} && del app\\gone.cfg"]"#
     } else {
-        r#"["rm", "app/gone.cfg"]"#
+        r#"["rm", "{ROOT}/app/gone.cfg"]"#
     };
     for (name, cmd, config) in [
         (
             "proc-ignored-old-denied",
-            r#"["git", "config", "--file", "app/old.cfg", "a.b", "c"]"#,
+            r#"["git", "config", "--file", "{ROOT}/app/old.cfg", "a.b", "c"]"#,
             deny.as_str(),
         ),
         ("proc-ignored-gone", rm, PASSING_CHECKS),
@@ -1054,16 +1076,17 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
     // An ignored path is still a path: `.trellis/` holds what judges the
     // run, and `deny_write` binds wherever git looks or not. The command
     // also writes an ordinary file, so the checks run and pass; only the
-    // ignored write can stop it converging.
+    // ignored write can stop it converging. In the repository, by absolute
+    // path: in the agent's clone an ignored write never comes back.
     let both = |a: &str| {
         if cfg!(windows) {
             format!(
-                r"['cmd', '/C', 'git config --file {} a.b c && git config --file app\x.txt a.b c']",
+                r#"['cmd', '/C', 'cd /d {{ROOT}} && git config --file {} a.b c && git config --file app\x.txt a.b c']"#,
                 a.replace('/', r"\")
             )
         } else {
             format!(
-                "['sh', '-c', 'git config --file {a} a.b c && git config --file app/x.txt a.b c']"
+                r#"['sh', '-c', 'cd "{{ROOT}}" && git config --file {a} a.b c && git config --file app/x.txt a.b c']"#
             )
         }
     };
@@ -1101,6 +1124,225 @@ fn a_process_agent_s_ignored_write_under_trellis_or_a_denied_path_is_a_breach() 
         assert!(!d.join("app/x.txt").exists(), "{name}: rolled back:\n{s}");
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+/// One script per platform: `cmd` wants backslashes where it names a file
+/// itself (`echo x> app\f`, `del`), `sh` wants forward ones.
+fn per_os(windows: &str, unix: &str) -> String {
+    shell_argv(if cfg!(windows) { windows } else { unix })
+}
+
+#[test]
+fn isolated_agent_writes_to_trellis_and_git_in_the_clone_never_reach_the_repository() {
+    // The risk (ADR 0032, #175): a process agent ran in the repository, so
+    // its writes under `.git/` (config, hooks, planted files) were undone
+    // after the fact by a guard that reads state the writer can also write,
+    // and its `.trellis/` writes were in the tree that judges it. In the
+    // clone, `.git/` writes stay there and `.trellis/` is refused at the
+    // carry-back, before the repository has them. The ordinary edit beside
+    // them comes back and is rolled back with the refused run.
+    let d = process_fixture(
+        "iso-agent-judge",
+        &per_os(
+            r"git config --file .git/config evil.x y && echo planted> .git\planted && echo x> .git\hooks\pre-commit && echo [hooks]> .trellis\config.toml && echo x> .trellis\new.txt && echo y> app\made.txt",
+            "git config --file .git/config evil.x y && echo planted > .git/planted && echo x > .git/hooks/pre-commit && echo [hooks] > .trellis/config.toml && echo x > .trellis/new.txt && echo y > app/made.txt",
+        ),
+        PASSES,
+    );
+    let git_config = std::fs::read(d.join(".git/config")).unwrap();
+    let trellis_config = std::fs::read(d.join(".trellis/config.toml")).unwrap();
+    ok(
+        &d,
+        &["queue", "add", "write the judge", "--assignee", "maker"],
+    );
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("process:  exited 0"), "{s}");
+    assert!(
+        s.contains("NOT CONVERGED (not converged: the command changed .trellis/"),
+        "{s}"
+    );
+    for p in [".trellis/config.toml", ".trellis/new.txt"] {
+        assert!(
+            s.contains(&format!("governance: refused: {p} (under .trellis/")),
+            "{p} is refused at the carry-back and named:\n{s}"
+        );
+    }
+    // Never there, rather than put back: the git guard had nothing to do.
+    assert!(!s.contains("put back"), "{s}");
+    assert_eq!(std::fs::read(d.join(".git/config")).unwrap(), git_config);
+    assert!(!d.join(".git/planted").exists());
+    assert!(!d.join(".git/hooks/pre-commit").exists());
+    assert_eq!(
+        std::fs::read(d.join(".trellis/config.toml")).unwrap(),
+        trellis_config
+    );
+    assert!(!d.join(".trellis/new.txt").exists());
+    assert!(!d.join("app/made.txt").exists(), "rolled back:\n{s}");
+    assert_eq!(porcelain(&d), "", "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A fixture whose agent edits `app/core.py`, creates `app/new.py`,
+/// deletes the tracked `app/old.py`, and records where it ran in
+/// `app/where.txt`, with `typecheck` as its typecheck command.
+fn edit_create_delete(name: &str, typecheck: &str) -> PathBuf {
+    let d = process_fixture(
+        name,
+        &per_os(
+            // A space before `>`: `cmd` reads `1>` as a redirect of handle 1.
+            r"echo x = 1 > app\core.py && echo y = 2 > app\new.py && del app\old.py && cd> app\where.txt",
+            "echo x = 1 > app/core.py && echo y = 2 > app/new.py && rm app/old.py && pwd > app/where.txt",
+        ),
+        typecheck,
+    );
+    std::fs::write(d.join("app/old.py"), "z = 3\n").unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "old.py"]);
+    ok(&d, &["trust"]);
+    d
+}
+
+#[test]
+fn isolated_agent_edit_new_file_and_deletion_are_carried_back() {
+    // The risk: carrying back only edits, as for `bash`, would lose the
+    // files an agent creates and deletes, which for a process agent are
+    // part of the run's change (it has no `write_file`), so a run that
+    // converged would leave half its work in a clone that is then removed.
+    let d = edit_create_delete("iso-agent-back", PASSES);
+    let id = queued_id(&ok(&d, &["queue", "add", "change", "--assignee", "maker"]));
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("CONVERGED (converged: both checks passed)"),
+        "{s}"
+    );
+    assert!(
+        s.contains("clone:    edited from the clone: app/core.py"),
+        "{s}"
+    );
+    assert!(
+        s.contains("clone:    created from the clone: app/new.py, app/where.txt"),
+        "{s}"
+    );
+    assert!(
+        s.contains("clone:    deleted from the clone: app/old.py"),
+        "{s}"
+    );
+    assert!(
+        std::fs::read_to_string(d.join("app/core.py"))
+            .unwrap()
+            .contains("x = 1")
+    );
+    assert!(d.join("app/new.py").exists());
+    assert!(!d.join("app/old.py").exists());
+    // It ran in the clone, not here.
+    let at = std::fs::read_to_string(d.join("app/where.txt")).unwrap();
+    assert!(at.contains("trellis-clone-"), "{at}");
+    // Left for review, and the trail names all three.
+    let t = task(&d, "done", &id);
+    let tr = trail(&d, t["outcome"]["run_id"].as_str().unwrap());
+    let proposed: Vec<&str> = tr["factual"]["proposed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    for p in ["app/core.py", "app/new.py", "app/old.py"] {
+        assert!(proposed.contains(&p), "{p}: {proposed:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn isolated_agent_carried_back_change_is_undone_by_rollback() {
+    // The point of carrying back only what `git reset --hard` and `git
+    // clean -fd` restore (ADR 0009): a run whose check fails leaves the
+    // tree as it was, the new file and the deletion included.
+    let d = edit_create_delete("iso-agent-rollback", r#"["git", "no-such-subcommand"]"#);
+    ok(&d, &["queue", "add", "change", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("NOT CONVERGED (not converged: a check failed)"),
+        "{s}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join("app/core.py")).unwrap(),
+        "def greet():\n    return \"hello\"\n"
+    );
+    assert!(!d.join("app/new.py").exists(), "{s}");
+    assert_eq!(
+        std::fs::read_to_string(d.join("app/old.py")).unwrap(),
+        "z = 3\n"
+    );
+    assert_eq!(porcelain(&d), "", "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn isolated_agent_cannot_unignore_a_file_by_editing_gitignore_in_its_clone() {
+    // The risk: a new file judged by the clone's `.gitignore`, which is the
+    // agent's to edit. It un-ignores `*.cfg` there, and `app/made.cfg`
+    // would come back as a file the repository's own rules ignore, which
+    // the rollback's `git clean -fd` then leaves in place. The repository's
+    // rules decide, and the `.gitignore` edit itself is refused.
+    let d = ignored_fixture(
+        "iso-agent-unignore",
+        &per_os(
+            r"echo !*.cfg>> .gitignore && git config --file app/made.cfg a.b c && echo y> app\x.txt",
+            "echo !*.cfg >> .gitignore && git config --file app/made.cfg a.b c && echo y > app/x.txt",
+        ),
+        PASSING_CHECKS,
+    );
+    ok(&d, &["queue", "add", "unignore", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("clone:    left in the clone, as the repository's git ignores it: app/made.cfg"),
+        "{s}"
+    );
+    assert!(
+        s.contains("clone:    not carried back: `.gitignore` tells git what to ignore"),
+        "{s}"
+    );
+    assert!(
+        s.contains("not converged: part of what the command changed in its clone could not be"),
+        "{s}"
+    );
+    assert!(!d.join("app/made.cfg").exists(), "{s}");
+    assert!(!d.join("app/x.txt").exists(), "rolled back:\n{s}");
+    assert_eq!(
+        std::fs::read_to_string(d.join(".gitignore")).unwrap(),
+        "*.cfg\n"
+    );
+    assert_eq!(porcelain(&d), "", "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn isolated_agent_that_commits_in_its_clone_leaves_head_alone_and_its_change_comes_back() {
+    // What the clone changes for an agent that commits its own work (many
+    // do): the commit moves the clone's HEAD, not the repository's, so it
+    // is no longer a breach; its files are compared by content and come
+    // back uncommitted, for review, like any other run's change.
+    let d = process_fixture(
+        "iso-agent-commit",
+        &per_os(
+            r"echo y> app\made.txt && git add -A && git -c user.email=a@example.invalid -c user.name=a commit -qm mine",
+            "echo y > app/made.txt && git add -A && git -c user.email=a@example.invalid -c user.name=a commit -qm mine",
+        ),
+        PASSES,
+    );
+    let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    ok(&d, &["queue", "add", "commit", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains("CONVERGED (converged: both checks passed)"),
+        "{s}"
+    );
+    assert!(!s.contains("moved HEAD"), "{s}");
+    assert!(d.join("app/made.txt").exists(), "{s}");
+    // The trail's commit sits on the snapshot; the agent's never left the clone.
+    assert_eq!(git(&d, &["rev-parse", "HEAD~1"]).trim(), head, "{s}");
+    assert_eq!(porcelain(&d).trim(), "?? app/made.txt", "{s}");
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
