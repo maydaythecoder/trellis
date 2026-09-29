@@ -19,6 +19,7 @@ pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
         user_skills_line(root, &user_config::skill_dirs()),
         trust_line(root, cfg),
         agents_line(root),
+        tz_line(),
         vault_line(root, cfg),
     ]
 }
@@ -138,6 +139,16 @@ fn agents_line(root: &Path) -> String {
     }
 }
 
+/// Where a routine's IANA zone name is looked up (ADR 0026 §7). Bundled data
+/// is as old as the build, so which source is in use is what a person needs
+/// when a routine fires an hour off after a rule change.
+fn tz_line() -> String {
+    format!(
+        "tz data:    {} — IANA names in routine schedules",
+        crate::plain(&trellis_queue::cron::tz_source())
+    )
+}
+
 fn vault_line(root: &Path, cfg: &RepoConfig) -> String {
     let dates = cfg.context.as_ref().and_then(|c| c.dates).unwrap_or(false);
     match cfg.vault(root, None) {
@@ -209,6 +220,8 @@ mod tests {
         );
         assert!(s.contains("agents:     1 profile(s), 0 routine(s)"), "{s}");
         assert!(s.contains("vault:      not configured"), "{s}");
+        // #47: which tz data a named routine zone is resolved against.
+        assert!(s.contains("tz data:    TimeZoneDatabase("), "{s}");
     }
 
     #[test]
