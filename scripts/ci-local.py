@@ -57,9 +57,21 @@ def git_bash():
 
 
 def wsl(script):
+    # `--exec`, not `--`: after `--`, wsl.exe hands the joined command line to
+    # the user's login shell, which expands every `$VAR` in `script` before the
+    # inner bash runs. `W=...; git clone ... $W` then cloned into an empty `$W`,
+    # i.e. into the current directory, which was the Windows checkout (#166).
+    # `--cd ~` so that a relative path, if one slips in again, lands in the WSL
+    # home and not in whichever Windows directory this script was started from.
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
-    return subprocess.run(["wsl.exe", "-d", DISTRO, "--", "bash", "-lc", script],
+    return subprocess.run(["wsl.exe", "-d", DISTRO, "--cd", "~", "--exec", "bash", "-lc", script],
                           text=True, capture_output=True, env=env)
+
+
+def to_wsl(path):
+    """C:/x/y -> /mnt/c/x/y, the drvfs mount of a Windows path."""
+    p = Path(path).resolve()
+    return f"/mnt/{p.drive[0].lower()}" + p.as_posix()[len(p.drive):]
 
 
 def legs(jobs, only):
@@ -87,6 +99,10 @@ def prelude(env, platform, venv):
               "export OPENAI_BASE_URL=http://127.0.0.1:9/v1"]
     if platform == "linux":
         lines.append('export PATH="$HOME/.cargo/bin:$PATH"')
+        # WSL does not inherit the Windows environment, so a job cap the
+        # caller set for the shared host has to be carried across by hand.
+        if os.environ.get("CARGO_BUILD_JOBS", "").isdigit():
+            lines.append(f"export CARGO_BUILD_JOBS={os.environ['CARGO_BUILD_JOBS']}")
     if venv:
         lines.append(f'export PATH="{home}/venv/bin:$PATH"')
     return "\n".join(lines) + "\n"
@@ -113,15 +129,23 @@ def run_leg(name, platform, job, top_env, sha, logdir):
         Path(ci_home).mkdir(parents=True, exist_ok=True)
         Path(ci_home, "gitconfig").write_text("[core]\n\tlongpaths = true\n")
     else:
-        win_root = ROOT.as_posix().replace("C:", "/mnt/c", 1)
-        r = wsl(f"set -e; mkdir -p {WSL_DIR}/home; W={WSL_DIR}/trellis; "
-                f"[ -d $W/.git ] || git clone -q --no-checkout {win_root} $W; "
-                f"git -C $W fetch -q {win_root} {sha}; git -C $W checkout -q -f --detach {sha}; "
-                f"git -C $W clean -q -fdx -e target -e .bench; "
+        # The common git dir, not ROOT: in a linked worktree ROOT/.git is a
+        # file naming a `C:/...` gitdir, which git inside WSL cannot follow.
+        common = sh(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute",
+                     "--git-common-dir"])
+        win_root = to_wsl(Path(common))
+        r = wsl(f"set -e; mkdir -p {WSL_DIR}/home; W=\"{WSL_DIR}/trellis\"; echo \"clone: $W\"; "
+                f"[ -d \"$W/.git\" ] || git clone -q --no-checkout {win_root} \"$W\"; "
+                f"git -C \"$W\" fetch -q {win_root} {sha}; git -C \"$W\" checkout -q -f --detach {sha}; "
+                f"git -C \"$W\" clean -q -fdx -e target -e .bench; "
                 f"printf '' > {WSL_DIR}/home/gitconfig; "
                 + (f"[ -x {WSL_DIR}/home/venv/bin/python ] || python3 -m venv {WSL_DIR}/home/venv" if venv else "true"))
+        # A checkout failure used to leave no log at all, which is why the
+        # first run's `test (ubuntu-latest)` failure had nothing to read.
+        log = logdir / f"{tag}-checkout.log"
+        log.write_text((r.stdout or "") + (r.stderr or ""), encoding="utf-8")
         if r.returncode:
-            return False, "checkout failed: " + (r.stderr or r.stdout)[-400:]
+            return False, f"checkout failed (log {log}): " + (r.stderr or r.stdout)[-400:]
     for i, st in enumerate(steps):
         if "run" not in st:
             continue
@@ -135,7 +159,7 @@ def run_leg(name, platform, job, top_env, sha, logdir):
             p = subprocess.run([git_bash(), script.as_posix()], cwd=WIN_DIR / "win", text=True,
                                capture_output=True, env=dict(os.environ, CI_HOME=ci_home))
         else:
-            spath = script.as_posix().replace("C:", "/mnt/c", 1)
+            spath = to_wsl(script)
             p = wsl(f"export CI_HOME={WSL_DIR}/home; cd {WSL_DIR}/trellis && bash {spath}")
         log.write_text((p.stdout or "") + (p.stderr or ""), encoding="utf-8")
         mark = "ok  " if p.returncode == 0 else "FAIL"
