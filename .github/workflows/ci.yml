@@ -6,9 +6,17 @@ name: CI
 # is the part that makes it evidence.
 
 on:
+  # A PR branch runs once per push, through `pull_request`. Pushing on every
+  # branch as well ran the whole suite twice for the same commit (#156).
   push:
-    branches: ["**"]
+    branches: ["v0.1-resolver"]
   pull_request:
+
+# A newer push to the same ref makes the older run's result moot; cancelling
+# it saves the minutes, which ran out on 2026-09-28 (#156).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
