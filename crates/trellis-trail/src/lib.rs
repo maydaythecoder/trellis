@@ -75,13 +75,28 @@ pub struct Factual {
     /// Completion tokens the runtime adapter reported for the run
     /// (ADR 0026 §8). The budget ledger sums this.
     ///
-    /// Completion only: no prompt-token figure exists anywhere in trellis,
-    /// so a budget over this limits generated tokens, not billed ones.
+    /// Completion only. Prompt tokens are `prompt_tokens`, below, and the
+    /// two are never summed: a budget over this limits generated tokens,
+    /// not billed ones.
     /// `None` for a scripted run and for a process agent, whose spend
     /// trellis cannot see — not a zero, which would read as a free run.
     /// Omitted when absent, like `control`, so older trails keep their digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// Prompt tokens the runtime adapter reported for the run, when it
+    /// reported any.
+    ///
+    /// A separate field rather than a larger `tokens`, so the two figures are
+    /// never added into one number: the ledger budgets over `tokens` as
+    /// generated output, and prompt tokens folded into it would make that
+    /// budget bill for context instead. Nothing in this crate adds them.
+    ///
+    /// Absent means unknown — a trail written before this field existed, a
+    /// scripted run, a process agent, an adapter that did not say — never
+    /// zero. Omitted when absent, like `tokens`, so a trail written before
+    /// the field keeps its shape and its digest, and `SCHEMA` stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
     /// The agent profile the run executed as (ADR 0026 §4), when one did.
     ///
     /// Recorded in the trail rather than joined from the queue: the queue is
@@ -329,47 +344,55 @@ pub const SCHEMA: u32 = 1;
 impl Trail {
     /// SHA-256 over `factual`, serialized canonically.
     ///
-    /// **Through `Value`, so the key order matches the reader's.** The check
-    /// that reads this back — [`UntrustedTrail::integrity`] — parses the file
-    /// and hashes `v["factual"]`, and `serde_json::Map` is a `BTreeMap`, so
-    /// its keys come back sorted. Hashing the struct directly emits fields in
-    /// *declaration* order, which is a different byte sequence and therefore
-    /// a different digest.
-    ///
-    /// Measured, for one `Factual`:
-    ///
-    /// ```text
-    /// to_vec(&factual)                 dedc5e7e…   {"proposed":…
-    /// to_vec(&to_value(&factual))      6a2530b3…   {"approved_by":…
-    /// to_vec(parse(to_string(factual)))6a2530b3…   {"approved_by":…
-    /// ```
-    ///
-    /// **Why it matters that both sides go through `Value`.** Hashing the
-    /// struct directly agrees with the reader only while
-    /// `serde_json::Map` is an `IndexMap` — that is, while
-    /// `serde_json/preserve_order` is enabled. It is, but by `schemars`,
-    /// which this crate does not depend on and which enables it to derive
-    /// tool-call schemas in `trellis-loop`. Tamper-evidence resting on a
-    /// sibling crate's transitive feature is not a property anyone declared
-    /// or tested. Going through `Value` here means both sides share whatever
-    /// `Map` is and agree either way. C-016.
-    ///
     /// Written by `cmd_run` when a trail is recorded. The *check* against it
     /// lives in [`UntrustedTrail::integrity`], which reads the raw JSON as it
     /// came off disk — a trail is read back as untrusted data (S10), so the
-    /// thing that verifies it takes bytes rather than a parsed `Trail`.
-    ///
-    /// `serde_json` orders struct fields by declaration and `BTreeMap` keys by
-    /// sort order, so the same `Factual` always serializes identically. That
-    /// determinism is what makes the digest checkable rather than decorative.
+    /// thing that verifies it takes bytes rather than a parsed `Trail`. Both
+    /// sides hash through `factual_digest`, so they share one canonical
+    /// form by construction.
     pub fn compute_factual_sha256(factual: &Factual) -> String {
-        use sha2::{Digest, Sha256};
-        let json = serde_json::to_value(factual)
-            .and_then(|v| serde_json::to_vec(&v))
-            .unwrap_or_default();
-        let digest = Sha256::digest(&json);
-        digest.iter().map(|b| format!("{b:02x}")).collect()
+        // A `Factual` that will not become a `Value` hashes the empty input,
+        // as it always has; the reader can never reproduce that digest from
+        // a parsed file, so such a trail reads Altered rather than Intact.
+        match serde_json::to_value(factual) {
+            Ok(v) => factual_digest(v),
+            Err(_) => sha256_hex(&[]),
+        }
     }
+}
+
+/// SHA-256 over `factual` as compact JSON with every object's keys sorted.
+///
+/// **The sort is explicit because the key order of `serde_json::Map` is a
+/// build setting, not a property of this crate.** Without
+/// `serde_json/preserve_order` it is a `BTreeMap` and keys come out sorted;
+/// with it, an `IndexMap` that keeps insertion order — declaration order for
+/// a struct, file order for parsed JSON. Cargo unifies that feature across
+/// whatever is being built: the `trellis-cli` binary's normal dependency
+/// graph does not enable it, but `llguidance`, pulled in by
+/// `trellis-model/grammar` through the dev-dependencies of `trellis-loop` and
+/// `trellis-model`, does, so a build with those dev-dependencies in its graph
+/// (`cargo test --workspace`) hashed different bytes from a
+/// `cargo build -p trellis-cli` one.
+/// The same trail then read Intact under one build and Altered under the
+/// other, which makes the digest a statement about the compiler invocation.
+///
+/// Sorted is the form kept because it is what the shipped binary writes
+/// (`cargo build -p trellis-cli`), so trails already committed keep their
+/// digest. C-016.
+/// `sort_all_objects` is a no-op on a `BTreeMap` and sorts an `IndexMap` by
+/// the same `String` ordering, so both builds now emit identical bytes.
+pub(crate) fn factual_digest(mut factual: serde_json::Value) -> String {
+    factual.sort_all_objects();
+    sha256_hex(&serde_json::to_vec(&factual).unwrap_or_default())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 impl Trail {
@@ -467,6 +490,7 @@ mod tests {
                 ],
                 control: None,
                 tokens: None,
+                prompt_tokens: None,
                 agent: None,
                 inputs: Vec::new(),
             },

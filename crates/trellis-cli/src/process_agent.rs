@@ -635,6 +635,7 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         control: Some("auto (process agent)".into()),
         // An external process's tokens are not visible to trellis.
         tokens: None,
+        prompt_tokens: None,
         agent: Some(t.profile.to_string()),
         // A process agent is given its task on stdin and nothing else.
         inputs: Vec::new(),
