@@ -86,7 +86,7 @@ score it as working. Only a populated `tool_calls` array counts
 | model | valid `tool_calls` /20 | correct tool /20 | answered in prose /20 | date |
 |---|---|---|---|---|
 | `qwen3:8b` | **20/20 (100%)** | 20/20 (100%) | 0/20 (0%) | 2026-09-21 |
-| `gpt-oss-20b` | pending | pending | pending | — |
+| `gpt-oss-20b` | unmeasured: loaded, then abandoned because it swapped the host (`qa/logs/20-ladder.md`, rung 2) | unmeasured | unmeasured | 2026-09-22 UTC |
 
 Measured with `toolcall_smoke` against ollama 0.34.2 at
 `http://localhost:11434/v1`, model `qwen3:8b` (5.2 GB, `500a1f067a9f`), on
@@ -109,9 +109,17 @@ on every machine without a model teaches everyone to ignore a red suite.
 Streaming, measured at the same time: ten chunks for a ten-word answer, so
 tokens really do arrive one at a time rather than as one lump at the end.
 
-`gpt-oss-20b` is still worth running — MoE at ~3.6B active is the right
-shape for this machine, and it may well beat qwen3 on judgment while scoring
-the same here:
+`gpt-oss-20b` has been tried on this machine, and it did not produce a
+measurement. Rung 2 of `qa/logs/20-ladder.md` records it: the pull was
+13.79 GB, it loaded (ollama 0.34.2 on Windows), and a single 16-token probe
+drove free physical memory to 0.02 GB and the pagefile from 2.94 to 9.63 GB,
+which is the host swapping and the ladder's abandon condition. The probe took
+31 s to evaluate a 65-token prompt and ended in `thinking` before any content,
+so it says nothing about tool-call validity. The run was abandoned and not
+retried, and the three rates above are recorded as unmeasured, not as zeros.
+The MoE shape (~3.6B active) was not what failed; the 13.79 GB of weights
+still had to pass through a host with 1.76 GB free. Measuring it needs a host
+with that much memory to spare, where the same harness applies:
 
 ```bash
 ollama pull gpt-oss:20b
