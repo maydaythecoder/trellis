@@ -50,8 +50,8 @@ pub use orchestrator::{
 };
 pub use partition::{FailurePolicy, Partition, WorkUnit, plan};
 pub use registry::{
-    BUILTIN_TOOLS, BashSettings, CustomTool, NotesSource, ToolCallError, ToolConfigError,
-    ToolSelection, ToolSet, call_json,
+    BUILTIN_TOOLS, BashSettings, CustomTool, DEFAULT_CUSTOM_TIMEOUT_S, NotesSource, ToolCallError,
+    ToolConfigError, ToolSelection, ToolSet, call_json,
 };
 pub use scripted::{ScriptError, ScriptedModel};
 pub use skills::{

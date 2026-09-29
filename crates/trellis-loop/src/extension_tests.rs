@@ -344,6 +344,7 @@ fn echo_tool(name: &str, matching: &str) -> CustomTool {
             "properties": { "path": { "type": "string" } },
             "required": ["path"]
         }),
+        timeout_s: None,
     }
 }
 

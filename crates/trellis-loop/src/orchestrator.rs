@@ -753,6 +753,7 @@ impl Orchestrator {
             return ToolResult::Error(format!("`{name}` is not a tool in this run"));
         };
         let command = tool.command.clone();
+        let timeout = tool.timeout();
         // Its command is trusted code, and a script it names may have been
         // rewritten since (ADR 0023 §5). Checked before the clone is made,
         // so the copy it runs is of what was just checked.
@@ -762,14 +763,14 @@ impl Orchestrator {
             return ToolResult::Error(format!("`{name}` was not started, because {why}"));
         }
         let stdin = Some(args.to_string().into_bytes());
-        let (c, carried) = match self.isolated(&command, stdin, CUSTOM_TIMEOUT).await {
+        let (c, carried) = match self.isolated(&command, stdin, timeout).await {
             Ok(r) => r,
             Err(e) => return ToolResult::Error(format!("`{name}` was not run: {e}")),
         };
         if c.timed_out {
             return ToolResult::Error(format!(
                 "`{name}` did not finish within {}s and was killed{carried}",
-                CUSTOM_TIMEOUT.as_secs()
+                timeout.as_secs()
             ));
         }
         if c.code == Some(0) {
@@ -1385,10 +1386,6 @@ pub(crate) fn write_refusal(root: &Path, rel: &str) -> Option<String> {
 /// `trellis-core`, where the binary's prompt-template names obey it too;
 /// the rules it applies are documented there.
 pub(crate) use trellis_core::paths::unsafe_repo_path;
-
-/// How long a custom tool may run. The same default as `bash`: a custom
-/// tool is a command the repository wrote, and it is bounded like one.
-const CUSTOM_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How many lines of a file a failed anchor is allowed to quote back.
 ///
