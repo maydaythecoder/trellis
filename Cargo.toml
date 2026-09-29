@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The cargo-fuzz workspace (fuzz/Cargo.toml): nightly-only, with its own lock.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"
