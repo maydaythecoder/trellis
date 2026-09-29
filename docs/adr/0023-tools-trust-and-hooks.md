@@ -258,7 +258,8 @@ loaded only if the user has trusted it.
   repository, so a repository cannot trust itself.
 - **Keyed by** the canonical repository root.
 - **Records** one sha256 over every hook argv, every custom tool's name,
-  description, command and schema, the `[tools]` bash settings, and the
+  description, command and schema (and its `timeout_s` when declared, #135),
+  the `[tools]` bash settings, and the
   path and bytes of every file those argv reference (an argument that names
   an existing file inside the repository). Any change to any of them makes
   the repository untrusted again.
@@ -1035,6 +1036,8 @@ Subject to trust, to the gate list, and to `[control] approve` by name.
 Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not
 shadow a built-in or `done`. The description is capped at 200 characters and
 may hold no control character, since it is printed in the prompt's tool line.
+An optional `timeout_s` bounds how long the command may run (default 120;
+see "As built", #135).
 
 Argument validation on tier 2 is the runtime's, from the composed schema. On
 tier 4 and in scripts there is no schema validator in the workspace, so
@@ -1118,8 +1121,14 @@ names are in the code beside each.
   appended to `.trellis/context.md`'s notes, inside the repository fence. A
   `before_run` that fails or times out adds nothing and the run says so and
   continues; what failed was a source of context, not a check.
-- **Custom tools have a fixed 120-second timeout**, the same as bash's
-  default. Not configurable yet.
+- **A custom tool's timeout is its declaration's `timeout_s`**, default
+  120, the same as bash's (#135). It is read as `bash_timeout_s` is: a
+  non-negative integer, with a value that key refuses refused here in the
+  same words, and 0 taken as 1 second. Neither key has an upper bound. The
+  key is part of the tool's trust item only when declared, so a declaration
+  without it keeps the digest it was trusted under, and adding or changing
+  it needs `trellis trust` again (`custom_tool_timeout_*` in
+  `crates/trellis-cli/src/tooling.rs`).
 - **Untrusted is per repository, not per item.** One digest covers every
   hook, custom tool and the bash settings together; changing any of them
   untrusts all of them. `disable` or `enable` naming an untrusted custom tool
@@ -1133,9 +1142,8 @@ names are in the code beside each.
   loaded hooks, whenever the set is not the measured default or hooks are
   loaded. An unconfigured run prints what it printed before.
 
-Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust, a
-configurable custom-tool timeout, hooks for events other than the four
-above, and tracking of what `bash` or a custom tool wrote in the worktree.
+Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust,
+hooks for events other than the four above, and tracking of what `bash` or a custom tool wrote in the worktree.
 
 ## Integrated
 
