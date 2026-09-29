@@ -75,13 +75,28 @@ pub struct Factual {
     /// Completion tokens the runtime adapter reported for the run
     /// (ADR 0026 §8). The budget ledger sums this.
     ///
-    /// Completion only: no prompt-token figure exists anywhere in trellis,
-    /// so a budget over this limits generated tokens, not billed ones.
+    /// Completion only. Prompt tokens are `prompt_tokens`, below, and the
+    /// two are never summed: a budget over this limits generated tokens,
+    /// not billed ones.
     /// `None` for a scripted run and for a process agent, whose spend
     /// trellis cannot see — not a zero, which would read as a free run.
     /// Omitted when absent, like `control`, so older trails keep their digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// Prompt tokens the runtime adapter reported for the run, when it
+    /// reported any.
+    ///
+    /// A separate field rather than a larger `tokens`, so the two figures are
+    /// never added into one number: a prompt is re-sent every turn, and a sum
+    /// would read as generated output that never happened. Nothing in this
+    /// crate adds them.
+    ///
+    /// Absent means unknown — a trail written before this field existed, a
+    /// scripted run, a process agent, an adapter that did not say — never
+    /// zero. Omitted when absent, like `tokens`, so a trail written before
+    /// the field keeps its shape and its digest, and `SCHEMA` stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
     /// The agent profile the run executed as (ADR 0026 §4), when one did.
     ///
     /// Recorded in the trail rather than joined from the queue: the queue is
@@ -467,6 +482,7 @@ mod tests {
                 ],
                 control: None,
                 tokens: None,
+                prompt_tokens: None,
                 agent: None,
                 inputs: Vec::new(),
             },
