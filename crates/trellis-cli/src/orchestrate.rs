@@ -316,6 +316,18 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
                     t.join(", ")
                 ),
             }
+            // Only when set, so a profile without it shows what it showed.
+            if let Some(a) = &f.allow_write {
+                println!(
+                    "allow_write:  {} — the only paths these runs may write; a path the \
+                     repository denies stays denied",
+                    if a.is_empty() {
+                        "(none: no write at all)".to_string()
+                    } else {
+                        a.join(", ")
+                    }
+                );
+            }
             let b = f.budget.clone().unwrap_or_default();
             if p.is_process() {
                 println!("budget:       none possible; trellis does not see a process's tokens");

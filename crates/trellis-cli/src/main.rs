@@ -1702,7 +1702,16 @@ fn run_body(
         .map(|r| r.as_written())
         .collect();
     deny.extend(trellis_checks::governance::deny_write_paths(&rules));
-    let governance = trellis_loop::Governance::new(&deny);
+    let mut governance = trellis_loop::Governance::new(&deny);
+    // A profile's `allow_write` narrows the run's writes (ADR 0026 §4). It
+    // is kept out of `deny_write`, so the writer guards cloned below still
+    // protect exactly what the repository's rules name, and a cache a check
+    // writes outside the scope is not a tree left unrestored.
+    if let Some(p) = profile
+        && let Some(allow) = &p.file.allow_write
+    {
+        governance = governance.with_allow_write(&p.name, allow);
+    }
     let writers = if tooling.tools.bash().is_some()
         || !tooling.tools.customs().is_empty()
         || tooling.hooks.is_some()
@@ -1833,6 +1842,30 @@ fn run_body(
         .iter()
         .map(|r| format!("{} (no writes)", r.as_written()))
         .collect();
+    // Told, not only enforced, for the reason the rules are: a model that
+    // does not know the scope spends turns on refusals. Phrased for the
+    // prompt's heading, which lists the files the model may not edit, and
+    // written as the rules parse, as the `deny_write` lines above are.
+    if let Some(p) = profile
+        && let Some(allow) = &p.file.allow_write
+    {
+        prompt_rules.push(if allow.is_empty() {
+            format!(
+                "every path (agent `{}` has an empty allow_write: no writes)",
+                p.name
+            )
+        } else {
+            let written: Vec<String> = allow
+                .iter()
+                .map(|a| trellis_loop::Rule::parse(a).as_written())
+                .collect();
+            format!(
+                "every path except {} (agent `{}`'s allow_write)",
+                written.join(", "),
+                p.name
+            )
+        });
+    }
     for r in &rules {
         let rank = match r.rank {
             trellis_checks::governance::Rank::NonNegotiable => "non-negotiable",

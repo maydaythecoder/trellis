@@ -101,6 +101,13 @@ impl GovernanceGate {
             .denies_write_at(&self.root, rel)
             .map(|r| r.as_written())
     }
+
+    /// Why a write landing at `rel` is outside the profile's `allow_write`,
+    /// or `None`. Asked after [`denies_write`](Self::denies_write), for the
+    /// same carry-back.
+    pub(crate) fn outside_allow_write(&self, rel: &str) -> Option<String> {
+        self.governance.outside_allow_write_at(&self.root, rel)
+    }
 }
 
 impl ToolGate for GovernanceGate {
@@ -121,7 +128,24 @@ impl ToolGate for GovernanceGate {
                             rule.as_written()
                         ),
                     },
-                    None => GateDecision::Allow,
+                    // The repository's rule first, so a path both rules
+                    // name is refused under the repository's (ADR 0026 §4:
+                    // `allow_write` only narrows).
+                    None => match self.governance.outside_allow_write_at(&self.root, path) {
+                        Some(why) => GateDecision::Deny {
+                            reason: format!(
+                                concat!(
+                                    "{} refused: `{}` is {}. This is the profile's own rule, ",
+                                    "not a guess — change the profile if the file really should ",
+                                    "be editable."
+                                ),
+                                tool_name(call),
+                                path,
+                                why
+                            ),
+                        },
+                        None => GateDecision::Allow,
+                    },
                 }
             }
             _ => GateDecision::Allow,
@@ -639,6 +663,86 @@ mod tests {
         }
     }
 
+    fn edit(path: &str) -> ToolCall {
+        ToolCall::Edit {
+            path: path.into(),
+            old: "a".into(),
+            new: "b".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_write_refuses_a_write_outside_it_as_deny_write_refuses() {
+        // The risk (#182): a profile's `allow_write` that only a prompt
+        // mentioned, so a run claimed by a docs-only agent could still edit
+        // `app/`. Refused at the gate, before the file is read, with a
+        // reason naming the profile's file as a deny names config.toml.
+        let d = tempfile::tempdir().unwrap();
+        let g = Governance::new(&[]).with_allow_write("docs-writer", &["docs/".into()]);
+        let mut g = GovernanceGate::new(g, d.path());
+        for call in [
+            edit("app/x.py"),
+            ToolCall::WriteFile {
+                path: "app/new.py".into(),
+                content: "x = 1\n".into(),
+            },
+        ] {
+            match g.check(&call).await {
+                GateDecision::Deny { reason } => {
+                    assert!(
+                        reason.starts_with(&format!("{} refused: `app/", tool_name(&call))),
+                        "{reason}"
+                    );
+                    assert!(
+                        reason.contains(
+                            "outside the allow_write [`docs/`] of agent `docs-writer` \
+                             in .trellis/agents/docs-writer.toml"
+                        ),
+                        "{reason}"
+                    );
+                }
+                other => panic!("allow_write must refuse {call:?}: {other:?}"),
+            }
+        }
+        // Inside it, in any spelling that lands there, the write goes ahead.
+        for p in ["docs/guide.md", ".//docs/a/b.md", "docs\\c.md"] {
+            assert_eq!(g.check(&edit(p)).await, GateDecision::Allow, "{p}");
+        }
+        // An empty list admits nothing: `allow_write = []` is a read-only
+        // agent, not an absent field.
+        let mut none =
+            GovernanceGate::new(Governance::new(&[]).with_allow_write("ro", &[]), d.path());
+        assert!(matches!(
+            none.check(&edit("docs/guide.md")).await,
+            GateDecision::Deny { .. }
+        ));
+        // And with no profile scope nothing is narrowed: today's behaviour.
+        let mut open = GovernanceGate::new(Governance::new(&[]), d.path());
+        assert_eq!(open.check(&edit("app/x.py")).await, GateDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn allow_write_never_admits_what_the_repository_denies() {
+        // The risk (#182, "only narrows"): a profile is repository content
+        // too, but a lower one; `allow_write = ["vendor/"]` must not undo
+        // the repository's `deny_write = ["vendor/"]`. The refusal names the
+        // repository's rule, which is the one to change.
+        let d = tempfile::tempdir().unwrap();
+        let g = Governance::new(&["vendor/".into()])
+            .with_allow_write("vendorer", &["vendor/".into(), "app/".into()]);
+        let mut g = GovernanceGate::new(g, d.path());
+        match g.check(&edit("vendor/lib.py")).await {
+            GateDecision::Deny { reason } => {
+                assert!(
+                    reason.contains("denied by the rule `vendor/` in .trellis/config.toml"),
+                    "{reason}"
+                );
+            }
+            other => panic!("a repository deny must win: {other:?}"),
+        }
+        assert_eq!(g.check(&edit("app/x.py")).await, GateDecision::Allow);
+    }
+
     /// A git repository with `vendor/` in it and `lnk` a link to it, or
     /// `None` where this platform will not make the link.
     fn repo_with_link_to_vendor() -> Option<tempfile::TempDir> {
@@ -708,6 +812,42 @@ mod tests {
         // An ordinary path is still written.
         let got = write_under(d.path(), "app.py").await;
         assert!(!matches!(got, crate::ToolResult::Error(_)), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn allow_write_holds_for_the_path_a_write_really_lands_on() {
+        // The risk: `allow_write` matched only against the model's string,
+        // so `lnk/new.py` passed a scope of `lnk/` while the write landed in
+        // `vendor/`, which the scope does not admit.
+        let Some(d) = repo_with_link_to_vendor() else {
+            eprintln!("skipped: no link on this platform");
+            return;
+        };
+        let (h, _j) = crate::orchestrator::Orchestrator::new(
+            d.path(),
+            trellis_checks::CheckConfig::default(),
+        )
+        .with_governance(Governance::new(&[]).with_allow_write("p", &["lnk/".into()]))
+        .with_tools(
+            crate::ToolSet::build(crate::ToolSelection {
+                enable: vec!["write_file".into()],
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .spawn();
+        let got = h
+            .call(&ToolCall::WriteFile {
+                path: "lnk/new.py".into(),
+                content: "x = 2\n".into(),
+            })
+            .await
+            .result;
+        assert!(
+            matches!(&got, crate::ToolResult::Error(e) if e.contains("outside the allow_write")),
+            "{got:?}"
+        );
+        assert!(!d.path().join("vendor/new.py").exists());
     }
 
     #[tokio::test]

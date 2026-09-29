@@ -79,12 +79,15 @@ struct Judge {
     rules: Vec<trellis_checks::governance::Rule>,
     /// Built once: `denied` runs per modified ignored file in undo's
     /// protected closure, and parsing and folding every rule each time
-    /// was repeated work (review round 12).
+    /// was repeated work (review round 12). Carries the profile's
+    /// `allow_write` too, which only [`Self::governance`] consults.
     deny: trellis_loop::Governance,
 }
 
 impl Judge {
-    fn load(root: &Path) -> Result<Judge, String> {
+    /// `profile` was read before the command ran, as the rest is: its
+    /// `allow_write` is one more thing the command may not choose.
+    fn load(root: &Path, profile: &Profile) -> Result<Judge, String> {
         let rules = trellis_checks::governance::load(root).map_err(|e| e.to_string())?;
         let cfg = crate::config::RepoConfig::load(root).map_err(|e| format!("{e:#}"))?;
         let mut deny: Vec<String> = cfg
@@ -94,17 +97,22 @@ impl Judge {
             .map(|r| r.as_written())
             .collect();
         deny.extend(trellis_checks::governance::deny_write_paths(&rules));
+        let mut deny = trellis_loop::Governance::new(&deny);
+        if let Some(allow) = &profile.file.allow_write {
+            deny = deny.with_allow_write(&profile.name, allow);
+        }
         Ok(Judge {
             // Once per run, not per check spawn (review round 11).
             checks: cfg.checks().for_run(root),
             rules,
-            deny: trellis_loop::Governance::new(&deny),
+            deny,
         })
     }
 
     /// Governance as a model run meets it: `deny_write` over every path the
-    /// command changed, then the `forbid` audit over those files. The first
-    /// is a list of breaches; the second is a `Verdict` from
+    /// command changed, then the profile's `allow_write` over those the
+    /// repository's rules let through, then the `forbid` audit over those
+    /// files. The first two are a list of breaches; the last is a `Verdict` from
     /// `trellis-checks`, present only when the repository has rule
     /// documents, as the loop audits only then.
     ///
@@ -116,7 +124,19 @@ impl Judge {
         root: &Path,
         touched: &[String],
     ) -> (Vec<String>, Option<trellis_checks::Verdict>) {
-        let denied = self.denied(root, touched.iter());
+        let mut denied = self.denied(root, touched.iter());
+        // Over what git shows changed, not over ignored files: the checks
+        // and the tests write caches there on every run, and a scope that
+        // counted them would refuse every run of a scoped agent. Ignored
+        // files are not part of the change a run leaves for review.
+        denied.extend(touched.iter().filter_map(|p| {
+            if trellis_loop::names_trellis_dir(p) || self.deny.denies_write_at(root, p).is_some() {
+                return None;
+            }
+            self.deny
+                .outside_allow_write_at(root, p)
+                .map(|why| format!("{p} ({why})"))
+        }));
         let audit = (!self.rules.is_empty())
             .then(|| trellis_checks::governance_audit(root, &self.rules, touched));
         (denied, audit)
@@ -193,7 +213,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let _ = writeln!(out, "snapshot at {}", snapshot.head);
     // Before the command, for the reason the git guard below is: what is
     // read after it is whatever it left there.
-    let judge = match Judge::load(root) {
+    let judge = match Judge::load(root, profile) {
         Ok(j) => j,
         Err(e) => {
             // Nothing ran, so nothing changed; the snapshot needs no rollback.
@@ -457,7 +477,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
                  rules that judge it"
             }
             _ if !denied.is_empty() => {
-                "not converged: the command wrote where [governance] deny_write refuses"
+                "not converged: the command wrote where [governance] deny_write refuses, \
+                 or outside the agent's allow_write"
             }
             _ => "not converged: a check failed",
         }
