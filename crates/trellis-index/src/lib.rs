@@ -10,6 +10,7 @@ mod graph;
 mod incremental;
 pub mod modules;
 pub mod parse;
+mod pyright_backstop;
 pub mod radius;
 mod resolve;
 
@@ -23,6 +24,10 @@ pub use modules::{ModuleGraph, ModuleNode, module_graph};
 pub use parse::{
     BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact, TypeFact,
     collect as parse_facts,
+};
+pub use pyright_backstop::{
+    BackstopEdge, BackstopReport, BackstopStatus, EdgeSource, Server as BackstopServer,
+    doubt_sites, run as run_backstop,
 };
 pub use radius::{
     CallerSite, DoubtSite, FileDoubt, RadiusReport, callers_of_files, doubt_in_files,
