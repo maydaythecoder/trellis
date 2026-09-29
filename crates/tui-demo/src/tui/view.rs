@@ -22,13 +22,23 @@ pub fn render(state: &AppState, frame: &mut Frame) {
         return;
     }
 
+    // The task entry grows by one row per `@` candidate, which it draws
+    // under the typed line. Nothing is offered while a run holds the input,
+    // because nothing typed then can be sent.
+    let offered = if state.running {
+        Vec::new()
+    } else {
+        state.at_file_candidates()
+    };
+    let entry_rows = 3 + u16::try_from(offered.len()).unwrap_or(u16::MAX);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // status
-            Constraint::Min(0),    // body
-            Constraint::Length(3), // budget
-            Constraint::Length(3), // task entry
+            Constraint::Length(1),          // status
+            Constraint::Min(0),             // body
+            Constraint::Length(3),          // budget
+            Constraint::Length(entry_rows), // task entry and `@` candidates
         ])
         .split(area);
 
@@ -60,7 +70,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     render_checks(state, right[2], frame);
     render_radius(state, right[3], frame);
     render_budget(state, rows[2], frame);
-    render_input(state, rows[3], frame);
+    render_input(state, &offered, rows[3], frame);
 
     // Last, so it is over everything, and `Clear` first so what is under it
     // is wiped rather than showing through the gaps.
@@ -408,25 +418,36 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(gauge, area);
 }
 
-fn render_input(state: &AppState, area: Rect, frame: &mut Frame) {
-    let (title, body, style) = if state.running {
+fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Frame) {
+    let (title, lines, style) = if state.running {
         (
             " running — input held until it finishes ",
-            String::new(),
+            Vec::new(),
             Style::default().fg(Color::DarkGray),
         )
     } else {
+        // A block cursor, so an empty line still shows where typing goes.
+        let mut lines = vec![Line::from(format!("{}█", state.input))];
+        // Each candidate on its own row, the first marked as the one Tab
+        // inserts. Cut rather than wrapped: a wrapped path would take a row
+        // the next candidate was given.
+        let width = usize::from(area.width.saturating_sub(6));
+        for (i, path) in offered.iter().enumerate() {
+            let mark = if i == 0 { "tab " } else { "    " };
+            lines.push(Line::from(Span::styled(
+                format!("{mark}{}", truncate(path, width)),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
         (
             " task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ",
-            // A block cursor, so an empty line still shows where typing goes.
-            format!("{}█", state.input),
+            lines,
             Style::default(),
         )
     };
-    let p = Paragraph::new(body)
+    let p = Paragraph::new(lines)
         .style(style)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: false });
+        .block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(p, area);
 }
 
@@ -576,6 +597,76 @@ mod tests {
         assert!(
             out.contains('\u{2588}'),
             "a block cursor, so an empty line still shows where typing goes"
+        );
+    }
+
+    /// The rendered screen as rows, so a test can ask what is below what.
+    fn drawn_rows(state: &AppState, w: u16, h: u16) -> Vec<String> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| render(state, f)).unwrap();
+        let buf = t.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn at_file_candidates_are_drawn_under_the_input_line() {
+        let paths = ["src/models.py", "app/models.py", "README.md"];
+        let mut s = populated().with_paths(paths.iter().map(|p| (*p).to_string()).collect());
+        s.input = "fix @models".into();
+        let rows = drawn_rows(&s, 80, 24);
+        let row_of = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{needle} not on screen:
+{}",
+                        rows.join(
+                            "
+"
+                        )
+                    )
+                })
+        };
+        let typed = row_of("fix @models");
+        let first = row_of("app/models.py");
+        let second = row_of("src/models.py");
+        assert!(
+            typed < first && first < second,
+            "{}",
+            rows.join(
+                "
+"
+            )
+        );
+        assert!(rows[first].contains("tab"), "the one Tab inserts is marked");
+        assert!(
+            !rows
+                .join(
+                    "
+"
+                )
+                .contains("README"),
+            "a non-match is not drawn"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("budget")),
+            "the other regions still fit at the minimum size"
+        );
+    }
+
+    #[test]
+    fn at_file_candidates_are_not_drawn_while_a_run_holds_the_input() {
+        let mut s = populated().with_paths(vec!["src/models.py".into()]);
+        s.input = "fix @models".into();
+        s.running = true;
+        let out = drawn(&s, 80, 24);
+        assert!(
+            !out.contains("src/models.py"),
+            "got:
+{out}"
         );
     }
 
