@@ -27,16 +27,18 @@ pub mod ledger;
 pub mod portable;
 pub mod profile;
 pub mod routine;
+mod stale;
 mod stamp;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 pub use activity::{ActivityLog, Actor, Event};
 use files::{io, move_to, present, publish, read_json, remove};
+pub use stale::{Claimant, Liveness, Probe, RELEASE_THROTTLE_SECS, StaleClaims, Swept};
 pub use stamp::iso_now;
 pub use stamp::{civil_from_secs, month_of, now_secs, parse_iso, secs_to_iso};
 
@@ -330,6 +332,21 @@ pub struct Task {
     /// this task on the next tick instead of enqueuing the instant again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine_at: Option<i64>,
+    /// Where the claim was made: the claimant's hostname and OS, and its
+    /// start time as the platform probe reports it. Written only by a
+    /// heartbeat with `[work] stale_claims = "release"`, and what that
+    /// setting needs before it may release a claim (ADR 0020 §5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_os: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_pid_started: Option<String>,
+    /// When a heartbeat last released this task's stale claim. Kept as the
+    /// task moves, so a task whose runs keep dying is released at most
+    /// once an hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_released_at: Option<String>,
 }
 
 impl Task {
@@ -436,6 +453,17 @@ impl Index {
 #[derive(Debug, Clone)]
 pub struct Queue {
     dir: PathBuf,
+    /// Recorded on each claim when set (`stale.rs`).
+    claimant: Option<Claimant>,
+}
+
+/// Forgets who holds a task: what every path out of `claimed/` does.
+pub(crate) fn clear_claim(t: &mut Task) {
+    t.claimed_at = None;
+    t.claimed_by_pid = None;
+    t.claimed_host = None;
+    t.claimed_os = None;
+    t.claimed_pid_started = None;
 }
 
 impl Queue {
@@ -454,7 +482,10 @@ impl Queue {
 
     /// A queue at an explicit directory. Nothing is created until written.
     pub fn at(dir: impl Into<PathBuf>) -> Self {
-        Queue { dir: dir.into() }
+        Queue {
+            dir: dir.into(),
+            claimant: None,
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -703,6 +734,10 @@ impl Queue {
         };
         task.claimed_at = Some(iso_now());
         task.claimed_by_pid = Some(std::process::id());
+        let c = self.claimant();
+        task.claimed_host = c.map(|c| c.host.clone());
+        task.claimed_os = c.map(|c| c.os.clone());
+        task.claimed_pid_started = c.and_then(|c| c.started.clone());
 
         // The atomic checkout: `claimed/<id>.json` is created by a hard link
         // that fails when the name exists, so exactly one claimer creates it.
@@ -903,8 +938,7 @@ impl Queue {
             let pid = self.find(&id).ok().and_then(|(_, t)| t.claimed_by_pid);
             return Err(QueueError::Claimed { id, pid });
         };
-        c.task.claimed_at = None;
-        c.task.claimed_by_pid = None;
+        clear_claim(&mut c.task);
         let to = match f(&mut c.task, State::Pending) {
             Ok(Some(State::Claimed)) => Err(QueueError::Invalid(
                 "a task becomes in_progress only by being claimed".into(),
@@ -1019,8 +1053,7 @@ impl Queue {
                 continue;
             }
             let mut task: Task = read_json(&from)?;
-            task.claimed_at = None;
-            task.claimed_by_pid = None;
+            clear_claim(&mut task);
             // A pending task has not ended; an old outcome on it would be
             // read as this attempt's.
             task.outcome = None;
@@ -1099,8 +1132,7 @@ impl Claim {
         if attempted {
             self.task.attempts += 1;
         }
-        self.task.claimed_at = None;
-        self.task.claimed_by_pid = None;
+        clear_claim(&mut self.task);
         let from = self.queue.path(State::Claimed, &self.id);
         move_to(
             &from,
@@ -1200,6 +1232,15 @@ pub trait Runner {
     /// The id of the task about to run, before `run`: what a process agent
     /// receives as `TRELLIS_TASK_ID`.
     fn starting(&mut self, _id: &str) {}
+    /// The platform probe `[work] stale_claims = "release"` needs. Without
+    /// one, stale claims are listed and nothing is released.
+    fn liveness(&self) -> Option<&dyn Liveness> {
+        None
+    }
+    /// Unix seconds, for the stale-claim sweep's age and throttle.
+    fn now(&self) -> i64 {
+        now_secs()
+    }
 }
 
 /// Why [`work`] returned.
@@ -1261,6 +1302,8 @@ pub struct WorkOptions {
     /// is due, if sooner) and look again, rather than returning. Tasks run
     /// back to back while there are any.
     pub every: Option<Duration>,
+    /// What to do with a task another process left in `claimed/`.
+    pub stale_claims: StaleClaims,
 }
 
 /// Wakes, logged and printed. Failure to reconcile is reported and not
@@ -1274,6 +1317,53 @@ fn reconcile_and_say(q: &Queue, out: &mut dyn Write) {
         }
         Err(e) => {
             let _ = writeln!(out, "work:     could not reconcile blockers: {e}");
+        }
+    }
+}
+
+/// The stale-claim sweep, printed. Each release is said and logged (by
+/// `release_stale_claims`); why a claim was kept is said once per claim per
+/// invocation, since under `--every` it would otherwise repeat every tick.
+/// A sweep that fails is reported and not fatal, as a reconcile is.
+fn release_stale_and_say(
+    q: &Queue,
+    runner: &dyn Runner,
+    said: &mut HashSet<String>,
+    out: &mut dyn Write,
+) {
+    let Some(live) = runner.liveness() else {
+        if said.insert(String::new()) {
+            let _ = writeln!(
+                out,
+                "queue:    stale_claims = \"release\", but no process probe is available; \
+                 stale claims are listed, not released"
+            );
+        }
+        return;
+    };
+    match q.release_stale_claims(live, runner.now()) {
+        Ok(swept) => {
+            for (id, s) in swept {
+                match s {
+                    Swept::Released(detail) => {
+                        let _ = writeln!(
+                            out,
+                            "queue:    {id} -> pending/ (stale claim released: {detail}; attempts kept)"
+                        );
+                    }
+                    Swept::Kept(why) => {
+                        if said.insert(format!("{id}\n{why}")) {
+                            let _ = writeln!(
+                                out,
+                                "queue:    {id} stays in claimed/ and will not be re-run: {why}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(out, "queue:    could not release stale claims: {e}");
         }
     }
 }
@@ -1294,7 +1384,20 @@ pub fn work(
     opts: WorkOptions,
     out: &mut dyn Write,
 ) -> Result<(u32, Stop), QueueError> {
-    let stale = q.ids(State::Claimed)?;
+    let mut said_kept = HashSet::new();
+    let stale = if opts.stale_claims == StaleClaims::Release {
+        release_stale_and_say(q, runner, &mut said_kept, out);
+        let left = q.ids(State::Claimed)?;
+        if !left.is_empty() {
+            let _ = writeln!(
+                out,
+                "          `trellis queue requeue <id>` puts one back in pending/ by hand"
+            );
+        }
+        Vec::new()
+    } else {
+        q.ids(State::Claimed)?
+    };
     if !stale.is_empty() {
         let _ = writeln!(
             out,
@@ -1324,6 +1427,11 @@ pub fn work(
             return Ok((ran, Stop::Blocked(why)));
         }
         runner.tick(q, out);
+        // Each tick, not only at start: under `--every` a `queue set` in
+        // another terminal can crash holding a claim hours after this began.
+        if opts.stale_claims == StaleClaims::Release {
+            release_stale_and_say(q, runner, &mut said_kept, out);
+        }
         reconcile_and_say(q, out);
         let claimed = {
             let mut gate = |id: &str, t: &Task| runner.gate(id, t, out);
