@@ -122,6 +122,10 @@ pub(crate) struct Spec<'a> {
     pub(crate) argv: &'a [String],
     pub(crate) cwd: &'a Path,
     pub(crate) env: &'a [(String, String)],
+    /// Removed from the inherited environment: the variables that would
+    /// point a `git` run in a throwaway clone at the real repository
+    /// ([`crate::isolate::GIT_LOCATION_VARS`]).
+    pub(crate) env_remove: &'a [&'a str],
     /// Written to stdin and then closed; `None` gives the child no stdin.
     pub(crate) stdin: Option<Vec<u8>>,
     pub(crate) timeout: Duration,
@@ -141,8 +145,9 @@ pub(crate) struct Spec<'a> {
 /// is still writing its stdin waits forever, and so does the parent. The
 /// run ends when the process exits, plus [`DRAIN_GRACE`] for its pipes; on a
 /// timeout the child and what it started are killed as far as
-/// [`kill_tree`] reaches, which ADR 0023 §3 states. `Err` only when the
-/// process could not be started.
+/// [`kill_tree`] reaches, which ADR 0023 §3 and ADR 0035 state. `Err` only
+/// when the process could not be started (on Windows, that includes a Job
+/// Object that could not be created or joined).
 pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
     let Some((program, args)) = spec.argv.split_first() else {
         return Err(ExecError::Empty);
@@ -163,6 +168,9 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
     // `bash`, custom tool, hook and listing command is spawned here, and its
     // output is an observation the log and the trail both record.
     trellis_core::secrets::scrub(cmd.as_std_mut());
+    for v in spec.env_remove {
+        cmd.env_remove(v);
+    }
     // No `__pycache__` from anything trellis runs: under `.trellis/` it is
     // in the trust digest (bytecode can be code, so it is not skipped), and
     // where git does not ignore it, it moves the per-call worktree digest
@@ -172,27 +180,25 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
     // (`kill_tree`). Safe std; the signal goes through `kill(1)`.
     #[cfg(unix)]
     cmd.process_group(0);
-    let mut child = cmd.spawn().map_err(|source| ExecError::Start {
+    let mut child = spawn(cmd).map_err(|source| ExecError::Start {
         program: program.clone(),
         source,
     })?;
     // Taken now: tokio's `id()` is `None` once the child has been reaped,
     // and the group is killed after that (`kill_group`).
+    #[cfg(unix)]
     let pid = child.id();
     // A member of the group that trellis holds and does not reap until the
     // group has been signalled: alive or a zombie, it keeps the group id
     // from being reused, so the group kill after a normal exit (which is
     // only observable by reaping the command) cannot reach a stranger's
-    // group that took the id (review round 9). `None` on Windows, or when
-    // it could not be started; the post-exit kill is then skipped.
+    // group that took the id (review round 9). `None` when it could not be
+    // started; the post-exit kill is then skipped. Unix only: on Windows a
+    // job handle, not an id, names the tree (ADR 0035).
     #[cfg(unix)]
     let mut holder = pid.and_then(hold_group);
-    #[cfg(not(unix))]
-    let mut holder: Option<tokio::process::Child> = None;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdin = child.stdin.take();
+    let (stdin, stdout, stderr) = pipes(&mut child);
     let mut out = Captured::default();
     let cap = spec.cap;
     let input = spec.stdin;
@@ -223,7 +229,7 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
         let exited = tokio::time::timeout(spec.timeout, async {
             loop {
                 tokio::select! {
-                    s = child.wait() => break s,
+                    s = wait_command(&mut child) => break s,
                     _ = &mut write, if !written => written = true,
                     _ = &mut reading, if !read => read = true,
                 }
@@ -233,17 +239,21 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
         // A normal exit ends what the command left running too: a
         // backgrounded `sleep 1; touch x` would otherwise write after this
         // call returns, after a convergence judged the tree or a rollback
-        // restored it. Before the drain, so the pipes it held close. Only
-        // while `holder` keeps the group id ours.
+        // restored it. Before the drain, so the pipes it held close. On
+        // Unix only while `holder` keeps the group id ours; on Windows the
+        // job handle names the tree for as long as `child` lives (ADR 0035).
         if let Ok(Ok(_)) = &exited {
+            #[cfg(unix)]
             if holder.is_some() {
                 Box::pin(kill_group(pid)).await;
-            } else if cfg!(unix) {
+            } else {
                 tracing::warn!(
                     "the group holder did not start; what the command left running is not \
                      killed"
                 );
             }
+            #[cfg(windows)]
+            end_job(&mut child);
         }
         // Then what is left in the pipes, for a short grace. Dropping the
         // readers keeps every byte they already stored.
@@ -278,11 +288,90 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
         }
     }
     // Reaped last, after every group signal: until now it held the id.
+    #[cfg(unix)]
     if let Some(h) = &mut holder {
         let _ = h.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(2), h.wait()).await;
     }
     Ok(out)
+}
+
+/// What `run` spawned. On Windows the command is wrapped in a Job Object
+/// (ADR 0035), and the wrapper owns the process.
+#[cfg(unix)]
+type Child = tokio::process::Child;
+#[cfg(windows)]
+type Child = Box<dyn process_wrap::tokio::ChildWrapper>;
+
+/// Spawns `cmd`, which the caller has already scrubbed.
+#[cfg(unix)]
+fn spawn(mut cmd: tokio::process::Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
+/// Spawns `cmd`, which the caller has already scrubbed, into a Job Object
+/// of its own: created suspended, assigned, then resumed, so nothing it
+/// starts runs before it is in the job. The job allows no breakaway, so a
+/// `CREATE_BREAKAWAY_FROM_JOB` child fails to start rather than escape, and
+/// `KillOnDrop` makes it kill-on-close, so the tree also ends when trellis
+/// does. A job that cannot be made or joined kills the child and is an
+/// error: running the command unheld is what ADR 0035 replaced.
+#[cfg(windows)]
+fn spawn(cmd: tokio::process::Command) -> std::io::Result<Child> {
+    use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+    let mut wrapped = CommandWrap::from(cmd);
+    wrapped.wrap(KillOnDrop).wrap(JobObject);
+    wrapped.spawn()
+}
+
+type Pipes = (
+    Option<tokio::process::ChildStdin>,
+    Option<tokio::process::ChildStdout>,
+    Option<tokio::process::ChildStderr>,
+);
+
+#[cfg(unix)]
+fn pipes(child: &mut Child) -> Pipes {
+    (child.stdin.take(), child.stdout.take(), child.stderr.take())
+}
+
+#[cfg(windows)]
+fn pipes(child: &mut Child) -> Pipes {
+    (
+        child.stdin().take(),
+        child.stdout().take(),
+        child.stderr().take(),
+    )
+}
+
+/// Waits for the command itself, not for what it started.
+#[cfg(unix)]
+fn wait_command(
+    child: &mut Child,
+) -> impl std::future::Future<Output = std::io::Result<std::process::ExitStatus>> + '_ {
+    child.wait()
+}
+
+/// Waits for the command itself, not for what it started: the job
+/// wrapper's own `wait` goes on to wait for every process in the job, and
+/// a backgrounded grandchild would hold the call for its whole life.
+#[cfg(windows)]
+fn wait_command(
+    child: &mut Child,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = std::io::Result<std::process::ExitStatus>> + Send + '_>,
+> {
+    child.inner_mut().wait()
+}
+
+/// Ends every process still in the command's job (`TerminateJobObject`).
+/// Safe after the command has been reaped: the job handle, not a pid,
+/// names the tree, so no reused id can make it reach a stranger.
+#[cfg(windows)]
+fn end_job(child: &mut Child) {
+    if let Err(e) = child.start_kill() {
+        tracing::warn!("could not end the command's job: {e}");
+    }
 }
 
 /// Starts `cat` in process group `pgid`, reading a pipe trellis holds so it
@@ -300,72 +389,41 @@ fn hold_group(pgid: u32) -> Option<tokio::process::Child> {
     c.spawn().ok()
 }
 
-/// Kills the child and what it started, as far as the platform allows
-/// without `unsafe`: the child leads its own process group on Unix, which
-/// `kill -KILL -- -<pgid>` signals whole; on Windows `taskkill /T` walks the
-/// tree from the child. A process that left the group (`setsid`) or whose
-/// parent already exited on Windows (the tree link is the parent pid) is
-/// not reached. Then the child itself, directly, whatever that did.
-async fn kill_tree(child: &mut tokio::process::Child) {
+/// Kills the child and what it started ([`trellis_core::process::kill_tree`],
+/// whose limits ADR 0023 §3 states), then the child itself, directly,
+/// whatever that did. Only while the child is unreaped: its pid is still
+/// its own until then.
+#[cfg(unix)]
+async fn kill_tree(child: &mut Child) {
     if let Some(pid) = child.id() {
-        if cfg!(windows) {
-            quietly(kill_command(
-                "taskkill",
-                &["/T", "/F", "/PID", &pid.to_string()],
-            ))
-            .await;
-        } else {
-            Box::pin(kill_group(Some(pid))).await;
-        }
+        // The kill commands are std and blocking; off the runtime's threads.
+        let _ = tokio::task::spawn_blocking(move || trellis_core::process::kill_tree(pid)).await;
     }
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
-/// Kills the process group the child led, after the child has exited: on
-/// Unix the group outlives its leader while any member lives, and
-/// `kill -KILL -- -<pgid>` reaches every member that did not leave it.
-/// Called only while the group provably has a member: the command itself,
-/// not yet reaped (`kill_tree`), or the holder `run` keeps unreaped. A
-/// group with no members could have had its id reused by then, and the
-/// signal would reach whoever took it.
-///
-/// Nothing on Windows. `taskkill /T` walks the tree from a live process,
-/// and after a normal exit the child is gone, so it would reach nothing;
-/// what the command started keeps running (a Job Object would hold the
-/// tree, which needs `unsafe` Win32 calls or a dependency this crate does
-/// not take). ADR 0023 §3 states it.
+/// Kills the child and what it started: every process in its job, the
+/// command included (ADR 0035), then reaps the command.
+#[cfg(windows)]
+async fn kill_tree(child: &mut Child) {
+    end_job(child);
+    let _ = tokio::time::timeout(Duration::from_secs(2), wait_command(child)).await;
+}
+
+/// Kills the process group the child led, after the child has exited
+/// ([`trellis_core::process::kill_group`]). Called only while the holder
+/// `run` keeps unreaped is a member, so the group id is still ours.
+/// Unix only; on Windows the job does this (`end_job`, ADR 0035).
 ///
 /// Awaited boxed, as `kill_tree` is: inline, their state made `run`'s
 /// future larger, and a debug build's deepest call path (a `pre_tool` hook
 /// before a custom tool, `child_env.rs`) overflowed the main thread's 1 MiB
 /// stack on Windows.
+#[cfg(unix)]
 async fn kill_group(pid: Option<u32>) {
-    if cfg!(windows) {
-        return;
-    }
     let Some(pid) = pid else { return };
-    quietly(kill_command("kill", &["-KILL", "--", &format!("-{pid}")])).await;
-}
-
-/// A kill command with no input, output or key.
-fn kill_command(program: &str, args: &[&str]) -> tokio::process::Command {
-    let mut k = tokio::process::Command::new(program);
-    // `taskkill` and `kill` need no key, and are given none.
-    trellis_core::secrets::scrub(k.as_std_mut());
-    k.args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    k
-}
-
-/// Runs a kill command for two seconds at most.
-async fn quietly(mut k: tokio::process::Command) {
-    if let Ok(mut k) = k.spawn() {
-        let _ = tokio::time::timeout(Duration::from_secs(2), k.wait()).await;
-    }
+    let _ = tokio::task::spawn_blocking(move || trellis_core::process::kill_group(pid)).await;
 }
 
 /// Reads `stream` to EOF into `into`: the last `cap` bytes, the total, and
@@ -468,6 +526,7 @@ mod tests {
             argv,
             cwd,
             env: &[],
+            env_remove: &[],
             stdin: None,
             timeout,
             cap,
@@ -662,6 +721,47 @@ mod tests {
         assert!(
             !d.path().join("marker").exists(),
             "the backgrounded write landed after the call returned"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn job_object_kills_tree() {
+        // The risk (ADR 0035): after a normal exit `taskkill /T` had no live
+        // process to walk the tree from, so a grandchild the command
+        // backgrounded kept running and could write after the call returned
+        // — after a convergence judged the tree, or a rollback restored it.
+        // The grandchild is a second `cmd` that appends to `hb` about once
+        // a second for 30 beats; the command waits long enough for it to
+        // beat, then exits 0. Bounded, because an escaped grandchild holds
+        // handles the test harness waits on: unbounded, a regression hung
+        // the test run instead of failing it.
+        let d = tempfile::tempdir().unwrap();
+        // A script file, because std quotes a `cmd /C` argument with `\"`,
+        // which cmd does not read as an escaped quote. Called as `.\`,
+        // because `NoDefaultCurrentDirectoryInExePath` may be set.
+        std::fs::write(
+            d.path().join("beat.cmd"),
+            "@for /L %%i in (1,1,30) do @(echo x>>hb& ping -n 2 127.0.0.1 >NUL)\r\n",
+        )
+        .unwrap();
+        let argv =
+            shell_argv(r"start /B cmd /C .\beat.cmd >NUL 2>&1 & ping -n 4 127.0.0.1 >NUL & exit 0");
+        let c = run(spec(&argv, d.path(), Duration::from_secs(30), 1024))
+            .await
+            .unwrap();
+        assert_eq!(c.code, Some(0), "{c:?}");
+        let hb = d.path().join("hb");
+        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        // Without a beat before the return, a stopped heartbeat proves
+        // nothing: the grandchild might never have started.
+        let before = size(&hb);
+        assert!(before > 0, "the grandchild never wrote its heartbeat");
+        std::thread::sleep(Duration::from_secs(4));
+        assert_eq!(
+            size(&hb),
+            before,
+            "the backgrounded grandchild kept writing after the call returned"
         );
     }
 

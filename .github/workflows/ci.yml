@@ -6,9 +6,17 @@ name: CI
 # is the part that makes it evidence.
 
 on:
+  # A PR branch runs once per push, through `pull_request`. Pushing on every
+  # branch as well ran the whole suite twice for the same commit (#156).
   push:
-    branches: ["**"]
+    branches: ["v0.1-resolver"]
   pull_request:
+
+# A newer push to the same ref makes the older run's result moot; cancelling
+# it saves the minutes, which ran out on 2026-09-28 (#156).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +28,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Self-hosted when the repository variables name runners (JSON label
+    # lists, e.g. ["self-hosted","Windows"]); GitHub-hosted when unset (#157).
+    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +44,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -45,14 +58,47 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
+  # every other job builds with it on. This one turns it off, so a change
+  # that only compiles with TLS present fails here instead of in the hands
+  # of whoever builds the local-only binary.
+  local-only:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same reason as the `test` job: the index's byte-span assertions
+      # depend on the checkout keeping LF line endings (A-21).
+      - name: Pin line endings
+        run: git config --global core.autocrlf false
+
+      - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+
+      - name: Build without default features
+        run: cargo build -p trellis-cli --no-default-features
+
+      - name: Test without default features
+        run: cargo test -p trellis-cli --no-default-features
+
   # Called out as its own job so a failure names the gate condition rather
   # than appearing as one line in a list of 100 passing tests.
   rollback-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Git identity for the test fixtures
         run: |
@@ -79,14 +125,115 @@ jobs:
           cargo build --release -p trellis-cli
           bash docs/bench/interrupt_test.sh "$PWD/target/release/trellis"
 
-  # The graph's two structural guarantees, likewise named so a regression is
-  # legible without reading the log.
-  index-invariants:
-    runs-on: ubuntu-latest
+  # The owner's deterministic guard suite (qa/run-guards.py, 11 cases), on a
+  # machine that is not the owner's. The fixture is the trellis-demo history
+  # vendored as qa/fixtures/trellis-demo.bundle; the runner clones it into a
+  # temporary directory. No model is involved: every guard either uses a
+  # scripted model or is refused before one is called.
+  guards:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+
+      # The fixture's `.trellis/config.toml` runs `python -m mypy` and
+      # `python -m pytest`. Pinned to the versions the suite last held 11/11
+      # with on the owner's machine, so a tool release cannot move a guard.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Fixture checks (mypy, pytest; pinned)
+        run: python -m pip install mypy==2.3.1 pytest==9.1.1
+
+      - name: No machine-specific paths under qa/, bundle verifies
+        run: bash scripts/checks/qa-portable.sh
+
+      # history/TRELLIS-direction.md keeps a skill at 500 lines or fewer; this
+      # holds the repository's own committed SKILL.md files to it (ADR 0019).
+      # The self-test runs first so a check that cannot fail cannot pass.
+      - name: No committed SKILL.md over 500 lines
+        run: |
+          bash scripts/checks/skill-lines.sh --self-test
+          bash scripts/checks/skill-lines.sh
+
+      - name: Build trellis-cli
+        run: cargo build -p trellis-cli
+
+      # `dirty_worktree` must be refused for its dirty tree, not for an
+      # unreachable runtime, and reachability is only a TCP connect
+      # (RuntimeClient::reachable). A plain listener on the fixture's runtime
+      # port is enough. It is not Ollama, which is why this runs the suite
+      # directly rather than through scripts/gates/guards.sh, whose
+      # `/api/tags` probe it would fail. Started in this step so it is alive
+      # for the whole run; it serves an empty directory.
+      - name: Guard suite (every guard must hold)
+        run: |
+          python3 -m http.server 11434 --bind 127.0.0.1 --directory "$(mktemp -d)" >/dev/null 2>&1 &
+          python3 - <<'EOF'
+          import socket, sys, time
+          for _ in range(50):
+              try:
+                  socket.create_connection(("127.0.0.1", 11434), timeout=1).close()
+                  sys.exit(0)
+              except OSError:
+                  time.sleep(0.2)
+          sys.exit("no listener on 127.0.0.1:11434 after 10s")
+          EOF
+          export PATH="$PWD/target/debug:$PATH"
+          python3 qa/run-guards.py
+
+  # Supply chain: licences, bans, sources and advisories against `deny.toml`,
+  # then the RustSec database again through cargo-audit. Its own job so a new
+  # advisory reads as a supply-chain failure, not as a broken build.
+  supply-chain:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Caches ~/.cargo/bin, so the pinned tools are not recompiled per run.
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+
+      # Pinned so a new tool release cannot change what passes: these are the
+      # versions the checks were last run with locally. RUSTFLAGS is cleared
+      # for this step only: the workflow-wide `-D warnings` is for trellis's
+      # code, and applying it to the tools' dependency tree would fail the
+      # install on a lint in code this repository does not own.
+      - name: Install cargo-deny and cargo-audit (pinned)
+        env:
+          RUSTFLAGS: ""
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
+
+      # Fails on any advisory not listed, with its reason, in `deny.toml`.
+      - name: Licences, bans, sources, advisories
+        run: cargo deny check
+
+      # cargo-audit does not read `deny.toml`. It exits non-zero on a
+      # vulnerability and reports unmaintained crates as warnings, which is
+      # how RUSTSEC-2023-0089 (accepted in `deny.toml`) passes here without a
+      # second ignore list.
+      - name: RustSec advisories
+        run: cargo audit
+
+  # The graph's two structural guarantees, likewise named so a regression is
+  # legible without reading the log.
+  index-invariants:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Bidirectionality of forward/reverse adjacency
         run: cargo test -p trellis-index --test bidirectional
@@ -112,11 +259,14 @@ jobs:
   # a different sdist fails here rather than quietly moving every figure in
   # the documents.
   precision-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
 
       - name: Fetch the benchmark corpus at its recorded hash
         run: |

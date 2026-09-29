@@ -10,6 +10,8 @@ fn main() {
         failure_count: Some(0),
         stdout: String::new(),
         stderr: String::new(),
+        stdout_truncated: None,
+        stderr_truncated: None,
         duration_ms: 0,
     };
     let _ = trellis_checks::Verdict::from_typecheck(out);

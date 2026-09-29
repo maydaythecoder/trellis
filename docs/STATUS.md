@@ -15,14 +15,14 @@ below, each audited against the code rather than against the milestone prose.
 | 4 | **S1 resolved**: measured resolver reach, fallback trigger recorded | **Done for v0.1.** Hand-audited on two independent samples; 72.0% on the fresh one. A third audit is required before any v1.0 gate claim (A-34) | `trellis-index/src/resolve.rs`, `BENCHMARK_AND_EVAL.md` §2 |
 | 5 | **S14 resolved**: named benchmark repo, threshold with reasoning | **Done** | `BENCHMARK_AND_EVAL.md` §1, §3 |
 | 6 | **S16 resolved**: the recall figure that fires the pivot | **Done** — 60% | ADR 0002, `ROADMAP.md` |
-| 7 | **S7 resolved**: model floor across seven metrics | **Partial.** Two configurations measured, both below the floor — two endpoints, no interval. Four of the seven metrics measured; §5.4 lists the other three with what each would take | `BENCHMARK_AND_EVAL.md` §5 |
+| 7 | **S7 resolved**: model floor across seven metrics | **Partial.** Two configurations measured, both below the floor — two endpoints, no interval. Four of the seven metrics measured. Of the other three (ADR 0028): metric 5 waived for temperature-0 configurations only; metric 3 replaced by a per-call argument audit, pending (no script computes it yet); metric 6 kept, pending until a configuration repairs a task | `BENCHMARK_AND_EVAL.md` §5, §5.4; ADR 0028 |
 | 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Mostly.** Embedded and tested; licence verified MIT 1.8.0; matrix published. **Inference path deliberately open** | ADR 0006, `TECH_SPIKE.md` §3 |
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
 | 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves demonstrated: a converging run, and a model declaring success while the checks disagree. The loop's *shape* is what this row is about; v0.2's full gate is not met — see the audit below | ADR 0005, `trellis-loop/src/agent.rs` |
 | 11 | Multi-agent parallelizes work only, ADR says why | **Done in design and rules; no concurrent execution yet** | ADR 0005, `trellis-loop/src/partition.rs` |
 | 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and property-tested over 400 seeds, now against a real resolver rather than synthetic graphs. Rule 2 documented; enforced when integration is built** | `partition::plan`, `tests/partition_invariants.rs` |
 | 13 | `trellis doctor` reports batching capability and multi-agent tier | **Done.** Probes the runtime rather than reporting a default; verified reporting `RuntimeConstrained` against a live server | `trellis-model/src/tier.rs`, `trellis-model/src/runtime.rs` |
-| 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite. No CI configured yet** | `trellis-vcs/src/lib.rs` tests |
+| 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite, run by CI** | `trellis-vcs/src/lib.rs` tests; `.github/workflows/ci.yml` runs `cargo test --workspace` (line 46) and the named `trellis-vcs` rollback tests as their own `rollback-gate` job (line 64) |
 | 15 | Bidirectionality verified by property test | **Done** — 199 random graphs | `trellis-index/tests/bidirectional.rs` |
 | 16 | v1.0 gate verbatim in `ROADMAP.md`, all five conditions | **Done** | `ROADMAP.md` |
 | 17 | v1.0 non-goals explicit and substantial | **Done** — 10 entries | `ROADMAP.md` |
@@ -448,14 +448,18 @@ project makes is that work comes back verified rather than merely written, and
 a forged terminal defeats the *reading* of the evidence rather than the
 evidence itself.
 
-### 13. Two interfaces exist — recorded as Q-19
+### 13. Two interfaces exist — recorded as Q-19, answered
 
-`crates/tui-demo` (~2,000 lines) is what `trellis tui` runs. `crates/chat`
+*[2026-09-29, #16: answered by the owner on 2026-09-28. `tui-demo` is the
+product; the `chat` crate was deleted and is archived in git history. The text
+below is the finding as written.]*
+
+`crates/tui-demo` (~2,000 lines) is what `trellis tui` runs. The `chat` crate
 (~5,500 lines, 127 passing tests) is reachable only from its own binary,
 depends on nothing else in the workspace, and is mentioned in no document.
 
 The split is already costing, and this session paid it: an action graph went
-into `tui-demo` while `chat/src/tui/widgets/graph.rs` already implemented the
+into `tui-demo` while chat's `src/tui/widgets/graph.rs` already implemented the
 same idea — nodes per tool, a ring for one never called, edges converging on a
 focus. Everything else from this session went to `tui-demo` only, because that
 is what ships. Every interface change from here has two possible homes and will

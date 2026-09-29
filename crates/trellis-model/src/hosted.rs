@@ -13,9 +13,9 @@
 
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
-use crate::transport::{self, Auth, Endpoint, SendError};
+use crate::transport::{self, Auth, Endpoint, Proxy, SendError};
 use serde_json::{Map, Value, json};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Which wire protocol a hosted endpoint speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -441,17 +441,106 @@ pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 
 /// The wait before attempt `attempt + 1`, `attempt` counting from 1.
 ///
-/// `Retry-After` in seconds when present, capped; otherwise 1, 2, 4 s. An
-/// HTTP-date `Retry-After` is not parsed and falls back to the fixed
-/// backoff (ADR 0024, "Not built").
+/// `Retry-After` in seconds or as an IMF-fixdate HTTP date
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`) when present, capped; a date at or
+/// before now waits zero. Otherwise 1, 2, 4 s. The obsolete RFC 850 and
+/// asctime date forms are not parsed and fall back to the fixed backoff
+/// (ADR 0024 §4).
 pub fn retry_delay(retry_after: Option<&str>, attempt: u32) -> Duration {
-    retry_after
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .filter(|s| s.is_finite() && *s >= 0.0)
-        // Clamped before converting: `from_secs_f64` panics past u64::MAX
-        // seconds, and the value is whatever the provider sent.
-        .map(|s| Duration::from_secs_f64(s.min(MAX_RETRY_WAIT.as_secs_f64())))
-        .unwrap_or_else(|| Duration::from_secs(1u64 << attempt.saturating_sub(1).min(5)))
+    retry_delay_at(retry_after, attempt, SystemTime::now())
+}
+
+/// `retry_delay` against a given clock, so the date form is testable
+/// without depending on when the test runs.
+fn retry_delay_at(retry_after: Option<&str>, attempt: u32, now: SystemTime) -> Duration {
+    let backoff = Duration::from_secs(1u64 << attempt.saturating_sub(1).min(5));
+    let Some(v) = retry_after.map(str::trim) else {
+        return backoff;
+    };
+    if let Ok(s) = v.parse::<f64>() {
+        return if s.is_finite() && s >= 0.0 {
+            // Clamped before converting: `from_secs_f64` panics past u64::MAX
+            // seconds, and the value is whatever the provider sent.
+            Duration::from_secs_f64(s.min(MAX_RETRY_WAIT.as_secs_f64()))
+        } else {
+            backoff
+        };
+    }
+    let Some(at) = imf_fixdate_unix_secs(v) else {
+        return backoff;
+    };
+    // A date before 1970 is in the past for any clock this runs on.
+    let Ok(at) = u64::try_from(at) else {
+        return Duration::ZERO;
+    };
+    let now = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+    Duration::from_secs(at)
+        .saturating_sub(now)
+        .min(MAX_RETRY_WAIT)
+}
+
+/// Seconds since the Unix epoch of an IMF-fixdate (RFC 9110 §5.6.7), the one
+/// form senders must use. Parsed by hand rather than adding a dependency for
+/// one header.
+///
+/// Anything else is `None`: the obsolete RFC 850 and asctime forms, a zone
+/// other than `GMT`, a day that does not exist in its month (`31 Feb`), or an
+/// out-of-range time. The day name must be a day name but is not checked
+/// against the date; the wait is computed from the date.
+fn imf_fixdate_unix_secs(v: &str) -> Option<i64> {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // `Sun, 06 Nov 1994 08:49:37 GMT` is fixed width, so every field sits at
+    // a fixed offset and any deviation fails a check below.
+    let b = v.as_bytes();
+    if b.len() != 29
+        || !DAYS.iter().any(|d| d.as_bytes() == &b[0..3])
+        || &b[3..5] != b", "
+        || b[7] != b' '
+        || b[11] != b' '
+        || b[16] != b' '
+        || b[19] != b':'
+        || b[22] != b':'
+        || &b[25..29] != b" GMT"
+    {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let d = &b[r];
+        d.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| d.iter().fold(0i64, |n, c| n * 10 + i64::from(c - b'0')))
+    };
+    let day = num(5..7)?;
+    let month = MONTHS.iter().position(|m| m.as_bytes() == &b[8..11])? as i64 + 1;
+    let year = num(12..16)?;
+    let (hour, minute, second) = (num(17..19)?, num(20..22)?, num(23..25)?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_len = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    // RFC 9110's grammar allows second 60, a leap second.
+    if !(1..=month_len).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Days from 1970-01-01 to a proleptic Gregorian date (H. Hinnant's
+/// `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// A hosted endpoint, with its key.
@@ -459,6 +548,9 @@ pub fn retry_delay(retry_after: Option<&str>, attempt: u32) -> Duration {
 pub struct HostedClient {
     protocol: Protocol,
     endpoint: Endpoint,
+    /// Resolved once, at construction, so a proxy URL that is refused
+    /// fails before a run's snapshot rather than on its first turn.
+    proxy: Option<Proxy>,
     base: String,
     model: String,
     key: Option<ApiKey>,
@@ -473,6 +565,7 @@ impl std::fmt::Debug for HostedClient {
             .field("protocol", &self.protocol)
             .field("base", &self.base)
             .field("model", &self.model)
+            .field("proxy", &self.proxy.as_ref().map(ToString::to_string))
             .field("key", &self.key.as_ref().map(ApiKey::source))
             .finish()
     }
@@ -493,13 +586,28 @@ impl HostedClient {
     }
 
     /// As [`new`](Self::new) with the key supplied, so tests need not touch
-    /// the process environment.
+    /// the process environment for it. The proxy is still read from the
+    /// environment (`HTTPS_PROXY`, `NO_PROXY`), which for the loopback
+    /// endpoints tests use is never consulted.
     pub fn with_key(
         protocol: Protocol,
         base: &str,
         model: &str,
         key_env: &str,
         key: Option<ApiKey>,
+    ) -> Result<Self, RuntimeError> {
+        Self::with_key_and_env(protocol, base, model, key_env, key, &|k| {
+            std::env::var(k).ok()
+        })
+    }
+
+    fn with_key_and_env(
+        protocol: Protocol,
+        base: &str,
+        model: &str,
+        key_env: &str,
+        key: Option<ApiKey>,
+        env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self, RuntimeError> {
         let endpoint = Endpoint::parse(base)?;
         if endpoint.tls && !cfg!(feature = "hosted") {
@@ -513,9 +621,11 @@ impl HostedClient {
                 protocol.describe()
             )));
         }
+        let proxy = transport::proxy_for(&endpoint, env)?;
         Ok(Self {
             protocol,
             endpoint,
+            proxy,
             base: base.to_string(),
             model: model.to_string(),
             key,
@@ -588,6 +698,7 @@ impl HostedClient {
         loop {
             let sent = transport::post(
                 &self.endpoint,
+                self.proxy.as_ref(),
                 path,
                 &headers,
                 self.key.as_ref().map(|k| (auth, k)),
@@ -856,13 +967,100 @@ mod tests {
         assert_eq!(retry_delay(Some("3"), 1), Duration::from_secs(3));
         assert_eq!(retry_delay(Some("0.5"), 1), Duration::from_millis(500));
         assert_eq!(retry_delay(Some("86400"), 1), MAX_RETRY_WAIT);
-        // Missing or an HTTP date: the fixed backoff.
+        // Missing: the fixed backoff.
         assert_eq!(retry_delay(None, 1), Duration::from_secs(1));
         assert_eq!(retry_delay(None, 3), Duration::from_secs(4));
+        // An HTTP date: the time until it, against a fixed clock.
         assert_eq!(
-            retry_delay(Some("Wed, 21 Oct 2026 07:28:00 GMT"), 2),
-            Duration::from_secs(2)
+            retry_delay_at(
+                Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+                2,
+                unix(1_792_567_650)
+            ),
+            Duration::from_secs(30)
         );
+    }
+
+    /// A fixed clock: the date tests must not depend on when they run.
+    fn unix(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn an_http_date_in_the_future_waits_the_difference() {
+        // Sun, 06 Nov 1994 08:49:37 GMT is 784111777 s after the epoch.
+        let v = Some("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert_eq!(
+            retry_delay_at(v, 1, unix(784_111_777 - 42)),
+            Duration::from_secs(42)
+        );
+        // A leap day, so a wrong month length would shift the answer.
+        assert_eq!(
+            imf_fixdate_unix_secs("Thu, 29 Feb 2024 00:00:00 GMT"),
+            Some(1_709_164_800)
+        );
+    }
+
+    #[test]
+    fn an_http_date_now_or_past_waits_zero_not_the_backoff() {
+        // A date already reached says "retry now", as `Retry-After: 0` does.
+        let v = Some("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert_eq!(retry_delay_at(v, 3, unix(784_111_777)), Duration::ZERO);
+        assert_eq!(retry_delay_at(v, 3, unix(1_800_000_000)), Duration::ZERO);
+        // Before the epoch: negative seconds, still the past, not a wrap.
+        assert_eq!(
+            retry_delay_at(Some("Mon, 01 Jan 1900 00:00:00 GMT"), 3, unix(0)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn an_http_date_beyond_the_cap_waits_max_retry_wait() {
+        // A date is as untrusted as a number of seconds: a provider naming a
+        // far-off date must not park the run until then.
+        assert_eq!(
+            retry_delay_at(Some("Fri, 31 Dec 9999 23:59:59 GMT"), 1, unix(0)),
+            MAX_RETRY_WAIT
+        );
+        let v = Some("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert_eq!(retry_delay_at(v, 1, unix(784_111_777 - 61)), MAX_RETRY_WAIT);
+    }
+
+    #[test]
+    fn a_malformed_or_obsolete_http_date_falls_back_to_the_backoff() {
+        // Each names a future instant if misparsed, so a lenient parser shows
+        // up as a wait other than the 2 s backoff.
+        let now = unix(0);
+        for v in [
+            // RFC 850 and asctime: obsolete, and not parsed.
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+            // Days that do not exist.
+            "Tue, 31 Feb 2026 00:00:00 GMT",
+            "Sat, 29 Feb 2025 00:00:00 GMT",
+            "Mon, 00 Jan 2026 00:00:00 GMT",
+            // A zone other than GMT.
+            "Sun, 06 Nov 1994 08:49:37 UTC",
+            "Sun, 06 Nov 1994 08:49:37 +0000",
+            // Out-of-range time, unknown names, wrong widths, garbage.
+            "Sun, 06 Nov 1994 24:00:00 GMT",
+            "Sun, 06 Nov 1994 08:60:00 GMT",
+            "Sun, 06 Nov 1994 08:49:61 GMT",
+            "Xyz, 06 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Noz 1994 08:49:37 GMT",
+            "Sun, 6 Nov 1994 08:49:37 GMT",
+            "Sun, +6 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 08:49:37 GMTX",
+            "Sun, 06 Nov 1994 08:49:37 gmt",
+            "soon",
+            "",
+        ] {
+            assert_eq!(
+                retry_delay_at(Some(v), 2, now),
+                Duration::from_secs(2),
+                "{v:?}"
+            );
+        }
     }
 
     #[test]
@@ -926,6 +1124,42 @@ mod tests {
         } else {
             assert!(e.contains("hosted"), "{e}");
         }
+    }
+
+    #[test]
+    fn a_refused_proxy_fails_at_construction_before_any_request() {
+        // The risk: a proxy URL with credentials refused only on the first
+        // turn, after the run's snapshot, instead of before it.
+        // Built at run time so no `user:pass@` literal reaches a secret
+        // scanner (#185).
+        let pw = "p";
+        let env =
+            |k: &str| (k == "HTTPS_PROXY").then(|| format!("http://u:{pw}@proxy.example:3128"));
+        let e = HostedClient::with_key_and_env(
+            Protocol::OpenAiChat,
+            "https://api.openai.com/v1",
+            "m",
+            "OPENAI_API_KEY",
+            Some(ApiKey::for_test("sk-x", "OPENAI_API_KEY")),
+            &env,
+        )
+        .unwrap_err()
+        .to_string();
+        if cfg!(feature = "hosted") {
+            assert!(e.contains("credentials"), "{e}");
+        }
+        // A local endpoint never reads it.
+        assert!(
+            HostedClient::with_key_and_env(
+                Protocol::OpenAiChat,
+                "http://127.0.0.1:9/v1",
+                "m",
+                "OPENAI_API_KEY",
+                None,
+                &env,
+            )
+            .is_ok()
+        );
     }
 
     #[test]

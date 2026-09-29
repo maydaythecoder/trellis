@@ -7,8 +7,8 @@
 //! and only the user's file may set `key_env` (ADR 0024 §3).
 
 use crate::config::{
-    BudgetSection, ChecksSection, ContextSection, ControlSection, GovernanceSection, ModelSection,
-    RepoConfig,
+    BudgetSection, ChecksSection, ContextSection, ControlSection, GovernanceSection, IndexSection,
+    ModelSection, RepoConfig,
 };
 use anyhow::{Context, Result};
 use std::ffi::OsString;
@@ -100,14 +100,16 @@ pub(crate) fn resolve_skill_dirs(
 /// decides how it layers, rather than compiling into a merge nobody chose.
 /// Today it carries `tools`, `hooks` and `provenance` from the repository;
 /// `provenance` is then replaced by `load_with_user` with the user file's.
-/// The allow is for the day every field is named again.
-#[allow(clippy::needless_update)]
 pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
     RepoConfig {
         checks: either(repo.checks, user.checks, |r, u| ChecksSection {
             typecheck: r.typecheck.or(u.typecheck),
             tests: r.tests.or(u.tests),
             python: r.python.or(u.python),
+            // Lower wins, as for the budget: a cloned repository may shorten
+            // how long a check may hold the user's machine, not lengthen a
+            // limit the user set.
+            timeout_s: lower(r.timeout_s, u.timeout_s),
         }),
         budget: either(repo.budget, user.budget, |r, u| BudgetSection {
             // Lower wins: ADR 0008, a runaway loop spends the user's money,
@@ -169,6 +171,19 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             },
         }),
         agents: repo.agents.or(user.agents),
+        index: either(repo.index, user.index, |r, u| IndexSection {
+            backstop: r.backstop.or(u.backstop),
+        }),
+        work: either(repo.work, user.work, |r, u| crate::config::WorkSection {
+            // A user's explicit "list" wins: releasing claims on the user's
+            // machine is something the user agrees to, and a cloned
+            // repository may not turn it on over their "no", as it may not
+            // turn approve mode off (ADR 0020 §5).
+            stale_claims: match (r.stale_claims, u.stale_claims) {
+                (_, Some(u)) if u == "list" => Some(u),
+                (r, u) => r.or(u),
+            },
+        }),
         ..repo
     }
 }
@@ -469,6 +484,59 @@ mod tests {
         assert_eq!(c.checks().tests, ["pytest", "-q"]);
         assert_eq!(c.model().as_deref(), Some("scripted:a.json"));
         assert!(c.unconstrained(), "a field the repository left unset");
+    }
+
+    /// `[checks] timeout_s` layers as the budget does: a cloned repository
+    /// may shorten the user's limit, never lengthen it; either alone
+    /// applies; neither is the 1800 s default (ADR 0004).
+    #[test]
+    fn check_timeout_s_is_read_and_the_lower_of_the_two_wins() {
+        let t = |repo: &str, user: &str| load(repo, user).checks().timeout_s;
+        assert_eq!(
+            t(
+                "[checks]\ntimeout_s = 9000\n",
+                "[checks]\ntimeout_s = 600\n"
+            ),
+            600
+        );
+        assert_eq!(
+            t("[checks]\ntimeout_s = 60\n", "[checks]\ntimeout_s = 600\n"),
+            60
+        );
+        assert_eq!(t("[checks]\ntimeout_s = 60\n", ""), 60);
+        assert_eq!(t("", "[checks]\ntimeout_s = 600\n"), 600);
+        assert_eq!(t("", ""), trellis_checks::DEFAULT_CHECK_TIMEOUT_S);
+    }
+
+    #[test]
+    fn a_repository_cannot_turn_on_stale_claim_release_over_the_user_s_list() {
+        // The risk: a cloned repository's `"release"` overriding a user who
+        // said `"list"`, changing what the user agreed to on their machine.
+        use trellis_queue::StaleClaims;
+        let repo = "[work]
+stale_claims = \"release\"
+";
+        let policy = |r: &str, u: &str| load(r, u).stale_claims().unwrap();
+        assert_eq!(
+            policy(
+                repo,
+                "[work]
+stale_claims = \"list\"
+"
+            ),
+            StaleClaims::List
+        );
+        assert_eq!(policy(repo, ""), StaleClaims::Release);
+        assert_eq!(
+            policy(
+                "",
+                "[work]
+stale_claims = \"release\"
+"
+            ),
+            StaleClaims::Release
+        );
+        assert_eq!(policy("", ""), StaleClaims::List);
     }
 
     #[test]

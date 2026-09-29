@@ -30,12 +30,19 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+# Windows Job Objects for what this crate spawns (ADR 0035).
+[target.'cfg(windows)'.dependencies]
+process-wrap.workspace = true
+
 [dev-dependencies]
 # Turns on trellis-model's `grammar` feature for test builds only. The
 # caller here is `wire.rs`'s test that the hand-written tool-call schema
 # compiles; trellis-model has two more of its own, which its own
 # dev-dependency covers.
 trellis-model = { workspace = true, features = ["grammar"] }
+# Snapshots of whole partition plans (tests/partition_snapshots.rs), so a
+# change to what runs apart shows up as a reviewed diff.
+insta.workspace = true
 smallvec.workspace = true
 tempfile.workspace = true
 

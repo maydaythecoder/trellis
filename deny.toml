@@ -39,7 +39,16 @@ allow = [
 # `Apache-2.0 WITH LLVM-exception` appears on the compiler-builtins family.
 # The exception only removes an attribution requirement, so it is strictly
 # more permissive than plain Apache-2.0.
-exceptions = []
+#
+# NCSA (the University of Illinois/NCSA licence, LLVM's before 2019) is
+# permissive, BSD-style with an attribution clause. It is allowed for one
+# crate only: libfuzzer-sys, which vendors LLVM's libFuzzer and is reached
+# only from fuzz/Cargo.lock (issue #95). The fuzzer is a test tool built on
+# nightly and never linked into the shipped binary; allowing NCSA globally
+# would let it into the binary's tree unreviewed.
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
 
 [[licenses.clarify]]
 name = "ring"

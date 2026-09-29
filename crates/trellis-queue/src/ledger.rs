@@ -6,8 +6,9 @@
 //! arithmetic and the thresholds are tested without a repository, and the
 //! binary is the one place that turns trail files into records.
 //!
-//! No dollars: COST_MODEL.md does not price tokens, and ADR 0021 excludes a
-//! price until it does.
+//! No dollars: COST_MODEL.md does not price tokens. Dollar pricing is
+//! deferred to v1.x, beside tokens and never replacing them (ADR 0026 §5,
+//! amended for #67).
 
 use crate::activity::{Actor, Event};
 use crate::approval;

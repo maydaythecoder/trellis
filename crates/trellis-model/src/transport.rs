@@ -135,6 +135,183 @@ pub fn is_loopback(host: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// An HTTP proxy that `https://` requests are tunnelled through with
+/// `CONNECT` (ADR 0024, amended by #150).
+///
+/// Only a tunnel: the proxy is told `host:port` and then carries TLS it
+/// cannot read, so the key and the transcript stay between trellis and the
+/// provider. Plain `http://` is never sent through it, because a proxy that
+/// forwards plain requests reads them, and plain http goes only to this
+/// machine anyway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Proxy {
+    pub host: String,
+    pub port: u16,
+}
+
+impl std::fmt::Display for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&socket_addr(&self.host, self.port))
+    }
+}
+
+/// The first non-empty value among `names`. Empty counts as unset, as
+/// shells export `HTTPS_PROXY=` to turn a proxy off.
+fn first_set(env: &dyn Fn(&str) -> Option<String>, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .filter_map(|n| env(n))
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
+}
+
+/// The proxy `ep` is reached through, if any, reading variables with `env`.
+///
+/// `None` for plain http, for a loopback host, and for a host `NO_PROXY`
+/// names; only then is `HTTPS_PROXY` read at all, so a proxy URL this
+/// refuses breaks only the requests that would have used it. `HTTP_PROXY`
+/// and `ALL_PROXY` are not read: the first names a proxy for plain http,
+/// which is never proxied, and the second is as often a SOCKS proxy, which
+/// this does not speak.
+pub(crate) fn proxy_for(
+    ep: &Endpoint,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<Proxy>, RuntimeError> {
+    if !ep.tls || is_loopback(&ep.host) {
+        return Ok(None);
+    }
+    if first_set(env, &["NO_PROXY", "no_proxy"])
+        .is_some_and(|list| no_proxy_matches(&list, &ep.host))
+    {
+        return Ok(None);
+    }
+    match first_set(env, &["HTTPS_PROXY", "https_proxy"]) {
+        Some(url) => parse_proxy(&url).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Whether a `NO_PROXY` list names `host`: comma-separated entries, `*` for
+/// every host, `.suffix` for the domain and every name under it, and a bare
+/// name for itself and every name under it (curl's and Go's reading). Names
+/// compare without case and IPv6 literals without brackets. An entry with a
+/// `:port` or a CIDR range is compared as written, so it never matches a
+/// host and the request goes through the proxy.
+fn no_proxy_matches(list: &str, host: &str) -> bool {
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    list.split(',')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .any(|e| {
+            if e == "*" {
+                return true;
+            }
+            let name = e
+                .trim_start_matches('.')
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            !name.is_empty()
+                && (host == name
+                    || host
+                        .strip_suffix(name)
+                        .is_some_and(|rest| rest.ends_with('.')))
+        })
+}
+
+/// Parses `HTTPS_PROXY`: `http://host:port`, `host:port`, or either without
+/// a port (80). Messages never repeat the value: a URL with credentials in
+/// it would print them.
+fn parse_proxy(url: &str) -> Result<Proxy, RuntimeError> {
+    let rest = match url.split_once("://") {
+        None => url,
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
+        Some((scheme, _)) => {
+            return Err(RuntimeError::Config(format!(
+                "HTTPS_PROXY names a `{scheme}://` proxy. Only an http proxy that \
+                 accepts CONNECT is supported: set HTTPS_PROXY=http://host:port, or \
+                 unset it to connect directly."
+            )));
+        }
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(RuntimeError::Config(
+            "HTTPS_PROXY carries a user name or password (`user:pass@`). Proxy \
+             credentials are not supported, and none were sent: use a proxy that \
+             does not need them, or add the provider's host to NO_PROXY."
+                .to_string(),
+        ));
+    }
+    let (host, port) = split_authority("HTTPS_PROXY", authority, 80)?;
+    Ok(Proxy { host, port })
+}
+
+/// Opens a `CONNECT` tunnel to `target` through `proxy`.
+///
+/// The response head is read a byte at a time: whatever follows it belongs
+/// to the tunnel, and a buffered read could take some of it. A 200 is the
+/// only answer accepted; anything else is the proxy refusing, which a retry
+/// would repeat.
+pub(crate) async fn connect_tunnel(
+    proxy: &Proxy,
+    target: &Endpoint,
+) -> Result<TcpStream, SendError> {
+    let mut s = TcpStream::connect(proxy.to_string())
+        .await
+        .map_err(|e| SendError::Connect(format!("cannot reach the proxy at {proxy}: {e}")))?;
+    let dest = socket_addr(&target.host, target.port);
+    tracing::debug!(%proxy, %dest, "opening a CONNECT tunnel");
+    s.write_all(format!("CONNECT {dest} HTTP/1.1\r\nHost: {dest}\r\n\r\n").as_bytes())
+        .await
+        .map_err(|e| {
+            SendError::Broken(format!(
+                "sending CONNECT to the proxy at {proxy} failed: {e}"
+            ))
+        })?;
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= MAX_CONNECT_HEAD {
+            return Err(SendError::Broken(format!(
+                "the proxy at {proxy} sent a CONNECT response head over {MAX_CONNECT_HEAD} bytes"
+            )));
+        }
+        match s.read(&mut byte).await {
+            Ok(0) => {
+                return Err(SendError::Broken(format!(
+                    "the proxy at {proxy} closed the connection before answering CONNECT"
+                )));
+            }
+            Ok(_) => head.push(byte[0]),
+            Err(e) => {
+                return Err(SendError::Broken(format!(
+                    "reading the proxy's CONNECT response failed: {e}"
+                )));
+            }
+        }
+    }
+    let status = parse_head(&head[..head.len() - 4])
+        .map_err(|e| SendError::Broken(format!("the proxy at {proxy} answered CONNECT with {e}")))?
+        .status;
+    match status {
+        200 => Ok(s),
+        407 => Err(SendError::Connect(format!(
+            "the proxy at {proxy} asks for credentials (407) to reach {dest}; proxy \
+             credentials are not supported"
+        ))),
+        n => Err(SendError::Connect(format!(
+            "the proxy at {proxy} refused CONNECT to {dest} with status {n}"
+        ))),
+    }
+}
+
+/// A CONNECT response is a status line and a few headers.
+const MAX_CONNECT_HEAD: usize = 16 * 1024;
+
 /// How a key is put on the wire. Two shapes cover both protocols.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Auth {
@@ -186,9 +363,11 @@ fn request_head(ep: &Endpoint, path: &str, body_len: usize) -> String {
 /// Sends one POST and reads the whole response.
 ///
 /// The key is written into the request buffer here and nowhere else, and
-/// the buffer is dropped when the write completes.
+/// the buffer is dropped when the write completes. With a `proxy` it is
+/// written inside the TLS session the tunnel carries, never to the proxy.
 pub(crate) async fn post(
     ep: &Endpoint,
+    proxy: Option<&Proxy>,
     path: &str,
     extra_headers: &[(&str, &str)],
     auth: Option<(Auth, &ApiKey)>,
@@ -219,10 +398,23 @@ pub(crate) async fn post(
     let bytes = req.into_bytes();
 
     let fut = async {
-        let addr = socket_addr(&ep.host, ep.port);
-        let tcp = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| SendError::Connect(format!("cannot reach {addr}: {e}")))?;
+        let tcp = match proxy {
+            // `proxy_for` returns one only for https, so the plain branch
+            // below never runs over a tunnel; checked again here because
+            // what reaches a proxy in the clear is the whole request.
+            Some(p) if ep.tls => connect_tunnel(p, ep).await?,
+            Some(_) => {
+                return Err(SendError::Config(
+                    "plain http is never sent through a proxy".to_string(),
+                ));
+            }
+            None => {
+                let addr = socket_addr(&ep.host, ep.port);
+                TcpStream::connect(&addr)
+                    .await
+                    .map_err(|e| SendError::Connect(format!("cannot reach {addr}: {e}")))?
+            }
+        };
         if ep.tls {
             tls_exchange(tcp, &ep.host, &bytes).await
         } else {
@@ -856,6 +1048,228 @@ mod tests {
     fn a_short_body_is_an_error_not_a_truncated_success() {
         let e = parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{}").unwrap_err();
         assert!(e.contains("cut short"), "{e}");
+    }
+
+    /// A process environment with only `vars` set.
+    fn env(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        let vars = vars.to_vec();
+        move |k: &str| {
+            vars.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    fn proxied(base: &str, vars: &[(&'static str, &'static str)]) -> Option<Proxy> {
+        proxy_for(&Endpoint::parse(base).unwrap(), &env(vars)).unwrap()
+    }
+
+    #[test]
+    fn a_proxy_is_used_only_for_https_to_a_remote_host() {
+        // The risk: plain http through a proxy is readable by the proxy, key
+        // header included; and a local server reached through a remote
+        // proxy is not the local server.
+        let p = [("HTTPS_PROXY", "http://proxy.example:3128")];
+        assert_eq!(
+            proxied("https://api.openai.com/v1", &p),
+            Some(Proxy {
+                host: "proxy.example".into(),
+                port: 3128
+            })
+        );
+        assert_eq!(proxied("http://127.0.0.1:8080/v1", &p), None);
+        assert_eq!(proxied("https://localhost:8443/v1", &p), None);
+        assert_eq!(proxied("https://[::1]:8443/v1", &p), None);
+        // Only the https variables are read.
+        for other in ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            let e: [(&'static str, &'static str); 1] = [(other, "http://proxy.example:3128")];
+            assert_eq!(proxied("https://api.openai.com/v1", &e), None, "{other}");
+        }
+        assert_eq!(
+            proxied(
+                "https://api.openai.com/v1",
+                &[("https_proxy", "proxy.example:8080")]
+            ),
+            Some(Proxy {
+                host: "proxy.example".into(),
+                port: 8080
+            })
+        );
+        assert_eq!(
+            proxied("https://api.openai.com/v1", &[("HTTPS_PROXY", "  ")]),
+            None,
+            "empty is unset"
+        );
+        assert_eq!(
+            proxied(
+                "https://api.openai.com/v1",
+                &[("HTTPS_PROXY", "http://p.example/")]
+            ),
+            Some(Proxy {
+                host: "p.example".into(),
+                port: 80
+            })
+        );
+    }
+
+    #[test]
+    fn no_proxy_names_hosts_suffixes_and_everything() {
+        let base = "https://api.openai.com/v1";
+        let with = |list: &'static str| {
+            proxied(
+                base,
+                &[
+                    ("HTTPS_PROXY", "http://proxy.example:3128"),
+                    ("NO_PROXY", list),
+                ],
+            )
+        };
+        for direct in [
+            "api.openai.com",
+            "API.OpenAI.com",
+            "openai.com",
+            ".openai.com",
+            "localhost, .openai.com",
+            "*",
+        ] {
+            assert_eq!(with(direct), None, "{direct}");
+        }
+        for through in [
+            "notopenai.com",
+            "i.com",
+            ".api.openai.com.evil",
+            "other.example,localhost",
+            // Ports and CIDR ranges are not read, so they do not match.
+            "api.openai.com:443",
+            "",
+        ] {
+            assert!(with(through).is_some(), "{through}");
+        }
+        assert_eq!(
+            proxied(
+                base,
+                &[
+                    ("HTTPS_PROXY", "http://proxy.example:3128"),
+                    ("no_proxy", "openai.com")
+                ]
+            ),
+            None
+        );
+        assert_eq!(
+            proxied(
+                "https://[2001:db8::1]/v1",
+                &[
+                    ("HTTPS_PROXY", "http://proxy.example:3128"),
+                    ("NO_PROXY", "[2001:db8::1]")
+                ]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_proxy_with_credentials_is_refused_without_repeating_them() {
+        // The risk: credentials either sent somewhere the user did not
+        // expect, or printed in the refusal that names the problem.
+        let ep = Endpoint::parse("https://api.openai.com/v1").unwrap();
+        // Built at run time: a `user:pass@` literal reads as a leaked
+        // basic-auth string to the secret scanner on every push (#185).
+        // Leaked because `env` takes `'static` pairs; two short strings in a
+        // test.
+        let proxy =
+            |pw: &str| -> &'static str { format!("http://alice:{pw}@proxy.example:3128").leak() };
+        let e = proxy_for(&ep, &env(&[("HTTPS_PROXY", proxy("s3cret-pw"))]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("credentials"), "{e}");
+        assert!(!e.contains("s3cret-pw") && !e.contains("alice"), "{e}");
+        // A host NO_PROXY exempts never reads the proxy, so a proxy URL it
+        // would refuse does not break it.
+        assert_eq!(
+            proxy_for(
+                &ep,
+                &env(&[("HTTPS_PROXY", proxy("pw")), ("NO_PROXY", "openai.com")])
+            )
+            .unwrap(),
+            None
+        );
+        let e = proxy_for(&ep, &env(&[("HTTPS_PROXY", "socks5://proxy.example:1080")]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("socks5://") && e.contains("CONNECT"), "{e}");
+        assert!(proxy_for(&ep, &env(&[("HTTPS_PROXY", "https://proxy.example:443")])).is_err());
+    }
+
+    /// A loopback proxy that answers one CONNECT with `status`, returns the
+    /// head it received, then echoes what the tunnel carries.
+    async fn connect_stub(status: &'static str) -> (Proxy, tokio::task::JoinHandle<String>) {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let h = tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if s.read(&mut b).await.unwrap() == 0 {
+                    break;
+                }
+                head.push(b[0]);
+            }
+            s.write_all(format!("HTTP/1.1 {status}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut buf = [0u8; 64];
+            if let Ok(n) = s.read(&mut buf).await {
+                let _ = s.write_all(&buf[..n]).await;
+            }
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        (
+            Proxy {
+                host: "127.0.0.1".into(),
+                port,
+            },
+            h,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_connect_tunnel_names_the_target_and_carries_bytes_after_200() {
+        let (p, h) = connect_stub("200 Connection established").await;
+        let target = Endpoint::parse("https://api.openai.com/v1").unwrap();
+        let mut s = connect_tunnel(&p, &target).await.expect("tunnel");
+        s.write_all(b"ping").await.unwrap();
+        let mut got = [0u8; 4];
+        s.read_exact(&mut got).await.unwrap();
+        assert_eq!(
+            &got, b"ping",
+            "nothing of the tunnel was eaten by the head read"
+        );
+        let head = h.await.unwrap();
+        assert!(
+            head.starts_with("CONNECT api.openai.com:443 HTTP/1.1\r\n"),
+            "{head}"
+        );
+        assert!(head.contains("Host: api.openai.com:443\r\n"), "{head}");
+        assert!(
+            !head.to_ascii_lowercase().contains("proxy-authorization"),
+            "{head}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_refuses_connect_is_a_connect_error_not_a_retry() {
+        let target = Endpoint::parse("https://api.openai.com/v1").unwrap();
+        for (status, says) in [
+            ("407 Proxy Authentication Required", "credentials"),
+            ("403 Forbidden", "403"),
+        ] {
+            let (p, _h) = connect_stub(status).await;
+            match connect_tunnel(&p, &target).await {
+                Err(SendError::Connect(e)) => assert!(e.contains(says), "{e}"),
+                other => panic!("{status}: {other:?}"),
+            }
+        }
     }
 
     #[cfg(feature = "hosted")]

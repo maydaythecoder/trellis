@@ -95,6 +95,10 @@ pub(crate) struct RunExtras {
     pub frames: Option<Sink>,
     /// Set by RPC's `abort`; the run takes the Ctrl-C path when it is.
     pub abort: Option<Arc<Abort>>,
+    /// RPC's `compact` requests, answered by the driver at its next model
+    /// request (ADR 0025 §5). The run closes them for a driver that renders
+    /// no prompt; its caller closes them when the run ends.
+    pub compact: Option<Arc<trellis_loop::CompactRequests>>,
 }
 
 impl Default for RunExtras {
@@ -104,6 +108,7 @@ impl Default for RunExtras {
             request_id: None,
             frames: json().then(stdout_sink),
             abort: None,
+            compact: None,
         }
     }
 }

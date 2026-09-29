@@ -457,11 +457,19 @@ impl Fingerprint {
             ));
         }
         for c in custom {
+            let mut settings = format!("description = {:?}\nschema = {}", c.description, c.schema);
+            // Only when declared: a declaration without the key keeps the
+            // digest it was trusted under, and one that adds or changes it
+            // has changed how long repository code may run, so it has to be
+            // trusted again.
+            if let Some(t) = c.timeout_s {
+                settings.push_str(&format!("\ntimeout_s = {t}"));
+            }
             items.push(TrustItem::command_cached(
                 root,
                 format!("custom tool {}", c.name),
                 &c.command,
-                format!("description = {:?}\nschema = {}", c.description, c.schema),
+                settings,
                 cache,
             ));
         }
@@ -1034,6 +1042,7 @@ mod tests {
                 description: "d".into(),
                 command: vec!["x".into()],
                 schema: serde_json::json!({ "type": "object" }),
+                timeout_s: None,
             }],
             None,
         );
@@ -1173,6 +1182,7 @@ mod tests {
             description: "d".into(),
             command: vec!["python".into(), "scripts/gate.py".into()],
             schema: serde_json::json!({ "type": "object" }),
+            timeout_s: None,
         };
         let why = Fingerprint::of(repo.path(), &HookConfig::default(), &[tool], None).refused;
         assert!(

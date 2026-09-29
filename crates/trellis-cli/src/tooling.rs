@@ -394,9 +394,11 @@ mod run_tests {
     //! model, real hooks and a real rollback, and a trust store that is not
     //! the user's.
 
+    use crate::config;
     use crate::{RunControl, RunSeeding, cmd_run};
     use std::path::{Path, PathBuf};
-    use trellis_loop::TrustStore;
+    use std::time::Duration;
+    use trellis_loop::{TrustState, TrustStore};
 
     /// Every test here shares one store in the scratch directory; entries
     /// are keyed by repository root, and each test has its own.
@@ -581,6 +583,48 @@ mod run_tests {
     }
 
     #[test]
+    fn hook_input_refusal_comes_before_the_snapshot_and_leaves_no_trail() {
+        // The risk: a refusal read after the snapshot is a run that began,
+        // rolled back and wrote a trail for work that never started. And an
+        // untrusted `input` never runs, so it refuses nothing.
+        let refuse = if cfg!(windows) {
+            "echo not this task 1>&2 & exit 2"
+        } else {
+            "echo not this task >&2; exit 2"
+        };
+        let (dir, spec) = fixture(
+            "input-refuses",
+            &format!("[hooks]\ninput = {}\n", sh(refuse)),
+            EDIT_THEN_STOP,
+        );
+        let said = run(&dir, &spec);
+        assert!(said.contains("hooks: 1 present, not trusted"), "{said}");
+        std::fs::remove_dir_all(dir.join(".trellis/runs")).unwrap();
+
+        trust(&dir);
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding::default(),
+            RunControl::default(),
+            &mut out,
+        );
+        let said = String::from_utf8(out).unwrap();
+        let err = format!("{:#}", r.expect_err("exit 2 refuses the run"));
+        assert!(err.contains("not this task"), "{err}");
+        assert!(!said.contains("snapshot at"), "{said}");
+        assert!(!dir.join(".trellis/runs").exists(), "no trail: {said}");
+        assert!(
+            std::fs::read_to_string(dir.join("a.py"))
+                .unwrap()
+                .contains("return 1")
+        );
+    }
+
+    #[test]
     fn a_check_that_writes_under_dot_trellis_does_not_converge() {
         // The edge the guard left: it is checked after each call that may
         // change the tree, and a check is not one, so a checker writing
@@ -619,19 +663,10 @@ mod run_tests {
         // snapshot, and a `bash` command then rewrote a file under
         // `.trellis/hooks/`, which every later hook spawn would have run
         // under the person's trust. `prepare` must hand the one guard to
-        // both the hooks and the orchestrator.
-        let rewrite = if cfg!(windows) {
-            "echo exit 0> .trellis\\\\hooks\\\\gate.txt"
-        } else {
-            "echo exit 0 > .trellis/hooks/gate.txt"
-        };
-        let script = format!(
-            r#"{{"steps":[
-                {{"tool":"bash","command":"{rewrite}"}},
-                {{"tool":"edit","path":"a.py","old":"return 1","new":"return 2"}},
-                {{"tool":"done","summary":"changed it"}}
-            ]}}"#
-        );
+        // both the hooks and the orchestrator. `bash` runs in a clone (ADR
+        // 0032) and a `.trellis/` write there is not carried back, so the
+        // command names the repository's file by absolute path: the writer
+        // the clone does not stop, and this guard does.
         let shell = if cfg!(windows) {
             "['cmd', '/C']"
         } else {
@@ -644,10 +679,23 @@ mod run_tests {
                  [hooks]\npre_tool = {}\n",
                 sh("exit 0")
             ),
-            &script,
+            "",
         );
+        let hook = dir.join(".trellis").join("hooks").join("gate.txt");
+        let rewrite = if cfg!(windows) {
+            format!("echo exit 0> {}", hook.display())
+        } else {
+            format!("echo exit 0 > '{}'", hook.display())
+        };
+        let script = serde_json::json!({"steps": [
+            {"tool": "bash", "command": rewrite},
+            {"tool": "edit", "path": "a.py", "old": "return 1", "new": "return 2"},
+            {"tool": "done", "summary": "changed it"}
+        ]});
+        let script_path = spec.strip_prefix("scripted:").unwrap();
+        std::fs::write(script_path, script.to_string()).unwrap();
         std::fs::create_dir_all(dir.join(".trellis/hooks")).unwrap();
-        std::fs::write(dir.join(".trellis/hooks/gate.txt"), "exit 2\n").unwrap();
+        std::fs::write(&hook, "exit 2\n").unwrap();
         crate::testutil::git_commit_all(&dir, "a hook file");
         trust(&dir);
         let said = run(&dir, &spec);
@@ -981,5 +1029,136 @@ mod run_tests {
             a[0].2.contains("denied to agent profile `reviewer`"),
             "{a:?}"
         );
+    }
+
+    /// `[[tools.custom]]` for a tool `nap` that waits about `secs` seconds,
+    /// with `timeout` as its `timeout_s` line (empty for none).
+    fn nap_tool(secs: u32, timeout: &str) -> String {
+        // ping waits a second between its echoes; cmd has no sleep that
+        // does not read the console.
+        let argv = if cfg!(windows) {
+            format!("['cmd', '/C', 'ping -n {} 127.0.0.1 >nul']", secs + 1)
+        } else {
+            format!("['sh', '-c', 'sleep {secs}']")
+        };
+        format!(
+            "[[tools.custom]]\nname = \"nap\"\ndescription = \"Wait.\"\n\
+             command = {argv}\nschema = {{ type = \"object\" }}\n{timeout}"
+        )
+    }
+
+    const NAP_THEN_STOP: &str = r#"{"steps":[
+        {"tool":"nap"},
+        {"tool":"done","summary":"waited"}
+    ]}"#;
+
+    #[test]
+    fn custom_tool_timeout_out_of_bounds_is_refused_like_bash_timeout_s_and_absent_is_120() {
+        // The key mirrors `[tools] bash_timeout_s`: a value that key refuses
+        // is refused here with the same words, and one that key accepts is
+        // accepted. A custom tool that silently ran without a bound because
+        // its timeout did not parse would be worse than a refused config.
+        let d = crate::testutil::scratch("custom-timeout-bounds");
+        std::fs::create_dir_all(d.join(".trellis")).unwrap();
+        let load = |toml: &str| {
+            std::fs::write(d.join(".trellis/config.toml"), toml).unwrap();
+            crate::config::RepoConfig::load(&d)
+        };
+        for bad in ["-1", "1.5", "\"60\""] {
+            let bash = format!(
+                "{:#}",
+                load(&format!("[tools]\nbash_timeout_s = {bad}\n")).unwrap_err()
+            );
+            let custom = format!(
+                "{:#}",
+                load(&nap_tool(1, &format!("timeout_s = {bad}\n"))).unwrap_err()
+            );
+            // The words after the location; the location names the key.
+            let why = |e: &str| e.lines().last().unwrap_or_default().trim().to_string();
+            assert!(!why(&bash).is_empty(), "{bash}");
+            assert_eq!(why(&bash), why(&custom), "{bash}\n---\n{custom}");
+        }
+
+        let cfg = load(&nap_tool(1, "timeout_s = 0\n")).unwrap();
+        // 0 is taken as 1 second, as `bash_timeout_s = 0` is.
+        assert_eq!(cfg.custom_tools()[0].timeout(), Duration::from_secs(1));
+        let cfg = load(&nap_tool(1, "")).unwrap();
+        assert_eq!(cfg.custom_tools()[0].timeout_s, None);
+        assert_eq!(
+            cfg.custom_tools()[0].timeout(),
+            Duration::from_secs(120),
+            "an absent timeout_s is the 120 s every custom tool had before"
+        );
+        assert_eq!(
+            trellis_loop::DEFAULT_CUSTOM_TIMEOUT_S,
+            config::DEFAULT_BASH_TIMEOUT_S
+        );
+    }
+
+    #[test]
+    fn custom_tool_timeout_a_run_just_under_it_completes() {
+        let (dir, spec) = fixture(
+            "custom-timeout-under",
+            &nap_tool(1, "timeout_s = 4\n"),
+            NAP_THEN_STOP,
+        );
+        trust(&dir);
+        let said = run(&dir, &spec);
+        let a = actions(&trail(&dir));
+        assert_eq!(a[0].0, "nap", "{a:?}\n{said}");
+        assert!(!a[0].2.contains("did not finish"), "{a:?}\n{said}");
+        assert!(!a[0].2.starts_with("error"), "{a:?}\n{said}");
+    }
+
+    #[test]
+    fn custom_tool_timeout_a_run_just_over_it_is_killed_at_the_configured_bound() {
+        // The risk: the key parses but the orchestrator still waits its
+        // fixed 120 s, so a hung tool holds the run far past what the
+        // repository asked for. The message names the configured bound.
+        let (dir, spec) = fixture(
+            "custom-timeout-over",
+            &nap_tool(6, "timeout_s = 2\n"),
+            NAP_THEN_STOP,
+        );
+        trust(&dir);
+        let started = std::time::Instant::now();
+        let said = run(&dir, &spec);
+        let a = actions(&trail(&dir));
+        assert_eq!(a[0].0, "nap", "{a:?}\n{said}");
+        assert!(
+            a[0].2.contains("did not finish within 2s and was killed"),
+            "{a:?}\n{said}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the run waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn custom_tool_timeout_adding_the_key_changes_the_digest_and_needs_trust_again() {
+        // How long repository code may run is part of what the person
+        // trusted: raising it from 120 s to an hour must not ride on the
+        // trust given to the shorter bound.
+        let (dir, _) = fixture("custom-timeout-digest", &nap_tool(1, ""), NAP_THEN_STOP);
+        trust(&dir);
+        let state = |dir: &Path| {
+            let cfg = crate::config::RepoConfig::load(dir).unwrap();
+            store().state(dir, &super::fingerprint(dir, &cfg)).unwrap()
+        };
+        assert_eq!(state(&dir), TrustState::Trusted);
+        let before = super::fingerprint(&dir, &crate::config::RepoConfig::load(&dir).unwrap());
+
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            nap_tool(1, "timeout_s = 3600\n"),
+        )
+        .unwrap();
+        let after = super::fingerprint(&dir, &crate::config::RepoConfig::load(&dir).unwrap());
+        assert_ne!(before.sha256, after.sha256);
+        assert_eq!(state(&dir), TrustState::Changed);
+        let why = super::require_trusted(&dir).unwrap_err();
+        assert!(why.contains("changed since it was trusted"), "{why}");
     }
 }

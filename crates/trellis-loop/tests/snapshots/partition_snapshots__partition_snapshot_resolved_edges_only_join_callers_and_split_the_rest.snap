@@ -1,0 +1,25 @@
+---
+source: crates/trellis-loop/tests/partition_snapshots.rs
+expression: out
+---
+width: 2
+shared: none
+partition 0 (parallel, conservative: false):
+  units (2):
+    alpha.f
+    use_alpha.call_f
+  radius (2):
+    alpha.f
+    use_alpha.call_f
+  files (2):
+    alpha.py
+    use_alpha.py
+partition 1 (parallel, conservative: false):
+  units (1):
+    beta.g
+  radius (2):
+    beta.g
+    use_beta.call_g
+  files (2):
+    beta.py
+    use_beta.py

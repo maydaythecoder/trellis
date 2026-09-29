@@ -6,7 +6,16 @@
 source "$(dirname "$0")/lib.sh"
 [ -n "$PY" ] || fail "no python3 or py on PATH; the guard suite cannot run"
 cargo build -p trellis-cli
-export PATH="$ROOT/target/debug:$PATH"
+# The shell's own form of the root (lib.sh has cd'd there): in Git Bash
+# `$ROOT` is `C:/...`, whose colon splits a PATH entry, and the suite then
+# ran whichever `trellis` was installed instead of this build (#158).
+debug="$(pwd)/target/debug"
+export PATH="$debug:$PATH"
+found=$(command -v trellis || true)
+case "$found" in
+  "$debug"/trellis|"$debug"/trellis.exe) ;;
+  *) fail "trellis resolves to '${found:-nothing}', not this build in $debug" ;;
+esac
 curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:11434/api/tags \
   || fail "no model runtime at 127.0.0.1:11434 (start Ollama); dirty_worktree needs it"
 out=$($PY qa/run-guards.py 2>&1) || true

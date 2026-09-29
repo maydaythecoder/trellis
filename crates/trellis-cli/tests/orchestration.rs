@@ -31,18 +31,23 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 fn trellis(root: &Path, args: &[&str]) -> Output {
+    trellis_command(root, args)
+        .output()
+        .expect("the binary must be built before its integration tests run")
+}
+
+fn trellis_command(root: &Path, args: &[&str]) -> Command {
     // The trust store is resolved from these (ADR 0023 §4); pointed beside
     // the fixture so `trellis trust` here never writes the developer's own.
     let home = root.with_extension("home");
-    Command::new(env!("CARGO_BIN_EXE_trellis"))
-        .args(args)
+    let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    c.args(args)
         .current_dir(root)
         .env("APPDATA", &home)
         .env("XDG_CONFIG_HOME", &home)
         .env("NO_COLOR", "1")
-        .env_remove("RUST_LOG")
-        .output()
-        .expect("the binary must be built before its integration tests run")
+        .env_remove("RUST_LOG");
+    c
 }
 
 fn combined(o: &Output) -> String {
@@ -447,7 +452,7 @@ fn a_bad_routine_or_profile_is_refused_before_anything_is_claimed() {
         "bad-defs",
         &[(
             ".trellis/routines/r.toml",
-            "schedule = \"0 3 * * *\"\ntimezone = \"Europe/Amsterdam\"\n[task]\ntext = \"x\"\n",
+            "schedule = \"0 3 * * *\"\ntimezone = \"Europe/Atlantis\"\n[task]\ntext = \"x\"\n",
         )],
     );
     ok(&d, &["queue", "add", "x"]);
@@ -510,6 +515,65 @@ fn a_process_agent_converges_only_when_it_changed_something_and_the_checks_pass(
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn allow_write_refuses_a_process_agent_s_write_outside_it_and_names_it() {
+    // The risk (#182): a process agent's writes reach the repository with
+    // no `edit` call for the gate to check, so a scope enforced only there
+    // held for model runs and not for the agent the profile names. The
+    // judge that reads the command's changes refuses it, names it, and the
+    // run rolls back. A scope that admits the write converges as before,
+    // and a repository `deny_write` still wins over a scope that names it.
+    let deny = "[governance]\ndeny_write = [\"app/\"]\n";
+    for (name, allow, extra, refusal) in [
+        (
+            "proc-allow-out",
+            r#"["docs/"]"#,
+            "",
+            Some(
+                "governance: refused: app/made.cfg (outside the allow_write [`docs/`] \
+                 of agent `maker` in .trellis/agents/maker.toml)",
+            ),
+        ),
+        (
+            "proc-allow-deny",
+            r#"["app/"]"#,
+            deny,
+            Some("governance: refused: app/made.cfg (deny_write `app/`)"),
+        ),
+        ("proc-allow-in", r#"["app/"]"#, "", None),
+    ] {
+        let d = process_fixture(name, MAKES_A_FILE, PASSES);
+        std::fs::write(
+            d.join(".trellis/agents/maker.toml"),
+            format!("command = {MAKES_A_FILE}\ntimeout_s = 60\nallow_write = {allow}\n"),
+        )
+        .unwrap();
+        let cfg = d.join(".trellis/config.toml");
+        let mut text = std::fs::read_to_string(&cfg).unwrap();
+        text.push_str(extra);
+        std::fs::write(&cfg, text).unwrap();
+        git(&d, &["commit", "-qam", "scope"]);
+        ok(&d, &["trust"]);
+        ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+        let s = ok(&d, &["work"]);
+        match refusal {
+            Some(r) => {
+                assert!(s.contains("NOT CONVERGED"), "{name}:\n{s}");
+                assert!(s.contains(r), "{name}: the refusal is named:\n{s}");
+                assert!(!d.join("app/made.cfg").exists(), "{name}: rolled back");
+            }
+            None => {
+                assert!(
+                    s.contains("CONVERGED (converged: both checks passed)"),
+                    "{name}:\n{s}"
+                );
+                assert!(d.join("app/made.cfg").exists(), "{name}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_process_agent_runs_in_trellis_s_own_process_group() {
@@ -533,6 +597,62 @@ fn a_process_agent_runs_in_trellis_s_own_process_group() {
         .unwrap();
     assert_eq!(theirs.trim(), String::from_utf8_lossy(&ours.stdout).trim());
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(windows)]
+#[test]
+fn job_object_kills_a_process_agent_s_tree() {
+    // The risk (ADR 0035): after the agent exited normally nothing was
+    // signalled on Windows, and `taskkill /T` could not have walked the tree
+    // from a process that was gone, so a grandchild it backgrounded kept
+    // running and could write after the comparison and the rollback. The
+    // grandchild appends to a heartbeat file outside the repository about
+    // once a second, for 30 beats: bounded, so a regression fails here
+    // rather than holding the test run.
+    let d = process_fixture("proc-job", PASSES, PASSES);
+    let beat = d.with_extension("beat");
+    let _ = std::fs::remove_dir_all(&beat);
+    std::fs::create_dir_all(&beat).unwrap();
+    std::fs::write(
+        beat.join("beat.cmd"),
+        "@for /L %%i in (1,1,30) do @(echo x>>\"%~dp0hb\"& ping -n 2 127.0.0.1 >NUL)\r\n",
+    )
+    .unwrap();
+    let script = format!(
+        "start /B cmd /C {} >NUL 2>&1 & ping -n 4 127.0.0.1 >NUL & exit 0",
+        beat.join("beat.cmd").display()
+    );
+    std::fs::write(
+        d.join(".trellis/agents/maker.toml"),
+        format!("command = ['cmd', '/C', '{script}']\ntimeout_s = 60\n"),
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "beat"]);
+    ok(&d, &["trust"]);
+    ok(&d, &["queue", "add", "beat", "--assignee", "maker"]);
+    // Output to a file, not a pipe: an escaped grandchild inherits the
+    // pipe, and `output()` would wait for it to end, which hid the escape.
+    let log = beat.join("work.log");
+    let st = trellis_command(&d, &["work"])
+        .stdout(std::fs::File::create(&log).unwrap())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    let s = std::fs::read_to_string(&log).unwrap();
+    assert!(st.success() && s.contains("exited 0"), "{s}");
+    let hb = beat.join("hb");
+    let size = || std::fs::metadata(&hb).map(|m| m.len()).unwrap_or(0);
+    // Without a beat before the return, a stopped heartbeat proves nothing.
+    let before = size();
+    assert!(before > 0, "the grandchild never wrote its heartbeat:\n{s}");
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert_eq!(
+        size(),
+        before,
+        "the agent's backgrounded grandchild kept writing after `work` returned"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&beat);
 }
 
 #[test]

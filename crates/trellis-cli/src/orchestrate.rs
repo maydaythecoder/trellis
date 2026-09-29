@@ -316,6 +316,18 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
                     t.join(", ")
                 ),
             }
+            // Only when set, so a profile without it shows what it showed.
+            if let Some(a) = &f.allow_write {
+                println!(
+                    "allow_write:  {} — the only paths these runs may write; a path the \
+                     repository denies stays denied",
+                    if a.is_empty() {
+                        "(none: no write at all)".to_string()
+                    } else {
+                        a.join(", ")
+                    }
+                );
+            }
             let b = f.budget.clone().unwrap_or_default();
             if p.is_process() {
                 println!("budget:       none possible; trellis does not see a process's tokens");
@@ -434,7 +446,7 @@ pub(crate) fn routines(root: &Path, action: RoutinesAction) -> Result<()> {
                 let st = routine::state(&q, &r.name)?;
                 let next = r
                     .cron
-                    .next_after(now, r.tz)
+                    .next_after(now, &r.tz)
                     .map(|t| {
                         let (d, h) = r.tz.date_time(t);
                         format!("{d} {h} {}", r.tz)
@@ -581,6 +593,89 @@ mod tests {
         assert_eq!(
             trellis_queue::month_of(&iso),
             trellis_queue::month_of(&trellis_queue::iso_now())
+        );
+    }
+
+    /// Every file under `examples/agents/`, relative to it, with `/`.
+    fn files_under(dir: &std::path::Path, rel: &str, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name().into_string().unwrap();
+            let r = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            if e.file_type().unwrap().is_dir() {
+                files_under(&e.path(), &r, out);
+            } else {
+                out.push(r);
+            }
+        }
+    }
+
+    #[test]
+    fn starter_profiles_load() {
+        // The risk: the starter profiles are copied in by hand, so nothing
+        // else loads them, and a field the loader stops accepting (or an
+        // `instructions` path that no longer matches the file) would ship
+        // a starter that fails `agents list` on first use. They are copied
+        // into `.trellis/agents/` as the header of each file says, then
+        // loaded through the same validation every command uses.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/agents");
+        let mut files = Vec::new();
+        files_under(&src, "", &mut files);
+        files.sort();
+        assert!(!files.is_empty(), "no files under {}", src.display());
+
+        let d = tempfile::tempdir().unwrap();
+        let dst = d.path().join(".trellis").join(trellis_queue::profile::DIR);
+        for f in &files {
+            let to = dst.join(f);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(src.join(f), &to).unwrap();
+        }
+        let profiles = super::load_profiles(d.path()).unwrap();
+
+        // `load_dir` skips what is not `*.toml` without a word, so a file
+        // is accounted for here: a profile that loaded, or the instructions
+        // file a loaded profile names. Anything else is a starter the
+        // loader never saw.
+        let prefix = format!("{}/", trellis_queue::profile::DIR);
+        for f in &files {
+            let loaded = f
+                .strip_suffix(".toml")
+                .is_some_and(|n| profiles.contains_key(n));
+            let named = profiles.values().any(|p| {
+                p.file
+                    .instructions
+                    .as_deref()
+                    .and_then(|i| i.strip_prefix(&prefix))
+                    == Some(f.as_str())
+            });
+            assert!(
+                loaded || named,
+                "examples/agents/{f} is neither a profile nor a profile's instructions"
+            );
+        }
+        for (n, p) in &profiles {
+            // Rule 5 (ADR 0005): no starter hands its work to another agent
+            // for judgment, and each one has instructions saying who decides.
+            assert_eq!(p.file.reports_to, None, "agent `{n}` reports to another");
+            assert!(
+                p.file.instructions.is_some(),
+                "agent `{n}` has no instructions"
+            );
+        }
+        let implementer = &profiles["implementer"];
+        assert_eq!(implementer.file.tools, None, "default tools means no list");
+        assert_eq!(
+            implementer
+                .file
+                .control
+                .as_ref()
+                .and_then(|c| c.mode.as_deref()),
+            Some("approve")
         );
     }
 }

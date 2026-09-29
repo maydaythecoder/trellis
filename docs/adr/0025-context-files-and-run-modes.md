@@ -201,11 +201,13 @@ on stderr.
   - `approve {id, yes}`
   - `get_commands`
   - `quit`
-- **Why these 9 of pi's 33:**
+  - `compact` (*added 2026-09-29, #110; see "compact" below*)
+- **Why these 9 of pi's 33:** (10 since `compact`)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred).
   - The thinking, retry and compaction commands are W-C. `compact` answers
-    "not built" by name.
+    "not built" by name. *Amended 2026-09-29 (#110): `compact` is built;
+    see below. The thinking and retry commands are still not.*
   - `bash` and `abort_bash` are excluded. A client that can start trellis can
     run a shell itself, and a shell reached through the harness would look
     like part of a run while bypassing its gates.
@@ -256,6 +258,36 @@ on stderr.
     both of which failed before (the first timed out waiting for the
     answer the dead server never gave; the second returned with no
     `run_end`).
+- *Added 2026-09-29 (#110), on the owner's decision recorded there; ADR
+  0021 row 9.4 already listed it.* **`compact`** asks the run in flight to
+  compact its next model request under ADR 0024 §5. No summary is written:
+  every observation but the newest is replaced by its `elided:` note, the
+  same elision the byte budget uses, and nothing else in the request
+  changes.
+  - With no run in flight it answers `success: false`, `"error": "no run
+    in flight"`.
+  - During a run the answer comes when the run makes its next model
+    request, not when the command is read: `data` is `{turn,
+    turns_folded, elided_turns, elided_bytes, bytes_before, bytes_after}`,
+    where `turn` is the turn that request produces, `turns_folded` the
+    turns newly elided by it (0 when nothing was left to elide), and the
+    byte counts the request's size without and with the new elision, as
+    measured for the budget (the prompt, or the hosted body with tools).
+    Commands read meanwhile are answered as usual, so a run paused on an
+    approval can be compacted before the answer that lets it continue.
+  - A scripted run is sent no prompt, so there is nothing to compact:
+    `success: false`, saying so. A run that ends before its next model
+    request answers `success: false`, "the run ended before its next model
+    request; nothing was compacted". No `compact` is left unanswered.
+  - A compaction that folded a turn is recorded as ADR 0024 §5 records one:
+    a `compaction` action in the trail, whose outcome says it was requested
+    over rpc and gives the sizes (no budget, since none applied), and a
+    `context:` line on the run's output.
+  - Evidence: `rpc_compact_with_no_run_in_flight_answers_no_run_in_flight`
+    and `rpc_compact_mid_run_folds_the_older_turns_before_the_next_request`
+    in `tests/modes.rs`, through the binary over stdio; the second checks
+    the provider received the note in place of the first observation and
+    that the size reported is the size sent.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
@@ -336,7 +368,7 @@ on stderr.
   `max_wall_clock_s`, `max_tokens`). This departs from "repo wins" on
   purpose. ADR 0008: a runaway loop spends the user's money. A user who
   caps spend at 1M tokens must not have a cloned repository raise the cap to
-  2M.
+  2M. `[checks] timeout_s` layers the same way (ADR 0004, amended for #19).
 - **Neither file may hold a key.** Both files are scanned before they are
   used. Loading is refused, naming the file and the key path but never the
   value, when a key is named:
@@ -374,8 +406,9 @@ on stderr.
   "Integrated".*
 - `/new`, `/name` and `/copy`. `/new` means nothing when each task is
   already a fresh run. `/name` and `/copy` are deferred.
-- `compact` over RPC: W-C.
-- `queue add --args`: the queue is W-E's, and ADR 0026 decides it.
+- `compact` over RPC: W-C. *Built 2026-09-29 (#110); see §5, "compact".*
+- `queue add --args`: the queue is W-E's, and ADR 0026 decides it. Built
+  since: ADR 0026 §3 records it.
 - The trail does not record which context files or system files a run saw.
   That would be a factual-field change under ADR 0007's digest, and belongs
   in its own change. Until then the `repo:` line is the record, and two runs
@@ -437,6 +470,10 @@ Each item is tested unless it says otherwise.
   `needless_update` is allowed there on purpose. The update becomes live the
   day W-B adds `[tools]` or `[hooks]`, and the rule in §7, that unnamed
   sections come from the repository only, depends on it.
+  *Amended 2026-09-28 (#13):* the allow is gone. `..repo` still carries
+  `tools`, `hooks` and `provenance`, so `needless_update` never fired and the
+  suppression was dead. The §7 rule is unchanged: those sections still come
+  from the repository only.
 - **An unknown `[control] mode` word survives the merge.** A word that is
   neither `auto` nor `approve`, from either file, is kept as written so that
   `RepoConfig::control` still refuses it by name.

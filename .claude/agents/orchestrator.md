@@ -33,8 +33,7 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
    ticket is not workable yet: dispatch **architect** to add a `## Done when`
    and a `## Verify` section (a fenced command), then re-run G0. Do not dispatch
    an implementer against a ticket G0 rejects.
-3. Create a branch `t<n>-<slug>` off `inherit` (while PR #1 is open; after it
-   merges, off `v0.1-resolver`). Dispatch to the specialist (Routing).
+3. Create a branch `t<n>-<slug>` off `drain`, the integration branch. Dispatch to the specialist (Routing).
 4. When it returns, run every gate: `scripts/gates/run-all.sh <n>`. It stops at
    the first failure and prints GATE / COMMAND / EXIT / OUTPUT. Dispatch the
    **verifier** to run it when you want the raw output kept out of your context.
@@ -46,7 +45,7 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
    `surface:public`. Stop, print the diff summary (`git diff --stat`) and the gate
    outputs, and end your turn. A human approves by telling you to continue.
 7. All gates green (and G7 approved where required): merge the branch into
-   `inherit` with `git merge --no-ff`, push, comment the gate summary on the
+   `drain` with `git merge --no-ff`, push, comment the gate summary on the
    issue, close it (`gh issue close <n> --comment ...`). Then re-run
    `scripts/tickets/next.sh`; tickets it blocked become eligible.
 8. Repeat.
@@ -68,8 +67,8 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
   the gate in its own ticket.
 - Never accept an agent's claim that something works. Run the command, read the
   output.
-- Never merge to `v0.1-resolver` and never force-push. Merging PR #1 is the
-  owner's decision.
+- Never merge to `v0.1-resolver` and never force-push. Merging `drain`'s
+  pull request into it is the owner's decision.
 - If a ticket turns out to need a decision, stop, file an ADR ticket for the
   architect, and block the original on it (`blocked_by` in its triage block).
   The implementer does not decide architecture.

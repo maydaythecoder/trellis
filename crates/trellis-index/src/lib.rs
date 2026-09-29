@@ -5,14 +5,17 @@
 
 pub mod cache;
 mod coverage;
+mod delta;
 mod graph;
 mod incremental;
 pub mod modules;
 pub mod parse;
+mod pyright_backstop;
 pub mod radius;
 mod resolve;
 
 pub use coverage::Coverage;
+pub use delta::{ChangeKind, IndexedSources, SymbolChange, symbol_delta};
 pub use graph::{
     CallSiteEntry, CalleeKind, Edge, FileEntry, Index, Reason, SymbolEntry, SymbolKind, Target,
 };
@@ -21,6 +24,10 @@ pub use modules::{ModuleGraph, ModuleNode, module_graph};
 pub use parse::{
     BindingFact, CallFact, CalleeShape, DefFact, FileFacts, ImportFact, TypeFact,
     collect as parse_facts,
+};
+pub use pyright_backstop::{
+    BackstopEdge, BackstopReport, BackstopStatus, EdgeSource, Server as BackstopServer,
+    doubt_sites, run as run_backstop,
 };
 pub use radius::{
     CallerSite, DoubtSite, FileDoubt, RadiusReport, callers_of_files, doubt_in_files,

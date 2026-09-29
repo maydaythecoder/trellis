@@ -2,7 +2,7 @@
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
-was closed. Each amendment is marked in place. §4's `tools` list and skill deny
+was closed. §7 amended again for IANA zone names (#47). Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -52,6 +52,7 @@ written under ADR 0020 still loads unchanged.
 | `needs_approval`, `approval` | §6 |
 | `notes` | `[{at, actor, text}]`, appended by `queue note` and by the queue |
 | `routine` | The routine that created the task, if any (§7) |
+| `args` | Arguments for the task's `prompt` template, the one unsplit string `run --args` takes (§3). Omitted from the file when absent |
 
 The goal is the vault stem already stored as `focus` (ADR 0020 §6).
 `queue add --goal` is an alias of `--focus`.
@@ -204,6 +205,21 @@ goes out in one write, and a reader skips a last line that does not parse.
   and `--backlog`. The parent, the blockers and the assignee must exist when
   the task is added. This follows ADR 0020's rule that anything checkable is
   checked at add time.
+- *Amended by the owner, 2026-09-28 (#112):* `queue add --prompt <name>
+  --args "<string>"`, which ADR 0025 left to this ADR. The string is stored
+  unsplit as the task's `args` and, when the task runs, expanded by the same
+  function `trellis run` uses (`templates::task_text`: one splitter, one
+  substitution, one join), so a queued template expands byte for byte as
+  the equivalent `run --prompt --args` would. `--args` requires `--prompt`,
+  as on `run`. The string is split once at add time as well, so an unclosed
+  quote is refused then rather than when the heartbeat reaches the task.
+  The field has a serde default and is not written when absent, so older
+  task files load and rewrite unchanged; a binary older than this reads a
+  file that has it by ignoring the key, and runs the template without its
+  arguments. Routines do not take `args`. Evidence:
+  `queue_add_args_expand_byte_for_byte_as_run_args` and
+  `queue_add_args_an_older_task_file_reads_back_unchanged` in
+  `crates/trellis-cli/src/work.rs`.
 - `queue list` shows priority, status, labels, assignee, blockers, parent
   and the reason a pending task is not claimable. It filters with
   `--status`, `--label`, `--assignee` and `--priority`.
@@ -230,6 +246,7 @@ model = "llamacpp:http://127.0.0.1:8080"
 reports_to = "lead"
 paused = false
 tools = ["read_file", "edit"]           # carried for W-B's registry; see below
+allow_write = ["docs/", "*.md"]         # optional; deny_write's syntax; only narrows (#182)
 
 [control]
 mode = "auto"          # or "approve"
@@ -262,6 +279,9 @@ that reads them:
   A model profile starts no process to pass a variable to, and accepting
   the field would read as a pass-through that happened. An entry that is
   blank or contains `=` is refused as not a variable name.
+- *Amended (#182):* an `allow_write` entry that is blank is refused: it
+  parses as the exact path "", which admits nothing, and would read as a
+  scope that is not one.
 
 **What a profile changes about a run of its tasks:**
 - **`instructions`**: the file's text goes ahead of the task, the same way
@@ -288,6 +308,40 @@ that reads them:
   does, ADR 0020 §5). `pass_env` gives a variable back to a process
   agent, and is a committed choice `trellis trust` shows (§11).
 - **`[skills]`**: filters the catalog disclosed to the model (ADR 0019).
+- *Amended (#182, owner's decision of 2026-09-29):* **`allow_write`**: the
+  only paths this profile's runs may write, in `deny_write`'s rule syntax
+  (`vendor/` a prefix, `*.lock` a suffix, `setup.py` exact; folded for
+  separators, `.` segments and, on Windows and macOS, case). **It only
+  narrows.** Absent, the run is judged by the repository's rules alone,
+  exactly as before the field existed, and a profile file without it
+  parses and serializes unchanged. Present, a write must be admitted by it
+  *and* not denied by the repository: `deny_write` is consulted first
+  everywhere, so a path the repository denies stays denied whatever
+  `allow_write` names, and the refusal names the repository's rule.
+  `allow_write = []` is not the same as absent: it admits no write (the
+  field is an `Option`, so the two cannot collapse). A write is admitted
+  only when both the path as spelt and the path it really lands on through
+  any link are inside; one whose landing place cannot be worked out is
+  outside. Enforced where writes are judged:
+  - a model run's `edit` and `write_file`, at the governance gate, before
+    the file is read, refused as a `deny_write` hit is, naming the list and
+    `.trellis/agents/<name>.toml`;
+  - a `bash` or custom-tool command's changes, at the throwaway clone's
+    carry-back (ADR 0032), refused and named in the tool's output;
+  - a process agent (§11), over the files git shows the command changed,
+    in the judge read before the command runs: each out-of-scope file is
+    named as `governance: refused:` and the run does not converge and is
+    rolled back. Process agents do not run in the throwaway clone yet
+    (ADR 0032, "What is not built"; #175), so this is the post-command
+    judge, the same one that applies `deny_write` to them; the clone's
+    carry-back must apply it when #175 lands.
+  Ignored files are outside what `allow_write` judges: the checks and the
+  tests write caches there on every run, and a scope that counted them
+  would refuse every run of a scoped agent. They are not part of the change
+  a run leaves for review, and `deny_write` still binds them. The scope is
+  also kept out of the set that decides which changed ignored files count
+  as unrestorable, for the same reason. The model is told the scope in its
+  rules, and `agents show` prints it when set.
 - **`tools`**: stored and validated only as a list of strings. W-B is
   building the tool registry at the same time (ADR 0023), and this field is
   what it will read. Until then, **it has no effect on the run**, and
@@ -336,6 +390,14 @@ For each profile, the ledger sums the tokens recorded in trails (§8) whose
 
 There are no dollars. COST_MODEL.md does not price tokens, and ADR 0021
 excludes dollars until it does.
+
+*Amended 2026-09-29 (#67), by the owner's decision of 2026-09-28:* dollars
+are deferred to v1.x, not excluded. Runs are token-only through v1.0. In
+v1.x dollars arrive only beside tokens, never replacing them, and only once
+COST_MODEL.md carries a per-provider, per-model price table with its source
+and retrieval date and prompt tokens are counted, since hosted providers
+bill both and a price without its method is a number CLAUDE.md does not
+allow.
 
 **What is counted, stated plainly.** The count is **completion tokens as the
 runtime adapter reported them**. It is `Model::tokens_used()`, which the
@@ -441,7 +503,7 @@ A routine is `.trellis/routines/<name>.toml`:
 
 ```toml
 schedule = "0 9 * * 1-5"    # minute hour day-of-month month day-of-week
-timezone = "UTC"            # or a fixed offset: "+02:00", "-05:30"
+timezone = "UTC"            # or "+02:00", "-05:30", or an IANA name: "Europe/Amsterdam"
 concurrency = "coalesce"    # coalesce | skip | always
 catch_up = "skip"           # skip | enqueue
 catch_up_max = 5            # with enqueue: at most this many missed fires
@@ -487,6 +549,39 @@ written in UTC. `Europe/Amsterdam` is refused with that explanation. It is
 not treated as UTC. An offset is exactly `+HH:MM` or `-HH:MM`, two digits in
 each field, checked on the text rather than on the parsed number: `-5:00`,
 `+05:5` and `+005:00` are refused rather than read as something close.
+
+*Amended 2026-09-29 (#47; owner decision 2026-09-28):* **IANA names are
+accepted.** `UTC` and fixed offsets parse exactly as before; anything else is
+looked up in `jiff::tz::db()`. Dependency reason, per ADR 0021's rule: `jiff`
+is already in the build through `trellis-cli` (vault dates), so
+`trellis-queue` gains a crate edge and `Cargo.lock` gains no package. The
+queue enables only `std`, `tzdb-zoneinfo` and `tzdb-bundle-platform`, a
+subset of what `trellis-cli` enables; `tz-system` is not needed, since a
+routine names its zone and never reads the machine's.
+- **Source, and how stale data shows.** On Unix the OS zoneinfo directory
+  (`TZDIR`, else `/usr/share/zoneinfo`), which the OS package manager keeps
+  current. On Windows, which has none, the data bundled into the binary by
+  `jiff-tzdb` (0.1.8 in `Cargo.lock`), as old as the build; it moves with
+  `cargo update`. `trellis doctor` prints which one is in use (`tz data:`),
+  and an unknown name's error names it too, since a name missing from stale
+  data reads the same as a misspelling.
+- **A nonexistent local time** (inside a spring-forward gap, e.g. 02:30 in
+  Amsterdam on 29 March 2026) fires at the first instant after the gap
+  (03:00 local), not at jiff's `compatible` 03:30. Every gap minute a
+  schedule names maps to that one instant, so it fires once.
+- **A repeated local time** (inside a fall-back fold) fires once, at the
+  earlier instant. The second pass through the hour does not fire, and is
+  not a missed fire for catch-up.
+- **An unknown name is refused**, including `Etc/Unknown`, which jiff answers
+  with a zone that behaves as UTC. A routine is still never read as UTC
+  because its zone was not understood.
+
+Evidence: `iana_zone_fires_at_local_nine_on_both_sides_of_each_transition`,
+`iana_zone_spring_gap_fires_at_the_first_instant_after_it`,
+`iana_zone_autumn_overlap_fires_once_at_the_earlier_instant` and
+`iana_zone_unknown_name_is_refused_not_read_as_utc` in
+`crates/trellis-queue/src/cron.rs`. They need the tz data present: on a Unix
+machine without zoneinfo they fail rather than pass on UTC.
 
 **Firing.** `work` evaluates routines on every tick before claiming. The
 state of each routine is stored at `<git-dir>/trellis/routines/<name>.json`,
@@ -570,6 +665,21 @@ scheduled instant) and the id of the last task the routine created.
 
 `work --every S` now idles until the sooner of S seconds and the next due
 routine.
+
+*Amended 2026-09-29 (#68), by the owner's decision of 2026-09-28:* the
+long-lived watcher stays excluded, and ADR 0020's no-daemon decision
+stands. The OS scheduler (cron, systemd timers, Task Scheduler) can start
+`trellis work --once` on a schedule with no trellis daemon: each start is
+one tick, which evaluates routines and runs at most one task, and the fires
+missed between starts go to the routine's catch-up policy as above. Two
+limits follow from `work` itself. A tick on a dirty worktree stops before
+routines are evaluated, so while a converged change waits for the human
+nothing fires and the fires accumulate as missed. And a scheduled start
+usually has no terminal, and without one a task assigned to a profile in
+approve mode is not claimed. A
+trellis-owned daemon was not taken because it would be a process with
+repository write access and no terminal attached, which is where ADR 0023's
+limits on unsandboxed writers matter most.
 
 **Subcommands:**
 - `trellis routines list` shows the schedule, timezone, policies, next due
@@ -738,6 +848,13 @@ This is Paperclip's `process` adapter. A profile with
      Windows host: `a_process_agent_runs_in_trellis_s_own_process_group`
      in `tests/orchestration.rs`, which compares the agent's process group
      with the test's; a stopped background job needs a terminal to stage.
+     *Amended by ADR 0035:* on Windows the command runs in a Job Object
+     with kill-on-close and no breakaway, and the job is terminated however
+     the command ends (exit, timeout or interrupt), before `.git/config`
+     is restored and the tree compared, so a backgrounded writer cannot
+     land after either. `taskkill /T` is no longer used here. Guarded by
+     `job_object_kills_a_process_agent_s_tree` in
+     `tests/orchestration.rs` (Windows only). Unix is unchanged.
    - Ctrl-C kills the child and rolls back.
 
    *Amended (wave K): the environment has no keys unless the profile
@@ -1046,21 +1163,33 @@ are not assumed closed:
   0023 §4, amended after the eleventh review), but code a hook or tool imports from
   elsewhere in the repository is an ordinary file a run may edit.
 
-**What holds.** For trellis's own edits (`edit`, `write_file`), the
-rollback's guarantee is exact, as ADR 0009 states. A run with none of
+**What holds.** For trellis's own edits (`edit`, `write_file`), and for
+the edits a `bash` or custom-tool command makes inside its clone and that
+are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
+0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
-**The real fix is sandboxing**: running these writers where they cannot
-reach `.git/`, the user's other files or processes that outlive them.
-That decision is deferred in ADR 0021 (1.6 swappable tool backends,
-13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
-the limit rather than adding another guard. `trellis trust` prints one line
-saying so when it records trust for any of these writers.
+**The real fix is isolation**, and the first step is built (ADR 0032,
+*amended 2026-09-29*): `bash` and custom tools run in a throwaway `git
+clone` of the repository (copy-in/diff-out), and only their edits to files
+trellis tracks come back, through the orchestrator's write path, where the
+rollback covers them exactly. Against a `bash` or custom-tool command that
+writes where it runs, every item in the list above is closed: its
+`.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
+in the clone, and what it started writes into a directory that is removed.
+The list still holds, in full, for **hooks and process agents**, which are
+not isolated yet, and for any writer that reaches the repository by
+absolute path, which a clone does not stop (ADR 0032, "Limits": no network
+isolation, reads and writes outside the clone still possible). The guards
+above are kept for those writers. Containers or an OS sandbox, for network
+and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
+`trellis trust` prints one line stating the limit when it records trust for
+any of these writers.
 
 ## What is not built
 
-- **IANA timezone names** (§7).
+- ~~**IANA timezone names** (§7).~~ Built for #47; see §7's amendment.
 - ~~**The per-profile `tools` list takes no effect** until W-B's registry
   reads it (§4).~~ Integrated; see below.
 - ~~**A profile's skill deny list does not stop `read_skill` by exact name**

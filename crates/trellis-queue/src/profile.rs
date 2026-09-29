@@ -63,6 +63,15 @@ pub struct ProfileFile {
     /// Names are checked against the repository's tools by the binary, which
     /// is the side that knows the custom ones.
     pub tools: Option<Vec<String>>,
+    /// The only paths this profile's runs may write, in `deny_write`'s rule
+    /// syntax (ADR 0026 §4). Absent means the repository's rules alone, as
+    /// before the field existed; present, even empty, narrows to exactly
+    /// these, and a path the repository denies stays denied. An `Option`,
+    /// not a defaulted list, so `allow_write = []` (a read-only agent) is not
+    /// read as "no restriction". Skipped when absent so a profile without
+    /// it serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_write: Option<Vec<String>>,
     pub control: Option<ControlFile>,
     pub skills: Option<SkillsFile>,
     pub budget: Option<BudgetFile>,
@@ -187,6 +196,11 @@ pub fn validate(set: &BTreeMap<String, Profile>) -> Result<(), QueueError> {
             .find(|v| v.trim().is_empty() || v.contains('=') || v.contains('\0'))
         {
             return bad(n, format!("`pass_env` entry {v:?} is not a variable name"));
+        }
+        if let Some(v) = f.allow_write.iter().flatten().find(|v| v.trim().is_empty()) {
+            // `Rule::parse` reads a blank entry as the exact path "", which
+            // admits nothing: a line that looks like a scope and is not one.
+            return bad(n, format!("`allow_write` entry {v:?} names no path"));
         }
         if f.command.is_none() && f.timeout_s.is_some() {
             return bad(
@@ -493,6 +507,38 @@ warn_at = 0.5
         assert!(err(&[("p", "[budget]\nwarn_at = 1.5")]).contains("outside"));
         assert!(err(&[("p", "instructions = \"../../etc/passwd\"")]).contains("relative"));
         assert!(err(&[("Bad", "")]).contains("lowercase"));
+    }
+
+    #[test]
+    fn allow_write_is_optional_and_an_empty_list_is_not_an_absent_one() {
+        // The risk (#182): the field made an older profile fail to parse
+        // or serialize differently, or `allow_write = []` (write nothing)
+        // collapsed into "absent" (write anything the repository allows).
+        let old = "role = \"writer\"\nmodel = \"x\"\ntools = [\"edit\"]\n";
+        let before = parse("w", old).unwrap();
+        assert_eq!(before.file.allow_write, None);
+        let back = toml::to_string(&before.file).unwrap();
+        assert!(!back.contains("allow_write"), "{back}");
+        assert_eq!(parse("w", &back).unwrap().file, before.file);
+
+        let s = set(&[("w", "allow_write = [\"docs/\", \"*.md\", \"README\"]\n")]).unwrap();
+        assert_eq!(
+            s["w"].file.allow_write.as_deref(),
+            Some(
+                &[
+                    "docs/".to_string(),
+                    "*.md".to_string(),
+                    "README".to_string()
+                ][..]
+            )
+        );
+        let s = set(&[("ro", "allow_write = []\n")]).unwrap();
+        assert_eq!(s["ro"].file.allow_write.as_deref(), Some(&[][..]));
+        let back = toml::to_string(&s["ro"].file).unwrap();
+        assert_eq!(parse("ro", &back).unwrap().file.allow_write, Some(vec![]));
+
+        assert!(err(&[("w", "allow_write = [\" \"]")]).contains("names no path"));
+        assert!(err(&[("w", "allow_writes = [\"docs/\"]")]).contains("unknown field"));
     }
 
     #[test]

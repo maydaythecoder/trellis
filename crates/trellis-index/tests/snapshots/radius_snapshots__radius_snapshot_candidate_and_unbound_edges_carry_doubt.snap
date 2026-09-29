@@ -1,0 +1,23 @@
+---
+source: crates/trellis-index/tests/radius_snapshots.rs
+expression: out
+---
+root: shapes.Shape.area
+partitionable: false
+certain (1):
+  report.py:8  measure(s, print)
+ambiguous (1):
+  report.py:5  shape.area()
+symbols reached (2):
+  report.measure
+  report.run
+coverage:
+  reached_resolved: 1
+  reached_ambiguous: 1
+  unbound_in_touched_files: 1
+  touched_files: 2
+  by_reason:
+    LocalBinding: 1
+  by_file:
+    report.py: 1
+  summary: 2 call sites reach this symbol (1 resolved, 1 ambiguous). Separately, 1 call sites across the 2 files this radius touches could not be bound to any definition; any of them may also reach it.

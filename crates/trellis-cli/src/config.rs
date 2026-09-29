@@ -43,6 +43,14 @@ pub(crate) struct RepoConfig {
     /// Hosted endpoints a `provider:<name>#<model>` spec names (ADR 0024).
     #[serde(default)]
     pub providers: Option<Vec<ProviderSection>>,
+    /// `[index] backstop`, the recall backstop `trellis index` runs after
+    /// the resolver (ADR 0031).
+    #[serde(default)]
+    pub index: Option<IndexSection>,
+    /// `[work] stale_claims`: what the heartbeat does with a claim another
+    /// process left behind (ADR 0020 §5).
+    #[serde(default)]
+    pub work: Option<WorkSection>,
     /// What the user's own file said, kept after layering, because where a
     /// hosted endpoint came from decides whether a key may go to it
     /// (ADR 0024 §3). Never read from any file.
@@ -145,7 +153,9 @@ pub(crate) struct ModelSection {
     /// protocol carries it; ignored with a notice elsewhere.
     pub thinking: Option<String>,
     /// A ceiling on one request's size in bytes; over it, the oldest
-    /// observations are elided (ADR 0024 §5). Unset means no ceiling.
+    /// observations are elided (ADR 0024 §5). Unset means no ceiling for a
+    /// local runtime and `hosted::HOSTED_CONTEXT_BYTES` for a hosted one;
+    /// that default is applied when the driver is built, not here.
     pub context_bytes: Option<u64>,
 }
 
@@ -157,11 +167,31 @@ pub(crate) struct GovernanceSection {
     pub deny_write: Option<Vec<String>>,
 }
 
+/// What `trellis index` runs beyond the resolver.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IndexSection {
+    /// `"pyright"`, or absent for none.
+    pub backstop: Option<String>,
+}
+
+/// How `trellis work` treats a task another process left in `claimed/`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkSection {
+    /// `"list"` (the default) or `"release"`.
+    pub stale_claims: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChecksSection {
     pub typecheck: Option<Vec<String>>,
     pub tests: Option<Vec<String>>,
     pub python: Option<String>,
+    /// Seconds a check may run before its process tree is killed and it
+    /// fails; `trellis_checks::DEFAULT_CHECK_TIMEOUT_S` when absent. A run
+    /// also ends a check when its wall-clock budget does (ADR 0004).
+    pub timeout_s: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,8 +241,40 @@ impl RepoConfig {
             if let Some(v) = &s.python {
                 c.python = v.clone();
             }
+            if let Some(v) = s.timeout_s {
+                c.timeout_s = v;
+            }
         }
         c
+    }
+
+    /// Whether `[index] backstop = "pyright"` asks for the Pyright backstop.
+    ///
+    /// Any other value is an error rather than "no backstop": a misspelt
+    /// name that quietly ran the resolver alone would print coverage the
+    /// user believes had the backstop's help.
+    pub(crate) fn pyright_backstop(&self) -> Result<bool> {
+        match self.index.as_ref().and_then(|i| i.backstop.as_deref()) {
+            None => Ok(false),
+            Some("pyright") => Ok(true),
+            Some(other) => anyhow::bail!(
+                "[index] backstop = \"{other}\" is not a backstop; the only one is \"pyright\""
+            ),
+        }
+    }
+
+    /// `[work] stale_claims`, validated. Any value but the two is an error
+    /// rather than the default: a misspelt `"release"` that quietly listed
+    /// would leave the user waiting on a recovery that never runs.
+    pub(crate) fn stale_claims(&self) -> Result<trellis_queue::StaleClaims> {
+        match self.work.as_ref().and_then(|w| w.stale_claims.as_deref()) {
+            None => Ok(trellis_queue::StaleClaims::List),
+            Some(v) => trellis_queue::StaleClaims::parse(v).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "[work] stale_claims = \"{v}\" is not a policy; use \"list\" or \"release\""
+                )
+            }),
+        }
     }
 
     /// The repository's default model spec, if it set one.
@@ -792,6 +854,82 @@ deny_write = [\"vendor/\", \"*.lock\"]
     }
 
     #[test]
+    fn stale_claims_default_to_list_and_a_misspelt_policy_is_refused() {
+        // A typo that quietly meant "list" would leave the user waiting on a
+        // recovery that never runs (ADR 0020 §5).
+        use trellis_queue::StaleClaims;
+        let d = tempfile::tempdir().unwrap();
+        let load = |d: &Path| RepoConfig::load(d).unwrap().stale_claims();
+        assert_eq!(load(d.path()).unwrap(), StaleClaims::List);
+        write(
+            d.path(),
+            "[work]
+stale_claims = \"release\"
+",
+        );
+        assert_eq!(load(d.path()).unwrap(), StaleClaims::Release);
+        write(
+            d.path(),
+            "[work]
+stale_claims = \"list\"
+",
+        );
+        assert_eq!(load(d.path()).unwrap(), StaleClaims::List);
+        write(
+            d.path(),
+            "[work]
+stale_claims = \"relase\"
+",
+        );
+        let e = load(d.path()).unwrap_err();
+        assert!(format!("{e}").contains("relase"), "{e}");
+    }
+
+    #[test]
+    fn the_pyright_backstop_runs_only_when_named_and_a_misspelling_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(
+            !RepoConfig::load(d.path())
+                .unwrap()
+                .pyright_backstop()
+                .unwrap()
+        );
+        write(
+            d.path(),
+            "[index]
+backstop = \"pyright\"
+",
+        );
+        assert!(
+            RepoConfig::load(d.path())
+                .unwrap()
+                .pyright_backstop()
+                .unwrap()
+        );
+        write(
+            d.path(),
+            "[index]
+backstop = \"pyrite\"
+",
+        );
+        let e = RepoConfig::load(d.path())
+            .unwrap()
+            .pyright_backstop()
+            .unwrap_err();
+        assert!(format!("{e}").contains("pyrite"), "{e}");
+        write(
+            d.path(),
+            "[index]
+backstops = \"pyright\"
+",
+        );
+        assert!(
+            RepoConfig::load(d.path()).is_err(),
+            "an unknown key is refused"
+        );
+    }
+
+    #[test]
     fn budget_values_are_read_and_the_regime_falls_back_rather_than_guessing() {
         let d = tempfile::tempdir().unwrap();
         write(
@@ -990,7 +1128,9 @@ impl RepoConfig {
         }
     }
 
-    /// `[model] context_bytes`, when set.
+    /// `[model] context_bytes`, when set. `None` when unset, for every
+    /// driver: the hosted default is `hosted::build`'s, so what a local
+    /// runtime is given does not change.
     pub(crate) fn context_bytes(&self) -> Option<usize> {
         self.model
             .as_ref()
