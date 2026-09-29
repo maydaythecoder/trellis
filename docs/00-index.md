@@ -71,7 +71,7 @@ trellis/
     ├── trellis-vault/         # Apex vault → one note's context; must not depend on trellis-model
     ├── trellis-queue/         # local task queue + heartbeat loop, file-backed in the git dir
     ├── trellis-cli/           # binary
-    └── tui-demo/              # what `trellis tui` runs, and the only interface (Q-19)
+    └── tui-demo/              # what `trellis tui` runs; the one TUI (Q-19)
 ```
 
 Crate boundaries are load-bearing. `trellis-index` must not depend on `trellis-model` — the graph has to be testable with no model anywhere near it. `trellis-checks` owning `Verdict` is what makes Constraint 2 structural.
