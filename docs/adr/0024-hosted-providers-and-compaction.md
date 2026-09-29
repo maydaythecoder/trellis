@@ -478,6 +478,9 @@ without a budget against the same replies and compares outcomes.
   elidable observation still exceeds the provider's window" rather than
   paying for the same refusal again
   (`an_overflow_that_elision_cannot_shrink_is_not_resent_unchanged`).
+  *Amended by ADR 0033:* the smallest supported window is now named, as
+  4,096 tokens; its byte conversion is pending #170, and `[model]
+  context_bytes` still has no default.
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's

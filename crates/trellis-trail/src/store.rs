@@ -207,6 +207,7 @@ mod tests {
                     reached_ambiguous: 1,
                     widest_unbound_in_touched_files: 2,
                     radius_queries: 1,
+                    summarised: 0,
                 },
                 checks: Vec::new(),
                 check_outcomes: Vec::new(),

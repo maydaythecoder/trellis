@@ -28,8 +28,8 @@ mod wire;
 
 pub use adapter::{Compacted, HostedModel, RuntimeModel};
 pub use agent::{
-    Model, NotConverged, Outcome, PriorContext, RepoContext, Seed, Step, ToolCall, Transcript,
-    Turn, VaultContext, run, run_seeded,
+    Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Step, ToolCall,
+    Transcript, Turn, VaultContext, run, run_seeded,
 };
 pub use budget::{Budget, CostRegime, Exhaustion, Spend};
 pub use exec::{ExecError, default_shell};
