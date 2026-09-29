@@ -54,6 +54,42 @@ someone decides whether it writes. A run stopped this way ends
 `ChangedAfterLastCheck`, whose explanation says the pass went stale rather
 than that there was none.
 
+### A check that does not finish fails (amended 2026-09-29, #19)
+
+A hung mypy or pytest had no deadline: the loop reads its wall-clock budget
+between turns, so one check could hold a run, and `trellis check`, for as
+long as it hung. Every grounded check (type check, tests, import) now runs
+under a bound:
+
+- **`[checks] timeout_s`**, default **1800** seconds
+  (`trellis_checks::DEFAULT_CHECK_TIMEOUT_S`). Where the repository's and the
+  user's `config.toml` both set it, the lower wins, as for the budget: a
+  cloned repository may shorten it, not lengthen the user's.
+- In a run, the bound is `min(timeout_s, what is left of the wall-clock
+  budget)`, measured when the loop dispatches the call and moved on by the
+  time a person took to approve it (the budget does not charge that wait,
+  so the check's share of it may not either). `trellis check` and the
+  convergence audit use `timeout_s` alone.
+- On expiry the check's whole process tree is killed with
+  `trellis_core::process::kill_tree`, the helper `bash` and hooks already
+  used (moved there from `trellis-loop`, not copied; its reach and limits
+  are ADR 0023 §3's: on Unix the check leads its own process group, on
+  Windows `taskkill /T` walks the tree). The result is
+  `ProcessOutput { exit_code: None, stderr: "timed out after N s; the
+  check's process tree was killed", .. }`, so the failing `Verdict` comes
+  from the existing `pub(crate)` constructors. `passed`, the `Seal`, the
+  constructors and the absent `Deserialize` are unchanged.
+- A check that exits but whose output is still held open at the bound (by
+  something it left running) also yields `exit_code: None`: a verdict
+  resting on cut output is not a pass. That case kills nothing, because the
+  checker has been reaped and its group id may no longer be its own.
+- A check whose run is dropped (interrupted, cancelled) has its checker process
+  killed with it (the process only, not its tree) rather than left running
+  unowned.
+
+The bound can only turn a pass into a failure, never the reverse, so it
+adds no way to converge.
+
 ## Alternatives considered
 
 **A code-review guideline plus a lint.** Rejected. Under delivery pressure a
