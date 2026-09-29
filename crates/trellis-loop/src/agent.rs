@@ -3239,11 +3239,20 @@ rank = \"non-negotiable\"
     /// The budget does not charge a person's wait, so neither may the
     /// check's share of it: a check approved after the budget's nominal
     /// end is given what the loop says is left, not nothing.
+    ///
+    /// Two constraints set the numbers, and only their relation is fixed.
+    /// The wait exceeds the budget, so a charged wait would leave the check
+    /// zero seconds and the check would fail: that is what this detects.
+    /// The budget exceeds what spawning `cmd /C exit 0` takes on a loaded
+    /// host: at 1 s the test failed 4 of 35 full-suite runs under a parallel
+    /// release build (issue #181), the check killed before the shell exited.
     #[tokio::test]
     async fn a_persons_wait_does_not_shorten_the_checks_bound() {
+        let budget = std::time::Duration::from_secs(5);
+        let wait = budget + std::time::Duration::from_millis(500);
         let d = repo();
         let (h, _j) = Orchestrator::new(d.path(), checker(0))
-            .with_gate(Box::new(SlowPerson(std::time::Duration::from_millis(1500))))
+            .with_gate(Box::new(SlowPerson(wait)))
             .spawn();
         let mut m = Scripted::new(vec![
             typecheck_now(),
@@ -3253,7 +3262,7 @@ rank = \"non-negotiable\"
         ]);
         let tight = Budget {
             max_iterations: 10,
-            max_wall_clock: std::time::Duration::from_secs(1),
+            max_wall_clock: budget,
             ..Budget::default()
         };
         let (outcome, t) = run("check", &mut m, &h, &tight).await;
