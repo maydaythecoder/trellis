@@ -15,6 +15,7 @@
 mod ask;
 mod config;
 mod hosted;
+mod liveness;
 mod orchestrate;
 mod process_agent;
 mod session;

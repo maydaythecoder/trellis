@@ -174,6 +174,16 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
         index: either(repo.index, user.index, |r, u| IndexSection {
             backstop: r.backstop.or(u.backstop),
         }),
+        work: either(repo.work, user.work, |r, u| crate::config::WorkSection {
+            // A user's explicit "list" wins: releasing claims on the user's
+            // machine is something the user agrees to, and a cloned
+            // repository may not turn it on over their "no", as it may not
+            // turn approve mode off (ADR 0020 §5).
+            stale_claims: match (r.stale_claims, u.stale_claims) {
+                (_, Some(u)) if u == "list" => Some(u),
+                (r, u) => r.or(u),
+            },
+        }),
         ..repo
     }
 }
@@ -496,6 +506,37 @@ mod tests {
         assert_eq!(t("[checks]\ntimeout_s = 60\n", ""), 60);
         assert_eq!(t("", "[checks]\ntimeout_s = 600\n"), 600);
         assert_eq!(t("", ""), trellis_checks::DEFAULT_CHECK_TIMEOUT_S);
+    }
+
+    #[test]
+    fn a_repository_cannot_turn_on_stale_claim_release_over_the_user_s_list() {
+        // The risk: a cloned repository's `"release"` overriding a user who
+        // said `"list"`, changing what the user agreed to on their machine.
+        use trellis_queue::StaleClaims;
+        let repo = "[work]
+stale_claims = \"release\"
+";
+        let policy = |r: &str, u: &str| load(r, u).stale_claims().unwrap();
+        assert_eq!(
+            policy(
+                repo,
+                "[work]
+stale_claims = \"list\"
+"
+            ),
+            StaleClaims::List
+        );
+        assert_eq!(policy(repo, ""), StaleClaims::Release);
+        assert_eq!(
+            policy(
+                "",
+                "[work]
+stale_claims = \"release\"
+"
+            ),
+            StaleClaims::Release
+        );
+        assert_eq!(policy("", ""), StaleClaims::List);
     }
 
     #[test]
