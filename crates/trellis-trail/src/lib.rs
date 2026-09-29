@@ -348,7 +348,7 @@ impl Trail {
     /// lives in [`UntrustedTrail::integrity`], which reads the raw JSON as it
     /// came off disk — a trail is read back as untrusted data (S10), so the
     /// thing that verifies it takes bytes rather than a parsed `Trail`. Both
-    /// sides hash through [`factual_digest`], so they share one canonical
+    /// sides hash through `factual_digest`, so they share one canonical
     /// form by construction.
     pub fn compute_factual_sha256(factual: &Factual) -> String {
         // A `Factual` that will not become a `Value` hashes the empty input,
@@ -368,11 +368,12 @@ impl Trail {
 /// `serde_json/preserve_order` it is a `BTreeMap` and keys come out sorted;
 /// with it, an `IndexMap` that keeps insertion order — declaration order for
 /// a struct, file order for parsed JSON. Cargo unifies that feature across
-/// whatever is being built: the `trellis-cli` binary's own graph does not
-/// enable it, but `llguidance`, pulled in by `trellis-model/grammar` through
-/// the dev-dependencies of `trellis-loop` and `trellis-model`, does, so a
-/// `cargo test --workspace` build (and any `target/debug/trellis` it leaves
-/// behind) hashed different bytes from a `cargo build -p trellis-cli` one.
+/// whatever is being built: the `trellis-cli` binary's normal dependency
+/// graph does not enable it, but `llguidance`, pulled in by
+/// `trellis-model/grammar` through the dev-dependencies of `trellis-loop` and
+/// `trellis-model`, does, so a build with those dev-dependencies in its graph
+/// (`cargo test --workspace`) hashed different bytes from a
+/// `cargo build -p trellis-cli` one.
 /// The same trail then read Intact under one build and Altered under the
 /// other, which makes the digest a statement about the compiler invocation.
 ///
