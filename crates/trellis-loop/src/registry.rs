@@ -162,7 +162,24 @@ pub struct CustomTool {
     pub command: Vec<String>,
     /// A JSON Schema object for the arguments.
     pub schema: Value,
+    /// Seconds before the command is killed. `None` is the default, 120.
+    /// Read like `[tools] bash_timeout_s`: any non-negative integer, and 0
+    /// is taken as 1 second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_s: Option<u64>,
 }
+
+impl CustomTool {
+    /// How long this tool may run.
+    pub fn timeout(&self) -> Duration {
+        Duration::from_secs(self.timeout_s.unwrap_or(DEFAULT_CUSTOM_TIMEOUT_S).max(1))
+    }
+}
+
+/// How long a custom tool may run when its declaration names no
+/// `timeout_s`. The same default as `bash`: a custom tool is a command the
+/// repository wrote, and it is bounded like one.
+pub const DEFAULT_CUSTOM_TIMEOUT_S: u64 = 120;
 
 /// `[tools] bash` and its settings, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -775,6 +792,7 @@ mod tests {
                 "properties": { "path": { "type": "string" } },
                 "required": ["path"]
             }),
+            timeout_s: None,
         }
     }
 
