@@ -50,6 +50,10 @@ pub enum Request {
     /// about it if one was asked. The loop's own path.
     Call {
         call: ToolCall,
+        /// What is left of the run's wall-clock budget as the loop sends
+        /// the call, so a check it runs ends when the budget does
+        /// (ADR 0004). `None`: the check's own `timeout_s` alone.
+        budget_left: Option<Duration>,
         reply: oneshot::Sender<Dispatched>,
     },
     /// The governance audit the loop runs at convergence. **Not gated.**
@@ -94,6 +98,11 @@ pub struct GateDenial {
 #[derive(Debug)]
 pub struct Dispatched {
     pub result: ToolResult,
+    /// For a radius, its call sites resolved to paths, lines and enclosing
+    /// symbols, which only this side can do: the index and the files are
+    /// here. Empty for every other result. Carried beside `result` rather
+    /// than inside it, so what a `post_tool` hook receives is unchanged.
+    pub radius_sites: Vec<crate::agent::RadiusSite>,
     /// `Some` only when a person was asked about this call.
     pub human: Option<HumanDecision>,
     /// Whether this call may have changed the working tree. See
@@ -211,11 +220,28 @@ impl Handle {
 
     /// A model's call, through the gates.
     pub async fn call(&self, call: &ToolCall) -> Dispatched {
+        self.dispatch(call, None).await
+    }
+
+    /// As [`call`](Self::call), with what is left of the run's wall-clock
+    /// budget: a check the call runs is killed when the budget runs out, if
+    /// that comes before its `timeout_s` (ADR 0004). Time a person spends
+    /// deciding on the call is not charged, as the loop does not charge it.
+    pub async fn call_within(&self, call: &ToolCall, budget_left: Duration) -> Dispatched {
+        self.dispatch(call, Some(budget_left)).await
+    }
+
+    async fn dispatch(&self, call: &ToolCall, budget_left: Option<Duration>) -> Dispatched {
         let call = call.clone();
         self.ask(
-            |reply| Request::Call { call, reply },
+            |reply| Request::Call {
+                call,
+                budget_left,
+                reply,
+            },
             || Dispatched {
                 result: ToolResult::Error("orchestrator stopped".into()),
+                radius_sites: Vec::new(),
                 human: None,
                 // A stopped actor owns the only write path and wrote nothing.
                 may_have_changed_tree: false,
@@ -407,11 +433,11 @@ impl Orchestrator {
             match req {
                 Request::BlastRadius { symbol, reply } => {
                     let call = ToolCall::BlastRadius { symbol };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
                 Request::ReadFile { path, reply } => {
                     let call = ToolCall::ReadFile { path };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
                 Request::ApplyEdit {
                     path,
@@ -420,7 +446,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::Edit { path, old, new };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
                 Request::RunChecks {
                     paths,
@@ -428,17 +454,21 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::RunChecks { paths, kinds };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
-                Request::Call { call, reply } => {
+                Request::Call {
+                    call,
+                    budget_left,
+                    reply,
+                } => {
                     self.calls += 1;
-                    let _ = reply.send(self.gated(call).await);
+                    let _ = reply.send(self.gated(call, budget_left).await);
                 }
                 Request::GateLog { reply } => {
                     let _ = reply.send(self.gate_log.clone());
                 }
                 Request::Audit { reply } => {
-                    let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance]).await);
+                    let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance], None).await);
                 }
                 Request::Touched { reply } => {
                     let _ = reply.send(self.touched.clone());
@@ -455,8 +485,8 @@ impl Orchestrator {
     /// way out, whichever way the call ended: a `pre_tool` hook refused by
     /// the guard returns early as a denial, and that is a breach as much as
     /// a `bash` command that rewrote a hook.
-    async fn gated(&mut self, call: ToolCall) -> Dispatched {
-        let mut d = self.gated_inner(call).await;
+    async fn gated(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+        let mut d = self.gated_inner(call, budget_left).await;
         if let Some(g) = &self.guard {
             if d.may_have_changed_tree {
                 // Latches on failure; the reason is read below.
@@ -470,7 +500,8 @@ impl Orchestrator {
     /// Consults the gates in order, then dispatches. The first `Deny` wins
     /// and nothing after it is asked — a human should not be asked about a
     /// call a rule has already refused.
-    async fn gated_inner(&mut self, call: ToolCall) -> Dispatched {
+    async fn gated_inner(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+        let received = Instant::now();
         let mut human = None;
         let name = tool_name(&call);
         if !self.tools.enabled(name) {
@@ -479,6 +510,7 @@ impl Orchestrator {
                     "`{name}` is not a tool in this run; the tools are {}",
                     self.tools.names().join(", ")
                 )),
+                radius_sites: Vec::new(),
                 human,
                 may_have_changed_tree: false,
                 trust_breach: None,
@@ -532,6 +564,7 @@ impl Orchestrator {
                 }
                 return Dispatched {
                     result: ToolResult::Error(reason),
+                    radius_sites: Vec::new(),
                     human,
                     may_have_changed_tree: changed_since(&self.root, before_gates).await,
                     trust_breach: None,
@@ -539,11 +572,19 @@ impl Orchestrator {
             }
         }
         let gates_changed = changed_since(&self.root, before_gates).await;
+        // When the run's budget ends, moved on by however long a person
+        // took over this call: the loop does not charge that wait, and a
+        // check cut short by it would fail for a diff read carefully.
+        // `None` on overflow too: a budget past the clock's range bounds
+        // nothing, and `timeout_s` still does.
+        let deadline = budget_left
+            .and_then(|left| received.checked_add(left))
+            .and_then(|end| end.checked_add(human.map_or(Duration::ZERO, |h| h.waited)));
         let result = match &call {
             ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
             ToolCall::ReadFile { path } => self.read_file(path),
             ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
-            ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
+            ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds, deadline).await,
             ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
                 Ok(body) => ToolResult::FileContent(body),
                 Err(e) => ToolResult::Error(e.to_string()),
@@ -583,6 +624,14 @@ impl Orchestrator {
             },
             ToolCall::Custom { name, args } => self.custom(name, args).await,
         };
+        // Read now, before `post_tool` runs: a hook that rewrites a file would
+        // otherwise shift the bytes the line numbers are counted from.
+        let radius_sites = match &result {
+            ToolResult::Radius(report) => {
+                crate::agent::radius_sites(self.session.index(), &self.root, report)
+            }
+            _ => Vec::new(),
+        };
         // Observe only. The result is already decided and is what the model
         // receives, whatever the hook prints or returns.
         let mut post_changed = false;
@@ -598,6 +647,7 @@ impl Orchestrator {
         }
         Dispatched {
             result,
+            radius_sites,
             human,
             may_have_changed_tree: may_change_tree(&call, self.wrote)
                 || gates_changed
@@ -659,91 +709,231 @@ impl Orchestrator {
         ))
     }
 
-    async fn bash(&self, command: &str) -> ToolResult {
+    async fn bash(&mut self, command: &str) -> ToolResult {
         let Some(b) = self.tools.bash() else {
             return ToolResult::Error("bash is not enabled in this run".into());
         };
-        let mut argv = b.shell.clone();
+        let (shell, timeout) = (b.shell.clone(), b.timeout);
+        let mut argv = shell;
         argv.push(command.to_string());
-        let r = crate::exec::run(crate::exec::Spec {
-            argv: &argv,
-            cwd: &self.root,
-            env: &self.env,
-            stdin: None,
-            timeout: b.timeout,
-            cap: crate::exec::OUTPUT_CAP,
-            head: false,
-            whole: false,
-        })
-        .await;
-        match r {
-            Err(e) => ToolResult::Error(e.to_string()),
-            Ok(c) => {
-                let status = if c.timed_out {
-                    format!("timed out after {}s and was killed", b.timeout.as_secs())
-                } else {
-                    match c.code {
-                        Some(code) => format!("exit {code}"),
-                        None => "ended without an exit code".to_string(),
-                    }
-                };
-                let mut s = format!("{status}\n");
-                if !c.stdout.is_empty() {
-                    s.push_str(&c.stdout.render());
-                }
-                if !c.stderr.is_empty() {
-                    s.push_str("\nstderr:\n");
-                    s.push_str(&c.stderr.render());
-                }
-                // Not a verdict, and said where the model reads it: a
-                // command printing "tests passed" has passed nothing.
-                s.push_str("\n(bash output is an observation, not a check)");
-                ToolResult::Output(s)
+        let (c, carried) = match self.isolated(&argv, None, timeout).await {
+            Ok(r) => r,
+            Err(e) => return ToolResult::Error(format!("bash was not run: {e}")),
+        };
+        let status = if c.timed_out {
+            format!("timed out after {}s and was killed", timeout.as_secs())
+        } else {
+            match c.code {
+                Some(code) => format!("exit {code}"),
+                None => "ended without an exit code".to_string(),
             }
+        };
+        let mut s = format!("{status}\n");
+        if !c.stdout.is_empty() {
+            s.push_str(&c.stdout.render());
         }
+        if !c.stderr.is_empty() {
+            s.push_str("\nstderr:\n");
+            s.push_str(&c.stderr.render());
+        }
+        s.push_str(&carried);
+        // Not a verdict, and said where the model reads it: a command
+        // printing "tests passed" has passed nothing. And where it ran, so a
+        // file it created and then cannot find is not a mystery.
+        s.push_str(
+            "\n(bash ran in a throwaway clone of the repository: changes to files trellis \
+             tracks are carried back, and nothing else is. Its output is an observation, \
+             not a check)",
+        );
+        ToolResult::Output(s)
     }
 
-    async fn custom(&self, name: &str, args: &serde_json::Value) -> ToolResult {
+    async fn custom(&mut self, name: &str, args: &serde_json::Value) -> ToolResult {
         let Some(tool) = self.tools.custom(name) else {
             return ToolResult::Error(format!("`{name}` is not a tool in this run"));
         };
+        let command = tool.command.clone();
         // Its command is trusted code, and a script it names may have been
-        // rewritten since (ADR 0023 §5).
+        // rewritten since (ADR 0023 §5). Checked before the clone is made,
+        // so the copy it runs is of what was just checked.
         if let Some(g) = &self.guard
             && let Err(why) = g.check_async().await
         {
             return ToolResult::Error(format!("`{name}` was not started, because {why}"));
         }
+        let stdin = Some(args.to_string().into_bytes());
+        let (c, carried) = match self.isolated(&command, stdin, CUSTOM_TIMEOUT).await {
+            Ok(r) => r,
+            Err(e) => return ToolResult::Error(format!("`{name}` was not run: {e}")),
+        };
+        if c.timed_out {
+            return ToolResult::Error(format!(
+                "`{name}` did not finish within {}s and was killed{carried}",
+                CUSTOM_TIMEOUT.as_secs()
+            ));
+        }
+        if c.code == Some(0) {
+            return ToolResult::Output(format!("{}{carried}", c.stdout.render()));
+        }
+        ToolResult::Error(format!(
+            "`{name}` exited with {}: {}{}{carried}",
+            c.code
+                .map_or_else(|| "no exit code".to_string(), |c| c.to_string()),
+            c.stdout.render(),
+            if c.stderr.is_empty() {
+                String::new()
+            } else {
+                format!("\nstderr:\n{}", c.stderr.render())
+            }
+        ))
+    }
+
+    /// Runs `argv` in a throwaway clone of the repository and carries back
+    /// what it changed (ADR 0032, copy-in/diff-out): the process's output,
+    /// and a report of what was carried back and what was not, empty when
+    /// it changed nothing. `Err` when it was not run: a clone that could not
+    /// be made is never a reason to run it in the repository instead.
+    ///
+    /// Whatever the process did, the clone is removed before this returns.
+    /// A change is carried back even when the process failed or timed out:
+    /// a person reading the run should find in the repository what the
+    /// command did, as before it was isolated.
+    async fn isolated(
+        &mut self,
+        argv: &[String],
+        stdin: Option<Vec<u8>>,
+        timeout: Duration,
+    ) -> Result<(crate::exec::Captured, String), String> {
+        let root = self.root.clone();
+        let sandbox = tokio::task::spawn_blocking(move || crate::isolate::Sandbox::prepare(&root))
+            .await
+            .map_err(|e| format!("preparing its throwaway clone failed: {e}"))?
+            .map_err(|e| format!("its throwaway clone could not be prepared: {e}"))?;
         let r = crate::exec::run(crate::exec::Spec {
-            argv: &tool.command,
-            cwd: &self.root,
+            argv,
+            cwd: sandbox.path(),
             env: &self.env,
-            stdin: Some(args.to_string().into_bytes()),
-            timeout: CUSTOM_TIMEOUT,
+            env_remove: &crate::isolate::GIT_LOCATION_VARS,
+            stdin,
+            timeout,
             cap: crate::exec::OUTPUT_CAP,
             head: false,
             whole: false,
         })
         .await;
-        match r {
-            Err(e) => ToolResult::Error(e.to_string()),
-            Ok(c) if c.timed_out => ToolResult::Error(format!(
-                "`{name}` did not finish within {}s and was killed",
-                CUSTOM_TIMEOUT.as_secs()
-            )),
-            Ok(c) if c.code == Some(0) => ToolResult::Output(c.stdout.render()),
-            Ok(c) => ToolResult::Error(format!(
-                "`{name}` exited with {}: {}{}",
-                c.code
-                    .map_or_else(|| "no exit code".to_string(), |c| c.to_string()),
-                c.stdout.render(),
-                if c.stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\nstderr:\n{}", c.stderr.render())
+        // Off the runtime: every copied-in file is hashed again.
+        let (sandbox, changes) = tokio::task::spawn_blocking(move || {
+            let c = sandbox.changes();
+            (sandbox, c)
+        })
+        .await
+        .map_err(|e| format!("reading what it changed failed: {e}"))?;
+        let captured = match r {
+            Ok(c) => c,
+            Err(e) => {
+                drop_off_runtime(sandbox).await;
+                return Err(e.to_string());
+            }
+        };
+        let report = self.carry_back(&sandbox, changes);
+        drop_off_runtime(sandbox).await;
+        Ok((captured, report))
+    }
+
+    /// Writes into the repository what a command changed in its clone,
+    /// through the rules `edit` obeys, and says what it did. The write path
+    /// is this orchestrator's own: refused under `.git/` and `.trellis/`
+    /// and through links out of the repository ([`write_refusal`]), refused
+    /// where `deny_write` denies it, recorded in `touched` so the rollback
+    /// and the trail both have it, and followed by a reindex.
+    fn carry_back(
+        &mut self,
+        sandbox: &crate::isolate::Sandbox,
+        ch: crate::isolate::Changes,
+    ) -> String {
+        let mut carried: Vec<String> = Vec::new();
+        // Whole sentences, since `write_refusal`'s already name the path.
+        let mut refused: Vec<String> = ch
+            .refused
+            .into_iter()
+            .map(|(rel, why)| format!("`{rel}` {why}"))
+            .collect();
+        let mut reopen = false;
+        for (rel, before) in ch.modified {
+            if let Some(why) = write_refusal(&self.root, &rel) {
+                refused.push(why);
+                continue;
+            }
+            if let Some(rule) = self.governance.denies_write(&rel) {
+                refused.push(format!(
+                    "`{rel}` is denied by the rule `{rule}` in .trellis/config.toml"
+                ));
+                continue;
+            }
+            let full = self.root.join(&rel);
+            // The repository's copy is still what was copied in: nothing
+            // else in this run writes while the orchestrator serves this
+            // call, so a difference is a writer outside it (a hook, a
+            // process the command started), and its bytes are not
+            // overwritten.
+            let unchanged = std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_file())
+                && crate::isolate::hash_file(&full).is_ok_and(|h| h == before);
+            if !unchanged {
+                refused.push(format!(
+                    "`{rel}` changed in the repository while the command ran"
+                ));
+                continue;
+            }
+            let bytes = match sandbox.read_changed(&rel) {
+                Ok(b) => b,
+                Err(why) => {
+                    refused.push(format!("`{rel}` {why}"));
+                    continue;
                 }
-            )),
+            };
+            // Before the write: one that fails part way has still changed
+            // the file.
+            self.wrote = true;
+            if let Err(e) = std::fs::write(&full, &bytes) {
+                refused.push(format!("`{rel}` could not be written: {e}"));
+                continue;
+            }
+            if !self.touched.iter().any(|p| p == &rel) {
+                self.touched.push(rel.clone());
+            }
+            if rel.ends_with(".py") {
+                let updated =
+                    std::str::from_utf8(&bytes).is_ok_and(|src| self.session.try_update(&rel, src));
+                reopen |= !updated;
+            }
+            carried.push(rel);
         }
+        // A file the session did not know, or could not take as text: the
+        // graph is rebuilt, so the next blast radius describes the tree.
+        if reopen {
+            self.session = Session::open(&self.root);
+        }
+        let mut s = String::new();
+        if !carried.is_empty() {
+            s.push_str(&format!(
+                "\ncarried back from the clone: {}",
+                trellis_vcs::ignored::shown(&carried)
+            ));
+        }
+        if !refused.is_empty() {
+            s.push_str(&format!(
+                "\nnot carried back: {}",
+                trellis_vcs::ignored::shown(&refused)
+            ));
+        }
+        if !ch.deleted.is_empty() {
+            s.push_str(&format!(
+                "\ndeleted in the clone, and not carried back (trellis does not delete \
+                 files): {}",
+                trellis_vcs::ignored::shown(&ch.deleted)
+            ));
+        }
+        s
     }
 
     pub fn index(&self) -> &trellis_index::Index {
@@ -976,7 +1166,16 @@ impl Orchestrator {
         })
     }
 
-    async fn run_checks(&self, paths: &[String], kinds: &[CheckKind]) -> ToolResult {
+    async fn run_checks(
+        &self,
+        paths: &[String],
+        kinds: &[CheckKind],
+        deadline: Option<Instant>,
+    ) -> ToolResult {
+        let checks = CheckConfig {
+            deadline,
+            ..self.checks.clone()
+        };
         // `requested` is kept distinct from the defaulted list below. Shadowing
         // the two together made the governance arm's "no paths given" branch
         // unreachable — `paths` was already `["."]` by the time it ran — so the
@@ -994,14 +1193,12 @@ impl Orchestrator {
         for kind in kinds {
             let v = match kind {
                 CheckKind::Typecheck => {
-                    trellis_checks::typecheck(&self.root, &self.checks, &paths).await
+                    trellis_checks::typecheck(&self.root, &checks, &paths).await
                 }
-                CheckKind::Tests => {
-                    trellis_checks::run_tests(&self.root, &self.checks, &paths).await
-                }
+                CheckKind::Tests => trellis_checks::run_tests(&self.root, &checks, &paths).await,
                 CheckKind::Import => {
                     let module = paths.first().and_then(|p| p.to_str()).unwrap_or(".");
-                    trellis_checks::import_check(&self.root, &self.checks, module).await
+                    trellis_checks::import_check(&self.root, &checks, module).await
                 }
                 CheckKind::Governance => {
                     // Audited over the files the run touched, not the whole
@@ -1237,6 +1434,12 @@ fn excerpt(src: &str) -> String {
         out.push_str("\n...cut here; the rest of this file is too large to show.");
     }
     out
+}
+
+/// Drops a clone on a blocking thread: removing it walks the whole tree,
+/// which on the runtime's own thread stalls every other task.
+async fn drop_off_runtime(sandbox: crate::isolate::Sandbox) {
+    let _ = tokio::task::spawn_blocking(move || drop(sandbox)).await;
 }
 
 /// The worktree digest around a hook (ADR 0023, "after a pass"), off the

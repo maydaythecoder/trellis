@@ -158,9 +158,20 @@ the protocol already states. Streaming is not built; replies are read whole.
   after the second review of PR #1.
 - **A format retry resends the same request**, as the completion tiers do;
   the model is not told why its previous reply was refused.
-- **`trellis ask`'s intent classifier** treats a hosted spec as it treats a
-  scripted one (everything is a task); the TUI labels it "tier 1, native
-  tool calls".
+- **`trellis ask`'s intent classifier** sends one classification request
+  per input on a hosted spec, as it does on a local runtime; the TUI labels
+  the spec "tier 1, native tool calls". *Amended 2026-09-29 (#41), by the
+  owner's decision:* it previously treated a hosted spec as a scripted one
+  (everything is a task), so every question snapshotted the worktree, ran
+  the loop and rolled back. The spec is resolved as a run resolves it, so
+  the §3 refusal of a repository-chosen endpoint applies before the
+  request, and the key is read from the user's environment as for a run.
+  The request carries no tool list and no `tool_choice` (the loop's
+  `"required"` would have nothing to choose from) and no system prompt, is sent with
+  thinking off whatever `[model] thinking` says, and its reply is read as
+  text. A provider failure is reported under the same context as the local
+  path's ("asking the model what this input is"). Tested against a loopback
+  stub only.
 
 ### 3. Keys (ADR 0010, narrowed)
 
@@ -257,6 +268,8 @@ for its own requests.
 - **The `chat` crate** depends on nothing in the workspace by design, so it
   removes the two default names itself (`chat::scrub_keys`) at its four
   spawns. It reads no `[[providers]]`, so it has no other names to remove.
+  *[2026-09-29, #16: `crates/chat` was deleted (Q-19); `chat::scrub_keys`
+  went with it and is recoverable from git history.]*
 
 Evidence is `crates/trellis-cli/tests/child_env.rs`. The binary is run with
 four canary keys in its environment: both defaults, a repository provider's
@@ -465,6 +478,9 @@ without a budget against the same replies and compares outcomes.
   elidable observation still exceeds the provider's window" rather than
   paying for the same refusal again
   (`an_overflow_that_elision_cannot_shrink_is_not_resent_unchanged`).
+  *Amended by ADR 0033:* the smallest supported window is now named, as
+  4,096 tokens; its byte conversion is pending #170, and `[model]
+  context_bytes` still has no default.
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
@@ -594,7 +610,6 @@ pull request.
 - Model-written summaries (§5).
 - Parallel tool calls (ADR 0005).
 - A byte default for `[model] context_bytes` (§5).
-- The intent classifier in `trellis ask` for a hosted model (§2).
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
 - Model overrides beyond `[model] context_bytes` and `thinking` (row 2.6):

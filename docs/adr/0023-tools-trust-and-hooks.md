@@ -167,8 +167,9 @@ is a guard at a size a test can build).
 
 ### 3. `bash`, off by default
 
-`[tools] bash = true` enables `bash {command}`. It runs with the repository
-root as its working directory, a timeout (`[tools] bash_timeout_s`, default
+`[tools] bash = true` enables `bash {command}`. It runs with the root of a
+throwaway clone of the repository as its working directory (ADR 0032; its
+edits to tracked files are carried back), a timeout (`[tools] bash_timeout_s`, default
 120), and `TRELLIS_RUN_ID` and `TRELLIS_MODEL` added to the environment.
 The shell is `[tools] shell` (an argv prefix, the command appended as the
 last argument) or the platform default: `sh -c` on Unix; on Windows, Git's
@@ -651,6 +652,10 @@ this amendment a hook that wrote at any of those points left bytes in a
     `grep_and_find_run_no_planted_fsmonitor` in `trellis-loop`'s
     `listing.rs`, which failed before with the marker written, and whose
     control runs plain `git status` and sees it.
+    *[2026-09-29, #16: `crates/chat` was deleted (Q-19), so
+    `chat::git_command` and the test tying its copy of the overrides to
+    `trellis_vcs` are gone; every `git` spawn now comes from
+    `trellis_vcs`. The crate is recoverable from git history.]*
   - **A changed pre-existing ignored file is a tree not restored.** The
     rollback said "NOT put back" and exited 1 as restored; it exits 2
     now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
@@ -977,17 +982,29 @@ are not assumed closed:
   0023 §4, amended after the eleventh review), but code a hook or tool imports from
   elsewhere in the repository is an ordinary file a run may edit.
 
-**What holds.** For trellis's own edits (`edit`, `write_file`), the
-rollback's guarantee is exact, as ADR 0009 states. A run with none of
+**What holds.** For trellis's own edits (`edit`, `write_file`), and for
+the edits a `bash` or custom-tool command makes inside its clone and that
+are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
+0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
-**The real fix is sandboxing**: running these writers where they cannot
-reach `.git/`, the user's other files or processes that outlive them.
-That decision is deferred in ADR 0021 (1.6 swappable tool backends,
-13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
-the limit rather than adding another guard. `trellis trust` prints one line
-saying so when it records trust for any of these writers.
+**The real fix is isolation**, and the first step is built (ADR 0032,
+*amended 2026-09-29*): `bash` and custom tools run in a throwaway `git
+clone` of the repository (copy-in/diff-out), and only their edits to files
+trellis tracks come back, through the orchestrator's write path, where the
+rollback covers them exactly. Against a `bash` or custom-tool command that
+writes where it runs, every item in the list above is closed: its
+`.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
+in the clone, and what it started writes into a directory that is removed.
+The list still holds, in full, for **hooks and process agents**, which are
+not isolated yet, and for any writer that reaches the repository by
+absolute path, which a clone does not stop (ADR 0032, "Limits": no network
+isolation, reads and writes outside the clone still possible). The guards
+above are kept for those writers. Containers or an OS sandbox, for network
+and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
+`trellis trust` prints one line stating the limit when it records trust for
+any of these writers.
 
 ### 6. Custom command tools
 
@@ -999,7 +1016,8 @@ command = ["python", ".trellis/tools/lint.py"]
 schema = { type = "object", properties = { path = { type = "string" } }, required = ["path"] }
 ```
 
-The arguments, as a JSON object, go to the command on stdin. Stdout, tail
+The arguments, as a JSON object, go to the command on stdin. It runs in a
+throwaway clone of the repository, as `bash` does (ADR 0032). Stdout, tail
 truncated, is the observation. A nonzero exit is an error observation.
 Subject to trust, to the gate list, and to `[control] approve` by name.
 Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not

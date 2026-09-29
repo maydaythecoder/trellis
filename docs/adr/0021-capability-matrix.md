@@ -45,9 +45,9 @@ wherever the two disagree. The items those sections name as not built are:
   bash together); a configurable timeout for custom tools; tracking what
   bash writes in the worktree; `after_run` on Ctrl-C.
 - **W-C (0024):** streaming, `HTTPS_PROXY`, a `Retry-After` given as a date,
-  summaries written by the model, OAuth/Bedrock/Vertex/Azure, and the `ask`
-  classifier on hosted models. Hosted runs have been exercised only against
-  loopback stubs, never a real provider.
+  summaries written by the model, and OAuth/Bedrock/Vertex/Azure. (The
+  `ask` classifier on hosted models was built by #41.) Hosted runs have
+  been exercised only against loopback stubs, never a real provider.
 - **W-D (0025):** `/new`, `/name`, `/copy`, RPC `compact`, and a user-level
   `system.md`.
 - **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),
@@ -140,7 +140,7 @@ override any row.
 | 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |
-| 13.3 containers | deferred (sandbox decision) |
+| 13.3 containers | first step built: `bash` and custom tools run in a throwaway git clone (ADR 0032); containers, for network and home-directory isolation, still deferred |
 | 13.4 guard examples | built in effect: `permission-gate` = ADR 0018, `protected-paths` = `deny_write`, `dirty-repo-guard` = ADR 0009, `git-checkpoint` = snapshot and rollback |
 | 14 telemetry / durability | built (`tracing`, trail, queue) |
 | 15 experimental (chord, pi-protocol, pi-server) | excluded: networked/multi-attach (brief Part 1) |
