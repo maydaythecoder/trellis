@@ -210,6 +210,57 @@ override any row.
 | 97–98 REST API | excluded [server] |
 | 99–100 UI | excluded [web-ui] |
 
+## Cosmetic and [ui] exclusions, itemised
+
+Added 2026-09-28 (#74). This section adds no disposition and changes no row
+above. It lists, one line each, the items that four rows exclude as a group,
+so that the absence of any one of them is not read as an oversight.
+
+What trellis does with Apex's own files is unchanged: `layout.json` is
+preserved and pruned on delete, never interpreted (row 9); `annotations.json`
+is never opened (row 12, `trellis-vault` `edit.rs`). The tests named
+`sidecars_survive_*` and `..._prunes_sidecars` in
+`crates/trellis-vault/tests/parity.rs` hold both.
+
+From pi §4, under the row "4 remaining events":
+
+- `ctx.ui` widgets: excluded, cosmetic.
+- `ctx.ui` header and footer: excluded, cosmetic.
+- `ctx.ui` overlays: excluded, cosmetic.
+- `registerShortcut`: excluded, cosmetic.
+- `registerMessageRenderer`: excluded, TypeScript-runtime specific (a
+  function called inside pi's renderer; trellis hooks are processes that
+  exchange JSON and have no render step to join).
+- `registerEntryRenderer`: excluded, TypeScript-runtime specific, as above.
+- `registerMarkdownTransformer`: excluded, TypeScript-runtime specific, as
+  above.
+- Themes: excluded, cosmetic.
+
+From pi §11, under the row "11 TUI features":
+
+- Keybindings: excluded, cosmetic.
+- Fullscreen mode: excluded, cosmetic.
+- External editor hook: excluded, cosmetic.
+- Mermaid rendering: excluded, cosmetic.
+- Inline images: excluded, cosmetic.
+- Games: excluded, cosmetic.
+
+`@` file search is not on this list. Row 11 records it as built in `tui`
+(#52).
+
+From Apex §12, under the row "12 `annotations.json`":
+
+- Annotation editing: excluded, [ui].
+
+From Apex §15–19, under the row "15–19 layout, canvas, labels, annotations":
+
+- Layered-layout canvas (the SVG graph view): excluded, [ui].
+- Large-graph mode: excluded, [ui].
+- Label tiers: excluded, [ui].
+- Drawing freehand annotations on the canvas: excluded, [ui].
+
+Building any item listed here needs an ADR amending ADR 0021.
+
 ## Rules every wave follows
 
 - The grounding contract is untouched. No capability here produces a
