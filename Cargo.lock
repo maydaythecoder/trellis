@@ -3175,6 +3175,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "ratatui",
+ "tempfile",
  "tokio",
 ]
 
