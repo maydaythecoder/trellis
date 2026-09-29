@@ -1,4 +1,4 @@
-# ADR 0034 — A throwaway clone for the writers trellis does not control
+# ADR 0032 — A throwaway clone for the writers trellis does not control
 
 **Status:** Accepted. First slice built: `bash` and custom tools. Hooks and
 process agents are not yet isolated (see "What is not built").

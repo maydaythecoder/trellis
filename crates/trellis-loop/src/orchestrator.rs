@@ -772,7 +772,7 @@ impl Orchestrator {
     }
 
     /// Runs `argv` in a throwaway clone of the repository and carries back
-    /// what it changed (ADR 0034, copy-in/diff-out): the process's output,
+    /// what it changed (ADR 0032, copy-in/diff-out): the process's output,
     /// and a report of what was carried back and what was not, empty when
     /// it changed nothing. `Err` when it was not run: a clone that could not
     /// be made is never a reason to run it in the repository instead.

@@ -95,7 +95,7 @@ impl GovernanceGate {
     /// The rule, as written, that denies a write landing at `rel`, or
     /// `None`. For a file a command changed in its throwaway clone, which
     /// reaches the repository without an `edit` call for this gate to
-    /// check (ADR 0034).
+    /// check (ADR 0032).
     pub(crate) fn denies_write(&self, rel: &str) -> Option<String> {
         self.governance
             .denies_write_at(&self.root, rel)

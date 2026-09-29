@@ -154,7 +154,7 @@ async fn hooks_can_never_make_a_run_converge() {
 async fn bash_output_can_never_make_a_run_converge() {
     // A command that exits 0 and prints "all tests passed" has passed
     // nothing. Only run_checks produces a Verdict.
-    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0034)
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&[], true, Duration::from_secs(30));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools.clone())
@@ -232,7 +232,7 @@ async fn a_hook_denial_is_logged_under_its_turn_and_no_person_is_asked() {
 
 #[tokio::test]
 async fn unattended_bash_runs_only_an_allowlisted_simple_command() {
-    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0034)
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&["echo"], false, Duration::from_secs(30));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools.clone())
@@ -263,7 +263,7 @@ async fn unattended_bash_runs_only_an_allowlisted_simple_command() {
 
 #[tokio::test]
 async fn bash_runs_in_a_clone_of_the_repository_with_the_run_s_identity_and_a_timeout() {
-    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0034)
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&[], true, Duration::from_secs(1));
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
         .with_tools(tools)
@@ -349,7 +349,7 @@ fn echo_tool(name: &str, matching: &str) -> CustomTool {
 
 #[tokio::test]
 async fn a_custom_tool_reads_its_arguments_on_stdin_and_a_failure_is_an_error() {
-    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0034)
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = ToolSet::build(ToolSelection {
         custom: vec![echo_tool("echo_args", "path"), echo_tool("never", "zzz-no")],
         ..Default::default()
@@ -866,7 +866,7 @@ async fn a_pass_then_a_refused_edit_then_done_still_converges() {
 async fn a_pass_then_bash_then_done_does_not_converge() {
     // A shell command may write anything, and whether it did is not
     // something the loop can tell from what it printed.
-    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0034)
+    let d = git_repo(); // bash and custom tools run in a clone of it (ADR 0032)
     let tools = with_bash(&[], true, Duration::from_secs(30));
     let (orch, _j) = Orchestrator::new(d.path(), passing_checker())
         .with_tools(tools.clone())
@@ -1243,7 +1243,7 @@ async fn a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run() {
     // The risk: `bash` cannot be path-checked, and a hook re-reads its
     // script on every spawn, so a command that rewrote `.trellis/hooks/`
     // had every later hook run code the person never trusted. `bash` runs
-    // in a clone now (ADR 0034), and a write to its `.trellis/` is not
+    // in a clone now (ADR 0032), and a write to its `.trellis/` is not
     // carried back; a command that names the repository by absolute path
     // still reaches it, and that is the writer this guard is for.
     let d = with_hook_file();
@@ -1314,7 +1314,7 @@ async fn a_bash_command_that_rewrites_a_hook_stops_the_next_hook_and_the_run() {
 async fn a_bash_command_that_changes_dot_trellis_ends_the_run_with_no_hook_declared() {
     // One rule, whichever tool broke it: a model run that changes
     // `.trellis/` does not converge, as a process agent's does not. By
-    // absolute path, which is how a command in its clone (ADR 0034) reaches
+    // absolute path, which is how a command in its clone (ADR 0032) reaches
     // the repository's `.trellis/`.
     let d = with_hook_file();
     let tools = with_bash(&[], true, Duration::from_secs(20));
