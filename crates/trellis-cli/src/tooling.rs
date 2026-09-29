@@ -583,6 +583,48 @@ mod run_tests {
     }
 
     #[test]
+    fn hook_input_refusal_comes_before_the_snapshot_and_leaves_no_trail() {
+        // The risk: a refusal read after the snapshot is a run that began,
+        // rolled back and wrote a trail for work that never started. And an
+        // untrusted `input` never runs, so it refuses nothing.
+        let refuse = if cfg!(windows) {
+            "echo not this task 1>&2 & exit 2"
+        } else {
+            "echo not this task >&2; exit 2"
+        };
+        let (dir, spec) = fixture(
+            "input-refuses",
+            &format!("[hooks]\ninput = {}\n", sh(refuse)),
+            EDIT_THEN_STOP,
+        );
+        let said = run(&dir, &spec);
+        assert!(said.contains("hooks: 1 present, not trusted"), "{said}");
+        std::fs::remove_dir_all(dir.join(".trellis/runs")).unwrap();
+
+        trust(&dir);
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding::default(),
+            RunControl::default(),
+            &mut out,
+        );
+        let said = String::from_utf8(out).unwrap();
+        let err = format!("{:#}", r.expect_err("exit 2 refuses the run"));
+        assert!(err.contains("not this task"), "{err}");
+        assert!(!said.contains("snapshot at"), "{said}");
+        assert!(!dir.join(".trellis/runs").exists(), "no trail: {said}");
+        assert!(
+            std::fs::read_to_string(dir.join("a.py"))
+                .unwrap()
+                .contains("return 1")
+        );
+    }
+
+    #[test]
     fn a_check_that_writes_under_dot_trellis_does_not_converge() {
         // The edge the guard left: it is checked after each call that may
         // change the tree, and a check is not one, so a checker writing
