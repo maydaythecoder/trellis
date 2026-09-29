@@ -1118,8 +1118,14 @@ names are in the code beside each.
   appended to `.trellis/context.md`'s notes, inside the repository fence. A
   `before_run` that fails or times out adds nothing and the run says so and
   continues; what failed was a source of context, not a check.
-- **Custom tools have a fixed 120-second timeout**, the same as bash's
-  default. Not configurable yet.
+- **A custom tool's timeout is its declaration's `timeout_s`**, default
+  120, the same as bash's (#135). It is read as `bash_timeout_s` is: a
+  non-negative integer, with a value that key refuses refused here in the
+  same words, and 0 taken as 1 second. Neither key has an upper bound. The
+  key is part of the tool's trust item only when declared, so a declaration
+  without it keeps the digest it was trusted under, and adding or changing
+  it needs `trellis trust` again (`custom_tool_timeout_*` in
+  `crates/trellis-cli/src/tooling.rs`).
 - **Untrusted is per repository, not per item.** One digest covers every
   hook, custom tool and the bash settings together; changing any of them
   untrusts all of them. `disable` or `enable` naming an untrusted custom tool
@@ -1133,9 +1139,8 @@ names are in the code beside each.
   loaded hooks, whenever the set is not the measured default or hooks are
   loaded. An unconfigured run prints what it printed before.
 
-Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust, a
-configurable custom-tool timeout, hooks for events other than the four
-above, and tracking of what `bash` or a custom tool wrote in the worktree.
+Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust,
+hooks for events other than the four above, and tracking of what `bash` or a custom tool wrote in the worktree.
 
 ## Integrated
 
