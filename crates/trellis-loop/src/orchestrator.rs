@@ -142,6 +142,9 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         | ToolCall::Ls { .. }
         | ToolCall::SearchNotes { .. }
         | ToolCall::ReadNote { .. } => false,
+        // Nothing is written: the question travels back to the loop in the
+        // call itself, and the binary records it on the task.
+        ToolCall::AskHuman { .. } => false,
     }
 }
 
@@ -674,6 +677,14 @@ impl Orchestrator {
                 None => ToolResult::Error("no note vault is configured for this run".into()),
             },
             ToolCall::Custom { name, args } => self.custom(name, args).await,
+            // Nothing to run. `Output` is what tells the loop the gates let
+            // the question through; it ends the run on it. The words are
+            // for the trail, since no later turn reads them.
+            ToolCall::AskHuman { .. } => ToolResult::Output(
+                "question recorded; the run ends here without converging, and the task \
+                 waits for a person's answer"
+                    .into(),
+            ),
         };
         // Read now, before `post_tool` runs: a hook that rewrites a file would
         // otherwise shift the bytes the line numbers are counted from.
