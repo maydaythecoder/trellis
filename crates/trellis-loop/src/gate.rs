@@ -719,10 +719,10 @@ mod tests {
             path: "debug.log".into(),
             content: "x\n".into(),
         };
-        // Bounded: a gate that asks waits for a reply nobody sends here.
-        let d2 = tokio::time::timeout(std::time::Duration::from_secs(5), g.check(&call)).await;
-        assert!(rx.try_recv().is_err(), "the person was asked");
-        assert_eq!(d2, Ok(GateDecision::Allow));
+        match decided_or_asked(&mut g, &mut rx, &call).await {
+            Ok(d) => assert_eq!(d, GateDecision::Allow),
+            Err(q) => panic!("the person was asked: {q}"),
+        }
         assert!(!g.human_decided(), "nobody was asked");
 
         // A path git would track is still put to the human.
@@ -732,10 +732,39 @@ mod tests {
             path: "new.py".into(),
             content: "x = 1\n".into(),
         };
-        let asked = tokio::spawn(async move { rx.recv().await.map(|r| r.question) });
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), g.check(&call)).await;
-        let q = asked.await.unwrap().expect("asked");
-        assert!(q.contains("write_file new.py"), "{q}");
+        match decided_or_asked(&mut g, &mut rx, &call).await {
+            Ok(d) => panic!("decided without asking: {d:?}"),
+            Err(q) => assert!(q.contains("write_file new.py"), "{q}"),
+        }
+    }
+
+    /// Runs `g.check(call)` until it decides (`Ok`) or puts a question to
+    /// the person (`Err(question)`), whichever comes first.
+    ///
+    /// The risk this defends (issue #173): the test used to cut the check
+    /// off after 500 ms and then await the question with no bound. Under a
+    /// loaded host the `git check-ignore` the check runs before asking took
+    /// longer than that, so the check was dropped before it sent anything,
+    /// the gate (and with it the sender) stayed alive, and the receive
+    /// waited forever at zero CPU: the G2 hang. Racing the two removes the
+    /// guess about how long git takes, and the outer bound turns a check
+    /// that never does either into a failure instead of a hang.
+    async fn decided_or_asked(
+        g: &mut ApprovalGate,
+        rx: &mut mpsc::Receiver<ApprovalRequest>,
+        call: &ToolCall,
+    ) -> Result<GateDecision, String> {
+        let raced = async {
+            tokio::select! {
+                d = g.check(call) => Ok(d),
+                // Received, the check is dropped mid-wait for a reply that
+                // this test never sends.
+                req = rx.recv() => Err(req.expect("the gate holds the sender").question),
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(120), raced)
+            .await
+            .expect("the gate neither decided nor asked within 120 s")
     }
 
     #[tokio::test]
