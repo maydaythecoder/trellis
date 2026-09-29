@@ -488,9 +488,11 @@ samples is bounded in [`bench/backstop-ceiling.md`](bench/backstop-ceiling.md)
 **Decided 2026-09-28: [ADR 0028](adr/0028-pyright-recall-backstop.md).** Pyright
 over LSP is the recall backstop, queried only on `Unresolved` and `Candidates`
 sites, because cross-file propagation's ceiling (74.8%, 78.0%; model-read upper
-bounds, A-34) is under 85% on both samples. The owner decided without first
-running the `Reason` measurement below, so the "try first" ordering below no
-longer holds. The paragraph is kept as the record of what was proposed.
+bounds, A-34) is under 85% on both samples. The `Reason` distribution the
+paragraph below asks for was measured (§2: `DecoratorIndirection` 63 of 6,737
+unresolved sites, `MethodDispatchUntyped` 6,090), and `DecoratorIndirection`
+does not dominate. Its "try first" condition is therefore false. The paragraph
+is kept as the record of what was proposed.
 
 **Cheaper intermediate, to try first.** If the `Reason` distribution shows
 `DecoratorIndirection` dominating — the prediction, supported by the 20–41%
