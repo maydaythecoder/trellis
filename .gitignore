@@ -24,3 +24,8 @@
 # The built binary staged for `dist/QUICKSTART.md`. The instructions are
 # tracked; a 30 MB executable is not.
 /dist/trellis.exe
+
+# The chat TUI's log. It now writes to the user's state directory, not the cwd,
+# but an older build writes chat.log here, and a tracked copy that changes
+# makes the worktree dirty, which refuses a run (ADR 0009).
+/chat.log
