@@ -939,55 +939,69 @@ There is no line editing yet, so nothing was run. Type the ",
     "line, or /help."
 );
 
+/// What `/help` prints.
+const HELP: &str = concat!(
+    "  <task>            run the agent loop against a task\n",
+    "\n",
+    "  /index            rebuild the index\n",
+    "  /radius <symbol>  who calls it, with the doubt beside it\n",
+    "  /check [paths]    run the repository's checks\n",
+    "  /doctor           probe runtime, tier, checkers\n",
+    "  /resume           what the last recorded run established\n",
+    "\n",
+    "  /diff             what the last run left uncommitted\n",
+    "  /accept [msg]     commit it\n",
+    "  /revert           discard it\n",
+    "\n",
+    "  /prompts          templates in .trellis/prompts/\n",
+    "  /<name> [args]    run a template as a task\n",
+    "  /skill <n> <task> run a task with a skill's body loaded\n",
+    "  !<cmd>            run a shell command in the repository root;\n",
+    "                    its output is shown, never sent to a model\n",
+    "                    (`!!` is the same: nothing is carried to a run)\n",
+    "\n",
+    "  /model [spec]     set or show the model\n",
+    "  /models           the catalog and the configured specs\n",
+    "  /unconstrained    toggle tier 4 (no schema; can fail on format)\n",
+    "  /status           root, index, model, tier\n",
+    "  /exit             leave\n",
+    "\n",
+    "  @ path completion is available in `trellis tui` only; this line\n",
+    "  mode reads a plain line and completes nothing.\n",
+    "
+",
+    "  trellis tui       the full-screen view: transcript, run state
+",
+    "                    and task entry at once. A separate command
+",
+    "                    rather than a slash, because it takes over
+",
+    "                    the terminal — leaving it returns here.
+",
+    "\n",
+    "Each task is a fresh run: its own snapshot, its own budget, and a\n",
+    "rollback to the state it started from if it does not converge. The\n",
+    "session keeps the index and the model, not a conversation."
+);
+
 fn help() {
-    println!(
-        "{}",
-        concat!(
-            "  <task>            run the agent loop against a task\n",
-            "\n",
-            "  /index            rebuild the index\n",
-            "  /radius <symbol>  who calls it, with the doubt beside it\n",
-            "  /check [paths]    run the repository's checks\n",
-            "  /doctor           probe runtime, tier, checkers\n",
-            "  /resume           what the last recorded run established\n",
-            "\n",
-            "  /diff             what the last run left uncommitted\n",
-            "  /accept [msg]     commit it\n",
-            "  /revert           discard it\n",
-            "\n",
-            "  /prompts          templates in .trellis/prompts/\n",
-            "  /<name> [args]    run a template as a task\n",
-            "  /skill <n> <task> run a task with a skill's body loaded\n",
-            "  !<cmd>            run a shell command in the repository root;\n",
-            "                    its output is shown, never sent to a model\n",
-            "                    (`!!` is the same: nothing is carried to a run)\n",
-            "\n",
-            "  /model [spec]     set or show the model\n",
-            "  /models           the catalog and the configured specs\n",
-            "  /unconstrained    toggle tier 4 (no schema; can fail on format)\n",
-            "  /status           root, index, model, tier\n",
-            "  /exit             leave\n",
-            "
-",
-            "  trellis tui       the full-screen view: transcript, run state
-",
-            "                    and task entry at once. A separate command
-",
-            "                    rather than a slash, because it takes over
-",
-            "                    the terminal — leaving it returns here.
-",
-            "\n",
-            "Each task is a fresh run: its own snapshot, its own budget, and a\n",
-            "rollback to the state it started from if it does not converge. The\n",
-            "session keeps the index and the model, not a conversation."
-        )
-    );
+    println!("{HELP}");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn at_file_help_says_completion_is_tui_only() {
+        // Someone who used `@` in `trellis tui` and types it here gets the
+        // literal text in their task. Saying where completion lives beats
+        // letting them find out from a task that names `@models`.
+        assert!(
+            HELP.contains("@ path completion is available in `trellis tui` only"),
+            "{HELP}"
+        );
+    }
 
     /// A session over a throwaway repository.
     ///

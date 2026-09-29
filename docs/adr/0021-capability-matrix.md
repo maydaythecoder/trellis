@@ -137,7 +137,7 @@ override any row.
 | 9.4–9.5 RPC | W-D (`trellis rpc`, a subset: prompt, abort, get_state, get_messages, set_model, compact, approve) |
 | 9.6 SDK | built in effect (the crates are libraries) |
 | 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B |
-| 11 TUI features | excluded [cosmetic]; `@` file search is deferred |
+| 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |
 | 13.3 containers | deferred (sandbox decision) |
