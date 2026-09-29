@@ -103,6 +103,22 @@ pub struct Factual {
     /// per worktree and dies with it, and the trail is what outlives both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The label a person gave the session the run started from (`/name`
+    /// in `trellis session`), when one was set. At most 80 characters, no
+    /// control characters; the session refuses anything else.
+    ///
+    /// A name for finding a run again, and nothing more. It is typed by a
+    /// person and is not a fact about what executed, so it is recorded here
+    /// only because `factual` is the tamper-evident half, and it is never
+    /// rendered into the context a resumed run reads
+    /// ([`UntrustedTrail::context_lines`]): a label reaching a prompt would
+    /// be instruction-shaped text with no fence around it.
+    ///
+    /// Omitted when unset, like `agent`, so a trail written without one (or
+    /// before the field existed) keeps its bytes and its digest, and
+    /// `SCHEMA` stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// What the run was given beyond the task and the repository's own
     /// `.trellis/` files (ADR 0025): context files, the system prompt files
     /// and skills the person forced, each by name and size. Never contents:
@@ -556,6 +572,7 @@ mod tests {
                 tokens: None,
                 prompt_tokens: None,
                 agent: None,
+                label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
             },

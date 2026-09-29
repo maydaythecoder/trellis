@@ -559,6 +559,8 @@ impl Server {
                 frames: Some(sink),
                 abort: Some(run_abort),
                 compact: Some(run_compact.clone()),
+                label: None,
+                done: None,
             };
             let r = crate::cmd_run_with(
                 &root,

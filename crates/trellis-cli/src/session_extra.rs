@@ -1,5 +1,6 @@
 //! What ADR 0025 §6 adds to `trellis session`: `!cmd`, `/prompts`,
-//! `/models`, and the model listing `rpc` shares.
+//! `/models`, and the model listing `rpc` shares; and `/name` and `/copy`
+//! (ADR 0027, #109).
 //!
 //! `/skill` and `/<template>` are dispatched in `session.rs`, because they
 //! start a run and the session owns how a run is started.
@@ -142,6 +143,117 @@ pub(crate) fn print_models(root: &Path, session: Option<&str>) {
     println!("/model <spec> switches; a catalog entry runs under a runtime such as llamacpp:.");
 }
 
+/// The longest `/name` label, in characters.
+pub(crate) const LABEL_MAX: usize = 80;
+
+/// Checks a `/name` label, returning it as it will be recorded.
+///
+/// The label goes into a committed trail, which is read back as untrusted
+/// data, and is printed on this terminal. A control character would be a
+/// terminal escape in both places, and a long label is a paragraph, not a
+/// name. Refused rather than trimmed, so what is recorded is what was typed.
+pub(crate) fn check_label(label: &str) -> Result<String, String> {
+    let n = label.chars().count();
+    if n > LABEL_MAX {
+        return Err(format!(
+            "a label is at most {LABEL_MAX} characters; this one is {n}. The label is unchanged."
+        ));
+    }
+    if label.chars().any(char::is_control) {
+        return Err(
+            "a label may not contain a control character. The label is unchanged.".to_string(),
+        );
+    }
+    Ok(label.to_string())
+}
+
+/// One clipboard program and its arguments. The text goes on its stdin.
+pub(crate) type Clipboard = (&'static str, &'static [&'static str]);
+
+/// The programs `/copy` tries, in order, on this platform. The first one
+/// that starts is the one used.
+#[cfg(windows)]
+pub(crate) const CLIPBOARDS: &[Clipboard] = &[("clip", &[])];
+#[cfg(target_os = "macos")]
+pub(crate) const CLIPBOARDS: &[Clipboard] = &[("pbcopy", &[])];
+#[cfg(not(any(windows, target_os = "macos")))]
+pub(crate) const CLIPBOARDS: &[Clipboard] =
+    &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+
+/// `/copy`: puts `text` on the clipboard through the first of `programs`
+/// that starts, or prints it when none is reached.
+///
+/// A program rather than a clipboard crate (ADR 0027, #109): the platforms'
+/// own tools already do this, and no dependency is added for it. `programs`
+/// is a parameter so a test can name a program that does not exist and
+/// reach the fallback without touching a real clipboard.
+///
+/// Printing is the fallback because the person asked for the text; a
+/// clipboard that could not be reached is no reason to withhold it.
+pub(crate) fn copy(
+    text: Option<&str>,
+    programs: &[Clipboard],
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let Some(text) = text else {
+        writeln!(out, "nothing to copy yet")?;
+        return Ok(());
+    };
+    let reached = programs.iter().find_map(|(program, args)| {
+        // Only the first that starts is used: one that starts and then
+        // fails is reported, not papered over by the next.
+        let child = clipboard_command(program, args).spawn().ok()?;
+        Some((*program, feed(child, text)))
+    });
+    match reached {
+        Some((program, true)) => {
+            writeln!(
+                out,
+                "copied the last run's done summary ({} bytes) with {program}",
+                text.len()
+            )?;
+        }
+        other => {
+            let why = match other {
+                Some((program, _)) => format!("{program} did not take it"),
+                None => "none of the clipboard programs started".to_string(),
+            };
+            writeln!(
+                out,
+                "no clipboard was reached ({why}); the summary is below"
+            )?;
+            writeln!(out, "{}", crate::plain(text))?;
+        }
+    }
+    Ok(())
+}
+
+/// A clipboard program, scrubbed like every other child (ADR 0024 §3), with
+/// stdout and stderr closed: `xclip` forks to hold the selection, and a
+/// piped stdout would keep this side waiting on it.
+fn clipboard_command(program: &str, args: &[&str]) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    c.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    trellis_core::secrets::scrub(&mut c);
+    c
+}
+
+/// Writes `text` to the child's stdin, closes it, and waits. `true` only
+/// when all of it was written and the program exited zero.
+fn feed(mut child: std::process::Child, text: &str) -> bool {
+    use std::io::Write;
+    let written = match child.stdin.take() {
+        // Dropped at the end of the arm, which is the end of input.
+        Some(mut stdin) => stdin.write_all(text.as_bytes()).is_ok(),
+        None => false,
+    };
+    let exited = child.wait().is_ok_and(|s| s.success());
+    written && exited
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +294,101 @@ mod tests {
             v["catalog"].as_array().unwrap().len(),
             trellis_model::CATALOG.len()
         );
+    }
+
+    // `/copy` (#109) --------------------------------------------------------
+
+    /// A program no machine has, so the fallback is reached without touching
+    /// a real clipboard.
+    const NOWHERE: &[Clipboard] = &[("trellis-no-such-clipboard-program-109", &[])];
+
+    fn copied(text: Option<&str>, programs: &[Clipboard]) -> String {
+        let mut out = Vec::new();
+        copy(text, programs, &mut out).expect("copy reports rather than failing");
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn slash_copy_prints_the_text_when_no_clipboard_program_starts() {
+        // The risk: a machine with no clipboard tool (a server, a container)
+        // swallowing the summary the person asked for.
+        let said = copied(Some("renamed run() and fixed its callers"), NOWHERE);
+        assert!(said.contains("no clipboard was reached"), "{said}");
+        assert!(
+            said.contains("renamed run() and fixed its callers"),
+            "the text itself must be printed: {said}"
+        );
+    }
+
+    #[test]
+    fn slash_copy_prints_the_text_when_the_clipboard_program_fails() {
+        // The risk: a program that starts and then fails (`wl-copy` with no
+        // Wayland display) reported as a copy that happened.
+        #[cfg(windows)]
+        const FAILS: &[Clipboard] = &[("cmd", &["/C", "exit 3"])];
+        #[cfg(not(windows))]
+        const FAILS: &[Clipboard] = &[("sh", &["-c", "exit 3"])];
+        let said = copied(Some("the summary"), FAILS);
+        assert!(said.contains("no clipboard was reached"), "{said}");
+        assert!(said.contains("did not take it"), "{said}");
+        assert!(said.contains("the summary"), "{said}");
+    }
+
+    #[test]
+    fn slash_copy_hands_the_text_to_the_first_program_that_starts() {
+        // The risk: the text never reaching the program's stdin, or a later
+        // program being used when an earlier one started. The first entry
+        // does not exist; the second writes its stdin to a file.
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("clip.txt");
+        #[cfg(windows)]
+        // Unquoted: std escapes an inner quote as `\"`, which `cmd` does not
+        // read. A temporary directory whose path has a space would break this
+        // test's redirect, not the code under test.
+        let (shell, line) = ("cmd", format!("more > {}", file.display()));
+        #[cfg(not(windows))]
+        let (shell, line) = ("sh", format!("cat > '{}'", file.display()));
+        #[cfg(windows)]
+        let flag = "/C";
+        #[cfg(not(windows))]
+        let flag = "-c";
+        let line: &'static str = Box::leak(line.into_boxed_str());
+        let args: &'static [&'static str] = Box::leak(vec![flag, line].into_boxed_slice());
+        let programs = [NOWHERE[0], (shell, args)];
+        let said = copied(Some("fixed the annotations"), &programs);
+        assert!(said.contains("copied"), "{said}");
+        assert!(!said.contains("no clipboard was reached"), "{said}");
+        let got = std::fs::read_to_string(&file).unwrap();
+        assert!(got.contains("fixed the annotations"), "{got:?}");
+    }
+
+    #[test]
+    fn slash_copy_with_nothing_to_copy_says_so_and_starts_nothing() {
+        // A failing program would be reported if anything were started.
+        let said = copied(None, NOWHERE);
+        assert_eq!(said.trim(), "nothing to copy yet");
+    }
+
+    // `/name` (#109) --------------------------------------------------------
+
+    #[test]
+    fn slash_name_label_limit_is_eighty_characters_not_bytes() {
+        // The risk: a byte count refusing a short label in a script whose
+        // characters take more than one byte each.
+        let at_limit: String = "é".repeat(LABEL_MAX);
+        assert_eq!(check_label(&at_limit), Ok(at_limit.clone()));
+        let over: String = "a".repeat(LABEL_MAX + 1);
+        let e = check_label(&over).unwrap_err();
+        assert!(e.contains("at most 80"), "{e}");
+        assert!(e.contains("unchanged"), "{e}");
+    }
+
+    #[test]
+    fn slash_name_refuses_a_control_character() {
+        // The risk: an escape sequence recorded in a committed trail and
+        // replayed at every terminal that prints it.
+        for bad in ["a\u{1b}[31mred", "tab\there", "bell\u{7}", "c1\u{9b}x"] {
+            assert!(check_label(bad).is_err(), "{bad:?} was accepted");
+        }
     }
 }

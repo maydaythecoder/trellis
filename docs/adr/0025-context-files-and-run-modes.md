@@ -405,7 +405,13 @@ on stderr.
   vouched for. *Integrated, and not through the trust store; see
   "Integrated".*
 - `/new`, `/name` and `/copy`. `/new` means nothing when each task is
-  already a fresh run. `/name` and `/copy` are deferred.
+  already a fresh run. `/name` and `/copy` were deferred. *Built since
+  (#109, ADR 0027's decision log): `/name <label>` records an optional
+  `Factual::label` (at most 80 characters, no control characters, omitted
+  when unset so older trails keep their digest, never rendered into a
+  resumed run's context); `/copy` puts the last `done` summary on the
+  clipboard through `clip`, `pbcopy`, `wl-copy` or `xclip`, scrubbed like
+  every child, and prints it when no clipboard is reached.*
 - `compact` over RPC: W-C. *Built 2026-09-29 (#110); see §5, "compact".*
 - `queue add --args`: the queue is W-E's, and ADR 0026 decides it. Built
   since: ADR 0026 §3 records it.
