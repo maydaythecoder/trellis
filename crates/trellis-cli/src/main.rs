@@ -3282,6 +3282,9 @@ pub fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
 fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
     // `index` always rebuilds — it is the command whose job is to refresh
     // the cache, so reading the cache here would make it a no-op.
+    // Read before the build, so a misspelt `[index] backstop` stops here
+    // rather than after a long index that ran without the help it asked for.
+    let backstop = config::RepoConfig::load(root)?.pyright_backstop()?;
     let started = std::time::Instant::now();
     let sources = trellis_index::read_sources(root);
     let index = trellis_index::build_from_sources(&sources);
@@ -3362,6 +3365,11 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
          hand-audited sample measures recall."
     );
 
+    println!();
+    for line in backstop_lines(&index, root, backstop) {
+        println!("{line}");
+    }
+
     if graph {
         println!();
         for line in graph_lines(&trellis_index::module_graph(&index), limit) {
@@ -3369,6 +3377,74 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The recall backstop's part of `trellis index` (ADR 0031).
+///
+/// Its counts stand beside the resolver's and are never added to `resolved`
+/// or divided by anything (rule 3). It runs after `index.bin` is written and
+/// its edges are not stored there: they depend on the server's version, which
+/// the file does not record. So the version is printed here instead.
+fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> Vec<String> {
+    if !enabled {
+        return vec![
+            "backstop: off (no `[index] backstop` in .trellis/config.toml);              the figures above are the resolver's alone"
+                .to_string(),
+        ];
+    }
+    let sites = trellis_index::doubt_sites(index);
+    let r = trellis_index::run_backstop(
+        index,
+        root,
+        &sites,
+        &trellis_index::BackstopServer::pyright(),
+    );
+    let mut out = Vec::new();
+    match &r.status {
+        trellis_index::BackstopStatus::NotRun { reason } => {
+            out.push(format!("backstop: pyright did not run ({reason})"));
+            out.push(format!(
+                "  {} Unresolved or Candidates site(s) keep the resolver's verdict",
+                r.not_queried
+            ));
+            return out;
+        }
+        trellis_index::BackstopStatus::Ran { server, stopped } => {
+            out.push(format!(
+                "backstop: pyright ran ({})",
+                server
+                    .as_deref()
+                    .unwrap_or("the server did not report its version")
+            ));
+            if let Some(why) = stopped {
+                out.push(format!("  stopped part way: {why}"));
+            }
+        }
+    }
+    out.push(format!(
+        "  queried          {:>6}  Unresolved or Candidates sites only",
+        r.queried
+    ));
+    out.push(format!(
+        "  bound by pyright {:>6}  counted apart: not in `resolved`, not in the graph",
+        r.edges.len()
+    ));
+    out.push(format!(
+        "  left alone       {:>6}  no answer, or one this backstop would not bind",
+        r.left
+    ));
+    if r.not_queried > 0 {
+        out.push(format!(
+            "  not queried      {:>6}  keep the resolver's verdict",
+            r.not_queried
+        ));
+    }
+    out.push(
+        "  A pyright-bound edge is the server's reading of the annotations, not a          verified callee;
+  those sites stay unpartitionable."
+            .to_string(),
+    );
+    out
 }
 
 /// The codebase as a graph of modules.

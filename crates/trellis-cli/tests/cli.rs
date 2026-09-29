@@ -191,6 +191,49 @@ fn index_says_its_percentage_is_a_lower_bound_and_not_recall() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn index_with_the_pyright_backstop_absent_completes_and_says_it_did_not_run() {
+    // ADR 0031: with Node or Pyright missing, the index does not fail, every
+    // site keeps the resolver's verdict, and the output says the backstop did
+    // not run, so it cannot be read as "Pyright ran and found nothing". PATH
+    // points at an empty directory so the result does not depend on whether
+    // the machine running the suite has Pyright.
+    let d = repo("index-backstop");
+    let off = stdout(&run(&d, &["index"]));
+    assert!(off.contains("backstop: off"), "{off}");
+
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[index]
+backstop = \"pyright\"
+",
+    )
+    .unwrap();
+    let empty = scratch("index-backstop-path");
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("index")
+        .current_dir(&d)
+        .env("NO_COLOR", "1")
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(s.contains("backstop: pyright did not run"), "{s}");
+    assert!(s.contains("keep the resolver's verdict"), "{s}");
+    assert!(
+        s.contains("first-party call sites resolved"),
+        "the resolver's figures still print: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
 // ---------------------------------------------------------------------------
 // radius
 // ---------------------------------------------------------------------------
