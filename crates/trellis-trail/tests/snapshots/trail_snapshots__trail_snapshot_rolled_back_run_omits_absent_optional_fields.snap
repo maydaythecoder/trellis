@@ -1,0 +1,44 @@
+---
+source: crates/trellis-trail/tests/trail_snapshots.rs
+expression: "trail_json(\"fix flaky test\", factual, Judgment::default())"
+---
+{
+  "schema": 1,
+  "run_id": "20260918-051200-000-fixture",
+  "task": "fix flaky test",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "started_at": "2026-09-18T05:12:00Z",
+  "provenance": {
+    "trellis_version": "0.0.0-fixture",
+    "model": "scripted",
+    "tier": "tier1"
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Tests",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": null,
+    "actions": []
+  },
+  "factual_sha256": "a125a5c1bb7378e655499e609c1cafaf2d10361100c3e2ab749dbd3f5d1cf685",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

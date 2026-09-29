@@ -1,0 +1,98 @@
+---
+source: crates/trellis-trail/tests/trail_snapshots.rs
+expression: "trail_json(\"rename Installer.run\", factual, judgment)"
+---
+{
+  "schema": 1,
+  "run_id": "20260918-051200-000-fixture",
+  "task": "rename Installer.run",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "started_at": "2026-09-18T05:12:00Z",
+  "provenance": {
+    "trellis_version": "0.0.0-fixture",
+    "model": "scripted",
+    "tier": "tier1"
+  },
+  "factual": {
+    "proposed": [
+      "src/pkg/installer.py"
+    ],
+    "radius": {
+      "reached_resolved": 47,
+      "reached_ambiguous": 3,
+      "widest_unbound_in_touched_files": 2,
+      "radius_queries": 1
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "TypeCheck",
+        "passed": true
+      },
+      {
+        "kind": "Tests",
+        "passed": true
+      }
+    ],
+    "approved_by": "Human",
+    "mode_counts": {
+      "verified": 45,
+      "reviewed": 7
+    },
+    "context": {
+      "first_prompt_bytes": 1200,
+      "peak_prompt_bytes": 9400,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "blast_radius",
+        "target": "Installer.run",
+        "outcome": "47 resolved, 3 candidates, 2 unresolved",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "approval",
+        "target": "src/pkg/installer.py",
+        "outcome": "approved",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/pkg/installer.py",
+        "outcome": "applied",
+        "wrote": true
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "",
+        "outcome": "TypeCheck: passed; Tests: passed",
+        "wrote": false
+      }
+    ],
+    "control": "approve (edit)",
+    "tokens": 812,
+    "agent": "builder",
+    "inputs": [
+      {
+        "kind": "context_file",
+        "name": "CLAUDE.md",
+        "bytes": 2048
+      },
+      {
+        "kind": "forced_skill",
+        "name": "refactor",
+        "bytes": 512
+      }
+    ]
+  },
+  "factual_sha256": "dde60fa729a5deabc49a41497dbd6c52ed7677f43e360ea6812b300fd080e203",
+  "judgment": {
+    "tech_debt_projection": "the alias will need removing",
+    "rationale": "kept the old name as an alias"
+  }
+}
