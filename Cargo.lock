@@ -2723,6 +2723,7 @@ dependencies = [
 name = "trellis-trail"
 version = "0.0.1"
 dependencies = [
+ "insta",
  "serde",
  "serde_json",
  "sha2",
