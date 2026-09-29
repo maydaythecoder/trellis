@@ -746,7 +746,11 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     // same reason.
     let profiles = load_profiles(root)?;
     load_routines(root, &profiles)?;
-    let q = Queue::for_repo(root)?;
+    let stale_claims = cfg.stale_claims()?;
+    let mut q = Queue::for_repo(root)?;
+    if stale_claims == trellis_queue::StaleClaims::Release {
+        q = with_claimant(q);
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
     listen_for_ctrl_c(stop.clone());
@@ -774,6 +778,7 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
     let opts = WorkOptions {
         max_tasks: if args.once { Some(1) } else { args.max_tasks },
         every: args.every.map(Duration::from_secs),
+        stale_claims,
     };
     let (ran, why) = trellis_queue::work(&q, &mut runner, opts, &mut crate::output::human())?;
     let _ = writeln!(
@@ -781,6 +786,34 @@ pub(crate) fn work(root: &Path, args: WorkArgs) -> Result<i32> {
         "work:     {ran} run(s) this invocation; stopped: {why}"
     );
     Ok(why.code())
+}
+
+/// Under `stale_claims = "release"`, every claim this heartbeat makes
+/// records where it was made and when this process started, so that a later
+/// heartbeat can tell whether its holder is gone (ADR 0020 §5). Probed once
+/// per invocation, not per claim: on Windows the probe is a PowerShell
+/// start. A machine whose name cannot be read records nothing, and its
+/// claims are then never released automatically.
+fn with_claimant(q: Queue) -> Queue {
+    use trellis_queue::{Claimant, Liveness, Probe};
+    let live = crate::liveness::SystemLiveness;
+    let Some(host) = live.host() else {
+        let _ = writeln!(
+            crate::output::human(),
+            "work:     this machine's hostname could not be read; claims made now \
+             cannot be released automatically if this process dies"
+        );
+        return q;
+    };
+    let started = match live.probe(std::process::id()) {
+        Probe::Running { started } => started,
+        Probe::Gone | Probe::Unknown(_) => None,
+    };
+    q.with_claimant(Claimant {
+        host,
+        os: live.os(),
+        started,
+    })
 }
 
 /// Ctrl-C sets a flag the heartbeat reads between runs and while idle.
@@ -1040,6 +1073,10 @@ impl Runner for CliRunner<'_> {
 
     fn starting(&mut self, id: &str) {
         self.current = Some(id.to_string());
+    }
+
+    fn liveness(&self) -> Option<&dyn trellis_queue::Liveness> {
+        Some(&crate::liveness::SystemLiveness)
     }
 
     fn run(&mut self, t: &trellis_queue::Task) -> RunEnd {

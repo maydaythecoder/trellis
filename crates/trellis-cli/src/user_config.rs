@@ -174,6 +174,9 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
         index: either(repo.index, user.index, |r, u| IndexSection {
             backstop: r.backstop.or(u.backstop),
         }),
+        work: either(repo.work, user.work, |r, u| crate::config::WorkSection {
+            stale_claims: r.stale_claims.or(u.stale_claims),
+        }),
         ..repo
     }
 }

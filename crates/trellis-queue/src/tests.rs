@@ -357,6 +357,7 @@ fn max_tasks_bounds_one_invocation() {
     let opts = WorkOptions {
         max_tasks: Some(2),
         every: None,
+        ..WorkOptions::default()
     };
     let (n, stop, _) = drain(&q, &mut f, opts);
     assert_eq!((n, stop), (2, Stop::MaxTasks));
@@ -377,6 +378,7 @@ fn an_empty_queue_returns_and_every_waits_instead() {
     let opts = WorkOptions {
         max_tasks: None,
         every: Some(Duration::from_secs(60)),
+        ..WorkOptions::default()
     };
     let (n, stop, _) = drain(&q, &mut f, opts);
     assert_eq!((n, stop), (0, Stop::Interrupted));
@@ -746,6 +748,7 @@ fn a_waiting_parent_wakes_when_every_child_is_terminal_failed_included() {
         WorkOptions {
             max_tasks: Some(1),
             every: None,
+            ..WorkOptions::default()
         },
     );
     assert_eq!(status(&q, &c1), Status::Failed);
@@ -1418,4 +1421,326 @@ fn a_task_left_only_as_its_side_file_is_moved_or_removed_whole() {
         .filter(|n| n.starts_with('.'))
         .collect();
     assert!(stray.is_empty(), "left behind {stray:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Stale claims (ADR 0020 §5, #59)
+// ---------------------------------------------------------------------------
+
+/// A platform probe that says what it is told.
+#[derive(Clone)]
+struct FakeLive {
+    host: Option<&'static str>,
+    os: &'static str,
+    probe: Probe,
+}
+
+impl Liveness for FakeLive {
+    fn host(&self) -> Option<String> {
+        self.host.map(str::to_string)
+    }
+    fn os(&self) -> String {
+        self.os.to_string()
+    }
+    fn probe(&self, _pid: u32) -> Probe {
+        self.probe.clone()
+    }
+}
+
+fn dead_here() -> FakeLive {
+    FakeLive {
+        host: Some("box"),
+        os: "testos",
+        probe: Probe::Gone,
+    }
+}
+
+fn here() -> Claimant {
+    Claimant {
+        host: "box".into(),
+        os: "testos".into(),
+        started: Some("1000".into()),
+    }
+}
+
+/// A claim left behind by a process that recorded `c` (or nothing, for
+/// `None`), as a crash leaves it. Returns the id and the claim's instant.
+fn crashed_claim(q: &Queue, task: &str, c: Option<Claimant>) -> (String, i64) {
+    let id = q.add(task, None, None).unwrap();
+    let holder = match c {
+        Some(c) => q.clone().with_claimant(c),
+        None => q.clone(),
+    };
+    let claim = holder.claim(&id).unwrap().unwrap();
+    let at = parse_iso(claim.task.claimed_at.as_deref().unwrap()).unwrap();
+    std::mem::forget(claim);
+    (id, at)
+}
+
+fn events(q: &Queue, action: &str) -> Vec<Event> {
+    q.activity()
+        .tail(1000)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == action)
+        .collect()
+}
+
+/// A heartbeat with a probe and a clock injected.
+struct Probed {
+    inner: Fake,
+    live: FakeLive,
+    now: i64,
+}
+
+impl Runner for Probed {
+    fn blocker(&mut self) -> Option<String> {
+        self.inner.blocker()
+    }
+    fn run(&mut self, task: &Task) -> RunEnd {
+        self.inner.run(task)
+    }
+    fn stop_requested(&self) -> bool {
+        self.inner.stop_requested()
+    }
+    fn idle(&mut self, d: Duration) -> bool {
+        self.inner.idle(d)
+    }
+    fn liveness(&self) -> Option<&dyn Liveness> {
+        Some(&self.live)
+    }
+    fn now(&self) -> i64 {
+        self.now
+    }
+}
+
+#[test]
+fn stale_claim_release_moves_a_dead_local_claim_to_pending_keeping_attempts_and_logs_it() {
+    // The risk the ticket names: a task stranded in claimed/ by a crash
+    // until a person notices. Released, it must keep its attempt count (a
+    // task that keeps dying says so) and leave a record of who, how old and
+    // where.
+    let (_d, q) = queue();
+    let id = q.add("x", None, None).unwrap();
+    q.claim(&id).unwrap().unwrap().release(true).unwrap(); // one attempt
+    let holder = q.clone().with_claimant(here());
+    let claim = holder.claim(&id).unwrap().unwrap();
+    assert_eq!(claim.task.claimed_host.as_deref(), Some("box"));
+    assert_eq!(claim.task.claimed_os.as_deref(), Some("testos"));
+    assert_eq!(claim.task.claimed_pid_started.as_deref(), Some("1000"));
+    let at = parse_iso(claim.task.claimed_at.as_deref().unwrap()).unwrap();
+    let pid = claim.task.claimed_by_pid.unwrap();
+    std::mem::forget(claim);
+
+    let swept = q.release_stale_claims(&dead_here(), at + 600).unwrap();
+    assert!(
+        matches!(&swept[..], [(i, Swept::Released(_))] if *i == id),
+        "{swept:?}"
+    );
+    assert!(q.ids(State::Claimed).unwrap().is_empty());
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!(t.attempts, 1, "attempts is kept");
+    assert_eq!(t.status, Some(Status::Todo));
+    assert_eq!(
+        (t.claimed_at, t.claimed_by_pid, t.claimed_host, t.claimed_os),
+        (None, None, None, None)
+    );
+    assert_eq!(t.stale_released_at, Some(secs_to_iso(at + 600)));
+    assert!(q.ids(State::Failed).unwrap().is_empty(), "never failed");
+
+    let logged = events(&q, "stale_claim_released");
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].entity, format!("task:{id}"));
+    assert_eq!(logged[0].actor, Actor::Work);
+    assert_eq!(
+        logged[0].detail.as_deref(),
+        Some(format!("pid {pid}, age 600s, host box").as_str())
+    );
+}
+
+#[test]
+fn stale_claim_release_keeps_every_claim_whose_holder_may_be_alive() {
+    // Releasing a live claim runs one task twice. Each case here is one the
+    // probe cannot rule out: another machine (by name, or by OS, which is
+    // WSL seeing a Windows checkout under the same computer name), a claim
+    // that recorded no host, a running pid (the claimant's, or a stranger
+    // with its pid), and a probe that could not answer.
+    let (_d, q) = queue();
+    let (other_host, at) = crashed_claim(
+        &q,
+        "other host",
+        Some(Claimant {
+            host: "elsewhere".into(),
+            ..here()
+        }),
+    );
+    let (other_os, _) = crashed_claim(
+        &q,
+        "other os",
+        Some(Claimant {
+            os: "windows".into(),
+            ..here()
+        }),
+    );
+    let (no_host, _) = crashed_claim(&q, "no host", None);
+    let before: Vec<Task> = q
+        .ids(State::Claimed)
+        .unwrap()
+        .iter()
+        .map(|id| read_task(&q.path(State::Claimed, id)).unwrap())
+        .collect();
+
+    let later = at + 10 * RELEASE_THROTTLE_SECS;
+    let swept = q.release_stale_claims(&dead_here(), later).unwrap();
+    let why = |id: &str| match swept.iter().find(|(i, _)| i == id) {
+        Some((_, Swept::Kept(w))) => w.clone(),
+        other => panic!("{id}: {other:?}"),
+    };
+    assert!(why(&other_host).contains("not this machine"));
+    assert!(why(&other_os).contains("not this machine"));
+    assert!(why(&no_host).contains("no host recorded"));
+
+    // A local claim, probed four ways that are not "gone".
+    let (local, _) = crashed_claim(&q, "local", Some(here()));
+    for (probe, says) in [
+        (
+            Probe::Running {
+                started: Some("1000".into()),
+            },
+            "is running",
+        ),
+        (
+            Probe::Running {
+                started: Some("2000".into()),
+            },
+            "probably another process",
+        ),
+        (Probe::Running { started: None }, "is running"),
+        (Probe::Unknown("access denied".into()), "could not tell"),
+    ] {
+        let live = FakeLive {
+            probe,
+            ..dead_here()
+        };
+        let swept = q.release_stale_claims(&live, later).unwrap();
+        let (_, s) = swept.iter().find(|(i, _)| *i == local).unwrap();
+        assert!(matches!(s, Swept::Kept(w) if w.contains(says)), "{s:?}");
+    }
+    // A machine whose own name cannot be read releases nothing.
+    let nameless = FakeLive {
+        host: None,
+        ..dead_here()
+    };
+    let swept = q.release_stale_claims(&nameless, later).unwrap();
+    assert!(swept.iter().all(|(_, s)| matches!(s, Swept::Kept(_))));
+
+    assert_eq!(q.ids(State::Claimed).unwrap().len(), 4);
+    let after: Vec<Task> = [&other_host, &other_os, &no_host]
+        .iter()
+        .map(|id| read_task(&q.path(State::Claimed, id)).unwrap())
+        .collect();
+    assert_eq!(before, after, "a kept claim is not rewritten");
+    assert!(events(&q, "stale_claim_released").is_empty());
+}
+
+#[test]
+fn stale_claim_release_happens_at_most_once_an_hour_per_task() {
+    // A task that kills whatever runs it would otherwise be claimed, die,
+    // be released and claimed again on every tick. The throttle is on the
+    // task, so it survives the release and the next claim.
+    let (_d, q) = queue();
+    let (id, at) = crashed_claim(&q, "dies", Some(here()));
+    let t0 = at + 60;
+    let swept = q.release_stale_claims(&dead_here(), t0).unwrap();
+    assert!(matches!(swept[0].1, Swept::Released(_)));
+
+    // Claimed again and crashed again, just inside the hour.
+    let claim = q.clone().with_claimant(here()).claim(&id).unwrap().unwrap();
+    assert_eq!(claim.task.stale_released_at, Some(secs_to_iso(t0)));
+    std::mem::forget(claim);
+    let swept = q
+        .release_stale_claims(&dead_here(), t0 + RELEASE_THROTTLE_SECS - 1)
+        .unwrap();
+    assert!(
+        matches!(&swept[0].1, Swept::Kept(w) if w.contains("at most once an hour")),
+        "{swept:?}"
+    );
+    assert_eq!(q.ids(State::Claimed).unwrap(), vec![id.clone()]);
+    assert_eq!(events(&q, "stale_claim_released").len(), 1);
+
+    // An hour after the first release, it may go again.
+    let swept = q
+        .release_stale_claims(&dead_here(), t0 + RELEASE_THROTTLE_SECS)
+        .unwrap();
+    assert!(matches!(swept[0].1, Swept::Released(_)), "{swept:?}");
+    assert_eq!(q.ids(State::Pending).unwrap(), vec![id]);
+    assert_eq!(events(&q, "stale_claim_released").len(), 2);
+    assert!(q.ids(State::Failed).unwrap().is_empty(), "never failed");
+}
+
+#[test]
+fn stale_claim_release_is_off_under_the_default_list_policy() {
+    // `"list"` must behave exactly as before #59: a probe that would
+    // release the claim is not consulted, the claim is named with the
+    // requeue hint, and claims record no host.
+    let (_d, q) = queue();
+    let (stale, _) = crashed_claim(&q, "stale", Some(here()));
+    let before = read_task(&q.path(State::Claimed, &stale)).unwrap();
+    q.add("fresh", None, None).unwrap();
+    let mut r = Probed {
+        inner: Fake::default(),
+        live: dead_here(),
+        now: now_secs() + 10 * RELEASE_THROTTLE_SECS,
+    };
+    assert_eq!(WorkOptions::default().stale_claims, StaleClaims::List);
+    let (_, _, out) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!(r.inner.ran, vec!["fresh"]);
+    assert!(
+        out.contains(&stale) && out.contains("trellis queue requeue"),
+        "{out}"
+    );
+    assert!(!out.contains("released"), "{out}");
+    assert_eq!(
+        read_task(&q.path(State::Claimed, &stale)).unwrap(),
+        before,
+        "untouched"
+    );
+    assert!(events(&q, "stale_claim_released").is_empty());
+    let (id, _) = crashed_claim(&q, "plain", None);
+    let t = read_task(&q.path(State::Claimed, &id)).unwrap();
+    assert_eq!((t.claimed_host, t.claimed_os), (None, None));
+}
+
+#[test]
+fn stale_claim_release_under_work_puts_the_task_back_and_runs_it() {
+    // The policy as the heartbeat applies it: released at start, said on
+    // the terminal, then claimed and run like any pending task. The
+    // worktree gate still comes before the claim (ADR 0009).
+    let (_d, q) = queue();
+    let (id, at) = crashed_claim(&q, "revived", Some(here()));
+    let opts = WorkOptions {
+        stale_claims: StaleClaims::Release,
+        ..WorkOptions::default()
+    };
+    let mut blocked = Probed {
+        inner: Fake {
+            blocked: Some("dirty".into()),
+            ..Fake::default()
+        },
+        live: dead_here(),
+        now: at + 120,
+    };
+    let (n, stop, out) = drain(&q, &mut blocked, opts);
+    assert_eq!((n, stop), (0, Stop::Blocked("dirty".into())));
+    assert!(out.contains("stale claim released"), "{out}");
+    assert_eq!(q.ids(State::Pending).unwrap(), vec![id.clone()]);
+
+    let mut r = Probed {
+        inner: Fake::default(),
+        live: dead_here(),
+        now: at + 180,
+    };
+    let (n, _, _) = drain(&q, &mut r, opts);
+    assert_eq!(n, 1);
+    assert_eq!(r.inner.ran, vec!["revived"]);
 }
