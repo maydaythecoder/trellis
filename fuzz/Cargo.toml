@@ -19,11 +19,19 @@ cargo-fuzz = true
 [dependencies]
 # The one dependency the owner approved for fuzzing (issue #95, ## Decision).
 libfuzzer-sys = "0.4"
+trellis-model = { path = "../crates/trellis-model" }
 trellis-trail = { path = "../crates/trellis-trail" }
 
 [[bin]]
 name = "trail_from_json"
 path = "fuzz_targets/trail_from_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_response"
+path = "fuzz_targets/http_response.rs"
 test = false
 doc = false
 bench = false
