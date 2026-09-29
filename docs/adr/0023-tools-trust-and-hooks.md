@@ -554,7 +554,10 @@ trellis starts has; see §4), and a timeout
 Both are declared, trusted and timed out like the other four: argv arrays
 in `[hooks]`, under `[hooks] timeout_s`, part of the trust digest (so
 adding or changing either asks for `trellis trust` again), and re-checked
-against trust before each spawn. Evidence, in
+against trust before each spawn. A trust recorded before this amendment
+still matches for a repository that declares neither: the digest is built
+from the declared hooks only, and the four earlier events keep their order
+in it. Evidence, in
 `crates/trellis-loop/src/extension_tests.rs`:
 `hook_turn_end_receives_run_id_turn_tool_and_outcome_after_every_turn`,
 `hook_turn_end_that_writes_after_the_pass_marks_the_turn_and_prevents_convergence`,
@@ -1154,7 +1157,8 @@ names are in the code beside each.
 - **What hooks receive.** `pre_tool`: the call's flat wire JSON.
   `post_tool`: `{"call": <wire JSON>, "result": <the ToolResult as
   serialized>}`. `before_run`: `{}`. `after_run`: `{"run_id", "converged",
-  "iterations", "reason", "touched"}`. `before_run` output is indented line
+  "iterations", "reason", "touched"}`. `turn_end` and `input` (added by
+  #137): the schemas in §5. `before_run` output is indented line
   by line inside its fence, so no line it prints can be the fence's closing
   line, and control characters other than newline and tab are dropped. It is
   appended to `.trellis/context.md`'s notes, inside the repository fence. A

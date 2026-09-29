@@ -492,10 +492,14 @@ impl Orchestrator {
     /// that is a breach as much as a `bash` command that rewrote a hook.
     ///
     /// Only a model's call is a turn; the audit at convergence and the
-    /// direct requests are not, so `turn_end` does not run for them. One
-    /// function rather than a wrapper around this one: in a debug build
-    /// another layer of future between `serve` and `gated_inner` took the
-    /// main thread past its stack on Windows (`tests/child_env.rs`).
+    /// direct requests are not, so `turn_end` does not run for them.
+    ///
+    /// Stack headroom: this is polled on the run thread (`trellis-run`,
+    /// 8 MiB since #180). Before that a debug build on Windows polled it on
+    /// the 1 MiB main thread, and `tests/child_env.rs` overflowed it while
+    /// the hook's spawn (about 19 KB of future) was held inline; the boxing
+    /// in `Hooks::turn_end` is what fixed that then. `turn_end` is folded in
+    /// here rather than wrapped around this so it adds no layer of its own.
     async fn gated(
         &mut self,
         call: ToolCall,
