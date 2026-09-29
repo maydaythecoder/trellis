@@ -300,72 +300,31 @@ fn hold_group(pgid: u32) -> Option<tokio::process::Child> {
     c.spawn().ok()
 }
 
-/// Kills the child and what it started, as far as the platform allows
-/// without `unsafe`: the child leads its own process group on Unix, which
-/// `kill -KILL -- -<pgid>` signals whole; on Windows `taskkill /T` walks the
-/// tree from the child. A process that left the group (`setsid`) or whose
-/// parent already exited on Windows (the tree link is the parent pid) is
-/// not reached. Then the child itself, directly, whatever that did.
+/// Kills the child and what it started ([`trellis_core::process::kill_tree`],
+/// whose limits ADR 0023 §3 states), then the child itself, directly,
+/// whatever that did. Only while the child is unreaped: its pid is still
+/// its own until then.
 async fn kill_tree(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
-        if cfg!(windows) {
-            quietly(kill_command(
-                "taskkill",
-                &["/T", "/F", "/PID", &pid.to_string()],
-            ))
-            .await;
-        } else {
-            Box::pin(kill_group(Some(pid))).await;
-        }
+        // The kill commands are std and blocking; off the runtime's threads.
+        let _ = tokio::task::spawn_blocking(move || trellis_core::process::kill_tree(pid)).await;
     }
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
-/// Kills the process group the child led, after the child has exited: on
-/// Unix the group outlives its leader while any member lives, and
-/// `kill -KILL -- -<pgid>` reaches every member that did not leave it.
-/// Called only while the group provably has a member: the command itself,
-/// not yet reaped (`kill_tree`), or the holder `run` keeps unreaped. A
-/// group with no members could have had its id reused by then, and the
-/// signal would reach whoever took it.
-///
-/// Nothing on Windows. `taskkill /T` walks the tree from a live process,
-/// and after a normal exit the child is gone, so it would reach nothing;
-/// what the command started keeps running (a Job Object would hold the
-/// tree, which needs `unsafe` Win32 calls or a dependency this crate does
-/// not take). ADR 0023 §3 states it.
+/// Kills the process group the child led, after the child has exited
+/// ([`trellis_core::process::kill_group`]). Called only while the holder
+/// `run` keeps unreaped is a member, so the group id is still ours.
+/// Nothing on Windows (ADR 0023 §3).
 ///
 /// Awaited boxed, as `kill_tree` is: inline, their state made `run`'s
 /// future larger, and a debug build's deepest call path (a `pre_tool` hook
 /// before a custom tool, `child_env.rs`) overflowed the main thread's 1 MiB
 /// stack on Windows.
 async fn kill_group(pid: Option<u32>) {
-    if cfg!(windows) {
-        return;
-    }
     let Some(pid) = pid else { return };
-    quietly(kill_command("kill", &["-KILL", "--", &format!("-{pid}")])).await;
-}
-
-/// A kill command with no input, output or key.
-fn kill_command(program: &str, args: &[&str]) -> tokio::process::Command {
-    let mut k = tokio::process::Command::new(program);
-    // `taskkill` and `kill` need no key, and are given none.
-    trellis_core::secrets::scrub(k.as_std_mut());
-    k.args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    k
-}
-
-/// Runs a kill command for two seconds at most.
-async fn quietly(mut k: tokio::process::Command) {
-    if let Ok(mut k) = k.spawn() {
-        let _ = tokio::time::timeout(Duration::from_secs(2), k.wait()).await;
-    }
+    let _ = tokio::task::spawn_blocking(move || trellis_core::process::kill_group(pid)).await;
 }
 
 /// Reads `stream` to EOF into `into`: the last `cap` bytes, the total, and

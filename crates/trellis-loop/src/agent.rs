@@ -756,7 +756,18 @@ pub async fn run_seeded<M: Model>(
                     human,
                     may_have_changed_tree,
                     trust_breach,
-                } = orch.call(&call).await;
+                } = orch
+                    .call_within(
+                        &call,
+                        // Measured now, after the model's turn: a check
+                        // started by this call ends when the budget does
+                        // (ADR 0004), so one hung checker cannot hold the
+                        // run past it.
+                        budget
+                            .max_wall_clock
+                            .saturating_sub(started.elapsed().saturating_sub(waited_on_human)),
+                    )
+                    .await;
                 if let Some(h) = human {
                     waited_on_human += h.waited;
                 }
@@ -2807,5 +2818,77 @@ rank = \"non-negotiable\"
             "and must not trigger the escalation turn"
         );
         assert_eq!(t.turns[0].human, Some(true));
+    }
+
+    fn typecheck_now() -> Step {
+        Step::Call(ToolCall::RunChecks {
+            paths: Vec::new(),
+            kinds: vec![CheckKind::Typecheck],
+        })
+    }
+
+    /// The risk: a hung checker held the run past its wall-clock budget,
+    /// which the loop only reads between turns. A check is bounded by what
+    /// is left of the budget as well as by `timeout_s` (ADR 0004).
+    #[tokio::test]
+    async fn a_hung_check_ends_when_the_run_budget_does() {
+        let d = repo();
+        let sleeper = if cfg!(windows) {
+            vec![
+                "cmd".into(),
+                "/C".into(),
+                "ping -n 31 127.0.0.1 >NUL".into(),
+            ]
+        } else {
+            vec!["sh".into(), "-c".into(), "sleep 30".into()]
+        };
+        let cfg = CheckConfig {
+            typecheck: sleeper,
+            ..CheckConfig::default()
+        };
+        let (h, _j) = Orchestrator::new(d.path(), cfg).spawn();
+        let mut m = Scripted::new(vec![
+            typecheck_now(),
+            Step::Done {
+                summary: "checked".into(),
+            },
+        ]);
+        let tight = Budget {
+            max_iterations: 10,
+            max_wall_clock: std::time::Duration::from_secs(2),
+            ..Budget::default()
+        };
+        let started = std::time::Instant::now();
+        let (_, t) = run("check", &mut m, &h, &tight).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(t.turns[0].verdict_passed, Some(false));
+    }
+
+    /// The budget does not charge a person's wait, so neither may the
+    /// check's share of it: a check approved after the budget's nominal
+    /// end is given what the loop says is left, not nothing.
+    #[tokio::test]
+    async fn a_persons_wait_does_not_shorten_the_checks_bound() {
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0))
+            .with_gate(Box::new(SlowPerson(std::time::Duration::from_millis(1500))))
+            .spawn();
+        let mut m = Scripted::new(vec![
+            typecheck_now(),
+            Step::Done {
+                summary: "checked".into(),
+            },
+        ]);
+        let tight = Budget {
+            max_iterations: 10,
+            max_wall_clock: std::time::Duration::from_secs(1),
+            ..Budget::default()
+        };
+        let (outcome, t) = run("check", &mut m, &h, &tight).await;
+        assert_eq!(t.turns[0].verdict_passed, Some(true), "{outcome:?}");
     }
 }

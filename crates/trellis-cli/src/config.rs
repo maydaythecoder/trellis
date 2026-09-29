@@ -162,6 +162,10 @@ pub(crate) struct ChecksSection {
     pub typecheck: Option<Vec<String>>,
     pub tests: Option<Vec<String>>,
     pub python: Option<String>,
+    /// Seconds a check may run before its process tree is killed and it
+    /// fails; `trellis_checks::DEFAULT_CHECK_TIMEOUT_S` when absent. A run
+    /// also ends a check when its wall-clock budget does (ADR 0004).
+    pub timeout_s: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +214,9 @@ impl RepoConfig {
             }
             if let Some(v) = &s.python {
                 c.python = v.clone();
+            }
+            if let Some(v) = s.timeout_s {
+                c.timeout_s = v;
             }
         }
         c
