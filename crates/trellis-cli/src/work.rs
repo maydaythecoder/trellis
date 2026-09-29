@@ -475,12 +475,15 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             reconcile(&q)
         }
         QueueAction::Note { id, text } => {
+            // The one writer of a person's note: an `@name` in it wakes that
+            // profile's task on the next `work` tick (trellis_queue::mention).
+            let mut nid = String::new();
             q.edit(&id, |t, _| {
-                t.note(Actor::Human, text.clone());
+                nid = t.note_from_person(text.clone());
                 Ok(None)
             })?;
             q.log(Event::new(Actor::Human, "task.note", format!("task:{id}")).detail(text))?;
-            println!("noted:    {id}");
+            println!("noted:    {id} (note {nid})");
             Ok(())
         }
         QueueAction::Cancel { id, reason } => {
@@ -1085,6 +1088,13 @@ impl Runner for CliRunner<'_> {
         Some(&crate::liveness::SystemLiveness)
     }
 
+    /// The set `tick` just reloaded, or the last good one: the same set
+    /// `gate` decides against, so a mention never wakes a task for a
+    /// profile the gate would not know.
+    fn profiles(&self) -> Option<&BTreeMap<String, Profile>> {
+        Some(&self.profiles)
+    }
+
     fn run(&mut self, t: &trellis_queue::Task) -> RunEnd {
         let profile = t
             .assignee
@@ -1511,5 +1521,72 @@ mod question_tests {
         assert!(block.starts_with("--- user input:"), "{text}");
         assert!(block.contains(r#""Keep v1 for mobile?""#), "{text}");
         assert!(block.contains("No, mobile moved to v2 in June."), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod mention_wake_cli_tests {
+    use super::*;
+
+    fn trusted(_: &Path) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    #[test]
+    fn a_person_note_wakes_its_profile_through_the_real_heartbeat() {
+        // The risk: the queue can wake on a mention, but the binary never
+        // hands its heartbeat the profiles, or `queue note` writes a note
+        // without the id that marks it a person's, and `@reviewer` in a
+        // note does nothing with no error anywhere.
+        let root = crate::testutil::scratch("mention-wake");
+        crate::testutil::git_init(&root);
+        std::fs::create_dir_all(root.join(".trellis/agents")).unwrap();
+        std::fs::write(root.join(".trellis/agents/reviewer.toml"), "").unwrap();
+        crate::testutil::git_commit_all(&root, "fixture");
+
+        let q = Queue::for_repo(&root).unwrap();
+        let id = q.add("x", None, None).unwrap();
+        q.edit(&id, |t, _| {
+            t.status = Some(Status::Cancelled);
+            Ok(Some(State::Cancelled))
+        })
+        .unwrap();
+        queue(
+            &root,
+            QueueAction::Note {
+                id: id.clone(),
+                text: "@reviewer please look again".into(),
+            },
+        )
+        .unwrap();
+
+        let mut r = CliRunner {
+            root: &root,
+            model: None,
+            model_from_user: false,
+            unconstrained: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            profiles: BTreeMap::new(),
+            queue: q.clone(),
+            routines: BTreeMap::new(),
+            current: None,
+            said: BTreeSet::new(),
+            trust_check: trusted,
+            trust: None,
+        };
+        let mut out = Vec::new();
+        // No model anywhere, so the woken task waits at the gate rather
+        // than starting a run: what is under test is the wake, not a run.
+        let (n, stop) =
+            trellis_queue::work(&q, &mut r, trellis_queue::WorkOptions::default(), &mut out)
+                .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!((n, stop), (0, trellis_queue::Stop::Waiting(1)), "{out}");
+        assert!(out.contains("-> todo for `reviewer`"), "{out}");
+        let (s, t) = q.find(&id).unwrap();
+        assert_eq!(s, State::Pending);
+        assert_eq!(t.assignee.as_deref(), Some("reviewer"));
+        assert_eq!(t.notes[0].id.as_deref(), Some("n1"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
