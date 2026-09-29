@@ -47,6 +47,10 @@ pub(crate) struct RepoConfig {
     /// the resolver (ADR 0031).
     #[serde(default)]
     pub index: Option<IndexSection>,
+    /// `[work] stale_claims`: what the heartbeat does with a claim another
+    /// process left behind (ADR 0020 §5).
+    #[serde(default)]
+    pub work: Option<WorkSection>,
     /// What the user's own file said, kept after layering, because where a
     /// hosted endpoint came from decides whether a key may go to it
     /// (ADR 0024 §3). Never read from any file.
@@ -171,6 +175,14 @@ pub(crate) struct IndexSection {
     pub backstop: Option<String>,
 }
 
+/// How `trellis work` treats a task another process left in `claimed/`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkSection {
+    /// `"list"` (the default) or `"release"`.
+    pub stale_claims: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChecksSection {
     pub typecheck: Option<Vec<String>>,
@@ -248,6 +260,20 @@ impl RepoConfig {
             Some(other) => anyhow::bail!(
                 "[index] backstop = \"{other}\" is not a backstop; the only one is \"pyright\""
             ),
+        }
+    }
+
+    /// `[work] stale_claims`, validated. Any value but the two is an error
+    /// rather than the default: a misspelt `"release"` that quietly listed
+    /// would leave the user waiting on a recovery that never runs.
+    pub(crate) fn stale_claims(&self) -> Result<trellis_queue::StaleClaims> {
+        match self.work.as_ref().and_then(|w| w.stale_claims.as_deref()) {
+            None => Ok(trellis_queue::StaleClaims::List),
+            Some(v) => trellis_queue::StaleClaims::parse(v).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "[work] stale_claims = \"{v}\" is not a policy; use \"list\" or \"release\""
+                )
+            }),
         }
     }
 
@@ -825,6 +851,38 @@ deny_write = [\"vendor/\", \"*.lock\"]
         write(d.path(), "[checks]\ntypecheck = \"not a list\"\n");
         let e = RepoConfig::load(d.path()).unwrap_err();
         assert!(format!("{e}").contains("config.toml"), "{e}");
+    }
+
+    #[test]
+    fn stale_claims_default_to_list_and_a_misspelt_policy_is_refused() {
+        // A typo that quietly meant "list" would leave the user waiting on a
+        // recovery that never runs (ADR 0020 §5).
+        use trellis_queue::StaleClaims;
+        let d = tempfile::tempdir().unwrap();
+        let load = |d: &Path| RepoConfig::load(d).unwrap().stale_claims();
+        assert_eq!(load(d.path()).unwrap(), StaleClaims::List);
+        write(
+            d.path(),
+            "[work]
+stale_claims = \"release\"
+",
+        );
+        assert_eq!(load(d.path()).unwrap(), StaleClaims::Release);
+        write(
+            d.path(),
+            "[work]
+stale_claims = \"list\"
+",
+        );
+        assert_eq!(load(d.path()).unwrap(), StaleClaims::List);
+        write(
+            d.path(),
+            "[work]
+stale_claims = \"relase\"
+",
+        );
+        let e = load(d.path()).unwrap_err();
+        assert!(format!("{e}").contains("relase"), "{e}");
     }
 
     #[test]

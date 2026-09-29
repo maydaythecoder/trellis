@@ -2,6 +2,8 @@
 
 **Status:** Accepted. Amended in implementation: §1, §2, §3 (the checkout is a
 hard link, not a rename), §5 and §7. Each amendment is marked in place.
+§2 and §5 amended again on 2026-09-29 for #59: an opt-in release of a stale
+claim, decided by the owner on 2026-09-28.
 **Date:** 2026-09-27
 **Reference design:** Paperclip (`paperclipai/paperclip`, MIT). Five of its
 ideas are borrowed as designs, and no Paperclip code or server is used:
@@ -66,6 +68,12 @@ Each task is one JSON file, `<ulid-or-timestamp>-<slug>.json`:
 - As the task moves, the queue appends three things:
   - `claimed_at` and `claimed_by_pid` while the task is in `claimed/`.
   - `outcome: { run_id, exit, finished_at }` when it leaves.
+  - *Amended for #59:* `claimed_host`, `claimed_os` and
+    `claimed_pid_started` beside `claimed_by_pid`, written only by a
+    heartbeat with `stale_claims = "release"` (§5), and `stale_released_at`
+    once such a heartbeat has released the task. All four are optional and
+    omitted when unset, so every earlier file loads unchanged and a queue
+    under the default writes exactly what it wrote before.
 - `attempts` counts runs started. A task put back before its run started is
   not counted.
 
@@ -240,6 +248,65 @@ live one in another terminal. It is still made visible:
 - `queue list` shows the claim's age and pid.
 - `trellis queue requeue <id>` moves it, or a task in `failed/`, back to
   `pending/` and keeps its `attempts`.
+
+*Amended for #59 (owner decision, 2026-09-28).* `.trellis/config.toml` (or
+the user's own file) may set
+
+```toml
+[work]
+stale_claims = "release"   # default "list"
+```
+
+Either file may set it, and the repository's value applies over a user's
+file that names none, but a user's explicit `"list"` wins over a
+repository's `"release"`: releasing claims is something the user agrees to
+on their own machine, and a cloned repository may not turn it on over
+their "no", for the same reason a user's approve mode wins in `[control]`.
+Under `"list"`, or with no `[work]` section, everything above holds
+unchanged. Any other value is refused before anything is claimed. Under
+`"release"`, `work` looks at `claimed/` when it starts and on each tick, and
+moves a claim back to `pending/` only when it can tell the holder is dead:
+- The claim records a hostname and OS, and both are this machine's.
+  Hostname alone is not enough: WSL reports the Windows computer name by
+  default and can reach a Windows checkout, where a Windows pid probed from
+  Linux always looks gone. A claim with no host recorded (made before #59,
+  or by a heartbeat under `"list"`, or by `queue set` editing a pending task)
+  is never released automatically.
+- Its pid is not running. How that is read, with no `unsafe`: `/proc/<pid>`
+  on Linux (a zombie counts as gone); on Windows, one `powershell
+  Get-Process` per probe, with the key variables removed as for every child
+  (ADR 0024 §3); on other Unix, `ps -p <pid> -o lstart=`. Each command has
+  a 20-second bound. A probe that cannot answer keeps the claim.
+- It was not released by this mechanism in the last hour.
+  `stale_released_at` travels with the task, so a task whose runs keep
+  dying is fed back at most once an hour and then waits for a person.
+
+A release keeps `attempts`, clears the claim fields, sets the status to
+`todo`, and is logged to the activity log as `stale_claim_released` with the
+pid, the claim's age and the host. It happens under the same task lock as
+`requeue`. Nothing ever fails a task automatically, and no path touches
+`failed/`. The released task then waits behind the same clean-worktree gate
+as every other (ADR 0009): a crash that left the tree dirty stops `work`
+before the claim.
+
+**A reused pid.** A pid can be given to another process after its holder
+dies. That can only make a dead holder look alive, never a live one look
+dead, so a running pid keeps the claim whoever holds it. When releasing,
+`work` records its own start time, as the probe reports it (Linux clock
+ticks since boot, a Windows FILETIME, `ps lstart` in the C locale and UTC).
+When a running pid's start time differs from the recorded one, `work` says
+the pid probably belongs to another process, and still does not release.
+Releasing on that mismatch is a separate decision; it would be a one-line
+change.
+
+**Not covered.** Two machines that share a hostname and OS and a git
+directory (a network filesystem), and a container with its own pid
+namespace that bind-mounts the repository under the host's name, can each
+see the other's live pid as gone. Both would need the same hostname, which
+a container does not have by default. A holder that the probe wrongly calls
+dead and that finishes during the release keeps its record: the pending copy
+is removed if `done/`, `failed/` or `cancelled/` holds the task after the
+move.
 
 **Not enforced.** Two `work` processes in one worktree at the same time.
 `trellis run` does not lock either. The snapshot's clean-tree check catches
