@@ -434,7 +434,7 @@ pub(crate) fn routines(root: &Path, action: RoutinesAction) -> Result<()> {
                 let st = routine::state(&q, &r.name)?;
                 let next = r
                     .cron
-                    .next_after(now, r.tz)
+                    .next_after(now, &r.tz)
                     .map(|t| {
                         let (d, h) = r.tz.date_time(t);
                         format!("{d} {h} {}", r.tz)

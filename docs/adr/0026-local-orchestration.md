@@ -465,7 +465,7 @@ A routine is `.trellis/routines/<name>.toml`:
 
 ```toml
 schedule = "0 9 * * 1-5"    # minute hour day-of-month month day-of-week
-timezone = "UTC"            # or a fixed offset: "+02:00", "-05:30"
+timezone = "UTC"            # or "+02:00", "-05:30", or an IANA name: "Europe/Amsterdam"
 concurrency = "coalesce"    # coalesce | skip | always
 catch_up = "skip"           # skip | enqueue
 catch_up_max = 5            # with enqueue: at most this many missed fires
@@ -511,6 +511,39 @@ written in UTC. `Europe/Amsterdam` is refused with that explanation. It is
 not treated as UTC. An offset is exactly `+HH:MM` or `-HH:MM`, two digits in
 each field, checked on the text rather than on the parsed number: `-5:00`,
 `+05:5` and `+005:00` are refused rather than read as something close.
+
+*Amended 2026-09-29 (#47; owner decision 2026-09-28):* **IANA names are
+accepted.** `UTC` and fixed offsets parse exactly as before; anything else is
+looked up in `jiff::tz::db()`. Dependency reason, per ADR 0021's rule: `jiff`
+is already in the build through `trellis-cli` (vault dates), so
+`trellis-queue` gains a crate edge and `Cargo.lock` gains no package. The
+queue enables only `std`, `tzdb-zoneinfo` and `tzdb-bundle-platform`, a
+subset of what `trellis-cli` enables; `tz-system` is not needed, since a
+routine names its zone and never reads the machine's.
+- **Source, and how stale data shows.** On Unix the OS zoneinfo directory
+  (`TZDIR`, else `/usr/share/zoneinfo`), which the OS package manager keeps
+  current. On Windows, which has none, the data bundled into the binary by
+  `jiff-tzdb` (0.1.8 in `Cargo.lock`), as old as the build; it moves with
+  `cargo update`. `trellis doctor` prints which one is in use (`tz data:`),
+  and an unknown name's error names it too, since a name missing from stale
+  data reads the same as a misspelling.
+- **A nonexistent local time** (inside a spring-forward gap, e.g. 02:30 in
+  Amsterdam on 29 March 2026) fires at the first instant after the gap
+  (03:00 local), not at jiff's `compatible` 03:30. Every gap minute a
+  schedule names maps to that one instant, so it fires once.
+- **A repeated local time** (inside a fall-back fold) fires once, at the
+  earlier instant. The second pass through the hour does not fire, and is
+  not a missed fire for catch-up.
+- **An unknown name is refused**, including `Etc/Unknown`, which jiff answers
+  with a zone that behaves as UTC. A routine is still never read as UTC
+  because its zone was not understood.
+
+Evidence: `iana_zone_fires_at_local_nine_on_both_sides_of_each_transition`,
+`iana_zone_spring_gap_fires_at_the_first_instant_after_it`,
+`iana_zone_autumn_overlap_fires_once_at_the_earlier_instant` and
+`iana_zone_unknown_name_is_refused_not_read_as_utc` in
+`crates/trellis-queue/src/cron.rs`. They need the tz data present: on a Unix
+machine without zoneinfo they fail rather than pass on UTC.
 
 **Firing.** `work` evaluates routines on every tick before claiming. The
 state of each routine is stored at `<git-dir>/trellis/routines/<name>.json`,
@@ -1118,7 +1151,7 @@ any of these writers.
 
 ## What is not built
 
-- **IANA timezone names** (§7).
+- ~~**IANA timezone names** (§7).~~ Built for #47; see §7's amendment.
 - ~~**The per-profile `tools` list takes no effect** until W-B's registry
   reads it (§4).~~ Integrated; see below.
 - ~~**A profile's skill deny list does not stop `read_skill` by exact name**

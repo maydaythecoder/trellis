@@ -455,7 +455,7 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
     let mut due: VecDeque<i64> = VecDeque::new();
     let mut total = 0u64;
     let mut t = base;
-    while let Some(next) = r.cron.next_after(t, r.tz) {
+    while let Some(next) = r.cron.next_after(t, &r.tz) {
         if next > now {
             break;
         }
@@ -512,7 +512,7 @@ pub fn next_due(routines: &BTreeMap<String, Routine>, now: i64) -> Option<i64> {
     routines
         .values()
         .filter(|r| !r.file.paused)
-        .filter_map(|r| r.cron.next_after(now, r.tz))
+        .filter_map(|r| r.cron.next_after(now, &r.tz))
         .min()
 }
 
@@ -745,7 +745,7 @@ mod tests {
         assert!(
             parse(
                 "r",
-                "schedule = \"* * * * *\"\ntimezone = \"Europe/Paris\"\n[task]\ntext = \"x\"\n"
+                "schedule = \"* * * * *\"\ntimezone = \"Europe/Atlantis\"\n[task]\ntext = \"x\"\n"
             )
             .unwrap_err()
             .to_string()
