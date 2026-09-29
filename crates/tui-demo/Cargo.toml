@@ -33,6 +33,9 @@ futures-util = { version = "0.3", default-features = false }
 color-eyre = { version = "0.6", optional = true }
 anyhow.workspace = true
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
 
