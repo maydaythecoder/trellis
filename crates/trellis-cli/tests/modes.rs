@@ -305,3 +305,208 @@ fn a_key_in_the_user_config_stops_every_command_that_reads_it() {
     assert!(all.contains("ADR 0010"), "{all}");
     assert!(!all.contains("sk-do-not-print-me"), "{all}");
 }
+
+#[test]
+fn rpc_compact_with_no_run_in_flight_answers_no_run_in_flight() {
+    // The risk: a `compact` with nothing to compact reported as done, or as
+    // "not built" after it was built. There is no run, so there is no model
+    // request to shrink, and the client is told exactly that.
+    let f = fixture("rpc-compact-idle");
+    let mut child = trellis(&f)
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"id":"c","type":"compact"}}"#).unwrap();
+    drop(stdin);
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success());
+    let lines = jsonl(&o);
+    let resp = lines.iter().find(|l| l["id"] == "c").expect("answered");
+    assert_eq!(resp["type"], "response");
+    assert_eq!(resp["command"], "compact");
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error"], "no run in flight", "{resp}");
+}
+
+/// Serves `replies` in order as an OpenAI-protocol endpoint on a loopback
+/// port, returning each request body it received.
+fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::Read;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let h = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        for r in replies {
+            let Ok((mut s, _)) = l.accept() else { break };
+            s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+                .ok();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 16384];
+            let body = loop {
+                let n = s.read(&mut buf).unwrap_or(0);
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length").then_some(v)
+                        })
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if body.len() >= len || n == 0 {
+                        break body.to_string();
+                    }
+                } else if n == 0 {
+                    break String::new();
+                }
+            };
+            got.push(body);
+            let out = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                r.len()
+            );
+            s.write_all(out.as_bytes()).ok();
+        }
+        got
+    });
+    (format!("http://{addr}"), h)
+}
+
+fn openai_call(id: &str, name: &str, args: Value) -> String {
+    serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,
+        "tool_calls":[{"id":id,"type":"function","function":{"name":name,
+        "arguments":args.to_string()}}]}}],
+        "usage":{"completion_tokens":3}})
+    .to_string()
+}
+
+#[test]
+fn rpc_compact_mid_run_folds_the_older_turns_before_the_next_request() {
+    // The risk: `compact` answered with figures that describe no request
+    // the model was actually sent. The answer must come from the request
+    // after it, and that request, as the provider received it, must carry
+    // the elision note in place of the first turn's observation.
+    let f = fixture("rpc-compact-run");
+    // Large enough that its shown tail outweighs the note replacing it.
+    std::fs::write(
+        f.root.join("big.py"),
+        format!("X = 1\n{}", "# pad\n".repeat(800)),
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "big"]);
+    let (base, server) = provider_stub(vec![
+        openai_call("c1", "read_file", serde_json::json!({"path": "big.py"})),
+        openai_call(
+            "c2",
+            "edit",
+            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+        ),
+        openai_call("c3", "done", serde_json::json!({"summary": "changed it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key,
+    // so no key of this machine's reaches the stub.
+    let key_env = "TRELLIS_TEST_RPC_COMPACT_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[control]\nmode = \"approve\"\n\n[[providers]]\nname = \"stub\"\n\
+             protocol = \"openai\"\nbase_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut child = trellis(&f)
+        .arg("rpc")
+        .env_remove(key_env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            let _ = tx.send(serde_json::from_str(&line).expect("stdout is JSONL"));
+        }
+    });
+    let mut seen: Vec<Value> = Vec::new();
+    let mut next = |pred: &dyn Fn(&Value) -> bool| -> Value {
+        loop {
+            let v = rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .unwrap_or_else(|_| panic!("a record within 60 s; so far: {seen:?}"));
+            seen.push(v.clone());
+            if pred(&v) {
+                return v;
+            }
+        }
+    };
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"})
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    // The run is paused on the edit's question, one turn behind it.
+    let q = next(&|v| v["type"] == "approval_request");
+    // Read in order, so the request is registered before the yes that lets
+    // the run reach its next model request.
+    writeln!(stdin, r#"{{"id":"c","type":"compact"}}"#).unwrap();
+    writeln!(
+        stdin,
+        r#"{{"id":"{}","type":"approve","yes":true}}"#,
+        q["id"].as_str().unwrap()
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let c = next(&|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["command"], "compact");
+    assert_eq!(c["success"], true, "{c}");
+    let d = &c["data"];
+    // Two turns (the read, the edit) before the third request: the read is
+    // folded, and the edit is the newest, which never is.
+    assert_eq!(d["turn"], 3, "{c}");
+    assert_eq!(d["turns_folded"], 1, "{c}");
+    assert_eq!(d["elided_turns"], 1, "{c}");
+    let (before, after) = (
+        d["bytes_before"].as_u64().unwrap(),
+        d["bytes_after"].as_u64().unwrap(),
+    );
+    assert!(after < before, "{c}");
+    let end = next(&|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p");
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    reader.join().unwrap();
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(
+        !requests[1].contains("elided: "),
+        "nothing was elided before the request: {}",
+        requests[1]
+    );
+    assert!(
+        requests[2].contains("elided: read_file big.py"),
+        "the request after `compact` carries the note: {}",
+        requests[2]
+    );
+    assert!(!requests[2].contains("# pad"), "{}", requests[2]);
+    assert_eq!(
+        requests[2].len() as u64,
+        after,
+        "the size reported is the size sent"
+    );
+}
