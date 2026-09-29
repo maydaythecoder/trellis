@@ -100,6 +100,10 @@ Decisions the text above left open, made when this was implemented.
 - **Test fixture.** `crates/trellis-loop/tests/fixtures/skills/rust-unsafe/`
   is copied unchanged from low-level-dev-skills at commit `bdc58472`, with its
   MIT licence beside it, and loads without modification.
+- **The 500-line cap on a `SKILL.md`** is a CI check on the skills committed
+  to this repository (`scripts/checks/skill-lines.sh`, #133), not a run-time
+  rule: a long skill in a user's repository is bounded in the prompt by the
+  list cap and `read_skill`'s 8,000-character window.
 - *Amended after the sixth review of PR #1:* a repository skill's
   `SKILL.md` (and its directory) is read only when its real path is inside
   the repository and outside `.git`, and a skill directory that is a link
