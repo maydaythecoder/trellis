@@ -167,8 +167,9 @@ is a guard at a size a test can build).
 
 ### 3. `bash`, off by default
 
-`[tools] bash = true` enables `bash {command}`. It runs with the repository
-root as its working directory, a timeout (`[tools] bash_timeout_s`, default
+`[tools] bash = true` enables `bash {command}`. It runs with the root of a
+throwaway clone of the repository as its working directory (ADR 0034; its
+edits to tracked files are carried back), a timeout (`[tools] bash_timeout_s`, default
 120), and `TRELLIS_RUN_ID` and `TRELLIS_MODEL` added to the environment.
 The shell is `[tools] shell` (an argv prefix, the command appended as the
 last argument) or the platform default: `sh -c` on Unix; on Windows, Git's
@@ -1015,7 +1016,8 @@ command = ["python", ".trellis/tools/lint.py"]
 schema = { type = "object", properties = { path = { type = "string" } }, required = ["path"] }
 ```
 
-The arguments, as a JSON object, go to the command on stdin. Stdout, tail
+The arguments, as a JSON object, go to the command on stdin. It runs in a
+throwaway clone of the repository, as `bash` does (ADR 0034). Stdout, tail
 truncated, is the observation. A nonzero exit is an error observation.
 Subject to trust, to the gate list, and to `[control] approve` by name.
 Names are lowercase `[a-z][a-z0-9_]*`, at most 64 characters, and may not
