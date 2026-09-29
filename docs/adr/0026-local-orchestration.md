@@ -199,7 +199,8 @@ id, and the heartbeat adds its own note saying so.
   it. A task in `claimed/` is skipped with its notes unread and read on a
   later tick.
 - **Only a person's note counts.** `queue note` is the only writer of a
-  note `id` (`n1`, `n2`, … within the task), and a note wakes only if its
+  note `id` (`n` and the note's 1-based position in the task's list, so
+  `n1`, `n3` when the queue wrote the second), and a note wakes only if its
   actor is `human` *and* it has one. The actor alone is not enough: the
   queue also writes `human` notes on a person's behalf (a cancel reason, an
   approval, a manual routine fire), and those are records, not messages to
