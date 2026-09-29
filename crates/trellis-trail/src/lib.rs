@@ -87,9 +87,9 @@ pub struct Factual {
     /// reported any.
     ///
     /// A separate field rather than a larger `tokens`, so the two figures are
-    /// never added into one number: a prompt is re-sent every turn, and a sum
-    /// would read as generated output that never happened. Nothing in this
-    /// crate adds them.
+    /// never added into one number: the ledger budgets over `tokens` as
+    /// generated output, and prompt tokens folded into it would make that
+    /// budget bill for context instead. Nothing in this crate adds them.
     ///
     /// Absent means unknown — a trail written before this field existed, a
     /// scripted run, a process agent, an adapter that did not say — never
