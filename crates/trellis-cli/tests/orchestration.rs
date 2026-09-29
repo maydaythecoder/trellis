@@ -515,6 +515,65 @@ fn a_process_agent_converges_only_when_it_changed_something_and_the_checks_pass(
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn allow_write_refuses_a_process_agent_s_write_outside_it_and_names_it() {
+    // The risk (#182): a process agent's writes reach the repository with
+    // no `edit` call for the gate to check, so a scope enforced only there
+    // held for model runs and not for the agent the profile names. The
+    // judge that reads the command's changes refuses it, names it, and the
+    // run rolls back. A scope that admits the write converges as before,
+    // and a repository `deny_write` still wins over a scope that names it.
+    let deny = "[governance]\ndeny_write = [\"app/\"]\n";
+    for (name, allow, extra, refusal) in [
+        (
+            "proc-allow-out",
+            r#"["docs/"]"#,
+            "",
+            Some(
+                "governance: refused: app/made.cfg (outside the allow_write [`docs/`] \
+                 of agent `maker` in .trellis/agents/maker.toml)",
+            ),
+        ),
+        (
+            "proc-allow-deny",
+            r#"["app/"]"#,
+            deny,
+            Some("governance: refused: app/made.cfg (deny_write `app/`)"),
+        ),
+        ("proc-allow-in", r#"["app/"]"#, "", None),
+    ] {
+        let d = process_fixture(name, MAKES_A_FILE, PASSES);
+        std::fs::write(
+            d.join(".trellis/agents/maker.toml"),
+            format!("command = {MAKES_A_FILE}\ntimeout_s = 60\nallow_write = {allow}\n"),
+        )
+        .unwrap();
+        let cfg = d.join(".trellis/config.toml");
+        let mut text = std::fs::read_to_string(&cfg).unwrap();
+        text.push_str(extra);
+        std::fs::write(&cfg, text).unwrap();
+        git(&d, &["commit", "-qam", "scope"]);
+        ok(&d, &["trust"]);
+        ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+        let s = ok(&d, &["work"]);
+        match refusal {
+            Some(r) => {
+                assert!(s.contains("NOT CONVERGED"), "{name}:\n{s}");
+                assert!(s.contains(r), "{name}: the refusal is named:\n{s}");
+                assert!(!d.join("app/made.cfg").exists(), "{name}: rolled back");
+            }
+            None => {
+                assert!(
+                    s.contains("CONVERGED (converged: both checks passed)"),
+                    "{name}:\n{s}"
+                );
+                assert!(d.join("app/made.cfg").exists(), "{name}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_process_agent_runs_in_trellis_s_own_process_group() {

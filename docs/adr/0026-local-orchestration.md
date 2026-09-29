@@ -246,6 +246,7 @@ model = "llamacpp:http://127.0.0.1:8080"
 reports_to = "lead"
 paused = false
 tools = ["read_file", "edit"]           # carried for W-B's registry; see below
+allow_write = ["docs/", "*.md"]         # optional; deny_write's syntax; only narrows (#182)
 
 [control]
 mode = "auto"          # or "approve"
@@ -278,6 +279,9 @@ that reads them:
   A model profile starts no process to pass a variable to, and accepting
   the field would read as a pass-through that happened. An entry that is
   blank or contains `=` is refused as not a variable name.
+- *Amended (#182):* an `allow_write` entry that is blank is refused: it
+  parses as the exact path "", which admits nothing, and would read as a
+  scope that is not one.
 
 **What a profile changes about a run of its tasks:**
 - **`instructions`**: the file's text goes ahead of the task, the same way
@@ -304,6 +308,40 @@ that reads them:
   does, ADR 0020 §5). `pass_env` gives a variable back to a process
   agent, and is a committed choice `trellis trust` shows (§11).
 - **`[skills]`**: filters the catalog disclosed to the model (ADR 0019).
+- *Amended (#182, owner's decision of 2026-09-29):* **`allow_write`**: the
+  only paths this profile's runs may write, in `deny_write`'s rule syntax
+  (`vendor/` a prefix, `*.lock` a suffix, `setup.py` exact; folded for
+  separators, `.` segments and, on Windows and macOS, case). **It only
+  narrows.** Absent, the run is judged by the repository's rules alone,
+  exactly as before the field existed, and a profile file without it
+  parses and serializes unchanged. Present, a write must be admitted by it
+  *and* not denied by the repository: `deny_write` is consulted first
+  everywhere, so a path the repository denies stays denied whatever
+  `allow_write` names, and the refusal names the repository's rule.
+  `allow_write = []` is not the same as absent: it admits no write (the
+  field is an `Option`, so the two cannot collapse). A write is admitted
+  only when both the path as spelt and the path it really lands on through
+  any link are inside; one whose landing place cannot be worked out is
+  outside. Enforced where writes are judged:
+  - a model run's `edit` and `write_file`, at the governance gate, before
+    the file is read, refused as a `deny_write` hit is, naming the list and
+    `.trellis/agents/<name>.toml`;
+  - a `bash` or custom-tool command's changes, at the throwaway clone's
+    carry-back (ADR 0032), refused and named in the tool's output;
+  - a process agent (§11), over the files git shows the command changed,
+    in the judge read before the command runs: each out-of-scope file is
+    named as `governance: refused:` and the run does not converge and is
+    rolled back. Process agents do not run in the throwaway clone yet
+    (ADR 0032, "What is not built"; #175), so this is the post-command
+    judge, the same one that applies `deny_write` to them; the clone's
+    carry-back must apply it when #175 lands.
+  Ignored files are outside what `allow_write` judges: the checks and the
+  tests write caches there on every run, and a scope that counted them
+  would refuse every run of a scoped agent. They are not part of the change
+  a run leaves for review, and `deny_write` still binds them. The scope is
+  also kept out of the set that decides which changed ignored files count
+  as unrestorable, for the same reason. The model is told the scope in its
+  rules, and `agents show` prints it when set.
 - **`tools`**: stored and validated only as a list of strings. W-B is
   building the tool registry at the same time (ADR 0023), and this field is
   what it will read. Until then, **it has no effect on the run**, and

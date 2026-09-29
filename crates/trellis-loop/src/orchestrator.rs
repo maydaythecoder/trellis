@@ -845,7 +845,8 @@ impl Orchestrator {
     /// through the rules `edit` obeys, and says what it did. The write path
     /// is this orchestrator's own: refused under `.git/` and `.trellis/`
     /// and through links out of the repository ([`write_refusal`]), refused
-    /// where `deny_write` denies it, recorded in `touched` so the rollback
+    /// where `deny_write` denies it or a profile's `allow_write` does not
+    /// admit it, recorded in `touched` so the rollback
     /// and the trail both have it, and followed by a reindex.
     fn carry_back(
         &mut self,
@@ -869,6 +870,10 @@ impl Orchestrator {
                 refused.push(format!(
                     "`{rel}` is denied by the rule `{rule}` in .trellis/config.toml"
                 ));
+                continue;
+            }
+            if let Some(why) = self.governance.outside_allow_write(&rel) {
+                refused.push(format!("`{rel}` is {why}"));
                 continue;
             }
             let full = self.root.join(&rel);
