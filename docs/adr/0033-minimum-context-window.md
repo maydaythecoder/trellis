@@ -1,4 +1,4 @@
-# ADR 0032 — The smallest supported context window, and a radius sized to fit
+# ADR 0033 — The smallest supported context window, and a radius sized to fit
 
 **Status:** Accepted.
 **Date:** 2026-09-29

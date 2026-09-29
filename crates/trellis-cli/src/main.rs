@@ -2898,7 +2898,7 @@ fn record_trail(
         }
         // A sum, like the reach counts: each query summarised its own sites,
         // and a site summarised in two queries was shown only as a count
-        // twice (ADR 0032).
+        // twice (ADR 0033).
         radius.summarised += t.radius_summarised.unwrap_or(0);
     }
 
@@ -4172,7 +4172,7 @@ mod interrupt_tests {
     }
 
     /// The trail records how many radius call sites the model saw only as
-    /// counts (ADR 0032). Without it a reader of the trail cannot tell a run
+    /// counts (ADR 0033). Without it a reader of the trail cannot tell a run
     /// that was shown every caller from one shown twenty and a per-file
     /// tally, and the second knew less than its radius counts suggest.
     #[test]
