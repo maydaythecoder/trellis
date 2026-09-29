@@ -220,14 +220,9 @@ impl UntrustedTrail {
         let Some(factual) = v.get("factual") else {
             return Integrity::Altered;
         };
-        use sha2::{Digest, Sha256};
-        let Ok(bytes) = serde_json::to_vec(factual) else {
-            return Integrity::Altered;
-        };
-        let got: String = Sha256::digest(&bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        // The writer's canonical form, not the file's key order: see
+        // `factual_digest` for why the two must not be left to the build.
+        let got = crate::factual_digest(factual.clone());
         if &got == recorded {
             Integrity::Intact
         } else {
@@ -708,6 +703,46 @@ mod tests {
             "an old-shaped run keeps its bytes"
         );
         assert_eq!(crate::SCHEMA, 1, "an additive field is not a schema bump");
+    }
+
+    #[test]
+    fn the_factual_digest_is_over_sorted_keys_whatever_order_the_map_keeps() {
+        // The risk: the digest's bytes following `serde_json::Map`'s order,
+        // which `serde_json/preserve_order` flips from sorted to insertion
+        // order and which Cargo unifies from anywhere in the build graph. A
+        // `cargo test --workspace` build enabled it and a `-p trellis-trail`
+        // build did not, so the same committed trail read Intact under one
+        // and Altered under the other. Keys are inserted here in reverse, at
+        // two depths, and the bytes hashed are pinned to the sorted literal:
+        // under a `BTreeMap` that is free, under an `IndexMap` it holds only
+        // because the sort is explicit.
+        let mut inner = serde_json::Map::new();
+        inner.insert("d".into(), 3.into());
+        inner.insert("c".into(), 2.into());
+        let mut reversed = serde_json::Map::new();
+        reversed.insert("b".into(), serde_json::Value::Object(inner));
+        reversed.insert("a".into(), 1.into());
+        let sorted: serde_json::Value =
+            serde_json::from_str(r#"{"a":1,"b":{"c":2,"d":3}}"#).unwrap();
+
+        let pinned = crate::sha256_hex(br#"{"a":1,"b":{"c":2,"d":3}}"#);
+        assert_eq!(
+            crate::factual_digest(serde_json::Value::Object(reversed)),
+            pinned
+        );
+        assert_eq!(crate::factual_digest(sorted), pinned);
+
+        // And the reader: one factual section, keys in the order the writer
+        // emits them and in the reverse order, under one recorded digest.
+        let digest = crate::sha256_hex(br#"{"proposed":["a.py"],"tokens":7}"#);
+        for factual in [
+            r#"{"proposed":["a.py"],"tokens":7}"#,
+            r#"{"tokens":7,"proposed":["a.py"]}"#,
+        ] {
+            let raw = format!(r#"{{"task":"t","factual":{factual},"factual_sha256":"{digest}"}}"#);
+            let read: UntrustedTrail = serde_json::from_str(&raw).unwrap();
+            assert_eq!(read.integrity(&raw), Integrity::Intact, "{raw}");
+        }
     }
 
     #[test]
