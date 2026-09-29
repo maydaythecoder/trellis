@@ -46,6 +46,11 @@ smallvec           = { version = "1.16.1", features = ["serde", "union"] }
 walkdir            = "2.5.0"
 insta              = "1.48.0"
 tempfile           = "3.17.1"
+# Windows only (ADR 0035): exec children and process agents spawn into a Job
+# Object with kill-on-close and no breakaway, so what they start ends with
+# them. `kill-on-drop` is what sets JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; it
+# adds no crate. The `unsafe` Win32 calls live in this crate, not ours.
+process-wrap       = { version = "10.0.1", default-features = false, features = ["job-object", "kill-on-drop", "tokio1"] }
 
 trellis-core   = { path = "crates/trellis-core" }
 trellis-index  = { path = "crates/trellis-index" }
