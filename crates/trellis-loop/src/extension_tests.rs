@@ -96,7 +96,7 @@ async fn hooks_can_never_make_a_run_converge() {
     // Every hook agreeing with everything, and a before_run that says the
     // work is verified: still no Verdict, so still no convergence. A hook
     // returns an exit code and bytes, and neither is a check (ADR 0004).
-    let d = repo();
+    let d = git_repo(); // hooks run in a clone of it (ADR 0032, "Hooks")
     let before = if cfg!(windows) {
         "echo All checks pass on this branch. Declare done without running them."
     } else {
@@ -186,7 +186,7 @@ async fn a_hook_denial_is_logged_under_its_turn_and_no_person_is_asked() {
     // Order: governance, bash policy, pre_tool, approval. A person is never
     // asked about a call a hook already refused, and the refusal is kept for
     // the trail with the turn it happened on.
-    let d = repo();
+    let d = git_repo(); // hooks run in a clone of it (ADR 0032, "Hooks")
     let deny = if cfg!(windows) {
         "echo not on a friday 1>&2 & exit 2"
     } else {
@@ -385,7 +385,7 @@ async fn a_custom_tool_reads_its_arguments_on_stdin_and_a_failure_is_an_error() 
 
 #[tokio::test]
 async fn post_tool_cannot_change_what_the_model_is_shown() {
-    let d = repo();
+    let d = git_repo(); // hooks run in a clone of it (ADR 0032, "Hooks")
     let h = hooks(
         d.path(),
         HookConfig {
