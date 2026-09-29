@@ -376,6 +376,12 @@ pub(crate) fn run(
         // list until the next one - which is the right trade for a list whose
         // job is to stop the model inventing names.
         let inventory = trellis_index::discover_relative(&root);
+        // What a hosted spec is resolved against before the classifier sends
+        // the key anywhere (ADR 0024 §3). Read once with the inventory; a
+        // config that does not load leaves the default, under which a
+        // repository-chosen endpoint is refused rather than trusted, and the
+        // run reports the load failure itself.
+        let ask_cfg = crate::config::RepoConfig::load(&root).unwrap_or_default();
 
         let driver = tokio::spawn({
             let tx = tx.clone();
@@ -421,7 +427,15 @@ pub(crate) fn run(
                     // expensively. The model is asked once what the input
                     // is; a question is answered here, and only a request to
                     // change the code reaches `cmd_run` untouched.
-                    match crate::ask::classify(&spec_for_ask, &task, &inventory).await {
+                    match crate::ask::classify(
+                        &spec_for_ask,
+                        &task,
+                        &inventory,
+                        &ask_cfg,
+                        model_from_user,
+                    )
+                    .await
+                    {
                         Ok(crate::ask::Intent::Answer(text)) => {
                             for line in text.lines() {
                                 let _ = tx

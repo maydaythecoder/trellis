@@ -15,8 +15,9 @@
 //! would not otherwise write, so a reply that merely *mentions* tasks is not
 //! mistaken for one.
 
+use crate::config::RepoConfig;
 use anyhow::{Context, Result};
-use trellis_model::{ModelSpec, RuntimeClient};
+use trellis_model::{Conversation, HostedClient, ModelSpec, RuntimeClient};
 
 /// The marker the model returns instead of an answer when the input is work.
 ///
@@ -180,32 +181,128 @@ const EXAMPLES: &[(&str, &str)] = &[
     ("rename helper to assist", TASK_MARKER),
 ];
 
+/// The context a failure to build the client is reported under, by both
+/// branches: a hosted provider that fails is reported the way a local
+/// runtime that fails is, so a reader of the error need not know which kind
+/// of spec was in use to know what went wrong.
+const BUILDING_CLIENT: &str = "building the client to answer with";
+
+/// The context a failed classification request is reported under, by both
+/// branches.
+const ASKING: &str = "asking the model what this input is";
+
 /// Classifies `input`, answering it when it is not a task.
 ///
-/// Errors only when the runtime could not be reached or refused. A model that
+/// Errors only when the model could not be reached or refused. A model that
 /// replies with something unexpected is treated as having answered, because
 /// the failure that costs the user something is the other one: mistaking a
 /// question for work snapshots the worktree and rolls it back.
-pub(crate) async fn classify(spec: &ModelSpec, input: &str, files: &[String]) -> Result<Intent> {
-    let ModelSpec::Runtime {
-        dialect,
-        base,
-        model,
-    } = spec
-    else {
+///
+/// `cfg` and `from_user` are what a run resolves a hosted spec with. They
+/// are needed here for the same reason: this call sends the key too, and a
+/// key goes only to an endpoint the user chose (ADR 0024 §3).
+pub(crate) async fn classify(
+    spec: &ModelSpec,
+    input: &str,
+    files: &[String],
+    cfg: &RepoConfig,
+    from_user: bool,
+) -> Result<Intent> {
+    match spec {
+        ModelSpec::Runtime {
+            dialect,
+            base,
+            model,
+        } => {
+            let client =
+                RuntimeClient::new(base, *dialect, model.clone()).context(BUILDING_CLIENT)?;
+            let completion = client
+                .complete(&prompt_for(input, files), None, MAX_REPLY_TOKENS)
+                .await
+                .context(ASKING)?;
+            Ok(interpret(&completion.text))
+        }
+        ModelSpec::Hosted { .. } | ModelSpec::Provider { .. } => {
+            let text = ask_hosted(spec, &prompt_for(input, files), cfg, from_user).await?;
+            Ok(interpret(&text))
+        }
         // A scripted model has no opinion about intent, and asking one would
         // consume a step of its script. Everything is a task.
-        return Ok(Intent::Task);
+        ModelSpec::Scripted(_) => Ok(Intent::Task),
+    }
+}
+
+/// One classification request to a hosted provider, returning its text.
+///
+/// Resolved exactly as a run resolves the spec, so the refusal of a
+/// repository-chosen endpoint happens here as well, before any request
+/// (ADR 0024 §3). The key is read from the user's environment inside
+/// `HostedClient::new`, as for a run, and this function never holds it.
+async fn ask_hosted(
+    spec: &ModelSpec,
+    prompt: &str,
+    cfg: &RepoConfig,
+    from_user: bool,
+) -> Result<String> {
+    let Some(r) = crate::hosted::resolve(spec, cfg, from_user).context(BUILDING_CLIENT)? else {
+        anyhow::bail!("{BUILDING_CLIENT}: `{spec}` is not a hosted spec");
     };
-
-    let client = RuntimeClient::new(base, *dialect, model.clone())
-        .context("building the client to answer with")?;
-    let completion = client
-        .complete(&prompt_for(input, files), None, MAX_REPLY_TOKENS)
+    // Registered so the key's value is scrubbed from anything logged, as
+    // `hosted::build` does for a run.
+    trellis_core::secrets::register_key_vars([&r.key_env]);
+    // Thinking stays off whatever `[model] thinking` says: this is one short
+    // call on every input a person types, and a reasoning budget spent here
+    // is the measured way this prompt returns an empty reply.
+    let client =
+        HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env).context(BUILDING_CLIENT)?;
+    let reply = client
+        .send(&text_only_body(&client, prompt))
         .await
-        .context("asking the model what this input is")?;
+        .context(ASKING)?;
+    Ok(reply_text(&reply.replay))
+}
 
-    Ok(interpret(&completion.text))
+/// The request body for a plain text reply.
+///
+/// `HostedClient::body` is built for the loop: it always carries `tools` and
+/// a `tool_choice` (on OpenAI `"required"`), which with an empty tool list
+/// asks for a call there is nothing to make. The classifier offers no tools, so
+/// those fields are removed rather than sent empty. The empty system prompt
+/// goes too; the whole measured prompt is the user message.
+fn text_only_body(client: &HostedClient, prompt: &str) -> serde_json::Value {
+    let conv = Conversation {
+        user: prompt.to_string(),
+        ..Conversation::default()
+    };
+    let mut body = client.body(&conv, &[], MAX_REPLY_TOKENS);
+    if let Some(obj) = body.as_object_mut() {
+        for key in ["tools", "tool_choice", "parallel_tool_calls", "system"] {
+            obj.remove(key);
+        }
+        if let Some(serde_json::Value::Array(messages)) = obj.get_mut("messages") {
+            messages.retain(|m| m["role"] != "system");
+        }
+    }
+    body
+}
+
+/// The text of a hosted reply, read from the assistant message.
+///
+/// `Reply::call` is the loop's view and is an error for a text-only reply,
+/// which is the only kind this request can get; the message itself is in
+/// `replay`. OpenAI puts a string (or null) in `content`; Anthropic puts an
+/// array of blocks, of which only the `text` ones are the answer.
+fn reply_text(replay: &serde_json::Value) -> String {
+    match &replay["content"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
 }
 
 /// Turns a raw completion into an intent.
@@ -384,8 +481,138 @@ mod tests {
         let got = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(classify(&spec, "hello", &[]));
+            .block_on(classify(&spec, "hello", &[], &RepoConfig::default(), true));
         assert_eq!(got.unwrap(), Intent::Task);
+    }
+
+    /// A loopback server answering every request with a 500, forever.
+    ///
+    /// `Retry-After: 0` so the hosted client's retries (ADR 0024 §4) cost no
+    /// wall time; they still happen, and each is served the same 500.
+    fn always_500() -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { break };
+                s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .ok();
+                // The whole request first: answering before the body is read
+                // can reset the connection, which is a different failure.
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 16384];
+                loop {
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .map(str::to_string)
+                            })
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        if body.len() >= len {
+                            break;
+                        }
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let body = r#"{"error":"stub failure"}"#;
+                let out = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\
+                     Retry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                s.write_all(out.as_bytes()).ok();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn classify_now(spec: &ModelSpec) -> Result<Intent> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(classify(
+                spec,
+                "what does helper do?",
+                &[],
+                &RepoConfig::default(),
+                true,
+            ))
+    }
+
+    #[test]
+    fn ask_hosted_classify_a_500_is_reported_as_the_local_path_reports_it() {
+        // The risk: a provider failure on the hosted branch surfacing as a
+        // bare transport error, or as an answer, where the local branch says
+        // what was being attempted. The TUI prints `{e:#}` either way, so the
+        // two must carry the same context for the same failure.
+        let base = always_500();
+        let hosted: ModelSpec = format!("openai-chat:{base}/v1#m").parse().unwrap();
+        let local: ModelSpec = format!("llamacpp:{base}").parse().unwrap();
+
+        let h = format!(
+            "{:#}",
+            classify_now(&hosted).expect_err("a 500 is not an answer")
+        );
+        let l = format!(
+            "{:#}",
+            classify_now(&local).expect_err("a 500 is not an answer")
+        );
+        for (which, e) in [("hosted", &h), ("local", &l)] {
+            assert!(e.starts_with(ASKING), "{which}: {e}");
+            assert!(e.contains("500"), "{which} names the status: {e}");
+        }
+    }
+
+    #[test]
+    fn a_hosted_text_reply_is_read_from_either_protocol_s_message() {
+        // `Reply::call` is an error for a text-only reply; reading it rather
+        // than the message would turn every answer into "returned nothing".
+        let openai = serde_json::json!({"role":"assistant","content":"It returns 1."});
+        assert_eq!(reply_text(&openai), "It returns 1.");
+        let anthropic = serde_json::json!({"role":"assistant","content":[
+            {"type":"thinking","thinking":"private"},
+            {"type":"text","text":"<<TRELLIS_TASK>>"}
+        ]});
+        assert_eq!(interpret(&reply_text(&anthropic)), Intent::Task);
+        assert_eq!(reply_text(&serde_json::json!({"content":null})), "");
+    }
+
+    #[test]
+    fn the_hosted_classification_body_offers_no_tools() {
+        // The loop's `tool_choice: "required"` with an empty tool list asks
+        // for a call there is nothing to make, and a loopback stub accepts
+        // it where a provider would not be relied on to.
+        for spec in [
+            "openai-chat:http://127.0.0.1:1/v1#m",
+            "anthropic:http://127.0.0.1:1#m",
+        ] {
+            let ModelSpec::Hosted {
+                protocol,
+                base,
+                model,
+            } = spec.parse().unwrap()
+            else {
+                panic!("{spec} is hosted");
+            };
+            let c = HostedClient::with_key(protocol, &base, &model, "UNUSED", None).unwrap();
+            let b = text_only_body(&c, "PROMPT");
+            for key in ["tools", "tool_choice", "parallel_tool_calls", "system"] {
+                assert!(b.get(key).is_none(), "{spec}: {key} in {b}");
+            }
+            assert!(b.to_string().contains("PROMPT"), "{b}");
+            assert!(!b.to_string().contains(r#""role":"system""#), "{b}");
+        }
     }
 
     #[test]
