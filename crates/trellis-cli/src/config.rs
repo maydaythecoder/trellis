@@ -149,7 +149,9 @@ pub(crate) struct ModelSection {
     /// protocol carries it; ignored with a notice elsewhere.
     pub thinking: Option<String>,
     /// A ceiling on one request's size in bytes; over it, the oldest
-    /// observations are elided (ADR 0024 §5). Unset means no ceiling.
+    /// observations are elided (ADR 0024 §5). Unset means no ceiling for a
+    /// local runtime and `hosted::HOSTED_CONTEXT_BYTES` for a hosted one;
+    /// that default is applied when the driver is built, not here.
     pub context_bytes: Option<u64>,
 }
 
@@ -1068,7 +1070,9 @@ impl RepoConfig {
         }
     }
 
-    /// `[model] context_bytes`, when set.
+    /// `[model] context_bytes`, when set. `None` when unset, for every
+    /// driver: the hosted default is `hosted::build`'s, so what a local
+    /// runtime is given does not change.
     pub(crate) fn context_bytes(&self) -> Option<usize> {
         self.model
             .as_ref()
