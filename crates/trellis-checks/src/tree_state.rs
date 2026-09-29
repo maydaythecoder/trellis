@@ -9,12 +9,23 @@
 //! taken when the exit is observed and one after the kill.
 //!
 //! Metadata, not content: hashing every file twice per check would cost a
-//! large repository seconds a check. An entry is its relative path, its
+//! large repository seconds a check. A file or link is its relative path, its
 //! kind, length and modification time, and on Unix its inode, mode and
 //! change time (`ctime`, which a process cannot set back the way it can
 //! `mtime`). On Windows there is no change time in std: a leftover that
 //! rewrites a file to the same length and restores its modification time
 //! is not seen there.
+//!
+//! A directory is recorded by its kind and its entries, not by its own
+//! times: what it holds is what a check reads, and on Windows a listing
+//! reports a directory's times as NTFS last copied them into the parent,
+//! which can move later with no change under it (seen on `.git/logs/refs`
+//! in `child_env.rs`, where it failed a check nothing had written after).
+//!
+//! `.git/` at the root is not walked. The working tree is what a check
+//! judges, as the loop's worktree digest defines it; trellis's own git
+//! calls around a run write under `.git/`, and a change there during a run
+//! is the trust guard's to catch (ADR 0023), not a check's.
 //!
 //! Each entry is kept as two 64-bit hashes, not as its path: a repository
 //! with a `.venv` or `node_modules` has hundreds of thousands of entries.
@@ -68,7 +79,7 @@ impl Keys {
 }
 
 impl TreeState {
-    /// Walks everything under `root`, `.git/` and `.trellis/` included,
+    /// Walks everything under `root` but its `.git/`, `.trellis/` included,
     /// without following a link (a link's own metadata is recorded). An
     /// entry that cannot be read is recorded as the error it gave, so one
     /// that becomes readable or unreadable between walks is a change.
@@ -104,6 +115,9 @@ impl TreeState {
                         continue;
                     }
                 };
+                if rel.as_os_str().is_empty() && entry.file_name() == ".git" {
+                    continue;
+                }
                 let path = rel.join(entry.file_name());
                 // `DirEntry::metadata` does not follow a link, on either
                 // platform, and on Windows costs no extra call.
@@ -174,6 +188,9 @@ fn name(root: &Path, keys: &Keys, wanted: &[u64]) -> Vec<String> {
             if found.len() >= NAMED || seen >= MAX_ENTRIES {
                 return found;
             }
+            if rel.as_os_str().is_empty() && entry.file_name() == ".git" {
+                continue;
+            }
             let path = rel.join(entry.file_name());
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 dirs.push(path.clone());
@@ -190,6 +207,7 @@ fn name(root: &Path, keys: &Keys, wanted: &[u64]) -> Vec<String> {
 /// whose metadata could not be read.
 #[derive(Hash)]
 enum Stamp {
+    Dir,
     Read {
         kind: u8,
         len: u64,
@@ -208,10 +226,12 @@ fn stamp(md: std::io::Result<std::fs::Metadata>) -> Stamp {
         Err(e) => return Stamp::Unreadable(e.kind()),
     };
     let t = md.file_type();
+    // `is_dir` is false for a link to one, which is stamped as a link.
+    if t.is_dir() {
+        return Stamp::Dir;
+    }
     let kind = if t.is_symlink() {
         b'l'
-    } else if t.is_dir() {
-        b'd'
     } else if t.is_file() {
         b'f'
     } else {
@@ -250,6 +270,7 @@ mod tests {
         std::fs::create_dir(d.path().join("pkg")).unwrap();
         std::fs::write(d.path().join("pkg/a.py"), "x = 1\n").unwrap();
         std::fs::write(d.path().join("gone.txt"), "bye").unwrap();
+        std::fs::create_dir_all(d.path().join(".git/logs")).unwrap();
         let keys = Keys::new();
         let before = TreeState::take(d.path(), &keys);
         let same = TreeState::take(d.path(), &keys);
@@ -259,12 +280,14 @@ mod tests {
         std::fs::write(d.path().join("pkg/a.py"), "x = 1\ny = 2\n").unwrap();
         std::fs::write(d.path().join("pkg/new.py"), "").unwrap();
         std::fs::remove_file(d.path().join("gone.txt")).unwrap();
+        // Not the working tree: trellis's own git calls write here.
+        std::fs::write(d.path().join(".git/logs/HEAD"), "moved").unwrap();
         let after = TreeState::take(d.path(), &keys);
         let c = before.changes(&after, d.path(), &keys);
         assert!(c.named.iter().any(|p| p == "pkg/a.py"), "{:?}", c.named);
         assert!(c.named.iter().any(|p| p == "pkg/new.py"), "{:?}", c.named);
-        // a.py, new.py, gone.txt, and the two directories whose listings
-        // changed (their modification times moved).
-        assert!(c.count >= 3, "{}", c.count);
+        // a.py, new.py and gone.txt; nothing under `.git/`, and no
+        // directory for its own times.
+        assert_eq!(c.count, 3, "{:?}", c.named);
     }
 }

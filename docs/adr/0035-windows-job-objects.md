@@ -191,9 +191,10 @@ job, and fail the check if the tree changed after its exit was observed.
   group holder as `exec::run` (a `cat` in the group, reaped last), and the
   group is killed through `trellis_core::process::kill_group` after the
   exit. The timeout path is unchanged (`kill_tree` while unreaped).
-- **The tree check.** For an exit that is a pass (code 0), the tree under
-  the root is walked by metadata when the exit is observed and again after
-  the kill; any difference fails the check (`exit_code: None`, through the
+- **The tree check.** For an exit that is a pass (code 0), the working
+  tree under the root (not `.git/`, whose changes during a run are the
+  trust guard's, ADR 0023) is walked by metadata when the exit is observed
+  and again after the kill; any difference fails the check (`exit_code: None`, through the
   existing constructors; `Verdict` is unchanged). Between the two walks the
   pipes get a grace of 2 s within the check's bound, so a leftover that
   holds them is seen writing; before #172 that wait was the whole bound.
