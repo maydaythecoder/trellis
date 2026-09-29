@@ -207,7 +207,9 @@ remove tokio (see the last paragraph).
 rustc 1.93.0 / cargo 1.93.0 (picked up from the repository's
 `rust-toolchain.toml`), 16 logical CPUs, default `-j`. Date 2026-09-28, tree at
 `aeef233`. No `.cargo/config.toml` exists in the repository or the user
-profile, so no rustflags apply.
+profile, and `RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`,
+`CARGO_ENCODED_RUSTFLAGS` and `CARGO_TARGET_DIR` are unset in the shell that
+ran the builds, so no rustflags apply.
 
 **The prototypes.** Two packages, `.bench/t38/threads/` and
 `.bench/t38/tokio/`, under the git-ignored `.bench/`. They are not committed
@@ -215,7 +217,11 @@ and are not workspace members: each manifest has its own empty `[workspace]`
 table. Both mirror the workspace's `[profile.release]` (`lto = "fat"`,
 `codegen-units = 1`, `strip = "symbols"`), so sizes are in the same units as the
 Numbers section. Each draws a `ratatui` frame and has one background worker
-that sends a counter to the UI every 250 ms over a channel.
+that sends a counter to the UI every 250 ms over a channel. That describes
+the source. The binaries were compiled but not run, because a TUI needs a
+controlling terminal and none was attached. `tui-demo`'s tests work around
+the same limit with an event source that never yields. The ticket asks for
+build figures only.
 
 - **threads**: `crossterm`'s blocking `event::poll`/`event::read` (through
   `ratatui::crossterm`), a `std::thread` worker, `std::sync::mpsc`.
