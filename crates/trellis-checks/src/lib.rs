@@ -20,6 +20,14 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 /// for good (ADR 0004).
 pub const DEFAULT_CHECK_TIMEOUT_S: u64 = 1_800;
 
+/// How many bytes of each of a check's output streams are held: 8 MiB, the
+/// last ones written. The checker is the repository's own command, and one
+/// that prints without end would otherwise be read into memory until the
+/// host ran out (#171). The tail, because a type checker's summary and a
+/// test runner's failures come last. The exit code is read apart from the
+/// output, so a cut never changes a verdict.
+pub const CHECK_OUTPUT_CAP: usize = 8 * 1024 * 1024;
+
 /// Raw result of a process that ran to completion (or failed to start).
 ///
 /// `pub` so callers can see what happened, but note that constructing one
@@ -34,6 +42,13 @@ pub struct ProcessOutput {
     pub failure_count: Option<u32>,
     pub stdout: String,
     pub stderr: String,
+    /// `Some(n)` when stdout wrote `n` bytes, more than
+    /// [`CHECK_OUTPUT_CAP`]: only its last bytes were kept, and `stdout`
+    /// opens with a line saying how many were dropped. `None` when it was
+    /// kept whole.
+    pub stdout_truncated: Option<u64>,
+    /// As `stdout_truncated`, for stderr.
+    pub stderr_truncated: Option<u64>,
     pub duration_ms: u64,
 }
 
@@ -235,6 +250,8 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
         failure_count: Some(failing.len() as u32),
         stdout: out,
         stderr: String::new(),
+        stdout_truncated: None,
+        stderr_truncated: None,
         duration_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -319,6 +336,8 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             failure_count: None,
             stdout: String::new(),
             stderr: "empty command".into(),
+            stdout_truncated: None,
+            stderr_truncated: None,
             duration_ms: 0,
         };
     };
@@ -362,12 +381,14 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
                 failure_count: None,
                 stdout: String::new(),
                 stderr: format!("failed to spawn: {e}"),
+                stdout_truncated: None,
+                stderr_truncated: None,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
     };
 
-    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (mut out, mut err) = (Captured::default(), Captured::default());
     let (so, se) = (child.stdout.take(), child.stderr.take());
     let (exited, drained) = {
         // Read while waiting: a checker that fills a pipe nobody reads
@@ -396,7 +417,8 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
         };
         (exited, drained)
     };
-    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let (out, stdout_truncated) = out.into_text();
+    let (err, stderr_truncated) = err.into_text();
     match exited {
         Ok(Ok(status)) if drained => ProcessOutput {
             command,
@@ -404,8 +426,10 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             // Unparsed: a count read from a tool's text is a guess about
             // its format, and the exit code is what the verdict rests on.
             failure_count: None,
-            stdout: text(&out),
-            stderr: text(&err),
+            stdout: out,
+            stderr: err,
+            stdout_truncated,
+            stderr_truncated,
             duration_ms: started.elapsed().as_millis() as u64,
         },
         // Exited, but something it left running held its output open past
@@ -416,21 +440,24 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             command,
             exit_code: None,
             failure_count: None,
-            stdout: text(&out),
+            stdout: out,
             stderr: format!(
                 "exited ({status}), but its output was still held open after {} s by a \
-                 process it left running, which was not killed; the output is incomplete\n{}",
+                 process it left running, which was not killed; the output is incomplete\n{err}",
                 seconds(limit),
-                text(&err)
             ),
+            stdout_truncated,
+            stderr_truncated,
             duration_ms: started.elapsed().as_millis() as u64,
         },
         Ok(Err(e)) => ProcessOutput {
             command,
             exit_code: None,
             failure_count: None,
-            stdout: text(&out),
-            stderr: format!("could not wait for the check: {e}\n{}", text(&err)),
+            stdout: out,
+            stderr: format!("could not wait for the check: {e}\n{err}"),
+            stdout_truncated,
+            stderr_truncated,
             duration_ms: started.elapsed().as_millis() as u64,
         },
         Err(_) => {
@@ -448,12 +475,13 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
                 command,
                 exit_code: None,
                 failure_count: None,
-                stdout: text(&out),
+                stdout: out,
                 stderr: format!(
-                    "timed out after {} s; the check's process tree was killed\n{}",
+                    "timed out after {} s; the check's process tree was killed\n{err}",
                     seconds(limit),
-                    text(&err)
                 ),
+                stdout_truncated,
+                stderr_truncated,
                 duration_ms: started.elapsed().as_millis() as u64,
             }
         }
@@ -480,16 +508,69 @@ fn seconds(d: Duration) -> String {
     }
 }
 
+/// One output stream as read: at most [`CHECK_OUTPUT_CAP`] bytes, the last
+/// ones, and how many were written in all.
+///
+/// A `VecDeque` so dropping the head is cheap: trimming a `Vec` from the
+/// front moves the whole 8 MiB for every 8 KiB read once the cap is
+/// reached, and a checker printing gigabytes would pay that many times over.
+#[derive(Default)]
+struct Captured {
+    tail: std::collections::VecDeque<u8>,
+    total: u64,
+}
+
+impl Captured {
+    fn push(&mut self, bytes: &[u8]) {
+        self.total = self.total.saturating_add(bytes.len() as u64);
+        // Only the last `CHECK_OUTPUT_CAP` of one read can survive it.
+        let bytes = &bytes[bytes.len().saturating_sub(CHECK_OUTPUT_CAP)..];
+        // Dropped before the new bytes go in, so the buffer never holds (or
+        // grows its allocation for) more than the cap.
+        let over = (self.tail.len() + bytes.len()).saturating_sub(CHECK_OUTPUT_CAP);
+        self.tail.drain(..over);
+        self.tail.extend(bytes);
+    }
+
+    /// The kept bytes as text, and the stream's true length when some were
+    /// dropped. A cut stream opens with a line that says so, because what
+    /// reads this downstream (the model, the trail) sees only the text, and
+    /// a log that begins mid-run would otherwise read as the whole of it.
+    fn into_text(self) -> (String, Option<u64>) {
+        let mut tail = Vec::from(self.tail);
+        if self.total == tail.len() as u64 {
+            return (String::from_utf8_lossy(&tail).into_owned(), None);
+        }
+        // The cut can land inside a UTF-8 sequence: its continuation bytes
+        // (at most three) are dropped too, rather than shown as U+FFFD.
+        let partial = tail
+            .iter()
+            .take(3)
+            .take_while(|b| (**b & 0xC0) == 0x80)
+            .count();
+        tail.drain(..partial);
+        let text = format!(
+            "[trellis: output cut to its last {CHECK_OUTPUT_CAP} bytes: {} written, the first {} \
+             dropped, {} kept]\n{}",
+            self.total,
+            self.total - tail.len() as u64,
+            tail.len(),
+            String::from_utf8_lossy(&tail)
+        );
+        (text, Some(self.total))
+    }
+}
+
 /// Reads `stream` to its end into `into`, keeping what was read if the read
 /// is abandoned part way: a timed-out check's partial output is still worth
 /// showing.
-async fn read_all<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut Vec<u8>) {
+async fn read_all<R: AsyncRead + Unpin>(stream: Option<R>, into: &mut Captured) {
     let Some(mut s) = stream else { return };
     let mut buf = [0u8; 8192];
     loop {
         match s.read(&mut buf).await {
             Ok(0) | Err(_) => return,
-            Ok(n) => into.extend_from_slice(&buf[..n]),
+            Ok(n) => into.push(&buf[..n]),
         }
     }
 }
@@ -1047,5 +1128,117 @@ mod timeout_tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod output_cap_tests {
+    use super::*;
+
+    const WRITTEN: usize = 20 * 1024 * 1024;
+
+    /// A checker that prints `big.txt` (20 MiB, no newline, every byte
+    /// placed by its offset) to stdout, one line to stderr, and exits `code`.
+    /// Returns its argv and the bytes it prints.
+    fn printer(dir: &Path, code: i32) -> (Vec<String>, Vec<u8>) {
+        let big: Vec<u8> = (0..WRITTEN)
+            .map(|i| b"abcdefghijklmnopqrstuvwxyz0123456789"[i % 36])
+            .collect();
+        std::fs::write(dir.join("big.txt"), &big).unwrap();
+        let argv = if cfg!(windows) {
+            vec![
+                "cmd".to_string(),
+                "/C".into(),
+                format!("type big.txt & echo small 1>&2 & exit {code}"),
+            ]
+        } else {
+            vec![
+                "sh".to_string(),
+                "-c".into(),
+                format!("cat big.txt; echo small >&2; exit {code}"),
+            ]
+        };
+        (argv, big)
+    }
+
+    /// What `stdout` holds after the truncation line.
+    fn body(stdout: &str) -> &str {
+        let (note, body) = stdout.split_once('\n').expect("a truncation line");
+        assert!(note.starts_with("[trellis: output cut"), "{note:?}");
+        body
+    }
+
+    /// The risk (#171): a checker printing without end was read whole into
+    /// memory. 20 MiB in leaves no more than the cap held, and what is held
+    /// is exactly the last bytes written, where a summary sits.
+    #[tokio::test]
+    async fn check_output_cap_a_20_mib_checker_leaves_at_most_the_cap_with_the_tail_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let (argv, big) = printer(d.path(), 0);
+        let cfg = CheckConfig::default();
+        let o = run(d.path(), &cfg, &argv).await;
+        let kept = body(&o.stdout);
+        assert_eq!(kept.len(), CHECK_OUTPUT_CAP);
+        assert!(
+            kept.as_bytes() == &big[WRITTEN - CHECK_OUTPUT_CAP..],
+            "the kept bytes are not the last {CHECK_OUTPUT_CAP} written"
+        );
+        assert_eq!(o.stderr.trim(), "small", "the other stream is untouched");
+    }
+
+    /// A cut that is not recorded reads as the whole log. The true length
+    /// is on `ProcessOutput`, the note reaches the verdict's detail (what
+    /// the model and the trail see), and a stream under the cap records
+    /// nothing. A cut inside a UTF-8 sequence drops its stray continuation
+    /// bytes rather than showing U+FFFD.
+    #[tokio::test]
+    async fn check_output_cap_the_truncation_is_recorded() {
+        let d = tempfile::tempdir().unwrap();
+        let (argv, _) = printer(d.path(), 0);
+        let cfg = CheckConfig {
+            tests: argv.clone(),
+            ..CheckConfig::default()
+        };
+        let o = run(d.path(), &cfg, &argv).await;
+        assert_eq!(o.stdout_truncated, Some(WRITTEN as u64));
+        assert_eq!(o.stderr_truncated, None);
+        let note = format!(
+            "[trellis: output cut to its last {CHECK_OUTPUT_CAP} bytes: {WRITTEN} written, \
+             the first {} dropped, {CHECK_OUTPUT_CAP} kept]\n",
+            WRITTEN - CHECK_OUTPUT_CAP
+        );
+        assert!(o.stdout.starts_with(&note), "{:?}", &o.stdout[..200]);
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(v.detail().stdout.starts_with(&note));
+
+        let mut c = Captured::default();
+        c.push("é".as_bytes());
+        c.push(&vec![b'x'; CHECK_OUTPUT_CAP - 1]);
+        let (text, total) = c.into_text();
+        assert_eq!(total, Some(CHECK_OUTPUT_CAP as u64 + 1));
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "a split sequence shown as U+FFFD"
+        );
+        assert_eq!(body(&text).len(), CHECK_OUTPUT_CAP - 1);
+    }
+
+    /// The verdict rests on the exit code, never on the output: a cut
+    /// passing check still passes and a cut failing one still fails, with
+    /// its own code.
+    #[tokio::test]
+    async fn check_output_cap_the_exit_code_is_unchanged() {
+        let d = tempfile::tempdir().unwrap();
+        for (code, passes) in [(0, true), (3, false)] {
+            let (argv, _) = printer(d.path(), code);
+            let cfg = CheckConfig {
+                tests: argv,
+                ..CheckConfig::default()
+            };
+            let v = run_tests(d.path(), &cfg, &[]).await;
+            assert_eq!(v.detail().exit_code, Some(code));
+            assert_eq!(v.passed(), passes, "exit {code}");
+            assert!(v.detail().stdout.starts_with("[trellis: output cut"));
+        }
     }
 }

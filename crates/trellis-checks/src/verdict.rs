@@ -153,6 +153,8 @@ mod tests {
             failure_count: None,
             stdout: String::new(),
             stderr: String::new(),
+            stdout_truncated: None,
+            stderr_truncated: None,
             duration_ms: 1,
         }
     }
