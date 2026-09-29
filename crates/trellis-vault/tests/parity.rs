@@ -484,6 +484,59 @@ fn rm_turns_links_to_text_orphans_children_and_prunes_sidecars() {
     assert!(read(d.path(), "task-a.md").contains("See glossary and [[missing-note]]."));
 }
 
+// Apex's canvas owns these two files and trellis does not interpret them
+// (ADR 0021 rows 9 and 12, ADR 0022). The content is deliberately not what
+// serde_json would write: keys out of order, odd whitespace, CRLF, no final
+// newline. A create or retitle that parsed and re-serialised either file
+// would reorder or reformat it and fail here, while the round-trip through
+// Apex's own reader would still look valid.
+const ODD_LAYOUT: &str =
+    "{ \"task-a.md\" :{\"y\":3 ,\"x\":2},\r\n\t\"project.md\":{ \"dy\":-1,\"x\":1.50}  }";
+const ODD_ANNOTATIONS: &str =
+    "{\"items\":[ {\"type\":\"text\",\"text\":\"note\"} ] ,\r\n  \"version\":1 }";
+
+fn plant_odd_sidecars(dir: &Path) {
+    write(dir, "layout.json", ODD_LAYOUT);
+    write(dir, "annotations.json", ODD_ANNOTATIONS);
+}
+
+fn assert_odd_sidecars_unchanged(dir: &Path) {
+    assert_eq!(
+        std::fs::read(dir.join("layout.json")).unwrap(),
+        ODD_LAYOUT.as_bytes(),
+        "layout.json was rewritten"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("annotations.json")).unwrap(),
+        ODD_ANNOTATIONS.as_bytes(),
+        "annotations.json was rewritten"
+    );
+}
+
+#[test]
+fn sidecars_survive_create_byte_for_byte() {
+    // `vault new` must not add a layout entry or normalise either file: a
+    // new note has no position until Apex's canvas gives it one.
+    let d = copy_vault();
+    plant_odd_sidecars(d.path());
+    let (p, out) = edit::create(d.path(), "Fresh", Some("project")).unwrap();
+    assert_eq!(out.touched.created, std::slice::from_ref(&p));
+    assert_odd_sidecars_unchanged(d.path());
+    validate(d.path()).unwrap();
+}
+
+#[test]
+fn sidecars_survive_retitle_byte_for_byte() {
+    // Retitle rewrites links across the vault but never renames a file, so
+    // layout.json's path keys stay valid and there is nothing to prune.
+    let d = copy_vault();
+    plant_odd_sidecars(d.path());
+    let out = edit::retitle(d.path(), "project", "Delivery").unwrap();
+    assert!(out.touched.modified.contains(&"project.md".to_string()));
+    assert_odd_sidecars_unchanged(d.path());
+    validate(d.path()).unwrap();
+}
+
 #[test]
 fn init_makes_an_empty_vault_once() {
     let d = tempfile::tempdir().unwrap();
