@@ -36,13 +36,20 @@ fn main() {
 
     println!("status: {:?}", report.status);
     println!(
-        "doubt sites {}  queried {}  bound {}  left {}  not queried {}",
+        "doubt sites {}  queried {}  bound {}  no answer {}  refused {}  not queried {}",
         sites.len(),
         report.queried,
         report.edges.len(),
-        report.left,
+        report.no_answer,
+        report.refused_total(),
         report.not_queried
     );
+    // By reason, as `trellis index` prints them: a refusal is the server
+    // answering something this backstop would not bind, and each reason
+    // calls for a different fix.
+    for (why, n) in &report.refused {
+        println!("    refused, {}: {n}", why.describe());
+    }
 
     let line_of = |src: &str, at: usize| src[..at].matches('\n').count() + 1;
     let mut mismatched = 0u32;
