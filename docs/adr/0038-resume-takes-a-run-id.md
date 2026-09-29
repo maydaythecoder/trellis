@@ -1,4 +1,4 @@
-# ADR 0033 — `trellis resume` takes an optional run id
+# ADR 0038 — `trellis resume` takes an optional run id
 
 **Status:** Accepted.
 **Date:** 2026-09-29
