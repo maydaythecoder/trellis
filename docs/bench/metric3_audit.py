@@ -30,19 +30,28 @@ path and anchor check is `unknown`, never absent.
 **"At that point".** A file listed on the log's `files written:` line changed
 during the run, and the log does not say which edit wrote it, so every anchor
 check on that file after the first `edit` to it is `unknown`. A file not
-listed was never written, so its content is the same at every step. Files are
-never created (the edit tool refuses a missing path), so path existence does
-not change during a run.
+listed was never written, so its content is the same at every step. `edit`
+never creates a file (it refuses a missing path), so in the committed runs,
+which had no other writing tool, path existence does not change. Later
+binaries have more: after a `WriteFile`, that path's existence and content
+are `unknown`; after a `Bash` or `Custom` call, or a turn this script cannot
+parse, every later check is `unknown`, since any of them can change the tree
+without naming what they changed.
 
 Matching rules, each mirroring what the tools did:
   - anchors are matched on LF-normalised text, file and anchor both, as the
     edit tool matches; presence means at least one occurrence;
   - a path is relative to the repository root; `/` and `\\` both separate
-    (the runs were on Windows); an absolute path, a `..` component or a
-    directory is not a file in the repository; case must match exactly.
+    (the runs were on Windows); an absolute path or a `..` component is not in
+    the repository; case must match exactly;
+  - a path must name a file, except for `Ls` and `Grep`, which take a
+    directory too, and `WriteFile`, whose path exists when the file or its
+    parent directory does (a new file in a real directory refers to something
+    real).
 
-Only a singular `path` argument is audited. `run_checks`' `paths` list is not
-counted as a path argument (it was empty in every committed run).
+Only a singular `path` argument is audited (`Grep`'s `None` is no path).
+`run_checks`' `paths` list is not counted as a path argument (it was empty in
+every committed run).
 
 Usage:
   py -3 docs/bench/metric3_audit.py <trail-dir> --tasks <floor_tasks.json>
@@ -102,9 +111,18 @@ class Corpus:
                         self._files[rel] = f.read()
         for h in HARNESS_FILES:
             self._files.setdefault(h, b"")
+        self._dirs = {""} | {
+            "/".join(parts[:i])
+            for rel in self._files
+            for parts in [rel.split("/")]
+            for i in range(1, len(parts))
+        }
 
     def has_file(self, rel: str) -> bool:
         return rel in self._files
+
+    def has_dir(self, rel: str) -> bool:
+        return rel in self._dirs
 
     def text(self, rel: str) -> str:
         v = self._files[rel]
@@ -120,8 +138,9 @@ def normalise(path: str) -> str | None:
     if not path or path.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", path):
         return None
     parts = [p for p in re.split(r"[/\\]", path) if p not in ("", ".")]
-    if not parts or ".." in parts:
+    if ".." in parts:
         return None
+    # "" is the root itself, which `Ls` and `Grep` may name as ".".
     return "/".join(parts)
 
 
@@ -152,14 +171,44 @@ def unescape(body: str) -> str:
     return "".join(out)
 
 
+def skip_braces(s: str, i: int) -> int:
+    """The index after the `{...}` opening at `s[i]`, skipping string literals,
+    so a `}` inside one does not close it."""
+    depth, j = 0, i
+    while True:
+        if s[j] == '"':
+            j += 1
+            while s[j] != '"':
+                j += 2 if s[j] == "\\" else 1
+        elif s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+
+
+class Opaque:
+    """A value this audit does not read, such as `Custom`'s JSON arguments."""
+
+
 def parse_value(s: str, i: int):
-    """Parses one `{:?}` field value at `s[i]`: a string literal, a list, or a
-    bare identifier. Returns (value, index after it)."""
+    """Parses one `{:?}` field value at `s[i]`: a string literal, a list,
+    `Some(v)` / `None`, a bare identifier, or a struct or tuple value, which
+    is skipped as `Opaque`. Returns (value, index after it)."""
     if s[i] == '"':
         j = i + 1
         while s[j] != '"':
             j += 2 if s[j] == "\\" else 1
         return unescape(s[i + 1:j]), j + 1
+    if s.startswith("None", i) and not re.match(r"\w", s[i + 4:i + 5]):
+        return None, i + 4
+    if s.startswith("Some(", i):
+        v, j = parse_value(s, i + 5)
+        if s[j] != ")":
+            raise ValueError(f"unclosed Some( at {s[i:i + 20]!r}")
+        return v, j + 1
     if s[i] == "[":
         items, j = [], i + 1
         while s[j] == " ":
@@ -170,10 +219,21 @@ def parse_value(s: str, i: int):
             while s[j] in ", ":
                 j += 1
         return items, j + 1
-    m = re.compile(r"[\w:]+").match(s, i)
+    m = re.compile(r"[\w:.-]+").match(s, i)
     if not m:
         raise ValueError(f"cannot parse a value at {s[i:i + 20]!r}")
-    return m.group(0), m.end()
+    j = m.end()
+    if s.startswith(" {", j):
+        return Opaque(), skip_braces(s, j + 1)
+    if s.startswith("(", j):
+        j += 1
+        while True:
+            while s[j] in ", ":
+                j += 1
+            if s[j] == ")":
+                return Opaque(), j + 1
+            _, j = parse_value(s, j)
+    return m.group(0), j
 
 
 def parse_call(line: str) -> tuple[str, dict] | None:
@@ -238,31 +298,53 @@ def audit_log(task_id: str, log: str, task: dict | None, corpus: Corpus | None) 
     if written is None:
         row.notes.append("no `files written:` line")
     edited: set[str] = set()
+    # Paths a `WriteFile` may have created or replaced, and whether a call
+    # that can change any file without naming it has run.
+    rewritten: set[str] = set()
+    tree_unknown = False
 
     for line in log.splitlines():
         # The turn list ends where the run's summary begins; a checker's
         # output quoted below it could otherwise read as a numbered turn.
         if line.startswith(("files written:", "why the check failed:")):
             break
-        parsed = parse_call(line)
-        if parsed is None:
+        if not TURN.match(line):
             continue
-        name, args = parsed
         row.calls += 1
-        if "path" not in args:
+        try:
+            name, args = parse_call(line)
+        except (ValueError, IndexError, AssertionError, AttributeError):
+            # Counted as a call, audited as nothing; and since it may have
+            # been one that writes, nothing after it is known either.
+            row.notes.append(f"turn {row.calls} not parsed")
+            tree_unknown = True
+            continue
+        if name in ("Bash", "Custom"):
+            tree_unknown = True
+        path = args.get("path")
+        if not isinstance(path, str):
             continue
         row.with_path += 1
-        rel = normalise(args["path"])
+        rel = normalise(path)
         is_edit = name == "Edit"
         if is_edit:
             row.edits += 1
 
-        if corpus is None:
+        if corpus is None or tree_unknown or rel in rewritten:
             row.path_unknown += 1
             if is_edit:
                 row.anchor_unknown += 1
             continue
-        exists = rel is not None and corpus.has_file(rel)
+        if rel is None:
+            exists = False
+        elif name in ("Ls", "Grep"):
+            exists = corpus.has_file(rel) or corpus.has_dir(rel)
+        elif name == "WriteFile":
+            parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            exists = bool(rel) and (corpus.has_file(rel) or corpus.has_dir(parent))
+            rewritten.add(rel)
+        else:
+            exists = corpus.has_file(rel)
         if exists:
             row.path_exists += 1
         if not is_edit:
@@ -315,11 +397,11 @@ def render(rows: list[Row]) -> str:
 EXPECTED_WITH_CORPUS = {
     #        calls path exist unk edits present unk
     "t00": (7, 6, 4, 0, 5, 2, 0),
-    "t01": (5, 4, 3, 0, 4, 2, 1),
+    "t01": (13, 9, 6, 2, 5, 2, 2),
 }
 EXPECTED_WITHOUT_CORPUS = {
     "t00": (7, 6, 0, 6, 5, 0, 5),
-    "t01": (5, 4, 0, 4, 4, 0, 4),
+    "t01": (13, 9, 0, 9, 5, 0, 5),
 }
 
 
@@ -344,6 +426,14 @@ def self_test() -> int:
     if (name, args) != ("Edit", {"path": "src\tests\x11x\x00.py",
                                  "old": 'a"b\\c', "new": "\n"}):
         print(f"FAIL: parse_call gave {name} {args}")
+        failed = 1
+    # A turn in a shape this parser does not know is counted, audited as
+    # nothing, and makes what follows unknown rather than crashing the run.
+    odd = ('   1. Edit { path: "pkg/a.py", old: <x>, new: "" } \n'
+           '   2. ReadFile { path: "pkg/a.py" } \n')
+    r = audit_log("odd", odd, None, Corpus(SELFTEST / "corpus"))
+    if r.counts() != (2, 1, 0, 1, 0, 0, 0) or "turn 1 not parsed" not in r.notes:
+        print(f"FAIL: an unparsed turn gave {r.counts()} {r.notes}")
         failed = 1
     print("OK: metric 3 audit self-test" if not failed else "FAIL: metric 3 audit self-test")
     return failed
