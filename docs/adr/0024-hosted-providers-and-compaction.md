@@ -481,6 +481,20 @@ without a budget against the same replies and compares outcomes.
   *Amended by ADR 0033:* the smallest supported window is now named, as
   4,096 tokens; its byte conversion is pending #170, and `[model]
   context_bytes` still has no default.
+  *Amended 2026-09-29 (#152), on the owner's decision of 2026-09-28:* a
+  **hosted** spec with no `[model] context_bytes` uses **400,000 bytes**
+  (`HOSTED_CONTEXT_BYTES`, `crates/trellis-cli/src/hosted.rs`), applied when
+  the driver is built. The figure is about 100,000 tokens at roughly 4
+  bytes per token, and that ratio is a **heuristic, not a measurement**:
+  #170 measures it on trails carrying both prompt bytes and prompt tokens,
+  and per-model input limits (split from #45) replace this default when
+  they exist. An explicit value always wins, larger or smaller. A local
+  spec is unchanged: unset still means nothing is elided and its prompt is
+  byte for byte what it was. Config parsing is unchanged; `[model]
+  context_bytes` still reads as unset when it is absent. The overflow retry
+  above still applies, now shrinking from 400,000 bytes or less. Held by
+  `hosted_context_default_elides_an_unconfigured_run_below_400000_bytes` and
+  `hosted_context_default_yields_to_an_explicit_value_above_or_below_it`.
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
@@ -618,7 +632,9 @@ pull request.
 - OAuth, Bedrock, Vertex and Azure request signing.
 - Model-written summaries (§5).
 - Parallel tool calls (ADR 0005).
-- A byte default for `[model] context_bytes` (§5).
+- A byte default for `[model] context_bytes` on a local runtime (§5). A
+  hosted spec has one since #152; it rests on a heuristic bytes-per-token
+  ratio, and a measured one is pending #170.
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
 - Model overrides beyond `[model] context_bytes` and `thinking` (row 2.6):

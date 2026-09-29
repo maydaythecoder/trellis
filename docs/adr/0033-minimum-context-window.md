@@ -36,6 +36,10 @@ trail records prompt tokens (#105 and #106 add them).
    trails that carry both prompt bytes and prompt tokens. Until then nothing
    converts it: `[model] context_bytes` still has no default, and nothing in
    the code is derived from 4,096 tokens.
+   *Amended 2026-09-29 (#152):* a hosted spec now has a default of 400,000
+   bytes (ADR 0024 §5). It is not derived from 4,096 tokens, and its ~4
+   bytes-per-token basis is a heuristic, not the measurement #170 makes. A
+   local spec still has no default.
 
 2. **The radius observation has a byte budget,
    `RADIUS_OBSERVATION_BYTES` (`crates/trellis-loop/src/agent.rs`), equal to
