@@ -503,7 +503,9 @@ decision of its own.
 Declared in `.trellis/config.toml` as argv arrays, with no reliance on a
 shebang, so a hook is `["python", ".trellis/hooks/pre.py"]` on every
 platform. One per event. Each runs with the repository root as its working
-directory, the same two environment variables as `bash` (and, since the
+directory (*amended 2026-09-29, #174*: no longer; each runs in a throwaway
+clone of the repository, and a write reaches the repository only through
+the carry-back `bash` uses, ADR 0032 "Hooks"), the same two environment variables as `bash` (and, since the
 fourth review of PR #1, `PYTHONDONTWRITEBYTECODE=1`, as every command
 trellis starts has; see §4), and a timeout
 (`[hooks] timeout_s`, default 10).
@@ -549,7 +551,10 @@ trellis starts has; see §4), and a timeout
   is the one deliberate refusal. It can refuse a task and never rewrite
   one: its stdout is discarded. It runs in the repository like every hook,
   before the snapshot, so a write by it leaves the worktree dirty and the
-  snapshot refuses the run (ADR 0009).
+  snapshot refuses the run (ADR 0009). (*Amended 2026-09-29, #174*: it
+  runs in a clone of its own and nothing it writes comes back, because a
+  write to an ignored file or under `.git/` here came before the guards
+  that would have seen it; ADR 0032 "Hooks".)
 
 Both are declared, trusted and timed out like the other four: argv arrays
 in `[hooks]`, under `[hooks] timeout_s`, part of the trust digest (so
