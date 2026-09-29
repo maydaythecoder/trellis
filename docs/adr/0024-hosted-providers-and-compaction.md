@@ -257,6 +257,8 @@ for its own requests.
 - **The `chat` crate** depends on nothing in the workspace by design, so it
   removes the two default names itself (`chat::scrub_keys`) at its four
   spawns. It reads no `[[providers]]`, so it has no other names to remove.
+  *[2026-09-29, #16: `crates/chat` was deleted (Q-19); `chat::scrub_keys`
+  went with it and is recoverable from git history.]*
 
 Evidence is `crates/trellis-cli/tests/child_env.rs`. The binary is run with
 four canary keys in its environment: both defaults, a repository provider's

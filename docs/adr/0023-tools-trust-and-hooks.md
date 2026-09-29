@@ -651,6 +651,10 @@ this amendment a hook that wrote at any of those points left bytes in a
     `grep_and_find_run_no_planted_fsmonitor` in `trellis-loop`'s
     `listing.rs`, which failed before with the marker written, and whose
     control runs plain `git status` and sees it.
+    *[2026-09-29, #16: `crates/chat` was deleted (Q-19), so
+    `chat::git_command` and the test tying its copy of the overrides to
+    `trellis_vcs` are gone; every `git` spawn now comes from
+    `trellis_vcs`. The crate is recoverable from git history.]*
   - **A changed pre-existing ignored file is a tree not restored.** The
     rollback said "NOT put back" and exited 1 as restored; it exits 2
     now (`a_model_run_s_bash_writes_to_ignored_paths_are_removed_on_rollback`
