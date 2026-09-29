@@ -1,0 +1,27 @@
+---
+source: crates/trellis-loop/tests/partition_snapshots.rs
+expression: out
+---
+width: 1
+partition 0 (shared, conservative: true):
+  units (3):
+    report.run
+    shapes.Shape.area  (unpartitionable)
+    shapes.Square.area  (unpartitionable)
+  radius (4):
+    report.measure
+    report.run
+    shapes.Shape.area
+    shapes.Square.area
+  files (2):
+    report.py
+    shapes.py
+partition 1 (parallel, conservative: false):
+  units (1):
+    util.tidy
+  radius (2):
+    main.go
+    util.tidy
+  files (2):
+    main.py
+    util.py
