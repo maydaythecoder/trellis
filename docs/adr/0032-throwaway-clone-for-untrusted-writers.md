@@ -183,8 +183,9 @@ refreshed before each hook, carried back after each.** For a model call
 `carry_back_hook`):
 
 1. At the call's first hook, the clone is made as for `bash` (steps 1 to
-   3 above). A call that governance refuses, or that has no hook, makes
-   none.
+   3 above). A call with none of the three hooks declared makes none,
+   and one that governance refuses makes one only for `turn_end`, which
+   runs after a denied call too.
 2. Before each later hook of the same call it is **refreshed**
    (`Sandbox::refresh`): the repository is listed again and every listed
    file is copied in where the clone's bytes differ, or put back where
