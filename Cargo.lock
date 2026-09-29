@@ -2602,6 +2602,7 @@ dependencies = [
 name = "trellis-checks"
 version = "0.0.1"
 dependencies = [
+ "process-wrap",
  "serde",
  "serde_json",
  "tempfile",
