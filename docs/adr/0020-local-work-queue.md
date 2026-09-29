@@ -257,6 +257,11 @@ the user's own file) may set
 stale_claims = "release"   # default "list"
 ```
 
+Either file may set it, and the repository's value applies over a user's
+file that names none, but a user's explicit `"list"` wins over a
+repository's `"release"`: releasing claims is something the user agrees to
+on their own machine, and a cloned repository may not turn it on over
+their "no", for the same reason a user's approve mode wins in `[control]`.
 Under `"list"`, or with no `[work]` section, everything above holds
 unchanged. Any other value is refused before anything is claimed. Under
 `"release"`, `work` looks at `claimed/` when it starts and on each tick, and
