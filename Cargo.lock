@@ -2711,6 +2711,7 @@ dependencies = [
 name = "trellis-queue"
 version = "0.0.1"
 dependencies = [
+ "jiff",
  "serde",
  "serde_json",
  "tempfile",

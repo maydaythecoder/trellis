@@ -452,7 +452,7 @@ fn a_bad_routine_or_profile_is_refused_before_anything_is_claimed() {
         "bad-defs",
         &[(
             ".trellis/routines/r.toml",
-            "schedule = \"0 3 * * *\"\ntimezone = \"Europe/Amsterdam\"\n[task]\ntext = \"x\"\n",
+            "schedule = \"0 3 * * *\"\ntimezone = \"Europe/Atlantis\"\n[task]\ntext = \"x\"\n",
         )],
     );
     ok(&d, &["queue", "add", "x"]);
