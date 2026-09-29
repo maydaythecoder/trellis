@@ -230,6 +230,27 @@ fn origin_of(base: &str) -> Option<String> {
     origin(base).map(|(o, _)| o)
 }
 
+/// `[model] context_bytes` for a hosted run whose configuration sets none
+/// (ADR 0024 §5, amended 2026-09-29 by #152).
+///
+/// About 100,000 tokens at roughly 4 bytes per token. That ratio is a
+/// heuristic, not a measurement: #170 measures it on trails that carry both
+/// prompt bytes and prompt tokens, and per-model input limits replace this
+/// figure when they exist. Without it an unconfigured hosted run sent its
+/// whole transcript every turn until the provider refused one, and the
+/// overflow retry could only shrink from there.
+///
+/// Hosted only. A local runtime's window is whatever its server was started
+/// with, and an unset budget there still means no elision, so a local
+/// prompt stays byte for byte what it was.
+pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
+
+/// The byte budget a hosted run elides to: the configured one when set,
+/// whatever its size, else [`HOSTED_CONTEXT_BYTES`].
+fn hosted_context_bytes(cfg: &RepoConfig) -> usize {
+    cfg.context_bytes().unwrap_or(HOSTED_CONTEXT_BYTES)
+}
+
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
 /// plain-http remote, or a build without TLS.
 pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
@@ -239,7 +260,7 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
         .with_thinking(cfg.thinking()?);
-    Ok(HostedModel::new(client).with_context_bytes(cfg.context_bytes()))
+    Ok(HostedModel::new(client).with_context_bytes(Some(hosted_context_bytes(cfg))))
 }
 
 /// The run banner's `model:` line.
@@ -623,5 +644,174 @@ mod tests {
         assert_eq!((a.turn, a.tool.as_str(), a.wrote), (5, "compaction", false));
         assert_eq!(a.target, "turns 1-2");
         assert!(a.outcome.contains("9000 B"), "{}", a.outcome);
+    }
+
+    // ---- ADR 0024 §5, amended by #152: a hosted run has a byte budget ----
+
+    /// Distinct files read one per turn: distinct so the loop's no-progress
+    /// rule does not end the run, and enough of them that the unelided
+    /// request passes [`HOSTED_CONTEXT_BYTES`]. Each observation is shown
+    /// as its last 2,000 characters, so a turn adds a little over 2 KB.
+    const FILES: usize = 220;
+
+    fn file(i: usize) -> String {
+        format!("app/m{i:03}.py")
+    }
+
+    /// Serves one `read_file` per file, then `done`, on a loopback port,
+    /// returning each request body. Content-Length is honoured so a body of
+    /// several hundred KB arrives whole.
+    fn stub() -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let reply = |id: usize, name: &str, args: serde_json::Value| {
+            serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,
+                "tool_calls":[{"id":format!("c{id}"),"type":"function",
+                    "function":{"name":name,"arguments":args.to_string()}}]}}],
+                "usage":{"completion_tokens":1}})
+            .to_string()
+        };
+        let mut replies: Vec<String> = (0..FILES)
+            .map(|i| reply(i, "read_file", serde_json::json!({"path": file(i)})))
+            .collect();
+        replies.push(reply(FILES, "done", serde_json::json!({"summary": "read"})));
+        let h = std::thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for r in replies {
+                let Ok((mut s, _)) = l.accept() else { break };
+                s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+                    .ok();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 65536];
+                let mut want = None;
+                loop {
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    raw.extend_from_slice(&buf[..n]);
+                    if want.is_none()
+                        && let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n")
+                    {
+                        let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        want = Some((end + 4, len));
+                    }
+                    if let Some((start, len)) = want
+                        && raw.len() >= start + len
+                    {
+                        bodies.push(String::from_utf8_lossy(&raw[start..start + len]).into_owned());
+                        break;
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                    r.len()
+                );
+                s.write_all(out.as_bytes()).ok();
+            }
+            bodies
+        });
+        (format!("http://{addr}/v1"), h)
+    }
+
+    /// One hosted run with the driver `build` makes from `cfg`, as `trellis
+    /// run` makes it: the request bodies the provider received, the
+    /// compactions, and the observation bytes the transcript held.
+    fn hosted_run(cfg: &RepoConfig) -> (Vec<String>, Vec<Compacted>, usize) {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        for i in 0..FILES {
+            let body = format!("# module {i}\n{}", "value = 1\n".repeat(300));
+            std::fs::write(d.path().join(file(i)), body).unwrap();
+        }
+        let (base, h) = stub();
+        // Loopback over plain http with no key set: the client sends none,
+        // so the test sets no variable.
+        let r = Resolved {
+            protocol: Protocol::OpenAiChat,
+            base,
+            model: "m".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: None,
+        };
+        let mut m = build(&r, cfg).unwrap();
+        let checks = trellis_checks::CheckConfig {
+            typecheck: if cfg!(windows) {
+                vec!["cmd".into(), "/C".into(), "exit 0".into()]
+            } else {
+                vec!["sh".into(), "-c".into(), "exit 0".into()]
+            },
+            ..trellis_checks::CheckConfig::default()
+        };
+        let budget = trellis_loop::Budget {
+            max_iterations: FILES as u32 + 5,
+            ..trellis_loop::Budget::default()
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (t, events) = rt.block_on(async {
+            let (orch, _j) = trellis_loop::Orchestrator::new(d.path(), checks).spawn();
+            let (_, t) = trellis_loop::run("read every module", &mut m, &orch, &budget).await;
+            (t, trellis_loop::Model::compactions(&m).to_vec())
+        });
+        let observed = t.turns.iter().map(|x| x.observation.len()).sum();
+        (h.join().unwrap(), events, observed)
+    }
+
+    #[test]
+    fn hosted_context_default_elides_an_unconfigured_run_below_400000_bytes() {
+        // The risk: with no `[model] context_bytes`, a hosted run sent its
+        // whole transcript every turn until the provider refused it.
+        let (bodies, events, observed) = hosted_run(&RepoConfig::default());
+        assert_eq!(bodies.len(), FILES + 1, "every turn reached the provider");
+        assert!(observed > HOSTED_CONTEXT_BYTES, "{observed} bytes read");
+        // A compaction is recorded only for a request whose unelided
+        // rendering was over the budget, so this is the default firing.
+        assert!(!events.is_empty(), "the transcript outgrew the default");
+        assert!(
+            events
+                .iter()
+                .all(|e| e.budget == HOSTED_CONTEXT_BYTES && e.fits),
+            "{events:?}"
+        );
+        let largest = bodies.iter().map(String::len).max().unwrap();
+        assert!(largest <= HOSTED_CONTEXT_BYTES, "{largest} bytes sent");
+        let last = bodies.last().unwrap();
+        assert!(
+            last.contains("elided: read_file app/m000.py"),
+            "the oldest observation went first"
+        );
+    }
+
+    #[test]
+    fn hosted_context_default_yields_to_an_explicit_value_above_or_below_it() {
+        // The risk: the default overriding a user's setting, by clamping a
+        // larger one or by replacing a smaller one.
+        let above: RepoConfig = toml::from_str("[model]\ncontext_bytes = 1000000\n").unwrap();
+        let (bodies, events, _) = hosted_run(&above);
+        assert!(events.is_empty(), "{events:?}");
+        let largest = bodies.iter().map(String::len).max().unwrap();
+        assert!(
+            largest > HOSTED_CONTEXT_BYTES,
+            "the run passed the default and nothing was elided: {largest} bytes"
+        );
+
+        let below: RepoConfig = toml::from_str("[model]\ncontext_bytes = 100000\n").unwrap();
+        let (bodies, events, _) = hosted_run(&below);
+        assert!(!events.is_empty());
+        assert!(
+            events.iter().all(|e| e.budget == 100_000 && e.fits),
+            "{events:?}"
+        );
+        let largest = bodies.iter().map(String::len).max().unwrap();
+        assert!(largest <= 100_000, "{largest} bytes sent");
     }
 }
