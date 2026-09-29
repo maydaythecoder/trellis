@@ -517,7 +517,7 @@ fn changes(wt: &Path, base: &str) -> Result<Vec<Change>, String> {
     let mut fields = diff.split('\0').filter(|s| !s.is_empty());
     while let Some(status) = fields.next() {
         let Some(path) = fields.next() else {
-            return Err(format!("git diff ended after status {status:?}"));
+            return Err(format!("the worktree diff ended after status {status:?}"));
         };
         match status {
             "A" | "M" | "T" => out.push(Change::Write(path.to_string())),
@@ -540,16 +540,16 @@ fn git_z(wt: &Path, args: &[&str]) -> Result<String, String> {
         .args(args)
         .current_dir(wt)
         .output()
-        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+        .map_err(|e| format!("running git {}: {e}", args.join(" ")))?;
     if !out.status.success() {
         return Err(format!(
-            "git {}: {}",
+            "running git {}: {}",
             args.join(" "),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
     String::from_utf8(out.stdout)
-        .map_err(|_| format!("git {}: output is not UTF-8", args.join(" ")))
+        .map_err(|_| format!("running git {}: output is not UTF-8", args.join(" ")))
 }
 
 #[cfg(test)]
