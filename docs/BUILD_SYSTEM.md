@@ -126,3 +126,30 @@ Changed or dropped:
   (issue #17) but a percentage gate rewards tests written for the number.
 - **Secret scanner**: a key-shape regex over added lines stands in until a
   real scanner is installed; GitGuardian still runs on the PR.
+
+## CI runners
+
+GitHub-hosted jobs stopped starting on 2026-09-28 ("recent account payments
+have failed or your spending limit needs to be increased"). CI runs on two
+self-hosted runners on the owner's machine instead; a smoke job on one ran
+while GitHub-hosted jobs were blocked (run 36507327810).
+
+| Runner | Where | Labels | Started by |
+|---|---|---|---|
+| `trellis-win` | `C:\actions-runner\win` (Windows host) | self-hosted, Windows, X64 | `start-runner.cmd` there |
+| `trellis-wsl` | `~/actions-runner` in WSL2 Ubuntu 24.04 | self-hosted, Linux, X64 | `wsl.exe -d Ubuntu -- ~/actions-runner/start.sh` |
+
+- Each `runs-on` in `ci.yml` reads `vars.LINUX_RUNNER` / `vars.WINDOWS_RUNNER`
+  (repository variables holding a JSON label list) and falls back to
+  `ubuntu-latest` / `windows-latest` when unset. Back to GitHub-hosted:
+  `gh variable delete LINUX_RUNNER` and `gh variable delete WINDOWS_RUNNER`.
+- `ci.yml` runs `git config --global`; each runner's `.env` points
+  `GIT_CONFIG_GLOBAL` at a runner-owned file, so the owner's git config is
+  never written. Each launcher strips the provider-key variables.
+- The runners are processes, not services: they stop on logout or reboot and
+  are restarted with the commands above. One job runs per runner at a time.
+- WSL runs its own Ollama on 127.0.0.1:11434, so the `guards` job's stand-in
+  listener does not bind; the job only needs something listening there.
+- Self-hosted runners run whatever a pushed workflow says, as the owner. That
+  is acceptable for a private repository with one owner; GitHub advises
+  against it for public ones.
