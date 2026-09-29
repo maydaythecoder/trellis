@@ -2090,8 +2090,20 @@ mod compaction_and_hosted_tests {
 
     /// Answers up to `n` requests with whatever `respond` makes of each
     /// body, as `(status, body)`, and returns the request bodies.
+    ///
+    /// Stops early once no request arrives for 5 s, which is how a test
+    /// that expects fewer than `n` requests gets its bodies back.
     async fn stub_with(
         n: usize,
+        respond: impl FnMut(&Value) -> (u16, String) + Send + 'static,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        stub_with_idle(n, std::time::Duration::from_secs(5), respond).await
+    }
+
+    /// As [`stub_with`], stopping early once no request arrives for `idle`.
+    async fn stub_with_idle(
+        n: usize,
+        idle: std::time::Duration,
         mut respond: impl FnMut(&Value) -> (u16, String) + Send + 'static,
     ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2099,10 +2111,7 @@ mod compaction_and_hosted_tests {
         let h = tokio::spawn(async move {
             let mut bodies: Vec<Value> = Vec::new();
             for _ in 0..n {
-                let Ok(Ok((mut s, _))) =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
-                        .await
-                else {
+                let Ok(Ok((mut s, _))) = tokio::time::timeout(idle, listener.accept()).await else {
                     break;
                 };
                 let mut raw = Vec::new();
@@ -2159,9 +2168,22 @@ mod compaction_and_hosted_tests {
 
     type Shape = (bool, u32, Vec<(ToolCall, Option<bool>, Option<String>)>);
 
-    async fn drive(code: u8, budget: Option<usize>) -> (Shape, Vec<Compacted>, Vec<Value>) {
+    /// One run of `script()` against a stub provider, and the outcome as
+    /// `Debug` text, so a mismatch in `Shape` says why the run ended.
+    async fn drive(code: u8, budget: Option<usize>) -> (Shape, Vec<Compacted>, Vec<Value>, String) {
         let d = repo();
-        let (base, h) = stub(script()).await;
+        // The stub returns once every scripted request is answered, so the
+        // idle bound only decides how a broken run fails. At the 5 s default,
+        // a loaded host spent longer than that running the check between
+        // the third reply and the fourth request: the stub had closed, the
+        // `done` request was refused, and the run ended `ModelFailed`
+        // (issue #181). 120 s is the outer bound #173 chose for its gate.
+        let mut replies = script().into_iter();
+        let n = replies.len();
+        let (base, h) = stub_with_idle(n, std::time::Duration::from_secs(120), move |_| {
+            (200, replies.next().unwrap_or_default())
+        })
+        .await;
         let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
         let mut m = HostedModel::new(client).with_context_bytes(budget);
         let (orch, _j) = Orchestrator::new(d.path(), checker(code)).spawn();
@@ -2170,6 +2192,7 @@ mod compaction_and_hosted_tests {
             ..Budget::default()
         };
         let (outcome, t) = crate::agent::run("fix it", &mut m, &orch, &b).await;
+        let ended = format!("{outcome:?}");
         let iterations = match outcome {
             Outcome::Converged { iterations, .. } | Outcome::NotConverged { iterations, .. } => {
                 iterations
@@ -2185,7 +2208,7 @@ mod compaction_and_hosted_tests {
         );
         let events = m.compactions().to_vec();
         drop(orch);
-        (shape, events, h.await.unwrap())
+        (shape, events, h.await.unwrap(), ended)
     }
 
     #[tokio::test]
@@ -2194,9 +2217,12 @@ mod compaction_and_hosted_tests {
         // the loop decides. Same replies, same checks, with and without a
         // budget small enough to elide on every turn after the first.
         for code in [0u8, 1] {
-            let (plain, none, _) = drive(code, None).await;
-            let (compact, events, bodies) = drive(code, Some(1)).await;
-            assert_eq!(plain, compact, "checker exit {code}");
+            let (plain, none, _, plain_ended) = drive(code, None).await;
+            let (compact, events, bodies, compact_ended) = drive(code, Some(1)).await;
+            assert_eq!(
+                plain, compact,
+                "checker exit {code}: uncompacted {plain_ended}, compacted {compact_ended}"
+            );
             assert_eq!(plain.0, code == 0, "exit 0 converges, exit 1 does not");
             assert!(none.is_empty());
             assert!(!events.is_empty(), "the budget of 1 byte compacted");
@@ -2210,7 +2236,7 @@ mod compaction_and_hosted_tests {
     async fn history_goes_back_with_the_provider_s_own_ids_and_messages() {
         // Rebuilding the assistant message would drop reasoning blocks and
         // their signatures, which a provider requires back unchanged.
-        let (_, _, bodies) = drive(0, None).await;
+        let (_, _, bodies, _) = drive(0, None).await;
         let second = &bodies[1]["messages"];
         assert_eq!(second[2]["tool_calls"][0]["id"], "c1");
         assert_eq!(second[3]["role"], "tool");
