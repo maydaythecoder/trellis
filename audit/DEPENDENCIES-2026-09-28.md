@@ -147,6 +147,54 @@ compiled. Its tests were not run: #154 requires them.
   cargo-audit. `deny.toml` ignores the same ID with a reason, and that entry
   dates from `bc705e1` (2026-09-21), before this ticket and the predecessor.
 
+## Feature powerset
+
+**Command:** `cargo hack check --feature-powerset --no-dev-deps --workspace`
+(cargo-hack 0.6.45, rustc/cargo 1.93.0, Windows 11, target
+`x86_64-pc-windows-msvc`). **Date:** 2026-09-28. **Commit:** `d79b55c`
+(`drain`, the base of #36). **Result:** exit 0, every combination compiled.
+`git status --porcelain` was empty afterwards, so the manifests
+`--no-dev-deps` rewrites while it runs were restored. The run took 13.3 s wall
+clock on an already-built target directory (`time`, one run).
+
+Combinations checked, counted from cargo-hack's `info: running` lines (19 in
+all):
+
+| Crate | Features declared | Combinations | Which |
+|---|---|---|---|
+| `trellis-cli` | `default = ["hosted"]`, `hosted` | 3 | none; `hosted`; `default` |
+| `trellis-model` | `grammar`, `hosted` (no `default`) | 4 | none; `grammar`; `hosted`; `grammar,hosted` |
+| `tui-demo` | `default = ["demo"]`, `demo` | 3 | none; `demo`; `default` |
+| `chat`, `trellis-checks`, `trellis-core`, `trellis-index`, `trellis-loop`, `trellis-queue`, `trellis-trail`, `trellis-vault`, `trellis-vcs` | none | 1 each, 9 in all | plain `cargo check` |
+
+For `trellis-cli`, `default` and `hosted` enable the same set, so two of its
+three runs build the same thing; cargo-hack runs both because it does not
+compare what the features expand to. Optional dependencies are declared with
+`dep:` everywhere, so none is an implicit feature and none adds a combination.
+
+**Nothing was excluded.** No `--exclude-features`, `--depth`,
+`--skip` or `--group-features` was passed; the full powerset is 11 builds for
+the three crates that have features, small enough to run whole.
+
+**What `--no-dev-deps` leaves out.** Dev-dependencies are removed for the run,
+so tests, examples and benches are not built in any combination. This checks
+that library and binary targets compile under each feature set, nothing more.
+Whether the test suite passes without `hosted` is a separate question this run
+does not answer.
+
+**The predecessor's Deferred item.** `audit/DEPENDENCIES-2026-09-22.md`
+(Deferred, first item) proposed this command in place of
+`cargo-unused-features`, which cannot parse an edition-2024 workspace. It does
+not answer the same question. `--feature-powerset` checks that every
+combination of *this workspace's own* features compiles; it does not report a
+feature of a dependency that is enabled but unused. The powerset over each
+dependency's features that the predecessor sketched would need each
+dependency's feature list edited in turn, which cargo-hack does not do. That
+item is closed as follows: the compile-under-every-combination question is
+answered (yes, at `d79b55c`); the unused-dependency-feature question is still not
+answered by any tool, only by hand checks such as the predecessor's of
+`smallvec`, `rustyline` and `tui-logger`.
+
 ## Unverified
 
 - **Per-crate size attribution was not produced.** `CARGO_PROFILE_RELEASE_STRIP=none
