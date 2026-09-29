@@ -1872,6 +1872,9 @@ fn run_body(
             tools: tooling.tools.clone(),
             extra: added.extra,
         },
+        // Nothing here sends input while the run is in progress, so there is
+        // no steering channel and the run is exactly the one before #113.
+        steering: None,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2584,6 +2587,7 @@ fn handle_interrupt(
         task: task.to_string(),
         turns: Vec::new(),
         final_notice: false,
+        steering: trellis_loop::SteeringLog::default(),
         prior: None,
         repo: trellis_loop::RepoContext::default(),
     };
@@ -4324,6 +4328,7 @@ mod interrupt_tests {
             task: "a wide radius".to_string(),
             turns,
             final_notice: false,
+            steering: trellis_loop::SteeringLog::default(),
             prior: None,
             repo: trellis_loop::RepoContext::default(),
         };

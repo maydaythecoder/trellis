@@ -236,6 +236,7 @@ mod tests {
             task: "fix f".into(),
             turns: Vec::new(),
             final_notice: false,
+            steering: Default::default(),
             prior: None,
             repo: RepoContext {
                 extra,
