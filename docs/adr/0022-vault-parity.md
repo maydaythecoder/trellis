@@ -236,6 +236,17 @@ and name it. `trellis vault` is a command the human runs. It is not a tool the
 model has, so it does not pass through the tool gate (ADR 0018), and it
 performs no clean-worktree check: the edit is the human's, and git shows it.
 
+*Amended 2026-09-29 (#30), by the owner's decision of 2026-09-28:* vault
+notes stay human-authored, and the model gets no note-write tool. The
+alternative considered was a `write_note` tool gated like `edit` (ADR 0018)
+that ran `vault check` validation before the write landed; it was declined.
+A note is prompt input to later runs (ADR 0017), so a model-written note is
+the model writing its own future context with no executed check behind it.
+What the model learns goes in its run summary and the trail, which read back
+as untrusted data (ADR 0007). A human who agrees with it files it with
+`trellis vault new`. `trellis vault` stays a command the human runs, as
+above.
+
 ### 4. Search
 
 The search index is `searchIndex.ts`'s `SearchIndex`. Apex builds it from
