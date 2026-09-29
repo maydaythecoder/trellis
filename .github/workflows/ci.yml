@@ -55,6 +55,33 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
+  # every other job builds with it on. This one turns it off, so a change
+  # that only compiles with TLS present fails here instead of in the hands
+  # of whoever builds the local-only binary.
+  local-only:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same reason as the `test` job: the index's byte-span assertions
+      # depend on the checkout keeping LF line endings (A-21).
+      - name: Pin line endings
+        run: git config --global core.autocrlf false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build without default features
+        run: cargo build -p trellis-cli --no-default-features
+
+      - name: Test without default features
+        run: cargo test -p trellis-cli --no-default-features
+
   # Called out as its own job so a failure names the gate condition rather
   # than appearing as one line in a list of 100 passing tests.
   rollback-gate:

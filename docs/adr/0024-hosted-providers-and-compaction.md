@@ -578,6 +578,11 @@ trellis-cli --no-default-features`). `release.yml` passes no feature flags,
 so it is left as it is and **the released binary includes TLS**. CI does not
 build the local-only configuration; it was run by hand for this ADR.
 
+*Amended 2026-09-28 (#62):* the `local-only` job in `.github/workflows/ci.yml`
+now builds and tests this configuration (`cargo build` and `cargo test -p
+trellis-cli --no-default-features`) on Linux and Windows on every push and
+pull request.
+
 ## Not built
 
 - Streaming.
@@ -592,7 +597,6 @@ build the local-only configuration; it was run by hand for this ADR.
 - The intent classifier in `trellis ask` for a hosted model (§2).
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
-- A CI job for the local-only build.
 - Model overrides beyond `[model] context_bytes` and `thinking` (row 2.6):
   per-model input limits, cache lifetimes and cost tables are not read.
 - Stripping the key from child processes' environments (§3).
