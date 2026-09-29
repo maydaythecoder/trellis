@@ -43,7 +43,7 @@ pub use gate::{
 pub use governance::{Governance, Rule};
 pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
-    fence_before_run,
+    InputDecision, fence_before_run,
 };
 pub use orchestrator::{
     Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request, names_trellis_dir,

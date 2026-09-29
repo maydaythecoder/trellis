@@ -525,9 +525,48 @@ trellis starts has; see §4), and a timeout
   before the rollback, so on a run that did not converge the rollback also
   undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
   a converged run, a write by it demotes the run (see "After a pass").
+- **`turn_end`** (*amended 2026-09-29, #137; the owner decided the schema
+  on 2026-09-28*): after each model turn, that is after each call the
+  model made (a denied one too) and after that call's `post_tool`; never
+  for `done` or the convergence-time governance audit. Stdin is
+  `{"run_id": <TRELLIS_RUN_ID>, "turn": <1-based turn number>, "tool":
+  <tool name>, "outcome": <label>}`, where the label is one of `denied` (a
+  gate refused the call and the tool did not run), `error` (the tool
+  failed), `check_passed`, `check_failed`, or `ok` (any other result). The
+  result itself is not passed; `post_tool` has it. Observe only: output
+  and exit code are discarded, a failure is logged. The worktree is
+  fingerprinted around it as around `post_tool`, so a write by it marks the
+  turn as one that may have changed the tree and a pass on that turn stops
+  counting (see "After a pass").
+- **`input`** (*amended 2026-09-29, #137*): once, before the snapshot,
+  with stdin `{"run_id": <TRELLIS_RUN_ID>, "task": <the task as given>}`.
+  Exit 2 refuses the run with stderr (its first 500 bytes) as the reason:
+  nothing is snapshotted and no trail is written. Every other end (exit 0,
+  another code, a timeout, a failure to start) lets the run go on, and a
+  non-zero one is printed as a `hook:` line. That is the opposite of
+  `pre_tool`, deliberately: `input` is not a gate in front of a write, and
+  a hook that crashes on every task would otherwise stop every run; exit 2
+  is the one deliberate refusal. It can refuse a task and never rewrite
+  one: its stdout is discarded. It runs in the repository like every hook,
+  before the snapshot, so a write by it leaves the worktree dirty and the
+  snapshot refuses the run (ADR 0009).
 
-A hook can refuse a call. It cannot produce a pass, cannot make a run
-converge, and cannot rewrite a call or an observation (ADR 0004, ADR 0005).
+Both are declared, trusted and timed out like the other four: argv arrays
+in `[hooks]`, under `[hooks] timeout_s`, part of the trust digest (so
+adding or changing either asks for `trellis trust` again), and re-checked
+against trust before each spawn. Evidence, in
+`crates/trellis-loop/src/extension_tests.rs`:
+`hook_turn_end_receives_run_id_turn_tool_and_outcome_after_every_turn`,
+`hook_turn_end_that_writes_after_the_pass_marks_the_turn_and_prevents_convergence`,
+`hook_input_exit_two_refuses_the_task_with_stderr_as_the_reason` and
+`hook_input_other_exits_proceed`; in `crates/trellis-loop/src/hooks.rs`,
+`turn_end_and_input_are_in_the_trust_digest`; and in
+`crates/trellis-cli/src/tooling.rs`,
+`hook_input_refusal_comes_before_the_snapshot_and_leaves_no_trail`.
+
+A hook can refuse a call, and `input` can refuse a task. It cannot produce
+a pass, cannot make a run converge, and cannot rewrite a call, a task or an
+observation (ADR 0004, ADR 0005).
 
 #### After a pass (amended 2026-09-27)
 
@@ -1143,7 +1182,8 @@ names are in the code beside each.
   loaded. An unconfigured run prints what it printed before.
 
 Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust,
-hooks for events other than the four above, and tracking of what `bash` or a custom tool wrote in the worktree.
+hooks for events other than the six in §5 (`turn_end` and `input` were
+added by #137), and tracking of what `bash` or a custom tool wrote in the worktree.
 
 ## Integrated
 
