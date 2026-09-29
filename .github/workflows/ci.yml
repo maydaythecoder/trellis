@@ -28,7 +28,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Self-hosted when the repository variables name runners (JSON label
+    # lists, e.g. ["self-hosted","Windows"]); GitHub-hosted when unset (#157).
+    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +58,7 @@ jobs:
   # Called out as its own job so a failure names the gate condition rather
   # than appearing as one line in a list of 100 passing tests.
   rollback-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -93,7 +95,7 @@ jobs:
   # temporary directory. No model is involved: every guard either uses a
   # scripted model or is refused before one is called.
   guards:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -141,7 +143,7 @@ jobs:
   # then the RustSec database again through cargo-audit. Its own job so a new
   # advisory reads as a supply-chain failure, not as a broken build.
   supply-chain:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -174,7 +176,7 @@ jobs:
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.
   index-invariants:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -204,7 +206,7 @@ jobs:
   # a different sdist fails here rather than quietly moving every figure in
   # the documents.
   precision-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
