@@ -75,6 +75,15 @@ surface brief 4.12 fixes, which is why this is an ADR. The owner decided on
 4. **The commands and their arguments.** These six, and no others without an
    amendment to this ADR:
 
+   ```
+   trellis-tickets new --title <t> --body-file <p> [--dry-run]
+   trellis-tickets triage <n> [--json]
+   trellis-tickets ready <n>
+   trellis-tickets sweep [--dry-run|--apply]
+   trellis-tickets scan [<path>]
+   trellis-tickets index [--out <p>]
+   ```
+
    | Command | Arguments | Behaviour |
    |---|---|---|
    | `new` | `--title <t> --body-file <p> [--dry-run]` | Refuses a body without `## Done when` or a fenced `## Verify` (what G0 and G6 read), runs G6's line checks on the Verify block, and files the issue with the labels `triage` computes. `--dry-run` prints the `gh issue create` argv without running it. (#79) |

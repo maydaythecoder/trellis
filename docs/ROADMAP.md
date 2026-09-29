@@ -136,7 +136,7 @@ Semantic backstop if v0.1 demands it. Frontier escalation policy. Coverage-gap
 UX. Budget calibration from real usage.
 
 Maintainer tooling, not product surface: `trellis-tickets`, a separate binary
-for trellis's own GitHub issues (triage, ready, sweep, scan, index, new), so
+for trellis's own GitHub issues (new, triage, ready, sweep, scan, index), so
 the `trellis` CLI that brief 4.12 fixes does not grow. Recorded in
 [ADR 0040](adr/0040-ticketing-tool.md); built by #76-#81.
 
