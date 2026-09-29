@@ -677,5 +677,79 @@ mod tests {
                 .and_then(|c| c.mode.as_deref()),
             Some("approve")
         );
+        assert_eq!(
+            implementer.file.allow_write, None,
+            "implementer is unscoped"
+        );
+
+        // The risk (#183): a scoped starter whose scope does not hold, so
+        // "tests only" or "docs only" is enforced by nothing but its prompt.
+        // Each scope is run through the same `Governance` the gate and a
+        // process agent's audit consult, against paths it must admit and
+        // paths it must refuse.
+        let scoped: [(&str, &[&str], &[&str]); 2] = [
+            (
+                "test-writer",
+                &[
+                    "tests/test_parse.py",
+                    "tests/unit/conftest.py",
+                    "pkg/parse_test.py",
+                    "conftest.py",
+                ],
+                &["pkg/parse.py", "setup.py", "docs/testing.md", "README.md"],
+            ),
+            (
+                "docs-writer",
+                &[
+                    "docs/guide.md",
+                    "docs/api/index.rst",
+                    "README.md",
+                    "pkg/NOTES.md",
+                ],
+                &["pkg/parse.py", "tests/test_parse.py", "pyproject.toml"],
+            ),
+        ];
+        for (n, inside, outside) in scoped {
+            let p = &profiles[n];
+            let allow = p
+                .file
+                .allow_write
+                .as_deref()
+                .unwrap_or_else(|| panic!("agent `{n}` has no allow_write"));
+            assert!(!allow.is_empty(), "agent `{n}` may write nothing");
+            assert_eq!(
+                p.file.control.as_ref().and_then(|c| c.mode.as_deref()),
+                Some("approve"),
+                "agent `{n}`"
+            );
+            let g = trellis_loop::Governance::new(&[]).with_allow_write(n, allow);
+            for path in inside {
+                assert_eq!(
+                    g.outside_allow_write_at(d.path(), path),
+                    None,
+                    "agent `{n}` must be able to write {path}"
+                );
+            }
+            for path in outside {
+                assert!(
+                    g.outside_allow_write_at(d.path(), path).is_some(),
+                    "agent `{n}` must not be able to write {path}"
+                );
+            }
+        }
+        // The rule syntax has no infix wildcard: `test_*.py` parses as the
+        // exact path "test_*.py", admits nothing, and reads as a scope that
+        // is on. No starter may ship an entry like that.
+        for (n, p) in &profiles {
+            for entry in p.file.allow_write.iter().flatten() {
+                assert!(
+                    !matches!(
+                        trellis_loop::Rule::parse(entry),
+                        trellis_loop::Rule::Exact(e) if e.contains('*')
+                    ),
+                    "agent `{n}`: allow_write entry {entry:?} matches nothing"
+                );
+            }
+        }
     }
 }
