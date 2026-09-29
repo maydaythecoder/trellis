@@ -380,13 +380,14 @@ that reads them:
     `.trellis/agents/<name>.toml`;
   - a `bash` or custom-tool command's changes, at the throwaway clone's
     carry-back (ADR 0032), refused and named in the tool's output;
-  - a process agent (§11), over the files git shows the command changed,
-    in the judge read before the command runs: each out-of-scope file is
-    named as `governance: refused:` and the run does not converge and is
-    rolled back. Process agents do not run in the throwaway clone yet
-    (ADR 0032, "What is not built"; #175), so this is the post-command
-    judge, the same one that applies `deny_write` to them; the clone's
-    carry-back must apply it when #175 lands.
+  - a process agent (§11), at its throwaway clone's carry-back (ADR
+    0032, "Process agents", #175), over every file it edited, created or
+    deleted there, `deny_write` first, with the rules read before the
+    command ran: each out-of-scope file is named as `governance:
+    refused:`, is never written into the repository, and the run does not
+    converge and is rolled back. The post-command judge still applies it
+    to what git shows changed in the repository, for a command that wrote
+    there by absolute path, which the clone does not stop.
   Ignored files are outside what `allow_write` judges: the checks and the
   tests write caches there on every run, and a scope that counted them
   would refuse every run of a scoped agent. They are not part of the change
@@ -863,7 +864,11 @@ This is Paperclip's `process` adapter. A profile with
    tasks before the change.
 1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
    model run.
-2. **Run** the command in the worktree root. Its stdin is the task text,
+2. **Run** the command in the worktree root. *Amended (#175):* in a
+   throwaway clone of the repository, and what it changed there is carried
+   back under the refusals every writer meets; ADR 0032, "Process agents",
+   is where that is recorded, with what it closes and what it does not.
+   Its stdin is the task text,
    with the instructions file prepended, and its environment has
    `TRELLIS_TASK`, `TRELLIS_TASK_ID` and `TRELLIS_AGENT` set. Its stdout and
    stderr go to `work`'s terminal.
