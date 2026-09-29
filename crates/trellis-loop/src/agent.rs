@@ -671,6 +671,18 @@ pub trait Model {
         0
     }
 
+    /// Prompt tokens summed over every call so far, as the runtime or
+    /// provider reported them (ADR 0027, #106), for the trail.
+    ///
+    /// `None` once any call reported none: the sum would then be a part of
+    /// the run presented as all of it, and a low figure reads as a cheap run.
+    /// `None` too for a driver that sends no prompt, the scripted one. Kept
+    /// apart from [`Model::tokens_used`], which is completion tokens and
+    /// what the budget counts.
+    fn prompt_tokens(&self) -> Option<u64> {
+        None
+    }
+
     /// Bytes of prompt sent on the most recent call, when the driver knows.
     ///
     /// **Bytes, not tokens, and the distinction is deliberate.** TRELLIS does
