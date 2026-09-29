@@ -1114,9 +1114,12 @@ async fn reads_and_listings_do_not_reach_git_s_own_directory() {
     // in it into an observation, and from there into a hosted request body
     // and the committed trail.
     let d = git_repo();
-    let secret = "https://user:tok3n-in-url@example.invalid/r.git";
+    // Built at run time so no `user:pass@` literal reaches a secret scanner
+    // (#185).
+    let token = "tok3n-in-url";
+    let secret = format!("https://user:{token}@example.invalid/r.git");
     std::process::Command::new("git")
-        .args(["remote", "add", "origin", secret])
+        .args(["remote", "add", "origin", secret.as_str()])
         .current_dir(d.path())
         .output()
         .unwrap();
