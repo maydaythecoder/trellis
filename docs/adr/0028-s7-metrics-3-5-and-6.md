@@ -20,7 +20,7 @@ them unmeasured, and §5.4 recorded why:
   in both configurations was greedy at temperature 0, and repetitions were
   observed byte-identical across four tasks that share a prompt.
 - **Metric 6, context degradation**, runs the same task at 25 / 50 / 75%
-  window fill. Neither configuration repaired a task at any fill, so there is
+  window fill. Neither configuration repaired a task, so there is
   no baseline for degradation to be measured from.
 
 Leaving the three as "not measured" indefinitely would let S7 be called
