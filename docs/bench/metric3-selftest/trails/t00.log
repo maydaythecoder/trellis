@@ -1,0 +1,24 @@
+# Hand-written, in the shape `trellis run` prints. Expected, with the corpus:
+# calls 7, with_path 6, path_exists 4, edits 5, anchor_present 2.
+#  1 no path argument
+#  2 path exists
+#  3 exists; anchor present only because the task's defect was applied
+#  4 exists; anchor absent: the defect replaced it, and nothing was written
+#  5 absolute path: not a file in the repository
+#  6 `\t` is a tab, not a separator: absent
+#  7 `\\` is a separator on Windows: pkg/b.py; LF anchor matches the CRLF file
+snapshot at 0000000000000000000000000000000000000000
+WARN malformed tool call; retrying attempt=1
+
+   1. RunChecks { paths: [], kinds: [Typecheck] } check FAILED
+   2. ReadFile { path: "pkg/a.py" } 
+   3. Edit { path: "pkg/a.py", old: "def f(x: int) -> str:", new: "def f(x: int) -> int:" } 
+   4. Edit { path: "pkg/a.py", old: "def f(x: int) -> int:", new: "def f(x: int) -> int:  # x" } 
+   5. Edit { path: "/pkg/a.py", old: "value = 1", new: "value = 2" } 
+   6. Edit { path: "pkg\tb.py", old: "return 2", new: "return 3" } 
+   7. Edit { path: "pkg\\b.py", old: "def g():\n    return 2", new: "def g():\n    return 3" } 
+
+files written: 
+
+NOT CONVERGED after 7 iterations.
+  the model could not continue: no valid tool call after 4 attempts
