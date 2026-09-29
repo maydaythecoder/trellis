@@ -1,7 +1,9 @@
 # ADR 0031 — Pyright over LSP as the recall backstop
 
-**Status:** Accepted. Not yet built; the implementation ticket is filed when
-this ADR lands.
+**Status:** Accepted. First slice built in #168: behind `[index] backstop =
+"pyright"`, with the version printed in `trellis index` output and not stored
+in `.trellis/index.bin`, and its edges kept out of the graph, so the
+conservative partitioning reading below still holds.
 **Date:** 2026-09-29
 **Decided:** 2026-09-28 by the owner, via the coordinator (issue #125)
 **Builds on:** ADR 0002 (thresholds), ADR 0012 (receiver typing), ADR 0014

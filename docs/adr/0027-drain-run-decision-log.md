@@ -49,3 +49,4 @@ issue that holds the full reasoning.
 | #17 | Relabelled effort:s → effort:m | four per-crate mutation runs | — |
 | — | Parked tickets carry `parked` and `triage:needs-human`, and no Done when / Verify | keeps them out of G0 and `next.sh` on two counts | — |
 | — | Gates take `--base <ref>`; `verify-tests.sh` fails on zero matched tests; `next.sh` and G0 read eligibility from the issue body, release `triage:blocked` when every `blocked_by` closes, and refuse `parked` | the label-driven queue disagreed with G0; a zero-test filter passes vacuously | — |
+| #168 | trellis-index takes serde_json as a normal dependency for the LSP client | already a workspace dependency used at run time by seven crates; no crate added to Cargo.lock | the transport moves to trellis-cli |

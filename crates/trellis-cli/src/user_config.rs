@@ -7,8 +7,8 @@
 //! and only the user's file may set `key_env` (ADR 0024 §3).
 
 use crate::config::{
-    BudgetSection, ChecksSection, ContextSection, ControlSection, GovernanceSection, ModelSection,
-    RepoConfig,
+    BudgetSection, ChecksSection, ContextSection, ControlSection, GovernanceSection, IndexSection,
+    ModelSection, RepoConfig,
 };
 use anyhow::{Context, Result};
 use std::ffi::OsString;
@@ -171,6 +171,9 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             },
         }),
         agents: repo.agents.or(user.agents),
+        index: either(repo.index, user.index, |r, u| IndexSection {
+            backstop: r.backstop.or(u.backstop),
+        }),
         ..repo
     }
 }

@@ -43,6 +43,10 @@ pub(crate) struct RepoConfig {
     /// Hosted endpoints a `provider:<name>#<model>` spec names (ADR 0024).
     #[serde(default)]
     pub providers: Option<Vec<ProviderSection>>,
+    /// `[index] backstop`, the recall backstop `trellis index` runs after
+    /// the resolver (ADR 0031).
+    #[serde(default)]
+    pub index: Option<IndexSection>,
     /// What the user's own file said, kept after layering, because where a
     /// hosted endpoint came from decides whether a key may go to it
     /// (ADR 0024 §3). Never read from any file.
@@ -157,6 +161,14 @@ pub(crate) struct GovernanceSection {
     pub deny_write: Option<Vec<String>>,
 }
 
+/// What `trellis index` runs beyond the resolver.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IndexSection {
+    /// `"pyright"`, or absent for none.
+    pub backstop: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChecksSection {
     pub typecheck: Option<Vec<String>>,
@@ -220,6 +232,21 @@ impl RepoConfig {
             }
         }
         c
+    }
+
+    /// Whether `[index] backstop = "pyright"` asks for the Pyright backstop.
+    ///
+    /// Any other value is an error rather than "no backstop": a misspelt
+    /// name that quietly ran the resolver alone would print coverage the
+    /// user believes had the backstop's help.
+    pub(crate) fn pyright_backstop(&self) -> Result<bool> {
+        match self.index.as_ref().and_then(|i| i.backstop.as_deref()) {
+            None => Ok(false),
+            Some("pyright") => Ok(true),
+            Some(other) => anyhow::bail!(
+                "[index] backstop = \"{other}\" is not a backstop; the only one is \"pyright\""
+            ),
+        }
     }
 
     /// The repository's default model spec, if it set one.
@@ -796,6 +823,50 @@ deny_write = [\"vendor/\", \"*.lock\"]
         write(d.path(), "[checks]\ntypecheck = \"not a list\"\n");
         let e = RepoConfig::load(d.path()).unwrap_err();
         assert!(format!("{e}").contains("config.toml"), "{e}");
+    }
+
+    #[test]
+    fn the_pyright_backstop_runs_only_when_named_and_a_misspelling_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(
+            !RepoConfig::load(d.path())
+                .unwrap()
+                .pyright_backstop()
+                .unwrap()
+        );
+        write(
+            d.path(),
+            "[index]
+backstop = \"pyright\"
+",
+        );
+        assert!(
+            RepoConfig::load(d.path())
+                .unwrap()
+                .pyright_backstop()
+                .unwrap()
+        );
+        write(
+            d.path(),
+            "[index]
+backstop = \"pyrite\"
+",
+        );
+        let e = RepoConfig::load(d.path())
+            .unwrap()
+            .pyright_backstop()
+            .unwrap_err();
+        assert!(format!("{e}").contains("pyrite"), "{e}");
+        write(
+            d.path(),
+            "[index]
+backstops = \"pyright\"
+",
+        );
+        assert!(
+            RepoConfig::load(d.path()).is_err(),
+            "an unknown key is refused"
+        );
     }
 
     #[test]
