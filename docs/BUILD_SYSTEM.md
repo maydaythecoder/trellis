@@ -28,6 +28,8 @@ failures on one gate, or a ticket that needs a person (G7), and reports.
 | verifier | `.claude/agents/verifier.md` | runs gates, reports output verbatim | edit anything; give an opinion |
 | security | `.claude/agents/security.md` | read-only review of trust-boundary changes | edit anything |
 | ops | `.claude/agents/ops.md` | CI, `deny.toml`, `scripts/gates`, `scripts/tickets` | touch crate code |
+| unparker | `.claude/agents/unparker.md` | ranks parked / needs-human tickets by what an answer unblocks, drafts one question each for the owner, applies the answers until a ticket needs nobody | decide for the owner; ask directly (the coordinator asks) |
+| queue-runner | `.claude/agents/queue-runner.md` | works the agent-executable queue one ticket at a time: implement, gate, merge into `drain`, close | touch parked work; push to `v0.1-resolver` |
 | queue | GitHub issues + Trellis roadmap project (#2) | the tickets, labelled per the ticketing standard | |
 | gates | `scripts/gates/` | exit 0 or say why not | be skipped |
 
@@ -157,3 +159,15 @@ while GitHub-hosted jobs were blocked (run 36507327810).
 - Self-hosted runners run whatever a pushed workflow says, as the owner. That
   is acceptable for a private repository with one owner; GitHub advises
   against it for public ones.
+
+## CI without GitHub
+
+`py -3 scripts/ci-local.py [--ref <commit>] [--job <name>]... [--keep-going]`
+runs every job in `.github/workflows/ci.yml` on this machine: Linux legs in
+WSL, Windows legs natively, one at a time, each in a clean checkout of the
+commit under `C:\ci-local` (or `~/ci-local` in WSL). `uses:` steps are
+replaced (checkout, toolchain) or skipped (rust-cache); setup-python becomes a
+virtualenv; an action it does not know fails the job. Jobs get a throwaway
+`GIT_CONFIG_GLOBAL` and `CARGO_INSTALL_ROOT`, no provider keys, and a closed
+`OPENAI_BASE_URL`. Exit 0 only when every leg passed. It posts nothing to
+GitHub; the self-hosted runners do that.
