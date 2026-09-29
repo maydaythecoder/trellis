@@ -3204,6 +3204,14 @@ rank = \"non-negotiable\"
     /// The risk: a hung checker held the run past its wall-clock budget,
     /// which the loop only reads between turns. A check is bounded by what
     /// is left of the budget as well as by `timeout_s` (ADR 0004).
+    ///
+    /// Three numbers, and only their order is fixed: budget < bound < the
+    /// checker's life. Unbounded by the budget, the check runs until the
+    /// checker exits 0 (`timeout_s` is thirty minutes), which fails both the
+    /// elapsed assertion and the verdict one. The bound was 10 s against a
+    /// 30 s checker, and a loaded Windows host took 11.6 s to finish the
+    /// run although the check itself exited at once (see the `rem` below;
+    /// issue #184).
     #[tokio::test]
     async fn a_hung_check_ends_when_the_run_budget_does() {
         let d = repo();
@@ -3211,10 +3219,14 @@ rank = \"non-negotiable\"
             vec![
                 "cmd".into(),
                 "/C".into(),
-                "ping -n 31 127.0.0.1 >NUL".into(),
+                // `typecheck` appends the paths it checks. Without the
+                // `rem`, cmd handed the `.` to ping, which refused it and
+                // exited 1 at once: the check never hung on Windows and the
+                // test passed without exercising the bound.
+                "ping -n 121 127.0.0.1 >NUL & rem".into(),
             ]
         } else {
-            vec!["sh".into(), "-c".into(), "sleep 30".into()]
+            vec!["sh".into(), "-c".into(), "sleep 120".into()]
         };
         let cfg = CheckConfig {
             typecheck: sleeper,
@@ -3235,7 +3247,7 @@ rank = \"non-negotiable\"
         let started = std::time::Instant::now();
         let (_, t) = run("check", &mut m, &h, &tight).await;
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
+            started.elapsed() < std::time::Duration::from_secs(60),
             "took {:?}",
             started.elapsed()
         );

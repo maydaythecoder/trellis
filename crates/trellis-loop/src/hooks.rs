@@ -645,10 +645,15 @@ mod tests {
         } else {
             "i=1; while [ $i -le 1500 ]; do echo line $i; i=$((i+1)); done"
         };
+        // What this defends is which part of the output is kept, not how
+        // fast the hook runs: 1500 `echo`s under cmd on a loaded host took
+        // longer than the 10 s default and the hook timed out (issue #184).
+        // 120 s is the outer bound #173 chose for its gate.
         let h = Hooks::new(
             d.path(),
             HookConfig {
                 before_run: Some(shell_argv(script)),
+                timeout_s: Some(120),
                 ..Default::default()
             },
             vec![],
