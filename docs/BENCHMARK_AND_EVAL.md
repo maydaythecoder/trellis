@@ -511,7 +511,8 @@ recall it produces: pending, measured by the human audit (#3).
 Pyright's Node process (one run, sampled `PeakWorkingSet64`, no Python
 environment installed; method and caveats in the file). Memory on a large
 repository: still pending, v1.0. Two findings recorded there: Pyright does not
-send `serverInfo`, so its version is not printed; and 813 of the 857 edges
+send `serverInfo`, so that run printed no version (#187 now reads it from
+Pyright's `package.json`); and 813 of the 857 edges
 bound on `Candidates` sites name a method a first-party subclass overrides
 (a text proxy over `class` lines, described in the file), because Pyright answers with the declared type's member, which ADR 0012 treats
 as an upper bound. The 1,859 is therefore not a count of sites narrowed to
