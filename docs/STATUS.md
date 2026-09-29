@@ -448,14 +448,18 @@ project makes is that work comes back verified rather than merely written, and
 a forged terminal defeats the *reading* of the evidence rather than the
 evidence itself.
 
-### 13. Two interfaces exist — recorded as Q-19
+### 13. Two interfaces exist — recorded as Q-19, answered
 
-`crates/tui-demo` (~2,000 lines) is what `trellis tui` runs. `crates/chat`
+*[2026-09-29, #16: answered by the owner on 2026-09-28. `tui-demo` is the
+product; the `chat` crate was deleted and is archived in git history. The text
+below is the finding as written.]*
+
+`crates/tui-demo` (~2,000 lines) is what `trellis tui` runs. The `chat` crate
 (~5,500 lines, 127 passing tests) is reachable only from its own binary,
 depends on nothing else in the workspace, and is mentioned in no document.
 
 The split is already costing, and this session paid it: an action graph went
-into `tui-demo` while `chat/src/tui/widgets/graph.rs` already implemented the
+into `tui-demo` while chat's `src/tui/widgets/graph.rs` already implemented the
 same idea — nodes per tool, a ring for one never called, edges converging on a
 focus. Everything else from this session went to `tui-demo` only, because that
 is what ships. Every interface change from here has two possible homes and will
