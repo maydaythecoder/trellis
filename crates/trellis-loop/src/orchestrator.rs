@@ -50,6 +50,10 @@ pub enum Request {
     /// about it if one was asked. The loop's own path.
     Call {
         call: ToolCall,
+        /// What is left of the run's wall-clock budget as the loop sends
+        /// the call, so a check it runs ends when the budget does
+        /// (ADR 0004). `None`: the check's own `timeout_s` alone.
+        budget_left: Option<Duration>,
         reply: oneshot::Sender<Dispatched>,
     },
     /// The governance audit the loop runs at convergence. **Not gated.**
@@ -211,9 +215,25 @@ impl Handle {
 
     /// A model's call, through the gates.
     pub async fn call(&self, call: &ToolCall) -> Dispatched {
+        self.dispatch(call, None).await
+    }
+
+    /// As [`call`](Self::call), with what is left of the run's wall-clock
+    /// budget: a check the call runs is killed when the budget runs out, if
+    /// that comes before its `timeout_s` (ADR 0004). Time a person spends
+    /// deciding on the call is not charged, as the loop does not charge it.
+    pub async fn call_within(&self, call: &ToolCall, budget_left: Duration) -> Dispatched {
+        self.dispatch(call, Some(budget_left)).await
+    }
+
+    async fn dispatch(&self, call: &ToolCall, budget_left: Option<Duration>) -> Dispatched {
         let call = call.clone();
         self.ask(
-            |reply| Request::Call { call, reply },
+            |reply| Request::Call {
+                call,
+                budget_left,
+                reply,
+            },
             || Dispatched {
                 result: ToolResult::Error("orchestrator stopped".into()),
                 human: None,
@@ -407,11 +427,11 @@ impl Orchestrator {
             match req {
                 Request::BlastRadius { symbol, reply } => {
                     let call = ToolCall::BlastRadius { symbol };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
                 Request::ReadFile { path, reply } => {
                     let call = ToolCall::ReadFile { path };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
                 Request::ApplyEdit {
                     path,
@@ -420,7 +440,7 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::Edit { path, old, new };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
                 Request::RunChecks {
                     paths,
@@ -428,17 +448,21 @@ impl Orchestrator {
                     reply,
                 } => {
                     let call = ToolCall::RunChecks { paths, kinds };
-                    let _ = reply.send(self.gated(call).await.result);
+                    let _ = reply.send(self.gated(call, None).await.result);
                 }
-                Request::Call { call, reply } => {
+                Request::Call {
+                    call,
+                    budget_left,
+                    reply,
+                } => {
                     self.calls += 1;
-                    let _ = reply.send(self.gated(call).await);
+                    let _ = reply.send(self.gated(call, budget_left).await);
                 }
                 Request::GateLog { reply } => {
                     let _ = reply.send(self.gate_log.clone());
                 }
                 Request::Audit { reply } => {
-                    let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance]).await);
+                    let _ = reply.send(self.run_checks(&[], &[CheckKind::Governance], None).await);
                 }
                 Request::Touched { reply } => {
                     let _ = reply.send(self.touched.clone());
@@ -455,8 +479,8 @@ impl Orchestrator {
     /// way out, whichever way the call ended: a `pre_tool` hook refused by
     /// the guard returns early as a denial, and that is a breach as much as
     /// a `bash` command that rewrote a hook.
-    async fn gated(&mut self, call: ToolCall) -> Dispatched {
-        let mut d = self.gated_inner(call).await;
+    async fn gated(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+        let mut d = self.gated_inner(call, budget_left).await;
         if let Some(g) = &self.guard {
             if d.may_have_changed_tree {
                 // Latches on failure; the reason is read below.
@@ -470,7 +494,8 @@ impl Orchestrator {
     /// Consults the gates in order, then dispatches. The first `Deny` wins
     /// and nothing after it is asked — a human should not be asked about a
     /// call a rule has already refused.
-    async fn gated_inner(&mut self, call: ToolCall) -> Dispatched {
+    async fn gated_inner(&mut self, call: ToolCall, budget_left: Option<Duration>) -> Dispatched {
+        let received = Instant::now();
         let mut human = None;
         let name = tool_name(&call);
         if !self.tools.enabled(name) {
@@ -539,11 +564,19 @@ impl Orchestrator {
             }
         }
         let gates_changed = changed_since(&self.root, before_gates).await;
+        // When the run's budget ends, moved on by however long a person
+        // took over this call: the loop does not charge that wait, and a
+        // check cut short by it would fail for a diff read carefully.
+        // `None` on overflow too: a budget past the clock's range bounds
+        // nothing, and `timeout_s` still does.
+        let deadline = budget_left
+            .and_then(|left| received.checked_add(left))
+            .and_then(|end| end.checked_add(human.map_or(Duration::ZERO, |h| h.waited)));
         let result = match &call {
             ToolCall::BlastRadius { symbol } => self.blast_radius(symbol),
             ToolCall::ReadFile { path } => self.read_file(path),
             ToolCall::Edit { path, old, new } => self.apply_edit(path, old, new),
-            ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds).await,
+            ToolCall::RunChecks { paths, kinds } => self.run_checks(paths, kinds, deadline).await,
             ToolCall::ReadSkill { name } => match self.skills.read(&self.root, name) {
                 Ok(body) => ToolResult::FileContent(body),
                 Err(e) => ToolResult::Error(e.to_string()),
@@ -976,7 +1009,16 @@ impl Orchestrator {
         })
     }
 
-    async fn run_checks(&self, paths: &[String], kinds: &[CheckKind]) -> ToolResult {
+    async fn run_checks(
+        &self,
+        paths: &[String],
+        kinds: &[CheckKind],
+        deadline: Option<Instant>,
+    ) -> ToolResult {
+        let checks = CheckConfig {
+            deadline,
+            ..self.checks.clone()
+        };
         // `requested` is kept distinct from the defaulted list below. Shadowing
         // the two together made the governance arm's "no paths given" branch
         // unreachable — `paths` was already `["."]` by the time it ran — so the
@@ -994,14 +1036,12 @@ impl Orchestrator {
         for kind in kinds {
             let v = match kind {
                 CheckKind::Typecheck => {
-                    trellis_checks::typecheck(&self.root, &self.checks, &paths).await
+                    trellis_checks::typecheck(&self.root, &checks, &paths).await
                 }
-                CheckKind::Tests => {
-                    trellis_checks::run_tests(&self.root, &self.checks, &paths).await
-                }
+                CheckKind::Tests => trellis_checks::run_tests(&self.root, &checks, &paths).await,
                 CheckKind::Import => {
                     let module = paths.first().and_then(|p| p.to_str()).unwrap_or(".");
-                    trellis_checks::import_check(&self.root, &self.checks, module).await
+                    trellis_checks::import_check(&self.root, &checks, module).await
                 }
                 CheckKind::Governance => {
                     // Audited over the files the run touched, not the whole

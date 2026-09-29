@@ -106,6 +106,10 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             typecheck: r.typecheck.or(u.typecheck),
             tests: r.tests.or(u.tests),
             python: r.python.or(u.python),
+            // Lower wins, as for the budget: a cloned repository may shorten
+            // how long a check may hold the user's machine, not lengthen a
+            // limit the user set.
+            timeout_s: lower(r.timeout_s, u.timeout_s),
         }),
         budget: either(repo.budget, user.budget, |r, u| BudgetSection {
             // Lower wins: ADR 0008, a runaway loop spends the user's money,
@@ -467,6 +471,28 @@ mod tests {
         assert_eq!(c.checks().tests, ["pytest", "-q"]);
         assert_eq!(c.model().as_deref(), Some("scripted:a.json"));
         assert!(c.unconstrained(), "a field the repository left unset");
+    }
+
+    /// `[checks] timeout_s` layers as the budget does: a cloned repository
+    /// may shorten the user's limit, never lengthen it; either alone
+    /// applies; neither is the 1800 s default (ADR 0004).
+    #[test]
+    fn check_timeout_s_is_read_and_the_lower_of_the_two_wins() {
+        let t = |repo: &str, user: &str| load(repo, user).checks().timeout_s;
+        assert_eq!(
+            t(
+                "[checks]\ntimeout_s = 9000\n",
+                "[checks]\ntimeout_s = 600\n"
+            ),
+            600
+        );
+        assert_eq!(
+            t("[checks]\ntimeout_s = 60\n", "[checks]\ntimeout_s = 600\n"),
+            60
+        );
+        assert_eq!(t("[checks]\ntimeout_s = 60\n", ""), 60);
+        assert_eq!(t("", "[checks]\ntimeout_s = 600\n"), 600);
+        assert_eq!(t("", ""), trellis_checks::DEFAULT_CHECK_TIMEOUT_S);
     }
 
     #[test]
