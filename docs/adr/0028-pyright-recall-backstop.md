@@ -26,10 +26,13 @@ thresholds as recall.
 
 §4 also names a cheaper intermediate to try first: measure the `Reason`
 distribution, and if `DecoratorIndirection` dominates, unwrap decorators
-before adopting Pyright. That measurement was not made. The ceiling report
-classifies misses by receiver shape, not by `Reason`. The owner decided
-without it, and this ADR records that the "try first" ordering in §4 no
-longer holds.
+before adopting Pyright. That measurement has been made, and the condition
+did not hold. Before ADR 0012, `DecoratorIndirection` was 3 of 11,233
+unresolved sites and `MethodDispatchUntyped` was 10,646 (ADR 0011). After ADR
+0012 and ADR 0015, they were 63 and 6,090 of 6,737 (`BENCHMARK_AND_EVAL.md`
+§2, measured 2026-09-20). Both are corpus-wide counts of what the resolver left
+unresolved, not counts over the audited sample. The decorator intermediate's
+precondition is false, so §4's "try first" ordering does not apply.
 
 ## Decision
 
@@ -108,9 +111,10 @@ So:
   like every other spawn. `tests/child_env.rs` enforces this.
 - **`trellis-index` still never depends on `trellis-model`.** Pyright is a
   deterministic static analyser, not a sampler, but it is still an input the
-  graph did not have before. The Pyright version is therefore recorded with
-  the index. Resolver tests and goldens run with Pyright absent, so they keep
-  testing the resolver alone.
+  graph did not have before. The implementation ticket decides how the
+  Pyright version is recorded alongside the index, because the graph's output
+  now depends on it. Resolver tests and goldens run with Pyright absent, so
+  they keep testing the resolver alone.
 - **Partitioning of Pyright-bound edges is not decided here.** Whether such an
   edge counts as certain for S19 partitioning (rule 6, ADR 0005) is left to the
   implementation ticket. Until that ticket decides it with its own reasoning,
@@ -125,5 +129,5 @@ So:
   that the separate count does not make safe to show.
 - Pyright's memory on the benchmark corpus, once measured, being too large for
   the machines trellis targets.
-- A measured `Reason` distribution showing decorator unwrapping alone clears
-  85%. §4's cheaper path would then be worth building first after all.
+- A cheaper in-house rule shown, on a human-audited sample, to clear 85% on
+  its own.
