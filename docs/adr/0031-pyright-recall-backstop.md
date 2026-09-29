@@ -1,4 +1,4 @@
-# ADR 0028 — Pyright over LSP as the recall backstop
+# ADR 0031 — Pyright over LSP as the recall backstop
 
 **Status:** Accepted. Not yet built; the implementation ticket is filed when
 this ADR lands.

@@ -485,7 +485,7 @@ trigger, and cross-file type propagation, could move recall on the two audited
 samples is bounded in [`bench/backstop-ceiling.md`](bench/backstop-ceiling.md)
 (ceilings, not recall figures).
 
-**Decided 2026-09-28: [ADR 0028](adr/0028-pyright-recall-backstop.md).** Pyright
+**Decided 2026-09-28: [ADR 0031](adr/0031-pyright-recall-backstop.md).** Pyright
 over LSP is the recall backstop, queried only on `Unresolved` and `Candidates`
 sites, because cross-file propagation's ceiling (74.8%, 78.0%; model-read upper
 bounds, A-34) is under 85% on both samples. The `Reason` distribution the
