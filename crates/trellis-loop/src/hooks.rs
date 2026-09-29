@@ -155,6 +155,7 @@ impl Hooks {
             argv,
             cwd: &self.root,
             env: &self.env,
+            env_remove: &[],
             stdin: Some(stdin),
             timeout: self.timeout,
             cap: OUTPUT_CAP,

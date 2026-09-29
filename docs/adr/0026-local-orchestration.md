@@ -1046,17 +1046,29 @@ are not assumed closed:
   0023 §4, amended after the eleventh review), but code a hook or tool imports from
   elsewhere in the repository is an ordinary file a run may edit.
 
-**What holds.** For trellis's own edits (`edit`, `write_file`), the
-rollback's guarantee is exact, as ADR 0009 states. A run with none of
+**What holds.** For trellis's own edits (`edit`, `write_file`), and for
+the edits a `bash` or custom-tool command makes inside its clone and that
+are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
+0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
-**The real fix is sandboxing**: running these writers where they cannot
-reach `.git/`, the user's other files or processes that outlive them.
-That decision is deferred in ADR 0021 (1.6 swappable tool backends,
-13.3 containers, 12 and 17-18 sandboxes). Until it is made, trellis states
-the limit rather than adding another guard. `trellis trust` prints one line
-saying so when it records trust for any of these writers.
+**The real fix is isolation**, and the first step is built (ADR 0032,
+*amended 2026-09-29*): `bash` and custom tools run in a throwaway `git
+clone` of the repository (copy-in/diff-out), and only their edits to files
+trellis tracks come back, through the orchestrator's write path, where the
+rollback covers them exactly. Against a `bash` or custom-tool command that
+writes where it runs, every item in the list above is closed: its
+`.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
+in the clone, and what it started writes into a directory that is removed.
+The list still holds, in full, for **hooks and process agents**, which are
+not isolated yet, and for any writer that reaches the repository by
+absolute path, which a clone does not stop (ADR 0032, "Limits": no network
+isolation, reads and writes outside the clone still possible). The guards
+above are kept for those writers. Containers or an OS sandbox, for network
+and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
+`trellis trust` prints one line stating the limit when it records trust for
+any of these writers.
 
 ## What is not built
 

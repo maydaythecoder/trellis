@@ -122,6 +122,10 @@ pub(crate) struct Spec<'a> {
     pub(crate) argv: &'a [String],
     pub(crate) cwd: &'a Path,
     pub(crate) env: &'a [(String, String)],
+    /// Removed from the inherited environment: the variables that would
+    /// point a `git` run in a throwaway clone at the real repository
+    /// ([`crate::isolate::GIT_LOCATION_VARS`]).
+    pub(crate) env_remove: &'a [&'a str],
     /// Written to stdin and then closed; `None` gives the child no stdin.
     pub(crate) stdin: Option<Vec<u8>>,
     pub(crate) timeout: Duration,
@@ -163,6 +167,9 @@ pub(crate) async fn run(spec: Spec<'_>) -> Result<Captured, ExecError> {
     // `bash`, custom tool, hook and listing command is spawned here, and its
     // output is an observation the log and the trail both record.
     trellis_core::secrets::scrub(cmd.as_std_mut());
+    for v in spec.env_remove {
+        cmd.env_remove(v);
+    }
     // No `__pycache__` from anything trellis runs: under `.trellis/` it is
     // in the trust digest (bytecode can be code, so it is not skipped), and
     // where git does not ignore it, it moves the per-call worktree digest
@@ -427,6 +434,7 @@ mod tests {
             argv,
             cwd,
             env: &[],
+            env_remove: &[],
             stdin: None,
             timeout,
             cap,
