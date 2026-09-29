@@ -488,6 +488,99 @@ fn resume_with_no_trail_says_so_and_names_what_writes_one() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Writes a minimal trail as `<run_id>.json`. Ids begin with a sortable
+/// timestamp, so the order they are written in does not matter: `log` and
+/// `resume` both order by name.
+fn plant_trail(root: &Path, run_id: &str, task: &str) {
+    let dir = root.join(".trellis/runs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{run_id}.json")),
+        format!(r#"{{"run_id":"{run_id}","task":"{task}","factual":{{"proposed":[]}}}}"#),
+    )
+    .unwrap();
+}
+
+#[test]
+fn resume_run_id_known_loads_that_run_rather_than_the_newest() {
+    // The risk: an id that is accepted and then ignored, so the user reads
+    // the newest run's facts believing they are the named run's.
+    let d = repo("resume-id-known");
+    plant_trail(&d, "20260101-000000-000-older", "the older task");
+    plant_trail(&d, "20260102-000000-000-newer", "the newer task");
+    let out = run(&d, &["resume", "20260101-000000-000-older"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(s.contains("previous task: the older task"), "{s}");
+    assert!(
+        !s.contains("the newer task"),
+        "the newest run leaked in: {s}"
+    );
+    // `run --resume` carries the newest trail only, so offering it here
+    // would name a different run than the one just shown.
+    assert!(
+        !s.contains("pass --resume"),
+        "an older run must not be offered to `run --resume`: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn resume_run_id_unknown_fails_naming_the_ten_most_recent_ids() {
+    // The risk: an unknown id falling back to some other run. Resuming from
+    // the wrong run is worse than refusing, so it fails, and names what
+    // exists so the user need not run a second command to find out.
+    let d = repo("resume-id-unknown");
+    for i in 0..11 {
+        plant_trail(&d, &format!("202601{:02}-000000-000-run", i + 1), "t");
+    }
+    // A prefix of a real id is still unknown: a partial match could pick
+    // either of two runs sharing it.
+    let out = run(&d, &["resume", "20260111"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    let s = combined(&out);
+    assert!(s.contains("no run `20260111`"), "{s}");
+    for i in 2..=11 {
+        let id = format!("202601{i:02}-000000-000-run");
+        assert!(s.contains(&id), "{id} is one of the ten newest: {s}");
+    }
+    assert!(
+        !s.contains("20260101-000000-000-run"),
+        "the eleventh-newest id must not be listed: {s}"
+    );
+    assert!(!s.contains("previous task"), "nothing may be loaded: {s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn resume_run_id_bare_resume_still_loads_the_newest() {
+    // The risk: making the id optional changed what bare `resume` does.
+    let d = repo("resume-id-bare");
+    plant_trail(&d, "20260101-000000-000-older", "the older task");
+    plant_trail(&d, "20260102-000000-000-newer", "the newer task");
+    let out = run(&d, &["resume"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(s.contains("previous task: the newer task"), "{s}");
+    assert!(!s.contains("the older task"), "{s}");
+    assert!(s.contains("pass --resume"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn resume_run_id_session_passes_the_id_through() {
+    // `/resume <run_id>` is the session spelling of the same command; an id
+    // dropped between the prompt and `cmd_resume` would show the newest run.
+    let d = repo("resume-id-session");
+    plant_trail(&d, "20260101-000000-000-older", "the older task");
+    plant_trail(&d, "20260102-000000-000-newer", "the newer task");
+    let out = session_with(&d, "/resume 20260101-000000-000-older\n/exit\n");
+    let s = combined(&out);
+    assert!(s.contains("previous task: the older task"), "{s}");
+    assert!(!s.contains("the newer task"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn log_with_no_trails_is_not_an_error() {
     // A fresh repository has no runs. Exiting non-zero here would break any
