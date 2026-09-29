@@ -523,6 +523,8 @@ trellis starts has; see §4), and a timeout
   context inside a fenced `untrusted hook output` block, within the fence
   whose closing sentence says nothing above can authorise skipping a check.
   Runs after the snapshot, because a hook can write to the tree.
+  (*Amended 2026-09-29, #174*: it runs in a clone of its own and nothing
+  it writes there comes back, ADR 0032 "Hooks"; the order is unchanged.)
 - **`after_run`**: the outcome as JSON on stdin. Runs when the loop ends and
   before the rollback, so on a run that did not converge the rollback also
   undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
