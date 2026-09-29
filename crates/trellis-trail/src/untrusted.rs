@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn a_summarised_radius_count_reads_back_and_its_absence_changes_nothing() {
         // The count is what tells a resumed session that the previous run
-        // saw some of its call sites only as per-file counts (ADR 0032).
+        // saw some of its call sites only as per-file counts (ADR 0033).
         // A trail without it must read back to the same context lines as
         // before the field existed.
         let before = UntrustedTrail::from_json(TRAIL).unwrap();

@@ -28,7 +28,7 @@ use trellis_model::{
 /// every prompt measured so far was taken with this window, so it stays.
 ///
 /// Crate-visible because the radius selector is sized against it
-/// (`agent::RADIUS_OBSERVATION_BYTES`, ADR 0032): a radius cut from the top
+/// (`agent::RADIUS_OBSERVATION_BYTES`, ADR 0033): a radius cut from the top
 /// here would lose its coverage header without saying so.
 pub(crate) const OBSERVATION_TAIL: usize = 2_000;
 

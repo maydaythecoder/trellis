@@ -203,7 +203,7 @@ pub struct RadiusCounts {
     #[serde(default)]
     pub radius_queries: u32,
     /// Call sites the radius observations summarised by file instead of
-    /// listing one per line, summed over the run's queries (ADR 0032).
+    /// listing one per line, summed over the run's queries (ADR 0033).
     ///
     /// The model saw a count for these, not a location, so a reader weighing
     /// what the run knew needs the figure. Omitted when zero, so a trail with

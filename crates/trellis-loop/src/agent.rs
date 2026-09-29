@@ -919,7 +919,7 @@ pub async fn run_seeded<M: Model>(
 /// entry listing and summary together.
 ///
 /// Taken from the observation cap ([`crate::adapter::OBSERVATION_TAIL`]),
-/// not converted from the 4,096-token minimum window (ADR 0032). The
+/// not converted from the 4,096-token minimum window (ADR 0033). The
 /// adapter keeps an observation's last 2,000 characters and cuts from the
 /// top, and the top of a radius is its coverage header, so a listing sized
 /// past the cap would lose the doubt figure without saying so. How many
@@ -3185,7 +3185,7 @@ rank = \"non-negotiable\"
     }
 }
 
-/// The radius selector (ADR 0032). Every test here renders through
+/// The radius selector (ADR 0033). Every test here renders through
 /// `render_radius` and holds the same two properties: the observation fits
 /// `RADIUS_OBSERVATION_BYTES`, so the adapter never cuts its coverage header
 /// off, and every call site is either listed or counted.
