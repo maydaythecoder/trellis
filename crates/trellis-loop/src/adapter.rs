@@ -124,6 +124,83 @@ pub struct Compacted {
     pub fits: bool,
 }
 
+/// One compaction a client asked for (`compact` over `trellis rpc`, ADR 0025
+/// §5): every observation but the newest elided, from the next request on.
+///
+/// A separate record from [`Compacted`], which describes a request fitted to
+/// a byte budget: this one had no budget, so it has none to report, and the
+/// client is told the sizes either side of the elision instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestedCompaction {
+    /// The turn the compacted request produced, 1-based.
+    pub turn: u32,
+    /// Turns newly elided by this request. 0 when nothing was left to elide.
+    pub turns_folded: usize,
+    /// Turns 1..=this have their observations elided, from this request on.
+    pub elided_turns: usize,
+    /// The observation bytes those turns held.
+    pub elided_bytes: usize,
+    /// The request's size with what was elided before it.
+    pub bytes_before: usize,
+    /// The request's size as sent.
+    pub bytes_after: usize,
+}
+
+/// Compactions a client asked for, waiting for the run's next model request.
+///
+/// Shared between the RPC server, which asks, and the adapter, which answers
+/// when it next renders a request. Each answer goes back on its own channel;
+/// a channel dropped unanswered means nothing was compacted, and
+/// [`closed`](Self::closed) says why.
+#[derive(Debug, Default)]
+pub struct CompactRequests {
+    state: std::sync::Mutex<RequestState>,
+}
+
+#[derive(Debug, Default)]
+struct RequestState {
+    waiting: Vec<tokio::sync::oneshot::Sender<RequestedCompaction>>,
+    /// Set once; from then on a request is dropped as it is made.
+    closed: Option<String>,
+}
+
+impl CompactRequests {
+    /// Asks for a compaction before the next model request. The receiver
+    /// yields the record, or errors if the requests close first.
+    pub fn request(&self) -> tokio::sync::oneshot::Receiver<RequestedCompaction> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Under the lock `close` drains under: a request racing the close is
+        // either drained by it or sees it, never left waiting forever.
+        if let Ok(mut s) = self.state.lock()
+            && s.closed.is_none()
+        {
+            s.waiting.push(tx);
+        }
+        rx
+    }
+
+    /// Drops every waiting request and refuses later ones, giving `why`.
+    /// The first reason stands.
+    pub fn close(&self, why: &str) {
+        if let Ok(mut s) = self.state.lock() {
+            s.waiting.clear();
+            s.closed.get_or_insert_with(|| why.to_string());
+        }
+    }
+
+    /// Why requests are refused, once they are.
+    pub fn closed(&self) -> Option<String> {
+        self.state.lock().ok().and_then(|s| s.closed.clone())
+    }
+
+    fn take(&self) -> Vec<tokio::sync::oneshot::Sender<RequestedCompaction>> {
+        self.state
+            .lock()
+            .map(|mut s| std::mem::take(&mut s.waiting))
+            .unwrap_or_default()
+    }
+}
+
 /// Deterministic elision of old observations (ADR 0024 §5).
 ///
 /// Works on what is rendered, never on the transcript: the adapter holds a
@@ -132,6 +209,9 @@ pub struct Compacted {
 #[derive(Debug, Default)]
 struct Compaction {
     budget: Option<usize>,
+    /// Where a client's `compact` arrives (ADR 0025 §5). `None` outside RPC.
+    requests: Option<std::sync::Arc<CompactRequests>>,
+    requested: Vec<RequestedCompaction>,
     /// Never decreases within a run, so an elided turn stays elided and the
     /// history a provider sees changes only by appending after it.
     elided: usize,
@@ -181,8 +261,16 @@ impl Compaction {
         measure: impl Fn(&str) -> usize,
     ) -> T {
         let n = t.turns.len();
+        // Taken once: a hosted overflow retry fits the same turn again, and
+        // must not fold again or answer twice.
+        let asked = self.requests.as_ref().map(|r| r.take()).unwrap_or_default();
+        if !asked.is_empty() {
+            return self.fold_requested(t, render, size, asked);
+        }
         let Some(budget) = self.budget else {
-            let out = render(0);
+            // What a client's `compact` elided stays elided; with none, this
+            // is 0 and the prompt is the one measured without compaction.
+            let out = render(self.elided.min(n.saturating_sub(1)));
             self.last_size = Some(size(&out));
             return out;
         };
@@ -247,6 +335,60 @@ impl Compaction {
             );
             self.events.push(ev);
             self.elided = k;
+        }
+        out
+    }
+
+    /// A client's `compact`: every turn but the newest elided, which is the
+    /// most §5 ever elides, so the result depends on the transcript alone
+    /// and not on when in the turn the request arrived. Monotone like the
+    /// budget path: `elided` only grows, so later fits start from here.
+    ///
+    /// Recorded only when a turn was newly elided; a request with nothing
+    /// left to fold is answered and leaves the trail as it was.
+    fn fold_requested<T>(
+        &mut self,
+        t: &Transcript,
+        render: impl Fn(usize) -> T,
+        size: impl Fn(&T) -> usize,
+        asked: Vec<tokio::sync::oneshot::Sender<RequestedCompaction>>,
+    ) -> T {
+        let n = t.turns.len();
+        let k0 = self.elided.min(n.saturating_sub(1));
+        let k = n.saturating_sub(1).max(k0);
+        let first = render(k0);
+        let before = size(&first);
+        let (out, after) = if k == k0 {
+            (first, before)
+        } else {
+            let out = render(k);
+            let s = size(&out);
+            (out, s)
+        };
+        self.last_size = Some(after);
+        let rec = RequestedCompaction {
+            turn: n as u32 + 1,
+            turns_folded: k - k0,
+            elided_turns: k,
+            elided_bytes: t.turns[..k].iter().map(|x| x.observation.len()).sum(),
+            bytes_before: before,
+            bytes_after: after,
+        };
+        if k > k0 {
+            tracing::info!(
+                turn = rec.turn,
+                turns_folded = rec.turns_folded,
+                elided_turns = rec.elided_turns,
+                bytes_before = rec.bytes_before,
+                bytes_after = rec.bytes_after,
+                "compacted on request"
+            );
+            self.requested.push(rec.clone());
+            self.elided = k;
+        }
+        for reply in asked {
+            // A client that stopped waiting is no reason to stop the run.
+            let _ = reply.send(rec.clone());
         }
         out
     }
@@ -348,6 +490,11 @@ impl RuntimeModel {
     pub fn with_context_bytes(mut self, budget: Option<usize>) -> Self {
         self.compaction.budget = budget;
         self
+    }
+
+    /// Answers a client's `compact` at the next request (ADR 0025 §5).
+    pub fn compact_on_request(&mut self, requests: std::sync::Arc<CompactRequests>) {
+        self.compaction.requests = Some(requests);
     }
 
     /// The client, so a caller can check the runtime is there before
@@ -808,6 +955,10 @@ impl Model for RuntimeModel {
     fn compactions(&self) -> &[Compacted] {
         &self.compaction.events
     }
+
+    fn requested_compactions(&self) -> &[RequestedCompaction] {
+        &self.compaction.requested
+    }
 }
 
 /// The per-reply ceiling for a hosted model. Larger than the local one
@@ -894,6 +1045,11 @@ impl HostedModel {
     pub fn with_context_bytes(mut self, budget: Option<usize>) -> Self {
         self.compaction.budget = budget;
         self
+    }
+
+    /// Answers a client's `compact` at the next request (ADR 0025 §5).
+    pub fn compact_on_request(&mut self, requests: std::sync::Arc<CompactRequests>) {
+        self.compaction.requests = Some(requests);
     }
 
     #[must_use]
@@ -1238,6 +1394,10 @@ impl Model for HostedModel {
 
     fn compactions(&self) -> &[Compacted] {
         &self.compaction.events
+    }
+
+    fn requested_compactions(&self) -> &[RequestedCompaction] {
+        &self.compaction.requested
     }
 }
 
@@ -1800,6 +1960,64 @@ mod compaction_and_hosted_tests {
         let got = c.fit(&t, |k| completion_prompt(&t, k), String::len);
         assert_eq!(got, completion_prompt(&t, 0));
         assert!(c.events.is_empty());
+    }
+
+    #[test]
+    fn a_requested_compaction_folds_all_but_the_newest_once_and_answers_it() {
+        // The risk: `compact` over RPC answered with sizes the model was not
+        // actually sent, or folding again on the overflow retry's second fit
+        // of the same turn and recording one compaction twice.
+        let t = transcript(vec![
+            turn(read("a.py"), &"A".repeat(1_500), None),
+            turn(read("b.py"), &"B".repeat(1_500), None),
+            turn(read("c.py"), &"C".repeat(1_500), None),
+        ]);
+        let reqs = std::sync::Arc::new(CompactRequests::default());
+        let mut c = Compaction {
+            requests: Some(reqs.clone()),
+            ..Compaction::default()
+        };
+        let mut rx = reqs.request();
+        let p = c.fit(&t, |k| completion_prompt(&t, k), String::len);
+        let rec = rx.try_recv().expect("answered at the request it compacted");
+        assert!(!p.contains("AAAA") && !p.contains("BBBB"), "{p}");
+        assert!(p.contains("CCCC"), "the newest observation is never elided");
+        assert_eq!((rec.turn, rec.turns_folded, rec.elided_turns), (4, 2, 2));
+        assert_eq!(rec.elided_bytes, 3_000);
+        assert_eq!(rec.bytes_before, completion_prompt(&t, 0).len());
+        assert_eq!(rec.bytes_after, p.len());
+        assert!(rec.bytes_after < rec.bytes_before);
+        assert_eq!(c.requested, [rec]);
+        assert!(c.events.is_empty(), "no budget was involved");
+
+        // The same turn fitted again, as a hosted retry does: nothing is
+        // asked, so nothing folds or is recorded again, and what was
+        // elided stays elided.
+        let again = c.fit(&t, |k| completion_prompt(&t, k), String::len);
+        assert_eq!(again, p);
+        assert_eq!(c.requested.len(), 1);
+
+        // Asked again with nothing left to fold: answered, not recorded.
+        let mut rx = reqs.request();
+        c.fit(&t, |k| completion_prompt(&t, k), String::len);
+        let rec = rx.try_recv().unwrap();
+        assert_eq!(rec.turns_folded, 0);
+        assert_eq!(rec.bytes_before, rec.bytes_after);
+        assert_eq!(c.requested.len(), 1);
+    }
+
+    #[test]
+    fn closed_requests_are_dropped_with_their_reason_and_later_ones_too() {
+        // The risk: a `compact` sent as the run ended waits on a channel
+        // nobody will ever answer, and the client with it.
+        let reqs = CompactRequests::default();
+        let mut early = reqs.request();
+        reqs.close("the run ended");
+        reqs.close("a second reason");
+        let mut late = reqs.request();
+        assert!(early.try_recv().is_err());
+        assert!(late.try_recv().is_err());
+        assert_eq!(reqs.closed().as_deref(), Some("the run ended"));
     }
 
     #[test]

@@ -53,7 +53,8 @@ wherever the two disagree. The items those sections name as not built are:
   merged; row 2.13 below says so.
 - **W-D (0025):** `/new`, `/name`, `/copy`, RPC `compact`, and a user-level
   `system.md`. Amended 2026-09-29 (#160): `/name` and `/copy` are landing
-  (#109), not yet merged.
+  (#109), not yet merged. *RPC `compact` built 2026-09-29 (#110; ADR 0025
+  §5).*
 - **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),
   `@profile` mentions, prompt-token and dollar accounting, and webhook or API
   triggers. Routines fire only while `work` runs.
