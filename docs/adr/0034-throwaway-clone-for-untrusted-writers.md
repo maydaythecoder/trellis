@@ -130,7 +130,13 @@ machine. Stated so they are not assumed closed:
   history, a search of the disk) or guesses it can write there directly,
   `.git/` included. Against that writer the ADR 0023 §5 guards (the trust
   guard, the git guard, the ignored-file listing, the worktree digests)
-  are still what stands, and they are kept for exactly that reason.
+  are still what stands, and they are kept for exactly that reason. The
+  same holds for the user's global git configuration (`~/.gitconfig`),
+  which every `git` trellis runs in the repository reads; only the
+  settings in `trellis_vcs::OVERRIDES` outrank it.
+- **Clones left by a crash.** The clone is removed when the call ends,
+  panics included; a trellis process killed mid-call leaves it in the
+  temporary directory.
 - **Processes that outlive the call** (#21). A process the command
   backgrounded is not killed on Windows after a normal exit (ADR 0023 §3).
   Inside the clone it writes to a directory that is being removed; one
