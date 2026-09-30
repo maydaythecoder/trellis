@@ -67,14 +67,52 @@ pub enum BackstopStatus {
     NotRun { reason: String },
     /// The server answered `initialize`.
     Ran {
-        /// `serverInfo` from `initialize`, as `name version`, or `None` when
-        /// the server did not say. Reported beside the counts, never stored
+        /// `serverInfo` from `initialize`, as `name version`; failing that,
+        /// the version in the server's npm `package.json`, marked as read
+        /// from there (Pyright 1.1.414 sends no `serverInfo`). `None` only
+        /// when both are missing. Reported beside the counts, never stored
         /// in `.trellis/index.bin`.
         server: Option<String>,
         /// Set when the server stopped answering part way through: the
         /// sites after that point were not queried and keep their verdict.
         stopped: Option<String>,
     },
+}
+
+/// Why the backstop refused an answer the server did give.
+///
+/// A reason rather than a bare count, so a new refusal (#186's "overridden
+/// or abstract") is one more variant and not another reshape of
+/// [`BackstopReport`]. Every variant is a site that keeps the resolver's
+/// verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Refusal {
+    /// A location with no URI or no readable start position.
+    Malformed,
+    /// A location outside the repository, or in a file the index does not
+    /// hold (the standard library, site-packages, a stub).
+    OutsideRepository,
+    /// A location inside an indexed file but not at a definition's name,
+    /// such as a parameter or a local variable inside a function's span.
+    NotADefinitionName,
+    /// Locations naming more than one symbol.
+    MoreThanOneSymbol,
+    /// A symbol outside a `Candidates` site's set, which is an upper bound
+    /// over first-party code (ADR 0012), so the answer is a disagreement.
+    OutsideCandidates,
+}
+
+impl Refusal {
+    /// What the refusal means, for output.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Refusal::Malformed => "malformed location",
+            Refusal::OutsideRepository => "outside the repository",
+            Refusal::NotADefinitionName => "not at a definition's name",
+            Refusal::MoreThanOneSymbol => "more than one symbol",
+            Refusal::OutsideCandidates => "outside the Candidates set",
+        }
+    }
 }
 
 /// What the backstop did, as counts beside the resolver's and never merged
@@ -86,11 +124,14 @@ pub struct BackstopReport {
     pub edges: Vec<BackstopEdge>,
     /// Doubt sites a definition request was sent for.
     pub queried: u32,
-    /// Queried sites the backstop left with the resolver's verdict: the
-    /// server returned nothing, or an answer this module would not bind
-    /// (outside the repository, not a definition's name, more than one
-    /// symbol, or outside a `Candidates` site's set).
-    pub left: u32,
+    /// Queried sites the server returned no location for (`null` or an
+    /// empty list). They keep the resolver's verdict.
+    pub no_answer: u32,
+    /// Queried sites whose answer this module would not bind, by reason.
+    /// They keep the resolver's verdict. Kept apart from `no_answer`
+    /// because "the server did not know" and "the server said something we
+    /// would not take" call for different fixes.
+    pub refused: BTreeMap<Refusal, u32>,
     /// Doubt sites never queried because the server was absent or stopped.
     pub not_queried: u32,
     /// Sites passed in that the resolver bound `Resolved` or that produced
@@ -99,12 +140,19 @@ pub struct BackstopReport {
 }
 
 impl BackstopReport {
+    /// Refused answers over every reason. One population (queried sites
+    /// with an answer), so the sum is a count, not a mix.
+    pub fn refused_total(&self) -> u32 {
+        self.refused.values().sum()
+    }
+
     fn not_run(reason: String, not_queried: u32, skipped_certain: u32) -> Self {
         BackstopReport {
             status: BackstopStatus::NotRun { reason },
             edges: Vec::new(),
             queried: 0,
-            left: 0,
+            no_answer: 0,
+            refused: BTreeMap::new(),
             not_queried,
             skipped_certain,
         }
@@ -121,6 +169,23 @@ pub struct Server {
     /// large repository takes a while, so the default is generous; a server
     /// that never answers still cannot hang `trellis index`.
     pub timeout: Duration,
+    /// Where to read the version when `initialize` carries no `serverInfo`.
+    pub package: Option<NpmPackage>,
+}
+
+/// An npm package whose `package.json` names the server's version.
+///
+/// Read from the file rather than asked of the program: `pyright-langserver
+/// --version` on 1.1.414 exits 1 ("Connection input stream is not set")
+/// because the language server has no such flag, and a file read starts no
+/// second Node process.
+#[derive(Debug, Clone)]
+pub struct NpmPackage {
+    /// The program to find on `PATH`, as `Lsp::start` finds it.
+    pub bin: OsString,
+    /// The package's `name`. A `package.json` naming anything else is not
+    /// this server's and is not read.
+    pub name: String,
 }
 
 impl Server {
@@ -130,6 +195,10 @@ impl Server {
             program: "pyright-langserver".into(),
             args: vec!["--stdio".into()],
             timeout: Duration::from_secs(120),
+            package: Some(NpmPackage {
+                bin: "pyright-langserver".into(),
+                name: "pyright".into(),
+            }),
         }
     }
 }
@@ -194,6 +263,13 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
         Err(reason) => return BackstopReport::not_run(reason, doubt, skipped_certain),
     };
     let server_info = match lsp.initialize(&root) {
+        // Pyright sends no `serverInfo`, so its version comes from the
+        // package the program on PATH belongs to.
+        Ok(None) => server.package.as_ref().and_then(|p| {
+            let path = std::env::var_os("PATH");
+            package_version(p, path.as_deref())
+                .map(|v| format!("{} {v}, from its package.json", p.name))
+        }),
         Ok(info) => info,
         Err(reason) => {
             lsp.finish();
@@ -209,7 +285,8 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
         },
         edges: Vec::new(),
         queried: 0,
-        left: 0,
+        no_answer: 0,
+        refused: BTreeMap::new(),
         not_queried: 0,
         skipped_certain,
     };
@@ -255,12 +332,13 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
             };
             report.queried += 1;
             match bind(&result, targets[&site], &mut files) {
-                Some(callee) => report.edges.push(BackstopEdge {
+                Ok(callee) => report.edges.push(BackstopEdge {
                     from: site,
                     callee,
                     source: EdgeSource::Pyright,
                 }),
-                None => report.left += 1,
+                Err(Answer::None) => report.no_answer += 1,
+                Err(Answer::Refused(why)) => *report.refused.entry(why).or_default() += 1,
             }
         }
         if stopped.is_none()
@@ -279,12 +357,84 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
     report
 }
 
+/// The version in the `package.json` of the npm package `pkg.bin` belongs
+/// to, found through `path` (the `PATH` value) the way the server was
+/// started. `None` when the program is not found, no candidate file names
+/// `pkg.name`, or the version is not a plain version string.
+fn package_version(pkg: &NpmPackage, path: Option<&std::ffi::OsStr>) -> Option<String> {
+    let bin = find_program(&pkg.bin, path)?;
+    let dir = bin.parent()?;
+    let mut candidates = Vec::new();
+    // Unix: `.bin/pyright-langserver` links to `../pyright/langserver.index.js`.
+    if let Some(real) = std::fs::canonicalize(&bin)
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+    {
+        candidates.push(real.join("package.json"));
+    }
+    // npm on Windows writes shims, not links: `node_modules/.bin/x.cmd` for
+    // a local install, `<prefix>/x.cmd` beside `<prefix>/node_modules` for a
+    // global one.
+    candidates.push(dir.join("..").join(&pkg.name).join("package.json"));
+    candidates.push(
+        dir.join("node_modules")
+            .join(&pkg.name)
+            .join("package.json"),
+    );
+    candidates.iter().find_map(|c| {
+        // A package file is not trusted input: it reaches stdout only as a
+        // short string of version characters.
+        let text = std::fs::read_to_string(c).ok()?;
+        let json: Value = serde_json::from_str(&text).ok()?;
+        if json.get("name").and_then(Value::as_str) != Some(pkg.name.as_str()) {
+            return None;
+        }
+        let v = json.get("version")?.as_str()?;
+        let plain = !v.is_empty()
+            && v.len() <= 64
+            && v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b));
+        plain.then(|| v.to_string())
+    })
+}
+
+/// `program` as `Lsp::start` would run it: a path as given, else a bare
+/// name from the first `PATH` entry holding it. On Windows in the same order
+/// the spawn tries: `name.exe` on the whole `PATH`, then the `.cmd` fallback.
+fn find_program(program: &OsString, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let p = Path::new(program);
+    if p.components().count() > 1 {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let suffixes: &[&str] = if cfg!(windows) {
+        &[".exe", ".cmd"]
+    } else {
+        &[""]
+    };
+    let path = path?;
+    suffixes.iter().find_map(|suffix| {
+        let mut name = program.clone();
+        name.push(suffix);
+        std::env::split_paths(path)
+            .map(|dir| dir.join(&name))
+            .find(|c| c.is_file())
+    })
+}
+
 fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// The one symbol a definition answer names, or `None` to leave the site
-/// alone.
+/// Why a queried site was not bound.
+enum Answer {
+    /// The server returned no location.
+    None,
+    /// The server returned locations this module would not bind.
+    Refused(Refusal),
+}
+
+/// The one symbol a definition answer names, or why the site is left alone.
 ///
 /// Conservative in every direction, because an edge bound here is evidence
 /// and not proof (ADR 0031): every location must name a first-party
@@ -292,7 +442,7 @@ fn count(n: usize) -> u32 {
 /// be one of the resolver's candidates. The resolver's set is an upper bound
 /// over first-party code (ADR 0012), so an answer outside it is a
 /// disagreement, not a refinement.
-fn bind(result: &Value, target: &Target, files: &mut Files<'_>) -> Option<SymbolId> {
+fn bind(result: &Value, target: &Target, files: &mut Files<'_>) -> Result<SymbolId, Answer> {
     let locations: Vec<&Value> = match result {
         Value::Array(a) => a.iter().collect(),
         Value::Object(_) => vec![result],
@@ -302,23 +452,35 @@ fn bind(result: &Value, target: &Target, files: &mut Files<'_>) -> Option<Symbol
     for loc in locations {
         // `Location` or `LocationLink`.
         let (uri, range) = match (loc.get("uri"), loc.get("targetUri")) {
-            (Some(u), _) => (u, loc.get("range")?),
-            (None, Some(u)) => (u, loc.get("targetSelectionRange")?),
-            (None, None) => return None,
+            (Some(u), _) => (u, loc.get("range")),
+            (None, Some(u)) => (u, loc.get("targetSelectionRange")),
+            (None, None) => return Err(Answer::Refused(Refusal::Malformed)),
         };
-        let start = range.get("start")?;
-        let line = u32::try_from(start.get("line")?.as_u64()?).ok()?;
-        let character = u32::try_from(start.get("character")?.as_u64()?).ok()?;
-        let sym = files.symbol_named_at(uri.as_str()?, line, character)?;
+        let start = range.and_then(|r| r.get("start"));
+        let at = |k: &str| {
+            start
+                .and_then(|s| s.get(k))
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let (Some(uri), Some(line), Some(character)) = (uri.as_str(), at("line"), at("character"))
+        else {
+            return Err(Answer::Refused(Refusal::Malformed));
+        };
+        let sym = files
+            .symbol_named_at(uri, line, character)
+            .map_err(Answer::Refused)?;
         match found {
-            Some(s) if s != sym => return None,
+            Some(s) if s != sym => return Err(Answer::Refused(Refusal::MoreThanOneSymbol)),
             _ => found = Some(sym),
         }
     }
-    let sym = found?;
+    let sym = found.ok_or(Answer::None)?;
     match target {
-        Target::Candidates(c) if !c.contains(&sym) => None,
-        _ => Some(sym),
+        Target::Candidates(c) if !c.contains(&sym) => {
+            Err(Answer::Refused(Refusal::OutsideCandidates))
+        }
+        _ => Ok(sym),
     }
 }
 
@@ -378,14 +540,29 @@ impl<'a> Files<'a> {
     /// pointing at a local variable or a parameter lies inside the enclosing
     /// function's span, and binding it to that function would be an edge to
     /// the wrong callee.
-    fn symbol_named_at(&mut self, uri: &str, line: u32, character: u32) -> Option<SymbolId> {
+    fn symbol_named_at(
+        &mut self,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<SymbolId, Refusal> {
+        let file = self.file_at(uri).ok_or(Refusal::OutsideRepository)?;
+        self.name_at(file, line, character)
+            .ok_or(Refusal::NotADefinitionName)
+    }
+
+    /// The indexed file `uri` names, or `None` when it names anything else.
+    fn file_at(&self, uri: &str) -> Option<FileId> {
         let path = std::fs::canonicalize(uri_to_path(uri)?).ok()?;
         let rel = path.strip_prefix(&self.root).ok()?;
         let rel: Vec<String> = rel
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        let file = *self.by_path.get(rel.join("/").as_str())?;
+        self.by_path.get(rel.join("/").as_str()).copied()
+    }
+
+    fn name_at(&mut self, file: FileId, line: u32, character: u32) -> Option<SymbolId> {
         let offset = offset_of(self.source(file)?, line, character)?;
         let src = self.sources.get(&file)?;
         let index = self.index;
@@ -731,7 +908,8 @@ mod tests {
     /// `line:character`, and asks `workspace/configuration` during
     /// `initialize` the way Pyright does, so the client must answer a
     /// server-to-client request before its own reply arrives. With `die` as
-    /// its second argument it exits on the first definition request.
+    /// its second argument it exits on the first definition request; with
+    /// `noinfo` it leaves `serverInfo` out of `initialize`, as Pyright does.
     const FAKE_SERVER: &str = r#"
 import json, sys
 inp, out = sys.stdin.buffer, sys.stdout.buffer
@@ -763,7 +941,10 @@ while True:
         send(dict(jsonrpc="2.0", id="cfg", method="workspace/configuration", params=dict(items=[dict(section="python")])))
         reply = read()
         assert reply.get("id") == "cfg", reply
-        send(dict(jsonrpc="2.0", id=m["id"], result=dict(capabilities=dict(), serverInfo=dict(name="fake-lsp", version="0.0.1"))))
+        result = dict(capabilities=dict())
+        if mode != "noinfo":
+            result["serverInfo"] = dict(name="fake-lsp", version="0.0.1")
+        send(dict(jsonrpc="2.0", id=m["id"], result=result))
     elif meth == "textDocument/definition":
         if mode == "die":
             sys.exit(0)
@@ -882,6 +1063,7 @@ def use(obj, cb):
                 program: program.into(),
                 args,
                 timeout: Duration::from_secs(30),
+                package: None,
             }
         }
     }
@@ -947,7 +1129,15 @@ def use(obj, cb):
                 source: EdgeSource::Pyright,
             }]
         );
-        assert_eq!((report.queried, report.left, report.not_queried), (3, 2, 0));
+        // `cb()` got `null`; `obj.stop()` got an answer that was refused.
+        assert_eq!(
+            (report.queried, report.no_answer, report.not_queried),
+            (3, 1, 0)
+        );
+        assert_eq!(
+            report.refused,
+            BTreeMap::from([(Refusal::NotADefinitionName, 1)])
+        );
         assert_eq!(
             f.index.edges, edges_before,
             "the graph is not the backstop's to change"
@@ -997,6 +1187,7 @@ def use(obj, cb):
             program: "trellis-no-such-language-server".into(),
             args: vec!["--stdio".into()],
             timeout: Duration::from_secs(5),
+            package: None,
         };
         let doubt = doubt_sites(&f.index);
         let report = run(&f.index, &f.root, &doubt, &server);
@@ -1085,7 +1276,193 @@ def use(a: Base, b: Base):
                 source: EdgeSource::Pyright,
             }]
         );
-        assert_eq!((report.queried, report.left), (2, 1));
+        assert_eq!((report.queried, report.no_answer), (2, 0));
+        assert_eq!(
+            report.refused,
+            BTreeMap::from([(Refusal::OutsideCandidates, 1)])
+        );
+    }
+
+    #[test]
+    fn pyright_backstop_counts_no_answer_apart_from_each_refusal() {
+        // #177 on poetry: 5,721 sites "left alone" could not say whether
+        // Pyright knew nothing or answered and was refused, and those call
+        // for different fixes. Each kind of answer lands in its own count.
+        let text = "def helper():
+    return 2
+
+
+def other():
+    return 3
+
+
+def use(o):
+    o.a()
+    o.b()
+    o.c()
+    o.d()
+    o.e()
+";
+        let f = fixture_of("split", text);
+        let sites: Vec<CallSiteId> = ["o.a()", "o.b()", "o.c()", "o.d()", "o.e()"]
+            .iter()
+            .map(|t| f.site(t))
+            .collect();
+        for &s in &sites {
+            assert!(!f.target(s).is_certain(), "fixture: {s:?} must be doubt");
+        }
+        // Under the root but not in the index, like a stub or a vendored file.
+        let stray = f.root.join("not_indexed.py");
+        std::fs::write(&stray, "def a():\n    pass\n").unwrap();
+        let stray = std::fs::canonicalize(stray).unwrap();
+        let zero = json!({"line": 0, "character": 4});
+        let answers = json!({
+            "9:6": null,
+            "10:6": [],
+            "11:6": {"range": {"start": zero, "end": zero}},
+            "12:6": {"uri": path_to_uri(&stray), "range": {"start": zero, "end": zero}},
+            "13:6": [f.location(0, 4), f.location(4, 4)],
+        });
+        let server = f.server(answers, "");
+        let report = run(&f.index, &f.root, &sites, &server);
+
+        assert!(report.edges.is_empty());
+        assert_eq!((report.queried, report.no_answer), (5, 2));
+        assert_eq!(
+            report.refused,
+            BTreeMap::from([
+                (Refusal::Malformed, 1),
+                (Refusal::OutsideRepository, 1),
+                (Refusal::MoreThanOneSymbol, 1),
+            ])
+        );
+        assert_eq!(report.refused_total(), 3);
+    }
+
+    /// An npm install of `pyright` under `dir`: `node_modules/.bin` holding
+    /// the shims npm writes, and the package's `package.json`.
+    fn npm_install(dir: &Path, package_json: &str) -> PathBuf {
+        let bin = dir.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for shim in ["pyright-langserver", "pyright-langserver.cmd"] {
+            std::fs::write(bin.join(shim), "").unwrap();
+        }
+        let pkg = dir.join("node_modules").join("pyright");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("package.json"), package_json).unwrap();
+        bin
+    }
+
+    fn pyright_package(bin: impl Into<OsString>) -> NpmPackage {
+        NpmPackage {
+            bin: bin.into(),
+            name: "pyright".into(),
+        }
+    }
+
+    #[test]
+    fn pyright_backstop_reads_the_version_from_package_json_when_the_server_sends_none() {
+        // Pyright 1.1.414 sends no `serverInfo` (#177), so ADR 0031's version
+        // line printed "did not report its version" on every real run. The
+        // fake server here omits it the same way; the version must come from
+        // the package, marked as read from there, and be absent only when
+        // both sources fail.
+        let f = fixture("version");
+        let bin = npm_install(
+            &f.root.join("tool"),
+            r#"{"name": "pyright", "version": "1.1.414"}"#,
+        );
+        let mut server = f.server(json!({}), "noinfo");
+        server.package = Some(pyright_package(bin.join("pyright-langserver")));
+        let report = run(&f.index, &f.root, &doubt_sites(&f.index), &server);
+        assert_eq!(
+            report.status,
+            BackstopStatus::Ran {
+                server: Some("pyright 1.1.414, from its package.json".into()),
+                stopped: None
+            }
+        );
+
+        // `serverInfo` wins when the server sends it.
+        server.args.pop();
+        server.args.push("".into());
+        let report = run(&f.index, &f.root, &doubt_sites(&f.index), &server);
+        assert!(
+            matches!(&report.status, BackstopStatus::Ran { server: Some(s), .. } if s == "fake-lsp 0.0.1"),
+            "{:?}",
+            report.status
+        );
+
+        // Neither source: the version is unknown, and the run still counts.
+        let mut server = f.server(json!({}), "noinfo");
+        server.package = Some(pyright_package(f.root.join("no-such-langserver")));
+        let report = run(&f.index, &f.root, &doubt_sites(&f.index), &server);
+        assert_eq!(
+            report.status,
+            BackstopStatus::Ran {
+                server: None,
+                stopped: None
+            }
+        );
+    }
+
+    #[test]
+    fn pyright_backstop_finds_the_package_the_way_the_server_was_started() {
+        // A bare name is found on PATH, in the local layout
+        // (`node_modules/.bin/x` beside `node_modules/pyright`) and the global
+        // Windows one (`<prefix>/x.cmd` beside `<prefix>/node_modules`). A
+        // package.json that names another package, or whose version is not a
+        // version, is not read: the text reaches stdout.
+        let f = fixture("package");
+        let local = npm_install(
+            &f.root.join("local"),
+            r#"{"name": "pyright", "version": "1.1.414"}"#,
+        );
+        let path = std::env::join_paths([f.root.join("empty"), local]).unwrap();
+        assert_eq!(
+            package_version(&pyright_package("pyright-langserver"), Some(&path)),
+            Some("1.1.414".into())
+        );
+
+        let global = f.root.join("global");
+        std::fs::create_dir_all(global.join("node_modules").join("pyright")).unwrap();
+        for shim in ["pyright-langserver", "pyright-langserver.cmd"] {
+            std::fs::write(global.join(shim), "").unwrap();
+        }
+        std::fs::write(
+            global.join("node_modules/pyright/package.json"),
+            r#"{"name": "pyright", "version": "1.2.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            package_version(
+                &pyright_package("pyright-langserver"),
+                Some(global.as_os_str())
+            ),
+            Some("1.2.0".into())
+        );
+
+        for (i, body) in [
+            r#"{"name": "not-pyright", "version": "1.1.414"}"#,
+            "{\"name\": \"pyright\", \"version\": \"1.1\\u001b[31m\"}",
+            r#"{"name": "pyright", "version": ""}"#,
+            "not json",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let bin = npm_install(&f.root.join(format!("bad{i}")), body);
+            assert_eq!(
+                package_version(&pyright_package(bin.join("pyright-langserver")), None),
+                None,
+                "{body}"
+            );
+        }
+        assert_eq!(
+            package_version(&pyright_package("pyright-langserver"), None),
+            None,
+            "no PATH, nothing found"
+        );
     }
 
     #[test]
