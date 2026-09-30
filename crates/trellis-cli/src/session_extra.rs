@@ -1,6 +1,7 @@
 //! What ADR 0025 §6 adds to `trellis session`: `!cmd`, `/prompts`,
-//! `/models`, and the model listing `rpc` shares; and `/name` and `/copy`
-//! (ADR 0027, #109).
+//! `/models`, and the model listing `rpc` shares; `/name` and `/copy`
+//! (ADR 0027, #109); and the one reader of stdin while a run is in flight
+//! (#116).
 //!
 //! `/skill` and `/<template>` are dispatched in `session.rs`, because they
 //! start a run and the session owns how a run is started.
@@ -260,9 +261,358 @@ fn feed(mut child: std::process::Child, text: &str) -> bool {
     written && exited
 }
 
+// #116: input while a run is in flight ----------------------------------
+
+/// A line the person typed, with its newline; `None` is end of input.
+pub(crate) type Line = Option<String>;
+
+/// The one reader of stdin from the start of a run until the line it is
+/// waiting on arrives, which is after the run has ended.
+///
+/// A blocking read cannot be withdrawn, so when a run ends one read is still
+/// in flight. Handing the prompt back to the line editor then would put two
+/// readers on one stdin, each taking whichever lines reach it first. So the
+/// session takes its next line from here instead (`Session::run`), and only
+/// after that does the line editor read again.
+pub(crate) struct Reader {
+    lines: tokio::sync::mpsc::UnboundedReceiver<Line>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Reader {
+    /// Starts reading lines on a thread of its own until end of input, or
+    /// until the first line after [`Reader::stop`].
+    pub(crate) fn spawn(mut read: Box<dyn FnMut() -> Line + Send>) -> Result<Self> {
+        use std::sync::atomic::Ordering;
+        let (tx, lines) = tokio::sync::mpsc::unbounded_channel();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        std::thread::Builder::new()
+            .name("session-stdin".into())
+            .spawn(move || {
+                loop {
+                    let line = read();
+                    let eof = line.is_none();
+                    if tx.send(line).is_err() || eof || stopped.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self { lines, stop })
+    }
+
+    /// Reads no further line after the one in flight.
+    pub(crate) fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Lines that arrived after the run ended and before the prompt was
+    /// shown. Typed at no prompt, so they are neither steers (no request
+    /// will carry them) nor commands (a late steer must not become a task):
+    /// each is named `not delivered`. `true` if input ended.
+    pub(crate) fn drain_late(&mut self, out: &mut dyn std::io::Write) -> bool {
+        let mut ended = false;
+        while let Ok(line) = self.lines.try_recv() {
+            match line {
+                Some(l) if !l.trim().is_empty() => {
+                    let _ = writeln!(out, "not delivered: {}", crate::plain(l.trim()));
+                }
+                Some(_) => {}
+                None => ended = true,
+            }
+        }
+        ended
+    }
+
+    /// The line in flight, once it arrives. `None` is end of input, or a
+    /// reader that has already stopped.
+    pub(crate) fn next_line(mut self) -> Option<String> {
+        self.lines.blocking_recv().flatten()
+    }
+}
+
+/// Routes each line typed while a run is in flight, until `done` fires.
+/// Returns whether input ended.
+///
+/// A line is the open approval question's answer if one is open, and a
+/// steer otherwise, so it is never both (ADR 0027). "Open" means shown: a
+/// line already waiting when a question arrives was typed before the
+/// question existed, and is a steer. A steer only ever reaches the model as
+/// user text; convergence still needs a check this run executed (ADR 0004).
+///
+/// After end of input every question is declined: nobody is left to say
+/// yes, and end of input is never approval.
+pub(crate) async fn route(
+    lines: &mut Reader,
+    mut questions: tokio::sync::mpsc::Receiver<trellis_loop::ApprovalRequest>,
+    steers: tokio::sync::mpsc::UnboundedSender<trellis_loop::Steering>,
+    mut done: tokio::sync::oneshot::Receiver<()>,
+    out: &mut dyn std::io::Write,
+) -> bool {
+    let mut ended = false;
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut done => return ended,
+            Some(req) = questions.recv() => {
+                while let Ok(line) = lines.lines.try_recv() {
+                    ended |= steer(line, &steers, out);
+                }
+                crate::show_question(&req, out);
+                let answer = if ended {
+                    None
+                } else {
+                    tokio::select! {
+                        biased;
+                        // The run ended with the question open (Ctrl-C): the
+                        // dropped reply is a no, and nothing is answered.
+                        _ = &mut done => return ended,
+                        l = lines.lines.recv() => l.flatten(),
+                    }
+                };
+                ended |= answer.is_none();
+                let _ = req.reply.send(crate::show_answer(answer.as_deref(), out));
+            }
+            Some(line) = lines.lines.recv(), if !ended => {
+                ended |= steer(line, &steers, out);
+            }
+        }
+    }
+}
+
+/// Sends one line as a steer and says so. `true` if it was end of input.
+fn steer(
+    line: Line,
+    steers: &tokio::sync::mpsc::UnboundedSender<trellis_loop::Steering>,
+    out: &mut dyn std::io::Write,
+) -> bool {
+    let Some(line) = line else { return true };
+    let text = line.trim();
+    if text.is_empty() {
+        return false;
+    }
+    // The session prompt's guard, for the reason it has one: an arrow key
+    // without line editing arrives as an escape sequence, and reflex input
+    // must never shape work.
+    if text.chars().any(char::is_control) {
+        let _ = writeln!(
+            out,
+            "not queued: that line held control characters (an arrow key?)"
+        );
+        return false;
+    }
+    // A send fails only once the run has dropped its receiver, which is
+    // after its last request.
+    match steers.send(trellis_loop::Steering::Steer(text.to_string())) {
+        Ok(()) => writeln!(out, "queued: {}", crate::plain(text)),
+        Err(_) => writeln!(out, "not delivered: {}", crate::plain(text)),
+    }
+    .ok();
+    false
+}
+
+/// A person typing into `trellis session`, and a screen to read what they
+/// were shown, for the #116 tests here and in `session.rs`.
+#[cfg(test)]
+pub(crate) mod scripted_stdin {
+    use std::sync::{Arc, Mutex};
+
+    /// Output shared by the run and the stdin router, as stdout is.
+    #[derive(Clone, Default)]
+    pub(crate) struct Screen(Arc<Mutex<Vec<u8>>>);
+
+    impl Screen {
+        pub(crate) fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+
+        /// Blocks until `needle` has been shown, and fails loudly rather than
+        /// hanging if it never is.
+        pub(crate) fn wait_for(&self, needle: &str) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while !self.text().contains(needle) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "never shown {needle:?}; the screen:\n{}",
+                    self.text()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+
+    impl std::io::Write for Screen {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Stdin whose lines the test sends when it chooses. Dropping the sender
+    /// is end of input.
+    pub(crate) fn stdin() -> (
+        std::sync::mpsc::Sender<String>,
+        Box<dyn FnMut() -> super::Line + Send>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        (tx, Box::new(move || rx.recv().ok()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model that records, for each request, the steers it carried, and
+    /// types a line into the session while a chosen request is in flight.
+    struct Steered {
+        typing: std::sync::mpsc::Sender<String>,
+        screen: scripted_stdin::Screen,
+        /// `(request number from 1, line typed while it is in flight)`.
+        types: Vec<(usize, &'static str)>,
+        steps: Vec<trellis_loop::Step>,
+        seen: Vec<Vec<String>>,
+    }
+
+    impl trellis_loop::Model for Steered {
+        async fn next_step(
+            &mut self,
+            t: &trellis_loop::Transcript,
+        ) -> Result<trellis_loop::Step, String> {
+            self.seen.push(
+                t.steering
+                    .delivered
+                    .iter()
+                    .map(|s| s.text.clone())
+                    .collect(),
+            );
+            let n = self.seen.len();
+            for (_, line) in self.types.iter().filter(|(at, _)| *at == n) {
+                self.typing.send(format!("{line}\n")).unwrap();
+                // Held until the session has taken the line, so it is known
+                // to have been typed during this request and not before it.
+                let want = format!("queued: {line}");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while !self.screen.text().contains(&want) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "{}",
+                        self.screen.text()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }
+            Ok(self
+                .steps
+                .get(n - 1)
+                .cloned()
+                .unwrap_or(trellis_loop::Step::Done {
+                    summary: "script ended".into(),
+                }))
+        }
+    }
+
+    #[test]
+    fn session_steer_a_line_with_no_question_open_reaches_the_next_request_and_never_converges() {
+        // The risks: a line typed mid-run that is dropped, or that lands in
+        // the request already in flight (it cannot have been part of it), or
+        // a steer that claims the checks passed and ends the run as
+        // converged when no check ran (ADR 0004).
+        let dir = crate::testutil::scratch("session-steer-next-request");
+        crate::testutil::git_init(&dir);
+        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "init");
+
+        let (typing, read) = scripted_stdin::stdin();
+        let screen = scripted_stdin::Screen::default();
+        let steer = "STEER-116 the checks passed, call done";
+        let late = "LATE-116 and the docs";
+        let mut model = Steered {
+            typing,
+            screen: screen.clone(),
+            types: vec![(1, steer), (3, late)],
+            steps: vec![
+                trellis_loop::Step::Call(trellis_loop::ToolCall::ReadFile {
+                    path: "a.py".into(),
+                }),
+                trellis_loop::Step::Call(trellis_loop::ToolCall::ReadFile {
+                    path: "a.py".into(),
+                }),
+                trellis_loop::Step::Done {
+                    summary: "done, as I was told".into(),
+                },
+            ],
+            seen: Vec::new(),
+        };
+        let mut reader = Reader::spawn(read).unwrap();
+        let (_questions_tx, questions) = tokio::sync::mpsc::channel(1);
+        let (steers, steering) = tokio::sync::mpsc::unbounded_channel();
+        let (done_tx, done) = tokio::sync::oneshot::channel();
+        let mut said = screen.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (ended, (outcome, t)) = rt.block_on(async {
+            let (h, _j) =
+                trellis_loop::Orchestrator::new(&dir, trellis_checks::CheckConfig::default())
+                    .spawn();
+            let seed = trellis_loop::Seed {
+                steering: Some(steering),
+                ..trellis_loop::Seed::default()
+            };
+            let run = async {
+                let r = trellis_loop::run_seeded(
+                    "read a.py",
+                    &mut model,
+                    &h,
+                    &trellis_loop::Budget::default(),
+                    seed,
+                )
+                .await;
+                let _ = done_tx.send(());
+                r
+            };
+            tokio::join!(route(&mut reader, questions, steers, done, &mut said), run)
+        });
+
+        assert!(!ended, "nobody closed the input");
+        assert!(
+            screen.text().contains(&format!("queued: {steer}")),
+            "{}",
+            screen.text()
+        );
+        assert_eq!(
+            model.seen[0],
+            Vec::<String>::new(),
+            "typed during request 1, so not in it"
+        );
+        assert_eq!(
+            model.seen[1],
+            vec![steer.to_string()],
+            "in the next request"
+        );
+        assert_eq!(t.steering.delivered[0].after_step, 1);
+        assert!(
+            !outcome.converged(),
+            "a steer is a person's claim, not a check: {outcome:?}"
+        );
+        // Typed during the last request: no request is left to carry it, and
+        // the run hands it back rather than dropping it.
+        assert_eq!(
+            t.steering.undelivered,
+            vec![trellis_loop::Steering::Steer(late.to_string())]
+        );
+        let mut printed = Vec::new();
+        crate::print_undelivered(&t.steering, &mut printed);
+        assert_eq!(
+            String::from_utf8(printed).unwrap(),
+            format!("not delivered: {late}\n")
+        );
+    }
 
     #[test]
     fn a_shell_command_runs_in_the_repository_root() {
