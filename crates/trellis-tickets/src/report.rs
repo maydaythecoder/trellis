@@ -21,12 +21,12 @@ use crate::{
     surface, triage,
 };
 
-/// The fields `triage` asks `gh` for. `labels` comes back as objects; only
+/// The fields `triage` and `ready` ask `gh` for. `labels` comes back as objects; only
 /// their `name` is read.
 pub const GH_VIEW_FIELDS: &str = "number,title,body,labels,state";
 
-/// The one `gh` argv `triage` runs, per issue: a read. Nothing in this
-/// command writes to GitHub, and this is the only argv it builds.
+/// The one `gh` argv `triage` and `ready` run, per issue: a read. Nothing
+/// in either command writes to GitHub, and this is the only argv they build.
 pub fn gh_view_args(number: u64) -> [String; 5] {
     [
         "issue".to_string(),
@@ -218,7 +218,7 @@ pub fn triage_with(
 
 /// Issue text with control characters escaped, so a title or body quoted in
 /// a reason cannot move the cursor or recolour the terminal it prints to.
-fn printable(s: &str) -> String {
+pub(crate) fn printable(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_control() {

@@ -11,12 +11,18 @@
 //! There is no I/O here. The caller fetches the issue (the `trellis-tickets`
 //! commands do it by spawning `gh`) and hands over its text, so every rule is
 //! tested from a string with no network and no `gh`.
+//!
+//! [`ready_with`] is `ready <n>`'s gate: G0's checks as
+//! `scripts/gates/ticket-ready.sh` reads them, beside the named extras from
+//! [`ready`]'s rule.
 
+mod gate;
 mod labels;
 mod parse;
 mod report;
 mod rules;
 
+pub use gate::{Abstention, ReadyReport, ready_gate, ready_with};
 pub use labels::{Area, Effort, Flag, Kind, Origin, Risk, Route, Surface};
 pub use report::{
     GH_VIEW_FIELDS, IntakeError, Line, Report, TriageError, Value, gh_view_args, report,

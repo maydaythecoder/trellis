@@ -40,6 +40,7 @@ cargo run -p trellis-cli -- run "<task>" --image <path>    # hosted tier 1 only,
 cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
 cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040)
 cargo run -p trellis-tickets -- triage <n> [--json]       # one issue's labels, each with its rule; read-only (ADR 0040)
+cargo run -p trellis-tickets -- ready <n>                 # G0's checks + 4 named extras; exit 1 lists each failure or abstention; read-only (ADR 0040)
 
 # ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
 # it is built, deferred, or excluded (and by which clause).
