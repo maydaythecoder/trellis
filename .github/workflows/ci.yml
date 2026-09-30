@@ -213,8 +213,10 @@ jobs:
           cargo install --locked cargo-audit --version 0.22.2
 
       # Fails on any advisory not listed, with its reason, in `deny.toml`.
+      # --locked: without it cargo deny rewrites a stale lock and passes on
+      # the rewritten one (#197).
       - name: Licences, bans, sources, advisories
-        run: cargo deny check
+        run: cargo deny --locked check
 
       # cargo-audit does not read `deny.toml`. It exits non-zero on a
       # vulnerability and reports unmaintained crates as warnings, which is
@@ -222,6 +224,22 @@ jobs:
       # second ignore list.
       - name: RustSec advisories
         run: cargo audit
+
+      # fuzz/ is its own workspace with its own lock (#95), which is not
+      # updated when a crate the fuzz target reaches gains a dependency
+      # (#172). The same check G5 runs: fails, naming the file, when a build
+      # of fuzz/ would rewrite it, and shows on a copy that a stale lock fails.
+      - name: fuzz/Cargo.lock is current
+        run: scripts/checks/fuzz-lock-current.sh
+
+      # Its dependency set differs from the root's (libfuzzer-sys and what it
+      # pulls in), so both audits run over it too. deny.toml at the root
+      # applies: cargo deny looks upward from the manifest for its policy.
+      - name: Licences, bans, sources, advisories (fuzz/)
+        run: cargo deny --locked --manifest-path fuzz/Cargo.toml check
+
+      - name: RustSec advisories (fuzz/)
+        run: cargo audit --file fuzz/Cargo.lock
 
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.
