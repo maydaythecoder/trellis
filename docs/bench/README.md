@@ -122,3 +122,42 @@ Seed for the v1.0 audit: 20260929, drawn at commit 9608f9a. The commit is the
 resolver that produced `answers.json`; if `resolve.rs` has changed since,
 regenerate the answers at this seed and size before scoring. The draw's
 composition is deliberately not recorded here: the auditor reads this file.
+
+## Bytes per prompt token (#170, ADR 0033 §1)
+
+**3.853 bytes per token, measured on 19 trails, on one configuration:**
+Ollama 0.34.2 serving `qwen2.5:3b` (Q4_K_M) through `/v1/completions`, its
+llama-server at `-c 4096`, spec `vllm:http://127.0.0.1:11434#qwen2.5:3b`.
+4,096 tokens × 3.853 = **15,781 bytes**. Not stated for any other runtime,
+model or tokenizer.
+
+Method, in full in ADR 0033 §1 and in `bytes_per_token.py`'s docstring:
+
+- Trails: `floor-qwen2.5-3b-q4km-ollama-20260930/`, the 20 floor tasks run
+  by `run_floor.py` over the CRLF poetry 2.5.0 corpus, release binary at
+  9fc754d (with #105 and #106), mypy 2.3.1, and
+  `RUST_LOG=trellis=info,trellis_loop::adapter=debug` so each run's log has
+  every prompt's size.
+- Per run: bytes of every prompt whose reply was read (from the log, checked
+  against the trail's `first_prompt_bytes`, `peak_prompt_bytes` and
+  `turns_measured`), divided by the trail's `factual.prompt_tokens`; pooled
+  over runs. Neither the first nor the peak prompt alone is the figure.
+- Checked against the runtime: `ollama-requests.txt` is Ollama's server log
+  cut to its per-request lines, and each used trail's `prompt_tokens` equals
+  its run's untruncated requests there. t16 is excluded because four of its
+  counted prompts were truncated by Ollama to 2,050 tokens.
+- Spread: per run 3.727–3.988; per request (93) 3.695–4.104, median 3.857;
+  first prompts 3.695 pooled, at which 4,096 tokens hold 15,132 bytes.
+- The counts include Ollama's chat template, about 29 tokens a request
+  (a one-word prompt reports 30), and the prompt included one skill from the
+  operator's own directory, so the bytes are this host's.
+
+```
+python docs/bench/bytes_per_token.py docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930
+```
+
+The same run is a third floor configuration: 0 of 20 repaired (11
+no-progress, 6 no-recovery, 3 format-failure; `…-20260930.json`). In 7 of
+the 20 runs a prompt passed 4,096 tokens (16,498–19,447 bytes), and 6 of
+those runs ended when trellis could not parse Ollama's reply to the
+truncated prompt.

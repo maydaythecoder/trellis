@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190455-629-a-type-check-is-failing-in-src-poetry-config-dic",
+  "task": "a type check is failing in src/poetry/config/dict_config_source.py; fix it",
+  "base_commit": "f8289acf8cc8eee77cb5269b4aadca25070698d0",
+  "started_at": "2026-09-30T19:04:55Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9766,
+      "peak_prompt_bytes": 15746,
+      "turns_measured": 4
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/config/dict_config_source.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/dict_config_source.py",
+        "outcome": "error: edit anchor occurs 5 times in src/poetry/config/dict_config_source.py; it must occur exactly once so the edit is…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "edit",
+        "target": "src/poetry/config/dict_config_source.py",
+        "outcome": "error: edit anchor occurs 5 times in src/poetry/config/dict_config_source.py; it must occur exactly once so the edit is…",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "edit",
+        "target": "src/poetry/config/dict_config_source.py",
+        "outcome": "error: edit anchor occurs 5 times in src/poetry/config/dict_config_source.py; it must occur exactly once so the edit is…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 137,
+    "prompt_tokens": 13183
+  },
+  "factual_sha256": "0e59797fdb8bd6b8857a558f25588566cef8f55af375e02935f2e6ab0db6eaf6",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

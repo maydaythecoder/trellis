@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190801-446-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/cache/list.py; fix it",
+  "base_commit": "a32ea3d570fdefc3b5b09f328e0a38ebb95f6a5e",
+  "started_at": "2026-09-30T19:08:01Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/console/commands/cache/list.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9768,
+      "peak_prompt_bytes": 13927,
+      "turns_measured": 7
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/cache/list.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/cache/list.py",
+        "outcome": "edited src/poetry/console/commands/cache/list.py (applied: true, bytes 38..75)",
+        "wrote": true
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/cache/list.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/cache/list.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/cache/list.py",
+        "outcome": "error: edit anchor occurs 2 times in src/poetry/console/commands/cache/list.py; it must occur exactly once so the edit …",
+        "wrote": false
+      },
+      {
+        "turn": 6,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/cache/list.py",
+        "outcome": "error: edit anchor occurs 2 times in src/poetry/console/commands/cache/list.py; it must occur exactly once so the edit …",
+        "wrote": false
+      },
+      {
+        "turn": 7,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/cache/list.py",
+        "outcome": "error: edit anchor occurs 2 times in src/poetry/console/commands/cache/list.py; it must occur exactly once so the edit …",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 246,
+    "prompt_tokens": 21481
+  },
+  "factual_sha256": "fdd8485006dfe40234da92dbe775f7de3606839ca7732d1cccf2a02722ba0201",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
