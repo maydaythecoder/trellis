@@ -537,8 +537,10 @@ without a budget against the same replies and compares outcomes.
   paying for the same refusal again
   (`an_overflow_that_elision_cannot_shrink_is_not_resent_unchanged`).
   *Amended by ADR 0033:* the smallest supported window is now named, as
-  4,096 tokens; its byte conversion is pending #170, and `[model]
-  context_bytes` still has no default.
+  4,096 tokens; its byte conversion, measured by #170 on one local
+  configuration (Ollama 0.34.2, `qwen2.5:3b`), is 3.853 bytes per token,
+  15,781 bytes (ADR 0033 §1 has the method). `[model] context_bytes` still
+  has no local default, and nothing reads that figure.
   *Amended 2026-09-29 (#152), on the owner's decision of 2026-09-28:* a
   **hosted** spec with no `[model] context_bytes` uses **400,000 bytes**
   (`HOSTED_CONTEXT_BYTES`, `crates/trellis-cli/src/hosted.rs`), applied when
@@ -721,7 +723,8 @@ pull request.
 - Parallel tool calls (ADR 0005).
 - A byte default for `[model] context_bytes` on a local runtime (§5). A
   hosted spec has one since #152; it rests on a heuristic bytes-per-token
-  ratio, and a measured one is pending #170.
+  ratio. #170 measured 3.853 on one local runtime (ADR 0033 §1); no hosted
+  provider's ratio has been measured.
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
 - Model overrides beyond `[model] context_bytes`, `thinking` and

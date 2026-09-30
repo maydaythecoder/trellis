@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190822-382-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/check.py; fix it",
+  "base_commit": "feeb76e94cebe5a6608251d3339dafade75019f0",
+  "started_at": "2026-09-30T19:08:22Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9763,
+      "peak_prompt_bytes": 16705,
+      "turns_measured": 4
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/check.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/check.py",
+        "outcome": "error: edit anchor occurs 2 times in src/poetry/console/commands/check.py; it must occur exactly once so the edit is un…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/check.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/check.py",
+        "outcome": "error: edit anchor occurs 2 times in src/poetry/console/commands/check.py; it must occur exactly once so the edit is un…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 604,
+    "prompt_tokens": 21616
+  },
+  "factual_sha256": "e29f4e276f1ec548f6e27fcfafd605dee3a22b55988da8887532b71647aea3a2",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
