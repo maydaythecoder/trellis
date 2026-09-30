@@ -132,6 +132,24 @@ pub(crate) fn trust_line_with(
     if services > 0 {
         what.push(format!("{services} service(s)"));
     }
+    // By name, from the fingerprint so the line lists what the digest
+    // covers: a repository whose only trusted item was a process agent
+    // printed `trust:      : trusted`, consent with nothing shown. The name
+    // is the profile's file stem, which the repository chose.
+    let mut agents: Vec<String> = fp
+        .items
+        .iter()
+        .filter_map(|i| i.label.strip_prefix("process agent "))
+        .map(crate::plain)
+        .collect();
+    agents.sort();
+    if !agents.is_empty() {
+        what.push(format!(
+            "{} process agent(s) ({})",
+            agents.len(),
+            agents.join(", ")
+        ));
+    }
     let state = match store.map_err(|e| e.to_string()).and_then(|s| {
         s.state(root, &fp)
             .map(|st| (s, st))
