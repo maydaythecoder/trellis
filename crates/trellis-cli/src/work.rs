@@ -891,6 +891,12 @@ impl CliRunner<'_> {
         {
             text = format!("{}\n\n{text}", instructions.trim_end());
         }
+        // After the task: the question the last run ended on, quoted as
+        // that run's output, and the person's answer as their input
+        // (ADR 0026 §1). A task that never asked gets the text it always did.
+        if let Some(answers) = t.answers_since_question() {
+            text = format!("{text}\n\n{answers}");
+        }
         Ok(text)
     }
 
@@ -1149,6 +1155,7 @@ impl Runner for CliRunner<'_> {
                 focus: t.focus.as_deref(),
                 profile: profile.as_ref(),
                 model_from_user,
+                queued: true,
             },
             control,
             &mut crate::output::human(),
@@ -1160,6 +1167,11 @@ impl Runner for CliRunner<'_> {
             Ok(RunExit::NotConverged { restored: true }) => RunEnd::RolledBack { run_id },
             Ok(RunExit::NotConverged { restored: false }) => RunEnd::NotRestored { run_id },
             Ok(RunExit::Interrupted { restored }) => RunEnd::Interrupted { run_id, restored },
+            Ok(RunExit::Asked { question, options }) => RunEnd::Asked {
+                run_id,
+                question,
+                options,
+            },
             Err(e) => RunEnd::Error {
                 run_id,
                 error: format!("{e:#}"),
@@ -1455,5 +1467,49 @@ mod queue_add_args_tests {
             r.text(&t, None).unwrap(),
             "Check $1 by hand.\n\nand the docs"
         );
+    }
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::*;
+
+    #[test]
+    fn a_task_that_asked_runs_with_the_answer_after_its_text_and_one_that_did_not_is_unchanged() {
+        // The risk: the answer recorded with `queue note` never reached the
+        // next run, which would ask the same question again; or a task that
+        // never asked had its prompt changed.
+        let d = tempfile::tempdir().unwrap();
+        let q = Queue::at(d.path().join("queue"));
+        let r = CliRunner {
+            root: d.path(),
+            model: None,
+            model_from_user: false,
+            unconstrained: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            profiles: BTreeMap::new(),
+            queue: q,
+            routines: BTreeMap::new(),
+            current: None,
+            said: BTreeSet::new(),
+            trust_check: |_| Ok(()),
+            trust: None,
+        };
+        let mut t = trellis_queue::Task {
+            task: "retire the v1 endpoint".into(),
+            ..Default::default()
+        };
+        assert_eq!(r.text(&t, None).unwrap(), "retire the v1 endpoint");
+        t.note(
+            Actor::Model,
+            trellis_queue::question_note("Keep v1 for mobile?", &[]),
+        );
+        t.note(Actor::Human, "No, mobile moved to v2 in June.");
+        let text = r.text(&t, None).unwrap();
+        let (task, block) = text.split_once("\n\n").unwrap();
+        assert_eq!(task, "retire the v1 endpoint");
+        assert!(block.starts_with("--- user input:"), "{text}");
+        assert!(block.contains(r#""Keep v1 for mobile?""#), "{text}");
+        assert!(block.contains("No, mobile moved to v2 in June."), "{text}");
     }
 }

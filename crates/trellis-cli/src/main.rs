@@ -557,6 +557,8 @@ fn main() -> Result<()> {
                     focus: focus.as_deref(),
                     profile: None,
                     model_from_user,
+                    // `trellis run` has no task for a question to wait on.
+                    queued: false,
                 },
                 RunControl {
                     flag,
@@ -1091,7 +1093,7 @@ fn pull_model(name: Option<&str>) -> Result<()> {
 /// mid-frame, without unwinding the terminal guard and without the panic hook
 /// firing — `exit` runs no destructors. The exit code is the caller's
 /// decision because only the caller knows whether it *is* the process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RunExit {
     Converged,
     /// The tree was restored, or it was not — which is not the same failure
@@ -1102,16 +1104,26 @@ enum RunExit {
     Interrupted {
         restored: bool,
     },
+    /// The model asked a person a question (`ask_human`), and the tree is
+    /// back as it was. Only a queued task's run is offered the tool, and
+    /// `work` blocks the task on the question (ADR 0026 §1). Both fields
+    /// are model output. A question whose rollback failed is
+    /// `NotConverged { restored: false }`: the tree is the louder fact.
+    Asked {
+        question: String,
+        options: Vec<String>,
+    },
 }
 
 impl RunExit {
     /// 0 converged. 1 did not converge and the tree is back as it was.
     /// 2 the tree is NOT back, which a wrapping script must not treat as an
     /// ordinary failed run. 130 a deliberate abort.
-    fn code(self) -> i32 {
+    fn code(&self) -> i32 {
         match self {
             RunExit::Converged => 0,
-            RunExit::NotConverged { restored: true } => 1,
+            // Not converged, and restored: the code `NotConverged` has.
+            RunExit::NotConverged { restored: true } | RunExit::Asked { .. } => 1,
             RunExit::NotConverged { restored: false } => 2,
             RunExit::Interrupted { restored: true } => 130,
             RunExit::Interrupted { restored: false } => 2,
@@ -1275,6 +1287,9 @@ struct RunSeeding<'a> {
     /// the user's allowlist before a key is sent to it (ADR 0024 §3).
     /// `false` by default, which is the stricter reading.
     model_from_user: bool,
+    /// A queued task's run, from `work`: offered `ask_human`, since only
+    /// here does a question have a task to wait on (ADR 0026 §1).
+    queued: bool,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -1502,6 +1517,7 @@ fn run_body(
         focus,
         profile,
         model_from_user,
+        queued,
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -1530,6 +1546,11 @@ fn run_body(
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
     let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    // Before the profile narrows the set, so a profile with a `tools` list
+    // keeps the question only by naming it, as with any other tool.
+    if queued {
+        tooling.tools = tooling.tools.clone().with_ask_human();
+    }
     // Integrated (ADR 0026 × 0023): a profile's `tools` list narrows the
     // set here, before the driver parses a script against it and before
     // bash joins the approve list, so every consumer gets the narrowed set.
@@ -2506,7 +2527,12 @@ fn run_body(
                     let _ = writeln!(out, "could not write the trail: {e}");
                 }
             }
-            Ok(RunExit::NotConverged { restored })
+            match reason {
+                trellis_loop::NotConverged::AskedHuman { question, options } if restored => {
+                    Ok(RunExit::Asked { question, options })
+                }
+                _ => Ok(RunExit::NotConverged { restored }),
+            }
         }
     }
 }
@@ -3017,6 +3043,8 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
         ToolCall::ReadNote { note } => ("read_note", note.clone()),
         ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
+        // Quoted: model output, and a trail is read back into prompts.
+        ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
     };
 
     trellis_trail::Action {

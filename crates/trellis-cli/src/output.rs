@@ -158,6 +158,10 @@ pub(crate) fn run_end(
             let (outcome, restored) = match exit {
                 RunExit::Converged => ("converged", None),
                 RunExit::NotConverged { restored } => ("not_converged", Some(*restored)),
+                // The same frame as any unconverged, restored run, so the
+                // protocol (ADR 0025) does not grow; the question is the
+                // task's, in the queue.
+                RunExit::Asked { .. } => ("not_converged", Some(true)),
                 RunExit::Interrupted { restored } => ("interrupted", Some(*restored)),
             };
             let mut v = json!({"type": "run_end", "outcome": outcome, "exit": exit.code()});

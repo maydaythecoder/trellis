@@ -173,6 +173,7 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "bash",
     "search_notes",
     "read_note",
+    "ask_human",
 ];
 
 /// The tool name a call is listed under in `[control] approve`, `[tools]`,
@@ -192,6 +193,7 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::SearchNotes { .. } => "search_notes",
         ToolCall::ReadNote { .. } => "read_note",
         ToolCall::Custom { name, .. } => name,
+        ToolCall::AskHuman { .. } => "ask_human",
     }
 }
 
@@ -285,6 +287,27 @@ impl ToolGate for ApprovalGate {
                 // The command in full: a person approving a shell command
                 // has to see all of it, not a label cut at the first line.
                 ToolCall::Bash { command } => ("bash".to_string(), command.clone()),
+                // The question in full, quoted: a person letting the run
+                // end on it should read what it asks, and it is model
+                // output, so it arrives as data rather than as a line of
+                // this prompt.
+                ToolCall::AskHuman { question, options } => {
+                    let mut detail = format!(
+                        "question: {question:?}
+"
+                    );
+                    for (i, o) in options.iter().enumerate() {
+                        detail.push_str(&format!(
+                            "option {}: {o:?}
+",
+                            i + 1
+                        ));
+                    }
+                    (
+                        "ask_human (the run ends and the task waits for an answer)".to_string(),
+                        detail,
+                    )
+                }
                 other => (label(other), String::new()),
             };
             let (reply, rx) = oneshot::channel();
@@ -346,6 +369,8 @@ pub(crate) fn label(call: &ToolCall) -> String {
         ToolCall::SearchNotes { query, .. } => format!("search_notes {}", first_line(query)),
         ToolCall::ReadNote { note } => format!("read_note {note}"),
         ToolCall::Custom { name, args } => format!("{name} {args}"),
+        // Quoted and cut: model output, on one line of a log or the trail.
+        ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
     }
 }
 
