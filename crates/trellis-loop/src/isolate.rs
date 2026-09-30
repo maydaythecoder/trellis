@@ -1148,6 +1148,184 @@ mod tests {
         assert_eq!(git(root, &["status", "--porcelain"]), "");
     }
 
+    // --- The four writers and `.git/` (#54) -------------------------------
+    //
+    // One test per writer trellis does not control, each running the same
+    // `.git/` writes from where it stands: a planted file, `core.hooksPath`,
+    // a branch, a tag and a `skip-worktree` flag in the index. ADR 0023 §5
+    // and ADR 0026 §11 listed each of these as a way past the rollback for a
+    // writer that ran in the repository. Each test first shows the writes
+    // happened (in the writer's clone), so a writer that failed to start
+    // cannot pass it, then that every byte under the repository's `.git/`
+    // is as it was.
+
+    /// The `.git/` writes, then `tail`, as one shell script.
+    fn git_dir_writes(tail: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                "echo planted> .git\\planted& git config core.hooksPath planted-hooks& \
+                 git branch planted-branch& git tag planted-tag& \
+                 git update-index --skip-worktree app/util.py& {tail}"
+            )
+        } else {
+            format!(
+                "echo planted > .git/planted; git config core.hooksPath planted-hooks; \
+                 git branch planted-branch; git tag planted-tag; \
+                 git update-index --skip-worktree app/util.py; {tail}"
+            )
+        }
+    }
+
+    /// What the writer reports from its own `.git/`, proof the writes ran.
+    const GIT_DIR_REPORT: &str =
+        "git config --get core.hooksPath && git branch --list planted-branch && git tag --list";
+
+    /// Asserts `report` shows every write of [`git_dir_writes`] landed.
+    fn wrote_its_own_git_dir(report: &str) {
+        for mark in ["planted-hooks", "planted-branch", "planted-tag"] {
+            assert!(report.contains(mark), "{mark} missing: {report}");
+        }
+    }
+
+    /// The repository's `.git/`, after refreshing what `git status` may
+    /// rewrite in the index, so a later comparison sees only other writers.
+    fn settled_git_dir(root: &Path) -> String {
+        git(root, &["status", "--porcelain"]);
+        git_dir_digest(root)
+    }
+
+    /// Nothing the writer did reached the repository's `.git/`. Compared
+    /// before any further `git` runs there.
+    fn git_dir_untouched(root: &Path, before: &str) {
+        assert_eq!(git_dir_digest(root), before, "a byte under .git/ changed");
+        assert!(!root.join(".git/planted").exists());
+        let config = std::fs::read_to_string(root.join(".git/config")).unwrap();
+        assert!(!config.contains("planted-hooks"), "{config}");
+        assert_eq!(git(root, &["branch", "--list", "planted-branch"]), "");
+        assert_eq!(git(root, &["tag", "--list"]), "");
+        assert_eq!(
+            git(root, &["ls-files", "-v", "app/util.py"]).trim(),
+            "H app/util.py",
+            "skip-worktree was set in the repository's index"
+        );
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_bash_git_dir_writes_do_not_reach_the_repository() {
+        let d = committed();
+        let root = d.path();
+        let before = settled_git_dir(root);
+        let orch = with_bash(root);
+        let (said, _) = bash(&orch, &git_dir_writes(GIT_DIR_REPORT)).await;
+        wrote_its_own_git_dir(&said);
+        git_dir_untouched(root, &before);
+        assert!(orch.touched().await.is_empty(), "{said}");
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_custom_tool_git_dir_writes_do_not_reach_the_repository() {
+        let d = committed();
+        let root = d.path();
+        let before = settled_git_dir(root);
+        let tool = crate::registry::CustomTool {
+            name: "plant".into(),
+            description: "Write under .git/.".into(),
+            command: shell_argv(&git_dir_writes(GIT_DIR_REPORT)),
+            schema: serde_json::json!({ "type": "object", "properties": {} }),
+            timeout_s: Some(60),
+        };
+        let tools = ToolSet::build(ToolSelection {
+            custom: vec![tool],
+            ..Default::default()
+        })
+        .unwrap();
+        let orch = Orchestrator::new(root, CheckConfig::default())
+            .with_tools(tools)
+            .spawn()
+            .0;
+        let d1 = orch
+            .call(&ToolCall::Custom {
+                name: "plant".into(),
+                args: serde_json::json!({}),
+            })
+            .await;
+        let said = match d1.result {
+            ToolResult::Output(s) => s,
+            other => panic!("the custom tool did not run: {other:?}"),
+        };
+        wrote_its_own_git_dir(&said);
+        git_dir_untouched(root, &before);
+        assert!(orch.touched().await.is_empty(), "{said}");
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_hook_git_dir_writes_do_not_reach_the_repository() {
+        // A hook has no observation, so what it saw of its own `.git/` goes
+        // to a log outside the repository.
+        let d = committed();
+        let root = d.path();
+        let logs = tempfile::tempdir().unwrap();
+        let log = logs.path().join("hook.log");
+        // Unquoted for `cmd`, which is handed the script as one argument and
+        // reads an escaped `"` inside it literally.
+        let report = if cfg!(windows) {
+            format!("({GIT_DIR_REPORT}) > {}", log.display())
+        } else {
+            format!("({GIT_DIR_REPORT}) > '{}'", log.display())
+        };
+        let before = settled_git_dir(root);
+        let h = hooked(
+            root,
+            crate::hooks::HookConfig {
+                pre_tool: Some(shell_argv(&git_dir_writes(&report))),
+                timeout_s: Some(60),
+                ..Default::default()
+            },
+        );
+        let orch = with_hooks(root, h, crate::governance::Governance::default());
+        let d1 = orch.call(&read_util()).await;
+        assert!(
+            matches!(d1.result, ToolResult::FileContent(_)),
+            "the hook allowed the call: {:?}",
+            d1.result
+        );
+        wrote_its_own_git_dir(&std::fs::read_to_string(&log).unwrap_or_default());
+        git_dir_untouched(root, &before);
+        assert!(orch.touched().await.is_empty());
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_process_agent_git_dir_writes_do_not_reach_the_repository() {
+        // Spawned as `trellis-cli`'s `process_agent` spawns it: confined to
+        // the clone, then scrubbed, then carried back.
+        let d = committed();
+        let root = d.path();
+        let before = settled_git_dir(root);
+        let clone = crate::AgentClone::prepare(root).unwrap();
+        let argv = shell_argv(&git_dir_writes(GIT_DIR_REPORT));
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]).stdin(std::process::Stdio::null());
+        clone.confine(&mut cmd);
+        trellis_core::secrets::scrub(&mut cmd);
+        let out = cmd.output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success(), "{said}");
+        wrote_its_own_git_dir(&said);
+        assert!(clone.path().join(".git/planted").exists(), "{said}");
+        let back = clone.carry_back(root, &crate::governance::Governance::new(&[]));
+        assert!(back.complete(), "{back:?}");
+        assert!(
+            back.written.is_empty() && back.created.is_empty() && back.deleted.is_empty(),
+            "{back:?}"
+        );
+        drop(clone);
+        git_dir_untouched(root, &before);
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
     #[test]
     fn git_instruction_files_are_recognised_by_any_spelling() {
         for p in [
