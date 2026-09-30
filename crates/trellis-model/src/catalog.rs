@@ -28,8 +28,16 @@ pub struct CatalogEntry {
     pub name: &'static str,
     /// Hugging Face repository.
     pub repo: &'static str,
+    /// The repository commit the file is fetched at. A branch name would let
+    /// whoever controls the repository change what `trellis model pull`
+    /// fetches after the catalogue was written (issue #216, ADR 0044).
+    pub revision: &'static str,
     /// File within the repository.
     pub file: &'static str,
+    /// SHA-256 of the file at `revision`, lowercase hex. The download is
+    /// checked against it before it is moved into place; the byte count alone
+    /// would accept any file of the right length.
+    pub sha256: &'static str,
     /// Exact size in bytes. A download that does not end here is incomplete,
     /// and on a slow link that distinction is the difference between resuming
     /// and starting again.
@@ -61,7 +69,9 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "bonsai-2-27b",
         repo: "prism-ml/Ternary-Bonsai-2-27B-gguf",
+        revision: "b072e1d3b35a0a630cece372c2127528e0994386",
         file: "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+        sha256: "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3",
         bytes: 5_946_648_928,
         license: "Apache-2.0",
         resident_gb: 7.0,
@@ -72,7 +82,9 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "bonsai-2-27b-pq2",
         repo: "prism-ml/Ternary-Bonsai-2-27B-gguf",
+        revision: "b072e1d3b35a0a630cece372c2127528e0994386",
         file: "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        sha256: "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
         bytes: 7_206_168_928,
         license: "Apache-2.0",
         resident_gb: 8.5,
@@ -82,7 +94,9 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "qwen2.5-coder-3b",
         repo: "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+        revision: "f74adce6aa16316c625447af059dbebe4983757c",
         file: "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+        sha256: "724fb256bec1ff062b2f65e4569e871ad2e95ab2a3989723d1769c54294730b7",
         bytes: 2_104_932_800,
         license: "Apache-2.0",
         resident_gb: 3.5,
@@ -94,7 +108,9 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "qwen2.5-0.5b",
         repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        revision: "9217f5db79a29953eb74d5343926648285ec7e67",
         file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        sha256: "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
         bytes: 491_400_032,
         license: "Apache-2.0",
         resident_gb: 1.0,
@@ -119,8 +135,8 @@ impl CatalogEntry {
     /// Where the weights are fetched from.
     pub fn url(&self) -> String {
         format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            self.repo, self.file
+            "https://huggingface.co/{}/resolve/{}/{}",
+            self.repo, self.revision, self.file
         )
     }
 
@@ -162,6 +178,31 @@ mod tests {
             let u = e.url();
             assert!(u.starts_with("https://huggingface.co/"), "{u}");
             assert!(u.ends_with(e.file), "{u}");
+            // The fetch is pinned to a commit; `main` is whatever the
+            // repository's owner last pushed (issue #216).
+            assert!(u.contains(&format!("/resolve/{}/", e.revision)), "{u}");
+            assert!(!u.contains("/resolve/main/"), "{u}");
+        }
+    }
+
+    #[test]
+    fn every_entry_pins_a_commit_and_a_sha256() {
+        // A revision that is not a full commit id could be a branch or tag,
+        // which moves; a hash in the wrong form never matches anything and
+        // turns every pull into a mismatch.
+        let lower_hex = |s: &str, n: usize| {
+            s.len() == n
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        for e in CATALOG {
+            assert!(
+                lower_hex(e.revision, 40),
+                "{}: revision {}",
+                e.name,
+                e.revision
+            );
+            assert!(lower_hex(e.sha256, 64), "{}: sha256 {}", e.name, e.sha256);
         }
     }
 
@@ -203,7 +244,9 @@ mod tests {
         let entry = |bytes| CatalogEntry {
             name: "x",
             repo: "r",
+            revision: "",
             file: "f",
+            sha256: "",
             bytes,
             license: "",
             resident_gb: 0.0,
