@@ -21,7 +21,9 @@ cargo audit
 scripts/checks/fuzz-lock-current.sh
 cargo deny --locked --manifest-path fuzz/Cargo.toml check
 cargo audit --file fuzz/Cargo.lock
-keys='(sk-(ant-|proj-|live-)?[A-Za-z0-9_-]{20,})|(AKIA[0-9A-Z]{16})|(gh[pousr]_[A-Za-z0-9]{36})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(AIza[0-9A-Za-z_-]{35})'
+# The pattern is shared with the pre-commit hook, so the two cannot drift
+# (#206).
+keys=$(scripts/checks/key-pattern.sh)
 # A URL literal with `user:pass@` before its host is flagged by the PR's
 # scanner as a basic-auth string even when it is a fake in a test (#185). The
 # pattern lives in the check script, so the two cannot drift; its self-test
