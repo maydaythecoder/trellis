@@ -25,6 +25,20 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use trellis_index::Index;
 
+/// This process's stdout, as a writer the run and the stdin router can
+/// each hold.
+#[derive(Clone, Copy)]
+struct Stdout;
+
+impl std::io::Write for Stdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::io::stdout().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stdout().flush()
+    }
+}
+
 pub(crate) struct Session {
     root: PathBuf,
     index: Index,
@@ -46,6 +60,11 @@ pub(crate) struct Session {
     /// What `/copy` tries, in order. A field so a test can name a program
     /// that does not exist rather than overwrite a real clipboard.
     clipboards: &'static [crate::session_extra::Clipboard],
+    /// The last run's stdin reader, with a read still in flight. The next
+    /// line comes from it rather than the line editor (#116).
+    reader: Option<crate::session_extra::Reader>,
+    /// Input ended while a run was in flight, so the session ends after it.
+    input_ended: bool,
 }
 
 /// What a passing run claims about its callers, given what was measured.
@@ -121,6 +140,8 @@ impl Session {
             label: None,
             last_done: None,
             clipboards: crate::session_extra::CLIPBOARDS,
+            reader: None,
+            input_ended: false,
         };
         s.banner(elapsed);
         Ok(s)
@@ -190,15 +211,30 @@ impl Session {
                 "> ".to_string()
             };
 
-            let line = match rl.readline(&prompt) {
-                Ok(l) => l,
-                // Ctrl-C cancels the line; it does not leave. Quitting on it
-                // would turn a half-typed task into an exit, which is the
-                // opposite of what every other prompt does.
-                Err(rustyline::error::ReadlineError::Interrupted) => continue,
-                // Ctrl-D, or the end of a piped script.
-                Err(rustyline::error::ReadlineError::Eof) => break,
-                Err(e) => return Err(e).context("reading input"),
+            if self.input_ended {
+                break;
+            }
+            let line = if let Some(reader) = self.reader.take() {
+                // The last run's reader is still waiting on stdin; see
+                // `session_extra::Reader`. No line editing for this line,
+                // which the control-character guard below covers.
+                print!("{prompt}");
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                match reader.next_line() {
+                    Some(l) => l,
+                    None => break,
+                }
+            } else {
+                match rl.readline(&prompt) {
+                    Ok(l) => l,
+                    // Ctrl-C cancels the line; it does not leave. Quitting on it
+                    // would turn a half-typed task into an exit, which is the
+                    // opposite of what every other prompt does.
+                    Err(rustyline::error::ReadlineError::Interrupted) => continue,
+                    // Ctrl-D, or the end of a piped script.
+                    Err(rustyline::error::ReadlineError::Eof) => break,
+                    Err(e) => return Err(e).context("reading input"),
+                }
             };
 
             let line = line.trim();
@@ -546,6 +582,97 @@ impl Session {
     /// Runs a task the person has already said is one: a typed task that
     /// `classify` passed, a template, or `/skill` (ADR 0025 §6).
     fn run_task(&mut self, task: &str, skills: Vec<String>) -> Result<()> {
+        use std::io::IsTerminal;
+        // The test `Human::terminal` makes. Without a person at the keyboard
+        // there is nobody to steer, and a reader would take a piped
+        // script's later commands as steers of its first task.
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            let read = Box::new(|| {
+                let mut line = String::new();
+                match std::io::stdin().read_line(&mut line) {
+                    Ok(0) | Err(_) => None,
+                    Ok(_) => Some(line),
+                }
+            });
+            return self.run_steered(task, skills, read, Stdout);
+        }
+        self.run_with(
+            task,
+            crate::Human::Absent,
+            None,
+            crate::output::RunExtras {
+                skills,
+                ..crate::output::RunExtras::default()
+            },
+            &mut std::io::stdout(),
+        )
+    }
+
+    /// A run at a terminal: one reader owns stdin until the run ends, and
+    /// routes each line to the open approval question or, with none open,
+    /// to the run as a steer (#116, ADR 0027).
+    fn run_steered<W: std::io::Write + Send + Clone + 'static>(
+        &mut self,
+        task: &str,
+        skills: Vec<String>,
+        read: Box<dyn FnMut() -> crate::session_extra::Line + Send>,
+        mut out: W,
+    ) -> Result<()> {
+        let mut reader = crate::session_extra::Reader::spawn(read)?;
+        let (questions_tx, questions) = tokio::sync::mpsc::channel(1);
+        let (steers, steering) = tokio::sync::mpsc::unbounded_channel();
+        let (done_tx, done) = tokio::sync::oneshot::channel();
+        let mut said = out.clone();
+        let router = std::thread::Builder::new()
+            .name("session-router".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                let ended = match rt {
+                    Ok(rt) => rt.block_on(crate::session_extra::route(
+                        &mut reader,
+                        questions,
+                        steers,
+                        done,
+                        &mut said,
+                    )),
+                    // Nobody routes: questions are declined by the dropped
+                    // channel and steers never leave this thread.
+                    Err(_) => false,
+                };
+                (reader, ended)
+            })?;
+        let outcome = self.run_with(
+            task,
+            crate::Human::Channel(questions_tx),
+            // On `RunControl`, the one carrier `trellis tui` uses too (#115).
+            Some(steering),
+            crate::output::RunExtras {
+                skills,
+                ..crate::output::RunExtras::default()
+            },
+            &mut out,
+        );
+        let _ = done_tx.send(());
+        let (mut reader, ended) = router
+            .join()
+            .map_err(|_| anyhow::anyhow!("the stdin router panicked"))?;
+        reader.stop();
+        let late = reader.drain_late(&mut out);
+        self.input_ended = ended || late;
+        self.reader = Some(reader);
+        outcome
+    }
+
+    fn run_with(
+        &mut self,
+        task: &str,
+        human: crate::Human,
+        steering: Option<trellis_loop::SteeringRx>,
+        extras: crate::output::RunExtras,
+        out: &mut (dyn std::io::Write + Send),
+    ) -> Result<()> {
         let Some(model) = self.model.as_ref().map(ToString::to_string) else {
             anyhow::bail!("no model set. /model <spec> first; /models lists what is configured");
         };
@@ -567,16 +694,16 @@ impl Session {
             // asked about here, on the line, with the diff shown first.
             crate::RunControl {
                 flag: None,
-                human: crate::Human::terminal(),
-                steering: None,
+                human,
+                steering,
             },
+            // The session's own two, whatever the caller built the rest from.
             crate::output::RunExtras {
-                skills,
                 label: self.label.clone(),
                 done: Some(done.clone()),
-                ..crate::output::RunExtras::default()
+                ..extras
             },
-            &mut std::io::stdout(),
+            out,
         );
         // Only replaced by a run that ended on `done`: a run that stopped
         // any other way has no summary, and the previous one is still the
@@ -2087,5 +2214,73 @@ def other():
         let said = String::from_utf8(out).unwrap();
         assert!(said.contains("no clipboard was reached"), "{said}");
         assert_eq!(said.lines().last(), Some("x"), "{said}");
+    }
+
+    #[test]
+    fn session_steer_a_line_typed_while_a_question_is_open_is_its_answer_not_a_steer() {
+        // The risk: one line read twice, or by the wrong party. A `y` meant
+        // for the approval question that went to the model as a steer would
+        // leave the question unanswered, and one taken as both would put a
+        // person's approval into the prompt as well (ADR 0027).
+        let dir = crate::testutil::scratch("session-steer-answer");
+        crate::testutil::git_init(&dir);
+        std::fs::create_dir_all(dir.join(".trellis")).unwrap();
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            "[control]\nmode = \"approve\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "init");
+        let scripts = crate::testutil::scratch("session-steer-answer-script");
+        let script = scripts.join("script.json");
+        std::fs::write(
+            &script,
+            r#"{"steps":[
+                {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+                {"tool":"done","summary":"changed it"}
+            ]}"#,
+        )
+        .unwrap();
+        let mut s = Session::open(&dir, Some(format!("scripted:{}", script.display()))).unwrap();
+
+        let screen = crate::session_extra::scripted_stdin::Screen::default();
+        let (typing, read) = crate::session_extra::scripted_stdin::stdin();
+        let shown = screen.clone();
+        // The person reads the question, then answers it, then closes the
+        // input. Nothing is typed before the question is on the screen.
+        let person = std::thread::spawn(move || {
+            shown.wait_for("[y/N]");
+            typing.send("y\n".into()).unwrap();
+        });
+        s.run_steered("change f", Vec::new(), read, screen.clone())
+            .expect("the run finishes");
+        person.join().unwrap();
+
+        let said = screen.text();
+        assert!(said.contains("edit a.py (+1 -1)? [y/N]"), "{said}");
+        assert!(said.contains("  approved"), "{said}");
+        assert!(
+            !said.contains("queued:"),
+            "the answer is not also a steer: {said}"
+        );
+        assert!(!said.contains("not delivered"), "{said}");
+        let trail = trellis_trail::query::all(&dir);
+        assert_eq!(trail.len(), 1);
+        let a = &trail[0].trail.factual.actions;
+        assert_eq!(
+            (a[0].tool.as_str(), a[0].outcome.as_str()),
+            ("approval", "approved")
+        );
+        assert_eq!(a[1].tool, "edit");
+        assert!(a[1].wrote, "the approved edit was applied: {a:?}");
+        assert!(
+            trail[0].trail.factual.steering.is_empty(),
+            "no steer was sent"
+        );
+        assert!(
+            s.input_ended,
+            "the input closed during the run, so the session ends"
+        );
     }
 }
