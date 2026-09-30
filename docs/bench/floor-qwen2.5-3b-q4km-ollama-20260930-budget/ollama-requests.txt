@@ -1,0 +1,450 @@
+slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 0 | stop processing: n_tokens = 47, truncated = 0
+[GIN] 2026/09/30 - 16:38:43 | 200 |   17.5043314s |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 15 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2640
+slot      release: id  0 | task 15 | stop processing: n_tokens = 2659, truncated = 0
+[GIN] 2026/09/30 - 16:38:48 | 200 |    599.5387ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 41 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3035
+slot      release: id  0 | task 41 | stop processing: n_tokens = 3073, truncated = 0
+[GIN] 2026/09/30 - 16:38:48 | 200 |    386.6028ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 81 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3100
+slot      release: id  0 | task 81 | stop processing: n_tokens = 3127, truncated = 0
+[GIN] 2026/09/30 - 16:38:49 | 200 |     241.488ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 110 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3208
+slot      release: id  0 | task 110 | stop processing: n_tokens = 3235, truncated = 0
+[GIN] 2026/09/30 - 16:38:53 | 200 |    318.4616ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 139 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3316
+slot      release: id  0 | task 139 | stop processing: n_tokens = 3343, truncated = 0
+[GIN] 2026/09/30 - 16:39:02 | 200 |    453.2626ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 168 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 168 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:39:14 | 200 |      434.27ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 194 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2640
+slot      release: id  0 | task 194 | stop processing: n_tokens = 2659, truncated = 0
+[GIN] 2026/09/30 - 16:39:15 | 200 |    189.8027ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 215 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3035
+slot      release: id  0 | task 215 | stop processing: n_tokens = 3073, truncated = 0
+[GIN] 2026/09/30 - 16:39:15 | 200 |    332.3307ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 255 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3100
+slot      release: id  0 | task 255 | stop processing: n_tokens = 3127, truncated = 0
+[GIN] 2026/09/30 - 16:39:16 | 200 |     220.338ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 284 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3216
+slot      release: id  0 | task 284 | stop processing: n_tokens = 3243, truncated = 0
+[GIN] 2026/09/30 - 16:39:19 | 200 |    268.7015ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 313 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3332
+slot      release: id  0 | task 313 | stop processing: n_tokens = 3359, truncated = 0
+[GIN] 2026/09/30 - 16:39:22 | 200 |    308.7323ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 342 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 342 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:39:37 | 200 |    445.7745ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 368 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2640
+slot      release: id  0 | task 368 | stop processing: n_tokens = 2659, truncated = 0
+[GIN] 2026/09/30 - 16:39:37 | 200 |    187.9243ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 389 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3035
+slot      release: id  0 | task 389 | stop processing: n_tokens = 3073, truncated = 0
+[GIN] 2026/09/30 - 16:39:38 | 200 |    337.0332ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 429 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3100
+slot      release: id  0 | task 429 | stop processing: n_tokens = 3127, truncated = 0
+[GIN] 2026/09/30 - 16:39:38 | 200 |    228.4596ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 458 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3272
+slot      release: id  0 | task 458 | stop processing: n_tokens = 3299, truncated = 0
+[GIN] 2026/09/30 - 16:39:41 | 200 |    305.7178ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 487 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3444
+slot      release: id  0 | task 487 | stop processing: n_tokens = 3471, truncated = 0
+[GIN] 2026/09/30 - 16:39:45 | 200 |    334.0855ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 516 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 516 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:39:58 | 200 |    466.5219ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 542 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2640
+slot      release: id  0 | task 542 | stop processing: n_tokens = 2659, truncated = 0
+[GIN] 2026/09/30 - 16:39:59 | 200 |    177.3818ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 563 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3035
+slot      release: id  0 | task 563 | stop processing: n_tokens = 3073, truncated = 0
+[GIN] 2026/09/30 - 16:39:59 | 200 |    335.5938ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 603 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3100
+slot      release: id  0 | task 603 | stop processing: n_tokens = 3127, truncated = 0
+[GIN] 2026/09/30 - 16:40:00 | 200 |    217.6293ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 632 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3210
+slot      release: id  0 | task 632 | stop processing: n_tokens = 3237, truncated = 0
+[GIN] 2026/09/30 - 16:40:03 | 200 |    278.8023ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 661 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3320
+slot      release: id  0 | task 661 | stop processing: n_tokens = 3347, truncated = 0
+[GIN] 2026/09/30 - 16:40:06 | 200 |    303.5415ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 690 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 690 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:40:21 | 200 |    413.7401ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 716 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2641
+slot      release: id  0 | task 716 | stop processing: n_tokens = 2661, truncated = 0
+[GIN] 2026/09/30 - 16:40:22 | 200 |     187.596ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 738 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3136
+slot      release: id  0 | task 738 | stop processing: n_tokens = 3178, truncated = 0
+[GIN] 2026/09/30 - 16:40:23 | 200 |    367.4594ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 782 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3202
+slot      release: id  0 | task 782 | stop processing: n_tokens = 3230, truncated = 0
+[GIN] 2026/09/30 - 16:40:23 | 200 |    224.5199ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 812 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3348
+slot      release: id  0 | task 812 | stop processing: n_tokens = 3376, truncated = 0
+[GIN] 2026/09/30 - 16:40:30 | 200 |    401.7541ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 842 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3494
+slot      release: id  0 | task 842 | stop processing: n_tokens = 3522, truncated = 0
+[GIN] 2026/09/30 - 16:40:31 | 200 |    240.3234ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 872 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 872 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:40:46 | 200 |    475.1827ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 898 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2643
+slot      release: id  0 | task 898 | stop processing: n_tokens = 2665, truncated = 0
+[GIN] 2026/09/30 - 16:40:47 | 200 |    199.6229ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 922 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3042
+slot      release: id  0 | task 922 | stop processing: n_tokens = 3079, truncated = 0
+[GIN] 2026/09/30 - 16:40:47 | 200 |    331.3154ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 961 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3513
+slot      release: id  0 | task 961 | stop processing: n_tokens = 3550, truncated = 0
+[GIN] 2026/09/30 - 16:40:48 | 200 |    342.1495ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1000 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3635
+slot      release: id  0 | task 1000 | stop processing: n_tokens = 3672, truncated = 0
+[GIN] 2026/09/30 - 16:40:48 | 200 |     413.806ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1040 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 1040 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:40:59 | 200 |    401.2383ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1066 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 1066 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:40:59 | 200 |    190.3809ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1089 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3064
+slot      release: id  0 | task 1089 | stop processing: n_tokens = 3097, truncated = 0
+[GIN] 2026/09/30 - 16:41:00 | 200 |    306.7723ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1124 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3124
+slot      release: id  0 | task 1124 | stop processing: n_tokens = 3153, truncated = 0
+[GIN] 2026/09/30 - 16:41:00 | 200 |    229.1048ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1155 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3237
+slot      release: id  0 | task 1155 | stop processing: n_tokens = 3266, truncated = 0
+[GIN] 2026/09/30 - 16:41:03 | 200 |    312.3758ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1186 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3350
+slot      release: id  0 | task 1186 | stop processing: n_tokens = 3379, truncated = 0
+[GIN] 2026/09/30 - 16:41:06 | 200 |    275.1611ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1217 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 1217 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:41:20 | 200 |    331.2772ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1243 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 1243 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:41:21 | 200 |    199.4317ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1266 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3063
+slot      release: id  0 | task 1266 | stop processing: n_tokens = 3096, truncated = 0
+[GIN] 2026/09/30 - 16:41:21 | 200 |    304.7881ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1301 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3123
+slot      release: id  0 | task 1301 | stop processing: n_tokens = 3152, truncated = 0
+[GIN] 2026/09/30 - 16:41:22 | 200 |    231.3917ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1332 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3248
+slot      release: id  0 | task 1332 | stop processing: n_tokens = 3286, truncated = 0
+[GIN] 2026/09/30 - 16:41:25 | 200 |    334.8314ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1372 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3323
+slot      release: id  0 | task 1372 | stop processing: n_tokens = 3352, truncated = 0
+[GIN] 2026/09/30 - 16:41:25 | 200 |    319.5019ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1404 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3448
+slot      release: id  0 | task 1404 | stop processing: n_tokens = 3477, truncated = 0
+[GIN] 2026/09/30 - 16:41:28 | 200 |    285.7126ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1435 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3573
+slot      release: id  0 | task 1435 | stop processing: n_tokens = 3602, truncated = 0
+[GIN] 2026/09/30 - 16:41:32 | 200 |    285.5306ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1466 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 1466 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:41:47 | 200 |    413.4235ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1492 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2640
+slot      release: id  0 | task 1492 | stop processing: n_tokens = 2659, truncated = 0
+[GIN] 2026/09/30 - 16:41:48 | 200 |    181.2327ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1513 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2923
+slot      release: id  0 | task 1513 | stop processing: n_tokens = 2955, truncated = 0
+[GIN] 2026/09/30 - 16:41:49 | 200 |     277.179ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1547 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3270
+slot      release: id  0 | task 1547 | stop processing: n_tokens = 3533, truncated = 0
+[GIN] 2026/09/30 - 16:41:50 | 200 |    1.7819403s |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1812 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3270
+slot      release: id  0 | task 1812 | stop processing: n_tokens = 3310, truncated = 0
+[GIN] 2026/09/30 - 16:41:51 | 200 |    290.6354ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1854 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3270
+slot      release: id  0 | task 1854 | stop processing: n_tokens = 3310, truncated = 0
+[GIN] 2026/09/30 - 16:41:51 | 200 |     279.803ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1896 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3270
+slot      release: id  0 | task 1896 | stop processing: n_tokens = 3310, truncated = 0
+[GIN] 2026/09/30 - 16:41:51 | 200 |    281.8338ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1938 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 1938 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:42:05 | 200 |    360.1502ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1964 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2640
+slot      release: id  0 | task 1964 | stop processing: n_tokens = 2659, truncated = 0
+[GIN] 2026/09/30 - 16:42:05 | 200 |     177.485ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 1985 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3041
+slot      release: id  0 | task 1985 | stop processing: n_tokens = 3076, truncated = 0
+[GIN] 2026/09/30 - 16:42:06 | 200 |    312.3946ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2022 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3606
+slot      release: id  0 | task 2022 | stop processing: n_tokens = 3625, truncated = 0
+[GIN] 2026/09/30 - 16:42:06 | 200 |    242.9244ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2044 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3650
+slot      release: id  0 | task 2044 | stop processing: n_tokens = 3685, truncated = 0
+[GIN] 2026/09/30 - 16:42:06 | 200 |    396.9244ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2082 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3347
+slot      release: id  0 | task 2082 | stop processing: n_tokens = 3366, truncated = 0
+[GIN] 2026/09/30 - 16:42:07 | 200 |    246.1827ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2104 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3237
+slot      release: id  0 | task 2104 | stop processing: n_tokens = 3264, truncated = 0
+[GIN] 2026/09/30 - 16:42:07 | 200 |    262.3417ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2133 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3478
+slot      release: id  0 | task 2133 | stop processing: n_tokens = 3505, truncated = 0
+[GIN] 2026/09/30 - 16:42:11 | 200 |    383.8469ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2162 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3720
+slot      release: id  0 | task 2162 | stop processing: n_tokens = 3747, truncated = 0
+[GIN] 2026/09/30 - 16:42:15 | 200 |    370.9623ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2191 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 2191 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:42:32 | 200 |    428.8922ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2217 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 2217 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:42:33 | 200 |    186.9662ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2240 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2816
+slot      release: id  0 | task 2240 | stop processing: n_tokens = 2857, truncated = 0
+[GIN] 2026/09/30 - 16:42:33 | 200 |    310.1789ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2283 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2883
+slot      release: id  0 | task 2283 | stop processing: n_tokens = 2912, truncated = 0
+[GIN] 2026/09/30 - 16:42:33 | 200 |    223.2913ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2314 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3069
+slot      release: id  0 | task 2314 | stop processing: n_tokens = 3098, truncated = 0
+[GIN] 2026/09/30 - 16:42:37 | 200 |    347.1412ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2345 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3255
+slot      release: id  0 | task 2345 | stop processing: n_tokens = 3284, truncated = 0
+[GIN] 2026/09/30 - 16:42:41 | 200 |    351.7074ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2376 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 2376 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:43:06 | 200 |    357.2485ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2402 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 2402 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:43:09 | 200 |    264.2322ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2425 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3073
+slot      release: id  0 | task 2425 | stop processing: n_tokens = 3187, truncated = 0
+[GIN] 2026/09/30 - 16:43:10 | 200 |    806.2367ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2541 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3301
+slot      release: id  0 | task 2541 | stop processing: n_tokens = 3322, truncated = 0
+[GIN] 2026/09/30 - 16:43:10 | 200 |    252.4723ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2565 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3256
+slot      release: id  0 | task 2565 | stop processing: n_tokens = 3285, truncated = 0
+[GIN] 2026/09/30 - 16:43:11 | 200 |    275.0416ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2596 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3531
+slot      release: id  0 | task 2596 | stop processing: n_tokens = 3560, truncated = 0
+[GIN] 2026/09/30 - 16:43:15 | 200 |    476.4712ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2627 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3424
+slot      release: id  0 | task 2627 | stop processing: n_tokens = 3475, truncated = 0
+[GIN] 2026/09/30 - 16:43:17 | 200 |     450.032ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2681 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3750
+slot      release: id  0 | task 2681 | stop processing: n_tokens = 3771, truncated = 0
+[GIN] 2026/09/30 - 16:43:18 | 200 |    295.0872ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2705 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3483
+slot      release: id  0 | task 2705 | stop processing: n_tokens = 3512, truncated = 0
+[GIN] 2026/09/30 - 16:43:18 | 200 |    305.2076ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2737 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3403
+slot      release: id  0 | task 2737 | stop processing: n_tokens = 3453, truncated = 0
+[GIN] 2026/09/30 - 16:43:22 | 200 |    445.7034ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2789 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3403
+slot      release: id  0 | task 2789 | stop processing: n_tokens = 3453, truncated = 0
+[GIN] 2026/09/30 - 16:43:22 | 200 |    351.9147ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2841 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3403
+slot      release: id  0 | task 2841 | stop processing: n_tokens = 3453, truncated = 0
+[GIN] 2026/09/30 - 16:43:22 | 200 |    361.1202ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2893 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3403
+slot      release: id  0 | task 2893 | stop processing: n_tokens = 3453, truncated = 0
+[GIN] 2026/09/30 - 16:43:23 | 200 |    352.2163ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2945 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 2945 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:43:35 | 200 |     395.875ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2971 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 2971 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:43:36 | 200 |    203.5437ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 2994 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3067
+slot      release: id  0 | task 2994 | stop processing: n_tokens = 3275, truncated = 0
+[GIN] 2026/09/30 - 16:43:37 | 200 |    1.4458843s |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3204 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3317
+slot      release: id  0 | task 3204 | stop processing: n_tokens = 3338, truncated = 0
+[GIN] 2026/09/30 - 16:43:37 | 200 |    270.3343ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3228 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3342
+slot      release: id  0 | task 3228 | stop processing: n_tokens = 3371, truncated = 0
+[GIN] 2026/09/30 - 16:43:38 | 200 |    293.1981ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3259 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3567
+slot      release: id  0 | task 3259 | stop processing: n_tokens = 3596, truncated = 0
+[GIN] 2026/09/30 - 16:43:41 | 200 |    415.6072ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3290 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3415
+slot      release: id  0 | task 3290 | stop processing: n_tokens = 3495, truncated = 0
+[GIN] 2026/09/30 - 16:43:45 | 200 |    622.6902ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3372 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3745
+slot      release: id  0 | task 3372 | stop processing: n_tokens = 3766, truncated = 0
+[GIN] 2026/09/30 - 16:43:46 | 200 |     272.163ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3396 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3598
+slot      release: id  0 | task 3396 | stop processing: n_tokens = 3627, truncated = 0
+[GIN] 2026/09/30 - 16:43:46 | 200 |    298.2389ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3428 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3473
+slot      release: id  0 | task 3428 | stop processing: n_tokens = 3502, truncated = 0
+[GIN] 2026/09/30 - 16:43:49 | 200 |    390.2194ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3459 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 3459 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:44:05 | 200 |    373.1991ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3485 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 3485 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:44:06 | 200 |    200.2445ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3508 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3067
+slot      release: id  0 | task 3508 | stop processing: n_tokens = 3275, truncated = 0
+[GIN] 2026/09/30 - 16:44:07 | 200 |    1.4345048s |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3718 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3317
+slot      release: id  0 | task 3718 | stop processing: n_tokens = 3338, truncated = 0
+[GIN] 2026/09/30 - 16:44:08 | 200 |    262.4535ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3742 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3342
+slot      release: id  0 | task 3742 | stop processing: n_tokens = 3371, truncated = 0
+[GIN] 2026/09/30 - 16:44:08 | 200 |    280.7944ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3773 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3463
+slot      release: id  0 | task 3773 | stop processing: n_tokens = 3503, truncated = 0
+[GIN] 2026/09/30 - 16:44:11 | 200 |    414.6387ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3815 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3532
+slot      release: id  0 | task 3815 | stop processing: n_tokens = 3561, truncated = 0
+[GIN] 2026/09/30 - 16:44:12 | 200 |    237.5034ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3846 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3610
+slot      release: id  0 | task 3846 | stop processing: n_tokens = 3638, truncated = 0
+[GIN] 2026/09/30 - 16:44:17 | 200 |     331.969ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3876 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3671
+slot      release: id  0 | task 3876 | stop processing: n_tokens = 3699, truncated = 0
+[GIN] 2026/09/30 - 16:44:20 | 200 |    311.6923ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3906 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3382
+slot      release: id  0 | task 3906 | stop processing: n_tokens = 3410, truncated = 0
+[GIN] 2026/09/30 - 16:44:22 | 200 |    370.2379ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3936 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 3936 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:44:41 | 200 |    395.4902ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3962 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2644
+slot      release: id  0 | task 3962 | stop processing: n_tokens = 2667, truncated = 0
+[GIN] 2026/09/30 - 16:44:43 | 200 |    246.0548ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 3987 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3053
+slot      release: id  0 | task 3987 | stop processing: n_tokens = 3095, truncated = 0
+[GIN] 2026/09/30 - 16:44:44 | 200 |    366.3848ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4031 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3490
+slot      release: id  0 | task 4031 | stop processing: n_tokens = 3521, truncated = 0
+[GIN] 2026/09/30 - 16:44:44 | 200 |    306.8839ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4064 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3404
+slot      release: id  0 | task 4064 | stop processing: n_tokens = 3452, truncated = 0
+[GIN] 2026/09/30 - 16:44:48 | 200 |    511.5517ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4115 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3475
+slot      release: id  0 | task 4115 | stop processing: n_tokens = 3506, truncated = 0
+[GIN] 2026/09/30 - 16:44:48 | 200 |    359.5866ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4149 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3747
+slot      release: id  0 | task 4149 | stop processing: n_tokens = 3778, truncated = 0
+[GIN] 2026/09/30 - 16:44:53 | 200 |    462.7012ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4182 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3433
+slot      release: id  0 | task 4182 | stop processing: n_tokens = 3464, truncated = 0
+[GIN] 2026/09/30 - 16:44:57 | 200 |    447.2689ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4216 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 4216 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:45:13 | 200 |    377.5763ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4242 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2643
+slot      release: id  0 | task 4242 | stop processing: n_tokens = 2665, truncated = 0
+[GIN] 2026/09/30 - 16:45:14 | 200 |     199.829ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4266 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2791
+slot      release: id  0 | task 4266 | stop processing: n_tokens = 2834, truncated = 0
+[GIN] 2026/09/30 - 16:45:15 | 200 |    330.4272ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4311 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2859
+slot      release: id  0 | task 4311 | stop processing: n_tokens = 2889, truncated = 0
+[GIN] 2026/09/30 - 16:45:15 | 200 |    233.0847ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4343 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3015
+slot      release: id  0 | task 4343 | stop processing: n_tokens = 3045, truncated = 0
+[GIN] 2026/09/30 - 16:45:19 | 200 |    295.4172ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4375 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3171
+slot      release: id  0 | task 4375 | stop processing: n_tokens = 3209, truncated = 0
+[GIN] 2026/09/30 - 16:45:23 | 200 |    411.5386ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4415 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3391
+slot      release: id  0 | task 4415 | stop processing: n_tokens = 3429, truncated = 0
+[GIN] 2026/09/30 - 16:45:24 | 200 |    313.0429ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4455 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3611
+slot      release: id  0 | task 4455 | stop processing: n_tokens = 3649, truncated = 0
+[GIN] 2026/09/30 - 16:45:24 | 200 |    313.6445ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4495 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 4495 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:45:37 | 200 |    342.2229ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4521 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 4521 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:45:38 | 200 |     189.391ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4544 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3075
+slot      release: id  0 | task 4544 | stop processing: n_tokens = 3246, truncated = 0
+[GIN] 2026/09/30 - 16:45:39 | 200 |    1.1920794s |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4717 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3247
+slot      release: id  0 | task 4717 | stop processing: n_tokens = 3268, truncated = 0
+[GIN] 2026/09/30 - 16:45:39 | 200 |    251.9254ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4741 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3314
+slot      release: id  0 | task 4741 | stop processing: n_tokens = 3342, truncated = 0
+[GIN] 2026/09/30 - 16:45:40 | 200 |    282.0445ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4771 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3374
+slot      release: id  0 | task 4771 | stop processing: n_tokens = 3402, truncated = 0
+[GIN] 2026/09/30 - 16:45:42 | 200 |    287.4698ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4801 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3435
+slot      release: id  0 | task 4801 | stop processing: n_tokens = 3463, truncated = 0
+[GIN] 2026/09/30 - 16:45:45 | 200 |    342.7687ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4831 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 4831 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:46:03 | 200 |    431.6445ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4857 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 4857 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:46:04 | 200 |    191.7744ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 4880 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3075
+slot      release: id  0 | task 4880 | stop processing: n_tokens = 3246, truncated = 0
+[GIN] 2026/09/30 - 16:46:05 | 200 |    1.1806763s |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5053 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3247
+slot      release: id  0 | task 5053 | stop processing: n_tokens = 3268, truncated = 0
+[GIN] 2026/09/30 - 16:46:06 | 200 |    249.4478ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5077 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3314
+slot      release: id  0 | task 5077 | stop processing: n_tokens = 3342, truncated = 0
+[GIN] 2026/09/30 - 16:46:06 | 200 |     276.609ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5107 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3374
+slot      release: id  0 | task 5107 | stop processing: n_tokens = 3402, truncated = 0
+[GIN] 2026/09/30 - 16:46:09 | 200 |    343.7931ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5137 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3435
+slot      release: id  0 | task 5137 | stop processing: n_tokens = 3463, truncated = 0
+[GIN] 2026/09/30 - 16:46:12 | 200 |    334.5003ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5167 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 5167 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:46:34 | 200 |    459.3893ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5193 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 5193 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:46:35 | 200 |    193.5384ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5216 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3076
+slot      release: id  0 | task 5216 | stop processing: n_tokens = 3122, truncated = 0
+[GIN] 2026/09/30 - 16:46:35 | 200 |    385.5823ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5264 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3508
+slot      release: id  0 | task 5264 | stop processing: n_tokens = 3529, truncated = 0
+[GIN] 2026/09/30 - 16:46:35 | 200 |    227.9084ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5287 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3555
+slot      release: id  0 | task 5287 | stop processing: n_tokens = 3601, truncated = 0
+[GIN] 2026/09/30 - 16:46:36 | 200 |    461.3004ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5336 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3234
+slot      release: id  0 | task 5336 | stop processing: n_tokens = 3255, truncated = 0
+[GIN] 2026/09/30 - 16:46:36 | 200 |    234.3357ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5359 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3302
+slot      release: id  0 | task 5359 | stop processing: n_tokens = 3331, truncated = 0
+[GIN] 2026/09/30 - 16:46:36 | 200 |    287.0227ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5390 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3431
+slot      release: id  0 | task 5390 | stop processing: n_tokens = 3477, truncated = 0
+[GIN] 2026/09/30 - 16:46:41 | 200 |     514.998ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5438 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3477
+slot      release: id  0 | task 5438 | stop processing: n_tokens = 3498, truncated = 0
+[GIN] 2026/09/30 - 16:46:41 | 200 |    260.0221ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5462 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3497
+slot      release: id  0 | task 5462 | stop processing: n_tokens = 3543, truncated = 0
+[GIN] 2026/09/30 - 16:46:42 | 200 |     418.094ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5511 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 34
+slot      release: id  0 | task 5511 | stop processing: n_tokens = 58, truncated = 0
+[GIN] 2026/09/30 - 16:46:55 | 200 |    398.7203ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5537 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2642
+slot      release: id  0 | task 5537 | stop processing: n_tokens = 2663, truncated = 0
+[GIN] 2026/09/30 - 16:46:55 | 200 |    195.6233ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5560 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 2939
+slot      release: id  0 | task 5560 | stop processing: n_tokens = 2977, truncated = 0
+[GIN] 2026/09/30 - 16:46:56 | 200 |    312.9448ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5600 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3000
+slot      release: id  0 | task 5600 | stop processing: n_tokens = 3029, truncated = 0
+[GIN] 2026/09/30 - 16:46:56 | 200 |    223.9519ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5631 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3100
+slot      release: id  0 | task 5631 | stop processing: n_tokens = 3129, truncated = 0
+[GIN] 2026/09/30 - 16:46:59 | 200 |    350.1193ms |       127.0.0.1 | POST     "/v1/completions"
+slot   operator(): id  0 | task 5662 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 3200
+slot      release: id  0 | task 5662 | stop processing: n_tokens = 3229, truncated = 0
+[GIN] 2026/09/30 - 16:47:03 | 200 |    349.7619ms |       127.0.0.1 | POST     "/v1/completions"

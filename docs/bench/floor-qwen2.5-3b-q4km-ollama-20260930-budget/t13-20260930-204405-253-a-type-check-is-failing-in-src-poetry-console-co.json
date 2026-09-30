@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "run_id": "20260930-204405-253-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/build.py; fix it",
+  "base_commit": "47a786d00afe5a58e27ca5f2868c1b0395af7e02",
+  "started_at": "2026-09-30T20:44:05Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/console/commands/build.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": true
+      },
+      {
+        "kind": "Tests",
+        "passed": false
+      },
+      {
+        "kind": "Tests",
+        "passed": false
+      },
+      {
+        "kind": "Tests",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9763,
+      "peak_prompt_bytes": 14113,
+      "turns_measured": 9
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/commands/build.py. `old` must be text copied from the file, not reco…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "compaction",
+        "target": "turns 1-1",
+        "outcome": "elided 8283 B of observations; request 12771 B, budget 14336 B",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "compaction",
+        "target": "turns 1-2",
+        "outcome": "elided 12314 B of observations; request 12914 B, budget 14336 B",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/build.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "edited src/poetry/console/commands/build.py (applied: true, bytes 2787..2813)",
+        "wrote": true
+      },
+      {
+        "turn": 6,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/build.py",
+        "outcome": "Typecheck: passed",
+        "wrote": false
+      },
+      {
+        "turn": 7,
+        "tool": "run_checks",
+        "target": "Tests on src/poetry/console/commands/build.py",
+        "outcome": "Tests: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 8,
+        "tool": "run_checks",
+        "target": "Tests on src/poetry/console/commands/build.py",
+        "outcome": "Tests: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 9,
+        "tool": "compaction",
+        "target": "turns 1-3",
+        "outcome": "elided 20597 B of observations; request 12490 B, budget 14336 B",
+        "wrote": false
+      },
+      {
+        "turn": 9,
+        "tool": "run_checks",
+        "target": "Tests on src/poetry/console/commands/build.py",
+        "outcome": "Tests: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 441,
+    "prompt_tokens": 30026
+  },
+  "factual_sha256": "b0bebe1dc0575f003d057c87ff3f498b0cfdee3862cf587ea2ff63349ec2f282",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

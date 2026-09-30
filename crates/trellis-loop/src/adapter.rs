@@ -42,9 +42,10 @@ pub(crate) const OBSERVATION_TAIL: usize = 2_000;
 /// first prompts, mostly file paths, ran 3.695, where 4,096 tokens hold
 /// 15,132 bytes, and 15,781 bytes (the pooled conversion) put 7 of 20 runs
 /// over the window. 3.695 is itself the lowest of 93 requests rather than a
-/// bound, so the budget sits about 5% under it. A prompt over the window is
-/// not refused by the runtime: Ollama cut each one to its last 2,050 tokens,
-/// which drops the system text and the task.
+/// bound, so the budget sits about 5% under it; the floor re-run with this
+/// budget measured one request at 3.636 (ADR 0033 §6). A prompt over the
+/// window is not refused by the runtime: Ollama cut each one to its last
+/// 2,050 tokens, which drops the system text and the task.
 ///
 /// Bytes are what this holds; tokens are inferred through the measured
 /// ratio, on that configuration only.

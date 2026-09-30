@@ -218,8 +218,33 @@ trail records prompt tokens (#105 and #106 add them).
    prompt still passes 4,096 tokens with the budget in force is a
    measurement: #170's floor, re-run by its method, counting Ollama's
    `truncating input prompt` lines and its per-request token counts.
-   Pending: not yet re-run with this budget (#231). No count of prompts
-   over the window is claimed for it until that run is made.
+   **0 of 150 requests passed 4,096 tokens**, against 7 of 20 runs
+   before. Ollama logged no `truncating input prompt` line, and its
+   largest prompt was 3,750 tokens; the largest prompt trellis sent was
+   14,321 bytes. 10 of the 20 runs compacted; none ended on a prompt that
+   could not be fitted.
+   - *Method.* #170's, on the same host and configuration (Ollama 0.34.2,
+     `qwen2.5:3b` Q4_K_M, its runner at `n_ctx_slot = 4096`, spec
+     `vllm:http://127.0.0.1:11434#qwen2.5:3b`, one user skill loaded), the
+     20 floor tasks by `run_floor.py` over poetry 2.5.0 from the sdist
+     (SHA-256 `e73b8738…336f`), mypy 2.3.1,
+     `RUST_LOG=trellis=info,trellis_loop::adapter=debug`, no
+     `[model] context_bytes`. One deviation: a **debug** binary built at
+     6a2c6b9 rather than a release one; prompt bytes do not depend on the
+     optimisation level. Trails, logs and the runtime log cut to the run's
+     window are in `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`;
+     150 requests there are 20 probes and 130 counted prompts.
+   - *The ratio, re-measured.* `bytes_per_token.py` over that directory:
+     all 20 runs pass both checks; pooled 3.811, first prompts 3.695 again
+     (the first prompt is unchanged by the budget), per request 3.636 to
+     4.027. **3.636 is denser than the 3.695 the budget was derived from**:
+     at it, 15,132 bytes would be about 4,162 tokens, over the window, and
+     14,336 bytes is about 3,943. The margin in decision 1 is what kept
+     that request inside; the densest ratio is a figure that moves with
+     the sample, not a bound.
+   - *Outcomes*, for the record and not for this ADR: 0 of 20 repaired
+     (16 no-progress, 2 format-failure, 2 budget-exhausted;
+     `…-20260930-budget.json`).
 
 ## Alternatives rejected
 
