@@ -140,7 +140,8 @@ trail records prompt tokens (#105 and #106 add them).
   a common rule of thumb and has not been measured on these prompts, which
   mix code, paths and prose. Writing it into the code would be an invented
   figure presented as a derived one; "measured, never assumed" rules it out,
-  and #170 exists to replace it with a measurement.
+  and #170 exists to replace it with a measurement. (#170 measured 3.853
+  on one configuration; see decision 1.)
 - **List every call site and let the adapter's tail cut it.** The cut is
   from the top, so the part lost is the coverage header, and the model sees
   a list of callers with no statement that it is incomplete. The surviving
