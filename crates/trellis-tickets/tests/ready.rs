@@ -242,14 +242,15 @@ fn ready_fails_needs_adr() {
 
 #[test]
 fn ready_reports_an_abstention_by_name_and_is_not_ready() {
-    // A path no table maps (#194) leaves `needs ADR` undecidable. Treating
+    // `scripts/` is under no path in the area table (#194), so risk cannot
+    // be told and `needs ADR` is undecidable. Treating
     // that as a pass would call the ticket ready on a guess; treating it as
     // a failure would name a failure nobody found. It is neither.
     let r = ready_of(|v| {
         set_body(v, |b| {
             b.replace(
                 "**Files:** crates/trellis-cli/src/tui_run.rs",
-                "**Files:** crates/trellis-loop/src/trust.rs",
+                "**Files:** scripts/tickets/next.sh",
             )
         })
     });
@@ -258,14 +259,14 @@ fn ready_reports_an_abstention_by_name_and_is_not_ready() {
     let Abstention { check, reason } = &r.abstained[0];
     assert_eq!(*check, "needs ADR");
     assert!(
-        reason.contains("crates/trellis-loop/src/trust.rs"),
+        reason.contains("`scripts/tickets/next.sh` is under no path in the area table"),
         "{reason}"
     );
     assert!(!r.is_ready());
     assert!(
         r.text()
             .lines()
-            .any(|l| l.starts_with("  - abstained: needs ADR (surface abstained: ")),
+            .any(|l| l.starts_with("  - abstained: needs ADR (risk abstained: area abstained: ")),
         "{}",
         r.text()
     );
