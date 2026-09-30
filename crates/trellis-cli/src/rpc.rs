@@ -881,6 +881,128 @@ mod tests {
         );
     }
 
+    /// A shell argv for `script`, as TOML, with literal strings so a Windows
+    /// path's backslashes are not escapes.
+    fn sh(script: &str) -> String {
+        if cfg!(windows) {
+            format!("['cmd', '/C', '{script}']")
+        } else {
+            format!("['sh', '-c', '{script}']")
+        }
+    }
+
+    /// Where `fixture(name, ..)` puts its repository, known before it is
+    /// made so a hook in its configuration can name a file in it.
+    fn fixture_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("trellis-rpc-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn after_run_interrupted_by_abort_runs_before_the_rollback_and_its_write_is_undone() {
+        // The risk: an aborted run rolled back and wrote its trail, and a
+        // hook relying on `after_run` (to release a lock, post a note) never
+        // learned the run had ended (#138). And once it runs, it must run
+        // before the rollback, or what it wrote in the worktree outlives the
+        // run. The hook runs in a throwaway clone (ADR 0032, "Hooks"), so
+        // it names the repository's file by absolute path: the one writer
+        // whose bytes reach the worktree. Its stdin goes outside the
+        // repository, where the rollback cannot touch it.
+        let name = "after-run-abort";
+        let hooked = fixture_dir(name).join("hooked.py");
+        let payload = crate::testutil::scratch("rpc-after-run-abort-payload").join("payload.json");
+        let script = if cfg!(windows) {
+            format!(
+                "more > {} & echo hooked> {}",
+                payload.display(),
+                hooked.display()
+            )
+        } else {
+            format!(
+                "cat > {}; echo hooked > {}",
+                payload.display(),
+                hooked.display()
+            )
+        };
+        let (dir, spec) = fixture(
+            name,
+            &format!(
+                "[control]\nmode = \"approve\"\n[hooks]\nafter_run = {}\n",
+                sh(&script)
+            ),
+        );
+        assert_eq!(
+            dir.join("hooked.py"),
+            hooked,
+            "the hook names the fixture's file"
+        );
+        crate::testutil::trust(&dir);
+        let c = Client::start(&dir);
+        c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        c.send(json!({"id": "x", "type": "abort"}));
+        let rs = c.finish();
+        let end = of_type(&rs, "run_end")[0];
+        assert_eq!(end["outcome"], "interrupted", "{rs:?}");
+        assert_eq!(end["restored"], true, "{rs:?}");
+
+        let raw = std::fs::read_to_string(&payload)
+            .unwrap_or_else(|e| panic!("after_run did not run on the abort ({e}): {rs:?}"));
+        let given: Value = serde_json::from_str(raw.trim())
+            .unwrap_or_else(|e| panic!("after_run's stdin is not JSON ({e}): {raw:?}"));
+        assert_eq!(given["reason"], "interrupted", "{given}");
+        assert_eq!(given["converged"], false, "{given}");
+        assert!(
+            given["iterations"].is_null(),
+            "not known, so not stated: {given}"
+        );
+        assert_eq!(given["run_id"], end["run_id"], "the trail's id: {given}");
+        assert!(given["touched"].is_array(), "{given}");
+
+        assert!(
+            !hooked.exists(),
+            "the hook's write outlived the run: it ran after the rollback, or the rollback missed it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+    }
+
+    #[test]
+    fn after_run_interrupted_by_abort_is_bounded_by_the_hook_timeout() {
+        // The risk: a hook that hangs holds an aborted run, and its
+        // rollback, forever. `rpc` has no second Ctrl-C to stop it (a second
+        // `abort` asks for what was already asked), so `[hooks] timeout_s`
+        // is the bound.
+        let sleep = if cfg!(windows) {
+            "ping -n 31 127.0.0.1 >NUL"
+        } else {
+            "sleep 30"
+        };
+        let (dir, spec) = fixture(
+            "after-run-timeout",
+            &format!(
+                "[control]\nmode = \"approve\"\n[hooks]\ntimeout_s = 1\nafter_run = {}\n",
+                sh(sleep)
+            ),
+        );
+        crate::testutil::trust(&dir);
+        let c = Client::start(&dir);
+        c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        let asked = Instant::now();
+        c.send(json!({"id": "x", "type": "abort"}));
+        let rs = c.finish();
+        let took = asked.elapsed();
+        let end = of_type(&rs, "run_end")[0];
+        assert_eq!(end["outcome"], "interrupted", "{rs:?}");
+        assert_eq!(end["restored"], true, "{rs:?}");
+        assert!(
+            took < Duration::from_secs(20),
+            "the 30 s hook was not stopped at its 1 s timeout: the run took {took:?}"
+        );
+    }
+
     #[test]
     fn end_of_input_with_a_question_open_declines_it_and_the_process_exits() {
         // The risk: the client closed stdin while an approve-mode run
