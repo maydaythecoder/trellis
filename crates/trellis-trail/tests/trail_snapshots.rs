@@ -142,6 +142,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             SteerKind::Steer,
             "keep the old name as an alias",
         )],
+        label: Some("installer rename".into()),
     };
     let judgment = Judgment {
         tech_debt_projection: Some("the alias will need removing".into()),
@@ -176,6 +177,7 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         agent: None,
         inputs: vec![],
         steering: vec![],
+        label: None,
     };
     insta::assert_snapshot!(trail_json("fix flaky test", factual, Judgment::default()));
 }
