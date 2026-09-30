@@ -33,6 +33,17 @@ the logs of every leg, and the clone and throwaway home of native legs; the self
 (scripts/checks/ci-local-selftest.sh) sets it so that it never touches the
 clone a real run reuses.
 
+Each leg gets RUNNER_TEMP, a directory of its own emptied when the leg
+starts, as GitHub gives each job one. Two workflow expressions are resolved
+the way a pull request into the base branch sees them: `github.base_ref` is
+the base branch's name (CI_LOCAL_BASE, default v0.1-resolver; set it empty to
+see a push instead) and `origin/<base>` in the clone is made to point where
+this repository's copy of that branch does; `github.event.before` is <ref>'s
+first parent, or forty zeros for a root commit, as GitHub sends for a new
+branch. Any other `${{ ... }}` in a step's `env:` or `run:` fails the job: a
+literal passed through reached gitleaks as a base named
+`${{ github.event.before }}` (#237).
+
 Exit 0 only if every step of every selected job exited 0.
 """
 
@@ -55,6 +66,8 @@ WIN_DIR = Path(os.environ.get("CI_LOCAL_DIR")
 WSL_DIR = "$HOME/ci-local"
 DISTRO = "Ubuntu"
 KEYS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY"]
+BASE = os.environ.get("CI_LOCAL_BASE", "v0.1-resolver")
+EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 KNOWN_USES = ("actions/checkout@", "dtolnay/rust-toolchain@", "Swatinem/rust-cache@",
               "actions/setup-python@")
 
@@ -110,7 +123,39 @@ def legs(jobs, only):
     return out
 
 
-def prelude(env, platform, venv):
+def git_ok(*args):
+    """stdout of a git command in ROOT, or None if it failed."""
+    p = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, **UTF8)
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def context(sha):
+    """(expression values, the base branch's commit or None), or exit naming why."""
+    before = git_ok("rev-parse", "--verify", "--quiet", f"{sha}^1")
+    exprs = {"github.base_ref": BASE, "github.event.before": before or "0" * 40}
+    if not BASE:
+        return exprs, None
+    # The repository's copy of the remote branch is what CI compares against;
+    # a repository with no remote (the self-test's) has only the local branch.
+    for ref in (f"refs/remotes/origin/{BASE}", f"refs/heads/{BASE}"):
+        got = git_ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if got:
+            return exprs, got
+    sys.exit(f"ci-local: base '{BASE}' (CI_LOCAL_BASE) is neither refs/remotes/origin/{BASE} "
+             f"nor refs/heads/{BASE} here, so github.base_ref cannot be resolved")
+
+
+def expand(text, exprs, where, unknown):
+    """Substitute the expressions in `exprs`; record any other in `unknown`."""
+    def sub(m):
+        if m.group(1) in exprs:
+            return exprs[m.group(1)]
+        unknown.append(f"{where}: ${{{{ {m.group(1)} }}}}")
+        return m.group(0)
+    return EXPR.sub(sub, str(text))
+
+
+def prelude(env, platform, venv, runner_temp):
     lines = ["set -eo pipefail"]
     for k in KEYS:
         lines.append(f"unset {k}")
@@ -120,7 +165,8 @@ def prelude(env, platform, venv):
     lines += [f'export GIT_CONFIG_GLOBAL="{home}/gitconfig"',
               f'export CARGO_INSTALL_ROOT="{home}/cargo-install"',
               f'export PATH="{home}/cargo-install/bin:$PATH"',
-              "export OPENAI_BASE_URL=http://127.0.0.1:9/v1"]
+              "export OPENAI_BASE_URL=http://127.0.0.1:9/v1",
+              f'export RUNNER_TEMP="{runner_temp}"']
     if platform == "linux":
         lines.append('export PATH="$HOME/.cargo/bin:$PATH"')
         # WSL does not inherit the Windows environment, so a job cap the
@@ -132,13 +178,30 @@ def prelude(env, platform, venv):
     return "\n".join(lines) + "\n"
 
 
-def run_leg(name, platform, job, top_env, sha, logdir):
+def run_leg(name, platform, job, top_env, sha, logdir, exprs, base_sha):
     steps = job["steps"]
     unknown = [s["uses"] for s in steps if "uses" in s and not s["uses"].startswith(KNOWN_USES)]
     if unknown:
         return False, f"unknown action(s): {unknown}"
     venv = any(s.get("uses", "").startswith("actions/setup-python@") for s in steps)
-    env = dict(top_env or {}, **(job.get("env") or {}))
+    # Every step's script is built before anything runs, so an expression
+    # this script cannot resolve fails the job before its first step rather
+    # than reaching a command as literal text.
+    bad = []
+    env = {k: expand(v, exprs, f"env {k}", bad)
+           for k, v in dict(top_env or {}, **(job.get("env") or {})).items()}
+    scripts = []
+    for i, st in enumerate(steps):
+        if "run" not in st:
+            continue
+        label = st.get("name") or st["run"].strip().splitlines()[0][:60]
+        # Step env over job env, per step, so one step's `env:` never
+        # reaches the next.
+        step_env = dict(env, **{k: expand(v, exprs, f"step '{label}' env {k}", bad)
+                                for k, v in (st.get("env") or {}).items()})
+        scripts.append((i, label, step_env, expand(st["run"], exprs, f"step '{label}' run", bad)))
+    if bad:
+        return False, "expression(s) ci-local does not resolve: " + "; ".join(bad)
     tag = f"{name}-{platform}"
     native = (platform == "windows") == ON_WINDOWS
     if platform == "windows" and not native:
@@ -152,6 +215,15 @@ def run_leg(name, platform, job, top_env, sha, logdir):
         sh(["git", "-C", str(work), "fetch", "-q", str(ROOT), sha])
         sh(["git", "-C", str(work), "-c", "core.autocrlf=false", "checkout", "-q", "-f", "--detach", sha])
         sh(["git", "-C", str(work), "clean", "-q", "-fdx", "-e", "target"])
+        if base_sha:
+            sh(["git", "-C", str(work), "fetch", "-q", str(ROOT), base_sha])
+            sh(["git", "-C", str(work), "update-ref", f"refs/remotes/origin/{BASE}", base_sha])
+        runner_temp = WIN_DIR / f"tmp-{tag}"
+        shutil.rmtree(runner_temp, ignore_errors=True)
+        if runner_temp.exists():
+            return False, f"could not empty RUNNER_TEMP {runner_temp}"
+        runner_temp.mkdir(parents=True)
+        runner_temp = runner_temp.as_posix()
         ci_home = (WIN_DIR / "home-win").as_posix()
         Path(ci_home).mkdir(parents=True, exist_ok=True)
         Path(ci_home, "gitconfig").write_text("[core]\n\tlongpaths = true\n")
@@ -165,9 +237,14 @@ def run_leg(name, platform, job, top_env, sha, logdir):
         common = sh(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute",
                      "--git-common-dir"])
         win_root = to_wsl(Path(common))
+        runner_temp = f"{WSL_DIR}/tmp-{tag}"
+        base = (f"git -C \"$W\" fetch -q {win_root} {base_sha}; "
+                f"git -C \"$W\" update-ref refs/remotes/origin/{BASE} {base_sha}; ") if base_sha else ""
         r = wsl(f"set -e; mkdir -p {WSL_DIR}/home; W=\"{WSL_DIR}/trellis\"; echo \"clone: $W\"; "
                 f"[ -d \"$W/.git\" ] || git clone -q --no-checkout {win_root} \"$W\"; "
-                f"git -C \"$W\" fetch -q {win_root} {sha}; git -C \"$W\" checkout -q -f --detach {sha}; "
+                f"git -C \"$W\" fetch -q {win_root} {sha}; {base}"
+                f"git -C \"$W\" checkout -q -f --detach {sha}; "
+                f"rm -rf \"{runner_temp}\"; mkdir -p \"{runner_temp}\"; "
                 f"git -C \"$W\" clean -q -fdx -e target -e .bench; "
                 f"printf '' > {WSL_DIR}/home/gitconfig; "
                 + (f"[ -x {WSL_DIR}/home/venv/bin/python ] || python3 -m venv {WSL_DIR}/home/venv" if venv else "true"))
@@ -177,13 +254,8 @@ def run_leg(name, platform, job, top_env, sha, logdir):
         log.write_text((r.stdout or "") + (r.stderr or ""), encoding="utf-8")
         if r.returncode:
             return False, f"checkout failed (log {log}): " + (r.stderr or r.stdout)[-400:]
-    for i, st in enumerate(steps):
-        if "run" not in st:
-            continue
-        label = st.get("name") or st["run"].strip().splitlines()[0][:60]
-        # Step env over job env, per step, so one step's `env:` never
-        # reaches the next.
-        body = prelude(dict(env, **(st.get("env") or {})), platform, venv) + st["run"]
+    for i, label, step_env, run in scripts:
+        body = prelude(step_env, platform, venv, runner_temp) + run
         script = logdir / f"{tag}-{i:02d}.sh"
         script.write_text(body, encoding="utf-8", newline="\n")
         log = logdir / f"{tag}-{i:02d}.log"
@@ -214,14 +286,19 @@ def main():
     a = ap.parse_args()
     wf = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     sha = sh(["git", "-C", str(ROOT), "rev-parse", a.ref])
+    exprs, base_sha = context(sha)
     logdir = WIN_DIR / "logs" / sha[:12]
     logdir.mkdir(parents=True, exist_ok=True)
     print(f"ci-local: {sha[:12]} ({a.ref}); logs in {logdir}", flush=True)
+    print(f"ci-local: github.base_ref={exprs['github.base_ref']!r}"
+          + (f" (origin/{BASE} -> {base_sha[:12]})" if base_sha else "")
+          + f", github.event.before={exprs['github.event.before'][:12]}", flush=True)
     results = []
     for name, platform, os_ in legs(wf["jobs"], set(a.job)):
         print(f"  {name} ({os_})", flush=True)
         t = time.time()
-        ok, why = run_leg(name, platform, wf["jobs"][name], wf.get("env"), sha, logdir)
+        ok, why = run_leg(name, platform, wf["jobs"][name], wf.get("env"), sha, logdir,
+                         exprs, base_sha)
         results.append((name, os_, ok, time.time() - t))
         if not ok:
             print(f"    -> {why}", flush=True)

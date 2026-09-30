@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ci-local-selftest.sh: scripts/ci-local.py keeps every byte of a step's
-# output and gives each step its own `env:`.
+# output, gives each step its own `env:`, gives each leg its own emptied
+# RUNNER_TEMP, and resolves the workflow expressions it knows and refuses the
+# rest.
 #
 #   scripts/checks/ci-local-selftest.sh
 #
@@ -20,6 +22,20 @@
 #     with no env of its own, must see the job's FOO=job again.
 #   - a second job prints the same bytes and exits 3: ci-local must report
 #     that exit and print the tail without raising while writing to a pipe.
+#
+# #237: ci-local set no RUNNER_TEMP and passed `${{ github.base_ref }}` and
+# `${{ github.event.before }}` through as literal text, so the gitleaks step
+# of supply-chain failed locally for a reason CI does not have. The fixture
+# history is A (branch v0.1-resolver) <- B <- C (HEAD), so the base and the
+# first parent are different commits:
+#   - job `exprs` must see BASE_REF=v0.1-resolver, origin/v0.1-resolver at A,
+#     BEFORE=B (through `env:` and, unspaced, in `run:`), and a RUNNER_TEMP
+#     that exists, is empty and is its own; job `temp` must get a different
+#     one. Both leave a file behind, and a second run must find each
+#     RUNNER_TEMP empty again.
+#   - with CI_LOCAL_BASE set empty (a push), BASE_REF must be empty.
+#   - job `unknown` names `${{ github.sha }}`, which ci-local does not
+#     resolve: it must fail, naming the expression, before any step runs.
 # The environment is passed through as it is: setting PYTHONUTF8 or
 # PYTHONIOENCODING here would hide the defect this check exists for.
 #
@@ -88,17 +104,66 @@ jobs:
         run: |
           printf 'marker \304\201 \305\220 end\n'
           exit 3
+  exprs:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [$os]
+    steps:
+      - uses: actions/checkout@v4
+      - name: exprs
+        env:
+          BASE_REF: \${{ github.base_ref }}
+          BEFORE: \${{github.event.before}}
+        run: |
+          echo "base_ref=\$BASE_REF"
+          if [ -n "\$BASE_REF" ]; then echo "origin=\$(git rev-parse "origin/\$BASE_REF")"; fi
+          echo "before=\$BEFORE"
+          echo "run_before=\${{ github.event.before }}"
+          test -d "\$RUNNER_TEMP"
+          test -z "\$(ls -A "\$RUNNER_TEMP")"
+          echo left > "\$RUNNER_TEMP/left"
+          echo "runner_temp=\$RUNNER_TEMP"
+  temp:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [$os]
+    steps:
+      - name: temp
+        run: |
+          test -d "\$RUNNER_TEMP"
+          test -z "\$(ls -A "\$RUNNER_TEMP")"
+          echo left > "\$RUNNER_TEMP/left"
+          echo "runner_temp=\$RUNNER_TEMP"
+  unknown:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [$os]
+    env:
+      SHA: \${{ github.sha }}
+    steps:
+      - name: never-runs
+        run: echo "SHA=\$SHA"
 EOF
 
 # A scratch global config, so the owner's hooks and signing do not run on
 # the fixture commit or inside ci-local's git calls.
 export GIT_CONFIG_GLOBAL="$tmp/gitconfig"
 : > "$GIT_CONFIG_GLOBAL"
-git -C "$repo" init -q || exit 1
-git -C "$repo" -c core.autocrlf=false add -A || exit 1
-git -C "$repo" -c user.name=selftest -c user.email=selftest@invalid \
-  commit -q -m fixture || exit 1
-sha="$(git -C "$repo" rev-parse HEAD)" || exit 1
+g() { git -C "$repo" -c user.name=selftest -c user.email=selftest@invalid -c core.autocrlf=false "$@"; }
+g init -q -b work || exit 1
+g commit -q --allow-empty -m A || exit 1
+g branch v0.1-resolver || exit 1
+g commit -q --allow-empty -m B || exit 1
+g add -A || exit 1
+g commit -q -m fixture || exit 1
+sha="$(g rev-parse HEAD)" || exit 1
+base_sha="$(g rev-parse v0.1-resolver)" || exit 1
+parent_sha="$(g rev-parse HEAD^)" || exit 1
+# The caller's choice of base would change what `exprs` must see.
+unset CI_LOCAL_BASE
 
 # ci-local writes logs in text mode, so on Windows each line ends in CRLF.
 lines() { tr -d '\r' < "$1" 2>/dev/null; }
@@ -159,7 +224,54 @@ bad_output "$out" "fails job"
 lines "$logs/fails-$platform-00.log" | grep -qxF -- "$marker" \
   || { echo "FAIL: $logs/fails-$platform-00.log lacks the line '$marker'"; fail=1; }
 
+# The value of `key=` in a log, CR stripped.
+val() { lines "$1" | sed -n "s/^$2=//p"; }
+want_eq() { [ "$2" = "$3" ] || { echo "FAIL: $1 is '$2', want '$3'"; fail=1; }; }
+
+for n in 1 2; do
+  echo "== ci-local --job exprs --job temp ($os), run $n"
+  out="$(CI_LOCAL_DIR="$(native "$run")" "${py[@]}" "$script" --job exprs --job temp 2>&1)"
+  code=$?
+  printf '%s\n' "$out"
+  [ "$code" -eq 0 ] || { echo "FAIL: exprs run $n: ci-local exited $code"; fail=1; }
+  bad_output "$out" "exprs run $n"
+  f="$logs/exprs-$platform-01.log"
+  want_eq "run $n: BASE_REF" "$(val "$f" base_ref)" v0.1-resolver
+  want_eq "run $n: origin/v0.1-resolver" "$(val "$f" origin)" "$base_sha"
+  want_eq "run $n: BEFORE from env" "$(val "$f" before)" "$parent_sha"
+  want_eq "run $n: github.event.before in run" "$(val "$f" run_before)" "$parent_sha"
+  t1="$(val "$f" runner_temp)" t2="$(val "$logs/temp-$platform-00.log" runner_temp)"
+  if [ "$platform" = windows ]; then
+    want_eq "run $n: exprs RUNNER_TEMP" "$t1" "$(native "$run")/tmp-exprs-$platform"
+  fi
+  [ -n "$t1" ] && [ -n "$t2" ] && [ "$t1" != "$t2" ] \
+    || { echo "FAIL: run $n: RUNNER_TEMP '$t1' and '$t2' are not two directories"; fail=1; }
+done
+
+echo "== CI_LOCAL_BASE= ci-local --job exprs ($os)"
+out="$(CI_LOCAL_BASE= CI_LOCAL_DIR="$(native "$run")" "${py[@]}" "$script" --job exprs 2>&1)"
+code=$?
+printf '%s\n' "$out"
+[ "$code" -eq 0 ] || { echo "FAIL: push exprs: ci-local exited $code"; fail=1; }
+bad_output "$out" "push exprs"
+want_eq "push: BASE_REF" "$(val "$logs/exprs-$platform-01.log" base_ref)" ""
+want_eq "push: BEFORE" "$(val "$logs/exprs-$platform-01.log" before)" "$parent_sha"
+
+echo "== ci-local --job unknown ($os)"
+out="$(CI_LOCAL_DIR="$(native "$run")" "${py[@]}" "$script" --job unknown 2>&1)"
+code=$?
+printf '%s\n' "$out"
+[ "$code" -eq 1 ] || { echo "FAIL: unknown job: ci-local exited $code, want 1"; fail=1; }
+printf '%s\n' "$out" | grep -Eq "^unknown \| $os \| FAIL \|" \
+  || { echo "FAIL: unknown job: no failing 'unknown | $os' row"; fail=1; }
+printf '%s\n' "$out" | grep -qF 'env SHA: ${{ github.sha }}' \
+  || { echo "FAIL: unknown job: the unresolved expression was not named"; fail=1; }
+[ ! -e "$logs/unknown-$platform-00.log" ] \
+  || { echo "FAIL: unknown job: a step ran with an unresolved expression"; fail=1; }
+bad_output "$out" "unknown job"
+
 if [ "$fail" -eq 0 ]; then
-  echo "ci-local-selftest: ok (UTF-8 step output kept whole; step env merged over job env)"
+  echo "ci-local-selftest: ok (UTF-8 step output kept whole; step env merged over job env;" \
+    "github.base_ref and github.event.before resolved, others refused; RUNNER_TEMP per leg, emptied)"
 fi
 exit "$fail"
