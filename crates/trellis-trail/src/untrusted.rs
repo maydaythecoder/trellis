@@ -204,6 +204,11 @@ pub struct UntrustedFactual {
     /// instruction, and `context_lines` fences every line of it.
     #[serde(default)]
     pub steering: Vec<super::Steer>,
+    /// Integrated-check failures that named files from two or more
+    /// partitions, as the writer recorded them. File names from a committed
+    /// file: data, never instruction, and not read into a prompt.
+    #[serde(default)]
+    pub suspected_recall_gaps: Vec<super::SuspectedRecallGap>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -545,6 +550,7 @@ mod tests {
                 label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                suspected_recall_gaps: Vec::new(),
             },
             judgment: crate::Judgment::default(),
         }
@@ -1076,5 +1082,48 @@ mod tests {
         let read = UntrustedTrail::from_json(&json).unwrap();
         assert_eq!(read.factual.actions[0].changed, hostile);
         assert_eq!(read.factual.actions[0].changed_count, 1);
+    }
+
+    #[test]
+    fn suspected_recall_gaps_absent_keeps_an_older_trails_bytes_and_digest() {
+        // The risk: a new factual field changes the bytes, and so the
+        // digest, of every trail already committed, and an older trail then
+        // reads as `Altered`. Omitted when empty keeps the old shape; a
+        // trail written before the field reads back with none.
+        let mut t = a_trail("app/core.py");
+        let json = written(&mut t);
+        assert!(!json.contains("suspected_recall_gaps"), "{json}");
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+        assert!(read.factual.suspected_recall_gaps.is_empty());
+
+        let old = UntrustedTrail::from_json(TRAIL).expect("a pre-field trail still parses");
+        assert!(old.factual.suspected_recall_gaps.is_empty());
+    }
+
+    #[test]
+    fn suspected_recall_gaps_round_trip_under_the_digest() {
+        // A gap record is a factual entry: it reads back as written, and
+        // editing it after the run (to hide a collision, say) is visible.
+        let mut t = a_trail("app/core.py");
+        let gap = crate::SuspectedRecallGap {
+            partitions: vec![0, 1],
+            files: vec!["a.py".into(), "pkg/b.py".into()],
+            check: "Typecheck".into(),
+        };
+        t.factual.suspected_recall_gaps = vec![gap.clone()];
+        let json = written(&mut t);
+        let read = UntrustedTrail::from_json(&json).unwrap();
+        assert_eq!(read.factual.suspected_recall_gaps, vec![gap]);
+        assert_eq!(read.integrity(&json), Integrity::Intact);
+
+        let edited = json.replace("pkg/b.py", "pkg/c.py");
+        assert_ne!(edited, json);
+        assert_eq!(
+            UntrustedTrail::from_json(&edited)
+                .unwrap()
+                .integrity(&edited),
+            Integrity::Altered
+        );
     }
 }

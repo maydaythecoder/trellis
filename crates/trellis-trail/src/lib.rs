@@ -141,6 +141,35 @@ pub struct Factual {
     /// empty, so a trail with no steering keeps its shape and its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steering: Vec<Steer>,
+    /// Integrated-check failures that named files changed by two or more
+    /// partitions (ADR 0005, ADR 0042): a collision the partition plan did
+    /// not predict, and so evidence the graph's recall missed an edge.
+    ///
+    /// Suspected, not established: the record says which merged files a
+    /// failing check's own output named, not that their pairing caused it.
+    /// Built by `trellis-loop` from that output alone, never from model
+    /// text. Omitted when empty, so a single-agent trail keeps its shape and
+    /// its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suspected_recall_gaps: Vec<SuspectedRecallGap>,
+}
+
+/// One integrated-check failure that named files from more than one
+/// partition, as `Factual::suspected_recall_gaps` records it.
+///
+/// Carries no `passed`: it is recorded only for a check that failed, and a
+/// failing verdict is already in `check_outcomes`. Nothing here is a
+/// correctness claim (ADR 0004).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuspectedRecallGap {
+    /// The partitions whose merged files the failure named, ascending.
+    pub partitions: Vec<u32>,
+    /// Those files, root-relative with `/` separators, in the order merged.
+    pub files: Vec<String>,
+    /// The check that failed, spelled as `CheckOutcome::kind` spells it
+    /// (`Typecheck`, `Tests`). A string rather than `CheckKind`, so a trail
+    /// naming a kind this build does not know still reads back.
+    pub check: String,
 }
 
 /// The most characters of one steer's text a trail keeps (ADR 0034).
@@ -620,6 +649,7 @@ mod tests {
                 label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                suspected_recall_gaps: Vec::new(),
             },
 
             factual_sha256: String::new(),

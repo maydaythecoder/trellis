@@ -3459,6 +3459,9 @@ fn record_trail(
         // Empty on a run nobody steered, and empty is omitted on disk, so
         // such a trail has the bytes it had before the field (ADR 0034).
         steering: steering_entries(&turns.steering, turns.turns.len()),
+        // A single-agent run has no partitions, so no failure of its can
+        // name files from two of them (ADR 0042). Empty is omitted on disk.
+        suspected_recall_gaps: Vec::new(),
     };
 
     let slug = trellis_trail::slugify(task);

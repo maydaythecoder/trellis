@@ -16,6 +16,7 @@ mod gate;
 mod governance;
 mod graph_tools;
 mod hooks;
+mod integrate;
 mod isolate;
 mod listing;
 mod notes;
@@ -49,6 +50,7 @@ pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
     InputDecision, fence_before_run,
 };
+pub use integrate::{Integrated, Integration, SuspectedRecallGap};
 pub use orchestrator::{
     Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request, names_trellis_dir,
 };
