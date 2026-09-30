@@ -3,7 +3,7 @@
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
 was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
-for `@profile` mention wakes (#57). Each amendment is marked in place. §4's `tools` list and skill deny
+for `@profile` mention wakes (#57). §5 amended again for prompt tokens (#108). Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -494,9 +494,18 @@ allow.
 
 **What is counted, stated plainly.** The count is **completion tokens as the
 runtime adapter reported them**. It is `Model::tokens_used()`, which the
-runtime adapter sums from each completion's reported count. No figure for
-prompt tokens exists anywhere in trellis, so a budget here limits generated
-tokens, not billed tokens. A scripted run records no token count. A process
+runtime adapter sums from each completion's reported count. *Amended
+2026-09-30 (#108):* the ledger now carries prompt tokens as a second number,
+field `prompt_tokens`: the trail's own `prompt_tokens`, which the adapter
+sums from each reply's reported prompt figure (`Model::prompt_tokens()`),
+kept per month and lifetime beside the completion sums and never added to
+them. `agents list` and `agents show` print it as its own clause, `prompt
+tokens <month>: <n>, lifetime <n>`. A run with any reply that reported no
+prompt figure records none; the clause prints `unknown` when every counted
+run lacks one, and otherwise the known sum followed by `(<k> runs
+unknown)`, never 0 for an unknown. Budgets still limit completion tokens
+only, so a budget here limits generated tokens, not billed tokens. A
+scripted run records no token count. A process
 agent's tokens are unknown to trellis.
 
 **A hosted reply with no usage figure** (amended after the second review of
