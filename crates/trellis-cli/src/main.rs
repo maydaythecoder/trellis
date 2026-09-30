@@ -310,8 +310,9 @@ enum Command {
     /// `<git-url|path>@<ref>`: the ref is required and recorded with the
     /// commit it resolved to, in packages/packages.toml. Only
     /// skills/<name>/ text files and prompts/<name>.md are copied; hooks,
-    /// tools and anything else in the source are skipped and named. Runs do
-    /// not read packages/ yet.
+    /// tools and anything else in the source are skipped and named. Runs
+    /// read them after the repository's own skills and templates, which win
+    /// a name.
     Install {
         /// `<git-url|path>@<ref>`.
         #[arg(
@@ -1813,7 +1814,7 @@ fn run_body(
     // before the snapshot, so an unreadable or over-cap file costs nothing.
     // User-level skill directories (ADR 0025, integrated), for the listing,
     // `read_skill` and forced skills alike, so all three agree on a name.
-    let skill_dirs = user_config::skill_dirs();
+    let skill_dirs = user_config::skill_dirs()?;
     let added = context_files::load(
         root,
         user_config::dir().as_deref(),
@@ -1969,9 +1970,14 @@ fn run_body(
                         n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
                     },
                     // Integrated (ADR 0025): says these were not trust-gated.
-                    context_files::user_skills_note(&skills)
-                        .map(|n| format!(", {n}"))
-                        .unwrap_or_default()
+                    context_files::user_skills_note(
+                        &skills,
+                        root,
+                        &skill_dirs,
+                        user_config::dir().as_deref()
+                    )
+                    .map(|n| format!(", {n}"))
+                    .unwrap_or_default()
                 )
             },
             match &tooling.untrusted {

@@ -49,28 +49,93 @@ pub(crate) fn skill_policy(
     })
 }
 
-/// The `repo:` fragment for user-level skills, when there are any.
+/// The `repo:` fragment for user-level and installed skills, when there are
+/// any.
 ///
 /// Says that they were not gated on repository trust, so a reader never
 /// assumes `trellis trust` vouched for them. It does not: they are the
-/// user's own files (ADR 0025, integrated).
-pub(crate) fn user_skills_note(c: &trellis_loop::SkillCatalog) -> Option<String> {
-    let listed = c
+/// user's own files (ADR 0025, integrated), and an installed package is in
+/// no repository and executes nothing (ADR 0039 §9).
+///
+/// `dirs` is the precedence list the catalog was built from
+/// (`user_config::skill_dirs`), and `config` the user config directory,
+/// whose `packages/` marks which of them are installed packages. Each
+/// shadowed name is reported with the source that won it and the ones it
+/// won over, since which body `read_skill` serves follows from that order.
+pub(crate) fn user_skills_note(
+    c: &trellis_loop::SkillCatalog,
+    root: &Path,
+    dirs: &[PathBuf],
+    config: Option<&Path>,
+) -> Option<String> {
+    let packages = config.map(crate::install::packages_dir);
+    let label = |d: &Path| match packages.as_deref().and_then(|p| d.strip_prefix(p).ok()) {
+        Some(rest) => format!(
+            "installed package `{}`",
+            crate::plain(&rest.iter().next().unwrap_or_default().to_string_lossy())
+        ),
+        None => crate::plain(&d.display().to_string()),
+    };
+    // Where `read_body_in` finds a user-level name: the first directory
+    // holding it.
+    let holders =
+        |name: &str| -> Vec<&PathBuf> { dirs.iter().filter(|d| d.join(name).is_dir()).collect() };
+    let listed: Vec<&String> = c
         .user
         .iter()
         .filter(|n| c.valid.iter().any(|s| &s.name == *n))
+        .collect();
+    let installed = listed
+        .iter()
+        .filter(|n| {
+            holders(n)
+                .first()
+                .is_some_and(|d| packages.as_deref().is_some_and(|p| d.starts_with(p)))
+        })
         .count();
-    if listed == 0 && c.shadowed.is_empty() {
+    if listed.is_empty() && c.shadowed.is_empty() {
         return None;
     }
     let mut s = format!(
-        "user skills: {listed} from the user's own directories (not gated on repository trust)"
+        "user skills: {} from the user's own directories",
+        listed.len() - installed
     );
+    if installed > 0 {
+        s.push_str(&format!(", {installed} from installed packages"));
+    }
+    s.push_str(" (not gated on repository trust)");
     if !c.shadowed.is_empty() {
+        let mut names: Vec<&String> = Vec::new();
+        for n in &c.shadowed {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+        let collisions: Vec<String> = names
+            .iter()
+            .map(|n| {
+                let repo = root.join(trellis_loop::SKILLS_DIR).join(n.as_str());
+                let in_repo = repo.is_dir()
+                    || std::fs::symlink_metadata(&repo).is_ok_and(|m| m.file_type().is_symlink());
+                let found = holders(n);
+                let (winner, losers) = match (in_repo, found.split_first()) {
+                    (true, _) => ("the repository".to_string(), found.as_slice()),
+                    (false, Some((first, rest))) => (label(first), rest),
+                    // Gone between discovery and now: the name alone.
+                    (false, None) => return crate::plain(n),
+                };
+                let losers: Vec<String> = losers.iter().map(|d| label(d)).collect();
+                format!(
+                    "{} from {winner} over {}",
+                    crate::plain(n),
+                    losers.join(" and ")
+                )
+            })
+            .collect();
         s.push_str(&format!(
             ", {} shadowed by a skill of the same name found first ({})",
             c.shadowed.len(),
-            c.shadowed.join(", ")
+            collisions.join("; ")
         ));
     }
     Some(s)
@@ -774,5 +839,248 @@ mod tests {
             "refused before the snapshot: {said}"
         );
         assert!(!dir.join(".trellis/runs").exists(), "no trail");
+    }
+}
+
+/// Installed packages as a skill source (ADR 0039, #119), built from a
+/// fixture user config directory: a `packages.toml` and the tree
+/// `trellis install` writes beside it.
+#[cfg(test)]
+mod installed_tests {
+    use super::*;
+    use trellis_loop::{DISCLOSURE_CAP, SkillCatalog};
+
+    fn md(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\n\nBODY-{name}-{description}\n")
+    }
+
+    fn skill_in(base: &Path, name: &str, description: &str) {
+        let d = base.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), md(name, description)).unwrap();
+    }
+
+    /// A manifest naming `packages`, in the order given.
+    fn manifest(config: &Path, packages: &[&str]) {
+        let dir = crate::install::packages_dir(config);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text: String = packages
+            .iter()
+            .map(|p| {
+                format!(
+                    "[[package]]\nname = \"{p}\"\nsource = \"/src/{p}\"\nref = \"v1\"\n\
+                     commit = \"0000000000000000000000000000000000000000\"\n\n"
+                )
+            })
+            .collect();
+        std::fs::write(dir.join(crate::install::MANIFEST), text).unwrap();
+    }
+
+    fn package_skills(config: &Path, package: &str) -> PathBuf {
+        crate::install::packages_dir(config)
+            .join(package)
+            .join("skills")
+    }
+
+    struct Fixture {
+        _t: tempfile::TempDir,
+        root: PathBuf,
+        config: PathBuf,
+        agents: PathBuf,
+    }
+
+    fn fixture() -> Fixture {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        let config = t.path().join("cfg");
+        let agents = t.path().join("home/.agents/skills");
+        for d in [&root, &config, &agents] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        Fixture {
+            _t: t,
+            root,
+            config,
+            agents,
+        }
+    }
+
+    impl Fixture {
+        /// The list `user_config::skill_dirs` builds, for this fixture.
+        fn dirs(&self) -> Vec<PathBuf> {
+            crate::user_config::with_installed_skills(
+                &self.config,
+                vec![self.config.join("skills"), self.agents.clone()],
+            )
+            .unwrap()
+        }
+
+        fn repo_skills(&self) -> PathBuf {
+            self.root.join(trellis_loop::SKILLS_DIR)
+        }
+    }
+
+    fn description(c: &SkillCatalog, name: &str) -> String {
+        c.valid
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} not loaded: {c:?}"))
+            .description
+            .clone()
+    }
+
+    #[test]
+    fn installed_skill_precedence_is_repository_then_package_then_agents_skills() {
+        // The risk: an installed package, fetched from outside, replacing
+        // a skill the repository's contributors reviewed; or the listing
+        // and `read_skill` disagreeing on which source a name comes from.
+        let f = fixture();
+        // Recorded out of name order: which package wins may not depend on
+        // install order.
+        manifest(&f.config, &["pkg-b", "pkg-a"]);
+        let (a, b) = (
+            package_skills(&f.config, "pkg-a"),
+            package_skills(&f.config, "pkg-b"),
+        );
+        skill_in(&f.repo_skills(), "shared", "REPO");
+        skill_in(&a, "shared", "PKGA");
+        skill_in(&f.agents, "shared", "AGENTS");
+        skill_in(&b, "fetched", "PKGB");
+        skill_in(&f.agents, "fetched", "AGENTS");
+        skill_in(&f.config.join("skills"), "own", "OWN");
+        skill_in(&a, "own", "PKGA");
+        skill_in(&a, "both", "PKGA");
+        skill_in(&b, "both", "PKGB");
+        // A staging directory mid-install, and a directory the manifest does
+        // not name: neither is installed.
+        skill_in(
+            &crate::install::packages_dir(&f.config).join(".staging-1-2/package/skills"),
+            "staged",
+            "STAGED",
+        );
+        skill_in(&package_skills(&f.config, "stray"), "stray", "STRAY");
+
+        let dirs = f.dirs();
+        assert_eq!(
+            dirs,
+            [
+                f.config.join("skills"),
+                a.clone(),
+                b.clone(),
+                f.agents.clone()
+            ],
+            "own, then packages by name, then ~/.agents/skills"
+        );
+        let c = SkillCatalog::discover_with(&f.root, &dirs);
+        for (name, want) in [
+            ("shared", "REPO"),
+            ("fetched", "PKGB"),
+            ("own", "OWN"),
+            ("both", "PKGA"),
+        ] {
+            assert_eq!(description(&c, name), want, "{name}");
+            let body = trellis_loop::read_body_in(&f.root, &dirs, name).unwrap();
+            assert!(
+                body.contains(&format!("BODY-{name}-{want}")),
+                "read_skill serves the listed source for {name}: {body}"
+            );
+        }
+        assert!(
+            c.valid
+                .iter()
+                .all(|s| s.name != "staged" && s.name != "stray"),
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn installed_skill_collision_is_reported_on_the_repo_line_with_the_winner() {
+        // The risk: a name silently served from a source the user did not
+        // expect. The `repo:` line names each collision and which source
+        // won it, and says installed skills were not trust-gated.
+        let f = fixture();
+        manifest(&f.config, &["pkg-a"]);
+        let a = package_skills(&f.config, "pkg-a");
+        skill_in(&f.repo_skills(), "shared", "REPO");
+        skill_in(&a, "shared", "PKGA");
+        skill_in(&a, "fetched", "PKGA");
+        skill_in(&f.agents, "fetched", "AGENTS");
+        skill_in(&a, "only-here", "PKGA");
+        let dirs = f.dirs();
+        let c = SkillCatalog::discover_with(&f.root, &dirs);
+        let note = user_skills_note(&c, &f.root, &dirs, Some(&f.config)).unwrap();
+        assert!(
+            note.starts_with(
+                "user skills: 0 from the user's own directories, 2 from installed packages \
+                 (not gated on repository trust)"
+            ),
+            "{note}"
+        );
+        assert!(
+            note.contains("2 shadowed by a skill of the same name found first"),
+            "{note}"
+        );
+        assert!(
+            note.contains("shared from the repository over installed package `pkg-a`"),
+            "{note}"
+        );
+        assert!(
+            note.contains(&format!(
+                "fetched from installed package `pkg-a` over {}",
+                f.agents.display()
+            )),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn installed_skill_disclosure_cap_is_shared_across_sources() {
+        // The risk: a cap applied per source, so installing packages
+        // multiplies what every prompt pays. Each source alone fits under
+        // ADR 0019's 4,096 bytes; together they do not, and the one cap cuts
+        // the merged list by name and counts what it left out.
+        assert_eq!(DISCLOSURE_CAP, 4_096, "ADR 0019's cap is unchanged");
+        let f = fixture();
+        manifest(&f.config, &["pkg-a"]);
+        let a = package_skills(&f.config, "pkg-a");
+        let desc = "d".repeat(240);
+        for i in 0..12 {
+            skill_in(&f.repo_skills(), &format!("repo-{i:02}"), &desc);
+            skill_in(&a, &format!("pkg-{i:02}"), &desc);
+        }
+        let repo_alone = SkillCatalog::discover(&f.root).disclosed();
+        let pkg_alone =
+            SkillCatalog::discover_with(&f.config.join("no-repo"), std::slice::from_ref(&a))
+                .disclosed();
+        assert_eq!(
+            (repo_alone.omitted, pkg_alone.omitted),
+            (0, 0),
+            "each fits alone"
+        );
+
+        let c = SkillCatalog::discover_with(&f.root, &f.dirs());
+        assert_eq!(c.valid.len(), 24);
+        let shown = c.disclosed();
+        let bytes: usize = shown.listed.iter().map(|s| s.listing().len()).sum();
+        assert!(bytes <= DISCLOSURE_CAP, "{bytes}");
+        assert!(shown.omitted > 0, "together they exceed the one cap");
+        assert_eq!(shown.listed.len() + shown.omitted, 24, "none silently lost");
+        // Name order across sources: `pkg-*` sorts before `repo-*`.
+        assert_eq!(shown.listed[0].name, "pkg-00");
+    }
+
+    #[test]
+    fn a_package_manifest_that_cannot_be_parsed_is_an_error_not_no_packages() {
+        // The risk: a run that silently lost every installed skill reading
+        // as one that had none installed.
+        let f = fixture();
+        let dir = crate::install::packages_dir(&f.config);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::install::MANIFEST), "[[package]\n").unwrap();
+        let e = crate::user_config::with_installed_skills(&f.config, Vec::new()).unwrap_err();
+        assert!(format!("{e:#}").contains("cannot parse"), "{e:#}");
+        // A name that would leave `packages/` is refused, not joined.
+        manifest(&f.config, &[".."]);
+        assert!(crate::install::installed_dirs(&f.config).is_err());
     }
 }

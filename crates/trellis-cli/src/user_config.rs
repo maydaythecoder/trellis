@@ -54,17 +54,68 @@ pub(crate) fn resolve(env: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> 
 }
 
 /// User-level skill directories, in precedence order: `<user dir>/skills`,
+/// then each installed package's `skills/` in package-name order (ADR 0039),
 /// then `~/.agents/skills` (ADR 0025, integrated). Each is read after the
 /// repository's `.trellis/skills`, which always wins a name.
 ///
-/// Empty in this crate's unit tests, for the reason [`dir`] is `None`.
-pub(crate) fn skill_dirs() -> Vec<PathBuf> {
+/// Empty in this crate's unit tests, for the reason [`dir`] is `None`. An
+/// error when the package manifest cannot be read (`install::installed_dirs`).
+pub(crate) fn skill_dirs() -> Result<Vec<PathBuf>> {
     if cfg!(test) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    resolve_skill_dirs(&|k| std::env::var_os(k), cfg!(windows))
+    let env = |k: &str| std::env::var_os(k);
+    let dirs = resolve_skill_dirs(&env, cfg!(windows));
+    match resolve(&env, cfg!(windows)) {
+        Some(config) => with_installed_skills(&config, dirs),
+        None => Ok(dirs),
+    }
 }
 
+/// `dirs` (from [`resolve_skill_dirs`]) with each installed package's
+/// `skills/` placed right after `<config>/skills`, so before
+/// `~/.agents/skills`.
+///
+/// Installed packages sit below the user's own `<config>/skills`: a skill
+/// the user wrote by hand on this machine is a more specific statement than
+/// one fetched from a package. They sit above `~/.agents/skills`, which
+/// other harnesses share and trellis does not manage (the owner's order on
+/// #119: repository, installed package, `~/.agents/skills`).
+pub(crate) fn with_installed_skills(config: &Path, mut dirs: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    let own = config.join("skills");
+    let at = dirs.iter().position(|d| *d == own).map_or(0, |i| i + 1);
+    let installed = crate::install::installed_dirs(config)?
+        .into_iter()
+        .map(|p| p.join("skills"));
+    dirs.splice(at..at, installed);
+    Ok(dirs)
+}
+
+/// Each installed package's `prompts/`, in package-name order, read after
+/// the repository's `.trellis/prompts`, which wins a name (ADR 0039).
+///
+/// Empty in this crate's unit tests, for the reason [`dir`] is `None`.
+pub(crate) fn prompt_dirs() -> Result<Vec<PathBuf>> {
+    if cfg!(test) {
+        return Ok(Vec::new());
+    }
+    match dir() {
+        Some(config) => installed_prompt_dirs(&config),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// [`prompt_dirs`] for a given user config directory.
+pub(crate) fn installed_prompt_dirs(config: &Path) -> Result<Vec<PathBuf>> {
+    Ok(crate::install::installed_dirs(config)?
+        .into_iter()
+        .map(|p| p.join("prompts"))
+        .collect())
+}
+
+/// The user's own and `~/.agents` skill directories, without installed
+/// packages (those need the file system; see [`with_installed_skills`]).
+///
 /// When `TRELLIS_CONFIG_DIR` is set it is the whole of the user level, and
 /// `~/.agents/skills` is not read. That variable is how the test suites say
 /// "this directory and nothing else"; without this rule every integration
