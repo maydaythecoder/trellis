@@ -505,6 +505,143 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
         facts.len(),
         "facts must line up with sources: file ids are positional"
     );
+    let Prepared {
+        mut index,
+        tables,
+        module_map,
+        opaque_decorated,
+        class_info,
+        subclasses,
+    } = prepare(sources, facts);
+
+    // ---- Call-site arena. ----
+    // Recorded before any edge is pushed: `Index::push_edge` reads
+    // `sites[..].enclosing` to build the forward adjacency.
+    let mut site_scopes: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, f) in facts.iter().enumerate() {
+        let file = FileId::from_index(i);
+        for c in &f.call_sites {
+            let enclosing = enclosing_symbol(&tables[i], &c.scope);
+            index.sites.push(CallSiteEntry {
+                kind: match c.shape {
+                    CalleeShape::Name(_) => crate::graph::CalleeKind::Name,
+                    CalleeShape::Attribute { .. } => crate::graph::CalleeKind::Attribute,
+                    CalleeShape::Dynamic => crate::graph::CalleeKind::Dynamic,
+                },
+                file,
+                span: c.span,
+                enclosing,
+            });
+            site_scopes.push((i, c.scope.clone()));
+        }
+    }
+
+    // ---- Bind. ----
+    // Resolution reads the symbol arena and the interner; `push_edge` writes
+    // the adjacency lists. Collecting outcomes first keeps the read phase and
+    // the write phase from overlapping, rather than reaching for interior
+    // mutability to paper over the conflict.
+    let outcomes: Vec<Outcome> = {
+        let resolver = Resolver {
+            tables: &tables,
+            module_map: &module_map,
+            symbols: &index.symbols,
+            files: &index.files,
+            interner: &index.interner,
+            opaque_decorated: &opaque_decorated,
+            class_info: &class_info,
+            subclasses: &subclasses,
+        };
+        let mut site_id = 0usize;
+        let mut outcomes = Vec::with_capacity(index.sites.len());
+        for (i, f) in facts.iter().enumerate() {
+            for c in &f.call_sites {
+                debug_assert_eq!(site_scopes[site_id].0, i);
+                let scope = &site_scopes[site_id].1;
+                outcomes.push(resolver.resolve(FileId::from_index(i), scope, &c.shape));
+                site_id += 1;
+            }
+        }
+        outcomes
+    };
+
+    let mut coverage = Coverage::default();
+    let mut by_shape: std::collections::BTreeMap<String, Coverage> =
+        std::collections::BTreeMap::new();
+    for (site_id, outcome) in outcomes.into_iter().enumerate() {
+        let shape = by_shape
+            .entry(index.sites[site_id].kind.as_str().to_string())
+            .or_default();
+        match outcome {
+            // An external call site produces no edge at all. That is what
+            // keeps `edges` equal to the recall denominator: every edge is a
+            // call site whose callee could be first-party.
+            Outcome::External => {
+                coverage.record_external();
+                shape.record_external();
+            }
+            Outcome::Edge(target) => {
+                match &target {
+                    Target::Resolved(_) => {
+                        coverage.record_resolved();
+                        shape.record_resolved();
+                    }
+                    Target::Candidates(_) => {
+                        coverage.record_candidates();
+                        shape.record_candidates();
+                    }
+                    Target::Unresolved(r) => {
+                        coverage.record_unresolved(*r);
+                        shape.record_unresolved(*r);
+                    }
+                }
+                index.push_edge(Edge {
+                    from: CallSiteId::from_index(site_id),
+                    target,
+                });
+            }
+        }
+    }
+
+    index.coverage = coverage;
+    index.by_shape = by_shape;
+    index.fingerprint = crate::cache::fingerprint(sources);
+    index
+}
+
+/// Everything the resolver reads, built before a single call is bound: the
+/// symbol arena, the per-file tables and the class hierarchy.
+///
+/// Its own step so the Pyright backstop can ask the hierarchy the question
+/// ADR 0012 asks (does a first-party subclass override this method?) with
+/// the resolver's own rule rather than a second copy of it.
+struct Prepared {
+    index: Index,
+    tables: Vec<FileTables>,
+    module_map: HashMap<String, FileId>,
+    opaque_decorated: HashSet<SymbolId>,
+    class_info: HashMap<SymbolId, ClassInfo>,
+    subclasses: HashMap<SymbolId, SmallVec<[SymbolId; 4]>>,
+}
+
+impl Prepared {
+    fn resolver(&self) -> Resolver<'_> {
+        Resolver {
+            tables: &self.tables,
+            module_map: &self.module_map,
+            symbols: &self.index.symbols,
+            files: &self.index.files,
+            interner: &self.index.interner,
+            opaque_decorated: &self.opaque_decorated,
+            class_info: &self.class_info,
+            subclasses: &self.subclasses,
+        }
+    }
+}
+
+/// The module map, the symbol arena, the definition and import tables, and
+/// the class hierarchy with its subclass map. No call site is touched.
+fn prepare(sources: &[(String, String)], facts: &[FileFacts]) -> Prepared {
     let mut index = Index::new();
     let mut module_map: HashMap<String, FileId> = HashMap::new();
     let mut first_party_roots: HashSet<String> = HashSet::new();
@@ -654,33 +791,7 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
         }
     }
 
-    // ---- Call-site arena. ----
-    // Recorded before any edge is pushed: `Index::push_edge` reads
-    // `sites[..].enclosing` to build the forward adjacency.
-    let mut site_scopes: Vec<(usize, Vec<String>)> = Vec::new();
-    for (i, f) in facts.iter().enumerate() {
-        let file = FileId::from_index(i);
-        for c in &f.call_sites {
-            let enclosing = enclosing_symbol(&tables[i], &c.scope);
-            index.sites.push(CallSiteEntry {
-                kind: match c.shape {
-                    CalleeShape::Name(_) => crate::graph::CalleeKind::Name,
-                    CalleeShape::Attribute { .. } => crate::graph::CalleeKind::Attribute,
-                    CalleeShape::Dynamic => crate::graph::CalleeKind::Dynamic,
-                },
-                file,
-                span: c.span,
-                enclosing,
-            });
-            site_scopes.push((i, c.scope.clone()));
-        }
-    }
-
-    // ---- Bind. ----
-    // Resolution reads the symbol arena and the interner; `push_edge` writes
-    // the adjacency lists. Collecting outcomes first keeps the read phase and
-    // the write phase from overlapping, rather than reaching for interior
-    // mutability to paper over the conflict.
+    // ---- Subclass map. ----
     // The subclass map needs base-class names resolved, which needs a
     // `Resolver` — so one is built with an empty map purely to compute it.
     // Cheap: a `Resolver` is a handful of references.
@@ -707,72 +818,77 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
         }
     }
 
-    let outcomes: Vec<Outcome> = {
-        let resolver = Resolver {
-            tables: &tables,
-            module_map: &module_map,
-            symbols: &index.symbols,
-            files: &index.files,
-            interner: &index.interner,
-            opaque_decorated: &opaque_decorated,
-            class_info: &class_info,
-            subclasses: &subclasses,
-        };
-        let mut site_id = 0usize;
-        let mut outcomes = Vec::with_capacity(index.sites.len());
-        for (i, f) in facts.iter().enumerate() {
-            for c in &f.call_sites {
-                debug_assert_eq!(site_scopes[site_id].0, i);
-                let scope = &site_scopes[site_id].1;
-                outcomes.push(resolver.resolve(FileId::from_index(i), scope, &c.shape));
-                site_id += 1;
-            }
-        }
-        outcomes
-    };
+    Prepared {
+        index,
+        tables,
+        module_map,
+        opaque_decorated,
+        class_info,
+        subclasses,
+    }
+}
 
-    let mut coverage = Coverage::default();
-    let mut by_shape: std::collections::BTreeMap<String, Coverage> =
-        std::collections::BTreeMap::new();
-    for (site_id, outcome) in outcomes.into_iter().enumerate() {
-        let shape = by_shape
-            .entry(index.sites[site_id].kind.as_str().to_string())
-            .or_default();
-        match outcome {
-            // An external call site produces no edge at all. That is what
-            // keeps `edges` equal to the recall denominator: every edge is a
-            // call site whose callee could be first-party.
-            Outcome::External => {
-                coverage.record_external();
-                shape.record_external();
+/// The methods of `index` that a first-party subclass overrides, by the rule
+/// the resolver applies to a declared receiver type (ADR 0012): the search
+/// is rooted at the class that defines the method and walks its whole
+/// subtree.
+///
+/// `sources` and `facts` must be what `index` was built from. Symbol ids are
+/// positional, so a set computed from anything else would name the wrong
+/// symbols; `None` when the symbols built here differ from `index`'s in
+/// count, file, span, kind or name.
+pub(crate) fn overridden_methods(
+    index: &Index,
+    sources: &[(String, String)],
+    facts: &[FileFacts],
+) -> Option<HashSet<SymbolId>> {
+    if sources.len() != facts.len() || sources.len() != index.files.len() {
+        return None;
+    }
+    let prepared = prepare(sources, facts);
+    let ours = &prepared.index;
+    if ours.symbols.len() != index.symbols.len() {
+        return None;
+    }
+    let same = ours.symbols.iter().zip(&index.symbols).all(|(a, b)| {
+        a.file == b.file
+            && a.span == b.span
+            && a.kind == b.kind
+            && ours.interner.resolve(a.name) == index.interner.resolve(b.name)
+    });
+    if !same {
+        return None;
+    }
+
+    // A class defined twice at one scope (`if TYPE_CHECKING:` branches)
+    // owns the method under either definition, so both are searched.
+    let mut classes_at: HashMap<(FileId, &[String]), SmallVec<[SymbolId; 2]>> = HashMap::new();
+    for (&class, info) in &prepared.class_info {
+        classes_at
+            .entry((info.file, info.path.as_slice()))
+            .or_default()
+            .push(class);
+    }
+    let resolver = prepared.resolver();
+    let mut out = HashSet::new();
+    let mut sym = 0usize;
+    for (i, f) in facts.iter().enumerate() {
+        for d in &f.defs {
+            let id = SymbolId::from_index(sym);
+            sym += 1;
+            if d.kind != SymbolKind::Method {
+                continue;
             }
-            Outcome::Edge(target) => {
-                match &target {
-                    Target::Resolved(_) => {
-                        coverage.record_resolved();
-                        shape.record_resolved();
-                    }
-                    Target::Candidates(_) => {
-                        coverage.record_candidates();
-                        shape.record_candidates();
-                    }
-                    Target::Unresolved(r) => {
-                        coverage.record_unresolved(*r);
-                        shape.record_unresolved(*r);
-                    }
-                }
-                index.push_edge(Edge {
-                    from: CallSiteId::from_index(site_id),
-                    target,
-                });
+            let owners = classes_at.get(&(FileId::from_index(i), d.scope.as_slice()));
+            if owners.is_some_and(|cs| {
+                cs.iter()
+                    .any(|&c| !resolver.overriding_subclasses(c, &d.name).is_empty())
+            }) {
+                out.insert(id);
             }
         }
     }
-
-    index.coverage = coverage;
-    index.by_shape = by_shape;
-    index.fingerprint = crate::cache::fingerprint(sources);
-    index
+    Some(out)
 }
 
 /// Whether a decorator leaves the definition reachable by a plain call.
@@ -783,7 +899,7 @@ fn is_transparent(decorator: &str) -> bool {
     TRANSPARENT_DECORATORS.contains(&last)
 }
 
-fn content_hash(src: &str) -> u64 {
+pub(crate) fn content_hash(src: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     src.hash(&mut h);
