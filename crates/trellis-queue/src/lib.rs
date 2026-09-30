@@ -24,6 +24,7 @@ pub mod approval;
 pub mod cron;
 mod files;
 pub mod ledger;
+pub mod mention;
 pub mod portable;
 pub mod profile;
 pub mod routine;
@@ -31,7 +32,7 @@ mod stale;
 mod stamp;
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -289,6 +290,19 @@ pub struct Note {
     pub at: String,
     pub actor: Actor,
     pub text: String,
+    /// Set only by [`Task::note_from_person`], which is what
+    /// `trellis queue note` calls, and so what marks a note a person typed
+    /// to the task. Notes the queue writes for itself — a wake, a cancel
+    /// reason, an approval, a coalesced routine fire — have none, whatever
+    /// their actor, and an `@name` in them wakes nothing (`mention.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The heartbeat has read this note's `@name` mentions and acted on
+    /// them. Kept on the note rather than as a cursor so that a mention
+    /// wakes once however many heartbeats run, and travels with the task
+    /// through export and import.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mentions_read: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -401,6 +415,8 @@ impl Task {
             at: iso_now(),
             actor,
             text: text.into(),
+            id: None,
+            mentions_read: false,
         });
     }
 
@@ -440,6 +456,24 @@ impl Task {
         }
         out.push_str("--- end of user input ---");
         Some(out)
+    }
+
+    /// Appends a note a person wrote with `trellis queue note`, and returns
+    /// its id. The only notes an `@name` mention in may wake a profile
+    /// (`mention.rs`). The id is `n` and the note's 1-based position in
+    /// the task's list, so ids have gaps where the queue wrote its own
+    /// notes; notes are never removed, so a position names one note for
+    /// good.
+    pub fn note_from_person(&mut self, text: impl Into<String>) -> String {
+        let id = format!("n{}", self.notes.len() + 1);
+        self.notes.push(Note {
+            at: iso_now(),
+            actor: Actor::Human,
+            text: text.into(),
+            id: Some(id.clone()),
+            mentions_read: false,
+        });
+        id
     }
 }
 
@@ -1360,6 +1394,12 @@ pub trait Runner {
     fn now(&self) -> i64 {
         now_secs()
     }
+    /// The agent profiles an `@name` in a person's note may wake, as of
+    /// this tick (`mention.rs`). `None` scans nothing: a runner that knows
+    /// no profiles cannot tell a mention from an unknown name.
+    fn profiles(&self) -> Option<&BTreeMap<String, profile::Profile>> {
+        None
+    }
 }
 
 /// Why [`work`] returned.
@@ -1550,6 +1590,11 @@ pub fn work(
         // another terminal can crash holding a claim hours after this began.
         if opts.stale_claims == StaleClaims::Release {
             release_stale_and_say(q, runner, &mut said_kept, out);
+        }
+        // Before the claim, so a task a mention just woke can be claimed on
+        // this same tick.
+        if let Some(profiles) = runner.profiles() {
+            mention::wake_and_say(q, profiles, out);
         }
         reconcile_and_say(q, out);
         let claimed = {

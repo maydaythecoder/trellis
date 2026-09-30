@@ -6,6 +6,7 @@
 
 mod adapter;
 mod agent;
+mod agent_clone;
 mod budget;
 mod exec;
 #[cfg(test)]
@@ -13,7 +14,9 @@ mod extension_tests;
 mod extra_context;
 mod gate;
 mod governance;
+mod graph_tools;
 mod hooks;
+mod integrate;
 mod isolate;
 mod listing;
 mod notes;
@@ -32,6 +35,7 @@ pub use agent::{
     Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Steer, Steering,
     SteeringLog, SteeringRx, Step, ToolCall, Transcript, Turn, VaultContext, run, run_seeded,
 };
+pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
 pub use budget::{Budget, BudgetTooSmall, CostRegime, Exhaustion, Spend};
 pub use exec::{ExecError, default_shell};
 pub use extra_context::{
@@ -46,6 +50,7 @@ pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
     InputDecision, fence_before_run,
 };
+pub use integrate::{Integrated, Integration, SuspectedRecallGap};
 pub use orchestrator::{
     Dispatched, GateDenial, Handle, HumanDecision, Orchestrator, Request, names_trellis_dir,
 };
@@ -63,5 +68,8 @@ pub use supervise::{
     PartitionFailure, PartitionReport, PartitionTask, SuperviseError, Supervised, Supervisor,
 };
 pub use tools::{EditOutcome, ToolResult};
-pub use trust::{Fingerprint, HashCache, TrustGuard, TrustItem, TrustState, TrustStore};
+pub use trust::{
+    Fingerprint, HashCache, ItemChange, TrustDiagnosis, TrustGuard, TrustItem, TrustState,
+    TrustStore,
+};
 pub use wire::ToolCallWire;

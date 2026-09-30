@@ -36,7 +36,14 @@ cargo run -p trellis-cli -- rpc                            # JSONL commands on s
 cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
 cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail, as data (ADR 0038)
 cargo run -p trellis-cli -- install <source>@<ref> | --list | --remove <name>   # skills and templates only (ADR 0039)
+cargo run -p trellis-cli -- run "<task>" --image <path>    # hosted tier 1 only, repeatable (ADR 0041)
 cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
+cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040)
+cargo run -p trellis-tickets -- triage <n> [--json]       # one issue's labels, each with its rule; read-only (ADR 0040)
+cargo run -p trellis-tickets -- ready <n>                 # G0's checks + 4 named extras; exit 1 lists each failure or abstention; read-only (ADR 0040)
+cargo run -p trellis-tickets -- new --title <t> --body-file <p> [--dry-run]   # files one issue with triage's labels; refuses a body G0/G6 would; prints the plan first (ADR 0040)
+cargo run -p trellis-tickets -- sweep [--dry-run|--apply]  # label drift on every open issue; writes only with --apply; skips parked/split; never ready, !agent-ok, or a lower risk (ADR 0040)
+cargo run -p trellis-tickets -- scan [<path>]              # G4's markers in Rust source as file:line proposals; files nothing (ADR 0040)
 
 # ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
 # it is built, deferred, or excluded (and by which clause).
@@ -108,6 +115,7 @@ trellis-trail    the decision trail
 trellis-vcs      git snapshot and rollback
 trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis-model)
 trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir; no trellis-loop/model)
+trellis-tickets  ticketing standard's label rules    (pure functions + a separate binary; depends only on trellis-core; ADR 0040)
 trellis-cli      the binary
 ```
 
@@ -146,14 +154,16 @@ of them.
 - **A pass stops counting once the tree changes.** So does a run whose HEAD
   moved, or whose trusted code or `.git/` changed during the run.
   (ADR 0004, 0009, 0023)
-- **Rollback is complete only for trellis's own writes.** `bash` and custom
-  tools run in a throwaway clone and their tracked-file edits come back
-  through the orchestrator's write path, so those are trellis's writes too
-  (ADR 0032). With hooks or process agents enabled, or a command that
-  reaches the repository by absolute path, it is best-effort, and the ADRs
-  list the known ways around it. Do not add another post-hoc git check to
-  close one more of those; the fix is isolation (ADR 0032, "What is not
-  built").
+- **Rollback is complete only for trellis's own writes.** `bash`, custom
+  tools, hooks and process agents run in a throwaway clone, and what they
+  changed there comes back under the refusals every writer meets, so
+  those are trellis's writes too (ADR 0032): tracked-file edits through
+  the orchestrator's write path for the first three, and edits, new files
+  and deletions through its own carry-back for a process agent. Against a
+  command that reaches the repository by absolute path it is best-effort,
+  and the ADRs list the known ways around it. Do not add another post-hoc
+  git check to close one more of those; the fix is isolation (ADR 0032,
+  "What is not built").
 
 ## Rules that need an ADR to change
 

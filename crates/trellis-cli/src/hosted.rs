@@ -260,7 +260,7 @@ pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
 /// layering: on a name both files define the user's entry wins whole, so a
 /// repository cannot raise a limit the user set (ADR 0024 §3), and under
 /// the minimum its `context_bytes` can only lower one.
-fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usize> {
+pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usize> {
     let limit = match &r.provider {
         Some(name) => cfg
             .provider(name)?
@@ -388,6 +388,8 @@ pub(crate) fn compaction_action(e: &Compacted) -> trellis_trail::Action {
             if e.fits { "" } else { ", still over" }
         ),
         wrote: false,
+        changed: Vec::new(),
+        changed_count: 0,
     }
 }
 
@@ -417,6 +419,8 @@ pub(crate) fn requested_compaction_action(e: &RequestedCompaction) -> trellis_tr
             e.elided_bytes, e.bytes_after, e.bytes_before
         ),
         wrote: false,
+        changed: Vec::new(),
+        changed_count: 0,
     }
 }
 
@@ -712,13 +716,29 @@ mod tests {
         format!("app/m{i:03}.py")
     }
 
+    /// What the stub saw: every connection it accepted, and the request
+    /// bodies that arrived whole. The two differ when a read failed partway,
+    /// which is a different fault from a run that stopped asking.
+    struct Served {
+        accepted: usize,
+        bodies: Vec<String>,
+    }
+
     /// Serves one `read_file` per file, then `done`, on a loopback port,
     /// returning each request body. Content-Length is honoured so a body of
     /// several hundred KB arrives whole.
-    fn stub() -> (String, std::thread::JoinHandle<Vec<String>>) {
+    ///
+    /// Stops when `stop` is set as well as when the replies run out. A run
+    /// that makes fewer requests than there are replies would otherwise
+    /// leave this thread in `accept` for good, and the join with it: #204,
+    /// where a gate waited 40 minutes on a test with no panic line.
+    fn stub(
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> (String, std::thread::JoinHandle<Served>) {
         use std::io::{Read, Write};
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
+        l.set_nonblocking(true).unwrap();
         let reply = |id: usize, name: &str, args: serde_json::Value| {
             serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,
                 "tool_calls":[{"id":format!("c{id}"),"type":"function",
@@ -732,8 +752,37 @@ mod tests {
         replies.push(reply(FILES, "done", serde_json::json!({"summary": "read"})));
         let h = std::thread::spawn(move || {
             let mut bodies = Vec::new();
-            for r in replies {
-                let Ok((mut s, _)) = l.accept() else { break };
+            let mut accepted = 0;
+            'replies: for r in replies {
+                // Accept before looking at `stop`, so a connection already
+                // queued when the run ended is still served and counted.
+                //
+                // The 5 ms poll is not what timed out a connect in #210
+                // (`os error 10060`). The run makes one request at a time,
+                // so at most one connection is ever queued here, and the
+                // kernel completes the handshake into the listen backlog
+                // whether or not `accept` has been called: a late poll delays
+                // the read below, not the client's connect. That failure was
+                // the OS giving up on the handshake on a loaded host, and the
+                // transport did not retry it; it now does (trellis-model's
+                // `SendError::ConnectTimedOut`).
+                let mut s = loop {
+                    match l.accept() {
+                        Ok((s, _)) => break s,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                break 'replies;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => break 'replies,
+                    }
+                };
+                accepted += 1;
+                // Windows hands the accepted socket the listener's
+                // non-blocking mode, and a read that returns WouldBlock would
+                // end the body below as if the peer had closed.
+                s.set_nonblocking(false).unwrap();
                 s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
                     .ok();
                 let mut raw = Vec::new();
@@ -769,7 +818,7 @@ mod tests {
                 );
                 s.write_all(out.as_bytes()).ok();
             }
-            bodies
+            Served { accepted, bodies }
         });
         (format!("http://{addr}/v1"), h)
     }
@@ -793,7 +842,8 @@ mod tests {
             let body = format!("# module {i}\n{}", "value = 1\n".repeat(300));
             std::fs::write(d.path().join(file(i)), body).unwrap();
         }
-        let (base, h) = stub();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (base, h) = stub(stop.clone());
         // Loopback over plain http with no key set: the client sends none,
         // so the test sets no variable.
         let r = Resolved {
@@ -820,13 +870,29 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (t, events) = rt.block_on(async {
+        let (outcome, t, events) = rt.block_on(async {
             let (orch, _j) = trellis_loop::Orchestrator::new(d.path(), checks).spawn();
-            let (_, t) = trellis_loop::run("read every module", &mut m, &orch, &budget).await;
-            (t, trellis_loop::Model::compactions(&m).to_vec())
+            let (o, t) = trellis_loop::run("read every module", &mut m, &orch, &budget).await;
+            (o, t, trellis_loop::Model::compactions(&m).to_vec())
         });
+        // The run is over, so no request is still coming.
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let served = h.join().unwrap();
+        // Every caller's assertions are about a run that reached `done`; one
+        // that stopped short says so here, with how far it got and why,
+        // instead of passing on a partial list.
+        assert_eq!(
+            served.bodies.len(),
+            FILES + 1,
+            "the stub expected {} requests: {} connections arrived, {} with a whole body; \
+             the run ended {outcome:?} after {} turns",
+            FILES + 1,
+            served.accepted,
+            served.bodies.len(),
+            t.turns.len(),
+        );
         let observed = t.turns.iter().map(|x| x.observation.len()).sum();
-        (h.join().unwrap(), events, observed)
+        (served.bodies, events, observed)
     }
 
     #[test]

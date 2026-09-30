@@ -29,8 +29,17 @@ const MAX_FILE_BYTES: u64 = 1 << 20;
 /// read.
 const MAX_FILES: usize = 2_000;
 const MAX_TOTAL_BYTES: u64 = 32 << 20;
-/// Skipped paths named in the output; the rest are counted.
-const SHOW_SKIPPED: usize = 20;
+/// Entries in the source's tree, copied or not. The whole listing is held
+/// in memory for `select` and every skipped path is printed, so the tree
+/// is bounded while it is read, not after. Five times `MAX_FILES` leaves
+/// room for the README, licence, CI and other paths a package carries and
+/// never copies (ADR 0039, 8). Chosen, not measured.
+const MAX_TREE_ENTRIES: usize = 10_000;
+/// Bytes of `ls-tree` output. A count alone does not bound memory: one
+/// entry can carry a path of any length. Derived, not measured: about 100
+/// bytes of fixed fields per record plus an average path of about 700
+/// bytes, over `MAX_TREE_ENTRIES` records (ADR 0039, 8).
+const MAX_LISTING_BYTES: u64 = 8 << 20;
 
 /// One installed package, as `packages.toml` records it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,12 +75,51 @@ pub(crate) fn run(source: Option<String>, list: bool, remove: Option<String>) ->
     }
 }
 
-fn packages_dir(config: &Path) -> PathBuf {
+pub(crate) fn packages_dir(config: &Path) -> PathBuf {
     config.join("packages")
+}
+
+/// `<config>/packages/<name>` for every package the manifest records, in
+/// name order: that order decides which of two packages wins a skill or
+/// template name they both carry, so it must not depend on the order they
+/// were installed in or on `read_dir`.
+///
+/// The manifest, not a directory listing, is what counts as installed: a
+/// staging directory mid-install, or a directory `--list` and `--remove`
+/// do not know, is never read into a run. A manifest that cannot be read
+/// or parsed is an error rather than no packages, because a run that
+/// silently lost every installed skill would look like one that had them.
+pub(crate) fn installed_dirs(config: &Path) -> Result<Vec<PathBuf>> {
+    let dir = packages_dir(config);
+    let mut names: Vec<String> = load(&dir)?.packages.into_iter().map(|e| e.name).collect();
+    // The manifest is a file the user can edit, and a name becomes a path.
+    for name in &names {
+        if let Some(why) = bad_name(name) {
+            bail!("{}: {why}", dir.join(MANIFEST).display());
+        }
+    }
+    names.sort();
+    Ok(names.into_iter().map(|n| dir.join(n)).collect())
 }
 
 /// Installs `spec` (`<git-url|path>@<ref>`) under `<config>/packages/<name>/`.
 pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<Entry> {
+    // `<helper>::<address>` makes git run `git-remote-<helper>` from PATH,
+    // so the source string would pick which installed program runs.
+    // `protocol.allow=never` in `git()` refuses it too; refusing here says
+    // why before any git runs. It is checked on the whole spec, before the
+    // split, because `split_spec` would refuse `foo::https://host@v1` for
+    // naming no ref, which is not the reason. A ref cannot hold `:`, so the
+    // helper prefix of the spec is that of its source.
+    if let Some(helper) = remote_helper(spec) {
+        bail!(
+            "`{}` names the git remote helper `{}`, which would run a program \
+             from PATH; give a URL (https://, ssh://, git://, file://), an scp-style \
+             user@host:path address, or a local path",
+            plain(spec),
+            plain(helper)
+        );
+    }
     let (source, reference) = split_spec(spec)?;
     if let Some(why) = unacceptable_source(source) {
         bail!("{why}");
@@ -197,17 +245,17 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
              never hooks, tools or other code (ADR 0039)",
             plan.skipped.len()
         )?;
-        for (path, why) in plan.skipped.iter().take(SHOW_SKIPPED) {
+        // Every path, uncapped (#120): a count stands in for the one hook
+        // the user would have wanted to see. What bounds this output is
+        // `MAX_TREE_ENTRIES`, enforced while `ls-tree` is read (#200).
+        for (path, why) in &plan.skipped {
             writeln!(out, "  {}: {why}", plain(path))?;
-        }
-        if plan.skipped.len() > SHOW_SKIPPED {
-            writeln!(out, "  ... and {} more", plan.skipped.len() - SHOW_SKIPPED)?;
         }
     }
     writeln!(
         out,
-        "note: runs do not read packages/ yet. Skills load from <user config dir>/skills \
-         and templates from .trellis/prompts (ADR 0039)."
+        "note: runs read it after the repository's own skills and templates, which win a \
+         name; a skill in <user config dir>/skills also wins over it (ADR 0039)."
     )?;
     Ok(entry)
 }
@@ -316,6 +364,18 @@ fn unacceptable_source(source: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The `<helper>` of a `<helper>::<address>` source, by git's own rule
+/// (`transport_get`): a scheme-like run of characters, a letter then
+/// letters, digits, `+`, `-` or `.`, followed directly by `::`.
+fn remote_helper(source: &str) -> Option<&str> {
+    let (helper, _) = source.split_once("::")?;
+    let mut chars = helper.chars();
+    let first = chars.next()?;
+    (first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
+    .then_some(helper)
 }
 
 /// The package's name: the source's last path component, less `.git`.
@@ -503,17 +563,29 @@ fn check_bounds(copy: &[Accepted]) -> Result<()> {
 /// `git` from `trellis_vcs`, so a planted `core.fsmonitor` or hooks path
 /// never runs and the environment is scrubbed of keys, with the settings a
 /// fetch from an untrusted source needs:
-/// - `protocol.ext.allow=never`: the `ext::` transport runs a command named
-///   in the URL;
+/// - `protocol.allow=never`, then `always` for `https`, `ssh`, `git` and
+///   `file` only: every other transport is refused, among them `ext::`,
+///   which runs a command named in the URL, and any `<helper>::` form,
+///   which runs `git-remote-<helper>` from PATH;
 /// - `transfer.fsckObjects=true`: git's own checks on what it receives,
 ///   which reject `..` and `.git` tree entries among others;
 /// - `GIT_TERMINAL_PROMPT=0`: a source that wants credentials fails rather
 ///   than waiting on a prompt nobody may be watching.
 fn git() -> std::process::Command {
     let mut c = trellis_vcs::command();
+    // A per-name `protocol.<name>.allow` takes precedence over the
+    // `protocol.allow` default, whatever their order.
     c.args([
         "-c",
-        "protocol.ext.allow=never",
+        "protocol.allow=never",
+        "-c",
+        "protocol.https.allow=always",
+        "-c",
+        "protocol.ssh.allow=always",
+        "-c",
+        "protocol.git.allow=always",
+        "-c",
+        "protocol.file.allow=always",
         "-c",
         "transfer.fsckObjects=true",
     ]);
@@ -568,42 +640,120 @@ fn resolve(bare: &Path, reference: &str) -> Result<String> {
 }
 
 fn ls_tree(bare: &Path, commit: &str) -> Result<Vec<TreeEntry>> {
-    let out = git_out(
-        git()
-            .arg("-C")
-            .arg(bare)
-            .args(["ls-tree", "-r", "-l", "-z", "--end-of-options", commit]),
-        "list the package's files",
-    )?;
-    parse_ls_tree(&out)
+    const WHAT: &str = "list the package's files";
+    let mut child = git()
+        .arg("-C")
+        .arg(bare)
+        .args(["ls-tree", "-r", "-l", "-z", "--end-of-options", commit])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("cannot run git to {WHAT}"))?;
+    // Drained on its own thread: a child blocked writing stderr would
+    // never finish the stdout this thread is reading.
+    let stderr = child.stderr.take().map(|mut e| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut e, &mut buf);
+            buf
+        })
+    });
+    let stdout = child.stdout.take().context("git's stdout was not piped")?;
+    let read = read_ls_tree(stdout, MAX_TREE_ENTRIES, MAX_LISTING_BYTES);
+    if read.is_err() {
+        // Stopped early: git may be blocked on a full pipe, so `wait`
+        // alone could hang.
+        let _ = child.kill();
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("cannot run git to {WHAT}"))?;
+    let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
+    let entries = read?;
+    if !status.success() {
+        let err = String::from_utf8_lossy(&err);
+        let err = match err.trim() {
+            "" => "no such ref or object".to_string(),
+            e => plain(e),
+        };
+        bail!("could not {WHAT}: {err}");
+    }
+    Ok(entries)
 }
 
-/// `<mode> SP <type> SP <id> SP+ <size> TAB <path> NUL`, repeated. A path
-/// that is not UTF-8 is kept lossily, which cannot pass the component
-/// allowlist, so it is skipped and named.
-fn parse_ls_tree(out: &[u8]) -> Result<Vec<TreeEntry>> {
+/// Reads `ls-tree -z` records one at a time and refuses the listing as soon
+/// as it passes `max_entries` or `max_bytes`, so an oversized tree is never
+/// held whole.
+fn read_ls_tree(
+    out: impl std::io::Read,
+    max_entries: usize,
+    max_bytes: u64,
+) -> Result<Vec<TreeEntry>> {
+    use std::io::BufRead;
+    // One byte past the cap, so output of exactly `max_bytes` is accepted
+    // and anything longer is seen.
+    let mut r = std::io::BufReader::new(out.take(max_bytes.saturating_add(1)));
     let mut v = Vec::new();
-    for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let tab = rec
-            .iter()
-            .position(|b| *b == b'\t')
-            .context("unexpected `git ls-tree` output")?;
-        let head = String::from_utf8_lossy(&rec[..tab]);
-        let path = String::from_utf8_lossy(&rec[tab + 1..]).into_owned();
-        let mut f = head.split_whitespace();
-        let (Some(mode), Some(_kind), Some(blob), Some(size)) =
-            (f.next(), f.next(), f.next(), f.next())
-        else {
+    let mut seen: u64 = 0;
+    let mut rec = Vec::new();
+    loop {
+        rec.clear();
+        let n = r
+            .read_until(0, &mut rec)
+            .context("cannot read `git ls-tree` output")?;
+        if n == 0 {
+            break;
+        }
+        seen += n as u64;
+        if seen > max_bytes {
+            bail!(
+                "the package's file listing is more than {max_bytes} bytes; the limit is \
+                 {max_bytes} (ADR 0039)"
+            );
+        }
+        if rec.last() != Some(&0) {
+            // Within the byte cap, so this is the end of the output: git
+            // ends every `-z` record with NUL.
             bail!("unexpected `git ls-tree` output");
-        };
-        v.push(TreeEntry {
-            mode: mode.to_string(),
-            blob: blob.to_string(),
-            size: size.parse().ok(),
-            path,
-        });
+        }
+        rec.pop();
+        if rec.is_empty() {
+            continue;
+        }
+        if v.len() == max_entries {
+            bail!(
+                "the package's tree has more than {max_entries} entries; the limit is \
+                 {max_entries} (ADR 0039)"
+            );
+        }
+        v.push(parse_ls_tree_record(&rec)?);
     }
     Ok(v)
+}
+
+/// `<mode> SP <type> SP <id> SP+ <size> TAB <path>`, one `-z` record. A
+/// path that is not UTF-8 is kept lossily, which cannot pass the component
+/// allowlist, so it is skipped and named.
+fn parse_ls_tree_record(rec: &[u8]) -> Result<TreeEntry> {
+    let tab = rec
+        .iter()
+        .position(|b| *b == b'\t')
+        .context("unexpected `git ls-tree` output")?;
+    let head = String::from_utf8_lossy(&rec[..tab]);
+    let path = String::from_utf8_lossy(&rec[tab + 1..]).into_owned();
+    let mut f = head.split_whitespace();
+    let (Some(mode), Some(_kind), Some(blob), Some(size)) =
+        (f.next(), f.next(), f.next(), f.next())
+    else {
+        bail!("unexpected `git ls-tree` output");
+    };
+    Ok(TreeEntry {
+        mode: mode.to_string(),
+        blob: blob.to_string(),
+        size: size.parse().ok(),
+        path,
+    })
 }
 
 fn blob(bare: &Path, id: &str) -> Result<Vec<u8>> {
@@ -855,7 +1005,10 @@ mod tests {
             assert!(said.contains(skipped), "{skipped} not named in:\n{said}");
         }
         assert!(said.contains("never hooks, tools or other code"), "{said}");
-        assert!(said.contains("runs do not read packages/ yet"), "{said}");
+        assert!(
+            said.contains("after the repository's own skills and templates, which win a name"),
+            "{said}"
+        );
         assert_eq!(entry.commit, git_in(&src, &["rev-parse", "v1^{commit}"]));
         // The staging clone is gone; only the package and its manifest stay.
         let mut left: Vec<String> = std::fs::read_dir(cfg.join("packages"))
@@ -864,6 +1017,109 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+    }
+
+    /// A package source whose code outnumbers any cap on how many skipped
+    /// paths are shown: 25 hooks, 25 tools, a `.trellis/` with a hook, and a
+    /// script inside a skill. Returns the source and every code path in it.
+    fn code_heavy_source(parent: &Path) -> (PathBuf, Vec<String>) {
+        let src = parent.join("codepkg");
+        std::fs::create_dir_all(&src).unwrap();
+        git_in(&src, &["init", "-q"]);
+        write(&src, "skills/alpha/SKILL.md", "---\nname: alpha\n---\nA\n");
+        let mut code = Vec::new();
+        for i in 0..25 {
+            code.push(format!("hooks/h{i:02}.sh"));
+            code.push(format!("tools/t{i:02}.py"));
+        }
+        code.push(".trellis/config.toml".to_string());
+        code.push(".trellis/hooks/pre_tool.py".to_string());
+        code.push("skills/alpha/run.py".to_string());
+        for p in &code {
+            write(&src, p, "#!/bin/sh\nexit 0\n");
+        }
+        git_in(&src, &["add", "-A"]);
+        git_in(&src, &["commit", "-q", "-m", "package"]);
+        git_in(&src, &["tag", "v1"]);
+        (src, code)
+    }
+
+    #[test]
+    fn install_skips_code_and_names_every_skipped_path() {
+        // The risk: a package with many hooks shows the first few and a
+        // count, so the one the user would have cared about is never named,
+        // and a package never carries code only if nothing of it lands on
+        // disk (#120).
+        let d = tempfile::tempdir().unwrap();
+        let (src, code) = code_heavy_source(d.path());
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        install(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+
+        assert_eq!(
+            files_under(&cfg.join("packages").join("codepkg")),
+            vec!["skills/alpha/SKILL.md"],
+            "{said}"
+        );
+        assert!(code.len() > 50, "the fixture outnumbers the old cap of 20");
+        for p in &code {
+            assert!(
+                said.lines()
+                    .any(|l| l.trim_start().starts_with(&format!("{p}: "))),
+                "{p} not named on its own line in:\n{said}"
+            );
+        }
+        assert!(
+            said.contains(&format!("skipped {} path(s)", code.len())),
+            "{said}"
+        );
+        assert!(
+            !said.contains("... and "),
+            "no path is folded into a count:\n{said}"
+        );
+    }
+
+    #[test]
+    fn install_skips_code_and_leaves_the_trust_store_byte_identical() {
+        // The risk: installing a package records, widens or rewrites trust,
+        // so code nobody ran `trellis trust` on is vouched for. The store is
+        // placed where `TrustStore::user()` puts it in production, beside
+        // `packages/` in the same user config directory, and holds a real
+        // record so a rewrite that kept it valid would still differ.
+        let d = tempfile::tempdir().unwrap();
+        let (src, _) = code_heavy_source(d.path());
+        let cfg = d.path().join("cfg");
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(repo.join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
+        let hooks = trellis_loop::HookConfig {
+            pre_tool: Some(vec!["python".into(), ".trellis/hooks/gate.py".into()]),
+            ..Default::default()
+        };
+        let fp = trellis_loop::Fingerprint::of(&repo, &hooks, &[], None);
+        let store = trellis_loop::TrustStore::at(cfg.join("trust.json"));
+        store.trust(&repo, &fp).unwrap();
+        let before = std::fs::read(store.path()).unwrap();
+
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+
+        assert_eq!(std::fs::read(store.path()).unwrap(), before);
+        assert!(
+            !cfg.join("trust.json.tmp").exists(),
+            "the store's write-then-rename path was not taken"
+        );
+        assert_eq!(
+            store.state(&repo, &fp).unwrap(),
+            trellis_loop::TrustState::Trusted
+        );
+        // Nothing beside the store and the packages directory appeared.
+        let mut top: Vec<String> = std::fs::read_dir(&cfg)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        top.sort();
+        assert_eq!(top, vec!["packages", "trust.json"]);
     }
 
     #[test]
@@ -966,5 +1222,169 @@ mod tests {
         let plan = select(&tree);
         let copied: Vec<&str> = plan.copy.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(copied, vec!["skills/a/SKILL.md"], "{:?}", plan.skipped);
+    }
+
+    /// A source whose tree holds `n` entries, all one blob, written through
+    /// the index so the test creates no worktree files.
+    fn wide_source(parent: &Path, n: usize) -> PathBuf {
+        let src = parent.join("wide-src");
+        std::fs::create_dir_all(&src).unwrap();
+        git_in(&src, &["init", "-q"]);
+        let blob = git_in(&src, &["hash-object", "-w", "--stdin", "--path", "x"]);
+        let mut info = String::new();
+        for i in 0..n {
+            info.push_str(&format!("100644 {blob}\tprompts/p{i}.md\n"));
+        }
+        let mut child = trellis_vcs::command()
+            .arg("-C")
+            .arg(&src)
+            .args(["update-index", "--add", "--index-info"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("git runs");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(info.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success(), "update-index --index-info");
+        git_in(&src, &["commit", "-q", "-m", "wide"]);
+        git_in(&src, &["tag", "v1"]);
+        src
+    }
+
+    #[test]
+    fn install_tree_listing_bounded_refuses_an_over_limit_tree_and_writes_nothing() {
+        // The risk: the whole `ls-tree` listing was read into memory before
+        // any bound applied, and every skipped entry is printed, so a source
+        // with a huge tree cost unbounded memory and output (#200).
+        let d = tempfile::tempdir().unwrap();
+        let src = wide_source(d.path(), MAX_TREE_ENTRIES + 1);
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        let e = install(&cfg, &spec(&src, "v1"), &mut out).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains(&format!("the limit is {MAX_TREE_ENTRIES}")),
+            "{msg}"
+        );
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        assert!(!cfg.join("packages/wide-src").exists());
+        assert!(load(&cfg.join("packages")).unwrap().packages.is_empty());
+
+        // Exactly at the limit the listing is read whole and the install
+        // goes on to the next bound: every entry is a prompt, so it is
+        // `MAX_FILES` that refuses it.
+        let d = tempfile::tempdir().unwrap();
+        let src = wide_source(d.path(), MAX_TREE_ENTRIES);
+        let cfg = d.path().join("cfg");
+        let e = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains(&format!("files to install; the limit is {MAX_FILES}")),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn install_tree_listing_bounded_stops_reading_at_the_limit() {
+        // The risk: a bound checked after the listing is collected still
+        // holds the whole listing. The reader here offers far more records
+        // than the limit; the error must come back without them.
+        let record = format!("100644 blob {} 1\tprompts/p.md\0", "0".repeat(40));
+        let many = record.repeat(1_000);
+        let e = read_ls_tree(many.as_bytes(), 10, u64::MAX).unwrap_err();
+        assert!(format!("{e:#}").contains("the limit is 10 "), "{e:#}");
+        assert_eq!(
+            read_ls_tree(many.as_bytes(), 1_000, u64::MAX)
+                .unwrap()
+                .len(),
+            1_000
+        );
+
+        // One record with a path of any length is one entry; the byte cap
+        // is what bounds it.
+        let long = format!(
+            "100644 blob {} 1\tprompts/{}.md\0",
+            "0".repeat(40),
+            "a".repeat(4_096)
+        );
+        let e = read_ls_tree(long.as_bytes(), 10, 1_024).unwrap_err();
+        assert!(format!("{e:#}").contains("the limit is 1024 "), "{e:#}");
+        assert_eq!(
+            read_ls_tree(long.as_bytes(), 10, long.len() as u64)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn install_transport_helper_sources_are_refused_before_git_runs() {
+        // The risk: `<helper>::<url>` makes git run `git-remote-<helper>`
+        // from the user's PATH, so the package source string would choose
+        // which installed program runs. It must be refused before any git
+        // spawn, and `ext::` (which names a command outright) with it.
+        let d = tempfile::tempdir().unwrap();
+        let cfg = d.path().join("cfg");
+        for source in [
+            "ext::sh -c touch% pwned",
+            "foo::https://x",
+            "git+x.y-z::https://x/p",
+        ] {
+            let mut out = Vec::new();
+            let e = install(&cfg, &format!("{source}@v1"), &mut out).unwrap_err();
+            let msg = format!("{e:#}");
+            assert!(msg.contains("remote helper"), "{source}: {msg}");
+            assert!(msg.contains("https://") && msg.contains("file://"), "{msg}");
+            assert!(out.is_empty(), "nothing is reported as fetched");
+            // The packages directory is created before the clone; its
+            // absence shows the refusal came before the git path.
+            assert!(
+                !cfg.join("packages").exists(),
+                "{source} reached the clone path"
+            );
+        }
+        // Addresses that hold `::` without a helper prefix, or none at all,
+        // are not mistaken for one.
+        assert_eq!(remote_helper("https://h/[::1]/p"), None);
+        assert_eq!(remote_helper("git@host:o/p.git"), None);
+        assert_eq!(remote_helper(r"C:\src\pkg"), None);
+        assert_eq!(remote_helper("1x::y"), None);
+        assert_eq!(remote_helper("foo::https://x"), Some("foo"));
+    }
+
+    #[test]
+    fn install_transport_local_file_source_still_installs() {
+        // The risk: `protocol.allow=never` also shuts the `file` transport a
+        // local path goes through under `--no-local`, so a local package
+        // would stop installing. The allowlist must also be what git gets.
+        let args: Vec<String> = git()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|a| a == "protocol.allow=never"), "{args:?}");
+        for name in ["https", "ssh", "git", "file"] {
+            let allow = format!("protocol.{name}.allow=always");
+            assert!(args.contains(&allow), "{allow} missing: {args:?}");
+        }
+        assert_eq!(
+            args.iter().filter(|a| a.ends_with(".allow=always")).count(),
+            4,
+            "no transport beyond the four: {args:?}"
+        );
+
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        let entry = install(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        assert_eq!(entry.name, "pkg-src");
+        assert!(
+            cfg.join("packages/pkg-src/skills/alpha/SKILL.md").is_file(),
+            "{:?}",
+            files_under(&cfg)
+        );
     }
 }

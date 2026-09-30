@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use trellis_checks::CheckConfig;
 use trellis_loop::{Budget, CostRegime};
@@ -414,52 +414,63 @@ impl RepoConfig {
         Self::prompt_raw(root, name).map(|s| crate::templates::render_text(&s, None))
     }
 
-    /// `.trellis/prompts/<name>.md` as written: the one reader `prompt` and
-    /// `templates::render` share, so there is one name check and one
-    /// real-path check.
+    /// `.trellis/prompts/<name>.md` as written, else the first installed
+    /// package's `prompts/<name>.md` (ADR 0039): the one reader `prompt` and
+    /// `templates::render` share, so there is one name check, one real-path
+    /// check and one precedence.
     pub(crate) fn prompt_raw(root: &Path, name: &str) -> Result<String> {
-        // No path separators: `--prompt ../../etc/passwd` must not read
-        // outside the prompts directory, and a name is a name. Nor anything
-        // the repository-path rule refuses: `C:x` is relative to drive C's
-        // current directory on Windows, so `join` leaves the repository.
-        if name.is_empty()
-            || name.contains('/')
-            || name.contains('\\')
-            || name.contains("..")
-            || trellis_core::paths::unsafe_repo_path(name).is_some()
-        {
-            anyhow::bail!("`{name}` is not a prompt name; use the file stem only");
-        }
-        let path = root
-            .join(".trellis")
-            .join("prompts")
-            .join(format!("{name}.md"));
+        // The manifest is read only when the repository has no such
+        // template, so a repository template never waits on, or fails on,
+        // the user's packages.
+        Self::prompt_raw_in(root, name, crate::user_config::prompt_dirs)
+    }
+
+    /// [`Self::prompt_raw`] with the installed `prompts/` directories, in
+    /// precedence order, supplied by `installed`.
+    pub(crate) fn prompt_raw_in(
+        root: &Path,
+        name: &str,
+        installed: impl FnOnce() -> Result<Vec<PathBuf>>,
+    ) -> Result<String> {
+        check_prompt_name(name)?;
+        let dir = root.join(".trellis").join("prompts");
+        let path = dir.join(format!("{name}.md"));
         // A committed link out of the repository is refused by name rather
         // than read into the task (`read_repo_text`).
-        match crate::context_files::read_repo_text(root, &path)
+        if let Some(text) = crate::context_files::read_repo_text(root, &path)
             .with_context(|| format!("prompt `{name}` could not be loaded"))?
         {
-            Some(text) => Ok(text),
-            None => {
-                let dir = root.join(".trellis").join("prompts");
-                let known: Vec<String> = std::fs::read_dir(&dir)
-                    .map(|rd| {
-                        rd.filter_map(Result::ok)
-                            .filter_map(|e| {
-                                e.path()
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .map(str::to_string)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if known.is_empty() {
-                    anyhow::bail!("no prompt `{name}`; {} holds none", dir.display())
-                } else {
-                    anyhow::bail!("no prompt `{name}`. Known: {}", known.join(", "))
+            return Ok(text);
+        }
+        let installed = installed()?;
+        for base in &installed {
+            // An installed template is the user's own file, outside any
+            // repository, as a user-level skill is (ADR 0039 §9): the
+            // repository-input rule is for what a repository supplies.
+            let file = base.join(format!("{name}.md"));
+            match std::fs::read_to_string(&file) {
+                Ok(text) => return Ok(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "prompt `{name}` could not be loaded from {}",
+                            file.display()
+                        )
+                    });
                 }
             }
+        }
+        let mut known: Vec<String> = std::iter::once(&dir)
+            .chain(&installed)
+            .flat_map(|d| file_stems(d))
+            .collect();
+        known.sort();
+        known.dedup();
+        if known.is_empty() {
+            anyhow::bail!("no prompt `{name}`; {} holds none", dir.display())
+        } else {
+            anyhow::bail!("no prompt `{name}`. Known: {}", known.join(", "))
         }
     }
 
@@ -502,6 +513,47 @@ impl RepoConfig {
         }
         b
     }
+}
+
+/// Refuses a template name that is not a bare file stem.
+///
+/// No path separators: `--prompt ../../etc/passwd` must not read outside
+/// the prompts directory, and a name is a name. Nor anything the
+/// repository-path rule refuses: `C:x` is relative to drive C's current
+/// directory on Windows, so `join` leaves the repository. The same check
+/// guards the installed packages' `prompts/`, which a name also joins onto.
+pub(crate) fn check_prompt_name(name: &str) -> Result<()> {
+    if prompt_name_ok(name) {
+        Ok(())
+    } else {
+        anyhow::bail!("`{name}` is not a prompt name; use the file stem only")
+    }
+}
+
+/// [`check_prompt_name`] as a predicate, for listings that skip rather
+/// than refuse.
+pub(crate) fn prompt_name_ok(name: &str) -> bool {
+    !(name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || trellis_core::paths::unsafe_repo_path(name).is_some())
+}
+
+/// The file stems in `dir`, for the "Known:" list; absent is none.
+fn file_stems(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter_map(|e| {
+                    e.path()
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

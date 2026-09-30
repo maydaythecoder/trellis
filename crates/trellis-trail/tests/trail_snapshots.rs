@@ -98,6 +98,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 target: "Installer.run".into(),
                 outcome: "47 resolved, 3 candidates, 2 unresolved".into(),
                 wrote: false,
+                changed: Vec::new(),
+                changed_count: 0,
             },
             Action {
                 turn: 2,
@@ -105,6 +107,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 target: "src/pkg/installer.py".into(),
                 outcome: "approved".into(),
                 wrote: false,
+                changed: Vec::new(),
+                changed_count: 0,
             },
             Action {
                 turn: 2,
@@ -112,6 +116,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 target: "src/pkg/installer.py".into(),
                 outcome: "applied".into(),
                 wrote: true,
+                changed: Vec::new(),
+                changed_count: 0,
             },
             Action {
                 turn: 3,
@@ -119,6 +125,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 target: String::new(),
                 outcome: "TypeCheck: passed; Tests: passed".into(),
                 wrote: false,
+                changed: Vec::new(),
+                changed_count: 0,
             },
         ],
         control: Some("approve (edit)".into()),
@@ -130,11 +138,13 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 kind: "context_file".into(),
                 name: "CLAUDE.md".into(),
                 bytes: 2_048,
+                sha256: None,
             },
             Input {
                 kind: "forced_skill".into(),
                 name: "refactor".into(),
                 bytes: 512,
+                sha256: None,
             },
         ],
         steering: vec![Steer::new(
@@ -142,6 +152,8 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             SteerKind::Steer,
             "keep the old name as an alias",
         )],
+        label: Some("installer rename".into()),
+        suspected_recall_gaps: vec![],
     };
     let judgment = Judgment {
         tech_debt_projection: Some("the alias will need removing".into()),
@@ -176,6 +188,8 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         agent: None,
         inputs: vec![],
         steering: vec![],
+        label: None,
+        suspected_recall_gaps: vec![],
     };
     insta::assert_snapshot!(trail_json("fix flaky test", factual, Judgment::default()));
 }

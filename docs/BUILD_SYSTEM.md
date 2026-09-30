@@ -54,7 +54,7 @@ and never inside the repository). A G2 failure also prints every
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
 | G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny check`, `cargo audit`, no key-shaped literal added |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); no key-shaped literal added |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
@@ -84,6 +84,37 @@ this file; the output is in the commit message.
   `crates/trellis-cli/tests/hosted_keys.rs`; that commit builds it at run time.
 - G0 fails on every existing ticket until the architect adds `## Done when`
   and `## Verify`; that is the orchestrator's first job.
+
+## Security: before every commit, and before every merge to main
+
+Two layers (#206):
+
+- **`scripts/hooks/pre-commit`**, installed into the shared git dir by
+  `scripts/hooks/install.sh`, so it runs in the main checkout and in every
+  worktree. It refuses a commit when:
+  - its added lines carry a key-shaped literal or a basic-auth URL (G5's
+    patterns, read from `scripts/checks/key-pattern.sh` and
+    `no-auth-urls.sh`, so the two cannot drift);
+  - it adds a secret-shaped file;
+  - it edits the secret scanner's ignore files;
+  - `gitleaks protect --staged` finds something;
+  - it touches `.github/workflows/` and uses `pull_request_target`, puts a
+    `${{ github.event.* }}` expression inside `run:`, or fails `actionlint`
+    or `zizmor` at medium severity or above.
+
+  Hits print redacted. `scripts/checks/pre-commit-selftest.sh` plants each
+  case in a throwaway repository and shows the refusal fires. trellis's own
+  git spawns disable hooks, so a run never executes it.
+- **The `security-auditor` agent** (`.claude/agents/security-auditor.md`)
+  runs the full audit: history, live credentials, GitHub settings, Actions,
+  code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
+  every squash-merge of `drain` into `v0.1-resolver`.
+
+The existing workflows fail `zizmor` today: unpinned `uses:`,
+`excessive-permissions` and `artipacked`. So the first commit that touches
+`.github/workflows/` has to fix what zizmor reports in the files it stages.
+That is deliberate: the audit's Phase 3 pins and scopes them on its own
+ticket.
 
 ## The loop
 

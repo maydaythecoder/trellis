@@ -42,5 +42,9 @@ later sessions, so recorded text is an injection surface (S10).
   turn whose request carried it; for a follow-up, or a steer that arrived
   too late to deliver, the turn the run had reached.
 - A process agent records none: nothing reaches it after it starts.
-- Until #113 lands, the loop has no steering channel and every trail's list
-  is empty, which is omitted on disk.
+- `record_trail` fills the list from the loop's `SteeringLog` (#176): a
+  steer delivered after step N is turn N + 1; an undelivered entry takes
+  `turns.len()` and keeps its kind. Delivered entries are written first,
+  then undelivered ones, each in the order received; the log keeps no
+  order across the two, so none is recorded. A run nobody steered still
+  writes an empty list, omitted on disk.

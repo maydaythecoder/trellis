@@ -16,9 +16,14 @@ pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
     vec![
         user_config_line(),
         context_line(root, cfg),
-        user_skills_line(root, &user_config::skill_dirs()),
+        match user_config::skill_dirs() {
+            Ok(dirs) => user_skills_line(root, &dirs),
+            // Said on its line, so doctor still gets to the end.
+            Err(e) => format!("user skills: not read: {e:#}"),
+        },
         trust_line(root, cfg),
         agents_line(root),
+        services_line(root),
         tz_line(),
         vault_line(root, cfg),
     ]
@@ -94,6 +99,15 @@ fn user_skills_line(root: &Path, dirs: &[PathBuf]) -> String {
 }
 
 pub(crate) fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
+    trust_line_with(root, cfg, trellis_loop::TrustStore::user())
+}
+
+/// [`trust_line`] against `store`, so a test can name its own.
+pub(crate) fn trust_line_with(
+    root: &Path,
+    cfg: &RepoConfig,
+    store: Result<trellis_loop::TrustStore, impl std::fmt::Display>,
+) -> String {
     let fp = tooling::fingerprint(root, cfg);
     if fp.is_empty() {
         return "trust:      nothing declared needs trust (no hooks, custom tools or bash)"
@@ -110,15 +124,46 @@ pub(crate) fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
     if cfg.bash_requested() {
         what.push("bash".to_string());
     }
-    let state = match trellis_loop::TrustStore::user().and_then(|s| s.state(root, &fp)) {
-        Ok(trellis_loop::TrustState::Trusted) => "trusted; they load".to_string(),
-        Ok(trellis_loop::TrustState::Changed) => {
-            "NOT trusted: changed since trusted; they do not load until `trellis trust`".to_string()
-        }
-        Ok(trellis_loop::TrustState::Unknown) => {
+    let services = fp
+        .items
+        .iter()
+        .filter(|i| i.label.starts_with("service "))
+        .count();
+    if services > 0 {
+        what.push(format!("{services} service(s)"));
+    }
+    // By name, from the fingerprint so the line lists what the digest
+    // covers: a repository whose only trusted item was a process agent
+    // printed `trust:      : trusted`, consent with nothing shown. The name
+    // is the profile's file stem, which the repository chose.
+    let mut agents: Vec<String> = fp
+        .items
+        .iter()
+        .filter_map(|i| i.label.strip_prefix("process agent "))
+        .map(crate::plain)
+        .collect();
+    agents.sort();
+    if !agents.is_empty() {
+        what.push(format!(
+            "{} process agent(s) ({})",
+            agents.len(),
+            agents.join(", ")
+        ));
+    }
+    let state = match store.map_err(|e| e.to_string()).and_then(|s| {
+        s.state(root, &fp)
+            .map(|st| (s, st))
+            .map_err(|e| e.to_string())
+    }) {
+        Ok((_, trellis_loop::TrustState::Trusted)) => "trusted; they load".to_string(),
+        Ok((s, trellis_loop::TrustState::Changed)) => format!(
+            "NOT trusted: changed since trusted ({}); they do not load until `trellis trust`",
+            crate::trust_cmd::changed_items(&s, root, &fp)
+        ),
+        Ok((_, trellis_loop::TrustState::Unknown)) => {
             "NOT trusted; they do not load until `trellis trust`".to_string()
         }
-        Ok(trellis_loop::TrustState::Refused { reason }) => {
+        Ok((_, trellis_loop::TrustState::Refused { reason })) => {
             format!("NOT trusted, and `trellis trust` would refuse: {reason}")
         }
         Err(e) => format!("trust store unreadable ({e}); treated as not trusted"),
@@ -137,6 +182,81 @@ fn agents_line(root: &Path) -> String {
             format!("agents:     {} profile(s), {routines}", profiles.len())
         }
     }
+}
+
+/// Services whose record is still in the git directory and whose process is
+/// still alive (ADR 0026 §12). A record lives while its task runs and is
+/// removed once trellis has killed the service's tree and reaped it. So a
+/// live one whose task is still claimed is most likely running as it should
+/// (`work` is running that task), and one whose task is not claimed outlived
+/// it: trellis was killed first, or the reap timed out. Only the service's
+/// own pid is recorded; what it started is not listed.
+fn services_line(root: &Path) -> String {
+    let queue = match trellis_queue::Queue::for_repo(root) {
+        Ok(q) => q,
+        Err(e) => return format!("services:   not checked: {}", crate::plain(&e.to_string())),
+    };
+    let dir = queue.trellis_dir();
+    let (alive, unreadable) = crate::services::outliving(&dir, &crate::liveness::SystemLiveness);
+    // The task id comes from a file in the git directory; one that is not
+    // an id's alphabet is not looked up by path.
+    let claimed = |task: &str| {
+        !task.is_empty()
+            && task
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            && matches!(queue.find(task), Ok((trellis_queue::State::Claimed, _)))
+    };
+    let describe = |r: &crate::services::Record| {
+        crate::plain(&format!(
+            "pid {} ({}/{}, task {}: {})",
+            r.pid,
+            r.agent,
+            r.service,
+            r.task,
+            r.argv.join(" ")
+        ))
+    };
+    let (running, outlived): (Vec<_>, Vec<_>) = alive.iter().partition(|r| claimed(&r.task));
+    let mut parts = Vec::new();
+    if !outlived.is_empty() {
+        parts.push(format!(
+            "{} recorded service(s) alive after their task ended: {}; kill each (and what it \
+             started), then delete its record in {}",
+            outlived.len(),
+            outlived
+                .iter()
+                .map(|r| describe(r))
+                .collect::<Vec<_>>()
+                .join("; "),
+            crate::plain(&dir.join(crate::services::DIR).display().to_string())
+        ));
+    }
+    if !running.is_empty() {
+        parts.push(format!(
+            "{} running for a task still claimed (expected while `work` runs it): {}",
+            running.len(),
+            running
+                .iter()
+                .map(|r| describe(r))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if parts.is_empty() {
+        parts.push("no recorded service outlived its task".to_string());
+    }
+    if !unreadable.is_empty() {
+        parts.push(format!(
+            "unreadable record(s): {}",
+            unreadable
+                .iter()
+                .map(|u| crate::plain(u))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    format!("services:   {}", parts.join("; "))
 }
 
 /// Where a routine's IANA zone name is looked up (ADR 0026 §7). Bundled data

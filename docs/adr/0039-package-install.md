@@ -3,6 +3,11 @@
 **Status:** Accepted.
 **Date:** 2026-09-29
 **Issue:** #118 (split from #51). Related: #120 (no package code).
+**Amended:** 2026-09-29 (#119): §10, how runs read installed packages.
+**Amended:** 2026-09-30 (#120): §5 and §9, every skipped path named and
+the trust store untouched, each held by a test.
+**Amended:** 2026-09-30 (#200): §8, the tree listing bounded while it is
+read.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -59,7 +64,11 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    Everything else is skipped and named in the output: hooks, tools,
    `.trellis/`, scripts inside a skill, executables (`100755`), links
    (`120000`), submodules (`160000`). **A package never carries code.**
-   There is no flag to install one that does.
+   There is no flag to install one that does. Every skipped path is named
+   on its own line, with no cap and no "and N more" (#120): a count would
+   hide exactly the hook the user wanted to see. The listing is already in
+   memory from `ls-tree`, so naming all of it reads nothing new. Evidence:
+   `install_skips_code_and_names_every_skipped_path`.
 
 6. **How it is fetched.** Nothing is checked out. Every git spawn goes
    through `trellis_vcs::command()`, so the environment is scrubbed of keys
@@ -84,26 +93,88 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 8. **Bounds.** Before any file is read: at most 2,000 files, 1 MiB each,
    32 MiB in total. Over any of them the install is refused, not trimmed.
 
+   The listing those bounds are applied to is bounded too, while
+   `ls-tree` is read and before the entry list is complete (#200): at most
+   10,000 entries in the source's tree, copied or not, and 8 MiB of
+   listing. Without it a source with a huge tree was held whole in memory,
+   and #120 prints one line per skipped entry. Over either, the install is
+   refused with a message naming the limit, and git is stopped.
+   - *10,000 entries* is chosen, not measured: five times the 2,000 files
+     that may be copied, leaving room for the README, licence, CI and other
+     paths a package carries and never copies. No package corpus was
+     surveyed; a real package over it is the evidence that would move it.
+   - *8 MiB* is derived, not measured: about 100 bytes of fixed fields per
+     `-z` record (mode, type, a 64-hex id, size, separators) plus an
+     assumed average path of about 700 bytes, over 10,000 records. It is
+     there because a count alone does not bound memory: a tree entry's path
+     has no length limit this code can rely on, so one entry can be large.
+
 9. **Why the trust store is not the gate.** Row 10 assumed it would be.
    The argument ADR 0025 made for user-level skills holds here: the trust
    store vouches for what one repository makes trellis execute, keyed by
    that repository's root, and a package is in no repository and executes
    nothing. What makes a package safe to install is 5 and 6, not a digest
-   of a repository's hooks.
+   of a repository's hooks. So install neither reads nor writes the trust
+   store: it is byte-identical before and after (#120). Trusted code lives
+   under a repository's `.trellis/` only; `packages/` holds no code for a
+   digest to cover. Evidence:
+   `install_skips_code_and_leaves_the_trust_store_byte_identical`, with the
+   store where ADR 0023 puts it, beside `packages/` (the two share a
+   directory unless `TRELLIS_CONFIG_DIR` is set, which moves `packages/`
+   and not the store). Letting a package
+   carry code would reverse the owner's answer on #120 and needs its own
+   ADR, which would have to put that code under the trust digest by
+   content before anything of it runs.
+
+10. **How runs read installed packages** (#119; the owner's order,
+    decided 2026-09-28: repository, installed package, `~/.agents/skills`).
+    - **Which packages.** Those `packages.toml` records, in package-name
+      order, whatever order they were installed in. A directory under
+      `packages/` the manifest does not name (a staging directory
+      mid-install, a stray copy) is not read. A manifest that cannot be
+      read or parsed refuses the run and `rpc`'s `get_commands`, and
+      `doctor` prints it on its line, rather than a run going ahead
+      without skills the user installed. A manifest name is held to the
+      alphabet in 3 before it becomes a path.
+    - **Skills.** The lookup order is the repository's `.trellis/skills`,
+      then `<user config dir>/skills`, then each package's `skills/`, then
+      `~/.agents/skills`. The first source holding a name wins it, in the
+      listing, in `read_skill` and for a forced `--skill` alike, because
+      all three take the same directory list. The user's own
+      `<user config dir>/skills` sits above packages, which the owner's
+      order does not name: a skill the user wrote on this machine is a
+      more specific statement than one fetched. Between two packages the
+      name order above decides.
+    - **The `repo:` line** counts installed skills apart from the user's
+      own, says neither was gated on repository trust, and names every
+      collision with the source that won it and the ones it won over.
+    - **Not trust-gated,** for the reason in 9, which is the one ADR 0025
+      ("Integrated") gives for user-level skills: the trust store vouches
+      for what a repository makes trellis execute, and a package is in no
+      repository and executes nothing.
+    - **One cap.** ADR 0019's 4,096-byte disclosure cap applies to the
+      merged, name-sorted list of every source, unchanged. Installing a
+      package does not buy a second allowance.
+    - **Templates.** `.trellis/prompts/<name>.md`, else the first package
+      in name order with `prompts/<name>.md`. The same name check guards
+      both, `/prompts` and `get_commands` list each name once from the
+      source that would be read, and an installed template is still a
+      task, never configuration (ADR 0025 §3). The manifest is read only
+      when the repository has no template of that name.
+    - Installed files are the user's own, outside any repository, so they
+      are read as they are, as user-level skills are; the
+      repository-input rule (ADR 0025) is for what a repository supplies.
+    - Evidence: tests `installed_skill_*` in `crates/trellis-cli/src/context_files.rs`
+      (`cargo test -p trellis-cli installed_skill_`) and
+      `installed_template_is_listed_and_read_and_the_repository_wins_a_name`.
 
 ## Not built
 
-- **Runs do not read `packages/` yet.** Skills still load from
-  `<user config dir>/skills` and `~/.agents/skills` (ADR 0025, integrated),
-  and templates from `.trellis/prompts`. Adding `packages/*/skills` and
-  `packages/*/prompts` to those lists changes what the model is shown and
-  in what precedence, so it is its own change. The install command says so
-  when it finishes, rather than looking like it did more than it did.
 - **Upgrade in place.** Reinstalling a name is refused; `--remove` then
   install.
 - **The fetch itself is not bounded.** `git clone` downloads the whole
   source before the bounds in 8 apply, and a slow or huge source is waited
-  on. The bounds cap what is written, not what is fetched.
+  on. The bounds cap what is listed and written, not what is fetched.
 
 ## Alternatives rejected
 
@@ -118,4 +189,6 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 - ADR 0021 row 10 now reads "built in part".
 - Evidence: `crates/trellis-cli/src/install.rs`, tests `install_*`
   (`cargo test -p trellis-cli install_`), which install from a local git
-  repository and never touch the network.
+  repository and never touch the network. The listing bound in 8:
+  `install_tree_listing_bounded_*`
+  (`cargo test -p trellis-cli install_tree_listing_bounded_`).

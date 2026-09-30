@@ -756,3 +756,233 @@ fn https_proxy_with_credentials_is_refused_before_the_snapshot() {
     );
     assert!(seen.is_empty(), "the proxy was contacted: {all}");
 }
+
+// `trellis run --image` (ADR 0041). Here because the loopback stub and the
+// every-log-path scan above are what an image needs as much as a key does:
+// the bytes must reach the provider in its own format, and nothing else.
+
+/// A GIF by its magic bytes, with a tail no other test writes, so its
+/// presence anywhere is this image and nothing else.
+fn image_canary() -> Vec<u8> {
+    format!("GIF89a-trellis-image-canary-{}", std::process::id()).into_bytes()
+}
+
+/// A hosted run with one committed image, returning the first request body
+/// the stub received and every place a log or record of the run could hold
+/// the image.
+fn image_run(protocol: &str, replies: Vec<String>) -> (serde_json::Value, Vec<(String, String)>) {
+    let (base, server) = stub(replies);
+    let d = repo(&format!("image-{protocol}"), protocol, &base);
+    std::fs::create_dir_all(d.join("docs")).unwrap();
+    std::fs::write(d.join("docs/shot.gif"), image_canary()).unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-q", "-m", "image"]);
+    let log = d.with_extension("jsonl");
+    let _ = std::fs::remove_file(&log);
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(&d)
+        .arg("--log-json")
+        .arg(&log)
+        .args(["run", "make helper return 2", "--model", "provider:stub#m"])
+        .arg("--image")
+        .arg(d.join("docs/shot.gif"))
+        .env("TRELLIS_CONFIG_DIR", user_dir(&d))
+        .env("RUST_LOG", "trace")
+        .env(KEY_ENV, canary())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let requests = server.join().unwrap();
+    assert!(
+        stdout.contains("CONVERGED"),
+        "stdout: {stdout}\nstderr: {stderr}\nrequests: {requests:?}"
+    );
+    assert_eq!(requests.len(), 2, "one request per turn: {requests:?}");
+    let first = body_of(&requests[0]);
+    // The first user message is resent every turn, image and all.
+    let second = body_of(&requests[1]);
+    let head = |b: &serde_json::Value, n: usize| b["messages"].as_array().unwrap()[..n].to_vec();
+    let n = if protocol == "openai" { 2 } else { 1 };
+    assert_eq!(head(&second, n), head(&first, n));
+
+    let log_text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        log_text.contains("request as sent"),
+        "the body was traced, so the widest log path was exercised"
+    );
+    let mut paths = Vec::new();
+    files(&d, &mut paths);
+    let trail = paths
+        .iter()
+        .find(|p| p.to_string_lossy().contains("runs"))
+        .expect("a trail was written");
+    let trail_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trail).unwrap()).unwrap();
+    let input = trail_json["factual"]["inputs"]
+        .as_array()
+        .and_then(|a| a.iter().find(|i| i["kind"] == "image"))
+        .unwrap_or_else(|| panic!("the trail records the image: {trail_json}"))
+        .clone();
+    assert_eq!(input["name"], "docs/shot.gif", "repository-relative");
+    assert_eq!(input["bytes"], image_canary().len());
+    assert_eq!(input["sha256"].as_str().map(str::len), Some(64), "{input}");
+    assert!(
+        stdout.contains("image:    docs/shot.gif"),
+        "the run says what it sent: {stdout}"
+    );
+
+    let mut places = vec![
+        ("stdout".to_string(), stdout),
+        ("stderr (fmt layer)".to_string(), stderr),
+        ("--log-json".to_string(), log_text),
+    ];
+    for p in &paths {
+        // The image itself is committed in the repository, and is the one
+        // file expected to hold it.
+        if p.ends_with("docs/shot.gif") {
+            continue;
+        }
+        places.push((
+            p.display().to_string(),
+            String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned(),
+        ));
+    }
+    (first, places)
+}
+
+/// The image's data, as sent, appears in none of `places`, and neither do
+/// its raw bytes.
+fn assert_image_unlogged(data: &str, places: &[(String, String)]) {
+    // "GIF89a" is "R0lGODlh" in base64, so this is the image and not an
+    // empty string that would match everywhere.
+    assert!(data.starts_with("R0lGODlh") && data.len() > 40, "{data}");
+    let raw = String::from_utf8(image_canary()).unwrap();
+    for (name, text) in places {
+        assert!(!text.contains(data), "{name} contains the image as base64");
+        assert!(!text.contains(&raw), "{name} contains the image's bytes");
+    }
+}
+
+#[test]
+fn image_input_openai_sends_a_data_url_image_url_part_and_logs_none_of_it() {
+    let (body, places) = image_run(
+        "openai",
+        vec![
+            openai(
+                "c1",
+                "run_checks",
+                r#"{"paths":["app/util.py"],"kinds":["typecheck"]}"#,
+            ),
+            openai("c2", "done", r#"{"summary":"checked"}"#),
+        ],
+    );
+    let user = &body["messages"][1];
+    assert_eq!(user["role"], "user");
+    assert_eq!(user["content"][0]["type"], "text");
+    let part = &user["content"][1];
+    assert_eq!(part["type"], "image_url", "{user}");
+    let url = part["image_url"]["url"].as_str().unwrap();
+    let data = url
+        .strip_prefix("data:image/gif;base64,")
+        .unwrap_or_else(|| panic!("a data URL with the sniffed type: {url}"));
+    assert_image_unlogged(data, &places);
+}
+
+#[test]
+fn image_input_anthropic_sends_a_base64_image_block_and_logs_none_of_it() {
+    let (body, places) = image_run(
+        "anthropic",
+        vec![
+            anthropic(
+                "t1",
+                "run_checks",
+                serde_json::json!({"paths":["app/util.py"],"kinds":["typecheck"]}),
+            ),
+            anthropic("t2", "done", serde_json::json!({"summary":"checked"})),
+        ],
+    );
+    let block = &body["messages"][0]["content"][0];
+    assert_eq!(block["type"], "image", "{body}");
+    assert_eq!(block["source"]["type"], "base64");
+    assert_eq!(block["source"]["media_type"], "image/gif");
+    assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+    assert_image_unlogged(block["source"]["data"].as_str().unwrap(), &places);
+}
+
+/// Runs `trellis run --image <image>` against `spec` with nothing listening,
+/// returning whether it succeeded and everything it printed.
+fn image_attempt(d: &Path, spec: &str, image: &Path) -> (bool, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(d)
+        .args(["run", "anything", "--model", spec, "--image"])
+        .arg(image)
+        .env("TRELLIS_CONFIG_DIR", user_dir(d))
+        .env(KEY_ENV, canary())
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+#[test]
+fn image_input_over_5_mib_is_refused_before_the_snapshot() {
+    // The risk: a file read whole and sent however large it is, or refused
+    // only after the snapshot, as a failed run with a trail. Port 9 has
+    // nothing on it, so a request would fail differently.
+    let d = repo("image-big", "openai", "http://127.0.0.1:9");
+    // Outside the repository, so it is the user's own file and nothing
+    // needs committing; five MiB and one byte.
+    let big = d.with_extension("big.gif");
+    let mut bytes = image_canary();
+    bytes.resize(5 * 1024 * 1024 + 1, 0);
+    std::fs::write(&big, &bytes).unwrap();
+    let (ok, all) = image_attempt(&d, "provider:stub#m", &big);
+    assert!(!ok, "{all}");
+    assert!(
+        all.contains("5 MiB") && all.contains("5242881 bytes"),
+        "{all}"
+    );
+    assert!(!all.contains("snapshot at"), "no snapshot was taken: {all}");
+    assert!(!d.join(".trellis/runs").exists(), "no trail: {all}");
+    let _ = std::fs::remove_file(&big);
+}
+
+#[test]
+fn image_refused_by_scripted_and_local_models_before_the_snapshot() {
+    // The risk: an image silently dropped by a model that cannot take one,
+    // so the run goes ahead on a task whose picture nobody saw.
+    let d = repo("image-refused", "openai", "http://127.0.0.1:9");
+    let script = d.with_extension("script.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[{"tool":"done","summary":"nothing to do"}]}"#,
+    )
+    .unwrap();
+    let img = d.with_extension("small.gif");
+    std::fs::write(&img, image_canary()).unwrap();
+    for spec in [
+        format!("scripted:{}", script.display()),
+        // Nothing listens on port 9: refused for what the model is, before
+        // the probe could say the runtime is down.
+        "llamacpp:http://127.0.0.1:9".to_string(),
+    ] {
+        let (ok, all) = image_attempt(&d, &spec, &img);
+        assert!(!ok, "{spec}: {all}");
+        assert!(
+            all.contains("this model does not take image input"),
+            "{spec}: {all}"
+        );
+        assert!(!all.contains("snapshot at"), "{spec}: {all}");
+    }
+    assert!(!d.join(".trellis/runs").exists());
+    let _ = std::fs::remove_file(&img);
+}

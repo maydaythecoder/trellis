@@ -2602,6 +2602,7 @@ dependencies = [
 name = "trellis-checks"
 version = "0.0.1"
 dependencies = [
+ "process-wrap",
  "serde",
  "serde_json",
  "tempfile",
@@ -2718,6 +2719,18 @@ dependencies = [
  "thiserror 2.0.20",
  "toml",
  "trellis-vcs",
+]
+
+[[package]]
+name = "trellis-tickets"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "trellis-core",
 ]
 
 [[package]]

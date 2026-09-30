@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 
@@ -1943,4 +1943,222 @@ fn question_fields_are_additive_and_an_older_blocked_file_parses_unchanged() {
         b,
         serde_json::json!({"reason": "question", "question": "q?"})
     );
+}
+
+// ---------------------------------------------------------------------------
+// @name mentions in notes (#57)
+// ---------------------------------------------------------------------------
+
+fn profiles(files: &[(&str, &str)]) -> BTreeMap<String, profile::Profile> {
+    files
+        .iter()
+        .map(|(n, text)| (n.to_string(), profile::parse(n, text).unwrap()))
+        .collect()
+}
+
+/// A person's `trellis queue note`, as the CLI writes it.
+fn person_note(q: &Queue, id: &str, text: &str) -> String {
+    let mut nid = String::new();
+    q.edit(id, |t, _| {
+        nid = t.note_from_person(text);
+        Ok(None)
+    })
+    .unwrap();
+    nid
+}
+
+/// A heartbeat that knows its profiles and records who each run was for.
+#[derive(Default)]
+struct Mentioned {
+    profiles: BTreeMap<String, profile::Profile>,
+    ran: Vec<(String, Option<String>)>,
+}
+
+impl Runner for Mentioned {
+    fn blocker(&mut self) -> Option<String> {
+        None
+    }
+    fn run(&mut self, task: &Task) -> RunEnd {
+        self.ran.push((task.task.clone(), task.assignee.clone()));
+        RunEnd::Converged { run_id: None }
+    }
+    fn stop_requested(&self) -> bool {
+        false
+    }
+    fn idle(&mut self, _d: Duration) -> bool {
+        false
+    }
+    fn profiles(&self) -> Option<&BTreeMap<String, profile::Profile>> {
+        Some(&self.profiles)
+    }
+}
+
+#[test]
+fn mention_wake_requeues_the_task_for_the_named_profile_on_the_next_tick_once_per_note() {
+    // The owner's decision on #57: a person's `@reviewer` in a note puts
+    // the task back for `reviewer`. The risk on the other side is a wake
+    // that repeats: a note read on every tick would re-run the task each
+    // time it finished.
+    let (_d, q) = queue();
+    let id = failed_task(&q);
+    let nid = person_note(&q, &id, "@reviewer, please take this one");
+    assert_eq!(nid, "n1");
+
+    let mut r = Mentioned {
+        profiles: profiles(&[("reviewer", ""), ("writer", "")]),
+        ..Mentioned::default()
+    };
+    let (n, stop, out) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!(n, 1, "{out}");
+    assert_eq!(stop, Stop::Converged { id: id.clone() });
+    assert_eq!(r.ran, vec![("x".to_string(), Some("reviewer".to_string()))]);
+    assert!(
+        out.contains("-> todo for `reviewer` (@reviewer in note n1)"),
+        "{out}"
+    );
+
+    let wakes = events(&q, "mention_wake");
+    assert_eq!(wakes.len(), 1);
+    assert_eq!(wakes[0].entity, format!("task:{id}"));
+    assert_eq!(wakes[0].actor, Actor::Work);
+    assert_eq!(wakes[0].detail.as_deref(), Some("note n1: @reviewer"));
+    let (_, t) = q.find(&id).unwrap();
+    assert!(t.notes[0].mentions_read);
+
+    // The run ended in review; the same note must not send it round again.
+    let (n, _, _) = drain(&q, &mut r, WorkOptions::default());
+    assert_eq!(n, 0);
+    assert_eq!(events(&q, "mention_wake").len(), 1);
+    assert_eq!(q.find(&id).unwrap().0, State::Done);
+}
+
+#[test]
+fn mention_wake_leaves_a_paused_profile_asleep_and_logs_it_once() {
+    // A pause is a person saying "not this agent"; a mention must not be a
+    // way round it, whether the pause is in the profile file or the overlay.
+    let (_d, q) = queue();
+    let a = failed_task(&q);
+    let b = failed_task(&q);
+    profile::update_overlay(&q, "reviewer", |o| {
+        o.paused = Some(profile::Pause {
+            by: profile::PausedBy::Human,
+            at: iso_now(),
+            reason: Some("on leave".into()),
+            window: None,
+            month: None,
+        })
+    })
+    .unwrap();
+    let set = profiles(&[("reviewer", ""), ("writer", "paused = true\n")]);
+    person_note(&q, &a, "@reviewer");
+    person_note(&q, &b, "@writer");
+
+    let got = q.wake_mentions(&set, Actor::Work).unwrap();
+    assert_eq!(got.len(), 2);
+    for m in &got {
+        assert!(
+            matches!(&m.outcome, mention::MentionOutcome::Ignored(why) if why.contains("paused")),
+            "{m:?}"
+        );
+    }
+    for id in [&a, &b] {
+        let (s, t) = q.find(id).unwrap();
+        assert_eq!((s, t.assignee.clone()), (State::Failed, None));
+        assert!(t.notes[0].mentions_read, "read, so not logged again");
+    }
+    assert_eq!(events(&q, "mention_ignored").len(), 2);
+    assert!(events(&q, "mention_wake").is_empty());
+
+    assert!(q.wake_mentions(&set, Actor::Work).unwrap().is_empty());
+    assert_eq!(events(&q, "mention_ignored").len(), 2);
+}
+
+#[test]
+fn mention_wake_ignores_an_unknown_name_and_does_not_read_an_address_as_one() {
+    // An unknown name is a typo or a deleted profile: logged so the person
+    // can see it went nowhere, and nothing moves. `ops@example.com` is not
+    // a mention at all.
+    let (_d, q) = queue();
+    let set = profiles(&[("reviewer", "")]);
+
+    let lone = failed_task(&q);
+    person_note(&q, &lone, "@nobody");
+    q.wake_mentions(&set, Actor::Work).unwrap();
+    let (s, t) = q.find(&lone).unwrap();
+    assert_eq!((s, t.assignee.clone()), (State::Failed, None));
+    let ignored = events(&q, "mention_ignored");
+    assert_eq!(ignored.len(), 1);
+    assert_eq!(
+        ignored[0].detail.as_deref(),
+        Some("note n1: @nobody: no agent profile `nobody`")
+    );
+
+    // Beside a real mention, the unknown one is still logged, and the
+    // address is not taken for anything.
+    let id = failed_task(&q);
+    person_note(
+        &q,
+        &id,
+        "ask @nobody, or mail reviewer@example.com (@reviewer.)",
+    );
+    let got = q.wake_mentions(&set, Actor::Work).unwrap();
+    let names: Vec<(&str, bool)> = got
+        .iter()
+        .map(|m| (m.name.as_str(), m.outcome == mention::MentionOutcome::Woke))
+        .collect();
+    assert_eq!(names, vec![("nobody", false), ("reviewer", true)]);
+    assert_eq!(events(&q, "mention_ignored").len(), 2);
+    assert_eq!(q.find(&id).unwrap().0, State::Pending);
+}
+
+#[test]
+fn mention_wake_ignores_notes_a_run_the_heartbeat_or_the_queue_wrote() {
+    // The owner's condition on #57: agent output never wakes an agent, or
+    // two profiles that mention each other run forever (ADR 0005). Only a
+    // note from `trellis queue note` counts. On this branch no run writes
+    // notes (#140 adds a model actor); what is here is the heartbeat, a
+    // routine, and the `Human` notes the queue writes on a person's behalf
+    // — a cancel reason, an approval — none of which carry a note id.
+    let (_d, q) = queue();
+    let id = failed_task(&q);
+    q.edit(&id, |t, _| {
+        t.note(Actor::Work, "woken: @reviewer");
+        t.note(Actor::Routine, "routine fired; @reviewer");
+        t.note(Actor::Human, "cancelled: hand to @reviewer");
+        // An id is not enough on its own: a note with one but a
+        // non-person actor, as a later writer that numbered its notes
+        // would produce, wakes nothing either.
+        t.notes.push(Note {
+            at: iso_now(),
+            actor: Actor::Work,
+            text: "@reviewer".into(),
+            id: Some("n4".into()),
+            mentions_read: false,
+        });
+        Ok(None)
+    })
+    .unwrap();
+
+    let set = profiles(&[("reviewer", "")]);
+    assert!(q.wake_mentions(&set, Actor::Work).unwrap().is_empty());
+    let (s, t) = q.find(&id).unwrap();
+    assert_eq!((s, t.assignee.clone()), (State::Failed, None));
+    assert!(t.notes.iter().all(|n| !n.mentions_read));
+    assert!(events(&q, "mention_wake").is_empty());
+    assert!(events(&q, "mention_ignored").is_empty());
+}
+
+#[test]
+fn a_note_written_before_note_ids_still_loads_and_is_not_a_mention() {
+    // Additive on disk: a note without `id` or `mentions_read` is what every
+    // task file before #57 holds, and it must read as a record, not as a
+    // mention waiting to fire on the first tick after an upgrade.
+    let n: Note = serde_json::from_str(r#"{"at":"t","actor":"human","text":"@reviewer"}"#).unwrap();
+    assert_eq!((n.id, n.mentions_read), (None, false));
+    let (_d, q) = queue();
+    let id = q.add("x", None, None).unwrap();
+    person_note(&q, &id, "plain");
+    let text = std::fs::read_to_string(q.path(State::Pending, &id)).unwrap();
+    assert!(text.contains("\"id\": \"n1\""), "{text}");
+    assert!(!text.contains("mentions_read"), "{text}");
 }

@@ -1,8 +1,8 @@
 # ADR 0032 — A throwaway clone for the writers trellis does not control
 
-**Status:** Accepted. Built: `bash` and custom tools (#20), and hooks
-(#174, "Hooks" below). Process agents are not yet isolated (see "What is
-not built").
+**Status:** Accepted. Built: `bash` and custom tools (#20), hooks
+(#174, "Hooks" below), and process agents (#175, "Process agents"
+below). What remains is in "What is not built".
 **Date:** 2026-09-29
 **Issue:** #20. The owner chose the mechanism on 2026-09-28 (the issue's
 `## Decision`); this ADR records it and its limits.
@@ -151,8 +151,10 @@ machine. Stated so they are not assumed closed:
   and `.env` are not in the clone, so a command that needs them (a test
   runner from `.venv/bin`) fails there. The model sees the failure; the
   checks trellis runs itself (`run_checks`) still run in the repository.
-- **Only edits come back.** New files and deletions stay in the clone, as
-  do changes to links, file modes and submodules.
+- **Only edits come back** from `bash`, custom tools and hooks. New files
+  and deletions stay in the clone, as do changes to links, file modes and
+  submodules. For process agents new files and deletions come back too
+  ("Process agents" below).
 - **Checkout filters run.** The clone's checkout runs the user's global
   smudge filters (Git LFS), as any clone does.
 
@@ -292,10 +294,146 @@ Tests, in `crates/trellis-loop/src/isolate.rs`:
 
 ## What is not built
 
-- **Process agents** (ADR 0026) still run in the repository. They are
-  started from `trellis-cli`, not the orchestrator, and their output is
-  the run's change, so the carry-back there is the whole of their work.
-  Follow-up ticket.
+- ~~Process agents~~: built by #175; see "Process agents" below.
 - **Containers, a micro-VM or an OS sandbox**, for network isolation and
   reads outside the repository. Later, per the owner's decision; ADR 0021
   rows 1.6 and 13.3 stay deferred for that step.
+
+## Process agents (amendment, #175)
+
+A process agent (ADR 0026 §11) now runs in a clone made by the same
+`isolate::Sandbox`, through `trellis_loop::AgentClone`
+(`crates/trellis-loop/src/agent_clone.rs`), started from
+`crates/trellis-cli/src/process_agent.rs`. Steps 1-5 and 7 above are
+unchanged. The clone is made after the snapshot, the judge (`[checks]`,
+`deny_write`, the rule documents, the profile's `allow_write`, all read
+before the command) and the git guard; the command runs with the clone as
+its working directory and every `GIT_LOCATION_VARS` variable removed; and
+its carry-back runs after the command has ended (and, on Windows, after
+its Job Object is terminated, ADR 0035) and after the git guard has put
+`.git/` back, since the carry-back asks the repository's git what it
+ignores.
+
+### New files and deletions come back for agents
+
+For `bash` and custom tools only edits come back. For a process agent,
+**new files and deletions of tracked files come back too**, under the same
+refusals. The reasons:
+
+- **It has no other write path.** A `bash` call is one step in a model run
+  whose model has `write_file` for a new file; a command's new files are
+  mostly build output and caches, and leaving them in the clone costs the
+  model nothing. A process agent's clone is the whole of its work: an
+  agent that adds a module or a test, or removes a dead file, and whose
+  carry-back dropped that, would converge on a change it did not make.
+  Every existing test of a converging agent creates a file.
+- **The rollback still covers them exactly.** A deleted tracked file is put
+  back by `git reset --hard`. A new file is written only where the
+  repository's own ignore rules (`.gitignore` files, `info/exclude`,
+  `core.excludesFile`, read by `git check-ignore` in the repository) do
+  not ignore it, so `git clean -fd` removes it. The clone's `.gitignore`
+  is never consulted: it is the agent's to edit, and un-ignoring `*.cfg`
+  there would otherwise bring back a file the rollback leaves behind.
+- **A refusal never lets a partial change converge.** Anything the agent
+  changed that does not come back is reported, and the run does not
+  converge and is rolled back. A new file the repository's rules ignore is
+  not a refusal: it is left in the clone, reported, and is not part of the
+  change, as a model run's caches are not.
+
+Would reverse if an agent kind needs to leave ignored files as its result
+(a generated artifact the repository ignores); that would need a copy of
+ignored files for the rollback, which trellis does not keep.
+
+### The carry-back for an agent
+
+For each path, whatever the kind, in order:
+
+1. under `.trellis/`, by any spelling and through any link: a breach,
+   named as `governance: refused: <path> (under .trellis/, ...)`;
+2. `write_refusal`: outside the repository, inside `.git`, an unsafe name;
+3. the repository's `deny_write` (named by its rule), then
+4. the profile's `allow_write` (#182; ADR 0026 §4): `deny_write` first,
+   so a path the repository denies is named by the repository's rule.
+
+Then, per kind: an edited or deleted file must still hold, in the
+repository, the bytes copied into the clone; a new file must not exist in
+the repository, must not be ignored there, and is written with
+`create_new`. `.gitignore`, `.gitattributes` and `.gitmodules` are never
+carried back in any kind, links never (a new link is refused; a tracked
+one is left as the checkout made it), and nothing over 16 MiB.
+
+New files are found by walking the clone's filesystem, never through a
+link and never into a directory named `.git`. **No `git` runs in the
+clone**, as in step 5. A directory the repository's rules ignore is not
+entered (one `git check-ignore` per level of the walk, in the
+repository), so an agent that fills `build/` or a virtualenv costs one
+line of report, not a walk of every file. A clone holding more than
+`NEW_FILE_WALK_CAP` (100 000) files and directories git does not ignore,
+or a `check-ignore` that fails, carries nothing new back and is a
+refusal.
+
+Only a command that exited is carried back. A timed-out or interrupted
+one left half a change; nothing comes back, and the run is rolled back as
+before.
+
+`allow_write` moves to the carry-back as #182 asked, and the
+post-command judge keeps its copy, with `deny_write` and the `.trellis/`
+breach, over what git shows changed in the repository afterwards. The
+two do not report the same file twice: a file the carry-back refuses is
+never in the repository. The judge's copy is what stands against a
+command that writes into the repository by absolute path, which the clone
+does not stop ("Limits"), and the git guard, the `HEAD` check and the
+ignored-file snapshot stay for the same writer.
+
+### What changes for an agent
+
+- **A commit, reset or checkout in its clone is no longer a breach.** It
+  moves the clone's `HEAD`; the files are compared by content, and what
+  the agent committed comes back uncommitted, for review. A `HEAD` moved
+  in the repository (by absolute path) is still refused and undone.
+- **Writes under `.git/`** (config, hooks, `info/exclude`) land in the
+  clone's `.git/` and are never put back, because they never reached the
+  repository. The git guard now has nothing to do unless the command
+  wrote into the repository by absolute path.
+- **Ignored files are absent**: a `.env`, a virtualenv, `node_modules`.
+  An agent that needs them fails in the clone, and its failure is its own
+  report. The checks trellis runs afterwards still run in the repository.
+- **A relative `command[0]`** (`./agent.sh`) is resolved against the
+  clone on Unix, where the child's working directory is applied first; on
+  Windows it may resolve against trellis's own working directory (the
+  repository). Both hold the same committed bytes, since a run starts from
+  a clean tree.
+- **Cost.** One clone per agent run (not per call, as for `bash`), plus
+  the walk for new files.
+
+Tests, in `crates/trellis-cli/tests/orchestration.rs`:
+`isolated_agent_writes_to_trellis_and_git_in_the_clone_never_reach_the_repository`,
+`isolated_agent_edit_new_file_and_deletion_are_carried_back`,
+`isolated_agent_carried_back_change_is_undone_by_rollback`,
+`isolated_agent_cannot_unignore_a_file_by_editing_gitignore_in_its_clone`
+and
+`isolated_agent_that_commits_in_its_clone_leaves_head_alone_and_its_change_comes_back`;
+in `crates/trellis-loop/src/agent_clone.rs`,
+`a_deletion_outside_allow_write_is_refused_and_the_file_kept` and
+`a_directory_the_repository_ignores_is_not_entered_and_nothing_in_it_comes_back`.
+The earlier tests of the git guard, the `HEAD` check and the ignored-file
+snapshot for process agents now write into the repository by absolute
+path (`in_repo`, `{ROOT}`), which is the writer those guards are still
+for, as the `bash` tests did when `bash` moved into the clone.
+
+## One test per writer (amendment, #54)
+
+The owner's decision on #54 routes all four writers through this clone
+with no switch to run them in the repository, which the sections above
+already do. #54 adds one test per writer, in
+`crates/trellis-loop/src/isolate.rs`, each running the same `.git/`
+writes from where the writer stands (a planted file, `core.hooksPath`, a
+branch, a tag, a `skip-worktree` flag), checking they landed in its clone,
+and checking every byte under the repository's `.git/` is unchanged:
+`isolated_writer_bash_git_dir_writes_do_not_reach_the_repository`,
+`isolated_writer_custom_tool_git_dir_writes_do_not_reach_the_repository`,
+`isolated_writer_hook_git_dir_writes_do_not_reach_the_repository` and
+`isolated_writer_process_agent_git_dir_writes_do_not_reach_the_repository`.
+The process-agent test spawns as `trellis-cli`'s `process_agent` does
+(`AgentClone::confine`, then the key scrub, then `carry_back`). ADR 0023
+§5 and ADR 0026 §11 now point here for the limits a clone leaves.

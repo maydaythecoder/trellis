@@ -25,9 +25,9 @@
 //! from a crate: it is two headers and a JSON body, and ADR 0031 adds no Rust
 //! dependency for Pyright.
 
-use crate::graph::{Index, Target};
+use crate::graph::{Index, SymbolKind, Target};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -81,10 +81,9 @@ pub enum BackstopStatus {
 
 /// Why the backstop refused an answer the server did give.
 ///
-/// A reason rather than a bare count, so a new refusal (#186's "overridden
-/// or abstract") is one more variant and not another reshape of
-/// [`BackstopReport`]. Every variant is a site that keeps the resolver's
-/// verdict.
+/// A reason rather than a bare count, so a new refusal is one more variant
+/// and not another reshape of [`BackstopReport`]. Every variant is a site
+/// that keeps the resolver's verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Refusal {
     /// A location with no URI or no readable start position.
@@ -100,6 +99,13 @@ pub enum Refusal {
     /// A symbol outside a `Candidates` site's set, which is an upper bound
     /// over first-party code (ADR 0012), so the answer is a disagreement.
     OutsideCandidates,
+    /// A method a first-party subclass overrides, or a function or method
+    /// that is `@abstractmethod` or has a stub body (`...`, `pass`, or a
+    /// raise of Python's not-implemented exception). Pyright names the member of the
+    /// receiver's declared type, and a declared type is an upper bound, not
+    /// an identity (ADR 0012): the call may reach an override, and an
+    /// abstract or stub body is never the one that runs (ADR 0031, #186).
+    OverriddenOrAbstract,
 }
 
 impl Refusal {
@@ -111,6 +117,7 @@ impl Refusal {
             Refusal::NotADefinitionName => "not at a definition's name",
             Refusal::MoreThanOneSymbol => "more than one symbol",
             Refusal::OutsideCandidates => "outside the Candidates set",
+            Refusal::OverriddenOrAbstract => "overridden or abstract",
         }
     }
 }
@@ -258,6 +265,12 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
             );
         }
     };
+    // Before the server starts: without this set the rule in `bind` cannot
+    // be applied, and binding without it is what #186 decided against.
+    let not_runtime = match not_the_runtime_callee(index, &root) {
+        Ok(s) => s,
+        Err(reason) => return BackstopReport::not_run(reason, doubt, skipped_certain),
+    };
     let mut lsp = match Lsp::start(server, &root) {
         Ok(l) => l,
         Err(reason) => return BackstopReport::not_run(reason, doubt, skipped_certain),
@@ -331,7 +344,7 @@ pub fn run(index: &Index, root: &Path, sites: &[CallSiteId], server: &Server) ->
                 }
             };
             report.queried += 1;
-            match bind(&result, targets[&site], &mut files) {
+            match bind(&result, targets[&site], &mut files, &not_runtime) {
                 Ok(callee) => report.edges.push(BackstopEdge {
                     from: site,
                     callee,
@@ -441,8 +454,15 @@ enum Answer {
 /// definition, all of them the same one, and for a `Candidates` site it must
 /// be one of the resolver's candidates. The resolver's set is an upper bound
 /// over first-party code (ADR 0012), so an answer outside it is a
-/// disagreement, not a refinement.
-fn bind(result: &Value, target: &Target, files: &mut Files<'_>) -> Result<SymbolId, Answer> {
+/// disagreement, not a refinement. Last, the symbol must not be in
+/// `not_runtime` (see [`not_the_runtime_callee`]); an answer outside the
+/// set counts as outside it, whether or not it is also overridden.
+fn bind(
+    result: &Value,
+    target: &Target,
+    files: &mut Files<'_>,
+    not_runtime: &HashSet<SymbolId>,
+) -> Result<SymbolId, Answer> {
     let locations: Vec<&Value> = match result {
         Value::Array(a) => a.iter().collect(),
         Value::Object(_) => vec![result],
@@ -476,12 +496,118 @@ fn bind(result: &Value, target: &Target, files: &mut Files<'_>) -> Result<Symbol
         }
     }
     let sym = found.ok_or(Answer::None)?;
-    match target {
-        Target::Candidates(c) if !c.contains(&sym) => {
-            Err(Answer::Refused(Refusal::OutsideCandidates))
-        }
-        _ => Ok(sym),
+    if let Target::Candidates(c) = target
+        && !c.contains(&sym)
+    {
+        return Err(Answer::Refused(Refusal::OutsideCandidates));
     }
+    if not_runtime.contains(&sym) {
+        return Err(Answer::Refused(Refusal::OverriddenOrAbstract));
+    }
+    Ok(sym)
+}
+
+/// The symbols an answer may not be bound to: methods a first-party
+/// subclass overrides, and functions or methods that are `@abstractmethod`
+/// or have a stub body.
+///
+/// The index holds no class hierarchy (it is not in `.trellis/index.bin`),
+/// so the files are read and parsed again and the hierarchy rebuilt with the
+/// resolver's own rule. That is sound only when the files are the ones the
+/// index was built from, so a file that is unreadable or changed since, or a
+/// symbol arena that does not line up, is an error: the backstop then does
+/// not run, rather than bind without the rule.
+fn not_the_runtime_callee(index: &Index, root: &Path) -> Result<HashSet<SymbolId>, String> {
+    let stale = |what: &str| {
+        format!(
+            "{what} since the index was built, so which methods are overridden is not known; \
+             re-run the index"
+        )
+    };
+    let mut sources = Vec::with_capacity(index.files.len());
+    let mut facts = Vec::with_capacity(index.files.len());
+    let mut out = HashSet::new();
+    let mut sym = 0usize;
+    for entry in &index.files {
+        let src = std::fs::read_to_string(root.join(&entry.path))
+            .map_err(|e| stale(&format!("{} became unreadable ({e})", entry.path)))?;
+        if crate::resolve::content_hash(&src) != entry.hash {
+            return Err(stale(&format!("{} changed", entry.path)));
+        }
+        let (f, tree) = crate::parse::collect_with_tree(&src, None);
+        for d in &f.defs {
+            let id = SymbolId::from_index(sym);
+            sym += 1;
+            if d.kind == SymbolKind::Class {
+                continue;
+            }
+            let is_abstract = d
+                .decorators
+                .iter()
+                .any(|dec| dec == "abstractmethod" || dec.ends_with(".abstractmethod"));
+            if is_abstract || tree.as_ref().is_some_and(|t| stub_body(t, &src, d.span)) {
+                out.insert(id);
+            }
+        }
+        facts.push(f);
+        sources.push((entry.path.clone(), src));
+    }
+    let overridden = crate::resolve::overridden_methods(index, &sources, &facts)
+        .ok_or_else(|| stale("the definitions changed"))?;
+    out.extend(overridden);
+    Ok(out)
+}
+
+/// Python's exception for a body not yet written. Spelled in two parts
+/// because `scripts/gates/no-stubs.sh` reads the class name as a stub
+/// marker in Rust source; here it is what a Python stub is recognised by.
+const NOT_IMPLEMENTED: &str = concat!("NotImpl", "ementedError");
+
+/// Whether the definition at `span` has a body that cannot be what runs:
+/// after an optional docstring, every statement is `...`, `pass` or a raise
+/// of [`NOT_IMPLEMENTED`] (bare or called), and there is at least one.
+fn stub_body(tree: &tree_sitter::Tree, src: &str, span: (usize, usize)) -> bool {
+    let Some(mut node) = tree.root_node().descendant_for_byte_range(span.0, span.1) else {
+        return false;
+    };
+    while node.kind() != "function_definition" || node.byte_range() != (span.0..span.1) {
+        match node.parent() {
+            Some(p) => node = p,
+            None => return false,
+        }
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let statements: Vec<tree_sitter::Node<'_>> = body
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() != "comment")
+        .collect();
+    let only_child = |n: tree_sitter::Node<'_>, kind: &str| {
+        n.kind() == "expression_statement"
+            && n.named_child_count() == 1
+            && n.named_child(0).is_some_and(|c| c.kind() == kind)
+    };
+    let rest = match statements.split_first() {
+        Some((first, rest)) if only_child(*first, "string") => rest,
+        _ => &statements[..],
+    };
+    let not_implemented = |n: tree_sitter::Node<'_>| {
+        let name = match n.named_child(0) {
+            Some(c) if c.kind() == "call" => c.child_by_field_name("function"),
+            other => other,
+        };
+        name.is_some_and(|c| {
+            c.kind() == "identifier" && c.utf8_text(src.as_bytes()) == Ok(NOT_IMPLEMENTED)
+        })
+    };
+    !rest.is_empty()
+        && rest.iter().all(|&n| match n.kind() {
+            "pass_statement" => true,
+            "raise_statement" => not_implemented(n),
+            _ => only_child(n, "ellipsis"),
+        })
 }
 
 /// Repository files the backstop has read, by id and by URI.
@@ -1281,6 +1407,157 @@ def use(a: Base, b: Base):
             report.refused,
             BTreeMap::from([(Refusal::OutsideCandidates, 1)])
         );
+    }
+
+    #[test]
+    fn pyright_backstop_refuses_an_overridden_callee_and_binds_a_concrete_leaf() {
+        // #177 on poetry: Pyright names the member of the receiver's
+        // declared type, and 813 of 857 Candidates bindings named a method a
+        // subclass overrides. Inside the resolver's set, `OutsideCandidates`
+        // does not catch that, and an Unresolved site has no set at all.
+        // ADR 0012 keeps every override, so both are refused (#186); a
+        // method no subclass overrides still binds, or the rule refuses
+        // everything and proves nothing.
+        let text = "class Base:
+    def run(self):
+        return 1
+
+
+class Sub(Base):
+    def run(self):
+        return 2
+
+
+class Leaf:
+    def go(self):
+        return 3
+
+
+def use(a: Base, x):
+    a.run()
+    x.run()
+    x.go()
+";
+        let f = fixture_of("refuses-overridden", text);
+        let (typed, untyped, leaf) = (f.site("a.run()"), f.site("x.run()"), f.site("x.go()"));
+        assert!(
+            matches!(f.target(typed), Target::Candidates(c) if c.contains(&f.symbol("run"))),
+            "fixture: a.run() must be Candidates holding Base.run, got {:?}",
+            f.target(typed)
+        );
+        for s in [untyped, leaf] {
+            assert!(
+                matches!(f.target(s), Target::Unresolved(_)),
+                "fixture: {s:?} must be Unresolved, got {:?}",
+                f.target(s)
+            );
+        }
+        let base_run = f.location(1, 8);
+        let answers = json!({"16:6": base_run, "17:6": base_run, "18:6": f.location(11, 8)});
+        let server = f.server(answers, "");
+        let report = run(&f.index, &f.root, &[typed, untyped, leaf], &server);
+
+        assert_eq!(
+            report.edges,
+            vec![BackstopEdge {
+                from: leaf,
+                callee: f.symbol("go"),
+                source: EdgeSource::Pyright,
+            }]
+        );
+        assert_eq!((report.queried, report.no_answer), (3, 0));
+        assert_eq!(
+            report.refused,
+            BTreeMap::from([(Refusal::OverriddenOrAbstract, 2)])
+        );
+    }
+
+    #[test]
+    fn pyright_backstop_refuses_an_abstract_or_stub_callee() {
+        // An `@abstractmethod`, or a body that is only `...`, `pass` or
+        // `raise NotImplementedError`, is never what runs (#177 found 38 such
+        // bindings on poetry). None of these methods is overridden, so the
+        // override rule cannot be what refuses them; `real` has a body and
+        // binds.
+        let text = r#"from abc import ABC, abstractmethod
+
+
+class Shape(ABC):
+    @abstractmethod
+    def area(self):
+        return 0
+
+    def todo(self):
+        raise NotImplementedError("later")
+
+    def hook(self):
+        """Called."""
+        ...
+
+    def real(self):
+        pass
+        return 1
+
+
+def use(s):
+    s.area()
+    s.todo()
+    s.hook()
+    s.real()
+"#;
+        let f = fixture_of("refuses-abstract", text);
+        let sites: Vec<CallSiteId> = ["s.area()", "s.todo()", "s.hook()", "s.real()"]
+            .iter()
+            .map(|t| f.site(t))
+            .collect();
+        for &s in &sites {
+            assert!(!f.target(s).is_certain(), "fixture: {s:?} must be doubt");
+        }
+        let answers = json!({
+            "21:6": f.location(5, 8),
+            "22:6": f.location(8, 8),
+            "23:6": f.location(11, 8),
+            "24:6": f.location(15, 8),
+        });
+        let server = f.server(answers, "");
+        let report = run(&f.index, &f.root, &sites, &server);
+
+        assert_eq!(
+            report.edges,
+            vec![BackstopEdge {
+                from: sites[3],
+                callee: f.symbol("real"),
+                source: EdgeSource::Pyright,
+            }]
+        );
+        assert_eq!(
+            report.refused,
+            BTreeMap::from([(Refusal::OverriddenOrAbstract, 3)])
+        );
+    }
+
+    #[test]
+    fn pyright_backstop_does_not_run_on_files_changed_since_the_index() {
+        // Which methods are overridden is rebuilt from the files, and symbol
+        // ids are positional: from a file edited after indexing, a refusal
+        // could land on the wrong symbol and a bind on an overridden one.
+        // The backstop does not run instead; every site keeps its verdict.
+        let f = fixture("stale");
+        std::fs::write(
+            f.root.join("a.py"),
+            format!("def first():\n    pass\n\n\n{REPO}"),
+        )
+        .unwrap();
+        let server = f.server(json!({"10:8": f.location(1, 8)}), "");
+        let doubt = doubt_sites(&f.index);
+        let report = run(&f.index, &f.root, &doubt, &server);
+
+        let BackstopStatus::NotRun { reason } = &report.status else {
+            panic!("a stale index ran the backstop: {:?}", report.status);
+        };
+        assert!(reason.contains("a.py changed"), "{reason}");
+        assert!(report.edges.is_empty());
+        assert_eq!(report.not_queried, u32::try_from(doubt.len()).unwrap());
     }
 
     #[test]

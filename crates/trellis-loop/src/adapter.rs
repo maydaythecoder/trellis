@@ -69,6 +69,11 @@ pub(crate) fn shown_observation(call: &ToolCall, obs: &str) -> String {
             )
         }
         ToolCall::ReadNote { .. } => obs.to_string(),
+        // Shown whole. Its counts come first and its listing is capped at
+        // `COVERAGE_REPORT_SITES` with the rest counted, so the tail cut
+        // below would drop the counts and keep sites: the doubt figure
+        // lost without saying so (CLAUDE.md rule 3).
+        ToolCall::CoverageReport { .. } => obs.to_string(),
         // Bytes in the test, characters in the cut: exactly as before this
         // function existed, so every other observation's prompt is unchanged
         // byte for byte.
@@ -423,11 +428,37 @@ const MAX_FORMAT_RETRIES: u32 = 4;
 /// silently, so the list is never mistaken for the whole repository.
 const MAX_FILES_LISTED: usize = 200;
 
+/// A run's prompt tokens: the reported figures summed, and how many calls
+/// reported none (ADR 0027, #106).
+#[derive(Debug, Default, Clone, Copy)]
+struct PromptTokens {
+    sum: u64,
+    unreported: u64,
+}
+
+impl PromptTokens {
+    fn add(&mut self, n: Option<u64>) {
+        match n {
+            Some(n) => self.sum = self.sum.saturating_add(n),
+            None => self.unreported += 1,
+        }
+    }
+
+    /// Unknown once any call went unreported, rather than the partial sum:
+    /// a low figure would read as a cheap run.
+    fn total(&self) -> Option<u64> {
+        (self.unreported == 0).then_some(self.sum)
+    }
+}
+
 pub struct RuntimeModel {
     client: RuntimeClient,
     tier: AdapterTier,
     max_tokens: u32,
     tokens: u64,
+    /// Prompt tokens as reported, and the calls that reported none; see
+    /// [`Model::prompt_tokens`].
+    prompt: PromptTokens,
     /// Prompt size on the most recent call, for the context-fill measurement
     /// the v0.2 gate asks for. Bytes, because TRELLIS does not tokenize.
     last_prompt_bytes: Option<usize>,
@@ -479,6 +510,7 @@ impl RuntimeModel {
             // edit at 2048.
             max_tokens: DEFAULT_MAX_REPLY_TOKENS,
             tokens: 0,
+            prompt: PromptTokens::default(),
             last_prompt_bytes: None,
             compaction: Compaction::default(),
         }
@@ -860,6 +892,8 @@ impl Model for RuntimeModel {
                 // connection just spends the budget discovering it again.
                 .map_err(|e| format!("runtime call failed: {e}"))?;
             self.tokens += completion.tokens;
+            // Every call, a retried one too: its prompt was sent and read.
+            self.prompt.add(completion.prompt_tokens);
 
             let Some(json) = extract_json(&completion.text) else {
                 // Two different failures, and they need different fixes.
@@ -948,6 +982,10 @@ impl Model for RuntimeModel {
         self.tokens
     }
 
+    fn prompt_tokens(&self) -> Option<u64> {
+        self.prompt.total()
+    }
+
     fn prompt_bytes(&self) -> Option<usize> {
         self.last_prompt_bytes
     }
@@ -981,6 +1019,8 @@ pub struct HostedModel {
     max_tokens: u32,
     /// Output tokens the provider reported.
     tokens: u64,
+    /// Prompt tokens as reported, and the replies that reported none.
+    prompt: PromptTokens,
     /// Replies that carried no usage figure. Each is charged to the in-run
     /// ceiling at the `max_tokens` it was requested with, the most it can
     /// have cost; none of them reaches the trail as a number.
@@ -1001,6 +1041,9 @@ pub struct HostedModel {
     pending: Option<(usize, Issued)>,
     /// Set, and said once, when thinking was withheld from a request.
     thinking_withheld: bool,
+    /// `trellis run --image`, sent with the first user message of every
+    /// request (ADR 0041).
+    images: Vec<trellis_model::Image>,
 }
 
 #[derive(Debug, Clone)]
@@ -1016,6 +1059,7 @@ impl HostedModel {
             client,
             max_tokens: HOSTED_MAX_REPLY_TOKENS,
             tokens: 0,
+            prompt: PromptTokens::default(),
             unreported: 0,
             usage_required: false,
             last_prompt_bytes: None,
@@ -1023,7 +1067,16 @@ impl HostedModel {
             issued: Vec::new(),
             pending: None,
             thinking_withheld: false,
+            images: Vec::new(),
         }
+    }
+
+    /// Images for the first user message (ADR 0041). Their base64 is part
+    /// of every body, so the context budget counts it like any other byte.
+    #[must_use]
+    pub fn with_images(mut self, images: Vec<trellis_model::Image>) -> Self {
+        self.images = images;
+        self
     }
 
     /// Ends the run at the first reply with no usage figure, rather than
@@ -1139,6 +1192,7 @@ fn conversation(
     issued: &[Option<Issued>],
     protocol: Protocol,
     elided: usize,
+    images: &[trellis_model::Image],
 ) -> Conversation {
     let mut user = format!("Task: {}\n\n", t.task);
     prior_block(t, &mut user);
@@ -1172,6 +1226,7 @@ fn conversation(
         user: user.trim_end().to_string(),
         exchanges,
         trailing: hosted_trailing(t),
+        images: images.to_vec(),
     }
 }
 
@@ -1275,13 +1330,14 @@ impl Model for HostedModel {
             );
         }
         while attempt < MAX_FORMAT_RETRIES {
-            let (client, issued, max) = (&self.client, &self.issued, self.max_tokens);
+            let (client, issued, max, images) =
+                (&self.client, &self.issued, self.max_tokens, &self.images);
             // Each observation is one JSON string in the body, so its cost
             // is its escaped length; `fit_by` checks that against a real
             // render and falls back to the scan if it is ever wrong.
             let body = self.compaction.fit_by(
                 t,
-                |k| client.body(&conversation(t, issued, protocol, k), &tools, max),
+                |k| client.body(&conversation(t, issued, protocol, k, images), &tools, max),
                 |b| b.to_string().len(),
                 |s| serde_json::to_string(s).map_or(s.len(), |j| j.len()),
             );
@@ -1299,8 +1355,9 @@ impl Model for HostedModel {
                 .unwrap_or_else(|| body.to_string().len());
             self.last_prompt_bytes = Some(bytes);
             tracing::debug!(prompt_bytes = bytes, turns = t.turns.len());
-            // The key is not in the body; it is added by the transport.
-            tracing::trace!(request = %body, "request as sent");
+            // The key is not in the body; it is added by the transport. An
+            // image's bytes are, and a log is not where they go (ADR 0041).
+            tracing::trace!(request = %trellis_model::redact_images(&body), "request as sent");
             let reply = match self.client.send(&body).await {
                 Ok(r) => r,
                 Err(RuntimeError::ContextOverflow(why)) if overflows < MAX_OVERFLOW_RETRIES => {
@@ -1318,6 +1375,10 @@ impl Model for HostedModel {
                 Err(e) => return Err(format!("hosted call failed: {e}")),
             };
             attempt += 1;
+            // Every reply, one retried as a format failure too. A missing
+            // prompt figure does not end a budgeted run the way a missing
+            // output figure does: the ledger counts output tokens only.
+            self.prompt.add(reply.prompt_tokens);
             match reply.tokens {
                 Some(n) => self.tokens += n,
                 None => {
@@ -1386,6 +1447,10 @@ impl Model for HostedModel {
     fn tokens_used(&self) -> u64 {
         self.tokens
             .saturating_add(self.unreported.saturating_mul(u64::from(self.max_tokens)))
+    }
+
+    fn prompt_tokens(&self) -> Option<u64> {
+        self.prompt.total()
     }
 
     fn prompt_bytes(&self) -> Option<usize> {
@@ -1554,6 +1619,7 @@ mod tests {
                 prompt_bytes: None,
                 human: None,
                 may_have_changed_tree: false,
+                changed: Vec::new(),
             }],
             final_notice: true,
             steering: Default::default(),
@@ -1595,6 +1661,7 @@ mod tests {
                 prompt_bytes: None,
                 human: None,
                 may_have_changed_tree: false,
+                changed: Vec::new(),
             }],
             final_notice: false,
             steering: Default::default(),
@@ -1794,6 +1861,36 @@ mod tests {
         assert!(asked.windows(2).all(|w| w[1] >= w[0]), "{asked:?}");
     }
 
+    #[tokio::test]
+    async fn runtime_prompt_tokens_sum_every_call_and_are_unknown_once_one_is_missing() {
+        // llama.cpp's `tokens_evaluated`, over a format retry and the call
+        // that followed it: both prompts were read, 60 + 70.
+        let prose = r#"{"content":"I will read it.","tokens_predicted":4,"tokens_evaluated":60}"#;
+        let good = r#"{"content":"{\"tool\":\"done\",\"summary\":\"ok\"}","tokens_predicted":5,"tokens_evaluated":70}"#;
+        let (base, _h) = replaying_stub(vec![prose, good]).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let mut m = RuntimeModel::unconstrained(c);
+        m.next_step(&one_turn("t")).await.expect("a valid call");
+        assert_eq!((m.prompt_tokens(), m.tokens_used()), (Some(130), 9));
+
+        // The first reply without the figure: unknown, not 70.
+        let prose = r#"{"content":"I will read it.","tokens_predicted":4}"#;
+        let (base, _h) = replaying_stub(vec![prose, good]).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let mut m = RuntimeModel::unconstrained(c);
+        m.next_step(&one_turn("t")).await.expect("a valid call");
+        assert_eq!((m.prompt_tokens(), m.tokens_used()), (None, 9));
+    }
+
+    #[test]
+    fn a_driver_that_sends_no_prompt_has_unknown_prompt_tokens() {
+        let m = crate::scripted::ScriptedModel::from_json(
+            r#"{"steps":[{"tool":"done","summary":"x"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(Model::prompt_tokens(&m), None);
+    }
+
     fn one_turn(task: &str) -> Transcript {
         Transcript {
             task: task.into(),
@@ -1898,6 +1995,7 @@ mod compaction_and_hosted_tests {
             radius_summarised: None,
             human: None,
             may_have_changed_tree: false,
+            changed: Vec::new(),
         }
     }
 
@@ -1924,7 +2022,7 @@ mod compaction_and_hosted_tests {
         // person's words as something a tool returned.
         let mut t = transcript(vec![turn(read("a.py"), "contents", None)]);
         for protocol in [Protocol::OpenAiChat, Protocol::Anthropic] {
-            let c = conversation(&t, &[], protocol, 0);
+            let c = conversation(&t, &[], protocol, 0, &[]);
             assert_eq!(c.trailing, None, "nothing steered, nothing trailing");
         }
 
@@ -1934,7 +2032,7 @@ mod compaction_and_hosted_tests {
         });
         t.final_notice = true;
         for protocol in [Protocol::OpenAiChat, Protocol::Anthropic] {
-            let c = conversation(&t, &[], protocol, 0);
+            let c = conversation(&t, &[], protocol, 0, &[]);
             let trailing = c.trailing.expect("a steer was delivered");
             assert!(trailing.contains("STEER-HOSTED stop and read b.py"));
             assert!(trailing.contains("from the person running this task"));
@@ -2501,6 +2599,50 @@ mod compaction_and_hosted_tests {
         assert_eq!(m.tokens_measured(), None);
     }
 
+    /// An OpenAI chat reply: prose (no call) when `name` is `None`, with
+    /// `prompt` as its `usage.prompt_tokens` when given.
+    fn reply_prompting(name: Option<&str>, prompt: Option<u64>) -> String {
+        let message = match name {
+            Some(n) => json!({"role":"assistant","content":null,"tool_calls":[
+                {"id":"c1","type":"function","function":{"name":n,"arguments":"{\"summary\":\"x\"}"}}]}),
+            None => json!({"role":"assistant","content":"I will read it."}),
+        };
+        let mut usage = json!({"completion_tokens": 7});
+        if let Some(p) = prompt {
+            usage["prompt_tokens"] = json!(p);
+        }
+        json!({"choices":[{"message": message}], "usage": usage}).to_string()
+    }
+
+    #[tokio::test]
+    async fn hosted_prompt_tokens_sum_every_reply_and_are_unknown_once_one_is_missing() {
+        // A reply retried as a format failure still sent its prompt, so it
+        // counts: 100 + 250.
+        let (base, _h) = stub(vec![
+            reply_prompting(None, Some(100)),
+            reply_prompting(Some("done"), Some(250)),
+        ])
+        .await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        m.next_step(&transcript(Vec::new())).await.unwrap();
+        assert_eq!(m.prompt_tokens(), Some(350));
+
+        // One reply without the figure makes the total unknown, not 250:
+        // the partial sum would read as a cheaper run than it was. The
+        // completion count is untouched by it.
+        let (base, _h) = stub(vec![
+            reply_prompting(None, None),
+            reply_prompting(Some("done"), Some(250)),
+        ])
+        .await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        m.next_step(&transcript(Vec::new())).await.unwrap();
+        assert_eq!(m.prompt_tokens(), None);
+        assert_eq!(m.tokens_measured(), Some(14));
+    }
+
     #[tokio::test]
     async fn a_budgeted_run_stops_at_a_reply_with_no_usage() {
         let (base, _h) = stub(vec![done_without_usage()]).await;
@@ -2582,7 +2724,7 @@ mod compaction_and_hosted_tests {
             for p in [Protocol::Anthropic, Protocol::OpenAiChat] {
                 assert_eq!(
                     every_turn_replayed(&t, &rec),
-                    trellis_model::every_turn_replayed(&conversation(&t, &rec, p, 0)),
+                    trellis_model::every_turn_replayed(&conversation(&t, &rec, p, 0, &[])),
                     "{} turns, {rec:?}",
                     t.turns.len()
                 );

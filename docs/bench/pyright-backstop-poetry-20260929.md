@@ -205,3 +205,93 @@ No edge names a symbol the source did not call.
 
 Zero violations, as expected: the backstop's edges are not in `Index::edges`,
 so the resolver's output is unchanged by it.
+
+## Re-run with overridden and abstract answers refused (#186, 2026-09-29)
+
+#186 changed the binder: an answer whose one symbol is a method a
+first-party subclass overrides, or a function or method that is
+`@abstractmethod` or has a stub body, is now refused and counted as
+**refused: overridden or abstract** (ADR 0031, amendment of 2026-09-29).
+
+Method: as above, changing only the trellis commit.
+
+| | |
+|---|---|
+| trellis commit | `9a644bbf4abf774d963b1f27d135a62f40acd28d` (branch `t186-refuse-overridden`) |
+| build | `cargo build --release -p trellis-cli`; the two examples with `cargo build --release -p trellis-index --example backstop_edges --example check_soundness` |
+| Pyright, Node, host | as above: 1.1.414 from the same scratch prefix, v25.6.0, Windows 11 Home 10.0.26200 |
+| corpus | a fresh copy of `.bench/poetry-2.5.0` without `.trellis/` and `.mypy_cache/`, with the same `.trellis/config.toml`; its `src/` compared equal (`diff -r`) to #177's copy |
+| Python environment | none, as above |
+
+`pyright_backstop_measure.ps1` was run twice. The resolver's line is the
+same as #177's (`5908 of 13510 ... 865 ambiguous, 6737 unresolved`), and the
+backstop section was identical in both runs:
+
+```
+backstop: pyright ran (pyright 1.1.414, from its package.json)
+  queried            7580  Unresolved or Candidates sites only
+  bound by pyright    827  counted apart: not in `resolved`, not in the graph
+  no answer          2949  the server returned no location; resolver's verdict kept
+  refused            3804  an answer this backstop would not bind; resolver's verdict kept
+    outside the repository         2192
+    not at a definition's name      568
+    more than one symbol             12
+    overridden or abstract         1032
+  not queried          22  keep the resolver's verdict
+```
+
+| | #177 | #186 |
+|---|---:|---:|
+| queried | 7,580 | 7,580 |
+| bound by pyright | 1,859 | 827 |
+| refused: overridden or abstract | (not a reason then) | 1,032 |
+| no answer + every other refusal | 5,721 | 5,721 (2,949 + 2,192 + 568 + 12) |
+| not queried | 22 | 22 |
+
+The new refusal took its 1,032 entirely from what #177 bound
+(1,859 − 827); no other count moved.
+
+Bound edges by the resolver's verdict, from `backstop_edges` on the same
+copy: **800 from `Unresolved` sites and 27 from `Candidates` sites** (#177:
+1,002 and 857). By subtraction, the refusals were 202 `Unresolved` and 830
+`Candidates` sites. That subtraction assumes Pyright answered as it did for
+#177; the unchanged counts above are consistent with that, and it was not
+checked site by site.
+
+The #177 text proxy ([`backstop_overrides.py`](backstop_overrides.py)) over
+the 827 remaining edges finds 0 whose callee a subclass overrides and 0
+abstract or stub callees. Its #177 counts (813 + 150 overridden, 8 + 30
+abstract or stub) differ from the 1,032 refused here, and there are known
+reasons they would: the proxy matches classes by bare name and reads bases
+from the `class` line, where the binder uses the resolver's hierarchy; the
+proxy checks the first statement of a body, where the binder requires every
+statement after the docstring to be `...`, `pass` or `raise
+NotImplementedError`; and the binder applies the abstract and stub test to
+module-level functions too (an `@overload` signature is a `...` body). How
+much each contributes was not measured.
+
+Name check over the 827: 0 name a symbol whose name differs from the call's
+identifier.
+
+`check_soundness` on the same copy:
+
+```
+checked 5908 Resolved edges (0 had no comparable identifier)
+No edge names a symbol the source did not call.
+```
+
+Zero violations. The refactor that lets the backstop ask the resolver's
+override rule (`prepare` split out of `build_from_facts`) left the
+resolver's counts on this corpus as #177 printed them (the line above and
+the resolver's line in `trellis index`), and every `trellis-index` test and
+snapshot passes; that is evidence the resolver's edges did not change, not a
+byte comparison of them. Precision on the audited sample is a property of the resolver's
+edges, which did not change; the audit was not re-run.
+
+Wall time and peak working set, one run each, same method as above, on a
+machine running other builds: 23.3 s and 26.6 s for the whole `trellis
+index`; `node.exe` (Pyright) 711.2 MiB and 717.2 MiB; `trellis.exe`
+56.7 MiB and 47.0 MiB. The backstop now re-reads and re-parses the indexed
+files before starting the server (the index stores no class hierarchy); that
+cost is inside these figures and was not measured apart. The second run
+found `.trellis/index.bin` written by the first.

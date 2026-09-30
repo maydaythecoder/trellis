@@ -11,6 +11,7 @@
 //! a call label, the verdict, the check kind, a tail of the observation, the
 //! radius counts when the call produced them, and the prompt size.
 
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::Sender;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
@@ -29,6 +30,8 @@ struct TurnFields {
     candidates: Option<u64>,
     unresolved: Option<u64>,
     prompt_bytes: Option<u64>,
+    /// On the loop's "steer delivered" event: turns completed before it.
+    after_step: Option<u64>,
     message: Option<String>,
 }
 
@@ -40,6 +43,7 @@ impl Visit for TurnFields {
             "candidates" => self.candidates = Some(v),
             "unresolved" => self.unresolved = Some(v),
             "prompt_bytes" => self.prompt_bytes = Some(v),
+            "after_step" => self.after_step = Some(v),
             _ => {}
         }
     }
@@ -85,11 +89,54 @@ impl Visit for TurnFields {
 /// pressure is the right trade against blocking the run to draw a frame.
 pub(crate) struct LoopLayer {
     tx: Sender<Message>,
+    delivered: SteerDeliveries,
 }
 
+/// Every steer delivery this layer has seen, as `(nth, turn)`, in order.
+///
+/// Kept beside the live message because `emit` is lossy: the driver sends
+/// these again once the run returns, before `RunFinished`, and a delivery
+/// dropped under load would otherwise be reported as a steer the model
+/// never saw.
+pub(crate) type SteerDeliveries = Arc<Mutex<Vec<(usize, usize)>>>;
+
 impl LoopLayer {
+    /// One per run: steers are counted from 0 from here, as the view counts
+    /// the ones it queued for the run.
     pub(crate) fn new(tx: Sender<Message>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            delivered: Arc::default(),
+        }
+    }
+
+    /// The deliveries this layer records, readable after it is installed.
+    pub(crate) fn deliveries(&self) -> SteerDeliveries {
+        Arc::clone(&self.delivered)
+    }
+
+    /// The loop's own "steer delivered" event, as a message naming the
+    /// steer by its position.
+    ///
+    /// The event carries a byte count and not the text, so the steer is
+    /// named by order: the loop drains its channel in the order sent and
+    /// delivers a prefix of what it received (a steer that arrives after the
+    /// last request is never delivered), so the nth delivery is the nth
+    /// steer sent. `turn` is `after_step + 1`: `after_step` counts completed
+    /// turns, and the steer is in the request that becomes the next one.
+    fn steer_delivered(&self, after_step: u64) {
+        let turn = usize::try_from(after_step)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
+        let nth = {
+            // A poisoned lock means a panic elsewhere on this run; the list
+            // itself is still whole, and losing it would misreport steers.
+            let mut d = self.delivered.lock().unwrap_or_else(|e| e.into_inner());
+            let nth = d.len();
+            d.push((nth, turn));
+            nth
+        };
+        self.emit(Message::SteerDelivered { nth, turn });
     }
 
     fn emit(&self, m: Message) {
@@ -101,6 +148,15 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
         let mut f = TurnFields::default();
         event.record(&mut f);
+
+        // Matched on the message as well as the field, so that no other
+        // event which happens to carry an `after_step` can count as one.
+        if let Some(after_step) = f.after_step
+            && f.message.as_deref() == Some("steer delivered")
+        {
+            self.steer_delivered(after_step);
+            return;
+        }
 
         // A turn is an event with *both* a call and a turn number. A `call`
         // alone is not enough: the loop's "no progress; stopping" warning
@@ -466,5 +522,37 @@ mod tests {
             tracing::debug!(prompt_bytes = 512u64, turns = 2u64, "prompt built");
         });
         assert!(got.is_empty(), "only turns and warnings surface: {got:?}");
+    }
+
+    #[test]
+    fn a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached() {
+        // The event `SteeringLog::drain` emits, spelled as it spells it: if
+        // the loop renames a field or rewords the message, this fails
+        // instead of the view reporting every steer not delivered.
+        let (tx, mut rx) = mpsc::channel(8);
+        let layer = LoopLayer::new(tx);
+        let log = layer.deliveries();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let after_step: usize = 0;
+            tracing::info!(after_step, bytes = 9usize, "steer delivered");
+            let after_step: usize = 2;
+            tracing::info!(after_step, bytes = 4usize, "steer delivered");
+        });
+        let mut got = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            got.push(m);
+        }
+        assert!(
+            matches!(
+                got.as_slice(),
+                [
+                    Message::SteerDelivered { nth: 0, turn: 1 },
+                    Message::SteerDelivered { nth: 1, turn: 3 }
+                ]
+            ),
+            "{got:?}"
+        );
+        assert_eq!(*log.lock().unwrap(), vec![(0, 1), (1, 3)]);
     }
 }
