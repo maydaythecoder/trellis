@@ -1,0 +1,383 @@
+//! The rules against `docs/TICKETING.md`, one ticket body at a time.
+//!
+//! Every `abstains_*` test names the input that makes its dimension abstain.
+//! The rest pin what a rule must decide, and the risk if it did not.
+
+use std::collections::BTreeMap;
+
+use trellis_tickets::{
+    Effort, Flag, Kind, Origin, Outcome, Risk, Route, State, Surface, TRIAGE_VERSION, Ticket, area,
+    effort, flags, kind, origin, ready, risk, surface, triage,
+};
+
+fn ticket(title: &str, body: &str, labels: &[&str]) -> Ticket {
+    Ticket {
+        title: title.to_string(),
+        body: body.to_string(),
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        state: State::Open,
+    }
+}
+
+/// A body G0 would accept, with the given `**Files:**` line.
+fn body(files: &str) -> String {
+    format!(
+        "**Source:** test\n\n{files}\n\n## Done when\n- the thing holds\n\n## Verify\n```\nscripts/tickets/verify-tests.sh trellis-x thing_ 1\n```\n"
+    )
+}
+
+fn no_blockers() -> BTreeMap<u64, State> {
+    BTreeMap::new()
+}
+
+fn reason<T: std::fmt::Debug>(o: &Outcome<T>) -> &str {
+    match o {
+        Outcome::Abstained { reason, .. } => reason,
+        Outcome::Decided { .. } => panic!("expected an abstention, got {o:?}"),
+    }
+}
+
+fn value<T: std::fmt::Debug>(o: &Outcome<T>) -> &T {
+    o.decided()
+        .unwrap_or_else(|| panic!("expected a decision, got {o:?}"))
+}
+
+// ---- one abstention per dimension -------------------------------------
+
+#[test]
+fn abstains_area_when_the_body_has_no_files_line() {
+    let t = ticket("Add a thing", "No files named here.", &["origin:manual"]);
+    assert!(reason(&area(&t)).contains("no `**Files:**` line"));
+}
+
+#[test]
+fn abstains_area_when_files_span_three_areas() {
+    // Spanning areas usually means the ticket is really a story (§5).
+    let t = ticket(
+        "Add a thing",
+        &body(
+            "**Files:** crates/trellis-model/src/a.rs; crates/trellis-cli/src/main.rs; docs/X.md",
+        ),
+        &[],
+    );
+    assert!(reason(&area(&t)).contains("3 areas"));
+}
+
+#[test]
+fn abstains_area_when_a_file_is_under_no_path_in_the_table() {
+    // trellis-index has no row in §5's table; mapping it would be a guess.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-index/src/resolve.rs"),
+        &[],
+    );
+    assert!(reason(&area(&t)).contains("crates/trellis-index/src/resolve.rs"));
+}
+
+#[test]
+fn abstains_kind_when_the_title_is_empty() {
+    let t = ticket("  ", &body("**Files:** docs/X.md"), &[]);
+    assert!(reason(&kind(&t)).contains("title is empty"));
+}
+
+#[test]
+fn abstains_kind_when_the_files_line_is_unreadable_and_the_title_names_no_bug() {
+    // Without the files, "only *.md touched" cannot be ruled out, so
+    // `feature` would be a guess.
+    let t = ticket("Add a thing", "**Files:** no crate files", &[]);
+    assert!(matches!(kind(&t), Outcome::Abstained { .. }));
+}
+
+#[test]
+fn abstains_surface_when_a_library_crate_src_file_needs_the_diff() {
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-model/src/tier.rs"),
+        &[],
+    );
+    let o = surface(&t);
+    assert!(reason(&o).contains("needs the diff"), "{o:?}");
+}
+
+#[test]
+fn abstains_risk_when_surface_is_unknown_and_nothing_raises_it() {
+    // Defaulting to low here would under-rate a change to a pub signature.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-model/src/tier.rs"),
+        &[],
+    );
+    assert!(reason(&risk(&t)).contains("surface abstained"));
+}
+
+#[test]
+fn abstains_risk_when_a_manifest_could_lift_the_unsafe_forbid() {
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-cli/Cargo.toml"),
+        &[],
+    );
+    assert!(reason(&risk(&t)).contains("unsafe"));
+}
+
+#[test]
+fn abstains_effort_when_a_files_entry_is_a_directory() {
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** docs/bench/ (new run)"),
+        &[],
+    );
+    assert!(reason(&effort(&t)).contains("docs/bench"));
+}
+
+#[test]
+fn abstains_origin_when_no_origin_label_is_recorded() {
+    let t = ticket("Add a thing", &body("**Files:** docs/X.md"), &[]);
+    assert!(reason(&origin(&t)).contains("no `origin:` label"));
+}
+
+#[test]
+fn abstains_origin_when_two_origin_labels_are_recorded() {
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** docs/X.md"),
+        &["origin:manual", "origin:qa"],
+    );
+    assert!(matches!(origin(&t), Outcome::Abstained { .. }));
+}
+
+#[test]
+fn abstains_flags_when_a_lockfile_may_carry_a_dependency_change() {
+    // `!needs-adr` is set by a dependency change (§5), and the files name
+    // the lockfile without saying whether one happens. Six files make risk
+    // medium on its own, so the abstention is the dependency's and not an
+    // upstream one passing through.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** docs/a.md; docs/b.md; docs/c.md; docs/d.md; docs/e.md; Cargo.lock"),
+        &["origin:manual"],
+    );
+    assert_eq!(*value(&risk(&t)), Risk::Medium);
+    let o = flags(&t);
+    assert!(reason(&o).contains("dependency"), "{o:?}");
+}
+
+#[test]
+fn abstains_ready_when_a_blockers_state_was_not_supplied() {
+    // An unknown dependency is not a satisfied one.
+    let t = ticket(
+        "Add a thing",
+        &format!("{}\nblocked_by: [75]\n", body("**Files:** docs/X.md")),
+        &["origin:manual"],
+    );
+    assert!(reason(&ready(&t, &no_blockers())).contains("#75"));
+}
+
+#[test]
+fn abstains_triage_when_a_blocked_by_entry_is_not_an_issue_number() {
+    // Malformed intake is a hard fail, not a guess (§4).
+    let t = ticket(
+        "Add a thing",
+        &format!(
+            "{}\nblocked_by: [75, child-a]\n",
+            body("**Files:** docs/X.md")
+        ),
+        &["origin:manual"],
+    );
+    let o = triage(&t, &BTreeMap::from([(75, State::Closed)]));
+    assert!(reason(&o).contains("child-a"), "{o:?}");
+}
+
+// ---- what the rules must decide ----------------------------------------
+
+#[test]
+fn triage_version_is_the_one_on_the_issues() {
+    assert_eq!(TRIAGE_VERSION, 2);
+}
+
+#[test]
+fn a_clean_docs_ticket_reaches_auto() {
+    // If `auto` were unreachable the pipeline would route everything to a
+    // person and carry no information.
+    let t = ticket(
+        "Document the thing",
+        &body("**Files:** docs/X.md"),
+        &["origin:manual"],
+    );
+    let o = triage(&t, &no_blockers());
+    assert_eq!(value(&o).route, Route::Auto, "{o:?}");
+    assert_eq!(value(&area(&t)).label(), "area:docs");
+    assert_eq!(*value(&kind(&t)), Kind::Docs);
+    assert_eq!(*value(&surface(&t)), Surface::Internal);
+    assert_eq!(*value(&risk(&t)), Risk::Low);
+    assert_eq!(*value(&effort(&t)), Effort::S);
+    assert_eq!(*value(&origin(&t)), Origin::Manual);
+}
+
+#[test]
+fn agent_ok_is_decided_absent_because_rule_2_has_no_check() {
+    // The flag releases unsupervised execution. It asserts all six of §5's
+    // conditions were shown, and rule 2 cannot be; absence is decided, and
+    // the rule string says why rather than leaving it to look accidental.
+    let t = ticket(
+        "Document the thing",
+        &body("**Files:** docs/X.md"),
+        &["origin:manual", "!agent-ok"],
+    );
+    let o = flags(&t);
+    assert!(!value(&o).contains(&Flag::AgentOk));
+    assert!(o.rule().contains("rule 2"));
+}
+
+#[test]
+fn a_checks_file_is_risk_high_even_when_area_abstains() {
+    // The Verdict seal is high risk "always" (§5). An unmapped second file
+    // makes area abstain; that must not hide the checks file.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-index/src/a.rs; crates/trellis-checks/src/lib.rs"),
+        &["origin:manual"],
+    );
+    assert!(matches!(area(&t), Outcome::Abstained { .. }));
+    assert_eq!(*value(&risk(&t)), Risk::High);
+    assert_eq!(value(&triage(&t, &no_blockers())).route, Route::NeedsHuman);
+}
+
+#[test]
+fn a_security_label_makes_risk_high_without_any_files() {
+    let t = ticket("Add a thing", "no files", &["!security"]);
+    assert_eq!(*value(&risk(&t)), Risk::High);
+}
+
+#[test]
+fn high_risk_that_is_not_a_bug_needs_an_adr() {
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-checks/tests/x_test.rs"),
+        &["origin:manual"],
+    );
+    assert_eq!(*value(&kind(&t)), Kind::Test);
+    assert!(value(&flags(&t)).contains(&Flag::NeedsAdr));
+    let r = ready(&t, &no_blockers());
+    assert!(value(&r).failures.contains(&"needs ADR".to_string()));
+}
+
+#[test]
+fn kind_follows_the_table_order() {
+    let fix = ticket("Fix the thing", &body("**Files:** docs/X.md"), &[]);
+    assert_eq!(*value(&kind(&fix)), Kind::Bug);
+    let rename = ticket(
+        "Rename the thing",
+        &body("**Files:** crates/trellis-cli/src/main.rs"),
+        &[],
+    );
+    assert_eq!(*value(&kind(&rename)), Kind::Refactor);
+    let ci = ticket(
+        "Run it in CI",
+        &body("**Files:** .github/workflows/ci.yml"),
+        &[],
+    );
+    assert_eq!(*value(&kind(&ci)), Kind::Chore);
+}
+
+#[test]
+fn a_command_definition_is_surface_cli_and_risk_medium() {
+    let t = ticket(
+        "Add a flag",
+        &body("**Files:** crates/trellis-cli/src/main.rs"),
+        &["origin:manual"],
+    );
+    assert_eq!(*value(&surface(&t)), Surface::Cli);
+    assert_eq!(*value(&risk(&t)), Risk::Medium);
+}
+
+#[test]
+fn effort_counts_new_tests_from_the_verify_block() {
+    let one_file_many_tests = ticket(
+        "Add a thing",
+        "**Files:** docs/X.md\n\n## Verify\n```\nscripts/tickets/verify-tests.sh trellis-x a_ 9\n```\n",
+        &[],
+    );
+    assert_eq!(*value(&effort(&one_file_many_tests)), Effort::M);
+    let six = ticket(
+        "Add a thing",
+        &body("**Files:** docs/a.md; docs/b.md; docs/c.md; docs/d.md; docs/e.md; docs/f.md"),
+        &[],
+    );
+    assert_eq!(*value(&effort(&six)), Effort::L);
+}
+
+#[test]
+fn ready_names_every_failure() {
+    // "Not ready" with no reason is useless (§5).
+    let mut t = ticket(
+        "Design the thing",
+        "**Files:** docs/a.md; docs/b.md; docs/c.md; docs/d.md; docs/e.md; docs/f.md\n\nblocked_by: [75]\n",
+        &["origin:manual"],
+    );
+    t.state = State::Closed;
+    let r = ready(&t, &BTreeMap::from([(75, State::Open)]));
+    assert_eq!(
+        value(&r).failures,
+        [
+            "issue is CLOSED",
+            "no '## Done when' section",
+            "no verify command",
+            "decision words: design",
+            "effort:l",
+            "blocked by #75 (OPEN)",
+        ]
+    );
+}
+
+#[test]
+fn decision_words_inside_the_decision_section_do_not_fail_ready() {
+    // Every released issue records "Decided ... by the owner" under
+    // `## Decision`; reading that as a pending decision would fail them all.
+    let t = ticket(
+        "Document the thing",
+        &format!(
+            "## Decision\nYes. Decided 2026-09-28 by the owner.\n\n{}",
+            body("**Files:** docs/X.md")
+        ),
+        &["origin:manual"],
+    );
+    assert!(value(&ready(&t, &no_blockers())).is_ready());
+}
+
+#[test]
+fn an_open_blocker_routes_blocked_and_a_closed_one_does_not() {
+    let t = ticket(
+        "Document the thing",
+        &format!("{}\nblocked_by: [75]\n", body("**Files:** docs/X.md")),
+        &["origin:manual"],
+    );
+    let open = triage(&t, &BTreeMap::from([(75, State::Open)]));
+    assert_eq!(value(&open).route, Route::Blocked);
+    let closed = triage(&t, &BTreeMap::from([(75, State::Closed)]));
+    assert_eq!(value(&closed).route, Route::Auto);
+}
+
+#[test]
+fn an_agents_ticket_goes_to_a_person() {
+    // An agent adding work to the queue unsupervised fills it with
+    // plausible noise (§2).
+    let t = ticket(
+        "Document the thing",
+        &body("**Files:** docs/X.md"),
+        &["origin:agent"],
+    );
+    assert_eq!(value(&triage(&t, &no_blockers())).route, Route::NeedsHuman);
+}
+
+#[test]
+fn a_ticket_that_is_not_ready_and_not_blocked_goes_to_a_person_with_its_failures() {
+    let t = ticket(
+        "Document the thing",
+        "**Files:** docs/X.md\n\n## Done when\n- it holds\n",
+        &["origin:manual"],
+    );
+    let o = triage(&t, &no_blockers());
+    assert_eq!(value(&o).route, Route::NeedsHuman);
+    assert_eq!(value(&o).reasons, ["not ready: no verify command"]);
+}

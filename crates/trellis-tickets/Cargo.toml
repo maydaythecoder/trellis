@@ -1,0 +1,20 @@
+[package]
+name = "trellis-tickets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Maintainer tooling for trellis's own GitHub issues (ADR 0040), not part of
+# the shipped `trellis` binary.
+publish = false
+
+# The rule engine is pure functions over an issue's text, so it needs no
+# third-party crate. `trellis-core` is the one first-party dependency ADR 0040
+# allows (decision 2): it is where `secrets::scrub` lives, which every `gh`
+# spawn the commands make must go through (decision 5). No trellis crate may
+# depend on this one.
+[dependencies]
+trellis-core.workspace = true
+
+[lints]
+workspace = true
