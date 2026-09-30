@@ -159,5 +159,10 @@ python docs/bench/bytes_per_token.py docs/bench/floor-qwen2.5-3b-q4km-ollama-202
 The same run is a third floor configuration: 0 of 20 repaired (11
 no-progress, 6 no-recovery, 3 format-failure; `…-20260930.json`). In 7 of
 the 20 runs a prompt passed 4,096 tokens (16,498–19,447 bytes), and 6 of
-those runs ended when trellis could not parse Ollama's reply to the
-truncated prompt.
+those runs (t09, t11, t12, t13, t17, t18) ended with "response is not JSON".
+The reply was a well-formed completion; the client did not decode Ollama's
+chunked framing (#229, fixed in 4f612eb). Those six are the report's six
+`no-recovery`, so their outcome was set by the client, not the model
+(`BENCHMARK_AND_EVAL.md` §5.9, which gives the grep). **This configuration is
+marked for re-run** with a binary at or after 4f612eb; its figures are not
+re-scored by hand and stand only as a record of this run until then.

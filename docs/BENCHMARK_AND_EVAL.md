@@ -918,6 +918,60 @@ making progress, and the tool result says so even when the call does not.
 Deliberately not changed while the sweep was running, so this result comes from
 one harness version.
 
+### 5.9 Runs whose outcome the chunked-reply client bug set (#229, #230)
+
+Until 4f612eb the local runtime client never decoded an HTTP chunked
+response. A reply sent with `Transfer-Encoding: chunked` began with its hex
+chunk-size line, the client parsed that line as the start of the JSON, and the
+run ended on `runtime call failed: runtime response was not the expected
+shape: response is not JSON: <serde error>`. The replies were well-formed
+completions (#229). A run that ended that way had its outcome **set by the
+client, not the model**, and is not evidence about the model.
+
+Every committed floor log was searched for the three serde messages #229
+records:
+
+| Directory under `docs/bench/` | Logs | Runs ended by the client bug | Which |
+|---|---|---|---|
+| `floor-qwen2.5-0.5b-q4km` | 20 (t00–t19) | **0** | — |
+| `floor-qwen2.5-0.5b-q4km-fixed-harness` | 9 (t00–t08) | **0** | — |
+| `floor-qwen2.5-coder-3b-q4km` | 18 (t00–t17) | **0** of 18; t18 and t19 **unknown** | t18 and t19 have no log (`skipped` in the report) |
+| `floor-qwen2.5-3b-q4km-ollama-20260930` | 20 (t00–t19) | **6** | t09, t11, t12, t13, t17, t18 |
+
+Method:
+
+- **Command**, at 9e16c3c, from the repository root in Git Bash, once per
+  directory:
+  ```
+  grep -l -E 'trailing characters at line 2 column 1|expected value at line 1 column 1|trailing characters at line 1 column 2' docs/bench/<dir>/*.log
+  ```
+  The count is the number of files it lists. The same pattern over each
+  directory's `.json` trails, and over the three `floor-qwen2.5-*.json`
+  reports, lists nothing.
+- **Why a zero is a zero.** The run-ending wording (`runtime call failed`,
+  `response is not JSON`) dates from 4a2f5be, 2026-09-19, before the
+  2026-09-20 runs, and a runtime failure is terminal in the adapter (it is not
+  retried), so it would have been the run's last error in this form. As a
+  second check, `grep -l 'the model could not continue'` was run over the same
+  logs: outside the Ollama directory its only hits are 0.5B t04, t16 and t17,
+  each `no valid tool call after 4 attempts`, the format failures of §5.2,
+  which are model output. Every other log in the three 2026-09-20 directories
+  ends on the iteration ceiling, the no-progress stop, or a stop without a
+  passing check. Coder-3B t17 is counted as not affected: its log records the
+  iteration ceiling and then the failed `git reset` §5.4 describes, a
+  different failure.
+- **The six are the whole of that run's `no-recovery` count.** The Ollama
+  run's report (`floor-qwen2.5-3b-q4km-ollama-20260930.json`, #170, reported
+  in `docs/bench/README.md` rather than §5.2) scores 0 of 20 repaired, with
+  `no-recovery` 6, and its six `no-recovery` tasks are exactly the six runs
+  above. Those six outcomes were set by the client. They are **not re-scored
+  here** and no figure is changed: that configuration is **marked for re-run**
+  with a binary at or after 4f612eb, and its figures stand only as a record of
+  that run until the re-run replaces them.
+
+The three runs in §5.2 (two configurations), and the per-call audit in §5.4,
+rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
+
 ### Exit criteria for v0.1
 
 A measured recall figure — **done**, §2. A stated threshold with reasoning —
