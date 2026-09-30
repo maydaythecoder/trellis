@@ -782,14 +782,24 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
     // judged or rolled back and holding a port the next task needs. The
     // service backgrounds a heartbeat that appends to a file outside the
     // repository about once a second, for 30 beats (bounded, so a
-    // regression fails here rather than holding the test run), then waits.
+    // regression fails here rather than holding the test run), then waits
+    // 120 s and marks, in `slept`, that the wait finished.
     //
     // Measured by a second task in the same `work`, while trellis is still
     // alive: on Windows the job is also killed when trellis exits
     // (kill-on-close), so a check made only after `work` returns would pass
     // even if nothing were stopped at the end of the task.
+    //
+    // Killed, not waited for, is read from the service's own evidence: a
+    // service `work` waited for finishes its 120 s wait and writes `slept`,
+    // however fast or slow the host; one killed at the end of its 3 s task
+    // never does. A bound on the whole `work` run's wall clock measured host
+    // load as much as the kill, and a loaded run exceeded it (#222, the same
+    // class as #207). The heartbeat cannot show this
+    // on its own: waited for, its 30 beats end before the next task looks.
     let beat = scratch("svc-kill-beat");
     let hb = beat.join("hb");
+    let slept = beat.join("slept");
     let (service, watcher) = if cfg!(windows) {
         std::fs::write(
             beat.join("beat.cmd"),
@@ -805,8 +815,9 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
         .unwrap();
         (
             format!(
-                "['cmd', '/C', 'start /B cmd /C {} >NUL 2>&1 & ping -n 60 127.0.0.1 >NUL']",
-                beat.join("beat.cmd").display()
+                "['cmd', '/C', 'start /B cmd /C {} >NUL 2>&1 & ping -n 121 127.0.0.1 >NUL & echo slept> {}']",
+                beat.join("beat.cmd").display(),
+                slept.display()
             ),
             format!("['cmd', '/C', '{}']", beat.join("watch.cmd").display()),
         )
@@ -831,8 +842,9 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
         .unwrap();
         (
             format!(
-                "['sh', '-c', 'sh {} & sleep 60']",
-                beat.join("beat.sh").display()
+                "['sh', '-c', 'sh {} & sleep 120; echo slept > {}']",
+                beat.join("beat.sh").display(),
+                slept.display()
             ),
             format!("['sh', '{}']", beat.join("watch.sh").display()),
         )
@@ -869,13 +881,8 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
         ],
     );
     ok(&d, &["queue", "add", "watch", "--assignee", "watcher"]);
-    let started = std::time::Instant::now();
     let (ran, s) = work_to_file(&d, &beat.join("work.log"));
     assert!(ran && s.contains("service:  beat started"), "{s}");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(40),
-        "`work` waited for the service instead of killing it:\n{s}"
-    );
     let size_at = |f: &str| -> u64 {
         std::fs::read_to_string(beat.join(f))
             .unwrap_or_else(|e| panic!("the watcher did not write {f}: {e}\n{s}"))
@@ -891,6 +898,10 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
         a, b,
         "the service's backgrounded heartbeat kept writing after its task ended, \
          while the next task ran:\n{s}"
+    );
+    assert!(
+        !slept.exists(),
+        "`work` waited out the service's 120 s wait instead of killing it:\n{s}"
     );
     assert!(
         service_records(&d).is_empty(),
