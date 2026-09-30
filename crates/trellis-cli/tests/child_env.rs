@@ -340,6 +340,55 @@ fn a_process_agent_inherits_no_key_unless_its_profile_passes_that_one() {
 }
 
 #[test]
+fn service_gets_the_scrubbed_environment_and_not_its_profile_s_pass_env() {
+    // ADR 0026 §12. The risk: a service is a long-running repository
+    // command whose output goes to a log, and one that inherited a key, or
+    // was handed the one `pass_env` gives its profile's process agent, would
+    // put it in that log. The process agent waits a few seconds so the
+    // service has written its dump before the task ends and it is killed.
+    let dumps = scratch("svc-dumps");
+    let svc = dumps.join("service.txt");
+    let wait = if cfg!(windows) {
+        "['cmd', '/C', 'ping -n 4 127.0.0.1 >NUL']"
+    } else {
+        "['sh', '-c', 'sleep 3']"
+    };
+    let f = fixture(
+        "svc",
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n",
+        &[(
+            ".trellis/agents/keyed.toml",
+            format!(
+                "command = {wait}\ntimeout_s = 60\npass_env = [\"ANTHROPIC_API_KEY\"]\n\
+                 [[services]]\nname = \"env\"\ncommand = {}\n",
+                dump_argv(&svc)
+            ),
+        )],
+    );
+    let o = trellis(
+        &f,
+        &[
+            "queue",
+            "add",
+            "print the environment",
+            "--assignee",
+            "keyed",
+        ],
+    );
+    assert!(o.status.success(), "{}", combined(&o));
+    let trust = trellis(&f, &["trust"]);
+    let shown = combined(&trust);
+    assert!(trust.status.success(), "trust: {shown}");
+    assert!(shown.contains("service keyed/env"), "{shown}");
+    let said = combined(&trellis(&f, &["work"]));
+    assert!(said.contains("service:  env started"), "{said}");
+    assert_scrubbed("service", &svc, keys(), &said);
+    for p in [&f.repo, &f.home, &f.dumps, &dumps] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
 fn pass_env_on_a_model_profile_is_refused() {
     // A model profile spawns nothing to pass a variable to; accepting the
     // field would read as a pass-through that happened.

@@ -527,8 +527,23 @@ trellis starts has; see §4), and a timeout
   it writes there comes back, ADR 0032 "Hooks"; the order is unchanged.)
 - **`after_run`**: the outcome as JSON on stdin. Runs when the loop ends and
   before the rollback, so on a run that did not converge the rollback also
-  undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
-  a converged run, a write by it demotes the run (see "After a pass").
+  undoes what it wrote inside the worktree. On a converged run, a write by
+  it demotes the run (see "After a pass"). (*Amended 2026-09-29, #138; the
+  owner decided it on 2026-09-28*: it had not run on Ctrl-C.) On Ctrl-C
+  and on `rpc`'s `abort` it runs too, before the interrupt's rollback, with
+  `"reason": "interrupted"`, `"converged": false` and `"iterations": null`
+  (the loop's count was in the future the interrupt dropped, and a guessed
+  number would be a false one). `touched` is what the orchestrator
+  recorded. It is bounded by `timeout_s`, as every hook is; the throwaway
+  clone it runs in (ADR 0032, "Hooks") is made before that timer starts
+  and is not bounded by it. A second Ctrl-C while it runs drops it, which
+  kills its process (on Unix the process itself, `kill_on_drop`, and not
+  what it started, as for any hook dropped during an interrupt; on Windows
+  its Job Object, ADR 0035), and the rollback goes ahead. `rpc` has no
+  second interrupt, since a second `abort` asks for what was already
+  asked, so there the timeout is the only bound. Tested by
+  `after_run_interrupted_*`: through `rpc`'s `abort` on every OS, and
+  through SIGINT to the binary on Unix.
 - **`turn_end`** (*amended 2026-09-29, #137; the owner decided the schema
   on 2026-09-28*): after each model turn, that is after each call the
   model made (a denied one too) and after that call's `post_tool`; never
@@ -985,12 +1000,26 @@ Each failed with its fix's behaviour removed.
 one premise: during a run the orchestrator is the only writer (ADR 0005).
 With `edit` and `write_file` as the only writers that premise holds, and
 the rollback's guarantee is exact. When `bash`, a custom tool, a hook or a
-process agent is enabled, it does not. Each of those is an unsandboxed
-process running with the user's authority, with write access to the whole
-worktree and to `.git/`. For them the rollback is **best-effort against
-git's view of the tree**: it restores what `git reset --hard`, `git clean
--fd`, the ignored-file listing and the git guard can see, and a writer
-that shapes git's view can place a change outside all four.
+process agent was enabled, it did not: each was an unsandboxed process
+running in the repository with the user's authority, with write access to
+the whole worktree and to `.git/`, and for them the rollback was
+best-effort against git's view of the tree.
+
+*Amended 2026-09-30, #54:* that caveat no longer holds for these four
+writers. Each runs in a throwaway clone (ADR 0032), and no configuration
+runs it in the repository instead; what it changes there reaches the
+repository only through a carry-back under the refusals every writer
+meets. For what such a writer does where it runs, `.git/` included, the
+rollback's guarantee is exact, as for `edit` and `write_file`. What a
+clone does not stop is stated once, in ADR 0032, "Limits": no network
+isolation, reads outside the clone, writes that reach the repository by
+absolute path, and processes that outlive the call. The list below is
+kept as the record of what the review rounds found; it now holds only
+for a writer that reaches the repository by absolute path. Evidence: the
+four `isolated_writer_*` tests in `crates/trellis-loop/src/isolate.rs`,
+one per writer, each showing a planted file, `core.hooksPath`, a branch,
+a tag and a `skip-worktree` flag written from inside it leave every byte
+under the repository's `.git/` as it was.
 
 This is a limit, not a defect awaiting another guard. Eleven review rounds
 have closed one route after another with a post-hoc git check, and each
@@ -1045,9 +1074,11 @@ are not assumed closed:
   elsewhere in the repository is an ordinary file a run may edit.
 
 **What holds.** For trellis's own edits (`edit`, `write_file`), and for
-the edits a `bash` or custom-tool command makes inside its clone and that
-are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
-0009 states. A run with none of
+the edits a `bash` or custom-tool command or a hook makes inside its
+clone, and the edits, new files and deletions a process agent makes
+inside its own, that are carried back (ADR 0032; hooks and process
+agents *amended 2026-09-29*, #174 and #175), the rollback's guarantee
+is exact, as ADR 0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
@@ -1059,8 +1090,12 @@ rollback covers them exactly. Against a `bash` or custom-tool command that
 writes where it runs, every item in the list above is closed: its
 `.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
 in the clone, and what it started writes into a directory that is removed.
-The list still holds, in full, for **hooks and process agents**, which are
-not isolated yet, and for any writer that reaches the repository by
+*Amended 2026-09-29, #174 and #175:* hooks and process agents run in
+clones too (ADR 0032, "Hooks" and "Process agents"). A hook's edits
+come back through the same write path; a process agent's edits, new
+files and deletions come back through its own carry-back, under the
+same refusals, where the rollback covers them exactly. The list still
+holds, in full, for any writer that reaches the repository by
 absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network
@@ -1103,6 +1138,46 @@ named gate (the `pre_tool` hook, the bash policy) is an action of its own,
 recorded under the same turn and just before the call it refused, the way a
 human decision is. A run with no such denial adds no field and no action,
 so older trails keep their shape and their digest.
+
+**What `bash` and a custom tool changed** (#139). A `bash` or custom-tool
+action carries `changed`, the repository paths the call changed, and
+`changed_count`, how many there were. The list is cut at 50
+(`trellis_trail::CHANGED_CAP`) and the count is not. Both are omitted when
+nothing changed, so a trail written before them, and every action that
+changed nothing, keeps its bytes and its digest (tests
+`changed_paths_absent_keep_an_older_trails_bytes_and_digest` and
+`changed_paths_over_the_cap_record_fifty_and_the_true_count` in
+`trellis-trail`, `changed_paths_*` in `trellis-loop` and `trellis-cli`).
+Read back, the paths are data a repository chose, like every other string
+in a trail (ADR 0007). `wrote` keeps its meaning (set by `edit` and
+`write_file` only), so an older trail and a newer one say the same thing by
+it.
+
+The list is the carry-back's (ADR 0032): the files the orchestrator wrote
+into the repository from the command's clone for this call, recorded where
+it writes them. The owner's decision named a `git status` taken before and
+after each call (`trellis_vcs::pending`); since ADR 0032 the carry-back is
+the only way trellis brings a command's changes into the repository, and
+it already knows exactly which files those were. The trade: the list is
+exact for what trellis wrote and blind to a command that escapes the clone.
+A status diff would catch an escape that landed on a tracked file, but it
+would also attribute to the command whatever a hook or another writer
+changed during the call, and costs two git spawns per call.
+
+**Best-effort.** It is what trellis wrote on the command's behalf, not
+everything the command did. It does not see:
+
+- a command that writes into the repository directly, by its absolute
+  path (ADR 0032, "Writes outside the clone"): that bypasses the
+  carry-back, and nothing records it;
+- a `pre_tool` or `post_tool` hook's writes around the call, which are
+  bracketed and reported on their own (`may_have_changed_tree`), not
+  attributed to the call;
+- anything the carry-back did not write, because the repository did not
+  change: new files, deletions, `.gitignore`-class files, writes under
+  `.git/` or `.trellis/`, paths `deny_write` or `allow_write` refuse, and
+  ignored paths, which are not in the clone at all. The observation the
+  model reads names the refused ones; the trail does not.
 
 ## Alternatives rejected
 
@@ -1156,7 +1231,8 @@ names are in the code beside each.
   120 characters like every outcome. The bash policy's reason names
   `bash_allow` and `bash_unattended` first, so the cut keeps them.
   `write_file` sets `wrote` when the file was created; `bash` and custom
-  tools never set it.
+  tools never set it, and record what they changed in `changed` instead
+  (§7, #139).
 - **`TRELLIS_RUN_ID` is the trail's run id.** The timestamp is taken when
   the run starts and handed to the trail, so a hook can find the trail by
   the id it was given. A consequence: `started_at` in a `cmd_run` trail is
@@ -1164,7 +1240,8 @@ names are in the code beside each.
 - **What hooks receive.** `pre_tool`: the call's flat wire JSON.
   `post_tool`: `{"call": <wire JSON>, "result": <the ToolResult as
   serialized>}`. `before_run`: `{}`. `after_run`: `{"run_id", "converged",
-  "iterations", "reason", "touched"}`. `turn_end` and `input` (added by
+  "iterations", "reason", "touched"}` (on an interrupt, `reason` is
+  `"interrupted"` and `iterations` is null; §5, #138). `turn_end` and `input` (added by
   #137): the schemas in §5. `before_run` output is indented line
   by line inside its fence, so no line it prints can be the fence's closing
   line, and control characters other than newline and tab are dropped. It is
@@ -1183,6 +1260,24 @@ names are in the code beside each.
   hook, custom tool and the bash settings together; changing any of them
   untrusts all of them. `disable` or `enable` naming an untrusted custom tool
   is dropped rather than reported as unknown.
+- **The single digest stays; per-item digests sit beside it for diagnosis
+  only** (#136, decided by the owner 2026-09-28). Items trusted together are
+  one decision: a person read them as a set, and a set recombined from items
+  trusted at different times (a hook from Monday's trust, a tool from
+  Friday's) is a set nobody read. Per-item trust would allow exactly that, and
+  an entry written before it could not say which items it covered. So each
+  store entry keeps its `sha256` as the only thing `TrustStore::state`
+  compares, and gains an optional `items` map (label to the sha256 of that
+  item's JSON, `Fingerprint::item_digests`), written by `trellis trust` and
+  read only by `TrustStore::changed_items`. `trellis trust --show` (an
+  `items:` line) and `trellis doctor` (on the `trust:` line) use it to name
+  each item changed, added or removed since trust was recorded, and say
+  "not known" for an entry written before the map existed. The map is
+  additive: such an entry reads and is honoured exactly as before, and an
+  older trellis ignores the field. A record whose item digests all match
+  while its `sha256` does not is still `Changed`. Tests:
+  `trust_changed_items_*` in `trellis-cli`, the last of which is that
+  property.
 - **The bash policy applies to every auto-mode run**, `trellis tui` included:
   someone may be watching the interface, but nobody is asked.
 - **`[control] approve`** accepts the new built-ins and any declared custom
@@ -1191,10 +1286,20 @@ names are in the code beside each.
 - **The `tools:` line** prints the set, the shell and its policy, and the
   loaded hooks, whenever the set is not the measured default or hooks are
   loaded. An unconfigured run prints what it printed before.
+- **`callers_of` and `callees_of` are opt-in built-ins** (#128, ADR 0027),
+  after `read_note` and on only through `[tools] enable`. Each returns
+  `Output` with its doubt as counts: `callers_of` the symbol's
+  `RadiusCoverage`, `callees_of` its own unbound call sites by reason
+  (`graph_tools` in `crates/trellis-loop/src`).
+- **`coverage_report` is an opt-in built-in** (#129), after `callees_of`:
+  `doubt_in_files` over the named paths as counts only, never the
+  index-wide `resolved` figure or a percentage.
 
-Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust,
+Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust (kept
+out on purpose, above),
 hooks for events other than the six in §5 (`turn_end` and `input` were
-added by #137), and tracking of what `bash` or a custom tool wrote in the worktree.
+added by #137). What `bash` or a custom tool wrote is tracked since #139,
+as far as §7 says.
 
 ## Integrated
 

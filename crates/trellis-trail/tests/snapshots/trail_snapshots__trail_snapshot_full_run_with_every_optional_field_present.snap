@@ -78,6 +78,7 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
     "tokens": 812,
     "prompt_tokens": 9400,
     "agent": "builder",
+    "label": "installer rename",
     "inputs": [
       {
         "kind": "context_file",
@@ -99,7 +100,7 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
       }
     ]
   },
-  "factual_sha256": "84c331662d71b67a4dd92fc2ebb59c9eb2ef52f7c2c8b87131f5da4ecd62fdbe",
+  "factual_sha256": "f239dd0e70120332d0455956f62f2471e02ec5bdb6e3555de46b81402d66bdee",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

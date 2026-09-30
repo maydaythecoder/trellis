@@ -88,6 +88,21 @@ pub enum ToolCall {
     ReadNote {
         note: String,
     },
+    /// The call sites that call a symbol directly (depth 1), with the
+    /// coverage `BlastRadius` attaches for it. Read-only; opt-in.
+    CallersOf {
+        symbol: String,
+    },
+    /// What a symbol's own call sites bound to, with the ones that bound to
+    /// nothing counted by reason. Read-only; opt-in.
+    CalleesOf {
+        symbol: String,
+    },
+    /// The call sites in the named files that bound to no definition,
+    /// counted by reason, with at most 50 listed. Read-only; opt-in.
+    CoverageReport {
+        paths: Vec<String>,
+    },
     /// A repository's own tool (`[[tools.custom]]`), loaded only when
     /// trusted. `args` is the flat object the model sent, less `tool`.
     Custom {
@@ -176,6 +191,11 @@ pub struct Turn {
     /// orchestrator ([`crate::orchestrator::may_change_tree`]), which is
     /// conservative: anything not known to be read-only counts.
     pub may_have_changed_tree: bool,
+    /// The repository paths a `bash` or custom-tool call changed, as the
+    /// orchestrator carried them back from the command's clone
+    /// ([`crate::orchestrator::Dispatched::changed`]). Empty for every other
+    /// tool. Whole here; the trail cuts it to its cap and keeps the count.
+    pub changed: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -671,6 +691,18 @@ pub trait Model {
         0
     }
 
+    /// Prompt tokens summed over every call so far, as the runtime or
+    /// provider reported them (ADR 0027, #106), for the trail.
+    ///
+    /// `None` once any call reported none: the sum would then be a part of
+    /// the run presented as all of it, and a low figure reads as a cheap run.
+    /// `None` too for a driver that sends no prompt, the scripted one. Kept
+    /// apart from [`Model::tokens_used`], which is completion tokens and
+    /// what the budget counts.
+    fn prompt_tokens(&self) -> Option<u64> {
+        None
+    }
+
     /// Bytes of prompt sent on the most recent call, when the driver knows.
     ///
     /// **Bytes, not tokens, and the distinction is deliberate.** TRELLIS does
@@ -852,6 +884,7 @@ pub async fn run_seeded<M: Model>(
                             prompt_bytes: None,
                             human: None,
                             may_have_changed_tree: false,
+                            changed: Vec::new(),
                         });
                         if !v.passed() {
                             break 'run Outcome::NotConverged {
@@ -887,6 +920,7 @@ pub async fn run_seeded<M: Model>(
                     human,
                     may_have_changed_tree,
                     trust_breach,
+                    changed,
                 } = orch
                     .call_within(
                         &call,
@@ -1000,6 +1034,7 @@ pub async fn run_seeded<M: Model>(
                     prompt_bytes,
                     human,
                     may_have_changed_tree,
+                    changed,
                 });
 
                 // After the turn is recorded, so the trail shows the call
@@ -1102,8 +1137,7 @@ pub(crate) fn radius_sites(
     root: &std::path::Path,
     report: &trellis_index::radius::RadiusReport,
 ) -> Vec<RadiusSite> {
-    let mut sources: std::collections::HashMap<usize, Option<Vec<u8>>> =
-        std::collections::HashMap::new();
+    let mut locate = SiteLocator::new(index, root);
     let entries = report
         .certain
         .iter()
@@ -1122,35 +1156,87 @@ pub(crate) fn radius_sites(
                     certain,
                 };
             };
-            let file = site.file.index();
-            let path = index
-                .files
-                .get(file)
-                .map_or_else(|| "?".to_string(), |f| f.path.clone());
-            let bytes = sources
-                .entry(file)
-                .or_insert_with(|| std::fs::read(root.join(&path)).ok());
-            let offset = site.span.0;
-            let line = bytes
-                .as_deref()
-                .filter(|b| offset <= b.len())
-                .map(|b| 1 + b[..offset].iter().filter(|&&c| c == b'\n').count());
-            let enclosing = site
-                .enclosing
-                .and_then(|s| index.symbols.get(s.index()))
-                .map_or_else(
-                    || "<module>".to_string(),
-                    |s| index.interner.resolve(s.name).to_string(),
-                );
+            let (path, line) = locate.path_and_line(site);
             RadiusSite {
                 path,
                 line,
-                offset,
-                enclosing,
+                offset: site.span.0,
+                enclosing: locate.enclosing(site),
                 certain,
             }
         })
         .collect()
+}
+
+/// Turns a call site into what a reader can find: its path, its 1-based
+/// line, and the name of the symbol whose body holds it. Each file is read
+/// at most once, and a file that cannot be read gives a `None` line rather
+/// than an error (see [`radius_sites`]).
+pub(crate) struct SiteLocator<'a> {
+    index: &'a trellis_index::Index,
+    root: &'a std::path::Path,
+    sources: std::collections::HashMap<usize, Option<Vec<u8>>>,
+}
+
+impl<'a> SiteLocator<'a> {
+    pub(crate) fn new(index: &'a trellis_index::Index, root: &'a std::path::Path) -> Self {
+        Self {
+            index,
+            root,
+            sources: std::collections::HashMap::new(),
+        }
+    }
+
+    pub(crate) fn path_and_line(
+        &mut self,
+        site: &trellis_index::CallSiteEntry,
+    ) -> (String, Option<usize>) {
+        self.at(site.file.index(), site.span.0)
+    }
+
+    /// Where a definition is, for a reader who wants to open it.
+    pub(crate) fn definition(
+        &mut self,
+        sym: &trellis_index::SymbolEntry,
+    ) -> (String, Option<usize>) {
+        self.at(sym.file.index(), sym.span.0)
+    }
+
+    /// The 1-based line of `offset` in the indexed file at `path`, for
+    /// callers that hold a path rather than an id (`DoubtSite`). `None` when
+    /// the index holds no such file or it cannot be read.
+    pub(crate) fn line_in(&mut self, path: &str, offset: usize) -> Option<usize> {
+        let file = self.index.files.iter().position(|f| f.path == path)?;
+        self.at(file, offset).1
+    }
+
+    fn at(&mut self, file: usize, offset: usize) -> (String, Option<usize>) {
+        let path = self
+            .index
+            .files
+            .get(file)
+            .map_or_else(|| "?".to_string(), |f| f.path.clone());
+        let root = self.root;
+        let bytes = self
+            .sources
+            .entry(file)
+            .or_insert_with(|| std::fs::read(root.join(&path)).ok());
+        let line = bytes
+            .as_deref()
+            .filter(|b| offset <= b.len())
+            .map(|b| 1 + b[..offset].iter().filter(|&&c| c == b'\n').count());
+        (path, line)
+    }
+
+    /// The enclosing symbol's name, `<module>` for top-level code.
+    pub(crate) fn enclosing(&self, site: &trellis_index::CallSiteEntry) -> String {
+        site.enclosing
+            .and_then(|s| self.index.symbols.get(s.index()))
+            .map_or_else(
+                || "<module>".to_string(),
+                |s| self.index.interner.resolve(s.name).to_string(),
+            )
+    }
 }
 
 /// A rendered radius and what the selector did to fit it.
@@ -1205,13 +1291,41 @@ fn confidence(certain: bool) -> &'static str {
     if certain { "certain" } else { "ambiguous" }
 }
 
-fn site_line(s: &RadiusSite) -> String {
+/// One entry of a sized call-site listing: where the call is, what the
+/// middle column says about it, and whether its edge was `Resolved`.
+///
+/// The radius, `callers_of` and `callees_of` share the selector below, so
+/// the one rule (nothing dropped without a count) is written once. Only the
+/// middle column differs: the enclosing symbol for a caller, the callee for
+/// a call a symbol makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ListedSite {
+    pub path: String,
+    pub line: Option<usize>,
+    pub offset: usize,
+    pub label: String,
+    pub certain: bool,
+}
+
+impl From<&RadiusSite> for ListedSite {
+    fn from(s: &RadiusSite) -> Self {
+        Self {
+            path: s.path.clone(),
+            line: s.line,
+            offset: s.offset,
+            label: s.enclosing.clone(),
+            certain: s.certain,
+        }
+    }
+}
+
+fn site_line(s: &ListedSite) -> String {
     let line = s.line.map_or_else(|| "?".to_string(), |n| n.to_string());
     format!(
         "\n{}:{} {} {}",
         s.path,
         line,
-        s.enclosing,
+        s.label,
         confidence(s.certain)
     )
 }
@@ -1235,21 +1349,36 @@ fn collapsed_line(sites: u32, files: usize) -> String {
 }
 
 /// The radius observation, sized to [`RADIUS_OBSERVATION_BYTES`].
-///
-/// The coverage header comes first and is never shortened. Then the call
-/// sites, one per line, certain before ambiguous, then by path, line and
-/// offset. When they do not all fit, the tail of that order is replaced by
-/// a count per file; the per-file counts take precedence over individual
-/// entries, so fewer entries are listed until every remaining file has its
-/// line. Only when the per-file lines cannot all fit even with no entry
-/// listed do the files left over collapse into one final count. Every call
-/// site is either listed or counted: nothing is dropped without a number
-/// (CLAUDE.md rule 3).
 pub(crate) fn render_radius(
     report: &trellis_index::radius::RadiusReport,
     sites: &[RadiusSite],
 ) -> RadiusRendering {
-    let mut sorted: Vec<&RadiusSite> = sites.iter().collect();
+    let listed: Vec<ListedSite> = sites.iter().map(ListedSite::from).collect();
+    render_listing(
+        radius_header(report),
+        "\nCall sites, certain first (path:line enclosing-symbol confidence):",
+        &listed,
+    )
+}
+
+/// `header`, then `heading` and the sites, sized to
+/// [`RADIUS_OBSERVATION_BYTES`].
+///
+/// The header comes first and is never shortened: it is where every caller
+/// puts the doubt. Then the call sites, one per line, certain before
+/// ambiguous, then by path, line and offset. When they do not all fit, the
+/// tail of that order is replaced by a count per file; the per-file counts
+/// take precedence over individual entries, so fewer entries are listed
+/// until every remaining file has its line. Only when the per-file lines
+/// cannot all fit even with no entry listed do the files left over collapse
+/// into one final count. Every call site is either listed or counted:
+/// nothing is dropped without a number (CLAUDE.md rule 3).
+pub(crate) fn render_listing(
+    header: String,
+    heading: &str,
+    sites: &[ListedSite],
+) -> RadiusRendering {
+    let mut sorted: Vec<&ListedSite> = sites.iter().collect();
     sorted.sort_by(|a, b| {
         b.certain
             .cmp(&a.certain)
@@ -1258,7 +1387,7 @@ pub(crate) fn render_radius(
             .then_with(|| a.offset.cmp(&b.offset))
     });
 
-    let mut text = radius_header(report);
+    let mut text = header;
     if sorted.is_empty() {
         return RadiusRendering {
             text,
@@ -1266,7 +1395,7 @@ pub(crate) fn render_radius(
             summarised: 0,
         };
     }
-    text.push_str("\nCall sites, certain first (path:line enclosing-symbol confidence):");
+    text.push_str(heading);
 
     let lines: Vec<String> = sorted.iter().map(|s| site_line(s)).collect();
     let listing: usize = lines.iter().map(String::len).sum();
@@ -2637,6 +2766,7 @@ rank = \"non-negotiable\"
                     prompt_bytes: None,
                     human: None,
                     may_have_changed_tree: false,
+                    changed: Vec::new(),
                 },
                 Turn {
                     call: ToolCall::ReadFile { path: "b".into() },
@@ -2648,6 +2778,7 @@ rank = \"non-negotiable\"
                     prompt_bytes: None,
                     human: None,
                     may_have_changed_tree: false,
+                    changed: Vec::new(),
                 },
             ],
             final_notice: false,

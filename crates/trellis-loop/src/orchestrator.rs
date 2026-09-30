@@ -116,6 +116,12 @@ pub struct Dispatched {
     /// guard has found it so (ADR 0023 §5). Latched: every call after the
     /// first carries it too. The loop ends the run on it.
     pub trust_breach: Option<String>,
+    /// The repository paths this call's carry-back wrote, in order: what a
+    /// `bash` or custom-tool command changed that reached the repository
+    /// (ADR 0032). Empty for every other tool, and for a command that
+    /// changed nothing trellis carries back. The trail records it
+    /// (ADR 0023 §7).
+    pub changed: Vec<String>,
 }
 
 /// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
@@ -141,7 +147,10 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         | ToolCall::Find { .. }
         | ToolCall::Ls { .. }
         | ToolCall::SearchNotes { .. }
-        | ToolCall::ReadNote { .. } => false,
+        | ToolCall::ReadNote { .. }
+        | ToolCall::CallersOf { .. }
+        | ToolCall::CalleesOf { .. }
+        | ToolCall::CoverageReport { .. } => false,
         // Nothing is written: the question travels back to the loop in the
         // call itself, and the binary records it on the task.
         ToolCall::AskHuman { .. } => false,
@@ -249,6 +258,7 @@ impl Handle {
                 // A stopped actor owns the only write path and wrote nothing.
                 may_have_changed_tree: false,
                 trust_breach: None,
+                changed: Vec::new(),
             },
         )
         .await
@@ -327,6 +337,9 @@ pub struct Orchestrator {
     /// Whether a gate refused the call being served, for `turn_end`'s
     /// `outcome`. Reset at the start of every gated call.
     denied: bool,
+    /// What the call being served carried back into the repository, for
+    /// [`Dispatched::changed`]. Reset at the start of every gated call.
+    changed: Vec<String>,
     /// Re-checks trust before a custom tool starts and after any call that
     /// may have changed the tree (ADR 0023 §5). The same latch the hooks
     /// hold, so a breach found by either ends the run.
@@ -356,6 +369,7 @@ impl Orchestrator {
             skills: crate::skills::SkillAccess::default(),
             wrote: false,
             denied: false,
+            changed: Vec::new(),
             guard: None,
             hook_clone: None,
         }
@@ -654,10 +668,12 @@ impl Orchestrator {
                 human,
                 may_have_changed_tree: false,
                 trust_breach: None,
+                changed: Vec::new(),
             };
         }
         self.wrote = false;
         self.denied = false;
+        self.changed.clear();
         // `pre_tool` and `post_tool` are repository code that runs around
         // every call, the passing check included, and nothing stops either
         // writing. The worktree is compared across each hook on its own,
@@ -731,6 +747,7 @@ impl Orchestrator {
                     human,
                     may_have_changed_tree: changed_since(&self.root, before_gates).await,
                     trust_breach: None,
+                    changed: Vec::new(),
                 };
             }
         }
@@ -785,6 +802,9 @@ impl Orchestrator {
                 Some(n) => crate::notes::read(n, note),
                 None => ToolResult::Error("no note vault is configured for this run".into()),
             },
+            ToolCall::CallersOf { symbol } => self.callers_of(symbol),
+            ToolCall::CalleesOf { symbol } => self.callees_of(symbol),
+            ToolCall::CoverageReport { paths } => self.coverage_report(paths),
             ToolCall::Custom { name, args } => self.custom(name, args).await,
             // Nothing to run. `Output` is what tells the loop the gates let
             // the question through; it ends the run on it. The words are
@@ -833,6 +853,7 @@ impl Orchestrator {
                 || gates_changed
                 || post_changed,
             trust_breach: None,
+            changed: std::mem::take(&mut self.changed),
         }
     }
 
@@ -1095,6 +1116,12 @@ impl Orchestrator {
         if reopen {
             self.session = Session::open(&self.root);
         }
+        // The carry-back's own list, not a `git status` taken before and
+        // after: these are exactly the files trellis wrote for this call,
+        // where a status diff would also attribute to the command whatever
+        // a hook or another writer changed meanwhile, and would cost two
+        // git spawns per call to learn less.
+        self.changed.extend(carried.iter().cloned());
         let mut s = String::new();
         if !carried.is_empty() {
             s.push_str(&format!(
@@ -1124,36 +1151,47 @@ impl Orchestrator {
 
     fn blast_radius(&self, symbol: &str) -> ToolResult {
         let index = self.session.index();
-        let qualified = |s: &trellis_index::SymbolEntry| {
-            format!(
-                "{}.{}",
-                index.files[s.file.index()].module,
-                index.interner.resolve(s.name)
-            )
-        };
-        let matches: Vec<_> = index
-            .symbols
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                let q = qualified(s);
-                q == symbol
-                    || q.ends_with(&format!(".{symbol}"))
-                    || index.interner.resolve(s.name) == symbol
-            })
-            .map(|(i, _)| trellis_core::SymbolId::from_index(i))
-            .collect();
-
-        match matches.len() {
-            0 => ToolResult::Error(format!(
-                "no first-party definition matches `{symbol}`; only definitions \
-                 inside the repository root are indexed"
-            )),
-            1 => ToolResult::Radius(trellis_index::radius::blast_radius(index, matches[0])),
-            n => ToolResult::Error(format!(
-                "`{symbol}` matches {n} definitions; qualify it further"
-            )),
+        match crate::graph_tools::find_symbol(index, symbol) {
+            Ok(id) => ToolResult::Radius(trellis_index::radius::blast_radius(index, id)),
+            Err(e) => ToolResult::Error(e),
         }
+    }
+
+    /// `callers_of`, resolving `symbol` exactly as `blast_radius` does.
+    fn callers_of(&self, symbol: &str) -> ToolResult {
+        let index = self.session.index();
+        match crate::graph_tools::find_symbol(index, symbol) {
+            Ok(id) => crate::graph_tools::callers_of(index, &self.root, id),
+            Err(e) => ToolResult::Error(e),
+        }
+    }
+
+    /// `callees_of`, resolving `symbol` exactly as `blast_radius` does.
+    fn callees_of(&self, symbol: &str) -> ToolResult {
+        let index = self.session.index();
+        match crate::graph_tools::find_symbol(index, symbol) {
+            Ok(id) => crate::graph_tools::callees_of(index, &self.root, id),
+            Err(e) => ToolResult::Error(e),
+        }
+    }
+
+    /// `coverage_report`, after every path passes the check `read_file`
+    /// makes: the report names files and lines, so a path outside the
+    /// repository or into `.git` is refused rather than answered with a
+    /// count of zero that would read as "nothing in doubt there".
+    fn coverage_report(&self, paths: &[String]) -> ToolResult {
+        if paths.is_empty() {
+            return ToolResult::Error(
+                "coverage_report needs at least one path; it reports on the files named,                  not on the whole repository"
+                    .into(),
+            );
+        }
+        for p in paths {
+            if let Some(why) = read_refusal(&self.root, p) {
+                return ToolResult::Error(format!("coverage_report refused: {why}"));
+            }
+        }
+        crate::graph_tools::coverage_report(self.session.index(), &self.root, paths)
     }
 
     fn read_file(&self, path: &str) -> ToolResult {

@@ -15,6 +15,7 @@ pub mod catalog;
 #[cfg(feature = "grammar")]
 mod grammar;
 mod hosted;
+mod image;
 mod runtime;
 mod secret;
 mod spec;
@@ -29,6 +30,7 @@ pub use hosted::{
     Protocol, Reply, Thinking, every_turn_replayed, is_context_overflow, parse_reply, request_body,
     retry_delay, thinking_sent,
 };
+pub use image::{Image, ImageError, MAX_IMAGE_BYTES, redact_images};
 pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use secret::ApiKey;
 pub use spec::{ModelSpec, SpecError};

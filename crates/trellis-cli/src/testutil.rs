@@ -60,3 +60,38 @@ pub(crate) fn git_commit_all(dir: &Path, message: &str) {
             .expect("git");
     }
 }
+
+/// The trust store every test in this process uses, never the user's.
+///
+/// One path for the whole process, because the override is set once and
+/// the first call wins: a second module choosing its own path would find
+/// its entries written to the first's. Entries are keyed by repository
+/// root, and each test has its own.
+///
+/// The store is emptied once, when this process first opens it (#199).
+/// It is named by process id and was never removed, and every fixture
+/// repository is named by the same id with the same bytes in it, so its
+/// fingerprint is the same in every run. Windows reuses process ids, so
+/// a test process that inherited an earlier one's id found a store that
+/// already trusted its own repository at the same path with the same
+/// fingerprint, and `hook_input_refusal_...`'s untrusted first run ran
+/// the hook. `scratch` deletes its directory first for the same reason.
+/// Once per process, not per call: tests trust in parallel, and a wipe
+/// on every call would erase another test's entry mid-test.
+pub(crate) fn trust_store() -> trellis_loop::TrustStore {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("trellis-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        trellis_loop::TrustStore::use_for_this_process(dir.join("trust.json"));
+    });
+    trellis_loop::TrustStore::user().unwrap()
+}
+
+/// Trusts `dir` as its configuration now stands, as `trellis trust` does.
+pub(crate) fn trust(dir: &Path) {
+    let cfg = crate::config::RepoConfig::load(dir).unwrap();
+    trust_store()
+        .trust(dir, &crate::tooling::fingerprint(dir, &cfg))
+        .unwrap();
+}

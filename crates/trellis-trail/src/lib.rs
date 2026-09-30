@@ -103,6 +103,22 @@ pub struct Factual {
     /// per worktree and dies with it, and the trail is what outlives both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The label a person gave the session the run started from (`/name`
+    /// in `trellis session`), when one was set. At most 80 characters, no
+    /// control characters; the session refuses anything else.
+    ///
+    /// A name for finding a run again, and nothing more. It is typed by a
+    /// person and is not a fact about what executed, so it is recorded here
+    /// only because `factual` is the tamper-evident half, and it is never
+    /// rendered into the context a resumed run reads
+    /// ([`UntrustedTrail::context_lines`]): a label reaching a prompt would
+    /// be instruction-shaped text with no fence around it.
+    ///
+    /// Omitted when unset, like `agent`, so a trail written without one (or
+    /// before the field existed) keeps its bytes and its digest, and
+    /// `SCHEMA` stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// What the run was given beyond the task and the repository's own
     /// `.trellis/` files (ADR 0025): context files, the system prompt files
     /// and skills the person forced, each by name and size. Never contents:
@@ -125,6 +141,35 @@ pub struct Factual {
     /// empty, so a trail with no steering keeps its shape and its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steering: Vec<Steer>,
+    /// Integrated-check failures that named files changed by two or more
+    /// partitions (ADR 0005, ADR 0042): a collision the partition plan did
+    /// not predict, and so evidence the graph's recall missed an edge.
+    ///
+    /// Suspected, not established: the record says which merged files a
+    /// failing check's own output named, not that their pairing caused it.
+    /// Built by `trellis-loop` from that output alone, never from model
+    /// text. Omitted when empty, so a single-agent trail keeps its shape and
+    /// its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suspected_recall_gaps: Vec<SuspectedRecallGap>,
+}
+
+/// One integrated-check failure that named files from more than one
+/// partition, as `Factual::suspected_recall_gaps` records it.
+///
+/// Carries no `passed`: it is recorded only for a check that failed, and a
+/// failing verdict is already in `check_outcomes`. Nothing here is a
+/// correctness claim (ADR 0004).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuspectedRecallGap {
+    /// The partitions whose merged files the failure named, ascending.
+    pub partitions: Vec<u32>,
+    /// Those files, root-relative with `/` separators, in the order merged.
+    pub files: Vec<String>,
+    /// The check that failed, spelled as `CheckOutcome::kind` spells it
+    /// (`Typecheck`, `Tests`). A string rather than `CheckKind`, so a trail
+    /// naming a kind this build does not know still reads back.
+    pub check: String,
 }
 
 /// The most characters of one steer's text a trail keeps (ADR 0034).
@@ -183,14 +228,35 @@ impl Steer {
 /// One file a run was given, as `Factual::inputs` records it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
-    /// `context_file`, `system_file` or `forced_skill`.
+    /// `context_file`, `system_file`, `forced_skill` or `image`.
     pub kind: String,
     /// As the run's `repo:` line names it: `CLAUDE.md`,
-    /// `<user>/AGENTS.md`, `.trellis/system.md`, or a skill's name. Never an
-    /// absolute path, which would put the user's home layout in the trail.
+    /// `<user>/AGENTS.md`, `.trellis/system.md`, or a skill's name; for an
+    /// image, its repository-relative path, or `<outside>/<file name>` for
+    /// one outside the repository. Never an absolute path, which would put
+    /// the user's home layout in the trail.
     pub name: String,
-    /// Bytes of content sent, the unit the caps are measured in.
+    /// Bytes of content sent, the unit the caps are measured in; for an
+    /// image, the file's size before encoding.
     pub bytes: u64,
+    /// SHA-256 of the content, lowercase hex, for an input whose contents
+    /// the trail may not hold but whose identity it must: an image
+    /// (ADR 0041). Omitted when absent, so the other kinds keep their shape
+    /// and every trail already committed keeps its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl Input {
+    /// An input recorded by name, size and hash, never by content.
+    pub fn hashed(kind: &str, name: &str, content: &[u8]) -> Self {
+        Self {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            bytes: content.len() as u64,
+            sha256: Some(sha256_hex(content)),
+        }
+    }
 }
 
 /// One thing the agent did, and what came back.
@@ -228,7 +294,46 @@ pub struct Action {
     /// files a run ended up touching, not which of its actions did the
     /// touching. A run whose every edit was refused has an empty `proposed`
     /// and a full list of actions, and those are different stories.
+    ///
+    /// Set by `edit` and `write_file` only. A `bash` or custom-tool call
+    /// leaves it false; what one of those changed is in `changed`.
     pub wrote: bool,
+    /// For a `bash` or custom-tool call: the repository paths trellis
+    /// carried back from the command's throwaway clone and wrote (ADR 0023
+    /// §7, ADR 0032), at most [`CHANGED_CAP`] of them, in the order they
+    /// were written.
+    ///
+    /// Best-effort, and the ADR names what it cannot see: a command that
+    /// writes into the repository by its absolute path, a hook's writes
+    /// around the call, and anything not carried back (new files,
+    /// deletions, refused paths) because the repository did not change.
+    ///
+    /// Omitted when empty, so a trail written before the field, and every
+    /// action that changed nothing, keeps its bytes and its digest. Read
+    /// back, these are paths a repository chose, and data only (ADR 0007).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+    /// How many paths the call changed, which is more than `changed` holds
+    /// when the list was cut at [`CHANGED_CAP`]. Omitted when zero, for the
+    /// same reason as `changed`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub changed_count: u32,
+}
+
+/// The most paths one action's `changed` lists. A command that rewrites a
+/// whole tree would otherwise put thousands of paths into a committed
+/// file; the true count is kept beside the cut list.
+pub const CHANGED_CAP: usize = 50;
+
+impl Action {
+    /// Records `paths` as what this action changed: the first
+    /// [`CHANGED_CAP`] of them, and how many there were.
+    #[must_use]
+    pub fn with_changed(mut self, paths: &[String]) -> Self {
+        self.changed = paths.iter().take(CHANGED_CAP).cloned().collect();
+        self.changed_count = u32::try_from(paths.len()).unwrap_or(u32::MAX);
+        self
+    }
 }
 
 /// How much prompt a run consumed, and how fast it grew.
@@ -536,6 +641,8 @@ mod tests {
                         target: "Installer.run".into(),
                         outcome: "47 resolved, 3 candidates, 2 unresolved".into(),
                         wrote: false,
+                        changed: Vec::new(),
+                        changed_count: 0,
                     },
                     Action {
                         turn: 2,
@@ -543,6 +650,8 @@ mod tests {
                         target: "src/poetry/installation/installer.py".into(),
                         outcome: "applied".into(),
                         wrote: true,
+                        changed: Vec::new(),
+                        changed_count: 0,
                     },
                     Action {
                         turn: 3,
@@ -550,14 +659,18 @@ mod tests {
                         target: "Tests".into(),
                         outcome: "Tests: passed".into(),
                         wrote: false,
+                        changed: Vec::new(),
+                        changed_count: 0,
                     },
                 ],
                 control: None,
                 tokens: None,
                 prompt_tokens: None,
                 agent: None,
+                label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                suspected_recall_gaps: Vec::new(),
             },
 
             factual_sha256: String::new(),

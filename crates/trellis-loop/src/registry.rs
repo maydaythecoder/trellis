@@ -33,6 +33,9 @@ pub const BUILTIN_TOOLS: &[&str] = &[
     "bash",
     "search_notes",
     "read_note",
+    "callers_of",
+    "callees_of",
+    "coverage_report",
     "ask_human",
 ];
 
@@ -58,6 +61,9 @@ const OPT_IN: &[&str] = &[
     "ls",
     "search_notes",
     "read_note",
+    "callers_of",
+    "callees_of",
+    "coverage_report",
 ];
 
 /// Offered by the binary to a queued task's run only
@@ -161,6 +167,8 @@ fn args_hint(name: &str) -> &'static str {
         "search_notes" => "query,limit",
         "read_note" => "note",
         "ask_human" => "question,options",
+        "callers_of" | "callees_of" => "symbol",
+        "coverage_report" => "paths",
         _ => "",
     }
 }
@@ -811,6 +819,11 @@ pub fn call_json(call: &ToolCall) -> Value {
         ToolCall::AskHuman { question, options } => {
             json!({ "tool": "ask_human", "question": question, "options": options })
         }
+        ToolCall::CallersOf { symbol } => json!({ "tool": "callers_of", "symbol": symbol }),
+        ToolCall::CalleesOf { symbol } => json!({ "tool": "callees_of", "symbol": symbol }),
+        ToolCall::CoverageReport { paths } => {
+            json!({ "tool": "coverage_report", "paths": paths })
+        }
         ToolCall::Custom { name, args } => {
             let mut m = args.as_object().cloned().unwrap_or_default();
             m.insert("tool".into(), Value::String(name.clone()));
@@ -1169,6 +1182,109 @@ mod note_tool_tests {
                 query: "retry".into(),
                 limit: None
             })
+        );
+    }
+
+    #[test]
+    fn callers_of_and_callees_of_are_opt_in_and_leave_the_measured_prompt_unchanged() {
+        // ADR 0027: a repository with no `[tools]` section sends the bytes
+        // the adapter was measured with, so the graph queries are opt-in and
+        // go after every tool already in the list.
+        let unconfigured = ToolSet::build(ToolSelection::default()).unwrap();
+        assert!(unconfigured.is_default());
+        for skills in [false, true] {
+            assert_eq!(
+                unconfigured.prompt_line(skills),
+                ToolSet::default().prompt_line(skills)
+            );
+            assert!(!unconfigured.prompt_line(skills).contains("callers_of"));
+            assert!(!unconfigured.prompt_line(skills).contains("callees_of"));
+        }
+        assert_eq!(unconfigured.schema(), ToolSet::default().schema());
+        assert!(!unconfigured.enabled("callers_of") && !unconfigured.enabled("callees_of"));
+
+        let at = |n: &str| BUILTIN_TOOLS.iter().position(|b| *b == n).unwrap();
+        assert_eq!(at("callers_of"), at("read_note") + 1);
+        assert_eq!(at("callees_of"), at("read_note") + 2);
+        assert!(!DEFAULT_ON.contains(&"callers_of") && !DEFAULT_ON.contains(&"callees_of"));
+
+        let on = with(&["callees_of", "callers_of"]);
+        assert!(
+            on.prompt_line(false).ends_with(
+                "run_checks{paths,kinds}, callers_of{symbol}, callees_of{symbol}, done{summary}"
+            ),
+            "{}",
+            on.prompt_line(false)
+        );
+        trellis_model::ToolGrammar::compile("tool_call", on.schema()).expect("compiles");
+        assert_eq!(
+            on.parse(r#"{"tool":"callees_of","symbol":"app.main.go"}"#)
+                .unwrap(),
+            Step::Call(ToolCall::CalleesOf {
+                symbol: "app.main.go".into()
+            })
+        );
+        assert!(
+            ToolSet::default()
+                .parse(r#"{"tool":"callers_of","symbol":"helper"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn coverage_report_is_opt_in_after_callees_of_and_leaves_the_measured_prompt_unchanged() {
+        // ADR 0027: a repository with no `[tools]` section sends the bytes
+        // the adapter was measured with, so the report is opt-in and goes
+        // after every tool already in the list.
+        let unconfigured = ToolSet::build(ToolSelection::default()).unwrap();
+        for skills in [false, true] {
+            assert_eq!(
+                unconfigured.prompt_line(skills),
+                ToolSet::default().prompt_line(skills)
+            );
+            assert!(!unconfigured.prompt_line(skills).contains("coverage_report"));
+        }
+        assert_eq!(unconfigured.schema(), ToolSet::default().schema());
+        assert!(
+            !unconfigured
+                .schema()
+                .to_string()
+                .contains("coverage_report")
+        );
+        assert!(!unconfigured.enabled("coverage_report"));
+
+        let at = |n: &str| BUILTIN_TOOLS.iter().position(|b| *b == n).unwrap();
+        assert_eq!(at("coverage_report"), at("callees_of") + 1);
+        assert!(OPT_IN.contains(&"coverage_report"));
+        assert!(!DEFAULT_ON.contains(&"coverage_report"));
+
+        let on = with(&["coverage_report"]);
+        assert!(
+            on.prompt_line(false)
+                .ends_with("run_checks{paths,kinds}, coverage_report{paths}, done{summary}"),
+            "{}",
+            on.prompt_line(false)
+        );
+        assert!(on.schema().to_string().contains("coverage_report"));
+        trellis_model::ToolGrammar::compile("tool_call", on.schema()).expect("compiles");
+        let call = ToolCall::CoverageReport {
+            paths: vec!["app/main.py".into()],
+        };
+        assert_eq!(
+            on.parse(r#"{"tool":"coverage_report","paths":["app/main.py"]}"#)
+                .unwrap(),
+            Step::Call(call.clone())
+        );
+        assert_eq!(
+            on.parse(&call_json(&call).to_string()).unwrap(),
+            Step::Call(call)
+        );
+        // A missing list is not "every file".
+        assert!(on.parse(r#"{"tool":"coverage_report"}"#).is_err());
+        assert!(
+            ToolSet::default()
+                .parse(r#"{"tool":"coverage_report","paths":["app/main.py"]}"#)
+                .is_err()
         );
     }
 }

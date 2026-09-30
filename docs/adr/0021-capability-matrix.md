@@ -24,10 +24,14 @@ merge passed CI on Linux and Windows. The findings split into two classes:
 
 For the second class, ADR 0023 §5 and ADR 0026 §11 now state the limit as a
 first-class section, "What rollback guarantees when trellis is not the only
-writer". ADR 0009's guarantee holds for trellis's own edits and is
-best-effort for these writers. The real fix is sandboxing, row 13.3 below,
-which is still deferred. The rows below for `bash`, hooks, custom tools and
-process agents mean "built, with that limit".
+writer". Since ADR 0032 all four run in a throwaway clone of the
+repository, and their edits come back through trellis's own write path.
+The clone is not an OS sandbox: a writer that reaches the repository by
+absolute path can still write there, `.git` included, and against that
+writer ADR 0009's guarantee is best-effort; nor are network access or
+reads outside the clone contained (ADR 0032 "Limits"). An OS sandbox or
+container, row 13.3 below, is still deferred. The rows below for `bash`,
+hooks, custom tools and process agents mean "built, with that limit".
 
 **When the waves landed** (2026-09-27):
 
@@ -42,9 +46,10 @@ wherever the two disagree. The items those sections name as not built are:
   There is no typing event on a command line; `vault new` is the explicit
   form.
 - **W-B (0023):** per-item trust (one digest covers hooks, custom tools and
-  bash together); tracking what bash writes in the worktree; `after_run`
-  on Ctrl-C. (A configurable custom-tool timeout was listed here; #135
-  built it, and 0023 "As built" records how.)
+  bash together); tracking what bash writes in the worktree. (A
+  configurable custom-tool timeout was listed here; #135 built it, and
+  0023 "As built" records how. So was `after_run` on Ctrl-C; #138 built
+  it, and 0023 §5 records how.)
 - **W-C (0024):** streaming, `HTTPS_PROXY`, a `Retry-After` given as a date,
   summaries written by the model, and OAuth/Bedrock/Vertex/Azure. (The
   `ask` classifier on hosted models was built by #41.) Hosted runs have
@@ -99,7 +104,7 @@ override any row.
 | Items | Disposition |
 |---|---|
 | 1.1 turn loop | built (`trellis-loop`, ADR 0005) |
-| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. Still to come: `steer` and `follow_up` over `trellis rpc` (#114), queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). |
+| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. `steer` and `follow_up` over `trellis rpc` are built (#114, ADR 0025 §5). Still to come: queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). |
 | 1.3 built-in tools read/edit | built; **write, grep, find, ls, bash → W-B** (bash is opt-in, see ADR 0023) |
 | 1.4 tool selection flags | W-B (`[tools]` enable/disable) |
 | 1.5 output truncation | built (2,000-character tail, and a separate skill window, ADR 0019) |
@@ -111,7 +116,7 @@ override any row.
 | 1.11 `!cmd` user shell | W-D (`session` `!` and `!!`) |
 | 1.12 session env for model shells | W-B (`TRELLIS_RUN_ID`, `TRELLIS_MODEL` in the bash tool's environment) |
 | 1.13 shell config | W-B (`[tools] shell`) |
-| 1.14 images | deferred: no local runtime in the tier matrix takes image input |
+| 1.14 images | deferred: no local runtime in the tier matrix takes image input. **Amended 2026-09-29 (#53):** built for hosted tier 1 only, as `trellis run --image <path>` (ADR 0041): PNG, JPEG, GIF or WebP by magic bytes, at most 5 MiB, not resized, its base64 counted against `[model] context_bytes`, and recorded in the trail by name, size and SHA-256. Every other tier refuses the run before the snapshot. |
 | 1.15 prompt-cache warming | excluded: a dollar heuristic for hosted APIs; COST_MODEL.md owns cost. **Amended 2026-09-29 (#67):** deferred to v1.x. Its trigger is a dollar estimate, and no dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted. |
 | 2.1–2.4 30+ providers, OAuth, cloud platforms | **W-C covers the two wire protocols most of them speak** (OpenAI-compatible chat completions, Anthropic Messages) over HTTPS with keys from environment variables. OAuth and device login are excluded because ADR 0010 says a key never goes in a file trellis reads. Bedrock, Vertex and Azure request signing are deferred. **Amended 2026-09-29 (#45):** the owner kept signing deferred on 2026-09-28 and took per-model input limits first (#162). A signing scheme must keep ADR 0010 (credentials come from the environment or the platform's own ambient chain, never a file trellis writes), and is accepted only with its signing tested against recorded vectors and a loopback stub. |
 | 2.5 credential precedence | W-C, environment only (ADR 0010) |
@@ -141,7 +146,7 @@ override any row.
 | 9.2–9.3 JSON event mode | built as `--log-json`; stdout JSONL → W-D (`--json`) |
 | 9.4–9.5 RPC | W-D (`trellis rpc`, a subset: prompt, abort, get_state, get_messages, set_model, compact, approve) |
 | 9.6 SDK | built in effect (the crates are libraries) |
-| 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B. **Amended 2026-09-29 (#118, ADR 0039):** built in part: `trellis install <source>@<ref>`, `--list`, `--remove` copy skills and prompt templates into `<user config dir>/packages/`, recorded in `packages.toml`; packages carry no code; runs do not read them yet |
+| 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B. **Amended 2026-09-29 (#118, ADR 0039):** built in part: `trellis install <source>@<ref>`, `--list`, `--remove` copy skills and prompt templates into `<user config dir>/packages/`, recorded in `packages.toml`; packages carry no code. **Amended (#119, ADR 0039 §10):** runs read installed skills and templates after the repository's, which wins a name |
 | 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |

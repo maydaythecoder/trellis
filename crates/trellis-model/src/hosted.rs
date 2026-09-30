@@ -11,6 +11,7 @@
 //! carrying more than one is treated as malformed. Answering one of two
 //! call ids would be a 400 on both APIs.
 
+use crate::image::Image;
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
 use crate::transport::{self, Auth, Endpoint, Proxy, SendError};
@@ -127,6 +128,10 @@ pub struct Conversation {
     pub exchanges: Vec<Exchange>,
     /// Text after the last result, e.g. the budget notice.
     pub trailing: Option<String>,
+    /// `trellis run --image`, carried in the first user message on every
+    /// request (ADR 0041). Empty for every other run, whose bodies are then
+    /// exactly what they were before images existed.
+    pub images: Vec<Image>,
 }
 
 /// A tool call read out of a reply.
@@ -146,6 +151,12 @@ pub struct Reply {
     /// carried no usage figure. Not `0`: an unreported reply is not free,
     /// and reading it as free let budgets never trip.
     pub tokens: Option<u64>,
+    /// Tokens the prompt occupied, as the provider reported them; `None`
+    /// when the reply did not say. Cached tokens are included on every
+    /// protocol, so the figure means the same thing whichever one answered
+    /// (ADR 0027, #106). Not `0` when unreported, for the reason `tokens`
+    /// is not.
+    pub prompt_tokens: Option<u64>,
     /// The assistant message to replay with this call's result.
     pub replay: Value,
 }
@@ -202,9 +213,22 @@ fn openai_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
+    // A plain string when there is no image, so every other body is byte
+    // for byte what it was; a parts array, the text first, when there is.
+    let user = if conv.images.is_empty() {
+        json!(conv.user)
+    } else {
+        let mut parts = vec![json!({ "type": "text", "text": conv.user })];
+        parts.extend(conv.images.iter().map(|i| {
+            json!({ "type": "image_url", "image_url": {
+                "url": format!("data:{};base64,{}", i.media_type(), i.base64())
+            }})
+        }));
+        Value::Array(parts)
+    };
     let mut messages = vec![
         json!({ "role": "system", "content": conv.system }),
-        json!({ "role": "user", "content": conv.user }),
+        json!({ "role": "user", "content": user }),
     ];
     for x in &conv.exchanges {
         messages.push(x.replay.clone().unwrap_or_else(|| {
@@ -259,9 +283,18 @@ fn anthropic_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
-    let mut messages = vec![json!({ "role": "user", "content": [
-        { "type": "text", "text": conv.user }
-    ]})];
+    // Images before the text, the order Anthropic's documentation asks for.
+    let mut first: Vec<Value> = conv
+        .images
+        .iter()
+        .map(|i| {
+            json!({ "type": "image", "source": {
+                "type": "base64", "media_type": i.media_type(), "data": i.base64()
+            }})
+        })
+        .collect();
+    first.push(json!({ "type": "text", "text": conv.user }));
+    let mut messages = vec![json!({ "role": "user", "content": first })];
     for x in &conv.exchanges {
         messages.push(x.replay.clone().unwrap_or_else(|| {
             json!({ "role": "assistant", "content": [
@@ -317,6 +350,9 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 .pointer("/choices/0/message")
                 .ok_or_else(|| shape("expected `choices[0].message`"))?;
             let tokens = v["usage"]["completion_tokens"].as_u64();
+            // Already counts cached prompt tokens; Anthropic's figure below is
+            // summed to match it.
+            let prompt_tokens = v["usage"]["prompt_tokens"].as_u64();
             let calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
             let call = match calls.as_slice() {
                 [one] => {
@@ -358,6 +394,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             Ok(Reply {
                 call,
                 tokens,
+                prompt_tokens,
                 replay: Value::Object(replay),
             })
         }
@@ -366,6 +403,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 .as_array()
                 .ok_or_else(|| shape("expected a `content` array"))?;
             let tokens = v["usage"]["output_tokens"].as_u64();
+            let prompt_tokens = anthropic_prompt_tokens(&v["usage"]);
             let uses: Vec<&Value> = content.iter().filter(|b| b["type"] == "tool_use").collect();
             let call = match uses.as_slice() {
                 [one] => Ok(NativeCall {
@@ -398,10 +436,28 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             Ok(Reply {
                 call,
                 tokens,
+                prompt_tokens,
                 replay: json!({ "role": "assistant", "content": content }),
             })
         }
     }
+}
+
+/// Anthropic's prompt figure: `input_tokens` plus the cache-creation and
+/// cache-read tokens it leaves out, so the sum is what OpenAI's
+/// `prompt_tokens` reports (ADR 0027, #106).
+///
+/// Gated on `input_tokens`: a cache field counts as 0 only beside it, since
+/// without it the sum would be a part of the prompt presented as all of it,
+/// and a low number reads as a cheap run.
+fn anthropic_prompt_tokens(usage: &Value) -> Option<u64> {
+    let input = usage["input_tokens"].as_u64()?;
+    let cached = |k: &str| usage[k].as_u64().unwrap_or(0);
+    Some(
+        input
+            .saturating_add(cached("cache_creation_input_tokens"))
+            .saturating_add(cached("cache_read_input_tokens")),
+    )
 }
 
 fn no_call(text: &str) -> String {
@@ -694,9 +750,8 @@ impl HostedClient {
                 vec![("anthropic-version", "2023-06-01")],
             ),
         };
-        let mut attempt = 1;
-        loop {
-            let sent = transport::post(
+        self.send_via(|| {
+            transport::post(
                 &self.endpoint,
                 self.proxy.as_ref(),
                 path,
@@ -705,7 +760,25 @@ impl HostedClient {
                 &text,
                 self.timeout,
             )
-            .await;
+        })
+        .await
+    }
+
+    /// The retry policy around `attempt`, which makes one request. Split
+    /// from `send` so a test can make one attempt fail in a way a loopback
+    /// socket cannot be made to on demand (an OS connect timeout).
+    ///
+    /// Every retry goes to the same endpoint through the same `attempt`, so
+    /// where the key is sent does not change with the attempt number
+    /// (ADR 0024 §3).
+    async fn send_via<F, Fut>(&self, mut attempt_once: F) -> Result<Reply, RuntimeError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<transport::Response, SendError>>,
+    {
+        let mut attempt = 1;
+        loop {
+            let sent = attempt_once().await;
             let wait = match sent {
                 Ok(r) if (200..300).contains(&r.status) => {
                     let v: Value = serde_json::from_str(&r.body).map_err(|e| {
@@ -750,6 +823,35 @@ impl HostedClient {
                     tracing::warn!(attempt, error = %e, "request failed mid-flight; retrying");
                     d
                 }
+                // #210: a run against a loopback stub ended on `os error
+                // 10060` while the host was loaded, because every connect
+                // failure was treated as a refusal. A handshake the OS timed
+                // out gets the policy a broken request gets: at most
+                // MAX_ATTEMPTS (4) attempts, 1, 2, 4 s apart. Each attempt's
+                // connect is bounded by the OS and then by `self.timeout`, so
+                // an endpoint that never answers now fails after up to four
+                // OS connect timeouts and 7 s of waits, not one timeout.
+                // `e` is the transport's message, the address and the OS
+                // error: it holds no key and no request body.
+                Err(SendError::ConnectTimedOut(e)) if attempt < MAX_ATTEMPTS => {
+                    let d = retry_delay(None, attempt);
+                    tracing::warn!(
+                        attempt,
+                        wait_ms = d.as_millis() as u64,
+                        error = %e,
+                        "connect timed out; retrying"
+                    );
+                    d
+                }
+                Err(SendError::ConnectTimedOut(e)) => {
+                    return Err(RuntimeError::Connect {
+                        base: self.base.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("{e} (after {MAX_ATTEMPTS} attempts)"),
+                        ),
+                    });
+                }
                 Err(SendError::Broken(e)) | Err(SendError::Connect(e)) => {
                     return Err(RuntimeError::Connect {
                         base: self.base.clone(),
@@ -789,6 +891,7 @@ mod tests {
                 replay: None,
             }],
             trailing: Some("last step".into()),
+            images: Vec::new(),
         }
     }
 
@@ -853,6 +956,39 @@ mod tests {
         assert_eq!(m[2]["content"][0]["tool_use_id"], "c1");
         assert_eq!(m[2]["content"][1]["text"], "last step");
         assert!(b.get("thinking").is_none());
+    }
+
+    #[test]
+    fn an_image_rides_in_the_first_user_message_in_each_protocol_s_format() {
+        let img = Image::from_bytes(b"GIF89a-pixels").unwrap();
+        let data = img.base64().to_string();
+        let mut c = conv();
+        c.images = vec![img];
+        let b = request_body(Protocol::Anthropic, "m", &c, &tools(), 100, Thinking::Off);
+        let first = &b["messages"][0]["content"];
+        assert_eq!(first[0]["type"], "image");
+        assert_eq!(first[0]["source"]["type"], "base64");
+        assert_eq!(first[0]["source"]["media_type"], "image/gif");
+        assert_eq!(first[0]["source"]["data"], data.as_str());
+        assert_eq!(first[1]["text"], "Task: fix it");
+        let b = request_body(Protocol::OpenAiChat, "m", &c, &tools(), 100, Thinking::Off);
+        let user = &b["messages"][1]["content"];
+        assert_eq!(user[0]["text"], "Task: fix it");
+        assert_eq!(user[1]["type"], "image_url");
+        assert_eq!(
+            user[1]["image_url"]["url"],
+            format!("data:image/gif;base64,{data}").as_str()
+        );
+        // Without one, the user content is the plain string it always was.
+        let b = request_body(
+            Protocol::OpenAiChat,
+            "m",
+            &conv(),
+            &tools(),
+            100,
+            Thinking::Off,
+        );
+        assert_eq!(b["messages"][1]["content"], "Task: fix it");
     }
 
     #[test]
@@ -1064,6 +1200,73 @@ mod tests {
     }
 
     #[test]
+    fn openai_chat_prompt_tokens_are_read_from_usage() {
+        // Recorded shape: OpenAI's `prompt_tokens` already includes the
+        // cached part, which `prompt_tokens_details` breaks out.
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}],
+            "usage":{"prompt_tokens":1200,"completion_tokens":9,"total_tokens":1209,
+                "prompt_tokens_details":{"cached_tokens":1024}}});
+        let r = parse_reply(Protocol::OpenAiChat, &v).unwrap();
+        assert_eq!((r.prompt_tokens, r.tokens), (Some(1200), Some(9)));
+    }
+
+    #[test]
+    fn anthropic_prompt_tokens_include_cache_creation_and_cache_read() {
+        // The risk: reading `input_tokens` alone reports only the uncached
+        // tail of a mostly-cached prompt, a fraction of what OpenAI's figure
+        // would say for the same request.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"input_tokens":12,"cache_creation_input_tokens":300,
+                "cache_read_input_tokens":4000,"output_tokens":5}});
+        let r = parse_reply(Protocol::Anthropic, &v).unwrap();
+        assert_eq!((r.prompt_tokens, r.tokens), (Some(4312), Some(5)));
+
+        // An absent cache field is 0 beside a present `input_tokens`.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"input_tokens":12,"output_tokens":5}});
+        assert_eq!(
+            parse_reply(Protocol::Anthropic, &v).unwrap().prompt_tokens,
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_tokens_without_input_tokens_are_unknown_not_the_cache_part() {
+        // The cache fields alone are part of the prompt; summing them would
+        // present that part as the whole.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"cache_creation_input_tokens":300,"cache_read_input_tokens":4000,
+                "output_tokens":5}});
+        let r = parse_reply(Protocol::Anthropic, &v).unwrap();
+        assert_eq!((r.prompt_tokens, r.tokens), (None, Some(5)));
+    }
+
+    #[test]
+    fn a_reply_without_usage_has_unknown_prompt_tokens_not_zero() {
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}],
+            "usage":{"completion_tokens":9}});
+        assert_eq!(
+            parse_reply(Protocol::OpenAiChat, &v).unwrap().prompt_tokens,
+            None
+        );
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}]});
+        assert_eq!(
+            parse_reply(Protocol::Anthropic, &v).unwrap().prompt_tokens,
+            None
+        );
+        // A reported zero is a figure, and stays one.
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}],
+            "usage":{"prompt_tokens":0}});
+        assert_eq!(
+            parse_reply(Protocol::OpenAiChat, &v).unwrap().prompt_tokens,
+            Some(0)
+        );
+    }
+
+    #[test]
     fn a_reply_without_usage_has_an_unknown_token_count_not_zero() {
         let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
             {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}]});
@@ -1253,6 +1456,124 @@ mod tests {
         let e = c.send(&json!({})).await.unwrap_err();
         assert!(matches!(e, RuntimeError::Http { status: 503, .. }), "{e}");
         assert_eq!(h.await.unwrap().len(), MAX_ATTEMPTS as usize);
+    }
+
+    /// `c.send_via` where attempt `n` (from 1) fails with `fail(n)` when that
+    /// returns one, and otherwise makes the real request `send` makes.
+    /// Returns the result and how many attempts were made.
+    async fn send_failing(
+        c: &HostedClient,
+        fail: impl Fn(u32) -> Option<SendError>,
+    ) -> (Result<Reply, RuntimeError>, u32) {
+        let text = json!({}).to_string();
+        let n = std::cell::Cell::new(0u32);
+        let r = c
+            .send_via(|| {
+                n.set(n.get() + 1);
+                let injected = fail(n.get());
+                let text = &text;
+                async move {
+                    match injected {
+                        Some(e) => Err(e),
+                        None => {
+                            transport::post(
+                                &c.endpoint,
+                                None,
+                                "/chat/completions",
+                                &[],
+                                None,
+                                text,
+                                c.timeout,
+                            )
+                            .await
+                        }
+                    }
+                }
+            })
+            .await;
+        (r, n.get())
+    }
+
+    fn timed_out() -> SendError {
+        SendError::ConnectTimedOut(
+            "cannot reach 127.0.0.1:9: A connection attempt failed (os error 10060)".into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn connect_retry_a_timed_out_connect_is_retried_and_the_second_attempt_succeeds() {
+        // The risk (#210): an OS connect timeout on a loaded host was
+        // treated as a refusal, so one slow handshake ended the whole run.
+        let ok = r#"{"choices":[{"message":{"role":"assistant","content":null,
+            "tool_calls":[{"id":"c","type":"function",
+            "function":{"name":"done","arguments":"{}"}}]}}]}"#;
+        let (base, h) = stub(vec![("200 OK", "", ok)]).await;
+        let c = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let (r, attempts) = send_failing(&c, |n| (n == 1).then(timed_out)).await;
+        assert_eq!(
+            r.expect("the second attempt succeeds").call.unwrap().name,
+            "done"
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            h.await.unwrap().len(),
+            1,
+            "one connection reached the endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_retry_stops_at_the_cap_and_says_how_many_attempts() {
+        // The risk: an endpoint that never answers retried without bound.
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "m",
+            "K",
+            None,
+        )
+        .unwrap();
+        // Real waits (tokio's paused clock needs its `test-util` feature,
+        // which this workspace does not enable): 7 s.
+        let started = std::time::Instant::now();
+        let (r, attempts) = send_failing(&c, |_| Some(timed_out())).await;
+        assert_eq!(attempts, MAX_ATTEMPTS);
+        // 1, 2 and 4 s between the four attempts.
+        assert!(
+            started.elapsed() >= Duration::from_secs(7),
+            "{:?}",
+            started.elapsed()
+        );
+        match r {
+            Err(RuntimeError::Connect { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+                let m = source.to_string();
+                assert!(m.contains("10060") && m.contains("after 4 attempts"), "{m}");
+            }
+            other => panic!("expected a connect error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_retry_does_not_apply_to_a_refused_connection() {
+        // The risk: retrying a refusal, which is nothing listening and only
+        // repeats, adding 7 s to every mistyped port (ADR 0024 §4).
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "m",
+            "K",
+            None,
+        )
+        .unwrap();
+        let (r, attempts) = send_failing(&c, |_| {
+            Some(SendError::Connect(
+                "cannot reach 127.0.0.1:9: refused".into(),
+            ))
+        })
+        .await;
+        assert_eq!(attempts, 1);
+        assert!(matches!(r, Err(RuntimeError::Connect { .. })), "{r:?}");
     }
 
     #[tokio::test]

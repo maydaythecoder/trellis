@@ -37,6 +37,21 @@ pub struct BudgetFile {
     pub warn_at: Option<f64>,
 }
 
+/// One `[[services]]` entry (ADR 0026 §12): a long-running command, such as
+/// a dev server, started in the task's worktree before the task runs and
+/// killed with its whole process tree when the task ends. Repository code,
+/// so it is a trust item, and it runs with the scrubbed environment every
+/// child gets and nothing passed back.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceFile {
+    /// Names the service in the trail, `trellis trust` and `doctor`, and
+    /// its log file; `valid_name`'s alphabet, so it is safe in a file name.
+    pub name: String,
+    /// argv, never a shell string.
+    pub command: Vec<String>,
+}
+
 /// What a profile file says. Unknown keys are refused: a misspelt
 /// `[budgett]` silently meaning "no budget" is the failure this prevents.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -75,6 +90,10 @@ pub struct ProfileFile {
     pub control: Option<ControlFile>,
     pub skills: Option<SkillsFile>,
     pub budget: Option<BudgetFile>,
+    /// Services the profile's tasks run beside them (ADR 0026 §12). Skipped
+    /// when empty so a profile without any serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceFile>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,6 +220,30 @@ pub fn validate(set: &BTreeMap<String, Profile>) -> Result<(), QueueError> {
             // `Rule::parse` reads a blank entry as the exact path "", which
             // admits nothing: a line that looks like a scope and is not one.
             return bad(n, format!("`allow_write` entry {v:?} names no path"));
+        }
+        let mut names: Vec<&str> = Vec::new();
+        for svc in &f.services {
+            if !valid_name(&svc.name) {
+                return bad(
+                    n,
+                    format!(
+                        "service {:?}: a name is lowercase ASCII letters, digits, `-` and `_`",
+                        svc.name
+                    ),
+                );
+            }
+            if names.contains(&svc.name.as_str()) {
+                // Two entries under one name would share a log file and read
+                // as one service in the trail.
+                return bad(n, format!("service `{}` is declared twice", svc.name));
+            }
+            names.push(&svc.name);
+            if svc.command.first().is_none_or(|p| p.trim().is_empty()) {
+                return bad(
+                    n,
+                    format!("service `{}`: `command` names no program", svc.name),
+                );
+            }
         }
         if f.command.is_none() && f.timeout_s.is_some() {
             return bad(
@@ -539,6 +582,42 @@ warn_at = 0.5
 
         assert!(err(&[("w", "allow_write = [\" \"]")]).contains("names no path"));
         assert!(err(&[("w", "allow_writes = [\"docs/\"]")]).contains("unknown field"));
+    }
+
+    #[test]
+    fn a_services_table_parses_and_an_older_profile_serializes_unchanged() {
+        // The risk (ADR 0026 §12): the field changed how a profile without
+        // it round-trips, or a service with no program or a name unsafe in a
+        // file name got as far as a spawn.
+        let old = "role = \"writer\"\nmodel = \"x\"\n";
+        let before = parse("w", old).unwrap();
+        assert!(before.file.services.is_empty());
+        assert!(!toml::to_string(&before.file).unwrap().contains("services"));
+
+        let s = set(&[(
+            "w",
+            "command = [\"agent\"]\n[[services]]\nname = \"web\"\ncommand = [\"python\", \"-m\", \"http.server\"]\n",
+        )])
+        .unwrap();
+        let svc = &s["w"].file.services;
+        assert_eq!(svc.len(), 1);
+        assert_eq!(svc[0].name, "web");
+        assert_eq!(svc[0].command, ["python", "-m", "http.server"]);
+        let back = toml::to_string(&s["w"].file).unwrap();
+        assert_eq!(parse("w", &back).unwrap().file, s["w"].file);
+
+        let one = |body: &str| err(&[("w", &format!("[[services]]\n{body}"))]);
+        assert!(one("name = \"web\"\ncommand = []").contains("names no program"));
+        assert!(one("name = \"web\"\ncommand = [\" \"]").contains("names no program"));
+        assert!(one("name = \"../x\"\ncommand = [\"y\"]").contains("lowercase"));
+        assert!(one("name = \"web\"\ncommand = [\"y\"]\nport = 1").contains("unknown field"));
+        assert!(
+            err(&[(
+                "w",
+                "[[services]]\nname = \"a\"\ncommand = [\"y\"]\n[[services]]\nname = \"a\"\ncommand = [\"z\"]\n"
+            )])
+            .contains("declared twice")
+        );
     }
 
     #[test]

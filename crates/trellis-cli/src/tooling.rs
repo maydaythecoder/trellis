@@ -91,20 +91,22 @@ impl Inputs {
     }
 }
 
-/// Each process agent's `command` (ADR 0026 §11), as a trust item: an argv
-/// from `.trellis/agents/*.toml` that `work` runs in the worktree, which is
-/// repository code as much as a hook is. A profile set that does not load
-/// contributes nothing here; `work` refuses it before anything runs.
+/// Each process agent's `command` (ADR 0026 §11), and each profile's
+/// services (§12), as trust items: argvs from `.trellis/agents/*.toml` that
+/// `work` runs in the worktree, which are repository code as much as a hook
+/// is. A profile set that does not load contributes nothing here; `work`
+/// refuses it before anything runs.
 fn process_agents(root: &Path, cache: &trellis_loop::HashCache) -> Vec<trellis_loop::TrustItem> {
-    trellis_queue::profile::load_all(root)
+    let mut items = Vec::new();
+    for p in trellis_queue::profile::load_all(root)
         .unwrap_or_default()
         .into_values()
-        .filter_map(|p| {
-            let argv = p.file.command.clone()?;
+    {
+        if let Some(argv) = &p.file.command {
             let mut item = trellis_loop::TrustItem::command_cached(
                 root,
                 format!("process agent {}", p.name),
-                &argv,
+                argv,
                 format!("timeout_s = {:?}", p.file.timeout_s),
                 cache,
             );
@@ -112,9 +114,23 @@ fn process_agents(root: &Path, cache: &trellis_loop::HashCache) -> Vec<trellis_l
             // by name: the profile file's hash alone put them in the digest
             // without anyone being told.
             item.receives = p.file.pass_env.clone();
-            Some(item)
-        })
-        .collect()
+            items.push(item);
+        }
+        for svc in &p.file.services {
+            // No `receives`: a service gets the scrubbed environment and no
+            // `pass_env`, whatever its profile passes its process agent.
+            items.push(trellis_loop::TrustItem::command_cached(
+                root,
+                format!("service {}/{}", p.name, svc.name),
+                &svc.command,
+                "runs beside each task of this profile; killed with its process tree when \
+                 the task ends"
+                    .to_string(),
+                cache,
+            ));
+        }
+    }
+    items
 }
 
 /// `Ok(())` when the repository's executable configuration is trusted,
@@ -250,6 +266,14 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
             .count();
         if agents > 0 {
             parts.push(format!("process agents: {agents} present"));
+        }
+        let services = fp
+            .items
+            .iter()
+            .filter(|i| i.label.starts_with("service "))
+            .count();
+        if services > 0 {
+            parts.push(format!("services: {services} present"));
         }
         match &refused {
             Some(reason) => format!("{}, cannot be trusted: {reason}", parts.join(", ")),
@@ -388,6 +412,20 @@ pub(crate) fn outcome_json(
     })
 }
 
+/// What `after_run` is given when the run was interrupted (Ctrl-C or
+/// `rpc`'s `abort`). The keys are `outcome_json`'s, so a hook reads one
+/// schema. `iterations` is null: the loop's count lived in the future the
+/// interrupt dropped, and a guessed number would be a false one.
+pub(crate) fn interrupted_json(touched: &[String], run_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": run_id,
+        "converged": false,
+        "iterations": null,
+        "reason": "interrupted",
+        "touched": touched,
+    })
+}
+
 #[cfg(test)]
 mod run_tests {
     //! ADR 0023 through `cmd_run`: a committed repository, a scripted
@@ -401,13 +439,10 @@ mod run_tests {
     use trellis_loop::{TrustState, TrustStore};
 
     /// Every test here shares one store in the scratch directory; entries
-    /// are keyed by repository root, and each test has its own.
+    /// are keyed by repository root, and each test has its own. The store
+    /// is `testutil`'s, emptied once per process there (#199).
     fn store() -> TrustStore {
-        let path = std::env::temp_dir()
-            .join(format!("trellis-trust-{}", std::process::id()))
-            .join("trust.json");
-        TrustStore::use_for_this_process(path);
-        TrustStore::user().unwrap()
+        crate::testutil::trust_store()
     }
 
     /// A shell argv for `script`, as TOML, with literal strings so a Windows
@@ -473,8 +508,7 @@ mod run_tests {
     }
 
     fn trust(dir: &Path) {
-        let cfg = crate::config::RepoConfig::load(dir).unwrap();
-        store().trust(dir, &super::fingerprint(dir, &cfg)).unwrap();
+        crate::testutil::trust(dir);
     }
 
     const EDIT_THEN_STOP: &str = r#"{"steps":[
@@ -763,7 +797,11 @@ mod run_tests {
             &spec,
             false,
             RunSeeding::default(),
-            RunControl { flag: None, human },
+            RunControl {
+                flag: None,
+                human,
+                steering: None,
+            },
             &mut out,
         );
         let said = String::from_utf8(out).unwrap();
@@ -1112,9 +1150,19 @@ mod run_tests {
 
     #[test]
     fn custom_tool_timeout_a_run_just_under_it_completes() {
+        // The risk: the configured bound is applied early (a smaller
+        // constant, milliseconds for seconds, 0-means-1 applied to every
+        // value), so a tool that finishes well inside `timeout_s` is killed.
+        // The two numbers split that claim in two. The nap sets what is
+        // caught: any enforced bound under about 2 s kills it. The gap to
+        // `timeout_s` is what load may take: a 1 s nap against 4 s was
+        // reported killed at 4 s on a host running three builds and a model
+        // (#212): more than 3 s went to something other than the nap (not
+        // measured; process start or a late exit notice), so 28 s is kept.
+        // "just under" in the name is kept for the ticket's Verify filter.
         let (dir, spec) = fixture(
             "custom-timeout-under",
-            &nap_tool(1, "timeout_s = 4\n"),
+            &nap_tool(2, "timeout_s = 30\n"),
             NAP_THEN_STOP,
         );
         trust(&dir);

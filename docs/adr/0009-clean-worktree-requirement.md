@@ -79,7 +79,11 @@ snapshot never recorded, so it is not used on that path. Evidence, in
 
 What this rollback guarantees when trellis is not the only writer (bash,
 custom tools, hooks, process agents) is stated in ADR 0023 §5 and ADR 0026
-§11: for those writers it is best-effort against git's view of the tree.
+§11. *Amended 2026-09-30, #54:* those writers run in a throwaway clone
+(ADR 0032), and what they change there comes back through a carry-back, so
+this guarantee is exact for what they do where they run; the limits that
+remain (network, reads, writes by absolute path, processes that outlive
+the call) are in ADR 0032, "Limits".
 
 ## Alternatives considered
 

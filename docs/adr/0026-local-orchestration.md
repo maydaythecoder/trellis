@@ -2,7 +2,9 @@
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
-was closed. §7 amended again for IANA zone names (#47). Each amendment is marked in place. §4's `tools` list and skill deny
+was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
+for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). §12 added for
+services (#60), with a line in §4. Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -50,7 +52,7 @@ written under ADR 0020 still loads unchanged.
 | `assignee` | An agent profile name (§4) |
 | `blockers` | Task ids this task waits for |
 | `needs_approval`, `approval` | §6 |
-| `notes` | `[{at, actor, text}]`, appended by `queue note` and by the queue |
+| `notes` | `[{at, actor, text, id?, mentions_read?}]`, appended by `queue note` and by the queue. `id` and `mentions_read` are #57's, below; both are omitted when absent |
 | `routine` | The routine that created the task, if any (§7) |
 | `args` | Arguments for the task's `prompt` template, the one unsplit string `run --args` takes (§3). Omitted from the file when absent |
 
@@ -172,6 +174,56 @@ unchanged. The reverse does not hold: a build from before this amendment
 cannot parse a task that uses them, so its `queue list` shows the file as
 unreadable and its `work` moves it to `failed/`, as it does any file that is
 not valid task JSON.
+
+*Amended 2026-09-29 (#57), by the owner's decision of 2026-09-28:* **a
+person's `@profile` mention wakes that profile's task.** A note added with
+`trellis queue note` that contains `@<name>`, where `<name>` is an existing
+profile that is not paused, puts the task back for that profile: `work`,
+at the top of each tick and before it claims, sets the task's `assignee` to
+`<name>`, its status to `todo` with no `blocked` reason and no `outcome`,
+and moves it to `pending/`. The task is then claimable exactly as any `todo`
+task is: unresolved blockers, a missing approval, and the profile's gate
+(§4) still hold it. Each wake is logged as `mention_wake` (§9) with the note
+id, and the heartbeat adds its own note saying so.
+
+- **A token** is a whitespace-separated word that starts with `@`, after
+  any opening bracket or quote, whose remainder less trailing punctuation
+  is a valid profile name. `@reviewer,` is a mention; `ops@example.com` is
+  not.
+- **Unknown and paused names** are logged as `mention_ignored`, with why,
+  and nothing moves. A pause in the profile file or the overlay both count;
+  a mention is not a way round one. A note that names several runnable
+  profiles wakes the task for the first and logs the rest as ignored.
+- **Once per note.** Each note carries `mentions_read`, set in the same
+  edit that wakes the task, and set too when every name in it was ignored,
+  so nothing is logged or woken twice whether one heartbeat or several read
+  it. A task in `claimed/` is skipped with its notes unread and read on a
+  later tick.
+- **Only a person's note counts.** `queue note` is the only writer of a
+  note `id` (`n` and the note's 1-based position in the task's list, so
+  `n1`, `n3` when the queue wrote the second), and a note wakes only if its
+  actor is `human` *and* it has one. The actor alone is not enough: the
+  queue also writes `human` notes on a person's behalf (a cancel reason, an
+  approval, a manual routine fire), and those are records, not messages to
+  an agent. Notes by the heartbeat, a routine, or a model never wake
+  anything, so one agent's output cannot start another agent (the intent of
+  ADR 0005). A note written before #57 has no id and wakes nothing.
+- **A run cannot write a person's note.** *Amended 2026-09-30 (#189),
+  replacing the "known limit" this bullet stated:* a run with `bash`, a
+  hook, a custom tool or a process agent enabled can spawn `trellis queue
+  note` itself, and without a check the queue would record that as a
+  person's note, so one agent could wake another. `queue note` now refuses
+  when `TRELLIS_RUN_ID` (set for `bash`, custom tools and hooks) or
+  `TRELLIS_TASK_ID` (set for a process agent, which gets no run id) is
+  present in its environment, an empty value included. It writes nothing
+  to the task, exits non-zero with a message saying a run cannot write a
+  person's note, and logs `task.note_refused` (§9).
+  **Its limit, stated:** this stops the accidental path, a child that
+  inherits the run's environment and calls `trellis queue note`. A child
+  that removes those variables on purpose, or starts a process that does
+  not inherit them, is not caught by it; stopping that writer is the
+  sandbox's job (ADR 0032, "Limits" and "What is not built"), not another
+  environment check.
 
 ### 2. Changing a file that already exists
 
@@ -312,6 +364,10 @@ deny = []
 monthly_tokens = 2000000
 lifetime_tokens = 50000000
 warn_at = 0.8
+
+# [[services]]                          # started beside each task (§12, #60)
+# name = "web"
+# command = ["python", "-m", "http.server", "8000"]
 ```
 
 **Validation** happens whenever profiles are loaded, which is every command
@@ -334,6 +390,10 @@ that reads them:
 - *Amended (#182):* an `allow_write` entry that is blank is refused: it
   parses as the exact path "", which admits nothing, and would read as a
   scope that is not one.
+- *Amended (#60):* each `[[services]]` entry has exactly `name` and
+  `command`. The name uses a profile name's alphabet (it becomes part of a
+  file name), is unique within the profile, and `command` must name a
+  program. Either kind of profile may declare services (§12).
 
 **What a profile changes about a run of its tasks:**
 - **`instructions`**: the file's text goes ahead of the task, the same way
@@ -380,13 +440,14 @@ that reads them:
     `.trellis/agents/<name>.toml`;
   - a `bash` or custom-tool command's changes, at the throwaway clone's
     carry-back (ADR 0032), refused and named in the tool's output;
-  - a process agent (§11), over the files git shows the command changed,
-    in the judge read before the command runs: each out-of-scope file is
-    named as `governance: refused:` and the run does not converge and is
-    rolled back. Process agents do not run in the throwaway clone yet
-    (ADR 0032, "What is not built"; #175), so this is the post-command
-    judge, the same one that applies `deny_write` to them; the clone's
-    carry-back must apply it when #175 lands.
+  - a process agent (§11), at its throwaway clone's carry-back (ADR
+    0032, "Process agents", #175), over every file it edited, created or
+    deleted there, `deny_write` first, with the rules read before the
+    command ran: each out-of-scope file is named as `governance:
+    refused:`, is never written into the repository, and the run does not
+    converge and is rolled back. The post-command judge still applies it
+    to what git shows changed in the repository, for a command that wrote
+    there by absolute path, which the clone does not stop.
   Ignored files are outside what `allow_write` judges: the checks and the
   tests write caches there on every run, and a scope that counted them
   would refuse every run of a scoped agent. They are not part of the change
@@ -453,9 +514,18 @@ allow.
 
 **What is counted, stated plainly.** The count is **completion tokens as the
 runtime adapter reported them**. It is `Model::tokens_used()`, which the
-runtime adapter sums from each completion's reported count. No figure for
-prompt tokens exists anywhere in trellis, so a budget here limits generated
-tokens, not billed tokens. A scripted run records no token count. A process
+runtime adapter sums from each completion's reported count. *Amended
+2026-09-30 (#108):* the ledger now carries prompt tokens as a second number,
+field `prompt_tokens`: the trail's own `prompt_tokens`, which the adapter
+sums from each reply's reported prompt figure (`Model::prompt_tokens()`),
+kept per month and lifetime beside the completion sums and never added to
+them. `agents list` and `agents show` print it as its own clause, `prompt
+tokens <month>: <n>, lifetime <n>`. A run with any reply that reported no
+prompt figure records none; the clause prints `unknown` when every counted
+run lacks one, and otherwise the known sum followed by `(<k> runs
+unknown)`, never 0 for an unknown. Budgets still limit completion tokens
+only, so a budget here limits generated tokens, not billed tokens. A
+scripted run records no token count. A process
 agent's tokens are unknown to trellis.
 
 **A hosted reply with no usage figure** (amended after the second review of
@@ -777,6 +847,11 @@ variants and dispatch:*
 
 **What is logged:**
 - task add, set, note, cancel, claim, finish, requeue, wake
+- `mention_wake` and `mention_ignored`, each naming the note (§1, #57)
+- `task.note_refused`: a `queue note` refused because it ran inside a run
+  (§1, #189). Its actor is `human`, the identity the command claims; its
+  `run_id` is `TRELLIS_RUN_ID`'s value when that was the variable found,
+  and its detail names the variable and the note's text
 - approval request, approve, reject
 - agent pause and resume, including budget pauses and resumes
 - routine fire, coalesce, skip and missed-drop
@@ -863,7 +938,11 @@ This is Paperclip's `process` adapter. A profile with
    tasks before the change.
 1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
    model run.
-2. **Run** the command in the worktree root. Its stdin is the task text,
+2. **Run** the command in the worktree root. *Amended (#175):* in a
+   throwaway clone of the repository, and what it changed there is carried
+   back under the refusals every writer meets; ADR 0032, "Process agents",
+   is where that is recorded, with what it closes and what it does not.
+   Its stdin is the task text,
    with the instructions file prepended, and its environment has
    `TRELLIS_TASK`, `TRELLIS_TASK_ID` and `TRELLIS_AGENT` set. Its stdout and
    stderr go to `work`'s terminal.
@@ -1161,12 +1240,26 @@ two `Verdict`s that `trellis-checks` constructs from processes it ran itself.
 one premise: during a run the orchestrator is the only writer (ADR 0005).
 With `edit` and `write_file` as the only writers that premise holds, and
 the rollback's guarantee is exact. When `bash`, a custom tool, a hook or a
-process agent is enabled, it does not. Each of those is an unsandboxed
-process running with the user's authority, with write access to the whole
-worktree and to `.git/`. For them the rollback is **best-effort against
-git's view of the tree**: it restores what `git reset --hard`, `git clean
--fd`, the ignored-file listing and the git guard can see, and a writer
-that shapes git's view can place a change outside all four.
+process agent was enabled, it did not: each was an unsandboxed process
+running in the repository with the user's authority, with write access to
+the whole worktree and to `.git/`, and for them the rollback was
+best-effort against git's view of the tree.
+
+*Amended 2026-09-30, #54:* that caveat no longer holds for these four
+writers. Each runs in a throwaway clone (ADR 0032), and no configuration
+runs it in the repository instead; what it changes there reaches the
+repository only through a carry-back under the refusals every writer
+meets. For what such a writer does where it runs, `.git/` included, the
+rollback's guarantee is exact, as for `edit` and `write_file`. What a
+clone does not stop is stated once, in ADR 0032, "Limits": no network
+isolation, reads outside the clone, writes that reach the repository by
+absolute path, and processes that outlive the call. The list below is
+kept as the record of what the review rounds found; it now holds only
+for a writer that reaches the repository by absolute path. Evidence: the
+four `isolated_writer_*` tests in `crates/trellis-loop/src/isolate.rs`,
+one per writer, each showing a planted file, `core.hooksPath`, a branch,
+a tag and a `skip-worktree` flag written from inside it leave every byte
+under the repository's `.git/` as it was.
 
 This is a limit, not a defect awaiting another guard. Eleven review rounds
 have closed one route after another with a post-hoc git check, and each
@@ -1216,9 +1309,11 @@ are not assumed closed:
   elsewhere in the repository is an ordinary file a run may edit.
 
 **What holds.** For trellis's own edits (`edit`, `write_file`), and for
-the edits a `bash` or custom-tool command makes inside its clone and that
-are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
-0009 states. A run with none of
+the edits a `bash` or custom-tool command or a hook makes inside its
+clone, and the edits, new files and deletions a process agent makes
+inside its own, that are carried back (ADR 0032; hooks and process
+agents *amended 2026-09-29*, #174 and #175), the rollback's guarantee
+is exact, as ADR 0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
@@ -1230,14 +1325,105 @@ rollback covers them exactly. Against a `bash` or custom-tool command that
 writes where it runs, every item in the list above is closed: its
 `.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
 in the clone, and what it started writes into a directory that is removed.
-The list still holds, in full, for **hooks and process agents**, which are
-not isolated yet, and for any writer that reaches the repository by
+*Amended 2026-09-29, #174 and #175:* hooks and process agents run in
+clones too (ADR 0032, "Hooks" and "Process agents"). A hook's edits
+come back through the same write path; a process agent's edits, new
+files and deletions come back through its own carry-back, under the
+same refusals, where the rollback covers them exactly. The list still
+holds, in full, for any writer that reaches the repository by
 absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network
 and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
 `trellis trust` prints one line stating the limit when it records trust for
 any of these writers.
+
+### 12. Services
+
+*Added for #60 (owner's decision of 2026-09-28, recorded on the issue).*
+Paperclip lets a workspace run runtime services, such as a dev server. A
+profile declares them as `[[services]]` (§4), and every task that profile
+runs gets them:
+
+1. **Trust.** A service's argv is repository code, as a process agent's is.
+   Each one is an item in the trust fingerprint, labelled `service
+   <agent>/<name>` and shown by `trellis trust`, and the profile file is
+   under `.trellis/`, so it is in the digest as every byte there is. A task
+   whose profile declares a service is not claimed until the repository is
+   trusted (the same gate and reason as §11 step 0), and `work` checks
+   again right before it spawns. Like a process agent's, a service's argv
+   may name code outside `.trellis/` (`python manage.py runserver`): the
+   refusal of ADR 0023 §4 applies to hooks and custom tools only.
+2. **Where and when.** Each service starts in the worktree the task runs
+   in, after the task's text has been built and before the run itself (the
+   model loop or the process agent), in the order declared. There is no
+   readiness wait: a task that needs the port open must wait for it
+   itself. Until #24 gives each task a worktree of its own, "the task's
+   worktree" is the one `work` runs in.
+3. **Environment.** The scrubbed environment every child gets (ADR 0024
+   §3), plus `TRELLIS_TASK_ID`, `TRELLIS_AGENT` and `TRELLIS_SERVICE`.
+   Nothing is put back: a profile's `pass_env` is for its process agent,
+   and its services never receive those variables. Evidence:
+   `service_gets_the_scrubbed_environment_and_not_its_profile_s_pass_env`
+   in `tests/child_env.rs`.
+4. **Output.** stdin is empty. stdout and stderr go to
+   `<git-dir>/trellis/services/<agent>.<name>.log`, truncated at each
+   start, never to the terminal: under `work --json` stdout carries JSONL
+   only, and on Unix a service in a process group of its own writing to the
+   terminal would be stopped by SIGTTOU. Nothing reads the log. It is not
+   bounded in size while the task runs.
+5. **Stopping, on every way out of the task.** The services are held by a
+   guard in `work`'s runner, and dropping it kills each one with its whole
+   process tree, in reverse order: after a converged or failed run, an
+   error, Ctrl-C (the run returns as interrupted and the guard drops after
+   it) and a panic that unwinds through the runner. If one service cannot
+   start, those already started are killed before the task ends as an
+   error.
+   - **Windows:** each service is in a Job Object of its own, with
+     kill-on-close and no breakaway (ADR 0035); the job is terminated and
+     the service reaped. If trellis itself is killed, closing the job
+     handle ends the tree.
+   - **Unix:** each service leads a process group of its own and is not
+     reaped until it is stopped, so the group id stays its own and `kill
+     -KILL -- -<pgid>` (`trellis_core::process::kill_tree`) cannot reach a
+     stranger; then the service is killed and reaped. A process that left
+     the group (`setsid`) is not reached. If trellis is killed with
+     SIGKILL, nothing stops the group.
+   Evidence: `service_is_killed_with_its_tree_when_the_task_ends` in
+   `tests/orchestration.rs`: a service backgrounds a heartbeat, and a second
+   task in the same `work` measures it and finds it stopped. The second
+   task is what makes this a test of the task's end rather than of
+   trellis's exit, which on Windows ends the job anyway. With the guard's
+   stop removed, it failed. Run on Windows here; the Unix branch of the
+   same test has not been run on this host.
+6. **Records, and `doctor`.** Each started service is recorded at
+   `<git-dir>/trellis/services/<pid>.json` (pid, the start time the
+   liveness probe of ADR 0020 §5 reports, agent, service, task, argv). The
+   record is removed once the service has been killed and reaped within two
+   seconds, and left otherwise. `trellis doctor` lists every recorded
+   service whose pid is alive with the recorded start time (or without one,
+   when either time is unknown). One whose task is not claimed is listed as
+   having outlived its task; one whose task is still claimed is listed
+   apart, as running for that task, which is expected while `work` runs it
+   (a claim a dead `work` left behind also reads as claimed, until it is
+   released as ADR 0020 §5 describes). Only the service's own pid is
+   recorded: a process it started that escaped the kill is not listed.
+7. **The trail.** Each service is one action, tool `service`, target
+   `<name>: <argv>`, first in the list under turn 1. Its outcome says it
+   was started and that its output is a log, not a check. `Action` has no
+   pass field, and nothing a service prints or returns reaches
+   `check_outcomes` (ADR 0004). Evidence:
+   `service_starts_in_the_task_s_worktree_and_the_trail_records_it_never_as_a_check`.
+
+**What rollback guarantees with a service, stated.** A service is an
+unsandboxed writer with the user's authority, of the same kind as a hook
+or a process agent, and it runs while the run is judged and while it is
+rolled back. Everything §11's "What rollback guarantees when trellis is not
+the only writer" lists applies to it. A service that writes into the
+worktree before the snapshot makes the run refuse to start (ADR 0009); one
+that writes during the run has its writes judged, and rolled back, as the
+run's own. No post-hoc check is added for it; the fix is isolation (ADR
+0032, "What is not built").
 
 ## What is not built
 
@@ -1247,14 +1433,18 @@ any of these writers.
 - ~~**A profile's skill deny list does not stop `read_skill` by exact name**
   (§4). It only narrows the list the model is shown.~~ Integrated; see
   below.
-- **`@profile` mentions in notes do not wake anything.** ADR 0021 defers
-  them.
+- ~~**`@profile` mentions in notes do not wake anything.** ADR 0021 defers
+  them.~~ Built for #57; see §1's amendment.
 - **No prompt-token or dollar accounting** (§5).
 - **Routines fire only while `work` is running.** There is no daemon
   (ADR 0020). A schedule with no `work` running accumulates missed fires,
   which the catch-up policy then handles.
 - **Webhook and API triggers.** ADR 0021 excludes them.
 - **Grandchildren of a timed-out process agent are not reaped** (§11).
+- **Services (§12): no readiness wait, no per-task worktree until #24, no
+  declaration on a single task** (only on a profile), and no services for
+  `trellis run`, which runs no profile. On Unix a SIGKILL of trellis leaves
+  a service's group running; `doctor` is what reports it.
 
 ## Alternatives rejected
 

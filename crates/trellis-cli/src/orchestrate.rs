@@ -115,6 +115,7 @@ pub(crate) fn spend_records(root: &Path) -> Vec<SpendRecord> {
             Some(SpendRecord {
                 agent: e.trail.factual.agent.clone()?,
                 tokens: e.trail.factual.tokens,
+                prompt_tokens: e.trail.factual.prompt_tokens,
                 started_at: e.trail.started_at.clone().unwrap_or_default(),
                 altered: e.integrity == trellis_trail::Integrity::Altered,
             })
@@ -130,6 +131,30 @@ fn limit_text(o: &profile::Overlay, base: Option<u64>, w: Window, month: &str) -
     match o.limit(base, w, month) {
         Some(l) => format!("of {l}"),
         None => "(no limit)".into(),
+    }
+}
+
+/// The prompt-token clause printed beside the completion figure (ADR 0026
+/// §5). A clause of its own and never added to the completion figure: a
+/// prompt is re-sent every turn, budgets limit completion tokens only, and
+/// one total would hide which of the two moved.
+///
+/// An unknown figure prints as `unknown`, never as 0: a run whose adapter
+/// reported no prompt figure did not cost nothing. The unknown count is
+/// lifetime-wide (the ledger keeps no per-month one), so it follows the
+/// clause once rather than qualifying either number alone.
+fn prompt_clause(s: &ledger::Spend, month: &str) -> String {
+    if s.runs > 0 && s.runs_without_prompt_count == s.runs {
+        return format!("prompt tokens {month}: unknown, lifetime unknown");
+    }
+    let known = format!(
+        "prompt tokens {month}: {}, lifetime {}",
+        s.prompt_month, s.prompt_lifetime
+    );
+    if s.runs_without_prompt_count > 0 {
+        format!("{known} ({} runs unknown)", s.runs_without_prompt_count)
+    } else {
+        known
     }
 }
 
@@ -232,6 +257,7 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
                         s.lifetime,
                         limit_text(&o, b.lifetime_tokens, Window::Lifetime, &month),
                     ));
+                    detail.push(prompt_clause(&s, &month));
                 }
                 println!("               {}", detail.join("; "));
             }
@@ -344,6 +370,10 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
                     "              completion tokens as the runtime adapter reported them, \
                      from {} trail(s) in this checkout",
                     s.runs
+                );
+                println!(
+                    "              {}; not limited by the budget",
+                    prompt_clause(&s, &month)
                 );
                 if s.runs_without_count > 0 {
                     println!(
@@ -751,5 +781,109 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn spend_records_read_prompt_tokens_from_the_trail_and_keep_absent_unknown() {
+        // The risk: the reader drops the trail's prompt figure, or turns a
+        // trail that has none (every trail before #105) into a known 0.
+        // Hand-written trails: read back as untrusted data (ADR 0007), so a
+        // digest that does not match is counted and flagged, not refused.
+        let d = tempfile::tempdir().unwrap();
+        let runs = d.path().join(".trellis").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let trail = |id: &str, at: &str, factual_extra: &str| {
+            format!(
+                r#"{{"schema":1,"run_id":"{id}","task":"t","base_commit":"abc1234","started_at":"{at}","provenance":{{"trellis_version":"0.0.1","model":null,"tier":null}},"factual":{{"proposed":[],"radius":{{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}},"checks":[],"check_outcomes":[],"approved_by":"Human","mode_counts":{{"verified":0,"reviewed":0}},"context":null,"actions":[],"agent":"rev"{factual_extra}}},"factual_sha256":"0000","judgment":{{"tech_debt_projection":null,"rationale":null}}}}"#
+            )
+        };
+        std::fs::write(
+            runs.join("20260930-235959-a.json"),
+            trail(
+                "20260930-235959-a",
+                "2026-09-30T23:59:59Z",
+                r#","tokens":10,"prompt_tokens":1000"#,
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("20261001-000000-b.json"),
+            trail(
+                "20261001-000000-b",
+                "2026-10-01T00:00:00Z",
+                r#","tokens":5,"prompt_tokens":200"#,
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("20261002-000000-c.json"),
+            trail(
+                "20261002-000000-c",
+                "2026-10-02T00:00:00Z",
+                r#","tokens":7"#,
+            ),
+        )
+        .unwrap();
+
+        let records = super::spend_records(d.path());
+        let mut prompts: Vec<_> = records.iter().map(|r| r.prompt_tokens).collect();
+        prompts.sort();
+        assert_eq!(prompts, [None, Some(200), Some(1000)]);
+        assert!(records.iter().all(|r| r.altered), "digest does not match");
+
+        let s = trellis_queue::ledger::spend(&records, "rev", "2026-10");
+        assert_eq!((s.prompt_month, s.prompt_lifetime), (200, 1200));
+        assert_eq!(s.runs_without_prompt_count, 1);
+        assert_eq!((s.month, s.lifetime), (12, 22));
+    }
+
+    fn spend(prompt: (u64, u64), runs: u32, unknown: u32) -> trellis_queue::ledger::Spend {
+        trellis_queue::ledger::Spend {
+            month: 7,
+            lifetime: 30,
+            runs,
+            prompt_month: prompt.0,
+            prompt_lifetime: prompt.1,
+            runs_without_prompt_count: unknown,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prompt_tokens_known_print_as_their_own_clause_and_never_as_a_sum() {
+        // The risk: the prompt figure is folded into the completion figure
+        // (7 + 400) or printed as one total, which hides which one moved.
+        let c = super::prompt_clause(&spend((400, 1200), 3, 0), "2026-09");
+        assert_eq!(c, "prompt tokens 2026-09: 400, lifetime 1200");
+        for sum in ["407", "1230"] {
+            assert!(!c.contains(sum), "{c}");
+        }
+    }
+
+    #[test]
+    fn prompt_tokens_all_unknown_print_unknown_never_zero() {
+        // The risk: runs whose adapter reported no prompt figure read as a
+        // prompt of 0 tokens, i.e. as free.
+        let c = super::prompt_clause(&spend((0, 0), 2, 2), "2026-09");
+        assert_eq!(c, "prompt tokens 2026-09: unknown, lifetime unknown");
+        assert!(!c.replace("2026-09", "").contains('0'), "{c}");
+    }
+
+    #[test]
+    fn prompt_tokens_partly_unknown_print_the_known_sum_and_how_many_runs_are_missing() {
+        // The risk: a lower bound shown as if it were the complete figure.
+        let c = super::prompt_clause(&spend((400, 1200), 5, 2), "2026-09");
+        assert_eq!(
+            c,
+            "prompt tokens 2026-09: 400, lifetime 1200 (2 runs unknown)"
+        );
+    }
+
+    #[test]
+    fn prompt_tokens_of_a_profile_that_never_ran_are_a_known_zero() {
+        // No run is not an unknown run: the completion clause prints 0 for
+        // the same profile, and "unknown" there would claim a run happened.
+        let c = super::prompt_clause(&spend((0, 0), 0, 0), "2026-09");
+        assert_eq!(c, "prompt tokens 2026-09: 0, lifetime 0");
     }
 }

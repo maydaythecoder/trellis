@@ -32,8 +32,20 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 fn trellis(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_trellis"))
-        .args(args)
+    trellis_env(root, args, &[])
+}
+
+/// `trellis` with `env` added. The run markers `queue note` refuses on are
+/// removed first, so a suite started from inside a trellis run behaves as
+/// one started from a shell, and only a test that sets one sees one.
+fn trellis_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    cmd.env_remove("TRELLIS_RUN_ID")
+        .env_remove("TRELLIS_TASK_ID");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.args(args)
         .current_dir(root)
         .env("NO_COLOR", "1")
         // Hermetic: the user-level config and context files (ADR 0025 §7)
@@ -421,4 +433,94 @@ fn log_json_writes_the_per_turn_events_as_jsonl() {
     assert!(after > before, "appended, not truncated");
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(log.parent().unwrap());
+}
+
+fn activity(d: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(d.join(".git/trellis/activity.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn queue_note_in_run_is_refused_writes_nothing_and_is_logged() {
+    // The risk: a `bash` call, hook or custom tool spawns `trellis queue
+    // note`, the note is recorded as a person's, and its `@reviewer` wakes
+    // another agent's task: an agent waking an agent (ADR 0005, #189).
+    let d = fixture("note-in-run");
+    add(&d, &["rename greet"]);
+    let id = ids(&d, "pending").remove(0);
+    let before = task_json(&d, "pending", &id);
+    let logged = activity(&d).len();
+
+    let o = trellis_env(
+        &d,
+        &["queue", "note", &id, "@reviewer please look"],
+        &[("TRELLIS_RUN_ID", "run-189")],
+    );
+    let s = combined(&o);
+    assert!(!o.status.success(), "{s}");
+    assert!(s.contains("a run cannot write a person's note"), "{s}");
+    assert!(s.contains("TRELLIS_RUN_ID"), "{s}");
+
+    assert_eq!(ids(&d, "pending"), vec![id.clone()]);
+    assert_eq!(
+        task_json(&d, "pending", &id),
+        before,
+        "a refused note must not touch the task"
+    );
+    let events = activity(&d);
+    assert_eq!(events.len(), logged + 1, "{events:?}");
+    let e = events.last().unwrap();
+    assert_eq!(e["action"], "task.note_refused", "{e}");
+    assert_eq!(e["entity"], format!("task:{id}"), "{e}");
+    assert_eq!(e["run_id"], "run-189", "{e}");
+    assert_eq!(porcelain(&d), "");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_note_in_run_of_a_process_agent_is_refused_too() {
+    // The risk: a process agent is given `TRELLIS_TASK_ID`, not a run id,
+    // so a check on `TRELLIS_RUN_ID` alone leaves its path open.
+    let d = fixture("note-in-agent");
+    add(&d, &["rename greet"]);
+    let id = ids(&d, "pending").remove(0);
+    let before = task_json(&d, "pending", &id);
+
+    let o = trellis_env(
+        &d,
+        &["queue", "note", &id, "@reviewer please look"],
+        &[("TRELLIS_TASK_ID", &id)],
+    );
+    let s = combined(&o);
+    assert!(!o.status.success(), "{s}");
+    assert!(s.contains("a run cannot write a person's note"), "{s}");
+    assert_eq!(task_json(&d, "pending", &id), before);
+    let e = activity(&d).pop().unwrap();
+    assert_eq!(e["action"], "task.note_refused", "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_note_in_run_absent_writes_a_person_note_as_before() {
+    // The risk: the check fires outside a run too, and a person can no
+    // longer write the note that wakes a profile.
+    let d = fixture("note-no-run");
+    add(&d, &["rename greet"]);
+    let id = ids(&d, "pending").remove(0);
+
+    let o = trellis(&d, &["queue", "note", &id, "@reviewer please look"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    let t = task_json(&d, "pending", &id);
+    let notes = t["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{t}");
+    assert_eq!(notes[0]["actor"], "human", "{t}");
+    assert_eq!(notes[0]["id"], "n1", "{t}");
+    assert_eq!(notes[0]["text"], "@reviewer please look", "{t}");
+    let e = activity(&d).pop().unwrap();
+    assert_eq!(e["action"], "task.note", "{e}");
+    assert_eq!(porcelain(&d), "");
+    let _ = std::fs::remove_dir_all(&d);
 }

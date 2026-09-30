@@ -205,6 +205,12 @@ const GIT_ALLOWED: &[(&str, usize, &str)] = &[
         "messages about `git check-ignore`, which runs through `trellis_vcs`",
     ),
     (
+        "trellis-tickets/src/new.rs",
+        1,
+        "G6's allowlist of Verify-line prefixes (`\"git \"` among them), compared \
+         against a ticket's text; `new` never spawns git",
+    ),
+    (
         "trellis-vcs/src/git_guard.rs",
         2,
         "`GuardError` labels naming the command (`what: \"git rev-parse\"`)",

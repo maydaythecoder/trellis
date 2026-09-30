@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# pre-commit: the fast part of the security audit (#206), run on every commit
+# in every worktree. The full audit (history, settings, Actions, supply chain)
+# is the security-auditor agent's job and runs before a merge to main; this
+# hook only keeps a secret or an exploitable workflow out of the commit being
+# made, which is the one moment it is cheap to stop.
+#
+# Installed by scripts/hooks/install.sh. trellis's own git spawns disable
+# hooks (trellis_vcs), so a run never executes this. Bypassing it is
+# `git commit --no-verify`, and that is the owner's call, not an agent's.
+set -u
+# The scanners install where git's own PATH does not look (go install,
+# pipx); add those places so the hook finds them in every shell.
+for d in "$HOME/go/bin" "$HOME/.local/bin"; do
+  [ -d "$d" ] && PATH="$PATH:$d"
+done
+root=$(git rev-parse --show-toplevel)
+cd "$root" || exit 1
+fail=0
+say() { printf 'pre-commit: %s\n' "$*" >&2; }
+# A hit is shown by where it is and its first characters only: the point is
+# to find it, not to print the secret again into a terminal or a log.
+redact() { sed -E 's/^(.{0,12}).*/\1…/'; }
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+added=$(git diff --cached -U0 --diff-filter=ACMR | grep -E '^\+[^+]' || true)
+
+# 1. Key-shaped literals and credentials in URLs, on added lines only (G5's
+#    patterns, from the scripts G5 reads). A branch older than #206 has no
+#    such scripts, so install.sh puts copies beside the hook. With neither,
+#    an empty pattern would match nothing and pass everything: refuse
+#    instead (#208).
+pattern() { # <script> [args]: the repository's copy, else the installed one
+  local s
+  for s in "scripts/checks/$1" "$(dirname "$0")/trellis-security/$1"; do
+    if [ -f "$s" ]; then shift; bash "$s" "$@"; return; fi
+  done
+  return 1
+}
+keys=$(pattern key-pattern.sh) || keys=
+auth=$(pattern no-auth-urls.sh --pattern) || auth=
+if [ -z "$keys" ] || [ -z "$auth" ]; then
+  say "cannot load the key or basic-auth pattern (scripts/checks/, or trellis-security/ beside this hook); refusing rather than scanning with nothing. Run scripts/hooks/install.sh from a checkout that has them."
+  exit 1
+fi
+hits=$(printf '%s\n' "$added" | grep -oE "$keys" || true)
+if [ -n "$hits" ]; then
+  say "key-shaped literal staged (build test canaries at run time instead):"
+  printf '%s\n' "$hits" | redact >&2; fail=1
+fi
+hits=$(printf '%s\n' "$added" | grep -oE "$auth" || true)
+if [ -n "$hits" ]; then
+  say "basic-auth URL staged (build it at run time instead):"
+  printf '%s\n' "$hits" | redact >&2; fail=1
+fi
+
+# 2. Files whose name says they hold a secret. A fixture that must look like
+#    one belongs in a test that writes it to a temp dir at run time.
+names=$(printf '%s\n' "$staged" | grep -Ei '(^|/)(\.env(\..*)?|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.[a-z]+)?|secrets?\.(json|ya?ml|toml))$|\.(pem|key|p12|pfx)$' || true)
+if [ -n "$names" ]; then
+  say "secret-shaped file staged:"; printf '  %s\n' $names >&2; fail=1
+fi
+
+# 3. The scanner's own allow and ignore files. Widening what the scanner
+#    ignores is how a gate gets quietly switched off, so it is a person's
+#    change, made with --no-verify on purpose.
+cfg=$(printf '%s\n' "$staged" | grep -E '(^|/)\.gitleaks(ignore|\.toml)$' || true)
+if [ -n "$cfg" ]; then
+  say "edits the secret scanner's allow/ignore files ($cfg): owner's change only"; fail=1
+fi
+
+# 4. gitleaks, when installed, over the staged changes.
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --no-banner >&2; then
+    say "gitleaks found a secret in the staged changes"; fail=1
+  fi
+else
+  say "note: gitleaks not installed; pattern scan only"
+fi
+
+# 5. Workflows: the patterns that actually get exploited.
+wf=$(printf '%s\n' "$staged" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
+if [ -n "$wf" ]; then
+  for f in $wf; do
+    [ -f "$f" ] || continue
+    if grep -nE '^\s*(on:.*)?pull_request_target' "$f" >/dev/null; then
+      say "$f uses pull_request_target (runs with secrets and a write token)"; fail=1
+    fi
+    # ${{ github.event.* }} inside a run: block is shell injection; it must
+    # reach the shell through env: instead.
+    inj=$(awk '
+      /^[[:space:]]*run:[[:space:]]*[|>]?[[:space:]]*$/ { inrun=1; ind=match($0,/[^ ]/); next }
+      /^[[:space:]]*run:/ { if ($0 ~ /\$\{\{[^}]*github\.event/) print FILENAME":"NR; next }
+      inrun { cur=match($0,/[^ ]/); if (cur>0 && cur<=ind) inrun=0; else if ($0 ~ /\$\{\{[^}]*github\.event/) print FILENAME":"NR }
+    ' "$f")
+    if [ -n "$inj" ]; then
+      say "github.event expression interpolated into a run: block (pass it through env:):"
+      printf '  %s\n' $inj >&2; fail=1
+    fi
+  done
+  if command -v actionlint >/dev/null 2>&1; then
+    actionlint $wf >&2 || { say "actionlint failed"; fail=1; }
+  else
+    say "note: actionlint not installed; workflow lint skipped"
+  fi
+  if command -v zizmor >/dev/null 2>&1; then
+    zizmor --min-severity medium $wf >&2 || { say "zizmor found a medium-or-higher finding"; fail=1; }
+  else
+    say "note: zizmor not installed; workflow audit skipped"
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  say "commit refused. Fix the finding; if it is a false positive, the owner decides (git commit --no-verify)."
+  exit 1
+fi
+exit 0

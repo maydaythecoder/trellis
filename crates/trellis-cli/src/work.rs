@@ -201,6 +201,22 @@ fn reconcile(q: &Queue) -> Result<()> {
     Ok(())
 }
 
+/// The variables trellis sets on the children of a run, and only there:
+/// `TRELLIS_RUN_ID` for `bash`, custom tools and hooks (`tooling.rs`), and
+/// `TRELLIS_TASK_ID` for a process agent, which is not given a run id
+/// (`process_agent.rs`). Either one present means the caller descends from
+/// a run. A child that removes them on purpose is not caught here; that
+/// writer is the sandbox's to stop (ADR 0032).
+const RUN_MARKERS: [&str; 2] = ["TRELLIS_RUN_ID", "TRELLIS_TASK_ID"];
+
+/// The first run marker present, and its value. Presence is what counts,
+/// an empty value included: no person's shell sets these.
+fn run_marker(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<(&'static str, String)> {
+    RUN_MARKERS
+        .iter()
+        .find_map(|&name| var(name).map(|v| (name, v.to_string_lossy().into_owned())))
+}
+
 pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
     let q = Queue::for_repo(root)?;
     match action {
@@ -475,8 +491,25 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             reconcile(&q)
         }
         QueueAction::Note { id, text } => {
+            // Before the edit: a child of a run that wrote this note would
+            // be an agent waking an agent (ADR 0005, ADR 0026 §1).
+            if let Some((var, value)) = run_marker(|name| std::env::var_os(name)) {
+                let run_id = (var == "TRELLIS_RUN_ID").then(|| value.clone());
+                q.log(
+                    Event::new(Actor::Human, "task.note_refused", format!("task:{id}"))
+                        .run(run_id)
+                        .detail(format!("{var}={value} is set: {text}")),
+                )?;
+                anyhow::bail!(
+                    "refused: {var} is set, so this runs inside a trellis run, and a run \
+                     cannot write a person's note (ADR 0026 §1). Nothing was written to \
+                     {id}; the refusal is in `trellis queue log`"
+                );
+            }
+            // The one writer of a person's note: an `@name` in it wakes that
+            // profile's task on the next `work` tick (trellis_queue::mention).
             q.edit(&id, |t, _| {
-                t.note(Actor::Human, text.clone());
+                t.note_from_person(text.clone());
                 Ok(None)
             })?;
             q.log(Event::new(Actor::Human, "task.note", format!("task:{id}")).detail(text))?;
@@ -1056,9 +1089,10 @@ impl Runner for CliRunner<'_> {
                 "agent `{name}` is in approve mode, and `work` has no terminal to ask on"
             ));
         }
-        // A process agent's command is repository code (ADR 0026 §11), so
-        // it waits for the same decision a hook does (ADR 0023 §4).
-        if p.is_process() {
+        // A process agent's command is repository code (ADR 0026 §11), and
+        // so is a service's (§12), so either waits for the same decision a
+        // hook does (ADR 0023 §4).
+        if p.is_process() || !p.file.services.is_empty() {
             let (check, root) = (self.trust_check, self.root);
             if let Err(why) = self.trust.get_or_insert_with(|| check(root)) {
                 return Some(format!("agent `{name}` runs a repository command; {why}"));
@@ -1085,6 +1119,13 @@ impl Runner for CliRunner<'_> {
         Some(&crate::liveness::SystemLiveness)
     }
 
+    /// The set `tick` just reloaded, or the last good one: the same set
+    /// `gate` decides against, so a mention never wakes a task for a
+    /// profile the gate would not know.
+    fn profiles(&self) -> Option<&BTreeMap<String, Profile>> {
+        Some(&self.profiles)
+    }
+
     fn run(&mut self, t: &trellis_queue::Task) -> RunEnd {
         let profile = t
             .assignee
@@ -1100,8 +1141,43 @@ impl Runner for CliRunner<'_> {
                 };
             }
         };
+        let id = self.current.clone().unwrap_or_default();
+        // Started now, after the task text is known to build and before the
+        // run, and held to the end of this function: every way out of it (a
+        // result, an error, Ctrl-C, which the run returns as `Interrupted`,
+        // or a panic unwinding) drops the guard, which kills each service
+        // with its process tree (ADR 0026 §12).
+        let services = match profile.as_ref().filter(|p| !p.file.services.is_empty()) {
+            Some(p) => {
+                // Checked again right before the spawn, as a process agent's
+                // runner does: the gate's answer is the tick's, and
+                // `.trellis/` may have changed since.
+                if let Err(why) = (self.trust_check)(self.root) {
+                    return RunEnd::Error {
+                        run_id: None,
+                        error: format!("agent `{}` runs a repository command; {why}", p.name),
+                    };
+                }
+                match crate::services::Services::start(
+                    self.root,
+                    &self.queue.trellis_dir(),
+                    p,
+                    &id,
+                    &mut crate::output::human(),
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return RunEnd::Error {
+                            run_id: None,
+                            error: format!("{e:#}"),
+                        };
+                    }
+                }
+            }
+            None => crate::services::Services::none(),
+        };
+        let service_actions = services.trail_actions();
         if let Some(p) = profile.as_ref().filter(|p| p.is_process()) {
-            let id = self.current.clone().unwrap_or_default();
             return crate::process_agent::run(
                 crate::process_agent::ProcessRun {
                     root: self.root,
@@ -1109,6 +1185,7 @@ impl Runner for CliRunner<'_> {
                     task_id: &id,
                     text: &text,
                     stop: &self.stop,
+                    services: &service_actions,
                 },
                 // The human stream, not stdout: under `work --json` stdout
                 // carries JSONL only (ADR 0025 §4).
@@ -1138,10 +1215,12 @@ impl Runner for CliRunner<'_> {
             Some(_) => RunControl {
                 flag: Some(config::ControlMode::Approve),
                 human: Human::terminal(),
+                steering: None,
             },
             None => RunControl {
                 flag: Some(config::ControlMode::Auto),
                 human: Human::Absent,
+                steering: None,
             },
         };
         let before = newest_run_id(self.root);
@@ -1156,6 +1235,7 @@ impl Runner for CliRunner<'_> {
                 profile: profile.as_ref(),
                 model_from_user,
                 queued: true,
+                services: &service_actions,
             },
             control,
             &mut crate::output::human(),
@@ -1511,5 +1591,72 @@ mod question_tests {
         assert!(block.starts_with("--- user input:"), "{text}");
         assert!(block.contains(r#""Keep v1 for mobile?""#), "{text}");
         assert!(block.contains("No, mobile moved to v2 in June."), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod mention_wake_cli_tests {
+    use super::*;
+
+    fn trusted(_: &Path) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    #[test]
+    fn a_person_note_wakes_its_profile_through_the_real_heartbeat() {
+        // The risk: the queue can wake on a mention, but the binary never
+        // hands its heartbeat the profiles, or `queue note` writes a note
+        // without the id that marks it a person's, and `@reviewer` in a
+        // note does nothing with no error anywhere.
+        let root = crate::testutil::scratch("mention-wake");
+        crate::testutil::git_init(&root);
+        std::fs::create_dir_all(root.join(".trellis/agents")).unwrap();
+        std::fs::write(root.join(".trellis/agents/reviewer.toml"), "").unwrap();
+        crate::testutil::git_commit_all(&root, "fixture");
+
+        let q = Queue::for_repo(&root).unwrap();
+        let id = q.add("x", None, None).unwrap();
+        q.edit(&id, |t, _| {
+            t.status = Some(Status::Cancelled);
+            Ok(Some(State::Cancelled))
+        })
+        .unwrap();
+        queue(
+            &root,
+            QueueAction::Note {
+                id: id.clone(),
+                text: "@reviewer please look again".into(),
+            },
+        )
+        .unwrap();
+
+        let mut r = CliRunner {
+            root: &root,
+            model: None,
+            model_from_user: false,
+            unconstrained: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            profiles: BTreeMap::new(),
+            queue: q.clone(),
+            routines: BTreeMap::new(),
+            current: None,
+            said: BTreeSet::new(),
+            trust_check: trusted,
+            trust: None,
+        };
+        let mut out = Vec::new();
+        // No model anywhere, so the woken task waits at the gate rather
+        // than starting a run: what is under test is the wake, not a run.
+        let (n, stop) =
+            trellis_queue::work(&q, &mut r, trellis_queue::WorkOptions::default(), &mut out)
+                .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!((n, stop), (0, trellis_queue::Stop::Waiting(1)), "{out}");
+        assert!(out.contains("-> todo for `reviewer`"), "{out}");
+        let (s, t) = q.find(&id).unwrap();
+        assert_eq!(s, State::Pending);
+        assert_eq!(t.assignee.as_deref(), Some("reviewer"));
+        assert_eq!(t.notes[0].id.as_deref(), Some("n1"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

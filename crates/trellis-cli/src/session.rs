@@ -25,6 +25,20 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use trellis_index::Index;
 
+/// This process's stdout, as a writer the run and the stdin router can
+/// each hold.
+#[derive(Clone, Copy)]
+struct Stdout;
+
+impl std::io::Write for Stdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::io::stdout().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stdout().flush()
+    }
+}
+
 pub(crate) struct Session {
     root: PathBuf,
     index: Index,
@@ -37,6 +51,20 @@ pub(crate) struct Session {
     model_from_user: bool,
     /// Tasks run this session, for `/status`.
     tasks_run: u32,
+    /// `/name`: recorded as `Factual::label` in the trail of every run
+    /// started afterwards. Never sent to the model.
+    label: Option<String>,
+    /// The `done` summary of the most recent run this session that ended on
+    /// one, for `/copy`. The model's own words, not a verdict.
+    last_done: Option<String>,
+    /// What `/copy` tries, in order. A field so a test can name a program
+    /// that does not exist rather than overwrite a real clipboard.
+    clipboards: &'static [crate::session_extra::Clipboard],
+    /// The last run's stdin reader, with a read still in flight. The next
+    /// line comes from it rather than the line editor (#116).
+    reader: Option<crate::session_extra::Reader>,
+    /// Input ended while a run was in flight, so the session ends after it.
+    input_ended: bool,
 }
 
 /// What a passing run claims about its callers, given what was measured.
@@ -109,6 +137,11 @@ impl Session {
             unconstrained: cfg.unconstrained(),
             model_from_user,
             tasks_run: 0,
+            label: None,
+            last_done: None,
+            clipboards: crate::session_extra::CLIPBOARDS,
+            reader: None,
+            input_ended: false,
         };
         s.banner(elapsed);
         Ok(s)
@@ -178,15 +211,30 @@ impl Session {
                 "> ".to_string()
             };
 
-            let line = match rl.readline(&prompt) {
-                Ok(l) => l,
-                // Ctrl-C cancels the line; it does not leave. Quitting on it
-                // would turn a half-typed task into an exit, which is the
-                // opposite of what every other prompt does.
-                Err(rustyline::error::ReadlineError::Interrupted) => continue,
-                // Ctrl-D, or the end of a piped script.
-                Err(rustyline::error::ReadlineError::Eof) => break,
-                Err(e) => return Err(e).context("reading input"),
+            if self.input_ended {
+                break;
+            }
+            let line = if let Some(reader) = self.reader.take() {
+                // The last run's reader is still waiting on stdin; see
+                // `session_extra::Reader`. No line editing for this line,
+                // which the control-character guard below covers.
+                print!("{prompt}");
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                match reader.next_line() {
+                    Some(l) => l,
+                    None => break,
+                }
+            } else {
+                match rl.readline(&prompt) {
+                    Ok(l) => l,
+                    // Ctrl-C cancels the line; it does not leave. Quitting on it
+                    // would turn a half-typed task into an exit, which is the
+                    // opposite of what every other prompt does.
+                    Err(rustyline::error::ReadlineError::Interrupted) => continue,
+                    // Ctrl-D, or the end of a piped script.
+                    Err(rustyline::error::ReadlineError::Eof) => break,
+                    Err(e) => return Err(e).context("reading input"),
+                }
             };
 
             let line = line.trim();
@@ -298,6 +346,18 @@ impl Session {
                 self.model_from_user = true;
                 Ok(())
             }
+            "/name" if rest.is_empty() => {
+                println!("{}", self.label_line());
+                Ok(())
+            }
+            "/name" => {
+                let label = crate::session_extra::check_label(rest).map_err(anyhow::Error::msg)?;
+                self.label = Some(label);
+                println!("{}", self.label_line());
+                println!("         recorded in the trail of each run started from here on");
+                Ok(())
+            }
+            "/copy" => self.copy_to(&mut std::io::stdout()),
             "/unconstrained" => {
                 self.unconstrained = !self.unconstrained;
                 println!(
@@ -329,19 +389,21 @@ impl Session {
                     "/skill needs a skill and a task, e.g. `/skill profiling speed up parse()`"
                 ),
             },
-            other
-                if other.len() > 1
-                    && other.starts_with('/')
-                    && crate::templates::list(&self.root)
-                        .iter()
-                        .any(|t| t.name == other[1..]) =>
-            {
-                let args = (!rest.is_empty()).then_some(rest);
-                let text = crate::templates::render(&self.root, &other[1..], args)?;
-                self.run_task(&text, Vec::new())
-            }
+            // One arm, so that a package manifest that cannot be read is
+            // said as that, not as "unknown command" for a template the
+            // user installed.
             other if other.starts_with('/') => {
-                anyhow::bail!("unknown command `{other}`. /help lists them.")
+                let name = &other[1..];
+                if name.is_empty()
+                    || !crate::templates::list(&self.root)?
+                        .iter()
+                        .any(|t| t.name == name)
+                {
+                    anyhow::bail!("unknown command `{other}`. /help lists them.")
+                }
+                let args = (!rest.is_empty()).then_some(rest);
+                let text = crate::templates::render(&self.root, name, args)?;
+                self.run_task(&text, Vec::new())
             }
             _ => self.task(line),
         }
@@ -520,10 +582,102 @@ impl Session {
     /// Runs a task the person has already said is one: a typed task that
     /// `classify` passed, a template, or `/skill` (ADR 0025 §6).
     fn run_task(&mut self, task: &str, skills: Vec<String>) -> Result<()> {
+        use std::io::IsTerminal;
+        // The test `Human::terminal` makes. Without a person at the keyboard
+        // there is nobody to steer, and a reader would take a piped
+        // script's later commands as steers of its first task.
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            let read = Box::new(|| {
+                let mut line = String::new();
+                match std::io::stdin().read_line(&mut line) {
+                    Ok(0) | Err(_) => None,
+                    Ok(_) => Some(line),
+                }
+            });
+            return self.run_steered(task, skills, read, Stdout);
+        }
+        self.run_with(
+            task,
+            crate::Human::Absent,
+            None,
+            crate::output::RunExtras {
+                skills,
+                ..crate::output::RunExtras::default()
+            },
+            &mut std::io::stdout(),
+        )
+    }
+
+    /// A run at a terminal: one reader owns stdin until the run ends, and
+    /// routes each line to the open approval question or, with none open,
+    /// to the run as a steer (#116, ADR 0027).
+    fn run_steered<W: std::io::Write + Send + Clone + 'static>(
+        &mut self,
+        task: &str,
+        skills: Vec<String>,
+        read: Box<dyn FnMut() -> crate::session_extra::Line + Send>,
+        mut out: W,
+    ) -> Result<()> {
+        let mut reader = crate::session_extra::Reader::spawn(read)?;
+        let (questions_tx, questions) = tokio::sync::mpsc::channel(1);
+        let (steers, steering) = tokio::sync::mpsc::unbounded_channel();
+        let (done_tx, done) = tokio::sync::oneshot::channel();
+        let mut said = out.clone();
+        let router = std::thread::Builder::new()
+            .name("session-router".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                let ended = match rt {
+                    Ok(rt) => rt.block_on(crate::session_extra::route(
+                        &mut reader,
+                        questions,
+                        steers,
+                        done,
+                        &mut said,
+                    )),
+                    // Nobody routes: questions are declined by the dropped
+                    // channel and steers never leave this thread.
+                    Err(_) => false,
+                };
+                (reader, ended)
+            })?;
+        let outcome = self.run_with(
+            task,
+            crate::Human::Channel(questions_tx),
+            // On `RunControl`, the one carrier `trellis tui` uses too (#115).
+            Some(steering),
+            crate::output::RunExtras {
+                skills,
+                ..crate::output::RunExtras::default()
+            },
+            &mut out,
+        );
+        let _ = done_tx.send(());
+        let (mut reader, ended) = router
+            .join()
+            .map_err(|_| anyhow::anyhow!("the stdin router panicked"))?;
+        reader.stop();
+        let late = reader.drain_late(&mut out);
+        self.input_ended = ended || late;
+        self.reader = Some(reader);
+        outcome
+    }
+
+    fn run_with(
+        &mut self,
+        task: &str,
+        human: crate::Human,
+        steering: Option<trellis_loop::SteeringRx>,
+        extras: crate::output::RunExtras,
+        out: &mut (dyn std::io::Write + Send),
+    ) -> Result<()> {
         let Some(model) = self.model.as_ref().map(ToString::to_string) else {
             anyhow::bail!("no model set. /model <spec> first; /models lists what is configured");
         };
         self.tasks_run += 1;
+        let done = crate::output::DoneSlot::default();
         let outcome = crate::cmd_run_with(
             &self.root,
             task,
@@ -540,14 +694,23 @@ impl Session {
             // asked about here, on the line, with the diff shown first.
             crate::RunControl {
                 flag: None,
-                human: crate::Human::terminal(),
+                human,
+                steering,
             },
+            // The session's own two, whatever the caller built the rest from.
             crate::output::RunExtras {
-                skills,
-                ..crate::output::RunExtras::default()
+                label: self.label.clone(),
+                done: Some(done.clone()),
+                ..extras
             },
-            &mut std::io::stdout(),
+            out,
         );
+        // Only replaced by a run that ended on `done`: a run that stopped
+        // any other way has no summary, and the previous one is still the
+        // most recent there is.
+        if let Some(summary) = done.lock().ok().and_then(|mut d| d.take()) {
+            self.last_done = Some(summary);
+        }
 
         // A run writes to the tree, so the session's index is now behind it.
         // Rebuilding here rather than lazily means the next `/radius` answers
@@ -845,6 +1008,19 @@ impl Session {
         );
     }
 
+    /// What `/name` with no argument prints.
+    fn label_line(&self) -> String {
+        match &self.label {
+            Some(l) => format!("label    {}", crate::plain(l)),
+            None => "label    none. /name <label> sets one".to_string(),
+        }
+    }
+
+    /// `/copy`, writing its report to `out`.
+    fn copy_to(&self, out: &mut dyn std::io::Write) -> Result<()> {
+        crate::session_extra::copy(self.last_done.as_deref(), self.clipboards, out)
+    }
+
     fn revert(&self) -> Result<()> {
         let pending = trellis_vcs::pending(&self.root)?;
         if pending.is_empty() {
@@ -968,6 +1144,9 @@ const HELP: &str = concat!(
     "  !<cmd>            run a shell command in the repository root;\n",
     "                    its output is shown, never sent to a model\n",
     "                    (`!!` is the same: nothing is carried to a run)\n",
+    "\n",
+    "  /name [label]     set or show a label; each later run's trail records it\n",
+    "  /copy             copy the last run's done summary to the clipboard\n",
     "\n",
     "  /model [spec]     set or show the model\n",
     "  /models           the catalog and the configured specs\n",
@@ -1941,5 +2120,167 @@ def other():
         s.dispatch("!!git status --short").expect("runs");
         assert_eq!(s.tasks_run, 0);
         assert!(trellis_trail::query::all(d.path()).is_empty());
+    }
+
+    // `/name` and `/copy` (#109) --------------------------------------------
+
+    /// The raw JSON of the only trail under `.trellis/runs/`.
+    fn only_trail_json(root: &Path) -> String {
+        let dir = root.join(".trellis/runs");
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(files.len(), 1, "one run, one trail");
+        std::fs::read_to_string(files[0].path()).unwrap()
+    }
+
+    #[test]
+    fn slash_name_is_recorded_in_the_trail_of_a_later_run() {
+        // The risk: a label set and shown at the prompt that never reaches
+        // the record it exists to find a run by.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("/name release prep").expect("sets");
+        s.dispatch("/name").expect("shows");
+        assert_eq!(s.label.as_deref(), Some("release prep"));
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        let trails = trellis_trail::query::all(d.path());
+        assert_eq!(trails.len(), 1);
+        assert_eq!(
+            trails[0].trail.factual.label.as_deref(),
+            Some("release prep")
+        );
+        assert_eq!(
+            trails[0].trail.integrity(&only_trail_json(d.path())),
+            trellis_trail::Integrity::Intact,
+            "the label sits under the digest"
+        );
+    }
+
+    #[test]
+    fn slash_name_unset_leaves_no_label_key_in_the_trail() {
+        // The risk: an unnamed session writing `"label": null`, which changes
+        // the shape and the digest of every trail that has no label.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        let json = only_trail_json(d.path());
+        assert!(!json.contains("\"label\""), "{json}");
+    }
+
+    #[test]
+    fn slash_name_refused_label_leaves_the_old_one() {
+        // The risk: a refusal that still clears or truncates the label, so a
+        // typo silently unnames the runs that follow.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.dispatch("/name first").expect("sets");
+        let long = format!("/name {}", "x".repeat(81));
+        let e = s.dispatch(&long).expect_err("81 characters is refused");
+        assert!(e.to_string().contains("unchanged"), "{e}");
+        assert!(
+            s.dispatch("/name a\u{1b}[2Jb").is_err(),
+            "control character"
+        );
+        assert_eq!(s.label.as_deref(), Some("first"));
+        assert!(s.label_line().contains("first"));
+    }
+
+    #[test]
+    fn slash_copy_before_any_run_has_nothing_to_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.clipboards = &[("trellis-no-such-clipboard-program-109", &[])];
+        s.dispatch("/copy").expect("reports rather than failing");
+        let mut out = Vec::new();
+        s.copy_to(&mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap().trim(),
+            "nothing to copy yet"
+        );
+    }
+
+    #[test]
+    fn slash_copy_holds_the_done_summary_of_the_last_run() {
+        // The risk: the summary dropped between the loop and the session,
+        // since the loop's outcome does not carry it. The scripted model
+        // ends on `done` with summary "x"; with no check passing the run does
+        // not converge, and the summary is still the model's last word.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.clipboards = &[("trellis-no-such-clipboard-program-109", &[])];
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        assert_eq!(s.last_done.as_deref(), Some("x"));
+        let mut out = Vec::new();
+        s.copy_to(&mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(said.contains("no clipboard was reached"), "{said}");
+        assert_eq!(said.lines().last(), Some("x"), "{said}");
+    }
+
+    #[test]
+    fn session_steer_a_line_typed_while_a_question_is_open_is_its_answer_not_a_steer() {
+        // The risk: one line read twice, or by the wrong party. A `y` meant
+        // for the approval question that went to the model as a steer would
+        // leave the question unanswered, and one taken as both would put a
+        // person's approval into the prompt as well (ADR 0027).
+        let dir = crate::testutil::scratch("session-steer-answer");
+        crate::testutil::git_init(&dir);
+        std::fs::create_dir_all(dir.join(".trellis")).unwrap();
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            "[control]\nmode = \"approve\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "init");
+        let scripts = crate::testutil::scratch("session-steer-answer-script");
+        let script = scripts.join("script.json");
+        std::fs::write(
+            &script,
+            r#"{"steps":[
+                {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+                {"tool":"done","summary":"changed it"}
+            ]}"#,
+        )
+        .unwrap();
+        let mut s = Session::open(&dir, Some(format!("scripted:{}", script.display()))).unwrap();
+
+        let screen = crate::session_extra::scripted_stdin::Screen::default();
+        let (typing, read) = crate::session_extra::scripted_stdin::stdin();
+        let shown = screen.clone();
+        // The person reads the question, then answers it, then closes the
+        // input. Nothing is typed before the question is on the screen.
+        let person = std::thread::spawn(move || {
+            shown.wait_for("[y/N]");
+            typing.send("y\n".into()).unwrap();
+        });
+        s.run_steered("change f", Vec::new(), read, screen.clone())
+            .expect("the run finishes");
+        person.join().unwrap();
+
+        let said = screen.text();
+        assert!(said.contains("edit a.py (+1 -1)? [y/N]"), "{said}");
+        assert!(said.contains("  approved"), "{said}");
+        assert!(
+            !said.contains("queued:"),
+            "the answer is not also a steer: {said}"
+        );
+        assert!(!said.contains("not delivered"), "{said}");
+        let trail = trellis_trail::query::all(&dir);
+        assert_eq!(trail.len(), 1);
+        let a = &trail[0].trail.factual.actions;
+        assert_eq!(
+            (a[0].tool.as_str(), a[0].outcome.as_str()),
+            ("approval", "approved")
+        );
+        assert_eq!(a[1].tool, "edit");
+        assert!(a[1].wrote, "the approved edit was applied: {a:?}");
+        assert!(
+            trail[0].trail.factual.steering.is_empty(),
+            "no steer was sent"
+        );
+        assert!(
+            s.input_ended,
+            "the input closed during the run, so the session ends"
+        );
     }
 }
