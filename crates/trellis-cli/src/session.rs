@@ -568,6 +568,7 @@ impl Session {
             crate::RunControl {
                 flag: None,
                 human: crate::Human::terminal(),
+                steering: None,
             },
             crate::output::RunExtras {
                 skills,

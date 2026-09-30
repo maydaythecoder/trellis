@@ -1147,10 +1147,12 @@ impl Runner for CliRunner<'_> {
             Some(_) => RunControl {
                 flag: Some(config::ControlMode::Approve),
                 human: Human::terminal(),
+                steering: None,
             },
             None => RunControl {
                 flag: Some(config::ControlMode::Auto),
                 human: Human::Absent,
+                steering: None,
             },
         };
         let before = newest_run_id(self.root);

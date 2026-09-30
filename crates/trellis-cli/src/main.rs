@@ -592,6 +592,7 @@ fn main() -> Result<()> {
                 RunControl {
                     flag,
                     human: Human::terminal(),
+                    steering: None,
                 },
                 output::RunExtras {
                     skills: skill,
@@ -1406,6 +1407,11 @@ pub(crate) struct RunControl {
     /// `--approve` or `--auto`; `None` takes the configured mode.
     flag: Option<config::ControlMode>,
     human: Human,
+    /// What the person types while the run is in flight (#113), delivered
+    /// between turns. Beside `human` because both are a person reaching into
+    /// a running task, and on its own channel so a steer can never be read
+    /// as an approval answer. `None` for every caller but `trellis tui`.
+    steering: Option<trellis_loop::SteeringRx>,
 }
 
 impl Default for RunControl {
@@ -1413,6 +1419,7 @@ impl Default for RunControl {
         Self {
             flag: None,
             human: Human::Absent,
+            steering: None,
         }
     }
 }
@@ -2077,9 +2084,9 @@ fn run_body(
             tools: tooling.tools.clone(),
             extra: added.extra,
         },
-        // Nothing here sends input while the run is in progress, so there is
-        // no steering channel and the run is exactly the one before #113.
-        steering: None,
+        // `None` for every caller but `trellis tui` (#115), and a run given
+        // `None` is exactly the one before #113.
+        steering: control.steering,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -3244,16 +3251,18 @@ struct TrailFacts<'a> {
 /// Delivered entries come first, then undelivered ones, each in the order
 /// received. `SteeringLog` keeps the two apart and records no sequence
 /// across them, so an interleaving here would be invented.
-fn steering_entries(t: &trellis_loop::Transcript) -> Vec<trellis_trail::Steer> {
+///
+/// Takes the log and the turns reached rather than the whole transcript so
+/// that `trellis tui`'s test can build the late-steer case directly (#115).
+fn steering_entries(log: &trellis_loop::SteeringLog, reached: usize) -> Vec<trellis_trail::Steer> {
     use trellis_loop::Steering;
     use trellis_trail::{Steer, SteerKind};
-    let reached = t.turns.len() as u32;
-    let delivered = t
-        .steering
+    let reached = reached as u32;
+    let delivered = log
         .delivered
         .iter()
         .map(|s| Steer::new(s.after_step as u32 + 1, SteerKind::Steer, &s.text));
-    let undelivered = t.steering.undelivered.iter().map(|m| match m {
+    let undelivered = log.undelivered.iter().map(|m| match m {
         Steering::Steer(text) => Steer::new(reached, SteerKind::Steer, text),
         Steering::FollowUp(text) => Steer::new(reached, SteerKind::FollowUp, text),
     });
@@ -3423,7 +3432,7 @@ fn record_trail(
         inputs,
         // Empty on a run nobody steered, and empty is omitted on disk, so
         // such a trail has the bytes it had before the field (ADR 0034).
-        steering: steering_entries(turns),
+        steering: steering_entries(&turns.steering, turns.turns.len()),
     };
 
     let slug = trellis_trail::slugify(task);
@@ -5620,7 +5629,11 @@ mod approval_tests {
             spec,
             false,
             RunSeeding::default(),
-            RunControl { flag: None, human },
+            RunControl {
+                flag: None,
+                human,
+                steering: None,
+            },
             &mut out,
         );
         (r, String::from_utf8(out).unwrap())
@@ -5684,6 +5697,7 @@ mod approval_tests {
             RunControl {
                 flag: Some(config::ControlMode::Auto),
                 human: Human::Absent,
+                steering: None,
             },
             &mut out,
         );
@@ -5819,6 +5833,7 @@ mod approval_tests {
             RunControl {
                 flag: Some(config::ControlMode::Auto),
                 human: Human::Absent,
+                steering: None,
             },
             &mut out,
         );

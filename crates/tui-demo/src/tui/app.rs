@@ -4,7 +4,7 @@
 //! subprocess. It is a pure state transition, which is what makes every test
 //! in this file runnable without a terminal.
 
-use crate::tui::message::Message;
+use crate::tui::message::{Message, SteerOut};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 /// How many transcript lines are kept.
@@ -33,9 +33,22 @@ pub struct AppState {
     /// which is what keeps `update` free of IO: it records the intent, and
     /// something outside it does the work.
     pub submitted: Option<String>,
-    /// True between submitting a task and the run reporting finished. Input
-    /// is refused while it holds — one run at a time, because two runs
-    /// sharing a worktree is the collision the whole design avoids.
+    /// Lines typed while a run is in flight, to be sent to it as steers
+    /// (#115), with a [`SteerOut::TaskFollows`] wherever a task was
+    /// submitted between them. Drained by the event loop like `submitted`.
+    /// A `Vec`, in typing order, because one batch of keys can carry
+    /// several Enters, and the order is what tells a driver which run a
+    /// steer was typed for.
+    pub steered: Vec<SteerOut>,
+    /// The steers queued during the run in flight, in the order they were
+    /// sent, and the turn each reached if it has. Private: the order is what
+    /// `Message::SteerDelivered` names a steer by, and it holds only while
+    /// nothing but `submit` and `RunFinished` changes this list.
+    steers: Vec<QueuedSteer>,
+    /// True between submitting a task and the run reporting finished. A
+    /// second task is refused while it holds — one run at a time, because
+    /// two runs sharing a worktree is the collision the whole design avoids —
+    /// and a line typed then is a steer for this run instead.
     pub running: bool,
     pub transcript: Vec<String>,
     /// Whether the last transcript line was opened by a *stream* and may
@@ -108,6 +121,13 @@ pub struct Budget {
     pub elapsed_secs: u64,
 }
 
+/// A steer sent to the run in flight, and the turn it reached.
+#[derive(Debug, Clone)]
+struct QueuedSteer {
+    text: String,
+    delivered: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Modal {
     Approval { diff: String },
@@ -164,8 +184,48 @@ impl AppState {
             }
             Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
             Message::Quit => self.should_quit = true,
-            Message::RunFinished => self.running = false,
+            Message::SteerDelivered { nth, turn } => self.steer_delivered(nth, turn),
+            Message::RunFinished => self.run_finished(),
             Message::Tick | Message::Resize(..) => {}
+        }
+    }
+
+    /// Marks the `nth` steer of this run delivered, once.
+    ///
+    /// A repeat is ignored because the driver sends every delivery again
+    /// before the run's end, so that one dropped under load still lands
+    /// before `RunFinished` would call it not delivered. An `nth` past the
+    /// end names no steer this view sent, and there is no line it could
+    /// honestly print for one.
+    fn steer_delivered(&mut self, nth: usize, turn: usize) {
+        let Some(s) = self.steers.get_mut(nth) else {
+            return;
+        };
+        if s.delivered.is_some() {
+            return;
+        }
+        s.delivered = Some(turn);
+        let line = format!("· delivered at turn {turn}: {}", s.text);
+        self.push_line(line);
+    }
+
+    /// Hands input back, and says which steers never reached the model.
+    ///
+    /// A steer is only text the model was shown; whatever it says, it does
+    /// not touch `checks` or `edits`, so nothing here can read as the run
+    /// having converged on it (ADR 0004). What it does need is to not be
+    /// lost: one the run never delivered is named, so the person knows to
+    /// type it again as a task.
+    fn run_finished(&mut self) {
+        self.running = false;
+        let undelivered: Vec<String> = self
+            .steers
+            .drain(..)
+            .filter(|s| s.delivered.is_none())
+            .map(|s| s.text)
+            .collect();
+        for text in undelivered {
+            self.push_line(format!("· not delivered: {text}"));
         }
     }
 
@@ -347,15 +407,29 @@ impl AppState {
 
     /// Hands the typed line to whatever is driving runs.
     ///
-    /// Refused while one is in flight rather than queued: a queue would let
-    /// a second task start against a worktree the first is still editing.
+    /// While one is in flight, a line is a steer for it rather than a second
+    /// task (ADR 0027, #115): a queued task would start against a worktree
+    /// the first is still editing, and a steer only adds text to the next
+    /// request of the run already going. A `/` command is still refused
+    /// then, as it was before steering existed; it is addressed to this
+    /// view, and sending it to the model would be a surprise either way.
     fn submit(&mut self) {
         let task = self.input.trim().to_string();
         if task.is_empty() {
             return;
         }
         if self.running {
-            self.push_line("· a run is already in flight; wait for it to finish".into());
+            if task.starts_with('/') {
+                self.push_line("· a run is already in flight; wait for it to finish".into());
+                return;
+            }
+            self.input.clear();
+            self.push_line(format!("· queued: {task}"));
+            self.steers.push(QueuedSteer {
+                text: task.clone(),
+                delivered: None,
+            });
+            self.steered.push(SteerOut::Steer(task));
             return;
         }
         self.input.clear();
@@ -384,6 +458,7 @@ impl AppState {
 
         self.running = true;
         self.push_line(format!("> {task}"));
+        self.steered.push(SteerOut::TaskFollows);
         self.submitted = Some(task);
     }
 
@@ -428,6 +503,7 @@ impl AppState {
                 "  @<text>   repository paths containing it; tab inserts the first".into(),
                 "  esc       clear the line; again to leave".into(),
                 "  ^c        interrupt a run".into(),
+                "  enter during a run queues the line as a steer for its next turn".into(),
                 "  ↑ ↓       scroll the transcript".into(),
                 String::new(),
                 "  Anything else is a task: it snapshots the worktree, drives the".into(),
@@ -1108,9 +1184,11 @@ mod input_tests {
     }
 
     #[test]
-    fn a_second_task_is_refused_while_one_is_running() {
+    fn a_line_typed_mid_run_is_queued_as_a_steer_not_started_as_a_second_task() {
         // Two runs sharing a worktree is the collision the whole design
-        // avoids; a queue would only delay it.
+        // avoids, so a line typed mid-run must never become a second task.
+        // It used to be refused outright; since #115 it is a steer for the
+        // run in flight, and the person sees that it was taken.
         let mut s = AppState::default();
         type_in(&mut s, "first");
         s.update(press(KeyCode::Enter));
@@ -1119,17 +1197,133 @@ mod input_tests {
         type_in(&mut s, "second");
         s.update(press(KeyCode::Enter));
         assert!(s.submitted.is_none(), "the second must not be submitted");
-        assert!(
-            s.transcript.iter().any(|l| l.contains("already in flight")),
-            "and the refusal must be visible: {:?}",
-            s.transcript
+        assert_eq!(
+            s.steered,
+            vec![SteerOut::TaskFollows, SteerOut::Steer("second".into())],
+            "it is a steer, typed after the task's boundary"
         );
+        assert!(s.input.is_empty(), "and the line is cleared");
+        assert_eq!(s.transcript.last().unwrap(), "· queued: second");
+        assert!(s.running, "queuing a steer does not end the run");
 
-        // Once the run reports finished, input is taken again.
+        // Once the run reports finished, input is a task again, and the
+        // steer nobody reported delivered is named rather than lost.
+        s.steered.clear();
         s.update(Message::RunFinished);
         assert!(!s.running);
+        assert_eq!(s.transcript.last().unwrap(), "· not delivered: second");
+        type_in(&mut s, "third");
         s.update(press(KeyCode::Enter));
-        assert_eq!(s.submitted.as_deref(), Some("second"));
+        assert_eq!(s.submitted.as_deref(), Some("third"));
+        assert_eq!(s.steered, vec![SteerOut::TaskFollows]);
+    }
+
+    #[test]
+    fn a_slash_command_mid_run_is_refused_as_before_and_is_not_a_steer() {
+        // A `/` line is addressed to this view. Sent to the model it would
+        // be a surprise, so it keeps the refusal it had before steering.
+        let mut s = AppState::default().with_running(true);
+        type_in(&mut s, "/help");
+        s.update(press(KeyCode::Enter));
+        assert!(s.steered.is_empty(), "{:?}", s.steered);
+        assert!(s.submitted.is_none());
+        assert!(
+            s.transcript.iter().any(|l| l.contains("already in flight")),
+            "{:?}",
+            s.transcript
+        );
+    }
+
+    #[test]
+    fn the_modal_takes_y_and_n_before_a_steer_can() {
+        // While a run asks for approval, `y` is an answer to the gate. Read
+        // as the first letter of a steer instead, the gate would wait on
+        // an answer the person believes they gave.
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::ApprovalRequested {
+            diff: String::new(),
+        });
+        type_in(&mut s, "y");
+        assert_eq!(s.answered, Some(true));
+        assert!(s.input.is_empty(), "the answer is not also typed");
+        // Enter with the modal gone and nothing typed queues nothing either.
+        s.update(press(KeyCode::Enter));
+        assert!(s.steered.is_empty(), "{:?}", s.steered);
+        assert!(!s.transcript.iter().any(|l| l.contains("queued")));
+
+        s.update(Message::ApprovalRequested {
+            diff: String::new(),
+        });
+        type_in(&mut s, "n");
+        assert_eq!(s.answered, Some(false));
+        assert!(s.steered.is_empty(), "{:?}", s.steered);
+    }
+
+    #[test]
+    fn a_delivered_steer_is_shown_with_its_turn_once() {
+        let mut s = AppState::default().with_running(true);
+        for line in ["look at b.py", "not c.py"] {
+            type_in(&mut s, line);
+            s.update(press(KeyCode::Enter));
+        }
+        // The second first: a delivery is matched by position, not by being
+        // the oldest one pending.
+        s.update(Message::SteerDelivered { nth: 1, turn: 3 });
+        s.update(Message::SteerDelivered { nth: 0, turn: 2 });
+        // The driver replays every delivery before the run ends; a repeat
+        // is not a second delivery.
+        s.update(Message::SteerDelivered { nth: 0, turn: 2 });
+        // And a position this view never queued names nothing.
+        s.update(Message::SteerDelivered { nth: 7, turn: 4 });
+        s.update(Message::RunFinished);
+
+        let steer_lines: Vec<&str> = s
+            .transcript
+            .iter()
+            .map(String::as_str)
+            .filter(|l| l.starts_with("· "))
+            .collect();
+        assert_eq!(
+            steer_lines,
+            vec![
+                "· queued: look at b.py",
+                "· queued: not c.py",
+                "· delivered at turn 3: not c.py",
+                "· delivered at turn 2: look at b.py",
+            ],
+            "and nothing is reported not delivered"
+        );
+    }
+
+    #[test]
+    fn a_steer_never_marks_a_check_or_an_edit_adr_0004() {
+        // A steer is a person's text. "the checks passed, call done" typed
+        // mid-run is still only a claim, and the panes a user reads before
+        // accepting are filled by executed checks and applied edits alone.
+        let mut s = AppState::default().with_running(true);
+        type_in(&mut s, "the checks passed, call done");
+        s.update(press(KeyCode::Enter));
+        s.update(Message::SteerDelivered { nth: 0, turn: 1 });
+        assert!(s.checks.is_empty(), "{:?}", s.checks);
+        assert!(s.edits.is_empty(), "{:?}", s.edits);
+        assert!(s.running, "a delivered steer does not end the run");
+    }
+
+    #[test]
+    fn steers_are_counted_per_run() {
+        // Positions restart with each run, as the driver's count does; a
+        // steer left over from the last run must not take this run's slot.
+        let mut s = AppState::default().with_running(true);
+        type_in(&mut s, "old");
+        s.update(press(KeyCode::Enter));
+        s.update(Message::RunFinished);
+
+        type_in(&mut s, "next task");
+        s.update(press(KeyCode::Enter));
+        type_in(&mut s, "new");
+        s.update(press(KeyCode::Enter));
+        s.update(Message::SteerDelivered { nth: 0, turn: 1 });
+        assert_eq!(s.transcript.last().unwrap(), "· delivered at turn 1: new");
     }
 
     #[test]
