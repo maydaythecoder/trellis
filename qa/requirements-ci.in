@@ -1,0 +1,10 @@
+# What the guard fixture's `.trellis/config.toml` runs (`python -m mypy`,
+# `python -m pytest`), at the versions the suite last held 11/11 with on the
+# owner's machine. CI installs qa/requirements-ci.txt, compiled from this with
+# every transitive dependency and a hash per file, and pip refuses a file
+# whose hash is not listed (#215). Regenerate after changing a version here:
+#
+#   uv pip compile qa/requirements-ci.in --generate-hashes --universal \
+#     --python-version 3.11 --no-header -o qa/requirements-ci.txt
+mypy==2.3.1
+pytest==9.1.1

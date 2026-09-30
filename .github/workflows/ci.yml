@@ -18,6 +18,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Declared rather than inherited: the repository default is already
+# read-only, but a workflow that does not say so is widened silently by a
+# change to that setting. No job here writes to the repository (#215).
+permissions:
+  contents: read
+
+# Every action below is pinned to a commit SHA resolved from its tag through
+# the GitHub API, with the tag in a comment; a tag can be moved, a SHA
+# cannot. Every checkout sets `persist-credentials: false`, so the job's
+# token is not left in .git/config for the code under test to read, and
+# every cargo build/test/clippy/run passes --locked, so CI builds the
+# versions Cargo.lock records instead of resolving new ones (#215, audit T1).
+# G5 holds both: zizmor over this directory, and
+# scripts/checks/workflows-locked.sh.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -32,7 +46,9 @@ jobs:
     # lists, e.g. ["self-hosted","Windows"]); GitHub-hosted when unset (#157).
     runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # The index asserts byte spans. Windows git rewrites line endings on
       # checkout by default, which makes those assertions platform-dependent
@@ -40,23 +56,24 @@ jobs:
       - name: Pin line endings
         run: git config --global core.autocrlf false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --locked --workspace --all-targets
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
   # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
   # every other job builds with it on. This one turns it off, so a change
@@ -69,35 +86,43 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # Same reason as the `test` job: the index's byte-span assertions
       # depend on the checkout keeping LF line endings (A-21).
       - name: Pin line endings
         run: git config --global core.autocrlf false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       - name: Build without default features
-        run: cargo build -p trellis-cli --no-default-features
+        run: cargo build --locked -p trellis-cli --no-default-features
 
       - name: Test without default features
-        run: cargo test -p trellis-cli --no-default-features
+        run: cargo test --locked -p trellis-cli --no-default-features
 
   # Called out as its own job so a failure names the gate condition rather
   # than appearing as one line in a list of 100 passing tests.
   rollback-gate:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       - name: Git identity for the test fixtures
@@ -107,14 +132,14 @@ jobs:
 
       - name: v1.0 condition 4 - rollback at every injection point
         run: |
-          cargo test -p trellis-vcs -- --nocapture             rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state             rollback_restores_tracked_edits_and_removes_new_files             rollback_is_idempotent             rollback_mid_edit_between_two_writes             rollback_after_a_killed_check_subprocess             rollback_after_checks_pass_but_before_approval             rollback_still_restores_when_the_trail_write_fails             a_rollback_that_fails_is_loud_and_leaves_a_manual_path
+          cargo test --locked -p trellis-vcs -- --nocapture             rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state             rollback_restores_tracked_edits_and_removes_new_files             rollback_is_idempotent             rollback_mid_edit_between_two_writes             rollback_after_a_killed_check_subprocess             rollback_after_checks_pass_but_before_approval             rollback_still_restores_when_the_trail_write_fails             a_rollback_that_fails_is_loud_and_leaves_a_manual_path
 
       - name: v1.0 condition 4 - a dead orchestrator writes nothing and stops
         run: |
-          cargo test -p trellis-loop -- --nocapture             a_dead_orchestrator_stops_the_run_instead_of_spending_the_budget
+          cargo test --locked -p trellis-loop -- --nocapture             a_dead_orchestrator_stops_the_run_instead_of_spending_the_budget
 
       - name: v1.0 condition 4 - what an interrupt does, without the signal
-        run: cargo test -p trellis-cli -- --nocapture interrupt_tests
+        run: cargo test --locked -p trellis-cli -- --nocapture interrupt_tests
 
       # The one injection point no unit test reaches: a real SIGINT delivered
       # to a real process mid-run. Linux only - MSYS `kill -INT` raises no
@@ -122,7 +147,7 @@ jobs:
       # pass by never testing anything.
       - name: v1.0 condition 4 - SIGINT mid-run, for real
         run: |
-          cargo build --release -p trellis-cli
+          cargo build --locked --release -p trellis-cli
           bash docs/bench/interrupt_test.sh "$PWD/target/release/trellis"
 
   # The owner's deterministic guard suite (qa/run-guards.py, 11 cases), on a
@@ -133,21 +158,27 @@ jobs:
   guards:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       # The fixture's `.trellis/config.toml` runs `python -m mypy` and
       # `python -m pytest`. Pinned to the versions the suite last held 11/11
-      # with on the owner's machine, so a tool release cannot move a guard.
-      - uses: actions/setup-python@v5
+      # with on the owner's machine, so a tool release cannot move a guard,
+      # and by hash, with every transitive dependency, so a replaced file on
+      # the index cannot either (qa/requirements-ci.in says how to regenerate).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
       - name: Fixture checks (mypy, pytest; pinned)
-        run: python -m pip install mypy==2.3.1 pytest==9.1.1
+        run: python -m pip install --require-hashes -r qa/requirements-ci.txt
 
       - name: No machine-specific paths under qa/, bundle verifies
         run: bash scripts/checks/qa-portable.sh
@@ -161,7 +192,7 @@ jobs:
           bash scripts/checks/skill-lines.sh
 
       - name: Build trellis-cli
-        run: cargo build -p trellis-cli
+        run: cargo build --locked -p trellis-cli
 
       # `dirty_worktree` must be refused for its dirty tree, not for an
       # unreachable runtime, and reachability is only a TCP connect
@@ -192,12 +223,16 @@ jobs:
   supply-chain:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
       # Caches ~/.cargo/bin, so the pinned tools are not recompiled per run.
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       # Pinned so a new tool release cannot change what passes: these are the
@@ -232,6 +267,15 @@ jobs:
       - name: fuzz/Cargo.lock is current
         run: scripts/checks/fuzz-lock-current.sh
 
+      # The same check G5 runs: every cargo build/test/clippy/run in these
+      # workflows passes --locked, so the steps above and in every other job
+      # build what Cargo.lock records (#215). Self-test first, so a scan that
+      # cannot fail does not pass.
+      - name: Workflow cargo commands pass --locked
+        run: |
+          scripts/checks/workflows-locked.sh --self-test
+          scripts/checks/workflows-locked.sh
+
       # Its dependency set differs from the root's (libfuzzer-sys and what it
       # pulls in), so both audits run over it too. deny.toml at the root
       # applies: cargo deny looks upward from the manifest for its policy.
@@ -246,26 +290,30 @@ jobs:
   index-invariants:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       - name: Bidirectionality of forward/reverse adjacency
-        run: cargo test -p trellis-index --test bidirectional
+        run: cargo test --locked -p trellis-index --test bidirectional
 
       - name: Resolver rules, soundness cases first
-        run: cargo test -p trellis-index --test resolve_rules
+        run: cargo test --locked -p trellis-index --test resolve_rules
 
       - name: Partition disjointness invariant (S19)
-        run: cargo test -p trellis-loop --test partition_invariants
+        run: cargo test --locked -p trellis-loop --test partition_invariants
 
       # tree-sitter and its grammar share a C ABI and fail at runtime, not at
       # compile time, when mismatched. This turns that into a test failure.
       - name: Grammar/library ABI pairing
-        run: cargo test -p trellis-index --test grammar_abi
+        run: cargo test --locked -p trellis-index --test grammar_abi
 
   # v1.0 gate conditions 1 and 2, against the benchmark corpus itself.
   #
@@ -279,11 +327,15 @@ jobs:
   precision-gate:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: runner.environment == 'github-hosted'
 
       - name: Fetch the benchmark corpus at its recorded hash
@@ -297,7 +349,7 @@ jobs:
       # did not call. Exits non-zero on any violation.
       - name: v1.0 condition 2 — every Resolved edge names what was called
         run: |
-          cargo run --release -p trellis-index --example check_soundness             -- .bench/poetry-2.5.0
+          cargo run --locked --release -p trellis-index --example check_soundness             -- .bench/poetry-2.5.0
 
       # Condition 2, second half: every cross-file Resolved edge has an import
       # path, or a verified inheritance chain, actually connecting it. This is
@@ -305,7 +357,7 @@ jobs:
       # name check explicitly cannot.
       - name: v1.0 condition 2 — every cross-file edge is reachable
         run: |
-          cargo run --release -p trellis-index --example check_reachability             -- .bench/poetry-2.5.0
+          cargo run --locked --release -p trellis-index --example check_reachability             -- .bench/poetry-2.5.0
 
       # Condition 1. The resolver's verdicts are REGENERATED here and scored
       # against the committed human judgements. Scoring the stored pair would
@@ -319,8 +371,8 @@ jobs:
             set -- $seed
             dir="docs/bench/poetry-2.5.0-seed$1"
             out=".bench/regen-$1"
-            cargo run --release -p trellis-index --example audit_sample               -- .bench/poetry-2.5.0 "$2" "$1" "$out"
+            cargo run --locked --release -p trellis-index --example audit_sample               -- .bench/poetry-2.5.0 "$2" "$1" "$out"
             # The human judgements are the truth and are never regenerated.
             cp "$dir/sample.json" "$out/sample.json"
-            cargo run --release -p trellis-index --example audit_score               -- "$out" --min-recall "$3" --min-precision 100.0
+            cargo run --locked --release -p trellis-index --example audit_score               -- "$out" --min-recall "$3" --min-precision 100.0
           done

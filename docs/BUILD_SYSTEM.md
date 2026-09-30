@@ -54,7 +54,7 @@ and never inside the repository). A G2 failure also prints every
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
 | G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); no key-shaped literal added |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); no key-shaped literal added |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
@@ -110,11 +110,15 @@ Two layers (#206):
   code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
   every squash-merge of `drain` into `v0.1-resolver`.
 
-The existing workflows fail `zizmor` today: unpinned `uses:`,
-`excessive-permissions` and `artipacked`. So the first commit that touches
-`.github/workflows/` has to fix what zizmor reports in the files it stages.
-That is deliberate: the audit's Phase 3 pins and scopes them on its own
-ticket.
+The workflows pass `zizmor` at medium and above since #215: every action is
+pinned to a commit SHA resolved from its tag through the GitHub API (the tag
+in a comment beside it), each workflow declares `permissions: contents:
+read`, checkout does not persist the token, and release's rust-cache is
+`lookup-only`. G5 runs zizmor over the whole directory, so a workflow change
+that reached a branch without the hook is still held to it. To move a pin,
+resolve the new tag with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`
+(dereference an annotated tag with `.../git/tags/<sha>`) and never type a
+SHA by hand.
 
 ## The loop
 
