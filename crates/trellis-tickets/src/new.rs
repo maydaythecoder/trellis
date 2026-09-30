@@ -59,9 +59,6 @@ pub struct NewOutcome {
     pub created: Option<String>,
 }
 
-/// G6's allowed first words (`ticket-verify.sh`'s `case`).
-const G6_ALLOWED: [&str; 5] = ["cargo ", "git ", "scripts/", "py -3 qa/", "python3 qa/"];
-
 /// G6's shell-composition patterns.
 const G6_COMPOSITION: [&str; 7] = ["$(", "`", "|", ";", "&", ">", "<"];
 
@@ -101,7 +98,10 @@ fn g6_line(line: &str) -> Option<String> {
         return None;
     }
     let shown = printable(l);
-    if !G6_ALLOWED.iter().any(|p| l.starts_with(p)) {
+    // G6's allowed first words (`ticket-verify.sh`'s `case`). Nothing here
+    // runs them; the line is only compared against them.
+    let allowed = ["cargo ", "git ", "scripts/", "py -3 qa/", "python3 qa/"];
+    if !allowed.iter().any(|p| l.starts_with(p)) {
         return Some(format!(
             "Verify line not allowed (cargo, git, scripts/, py -3 qa/, python3 qa/ only): {shown}"
         ));
