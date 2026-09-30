@@ -40,8 +40,8 @@ pub(crate) const OBSERVATION_TAIL: usize = 2_000;
 /// #170 measured 3.853 bytes per token pooled on its one configuration
 /// (Ollama 0.34.2, `qwen2.5:3b`), but a pooled figure is not a bound: the
 /// first prompts, mostly file paths, ran 3.695, where 4,096 tokens hold
-/// 15,132 bytes, and 15,781 bytes (the pooled conversion) put 7 of 20 runs
-/// over the window. 3.695 is itself the lowest of 93 requests rather than a
+/// 15,132 bytes; at that density the pooled conversion, 15,781 bytes, is
+/// about 4,270 tokens. 3.695 is itself the lowest of 93 requests rather than a
 /// bound, so the budget sits about 5% under it; the floor re-run with this
 /// budget measured one request at 3.636 (ADR 0033 §6). A prompt over the
 /// window is not refused by the runtime: Ollama cut each one to its last
