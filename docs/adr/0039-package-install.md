@@ -4,6 +4,8 @@
 **Date:** 2026-09-29
 **Issue:** #118 (split from #51). Related: #120 (no package code).
 **Amended:** 2026-09-29 (#119): §10, how runs read installed packages.
+**Amended:** 2026-09-30 (#120): §5 and §9, every skipped path named and
+the trust store untouched, each held by a test.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -60,7 +62,11 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    Everything else is skipped and named in the output: hooks, tools,
    `.trellis/`, scripts inside a skill, executables (`100755`), links
    (`120000`), submodules (`160000`). **A package never carries code.**
-   There is no flag to install one that does.
+   There is no flag to install one that does. Every skipped path is named
+   on its own line, with no cap and no "and N more" (#120): a count would
+   hide exactly the hook the user wanted to see. The listing is already in
+   memory from `ls-tree`, so naming all of it reads nothing new. Evidence:
+   `install_skips_code_and_names_every_skipped_path`.
 
 6. **How it is fetched.** Nothing is checked out. Every git spawn goes
    through `trellis_vcs::command()`, so the environment is scrubbed of keys
@@ -90,7 +96,15 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    store vouches for what one repository makes trellis execute, keyed by
    that repository's root, and a package is in no repository and executes
    nothing. What makes a package safe to install is 5 and 6, not a digest
-   of a repository's hooks.
+   of a repository's hooks. So install neither reads nor writes the trust
+   store: it is byte-identical before and after (#120). Trusted code lives
+   under a repository's `.trellis/` only; `packages/` holds no code for a
+   digest to cover. Evidence:
+   `install_skips_code_and_leaves_the_trust_store_byte_identical`, with the
+   store where ADR 0023 puts it, beside `packages/`. Letting a package
+   carry code would reverse the owner's answer on #120 and needs its own
+   ADR, which would have to put that code under the trust digest by
+   content before anything of it runs.
 
 10. **How runs read installed packages** (#119; the owner's order,
     decided 2026-09-28: repository, installed package, `~/.agents/skills`).
