@@ -2725,6 +2725,11 @@ dependencies = [
 name = "trellis-tickets"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
  "trellis-core",
 ]
 

@@ -14,9 +14,14 @@
 
 mod labels;
 mod parse;
+mod report;
 mod rules;
 
 pub use labels::{Area, Effort, Flag, Kind, Origin, Risk, Route, Surface};
+pub use report::{
+    GH_VIEW_FIELDS, IntakeError, Line, Report, TriageError, Value, gh_view_args, report,
+    ticket_from_gh_json, triage_with,
+};
 pub use rules::{
     Readiness, Triage, area, effort, flags, kind, origin, ready, risk, surface, triage,
 };
