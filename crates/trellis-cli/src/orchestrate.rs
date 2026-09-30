@@ -134,6 +134,30 @@ fn limit_text(o: &profile::Overlay, base: Option<u64>, w: Window, month: &str) -
     }
 }
 
+/// The prompt-token clause printed beside the completion figure (ADR 0026
+/// §5). A clause of its own and never added to the completion figure: a
+/// prompt is re-sent every turn, budgets limit completion tokens only, and
+/// one total would hide which of the two moved.
+///
+/// An unknown figure prints as `unknown`, never as 0: a run whose adapter
+/// reported no prompt figure did not cost nothing. The unknown count is
+/// lifetime-wide (the ledger keeps no per-month one), so it follows the
+/// clause once rather than qualifying either number alone.
+fn prompt_clause(s: &ledger::Spend, month: &str) -> String {
+    if s.runs > 0 && s.runs_without_prompt_count == s.runs {
+        return format!("prompt tokens {month}: unknown, lifetime unknown");
+    }
+    let known = format!(
+        "prompt tokens {month}: {}, lifetime {}",
+        s.prompt_month, s.prompt_lifetime
+    );
+    if s.runs_without_prompt_count > 0 {
+        format!("{known} ({} runs unknown)", s.runs_without_prompt_count)
+    } else {
+        known
+    }
+}
+
 fn state_text(p: &Profile, o: &profile::Overlay) -> String {
     match profile::paused_reason(p, o) {
         None => "active".into(),
@@ -233,6 +257,7 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
                         s.lifetime,
                         limit_text(&o, b.lifetime_tokens, Window::Lifetime, &month),
                     ));
+                    detail.push(prompt_clause(&s, &month));
                 }
                 println!("               {}", detail.join("; "));
             }
@@ -345,6 +370,10 @@ pub(crate) fn agents(root: &Path, action: AgentsAction) -> Result<()> {
                     "              completion tokens as the runtime adapter reported them, \
                      from {} trail(s) in this checkout",
                     s.runs
+                );
+                println!(
+                    "              {}; not limited by the budget",
+                    prompt_clause(&s, &month)
                 );
                 if s.runs_without_count > 0 {
                     println!(
@@ -806,5 +835,55 @@ mod tests {
         assert_eq!((s.prompt_month, s.prompt_lifetime), (200, 1200));
         assert_eq!(s.runs_without_prompt_count, 1);
         assert_eq!((s.month, s.lifetime), (12, 22));
+    }
+
+    fn spend(prompt: (u64, u64), runs: u32, unknown: u32) -> trellis_queue::ledger::Spend {
+        trellis_queue::ledger::Spend {
+            month: 7,
+            lifetime: 30,
+            runs,
+            prompt_month: prompt.0,
+            prompt_lifetime: prompt.1,
+            runs_without_prompt_count: unknown,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prompt_tokens_known_print_as_their_own_clause_and_never_as_a_sum() {
+        // The risk: the prompt figure is folded into the completion figure
+        // (7 + 400) or printed as one total, which hides which one moved.
+        let c = super::prompt_clause(&spend((400, 1200), 3, 0), "2026-09");
+        assert_eq!(c, "prompt tokens 2026-09: 400, lifetime 1200");
+        for sum in ["407", "1230"] {
+            assert!(!c.contains(sum), "{c}");
+        }
+    }
+
+    #[test]
+    fn prompt_tokens_all_unknown_print_unknown_never_zero() {
+        // The risk: runs whose adapter reported no prompt figure read as a
+        // prompt of 0 tokens, i.e. as free.
+        let c = super::prompt_clause(&spend((0, 0), 2, 2), "2026-09");
+        assert_eq!(c, "prompt tokens 2026-09: unknown, lifetime unknown");
+        assert!(!c.replace("2026-09", "").contains('0'), "{c}");
+    }
+
+    #[test]
+    fn prompt_tokens_partly_unknown_print_the_known_sum_and_how_many_runs_are_missing() {
+        // The risk: a lower bound shown as if it were the complete figure.
+        let c = super::prompt_clause(&spend((400, 1200), 5, 2), "2026-09");
+        assert_eq!(
+            c,
+            "prompt tokens 2026-09: 400, lifetime 1200 (2 runs unknown)"
+        );
+    }
+
+    #[test]
+    fn prompt_tokens_of_a_profile_that_never_ran_are_a_known_zero() {
+        // No run is not an unknown run: the completion clause prints 0 for
+        // the same profile, and "unknown" there would claim a run happened.
+        let c = super::prompt_clause(&spend((0, 0), 0, 0), "2026-09");
+        assert_eq!(c, "prompt tokens 2026-09: 0, lifetime 0");
     }
 }
