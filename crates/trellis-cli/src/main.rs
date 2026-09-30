@@ -1410,7 +1410,8 @@ pub(crate) struct RunControl {
     /// What the person types while the run is in flight (#113), delivered
     /// between turns. Beside `human` because both are a person reaching into
     /// a running task, and on its own channel so a steer can never be read
-    /// as an approval answer. `None` for every caller but `trellis tui`.
+    /// as an approval answer. `None` for every caller but `trellis tui`
+    /// (#115) and `session` at a terminal (#116).
     steering: Option<trellis_loop::SteeringRx>,
 }
 
@@ -1453,12 +1454,7 @@ async fn answer_on_the_line(
     out: &mut dyn std::io::Write,
 ) {
     while let Some(req) = rx.recv().await {
-        let _ = writeln!(out);
-        for line in req.detail.lines() {
-            let _ = writeln!(out, "  {}", plain(line));
-        }
-        let _ = write!(out, "{}? [y/N] ", plain(&req.question));
-        let _ = out.flush();
+        show_question(&req, out);
         let (back, answer) = match tokio::task::spawn_blocking(move || {
             let a = read();
             (read, a)
@@ -1471,14 +1467,42 @@ async fn answer_on_the_line(
             Err(_) => return,
         };
         read = back;
-        let yes = is_yes(answer.as_deref());
-        if answer.is_none() {
-            // End of input leaves the cursor on the question line.
-            let _ = writeln!(out);
-        }
-        let _ = writeln!(out, "  {}", if yes { "approved" } else { "declined" });
-        let _ = req.reply.send(yes);
+        let _ = req.reply.send(show_answer(answer.as_deref(), out));
     }
+}
+
+/// What the person typed that no request carried: a steer that arrived
+/// after the last request. Printed so no text they typed goes missing
+/// without a word (#116).
+fn print_undelivered(log: &trellis_loop::SteeringLog, out: &mut dyn std::io::Write) {
+    for m in &log.undelivered {
+        let (trellis_loop::Steering::Steer(text) | trellis_loop::Steering::FollowUp(text)) = m;
+        let _ = writeln!(out, "not delivered: {}", plain(text));
+    }
+}
+
+/// An approval question as the line terminal shows it: the detail, then the
+/// question with its `[y/N]`. Shared with `session`'s reader (#116), so a
+/// question asked there reads exactly as one asked here.
+fn show_question(req: &trellis_loop::ApprovalRequest, out: &mut dyn std::io::Write) {
+    let _ = writeln!(out);
+    for line in req.detail.lines() {
+        let _ = writeln!(out, "  {}", plain(line));
+    }
+    let _ = write!(out, "{}? [y/N] ", plain(&req.question));
+    let _ = out.flush();
+}
+
+/// Reads a typed answer (`None` is end of input), says what it was taken
+/// as, and returns whether it is a yes.
+fn show_answer(answer: Option<&str>, out: &mut dyn std::io::Write) -> bool {
+    let yes = is_yes(answer);
+    if answer.is_none() {
+        // End of input leaves the cursor on the question line.
+        let _ = writeln!(out);
+    }
+    let _ = writeln!(out, "  {}", if yes { "approved" } else { "declined" });
+    yes
 }
 
 /// `input` (ADR 0023 §5), for [`cmd_run_with`]: `Err` when it refused the
@@ -2084,8 +2108,9 @@ fn run_body(
             tools: tooling.tools.clone(),
             extra: added.extra,
         },
-        // `None` for every caller but `trellis tui` (#115), and a run given
-        // `None` is exactly the one before #113.
+        // `None` for every caller but `trellis tui` (#115) and `session` at a
+        // terminal (#116), and a run given `None` is exactly the one before
+        // #113.
         steering: control.steering,
     };
 
@@ -2466,6 +2491,7 @@ fn run_body(
     if let Some(line) = hosted::requested_compaction_line(&requested) {
         let _ = writeln!(out, "{line}");
     }
+    print_undelivered(&turns.steering, &mut *out);
 
     // Before any git command below (the ignored listing, the rollback's
     // reset, the trail's commit): `.git/` goes back to what it was, since a
