@@ -799,6 +799,16 @@ impl Queue {
             Err(QueueError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(None);
             }
+            // On Windows a file the winner deleted while this claimer still
+            // had it open is delete-pending, and opening it is refused with
+            // ERROR_ACCESS_DENIED rather than NotFound. Lost only if the
+            // evidence says so; a real permission problem still surfaces.
+            Err(QueueError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::PermissionDenied
+                    && (!from.exists() || to.exists()) =>
+            {
+                return Ok(None);
+            }
             Err(e @ QueueError::Unreadable { .. }) => {
                 // Not runnable and not retryable. Moved to failed/ so it
                 // stops blocking the head of the queue, and reported.
