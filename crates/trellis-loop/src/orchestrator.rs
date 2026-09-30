@@ -116,6 +116,12 @@ pub struct Dispatched {
     /// guard has found it so (ADR 0023 §5). Latched: every call after the
     /// first carries it too. The loop ends the run on it.
     pub trust_breach: Option<String>,
+    /// The repository paths this call's carry-back wrote, in order: what a
+    /// `bash` or custom-tool command changed that reached the repository
+    /// (ADR 0032). Empty for every other tool, and for a command that
+    /// changed nothing trellis carries back. The trail records it
+    /// (ADR 0023 §7).
+    pub changed: Vec<String>,
 }
 
 /// The tool's own part in [`Dispatched::may_have_changed_tree`], for a call
@@ -249,6 +255,7 @@ impl Handle {
                 // A stopped actor owns the only write path and wrote nothing.
                 may_have_changed_tree: false,
                 trust_breach: None,
+                changed: Vec::new(),
             },
         )
         .await
@@ -327,6 +334,9 @@ pub struct Orchestrator {
     /// Whether a gate refused the call being served, for `turn_end`'s
     /// `outcome`. Reset at the start of every gated call.
     denied: bool,
+    /// What the call being served carried back into the repository, for
+    /// [`Dispatched::changed`]. Reset at the start of every gated call.
+    changed: Vec<String>,
     /// Re-checks trust before a custom tool starts and after any call that
     /// may have changed the tree (ADR 0023 §5). The same latch the hooks
     /// hold, so a breach found by either ends the run.
@@ -356,6 +366,7 @@ impl Orchestrator {
             skills: crate::skills::SkillAccess::default(),
             wrote: false,
             denied: false,
+            changed: Vec::new(),
             guard: None,
             hook_clone: None,
         }
@@ -654,10 +665,12 @@ impl Orchestrator {
                 human,
                 may_have_changed_tree: false,
                 trust_breach: None,
+                changed: Vec::new(),
             };
         }
         self.wrote = false;
         self.denied = false;
+        self.changed.clear();
         // `pre_tool` and `post_tool` are repository code that runs around
         // every call, the passing check included, and nothing stops either
         // writing. The worktree is compared across each hook on its own,
@@ -731,6 +744,7 @@ impl Orchestrator {
                     human,
                     may_have_changed_tree: changed_since(&self.root, before_gates).await,
                     trust_breach: None,
+                    changed: Vec::new(),
                 };
             }
         }
@@ -833,6 +847,7 @@ impl Orchestrator {
                 || gates_changed
                 || post_changed,
             trust_breach: None,
+            changed: std::mem::take(&mut self.changed),
         }
     }
 
@@ -1095,6 +1110,12 @@ impl Orchestrator {
         if reopen {
             self.session = Session::open(&self.root);
         }
+        // The carry-back's own list, not a `git status` taken before and
+        // after: these are exactly the files trellis wrote for this call,
+        // where a status diff would also attribute to the command whatever
+        // a hook or another writer changed meanwhile, and would cost two
+        // git spawns per call to learn less.
+        self.changed.extend(carried.iter().cloned());
         let mut s = String::new();
         if !carried.is_empty() {
             s.push_str(&format!(

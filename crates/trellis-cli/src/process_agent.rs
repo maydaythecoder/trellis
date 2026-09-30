@@ -803,6 +803,8 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
             target: t.argv.join(" "),
             outcome: t.exit_text.to_string(),
             wrote: !t.touched.is_empty(),
+            changed: Vec::new(),
+            changed_count: 0,
         })
         // What it did to files git ignores: not `proposed`, which is what
         // a commit would carry, but recorded, since a converged run keeps
@@ -813,6 +815,8 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
             target: "files git ignores".into(),
             outcome: t.ignored.summary(),
             wrote: true,
+            changed: Vec::new(),
+            changed_count: 0,
         }))
         .collect(),
         control: Some("auto (process agent)".into()),

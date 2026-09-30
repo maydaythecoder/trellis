@@ -1110,6 +1110,46 @@ recorded under the same turn and just before the call it refused, the way a
 human decision is. A run with no such denial adds no field and no action,
 so older trails keep their shape and their digest.
 
+**What `bash` and a custom tool changed** (#139). A `bash` or custom-tool
+action carries `changed`, the repository paths the call changed, and
+`changed_count`, how many there were. The list is cut at 50
+(`trellis_trail::CHANGED_CAP`) and the count is not. Both are omitted when
+nothing changed, so a trail written before them, and every action that
+changed nothing, keeps its bytes and its digest (tests
+`changed_paths_absent_keep_an_older_trails_bytes_and_digest` and
+`changed_paths_over_the_cap_record_fifty_and_the_true_count` in
+`trellis-trail`, `changed_paths_*` in `trellis-loop` and `trellis-cli`).
+Read back, the paths are data a repository chose, like every other string
+in a trail (ADR 0007). `wrote` keeps its meaning (set by `edit` and
+`write_file` only), so an older trail and a newer one say the same thing by
+it.
+
+The list is the carry-back's (ADR 0032): the files the orchestrator wrote
+into the repository from the command's clone for this call, recorded where
+it writes them. The owner's decision named a `git status` taken before and
+after each call (`trellis_vcs::pending`); since ADR 0032 the carry-back is
+the only way trellis brings a command's changes into the repository, and
+it already knows exactly which files those were. The trade: the list is
+exact for what trellis wrote and blind to a command that escapes the clone.
+A status diff would catch an escape that landed on a tracked file, but it
+would also attribute to the command whatever a hook or another writer
+changed during the call, and costs two git spawns per call.
+
+**Best-effort.** It is what trellis wrote on the command's behalf, not
+everything the command did. It does not see:
+
+- a command that writes into the repository directly, by its absolute
+  path (ADR 0032, "Writes outside the clone"): that bypasses the
+  carry-back, and nothing records it;
+- a `pre_tool` or `post_tool` hook's writes around the call, which are
+  bracketed and reported on their own (`may_have_changed_tree`), not
+  attributed to the call;
+- anything the carry-back did not write, because the repository did not
+  change: new files, deletions, `.gitignore`-class files, writes under
+  `.git/` or `.trellis/`, paths `deny_write` or `allow_write` refuse, and
+  ignored paths, which are not in the clone at all. The observation the
+  model reads names the refused ones; the trail does not.
+
 ## Alternatives rejected
 
 - **A tool set held on the model.** The adapter would need a constructor
@@ -1162,7 +1202,8 @@ names are in the code beside each.
   120 characters like every outcome. The bash policy's reason names
   `bash_allow` and `bash_unattended` first, so the cut keeps them.
   `write_file` sets `wrote` when the file was created; `bash` and custom
-  tools never set it.
+  tools never set it, and record what they changed in `changed` instead
+  (§7, #139).
 - **`TRELLIS_RUN_ID` is the trail's run id.** The timestamp is taken when
   the run starts and handed to the trail, so a hook can find the trail by
   the id it was given. A consequence: `started_at` in a `cmd_run` trail is
@@ -1219,7 +1260,8 @@ names are in the code beside each.
 Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust (kept
 out on purpose, above),
 hooks for events other than the six in §5 (`turn_end` and `input` were
-added by #137), and tracking of what `bash` or a custom tool wrote in the worktree.
+added by #137). What `bash` or a custom tool wrote is tracked since #139,
+as far as §7 says.
 
 ## Integrated
 
