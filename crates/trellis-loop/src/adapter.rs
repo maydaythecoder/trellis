@@ -69,6 +69,11 @@ pub(crate) fn shown_observation(call: &ToolCall, obs: &str) -> String {
             )
         }
         ToolCall::ReadNote { .. } => obs.to_string(),
+        // Shown whole. Its counts come first and its listing is capped at
+        // `COVERAGE_REPORT_SITES` with the rest counted, so the tail cut
+        // below would drop the counts and keep sites: the doubt figure
+        // lost without saying so (CLAUDE.md rule 3).
+        ToolCall::CoverageReport { .. } => obs.to_string(),
         // Bytes in the test, characters in the cut: exactly as before this
         // function existed, so every other observation's prompt is unchanged
         // byte for byte.

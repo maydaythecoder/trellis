@@ -98,6 +98,11 @@ pub enum ToolCall {
     CalleesOf {
         symbol: String,
     },
+    /// The call sites in the named files that bound to no definition,
+    /// counted by reason, with at most 50 listed. Read-only; opt-in.
+    CoverageReport {
+        paths: Vec<String>,
+    },
     /// A repository's own tool (`[[tools.custom]]`), loaded only when
     /// trusted. `args` is the flat object the model sent, less `tool`.
     Custom {
@@ -1195,6 +1200,14 @@ impl<'a> SiteLocator<'a> {
         sym: &trellis_index::SymbolEntry,
     ) -> (String, Option<usize>) {
         self.at(sym.file.index(), sym.span.0)
+    }
+
+    /// The 1-based line of `offset` in the indexed file at `path`, for
+    /// callers that hold a path rather than an id (`DoubtSite`). `None` when
+    /// the index holds no such file or it cannot be read.
+    pub(crate) fn line_in(&mut self, path: &str, offset: usize) -> Option<usize> {
+        let file = self.index.files.iter().position(|f| f.path == path)?;
+        self.at(file, offset).1
     }
 
     fn at(&mut self, file: usize, offset: usize) -> (String, Option<usize>) {
