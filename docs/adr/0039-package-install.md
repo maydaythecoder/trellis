@@ -3,6 +3,7 @@
 **Status:** Accepted.
 **Date:** 2026-09-29
 **Issue:** #118 (split from #51). Related: #120 (no package code).
+**Amended:** 2026-09-29 (#119): §10, how runs read installed packages.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
