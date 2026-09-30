@@ -776,7 +776,11 @@ mod run_tests {
             &spec,
             false,
             RunSeeding::default(),
-            RunControl { flag: None, human },
+            RunControl {
+                flag: None,
+                human,
+                steering: None,
+            },
             &mut out,
         );
         let said = String::from_utf8(out).unwrap();
