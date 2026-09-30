@@ -2722,6 +2722,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-tickets"
+version = "0.0.1"
+dependencies = [
+ "trellis-core",
+]
+
+[[package]]
 name = "trellis-trail"
 version = "0.0.1"
 dependencies = [
