@@ -34,3 +34,15 @@ pub use secret::ApiKey;
 pub use spec::{ModelSpec, SpecError};
 pub use tier::{AdapterTier, BatchingCapability, Probe};
 pub use transport::{is_loopback, split_authority};
+
+/// Feeds untrusted bytes to the hosted client's HTTP response parser, for the
+/// `http_response` fuzz target (issue #97). A provider or proxy controls those
+/// bytes, so the parser must return `Err` on anything malformed, never panic.
+///
+/// Compiled only under `cfg(fuzzing)`, which cargo-fuzz sets for every crate it
+/// builds: the ordinary build keeps `parse_response` crate-private and gains no
+/// public item and no Cargo feature (ADR 0027, decision log row #97).
+#[cfg(fuzzing)]
+pub fn fuzz_parse_response(raw: &[u8]) {
+    let _ = transport::parse_response(raw);
+}

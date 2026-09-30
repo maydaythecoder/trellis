@@ -468,7 +468,19 @@ name = "trellis-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "trellis-model",
  "trellis-trail",
+]
+
+[[package]]
+name = "trellis-model"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
