@@ -38,7 +38,8 @@ cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail
 cargo run -p trellis-cli -- install <source>@<ref> | --list | --remove <name>   # skills and templates only (ADR 0039)
 cargo run -p trellis-cli -- run "<task>" --image <path>    # hosted tier 1 only, repeatable (ADR 0041)
 cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
-cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040); no binary yet
+cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040)
+cargo run -p trellis-tickets -- triage <n> [--json]       # one issue's labels, each with its rule; read-only (ADR 0040)
 
 # ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
 # it is built, deferred, or excluded (and by which clause).
@@ -110,7 +111,7 @@ trellis-trail    the decision trail
 trellis-vcs      git snapshot and rollback
 trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis-model)
 trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir; no trellis-loop/model)
-trellis-tickets  ticketing standard's label rules    (pure functions; depends only on trellis-core; ADR 0040)
+trellis-tickets  ticketing standard's label rules    (pure functions + a separate binary; depends only on trellis-core; ADR 0040)
 trellis-cli      the binary
 ```
 
