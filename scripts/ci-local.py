@@ -28,8 +28,8 @@ undefined (cp1252 has five) once left an empty log behind an exit code of 0
 (#223).
 
 On a Linux host a Linux leg runs natively in a clean clone, and a Windows leg
-fails; it is not skipped. CI_LOCAL_DIR, if set, replaces the run directory
-(clone, logs, throwaway home) of native legs; the self-test
+fails; it is not skipped. CI_LOCAL_DIR, if set, replaces the run directory:
+the logs of every leg, and the clone and throwaway home of native legs; the self-test
 (scripts/checks/ci-local-selftest.sh) sets it so that it never touches the
 clone a real run reuses.
 
