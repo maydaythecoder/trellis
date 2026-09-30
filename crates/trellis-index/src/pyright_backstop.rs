@@ -101,7 +101,7 @@ pub enum Refusal {
     OutsideCandidates,
     /// A method a first-party subclass overrides, or a function or method
     /// that is `@abstractmethod` or has a stub body (`...`, `pass`, or a
-    /// raise of [`NOT_IMPLEMENTED`]). Pyright names the member of the
+    /// raise of Python's not-implemented exception). Pyright names the member of the
     /// receiver's declared type, and a declared type is an upper bound, not
     /// an identity (ADR 0012): the call may reach an override, and an
     /// abstract or stub body is never the one that runs (ADR 0031, #186).
