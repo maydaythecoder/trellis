@@ -129,9 +129,11 @@ ticket.
 
 `v0.1-resolver` moves only when the owner merges a pull request on GitHub.
 Agent work collects on the integration branch `drain`, which has an open
-draft PR into `v0.1-resolver`. The local pre-push hook refuses every push to
-`v0.1-resolver` from this clone (GitHub branch protection needs Pro on a
-private repository; ADR 0036 records the gap and the ruleset to apply later).
+draft PR into `v0.1-resolver`. The pre-push hook (`scripts/hooks/pre-push`,
+installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
+shows it firing) refuses every push to `v0.1-resolver` from a clone that has
+installed it (GitHub branch protection needs Pro on a private repository;
+ADR 0036 records the gap and the ruleset to apply later).
 
 ## Where a person is needed
 
