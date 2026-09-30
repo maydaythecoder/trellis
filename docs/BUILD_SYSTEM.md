@@ -54,7 +54,7 @@ and never inside the repository). A G2 failure also prints every
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
 | G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny check`, `cargo audit`, no key-shaped literal added |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); no key-shaped literal added |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
