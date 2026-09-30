@@ -8,7 +8,7 @@ use crate::config::RepoConfig;
 use anyhow::{Result, anyhow};
 use std::io::Write;
 use std::path::Path;
-use trellis_loop::{Fingerprint, TrustState, TrustStore};
+use trellis_loop::{Fingerprint, ItemChange, TrustDiagnosis, TrustState, TrustStore};
 
 pub(crate) fn run(root: &Path, show: bool, revoke: bool) -> Result<()> {
     let store = TrustStore::user().map_err(|e| anyhow!(e))?;
@@ -71,6 +71,9 @@ pub(crate) fn run_with(
                 TrustState::Refused { .. } => "cannot be trusted",
             }
         )?;
+        if state == TrustState::Changed {
+            writeln!(out, "items:   {}", changed_items(store, root, &fp))?;
+        }
         return Ok(());
     }
     store.trust(root, &fp).map_err(|e| anyhow!(e))?;
@@ -83,6 +86,50 @@ pub(crate) fn run_with(
     // the only writer and rollback is best-effort against it (ADR 0023 §5).
     writeln!(out, "{ROLLBACK_LIMIT}")?;
     Ok(())
+}
+
+/// Which declared items differ from the ones recorded at trust, in words,
+/// for a repository whose [`TrustState`] is `Changed`. Diagnosis only: the
+/// state was decided by the one repository digest (ADR 0023). Labels come
+/// from the repository's configuration, so they are printed through
+/// [`crate::plain`].
+pub(crate) fn changed_items(store: &TrustStore, root: &Path, fp: &Fingerprint) -> String {
+    let changes = match store.changed_items(root, fp) {
+        Ok(TrustDiagnosis::Items(changes)) => changes,
+        Ok(TrustDiagnosis::NoItemDigests) => {
+            return "which item changed is not known: trust was recorded before trellis \
+                    kept a digest per item"
+                .to_string();
+        }
+        Ok(TrustDiagnosis::NotRecorded) => {
+            return "which item changed is not known: the trust record is gone".to_string();
+        }
+        Err(e) => return format!("which item changed is not known: {e}"),
+    };
+    let mut changed = Vec::new();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    for c in &changes {
+        match c {
+            ItemChange::Changed(l) => changed.push(crate::plain(l)),
+            ItemChange::Added(l) => added.push(crate::plain(l)),
+            ItemChange::Removed(l) => removed.push(crate::plain(l)),
+        }
+    }
+    let parts: Vec<String> = [("changed", changed), ("added", added), ("removed", removed)]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(what, v)| format!("{what}: {}", v.join(", ")))
+        .collect();
+    if parts.is_empty() {
+        // Every item matches its recorded digest and the repository digest
+        // does not: declared in another order, for one.
+        "no single item differs from its recorded digest (the same items declared in \
+         another order differ only as a whole)"
+            .to_string()
+    } else {
+        parts.join("; ")
+    }
 }
 
 /// Printed when trust is recorded. One line, plain: what the person gives
@@ -238,6 +285,195 @@ mod tests {
             .find(|i| i.label == "process agent ext")
             .expect("the agent is an item");
         assert_eq!(item.receives, ["ANTHROPIC_API_KEY"]);
+    }
+
+    /// Two hooks on the events #137 added and a custom tool with the
+    /// `timeout_s` #135 added, each with its script under `.trellis/`.
+    fn repo_with_three_items(lint_timeout: u32) -> tempfile::TempDir {
+        let d = repo_with(&three_items_config(lint_timeout));
+        for (path, body) in [
+            (".trellis/hooks/turn.py", "print('turn')\n"),
+            (".trellis/hooks/before.py", "print('before')\n"),
+            (".trellis/tools/lint.py", "print('lint')\n"),
+        ] {
+            let p = d.path().join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        d
+    }
+
+    fn three_items_config(lint_timeout: u32) -> String {
+        format!(
+            "[hooks]\nturn_end = [\"python\", \".trellis/hooks/turn.py\"]\n\
+             before_run = [\"python\", \".trellis/hooks/before.py\"]\n\
+             [[tools.custom]]\nname = \"lint\"\ndescription = \"Lint.\"\n\
+             command = [\"python\", \".trellis/tools/lint.py\"]\n\
+             schema = {{ type = \"object\" }}\ntimeout_s = {lint_timeout}\n"
+        )
+    }
+
+    fn show(root: &Path, store: &TrustStore) -> String {
+        let mut out = Vec::new();
+        run_with(root, store, true, false, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn doctor(root: &Path, store: &TrustStore) -> String {
+        let cfg = RepoConfig::load(root).unwrap();
+        crate::doctor_extra::trust_line_with(
+            root,
+            &cfg,
+            Ok::<_, std::convert::Infallible>(store.clone()),
+        )
+    }
+
+    fn fingerprint(root: &Path) -> Fingerprint {
+        crate::tooling::fingerprint(root, &RepoConfig::load(root).unwrap())
+    }
+
+    #[test]
+    fn trust_changed_items_are_named_by_show_and_doctor_and_an_untouched_one_is_not() {
+        // The risk (#136): one digest per repository means one edit
+        // untrusts every hook and tool, and "changed since it was trusted"
+        // alone leaves a person diffing the whole of `trellis trust` output
+        // by eye to find which one to review.
+        let d = repo_with_three_items(30);
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        run_with(d.path(), &store, false, false, &mut Vec::new()).unwrap();
+
+        std::fs::write(d.path().join(".trellis/hooks/turn.py"), "import os\n").unwrap();
+        std::fs::write(
+            d.path().join(".trellis/config.toml"),
+            three_items_config(60),
+        )
+        .unwrap();
+
+        let shown = show(d.path(), &store);
+        assert!(shown.contains("state:   not trusted: changed"), "{shown}");
+        let items = shown
+            .lines()
+            .find(|l| l.starts_with("items:"))
+            .unwrap_or_else(|| panic!("an items line: {shown}"));
+        let line = doctor(d.path(), &store);
+        assert!(
+            line.contains("NOT trusted: changed since trusted ("),
+            "{line}"
+        );
+        for said in [items, line.as_str()] {
+            assert!(said.contains("changed: "), "{said}");
+            assert!(said.contains("hook turn_end"), "the edited script: {said}");
+            assert!(said.contains("custom tool lint"), "its timeout_s: {said}");
+            // Both edits are under `.trellis/`, which is its own item.
+            assert!(said.contains(".trellis/ (every file)"), "{said}");
+            assert!(!said.contains("before_run"), "untouched: {said}");
+        }
+
+        // Trust itself is still all or nothing: the untouched hook is not
+        // trusted on its own.
+        assert_eq!(
+            store.state(d.path(), &fingerprint(d.path())).unwrap(),
+            TrustState::Changed
+        );
+    }
+
+    #[test]
+    fn trust_changed_items_an_unchanged_repository_reports_nothing() {
+        let d = repo_with_three_items(30);
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        run_with(d.path(), &store, false, false, &mut Vec::new()).unwrap();
+
+        let shown = show(d.path(), &store);
+        assert!(shown.contains("state:   trusted"), "{shown}");
+        assert!(!shown.contains("items:"), "{shown}");
+        assert!(!shown.contains("changed"), "{shown}");
+        let line = doctor(d.path(), &store);
+        assert!(line.ends_with("trusted; they load"), "{line}");
+        assert!(!line.contains("changed"), "{line}");
+        assert_eq!(
+            store
+                .changed_items(d.path(), &fingerprint(d.path()))
+                .unwrap(),
+            TrustDiagnosis::Items(Vec::new())
+        );
+    }
+
+    #[test]
+    fn trust_changed_items_a_store_written_before_them_is_still_honoured() {
+        // The risk: the added field makes an existing trust.json unreadable
+        // or untrusted, and every trusted repository silently stops loading
+        // its hooks. The record below is the format as written before
+        // #136: no per-item digests.
+        let d = repo_with_three_items(30);
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("trust.json");
+        let store = TrustStore::at(path.clone());
+        let fp = fingerprint(d.path());
+        let key = std::fs::canonicalize(d.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let old = serde_json::json!({
+            "repos": { key: { "sha256": fp.sha256, "trusted_at": 1_700_000_000u64 } }
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+
+        assert_eq!(store.state(d.path(), &fp).unwrap(), TrustState::Trusted);
+        assert!(show(d.path(), &store).contains("state:   trusted"));
+        assert!(doctor(d.path(), &store).ends_with("trusted; they load"));
+        assert_eq!(
+            store.changed_items(d.path(), &fp).unwrap(),
+            TrustDiagnosis::NoItemDigests
+        );
+
+        // Changed later, it is untrusted as before, and nobody is told a
+        // guess about which item it was.
+        std::fs::write(d.path().join(".trellis/hooks/turn.py"), "import os\n").unwrap();
+        let shown = show(d.path(), &store);
+        assert!(shown.contains("state:   not trusted: changed"), "{shown}");
+        assert!(
+            shown.contains("items:   which item changed is not known"),
+            "{shown}"
+        );
+        assert!(!shown.contains("changed: hook"), "{shown}");
+    }
+
+    #[test]
+    fn trust_changed_items_never_trust_what_the_repository_digest_does_not() {
+        // The risk (ADR 0023, #136): per-item digests read as per-item
+        // trust, so a set recombined from items trusted at different times,
+        // or a record whose item digests match, loads code nobody reviewed
+        // as a whole. Only the repository digest decides.
+        let d = repo_with_three_items(30);
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("trust.json");
+        let store = TrustStore::at(path.clone());
+        run_with(d.path(), &store, false, false, &mut Vec::new()).unwrap();
+        std::fs::write(d.path().join(".trellis/hooks/turn.py"), "import os\n").unwrap();
+        let now = fingerprint(d.path());
+
+        // Every item digest in the record now matches; the repository
+        // digest is the one trusted before the edit.
+        let mut rec: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let entry = rec["repos"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap();
+        entry["items"] = serde_json::to_value(now.item_digests()).unwrap();
+        std::fs::write(&path, serde_json::to_vec_pretty(&rec).unwrap()).unwrap();
+        assert_eq!(store.state(d.path(), &now).unwrap(), TrustState::Changed);
+        assert_eq!(
+            store.changed_items(d.path(), &now).unwrap(),
+            TrustDiagnosis::Items(Vec::new()),
+            "no item differs, and it is still not trusted"
+        );
+        let line = doctor(d.path(), &store);
+        assert!(line.contains("NOT trusted"), "{line}");
     }
 
     #[test]

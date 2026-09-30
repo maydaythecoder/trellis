@@ -522,6 +522,25 @@ impl Fingerprint {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    /// One sha256 per item label, over that item's JSON as the repository
+    /// digest serializes it; items sharing a label are hashed together, in
+    /// order. For diagnosis only (#136): stored beside the repository
+    /// digest so `trellis trust --show` and `trellis doctor` can name which
+    /// item changed. No trust decision reads it; see [`TrustStore::state`].
+    pub fn item_digests(&self) -> BTreeMap<String, String> {
+        let mut by_label: BTreeMap<&str, Vec<&TrustItem>> = BTreeMap::new();
+        for item in &self.items {
+            by_label.entry(&item.label).or_default().push(item);
+        }
+        by_label
+            .into_iter()
+            .map(|(label, items)| {
+                let json = serde_json::to_vec(&items).expect("a list of strings always serializes");
+                (label.to_string(), hex(&Sha256::digest(&json)))
+            })
+            .collect()
+    }
 }
 
 /// What a person trusted, re-checked before each spawn of trusted code
@@ -790,9 +809,44 @@ struct StoreFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
+    /// The one authoritative digest: trust is given, and honoured, for
+    /// exactly this [`Fingerprint::sha256`] and nothing else.
     sha256: String,
     /// Seconds since the Unix epoch.
     trusted_at: u64,
+    /// [`Fingerprint::item_digests`] at the time of trust, for naming what
+    /// changed and for nothing else (#136). Absent from an entry written
+    /// before it was kept, which then reads exactly as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    items: BTreeMap<String, String>,
+}
+
+/// One item that differs from what was trusted, by its label
+/// ([`TrustItem::label`], written by the repository's configuration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemChange {
+    /// Declared then and now, with different contents.
+    Changed(String),
+    /// Declared now, not when trust was recorded.
+    Added(String),
+    /// Declared when trust was recorded, not now.
+    Removed(String),
+}
+
+/// What [`TrustStore::changed_items`] can say about a repository's items
+/// against its trust record. Informational: [`TrustStore::state`] alone
+/// decides whether anything loads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustDiagnosis {
+    /// No trust is recorded for this repository.
+    NotRecorded,
+    /// Trust was recorded before per-item digests were kept, so which item
+    /// changed cannot be said.
+    NoItemDigests,
+    /// Each item that differs, by label. Empty when every item matches its
+    /// recorded digest; the repository digest can still differ then (the
+    /// same items declared in another order), which is not a match.
+    Items(Vec<ItemChange>),
 }
 
 /// Why the trust store could not be read or written, or would not record a
@@ -921,6 +975,9 @@ impl TrustStore {
         })
     }
 
+    /// Trusted only when the recorded repository digest is `fp.sha256`.
+    /// The per-item digests beside it are not consulted: they say what
+    /// changed, never that anything is trusted ([`changed_items`](Self::changed_items)).
     pub fn state(&self, root: &Path, fp: &Fingerprint) -> Result<TrustState, TrustStoreError> {
         if let Some(reason) = &fp.refused {
             return Ok(TrustState::Refused {
@@ -933,6 +990,39 @@ impl TrustStore {
             Some(e) if e.sha256 == fp.sha256 => TrustState::Trusted,
             Some(_) => TrustState::Changed,
         })
+    }
+
+    /// Which items differ from the ones recorded when this repository was
+    /// trusted. For `trellis trust --show` and `trellis doctor` to name what
+    /// changed; never for deciding trust. Items trusted together are one
+    /// decision, and a set recombined from items trusted at different times
+    /// is a set nobody looked at, so a per-item match trusts nothing
+    /// (ADR 0023, "Untrusted is per repository, not per item").
+    pub fn changed_items(
+        &self,
+        root: &Path,
+        fp: &Fingerprint,
+    ) -> Result<TrustDiagnosis, TrustStoreError> {
+        let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = self.read()?.repos.remove(&key(root)) else {
+            return Ok(TrustDiagnosis::NotRecorded);
+        };
+        if entry.items.is_empty() {
+            return Ok(TrustDiagnosis::NoItemDigests);
+        }
+        let now = fp.item_digests();
+        let mut out = Vec::new();
+        for (label, digest) in &now {
+            match entry.items.get(label) {
+                None => out.push(ItemChange::Added(label.clone())),
+                Some(was) if was != digest => out.push(ItemChange::Changed(label.clone())),
+                Some(_) => {}
+            }
+        }
+        for label in entry.items.keys().filter(|l| !now.contains_key(*l)) {
+            out.push(ItemChange::Removed(label.clone()));
+        }
+        Ok(TrustDiagnosis::Items(out))
     }
 
     pub fn trust(&self, root: &Path, fp: &Fingerprint) -> Result<(), TrustStoreError> {
@@ -950,6 +1040,7 @@ impl TrustStore {
             Entry {
                 sha256: fp.sha256.clone(),
                 trusted_at: now,
+                items: fp.item_digests(),
             },
         );
         self.write(&f)

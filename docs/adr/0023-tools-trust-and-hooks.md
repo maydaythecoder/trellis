@@ -1183,6 +1183,24 @@ names are in the code beside each.
   hook, custom tool and the bash settings together; changing any of them
   untrusts all of them. `disable` or `enable` naming an untrusted custom tool
   is dropped rather than reported as unknown.
+- **The single digest stays; per-item digests sit beside it for diagnosis
+  only** (#136, decided by the owner 2026-09-28). Items trusted together are
+  one decision: a person read them as a set, and a set recombined from items
+  trusted at different times (a hook from Monday's trust, a tool from
+  Friday's) is a set nobody read. Per-item trust would allow exactly that, and
+  an entry written before it could not say which items it covered. So each
+  store entry keeps its `sha256` as the only thing `TrustStore::state`
+  compares, and gains an optional `items` map (label to the sha256 of that
+  item's JSON, `Fingerprint::item_digests`), written by `trellis trust` and
+  read only by `TrustStore::changed_items`. `trellis trust --show` (an
+  `items:` line) and `trellis doctor` (on the `trust:` line) use it to name
+  each item changed, added or removed since trust was recorded, and say
+  "not known" for an entry written before the map existed. The map is
+  additive: such an entry reads and is honoured exactly as before, and an
+  older trellis ignores the field. A record whose item digests all match
+  while its `sha256` does not is still `Changed`. Tests:
+  `trust_changed_items_*` in `trellis-cli`, the last of which is that
+  property.
 - **The bash policy applies to every auto-mode run**, `trellis tui` included:
   someone may be watching the interface, but nobody is asked.
 - **`[control] approve`** accepts the new built-ins and any declared custom
@@ -1192,7 +1210,8 @@ names are in the code beside each.
   loaded hooks, whenever the set is not the measured default or hooks are
   loaded. An unconfigured run prints what it printed before.
 
-Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust,
+Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust (kept
+out on purpose, above),
 hooks for events other than the six in §5 (`turn_end` and `input` were
 added by #137), and tracking of what `bash` or a custom tool wrote in the worktree.
 
