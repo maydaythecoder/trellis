@@ -16,6 +16,7 @@ pub mod catalog;
 mod grammar;
 mod hosted;
 mod image;
+pub mod pull;
 mod runtime;
 mod secret;
 mod spec;
@@ -31,6 +32,7 @@ pub use hosted::{
     retry_delay, thinking_sent,
 };
 pub use image::{Image, ImageError, MAX_IMAGE_BYTES, redact_images};
+pub use pull::{PullError, Pulled};
 pub use runtime::{Completion, Dialect, RuntimeClient, RuntimeError};
 pub use secret::ApiKey;
 pub use spec::{ModelSpec, SpecError};
