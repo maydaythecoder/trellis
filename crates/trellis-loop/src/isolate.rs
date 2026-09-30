@@ -577,26 +577,30 @@ mod tests {
     }
 
     /// A committed repository: a Python file, a `.gitignore`, and a
-    /// tracked `.trellis/config.toml`.
+    /// tracked `.trellis/config.toml`. A copy of one built once per process
+    /// (`testutil`); each writer still gets its own clone of the copy.
     fn committed() -> tempfile::TempDir {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        std::fs::create_dir_all(root.join("app")).unwrap();
-        std::fs::create_dir_all(root.join(".trellis")).unwrap();
-        std::fs::write(root.join("app/util.py"), "def helper():\n    return 1\n").unwrap();
-        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
-        std::fs::write(root.join(".trellis/config.toml"), "[checks]\n").unwrap();
-        for args in [
-            ["init", "-q"].as_slice(),
-            &["config", "user.email", "t@example.invalid"],
-            &["config", "user.name", "t"],
-            &["config", "core.autocrlf", "false"],
-            &["add", "-A"],
-            &["commit", "-qm", "fixture"],
-        ] {
-            git(root, args);
-        }
-        d
+        static T: std::sync::OnceLock<crate::testutil::Template> = std::sync::OnceLock::new();
+        T.get_or_init(|| {
+            crate::testutil::Template::build(|root| {
+                std::fs::create_dir_all(root.join("app")).unwrap();
+                std::fs::create_dir_all(root.join(".trellis")).unwrap();
+                std::fs::write(root.join("app/util.py"), "def helper():\n    return 1\n").unwrap();
+                std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+                std::fs::write(root.join(".trellis/config.toml"), "[checks]\n").unwrap();
+                for args in [
+                    ["init", "-q"].as_slice(),
+                    &["config", "user.email", "t@example.invalid"],
+                    &["config", "user.name", "t"],
+                    &["config", "core.autocrlf", "false"],
+                    &["add", "-A"],
+                    &["commit", "-qm", "fixture"],
+                ] {
+                    crate::testutil::git(root, args);
+                }
+            })
+        })
+        .instance()
     }
 
     fn with_bash(root: &Path) -> Handle {

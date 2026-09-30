@@ -26,6 +26,8 @@ mod registry;
 mod scripted;
 mod skills;
 mod supervise;
+#[cfg(test)]
+mod testutil;
 mod tools;
 mod trust;
 mod wire;
