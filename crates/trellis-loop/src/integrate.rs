@@ -742,19 +742,20 @@ mod tests {
         let merged = |f: &str| {
             std::fs::read_to_string(dir.path().join(f)).is_ok_and(|s| s.contains("A_NEW"))
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        // No wall-clock deadline: the future is the deadline. `run_plan` has
+        // no await between writing the merge and the type check's first poll,
+        // so once both files show the merge, the future is parked inside the
+        // 20 s check, and it cannot finish before the merge is visible. A
+        // fixed wait here measured host load (#225): under parallel test
+        // load the partitions alone outlasted 15 s.
         loop {
             tokio::select! {
-                _ = &mut fut => panic!("the check ended before the run was interrupted"),
+                out = &mut fut => panic!("the run ended before it was interrupted: {out:?}"),
                 () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
             }
             if merged("a.py") && merged("b.py") {
                 break;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the merge never landed"
-            );
         }
         drop(fut);
 
