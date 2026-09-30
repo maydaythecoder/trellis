@@ -34,7 +34,8 @@ a Job Object of their own with kill-on-close and no breakaway.**
 
 - `Cargo.toml`: `process-wrap = { version = "10.0.1", default-features =
   false, features = ["job-object", "kill-on-drop", "tokio1"] }`, and in
-  trellis-loop and trellis-cli only under `[target.'cfg(windows)'.dependencies]`.
+  trellis-loop and trellis-cli only under `[target.'cfg(windows)'.dependencies]`
+  (and trellis-checks since #172, below).
   No Unix build compiles it.
 - `kill-on-drop` is the third feature. The owner's approval named
   `job-object` and `tokio1`; `JobObject` sets
@@ -107,10 +108,8 @@ ADR 0021 row 13.3):
   terminals), ours is nested in it, which Windows 8 and later support. How
   a breakaway request behaves across such a chain was read from Microsoft's
   documentation, not tested here.
-- **The grounded checks** (`trellis-checks`) still use
-  `trellis_core::process::kill_tree` (`taskkill /T`) on a timeout. They
-  were out of this ticket's scope; a check's backgrounded process after a
-  normal exit is not held.
+- **The grounded checks** were out of this ticket's scope. #172 (below)
+  brought them in.
 - **Unix is unchanged.** A process agent runs in trellis's own process
   group (ADR 0026 §11, round 9), so after its normal exit nothing is
   killed there, and a process that leaves its group (`setsid`) is not
@@ -174,3 +173,36 @@ ADR 0021 row 13.3):
 
 Both heartbeats stop after 30 beats, so a regression fails the test rather
 than holding the test run on a process that never ends.
+
+## Amendment: the grounded checks (#172, 2026-09-29)
+
+A check that exited normally left what it started running, and on Windows
+nothing reached it: `taskkill /T` walks by parent pid from a live process,
+and #184 saw a check's `ping` grandchild outlive it by about 120 s. Decided
+by the owner (issue #172): after a check exits, kill its whole group or
+job, and fail the check if the tree changed after its exit was observed.
+
+- **Windows:** `trellis-checks` spawns the checker exactly as `exec::run`
+  does (scrub, then `KillOnDrop` and `JobObject`, wait on the inner child).
+  After the exit the job is terminated, pass or fail, and on a timeout it
+  replaces `taskkill /T`. The dependency line is the same, under
+  `[target.'cfg(windows)'.dependencies]`; `Cargo.lock` gains only the edge.
+- **Unix:** the checker already led its own group. It now gets the same
+  group holder as `exec::run` (a `cat` in the group, reaped last), and the
+  group is killed through `trellis_core::process::kill_group` after the
+  exit. The timeout path is unchanged (`kill_tree` while unreaped).
+- **The tree check.** For an exit that is a pass (code 0), the working
+  tree under the root (not `.git/`, whose changes during a run are the
+  trust guard's, ADR 0023) is walked by metadata when the exit is observed
+  and again after the kill; any difference fails the check (`exit_code: None`, through the
+  existing constructors; `Verdict` is unchanged). Between the two walks the
+  pipes get a grace of 2 s within the check's bound, so a leftover that
+  holds them is seen writing; before #172 that wait was the whole bound.
+  Not seen: a write between the exit and the first walk reaching that path,
+  a same-length rewrite that restores its modification time on Windows
+  (Unix compares `ctime`), and anything a process the kill does not reach
+  writes after the second walk. The fix for those is the sandbox (ADR 0021
+  row 13.3).
+- **Tests:** `check_leftover_*` in `trellis-checks`: a backgrounded
+  heartbeat stops when the check returns; a leftover writing after the
+  exit fails the check; a normal check that writes before it exits passes.

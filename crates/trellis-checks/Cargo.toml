@@ -19,6 +19,10 @@ tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 
+# Windows Job Objects for the checker and what it starts (ADR 0035, #172).
+[target.'cfg(windows)'.dependencies]
+process-wrap.workspace = true
+
 [lints]
 workspace = true
 

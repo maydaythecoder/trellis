@@ -6,6 +6,7 @@
 
 pub mod coverage;
 pub mod governance;
+mod tree_state;
 mod verdict;
 
 pub use verdict::{AuditMode, CheckDetail, CheckKind, Verdict};
@@ -371,9 +372,11 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
     {
         cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     }
-    let mut child = match cmd.spawn() {
+    let mut child = match spawn(cmd) {
         Ok(c) => c,
-        // A check that could not run is not a check that passed.
+        // A check that could not run is not a check that passed. On
+        // Windows that includes a Job Object that could not be made or
+        // joined: running the checker unheld is what #172 replaced.
         Err(e) => {
             return ProcessOutput {
                 command,
@@ -387,10 +390,25 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             };
         }
     };
+    // Taken now: tokio's `id()` is `None` once the child has been reaped,
+    // and the group is killed after that (`kill_group`).
+    #[cfg(unix)]
+    let pid = child.id();
+    // A member of the checker's group that is not reaped until the group
+    // has been signalled: alive or a zombie, it keeps the group id from
+    // being reused, so the kill after a normal exit (observable only by
+    // reaping the checker) cannot reach a stranger's group that took the
+    // id. As `exec::run` in trellis-loop (ADR 0023 §3, review round 9).
+    // `None` when it could not be started; the post-exit kill is then
+    // skipped and said so. Unix only: on Windows the job handle names the
+    // tree (ADR 0035).
+    #[cfg(unix)]
+    let mut holder = pid.and_then(hold_group);
 
     let (mut out, mut err) = (Captured::default(), Captured::default());
-    let (so, se) = (child.stdout.take(), child.stderr.take());
-    let (exited, drained) = {
+    let (so, se) = pipes(&mut child);
+    let keys = tree_state::Keys::new();
+    let (exited, drained, changes) = {
         // Read while waiting: a checker that fills a pipe nobody reads
         // blocks, and would then look hung when it is not.
         let mut reading = std::pin::pin!(async {
@@ -400,26 +418,93 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
         let exited = tokio::time::timeout(limit, async {
             loop {
                 tokio::select! {
-                    s = child.wait() => break s,
+                    s = wait_command(&mut child) => break s,
                     _ = &mut reading, if !read => read = true,
                 }
             }
         })
         .await;
-        // What is left in the pipes, within what remains of the bound: a
-        // process the checker backgrounded may hold them after it exits.
-        let drained = match &exited {
-            Ok(Ok(_)) if !read => {
-                let left = limit.saturating_sub(started.elapsed());
-                tokio::time::timeout(left, &mut reading).await.is_ok()
+        let mut changes = None;
+        if let Ok(waited) = &exited {
+            // The tree as the checker left it. Only for an exit that is a
+            // pass (`Verdict` passes on exit code 0 and nothing else): a
+            // failing check has nothing a later write could void, and the
+            // walk costs a large tree real time.
+            let before = match waited {
+                Ok(s) if s.code() == Some(0) => Some(walk(root, &keys).await),
+                _ => None,
+            };
+            // What is left in the pipes, for a short grace within the
+            // bound. A process the checker left running that inherited
+            // them keeps them open, and whatever it writes meanwhile is
+            // caught by the second walk.
+            if !read {
+                let grace = LEFTOVER_GRACE.min(limit.saturating_sub(started.elapsed()));
+                read = tokio::time::timeout(grace, &mut reading).await.is_ok();
             }
-            _ => true,
-        };
-        (exited, drained)
+            // Whatever the exit code: what the checker left running is
+            // killed before this call returns, so it cannot write after a
+            // convergence judged the tree or a rollback restored it.
+            #[cfg(unix)]
+            if holder.is_some() {
+                Box::pin(kill_group(pid)).await;
+            } else {
+                tracing::warn!(
+                    "the group holder did not start; what the check left running is not killed"
+                );
+            }
+            #[cfg(windows)]
+            end_job(&mut child);
+            // The kill closed the pipes it held, unless a process outside
+            // the group or job holds them too.
+            if !read {
+                read = tokio::time::timeout(AFTER_KILL_DRAIN, &mut reading)
+                    .await
+                    .is_ok();
+            }
+            if let Some(before) = before {
+                let after = walk(root, &keys).await;
+                changes = Some(before.changes(&after, root, &keys));
+            }
+        } else {
+            // Unreaped, so its pid and its group are still its own when
+            // the tree is signalled.
+            Box::pin(kill_tree(&mut child)).await;
+        }
+        (exited, read, changes)
     };
+    // Reaped last, after every group signal: until now it held the id.
+    #[cfg(unix)]
+    if let Some(h) = &mut holder {
+        let _ = h.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(2), h.wait()).await;
+    }
     let (out, stdout_truncated) = out.into_text();
     let (err, stderr_truncated) = err.into_text();
+    let failed = |stderr: String| ProcessOutput {
+        command: command.clone(),
+        exit_code: None,
+        failure_count: None,
+        stdout: out.clone(),
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+        duration_ms: started.elapsed().as_millis() as u64,
+    };
     match exited {
+        // Exited zero, but the tree it was judged on changed before its
+        // leftovers were killed: the pass would describe a tree that no
+        // longer exists (a pass stops counting once the tree changes).
+        // `None`, which never reads as success, rather than a new way to
+        // fail a `Verdict`.
+        Ok(Ok(status))
+            if changes
+                .as_ref()
+                .is_some_and(|c| c.incomplete || c.count > 0) =>
+        {
+            let c = changes.expect("checked above");
+            failed(format!("{}\n{err}", tree_changed(status, &c)))
+        }
         Ok(Ok(status)) if drained => ProcessOutput {
             command,
             exit_code: status.code(),
@@ -432,60 +517,184 @@ async fn run(root: &Path, cfg: &CheckConfig, argv: &[String]) -> ProcessOutput {
             stderr_truncated,
             duration_ms: started.elapsed().as_millis() as u64,
         },
-        // Exited, but something it left running held its output open past
-        // the bound. Not a pass, whatever the exit code: the verdict would
-        // rest on output that was cut. Nothing is killed, because the
-        // checker has been reaped and its group id may no longer be ours.
-        Ok(Ok(status)) => ProcessOutput {
-            command,
-            exit_code: None,
-            failure_count: None,
-            stdout: out,
-            stderr: format!(
-                "exited ({status}), but its output was still held open after {} s by a \
-                 process it left running, which was not killed; the output is incomplete\n{err}",
-                seconds(limit),
-            ),
-            stdout_truncated,
-            stderr_truncated,
-            duration_ms: started.elapsed().as_millis() as u64,
-        },
-        Ok(Err(e)) => ProcessOutput {
-            command,
-            exit_code: None,
-            failure_count: None,
-            stdout: out,
-            stderr: format!("could not wait for the check: {e}\n{err}"),
-            stdout_truncated,
-            stderr_truncated,
-            duration_ms: started.elapsed().as_millis() as u64,
-        },
-        Err(_) => {
-            // Unreaped until this arm reaps it, so its pid and its group
-            // are still its own when the tree is signalled.
-            if let Some(pid) = child.id() {
-                let _ = tokio::task::spawn_blocking(move || {
-                    trellis_core::process::kill_tree(pid);
-                })
-                .await;
-            }
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-            ProcessOutput {
-                command,
-                exit_code: None,
-                failure_count: None,
-                stdout: out,
-                stderr: format!(
-                    "timed out after {} s; the check's process tree was killed\n{err}",
-                    seconds(limit),
-                ),
-                stdout_truncated,
-                stderr_truncated,
-                duration_ms: started.elapsed().as_millis() as u64,
-            }
-        }
+        // Exited, and something still held its output open after its
+        // processes were killed. Not a pass, whatever the exit code: the
+        // verdict would rest on output that was cut.
+        Ok(Ok(status)) => failed(format!(
+            "exited ({status}), but its output was still held open after what it left running \
+             was killed, by a process the kill did not reach; the output is incomplete\n{err}"
+        )),
+        Ok(Err(e)) => failed(format!("could not wait for the check: {e}\n{err}")),
+        Err(_) => failed(format!(
+            "timed out after {} s; the check's process tree was killed\n{err}",
+            seconds(limit),
+        )),
     }
+}
+
+/// How long a check's pipes may stay open after it exits before what it
+/// left running is killed, within the check's bound. Long enough that a
+/// leftover holding them is seen writing (the second walk catches it), and
+/// short: before #172 the wait was the whole bound. A check that left
+/// nothing holding its pipes has them at end of file already and pays
+/// nothing.
+const LEFTOVER_GRACE: Duration = Duration::from_secs(2);
+
+/// How long the pipes may take to close once the group or job is killed.
+const AFTER_KILL_DRAIN: Duration = Duration::from_secs(2);
+
+/// The tree under `root`, walked off the async runtime. A walk that
+/// panicked is an unknown state, which compares as changed: "could not
+/// tell" is not "unchanged".
+async fn walk(root: &Path, keys: &tree_state::Keys) -> tree_state::TreeState {
+    let (root, keys) = (root.to_path_buf(), keys.clone());
+    tokio::task::spawn_blocking(move || tree_state::TreeState::take(&root, &keys))
+        .await
+        .unwrap_or_else(|_| tree_state::TreeState::unknown())
+}
+
+/// The failure a changed tree gives a check that exited zero.
+fn tree_changed(status: std::process::ExitStatus, c: &tree_state::Changes) -> String {
+    if c.incomplete {
+        return format!(
+            "exited ({status}), but whether the working tree changed after its exit was \
+             observed could not be established (the tree could not be walked whole), so the \
+             pass does not count"
+        );
+    }
+    let mut named = c.named.join(", ");
+    if c.count > c.named.len() {
+        named.push_str(&format!(
+            "{}{} more",
+            if named.is_empty() { "" } else { ", " },
+            c.count - c.named.len()
+        ));
+    }
+    format!(
+        "exited ({status}), but the working tree changed after its exit was observed, before \
+         what it left running was killed ({} path(s): {named}); a pass stops counting once the \
+         tree changes",
+        c.count
+    )
+}
+
+/// What `run` spawned. On Windows the checker is wrapped in a Job Object
+/// (ADR 0035), and the wrapper owns the process.
+#[cfg(unix)]
+type Child = tokio::process::Child;
+#[cfg(windows)]
+type Child = Box<dyn process_wrap::tokio::ChildWrapper>;
+
+/// Spawns `cmd`, which the caller has already scrubbed.
+#[cfg(unix)]
+fn spawn(mut cmd: tokio::process::Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
+/// Spawns `cmd`, which the caller has already scrubbed, into a Job Object
+/// of its own, as `exec::run` in trellis-loop does (ADR 0035): created
+/// suspended, assigned, then resumed, so nothing it starts runs outside
+/// the job; no breakaway; kill-on-close, so the tree also ends when
+/// trellis does. #184 saw a check's `ping` grandchild outlive the
+/// pid-walking `taskkill /T` by about 120 s; the job reaches it by handle.
+#[cfg(windows)]
+fn spawn(cmd: tokio::process::Command) -> std::io::Result<Child> {
+    use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+    let mut wrapped = CommandWrap::from(cmd);
+    wrapped.wrap(KillOnDrop).wrap(JobObject);
+    wrapped.spawn()
+}
+
+type Pipes = (
+    Option<tokio::process::ChildStdout>,
+    Option<tokio::process::ChildStderr>,
+);
+
+#[cfg(unix)]
+fn pipes(child: &mut Child) -> Pipes {
+    (child.stdout.take(), child.stderr.take())
+}
+
+#[cfg(windows)]
+fn pipes(child: &mut Child) -> Pipes {
+    (child.stdout().take(), child.stderr().take())
+}
+
+/// Waits for the checker itself, not for what it started.
+#[cfg(unix)]
+fn wait_command(
+    child: &mut Child,
+) -> impl std::future::Future<Output = std::io::Result<std::process::ExitStatus>> + '_ {
+    child.wait()
+}
+
+/// Waits for the checker itself, not for what it started: the job
+/// wrapper's own `wait` goes on to wait for every process in the job, and
+/// a backgrounded grandchild would hold the call for its whole life.
+#[cfg(windows)]
+fn wait_command(
+    child: &mut Child,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = std::io::Result<std::process::ExitStatus>> + Send + '_>,
+> {
+    child.inner_mut().wait()
+}
+
+/// Ends every process still in the checker's job (`TerminateJobObject`).
+/// Safe after the checker has been reaped: the job handle, not a pid,
+/// names the tree, so no reused id can make it reach a stranger.
+#[cfg(windows)]
+fn end_job(child: &mut Child) {
+    if let Err(e) = child.start_kill() {
+        tracing::warn!("could not end the check's job: {e}");
+    }
+}
+
+/// Starts `cat` in process group `pgid`, reading a pipe trellis holds so it
+/// ends with trellis. Joining needs the group to exist, and it does: the
+/// checker leads it and has not been reaped yet (a zombie still counts).
+/// A copy of trellis-loop's `exec::hold_group`, which is private there.
+#[cfg(unix)]
+fn hold_group(pgid: u32) -> Option<tokio::process::Child> {
+    let mut c = tokio::process::Command::new("cat");
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .process_group(i32::try_from(pgid).ok()?);
+    trellis_core::secrets::scrub(c.as_std_mut());
+    c.spawn().ok()
+}
+
+/// Kills the process group the checker led, after it has exited
+/// ([`trellis_core::process::kill_group`]). Called only while the holder
+/// `run` keeps unreaped is a member, so the group id is still ours.
+#[cfg(unix)]
+async fn kill_group(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
+    let _ = tokio::task::spawn_blocking(move || trellis_core::process::kill_group(pid)).await;
+}
+
+/// Kills the checker and what it started on a timeout
+/// ([`trellis_core::process::kill_tree`]), then the checker itself,
+/// directly, whatever that did. Only while it is unreaped: its pid is still
+/// its own until then.
+#[cfg(unix)]
+async fn kill_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        // The kill commands are std and blocking; off the runtime's threads.
+        let _ = tokio::task::spawn_blocking(move || trellis_core::process::kill_tree(pid)).await;
+    }
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+}
+
+/// Kills every process in the checker's job, the checker included, then
+/// reaps the checker.
+#[cfg(windows)]
+async fn kill_tree(child: &mut Child) {
+    end_job(child);
+    let _ = tokio::time::timeout(Duration::from_secs(2), wait_command(child)).await;
 }
 
 /// How long a check may run: `timeout_s`, or less when the run's budget
@@ -1240,5 +1449,144 @@ mod output_cap_tests {
             assert_eq!(v.passed(), passes, "exit {code}");
             assert!(v.detail().stdout.starts_with("[trellis: output cut"));
         }
+    }
+}
+
+#[cfg(test)]
+mod leftover_tests {
+    use super::*;
+
+    /// A checker that starts a heartbeat in the background, waits until it
+    /// has beaten once, and exits 0.
+    ///
+    /// With `holds_pipes` the heartbeat inherits the checker's stdout and
+    /// stderr, and appends to `hb` without pause: it is writing through the
+    /// whole grace, however loaded the machine, so a write after the exit
+    /// is certain. Without, its output goes to the null device and it beats
+    /// about once a second, 30 times. Bounded either way, so a regression
+    /// fails the test rather than leaving a process that holds the run.
+    fn heartbeat(dir: &Path, holds_pipes: bool) -> Vec<String> {
+        if cfg!(windows) {
+            // Script files, because std quotes a `cmd /C` argument with
+            // `\"`, which cmd does not read as an escaped quote. Called as
+            // `.\`, because `NoDefaultCurrentDirectoryInExePath` may be set.
+            let (beat, quiet) = if holds_pipes {
+                ("@for /L %%i in (1,1,3000) do @echo x>>hb\r\n", "")
+            } else {
+                (
+                    "@for /L %%i in (1,1,30) do @(echo x>>hb& ping -n 2 127.0.0.1 >NUL)\r\n",
+                    " >NUL 2>&1",
+                )
+            };
+            std::fs::write(dir.join("beat.cmd"), beat).unwrap();
+            std::fs::write(
+                dir.join("check.cmd"),
+                format!(
+                    "@start /B cmd /C .\\beat.cmd{quiet}\r\n:wait\r\n\
+                     @if not exist hb (ping -n 1 127.0.0.1 >NUL& goto wait)\r\n@exit /b 0\r\n"
+                ),
+            )
+            .unwrap();
+            vec!["cmd".into(), "/C".into(), r".\check.cmd".into()]
+        } else {
+            let (pause, beats, quiet) = if holds_pipes {
+                ("", 50_000, "")
+            } else {
+                (" sleep 1;", 30, " >/dev/null 2>&1")
+            };
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "(i=0; while [ $i -lt {beats} ]; do echo x >> hb; i=$((i+1));{pause} \
+                     done){quiet} & while [ ! -s hb ]; do sleep 0.05; done; exit 0"
+                ),
+            ]
+        }
+    }
+
+    fn size(p: &Path) -> u64 {
+        std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// The risk (#172): a check that exited normally left what it started
+    /// running, and that could write to the tree after the pass was
+    /// judged, or after a rollback restored it. On Windows #184 saw a
+    /// check's `ping` grandchild outlive the pid-walking `taskkill /T` by
+    /// about 120 s. After the call returns the heartbeat must have beaten
+    /// (else a silent heartbeat proves nothing) and must not beat again.
+    #[tokio::test]
+    async fn check_leftover_a_backgrounded_heartbeat_stops_when_the_check_returns() {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = CheckConfig {
+            tests: heartbeat(d.path(), false),
+            timeout_s: 60,
+            ..CheckConfig::default()
+        };
+        run_tests(d.path(), &cfg, &[]).await;
+        let hb = d.path().join("hb");
+        let before = size(&hb);
+        assert!(before > 0, "the heartbeat never beat");
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(
+            size(&hb),
+            before,
+            "what the check left running kept writing after the call returned"
+        );
+    }
+
+    /// A process the checker left running that writes after the exit was
+    /// observed voids the pass: the verdict would describe a tree that no
+    /// longer exists. Held pipes keep it alive through the grace, so the
+    /// write is certain to land after the exit, and the check must fail
+    /// saying so, naming the file, whatever its exit code.
+    #[tokio::test]
+    async fn check_leftover_a_write_after_exit_fails_the_check() {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = CheckConfig {
+            tests: heartbeat(d.path(), true),
+            timeout_s: 60,
+            ..CheckConfig::default()
+        };
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(
+            !v.passed(),
+            "a pass survived a later write: {:?}",
+            v.detail()
+        );
+        assert_eq!(v.detail().exit_code, None);
+        let why = &v.detail().stderr;
+        assert!(
+            why.contains("the working tree changed after its exit was observed"),
+            "{why:?}"
+        );
+        assert!(why.contains("hb"), "the changed file is not named: {why:?}");
+        let hb = d.path().join("hb");
+        let before = size(&hb);
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(size(&hb), before, "the heartbeat outlived the check");
+    }
+
+    /// The other direction: a checker's own writes before it exits (a
+    /// `.pytest_cache`, a `.coverage`) are not a change after its exit.
+    #[tokio::test]
+    async fn check_leftover_a_normal_check_still_passes() {
+        let d = tempfile::tempdir().unwrap();
+        let argv: Vec<String> = if cfg!(windows) {
+            ["cmd", "/C", "echo x>out.txt& echo ok"]
+        } else {
+            ["sh", "-c", "echo x > out.txt; echo ok"]
+        }
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let cfg = CheckConfig {
+            tests: argv,
+            ..CheckConfig::default()
+        };
+        let v = run_tests(d.path(), &cfg, &[]).await;
+        assert!(v.passed(), "{:?}", v.detail());
+        assert!(v.detail().stdout.contains("ok"), "{:?}", v.detail().stdout);
+        assert!(d.path().join("out.txt").exists());
     }
 }
