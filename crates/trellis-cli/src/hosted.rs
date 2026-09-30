@@ -756,6 +756,16 @@ mod tests {
             'replies: for r in replies {
                 // Accept before looking at `stop`, so a connection already
                 // queued when the run ended is still served and counted.
+                //
+                // The 5 ms poll is not what timed out a connect in #210
+                // (`os error 10060`). The run makes one request at a time,
+                // so at most one connection is ever queued here, and the
+                // kernel completes the handshake into the listen backlog
+                // whether or not `accept` has been called: a late poll delays
+                // the read below, not the client's connect. That failure was
+                // the OS giving up on the handshake on a loaded host, and the
+                // transport did not retry it; it now does (trellis-model's
+                // `SendError::ConnectTimedOut`).
                 let mut s = loop {
                     match l.accept() {
                         Ok((s, _)) => break s,

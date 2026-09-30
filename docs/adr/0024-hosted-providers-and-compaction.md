@@ -421,7 +421,8 @@ repository may no longer name `key_env`.
   than `GMT`, and a date that does not exist (`31 Feb`) are not honoured
   and fall back to the fixed backoff.
   At most four attempts per model call. A transport failure mid-request is
-  retried the same way; a refused connection is not. A malformed reply keeps
+  retried the same way, and so is a connect the OS timed out (amended by
+  #210, below); a refused connection is not. A malformed reply keeps
   the existing format-retry path, which is separate.
 - **`[model] thinking = off|low|medium|high`.** Anthropic:
   `thinking: {type: "adaptive"}` with `output_config: {effort}`. OpenAI:
@@ -486,6 +487,21 @@ repository may no longer name `key_env`.
   retrying one would multiply a stall), and neither is a refused connection.
   The retry waits are real sleeps and are not charged separately to the
   budget; the wall-clock ceiling covers them.
+
+  *Amended by #210.* A connect the operating system timed out (`TimedOut`;
+  on Windows `os error 10060`) is retried like a failure mid-request: at
+  most four attempts, 1, 2, 4 s apart. A run against a loopback stub on a
+  loaded host ended on one, because every connect failure was treated as a
+  refusal. The connect has no timeout of its own; it runs inside the
+  request's 300 s timeout, so each attempt waits as long as the OS allows
+  the handshake. What a user sees: an endpoint whose connect times out now
+  fails after up to four OS connect timeouts and 7 s of waits instead of
+  one, and the error says `after 4 attempts`. A refused connection, a name
+  that does not resolve, a proxy's refusal of `CONNECT` and the 300 s
+  request timeout are still not retried. Each retry goes to the same
+  endpoint, and its log line carries the address and the OS error, never
+  the key or the request body. Evidence: the `connect_retry_` tests in
+  `crates/trellis-model/src/hosted.rs` and `transport.rs`.
 
 ### 5. Compaction: elision, not summary
 
