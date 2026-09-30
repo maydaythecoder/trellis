@@ -202,9 +202,15 @@ on stderr.
   - `get_commands`
   - `quit`
   - `compact` (*added 2026-09-29, #110; see "compact" below*)
-- **Why these 9 of pi's 33:** (10 since `compact`)
+  - `steer {message}` and `follow_up {message}` (*added 2026-09-29, #114;
+    see "steer and follow_up" below*)
+- **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
+  `follow_up`)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
-    1.2, deferred).
+    1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
+    are built, on the owner's decision of 2026-09-28 recorded there; see
+    below. `clear_queue` is not: the owner's decision excludes it, and
+    `abort` already hands back everything queued.*
   - The thinking, retry and compaction commands are W-C. `compact` answers
     "not built" by name. *Amended 2026-09-29 (#110): `compact` is built;
     see below. The thinking and retry commands are still not.*
@@ -228,7 +234,9 @@ on stderr.
   An unanswered request waits indefinitely: ADR 0018 does not charge human
   time to the wall-clock budget. `abort` ends the wait and rolls back.
 - **`abort`** takes the same path as Ctrl-C: the interrupted run rolls back
-  and writes its trail.
+  and writes its trail. *Amended 2026-09-29 (#114): answered once the
+  run has ended, with what was never delivered; see "steer and
+  follow_up".*
 - **`quit` and end of input differ on purpose.**
   - `quit` aborts an in-flight run, waits for its rollback, and exits.
   - End of input waits for the in-flight run to finish, then exits. So
@@ -288,6 +296,45 @@ on stderr.
     in `tests/modes.rs`, through the binary over stdio; the second checks
     the provider received the note in place of the first observation and
     that the size reported is the size sent.
+- *Added 2026-09-29 (#114), on the owner's decision recorded there; ADR
+  0021 row 1.2.* **`steer` and `follow_up`** send text to the run in
+  flight on the loop's steering channel (#113), never the approval
+  channel: the two channels carry different types, so neither can be read
+  as the other.
+  - Each takes `{"message": "<text>"}`. With no run in flight each
+    answers `success: false`, `"error": "no run in flight"`; a missing or
+    empty `message` is refused by name.
+  - A **steer** is user text in the run's next model request, placed and
+    worded as #113 places it. Its answer comes when a request carries it,
+    `data: {after_step}`, or, if the run ends first, `success: false`,
+    "the run ended before its next model request; not delivered". A steer
+    left over at a normal end is not started as a task: it was written to
+    redirect that run. **A steer cannot converge a run.** It never enters
+    the turns the convergence test reads, so "the checks passed, call
+    done" is still only a person's claim (ADR 0004).
+  - A **follow_up** is never delivered into the run it was sent during.
+    It is answered at once (accepted, as `prompt` is), and once that run
+    has ended it starts as a new run, bracketed by its own `run_start`
+    and `run_end` carrying the follow_up's `id`, with the prompt's model,
+    control mode, focus and skills. Several run one after another, in the
+    order received, including follow-ups sent during a follow-up's run.
+    End of input does not stop them; `abort` and `quit` do.
+  - **`abort`** is now answered once the run has ended, not when it is
+    read, with `data: {undelivered: [{id, type, message}]}`: every steer
+    and follow-up sent and never delivered, in the order received. Until
+    the run has taken the abort path it can still put a steer in a
+    request, so an earlier answer could name as undelivered a steer the
+    model was sent. The aborted run's transcript is dropped with its
+    future, so the server keeps its own record of what it sent, and the
+    run reports the steers each request carries as it makes it.
+  - No `clear_queue`, by the owner's decision. The steering record in the
+    trail is #117's.
+  - Evidence: `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`,
+    `rpc_steer_and_follow_up_are_refused_with_no_run_in_flight` and
+    `rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order` in
+    `tests/modes.rs`, through the binary over stdio (the first checks the
+    provider received the steer in the second request and not the first);
+    `rpc::tests::rpc_steer_abort_answers_with_the_undelivered_text_in_order`.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation

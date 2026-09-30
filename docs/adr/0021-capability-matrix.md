@@ -104,7 +104,7 @@ override any row.
 | Items | Disposition |
 |---|---|
 | 1.1 turn loop | built (`trellis-loop`, ADR 0005) |
-| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. Still to come: `steer` and `follow_up` over `trellis rpc` (#114), queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). |
+| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. `steer` and `follow_up` over `trellis rpc` are built (#114, ADR 0025 §5). Still to come: queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). |
 | 1.3 built-in tools read/edit | built; **write, grep, find, ls, bash → W-B** (bash is opt-in, see ADR 0023) |
 | 1.4 tool selection flags | W-B (`[tools]` enable/disable) |
 | 1.5 output truncation | built (2,000-character tail, and a separate skill window, ADR 0019) |

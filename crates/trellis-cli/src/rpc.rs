@@ -3,20 +3,23 @@
 //!
 //! A `prompt` runs a task through `cmd_run_with`, the path `trellis run`
 //! takes, on its own thread. The main thread keeps reading, so `abort`,
-//! `approve` and `get_state` are answered while the run is in flight. One
-//! run at a time; the clean-worktree rule is `cmd_run`'s and is unchanged.
+//! `approve`, `get_state`, `steer` and `follow_up` are answered while the
+//! run is in flight. One run at a time; the clean-worktree rule is
+//! `cmd_run`'s and is unchanged. A follow-up is the one way a run starts
+//! other than `prompt`: after the run it was sent during ends.
 
 use crate::output::{self, Sink, frame};
 use crate::{Human, RunControl, RunExit, RunSeeding, config};
 use anyhow::Result;
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
+use trellis_loop::Steering;
 
 /// Where the runs' human text goes.
 #[derive(Clone, Copy)]
@@ -46,6 +49,15 @@ const COMMANDS: &[(&str, &str)] = &[
         "the catalog and the configured specs",
     ),
     ("approve", "answer an approval request: {id, yes}"),
+    (
+        "steer",
+        "user text for the run in flight's next model request: {message}; \
+         answered when that request carries it",
+    ),
+    (
+        "follow_up",
+        "a task to run as a new prompt once the run in flight ends: {message}",
+    ),
     (
         "compact",
         "elide every observation but the newest from the run's next model request; \
@@ -113,15 +125,263 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
     }
 }
 
-/// A run in flight.
-struct Running {
-    thread: std::thread::JoinHandle<()>,
-    abort: Arc<output::Abort>,
-    /// Set by the run's thread as it finishes.
-    done: Arc<AtomicBool>,
+/// What a `steer` still waiting is answered once its run has ended: the
+/// loop will read the channel no more.
+const STEER_ENDED: &str = "the run ended before its next model request; not delivered";
+
+/// One run's steering channel, and the server's own record of it.
+///
+/// The record exists because an aborted run returns no transcript: `abort`
+/// drops the run's future, and the loop's [`trellis_loop::SteeringLog`]
+/// goes with it. So the server keeps every message it sent, in order, with
+/// the command id that sent it, and the run reports each request's
+/// delivered steers here as it makes it (through [`Watched`]). What was
+/// sent and not delivered is then known however the run ended.
+///
+/// Sending, recording and closing happen under one lock, so a message that
+/// races the run's end is either recorded (and handed back undelivered) or
+/// refused; never taken and lost.
+pub(crate) struct SteeringPort {
+    state: Mutex<PortState>,
+    receiver: Mutex<Option<trellis_loop::SteeringRx>>,
+}
+
+struct PortState {
+    /// `None` once the run has ended.
+    tx: Option<tokio::sync::mpsc::UnboundedSender<Steering>>,
+    sent: Vec<Sent>,
+    /// Steers that have reached a model request. The channel is FIFO and
+    /// the loop delivers every steer it takes before a request, so these
+    /// are the first `delivered` steers in `sent`.
+    delivered: usize,
+}
+
+/// A steer's answer: the step it was delivered after, or why it was not.
+type SteerAnswer = Result<usize, String>;
+
+struct Sent {
+    id: Option<String>,
+    what: Steering,
+    /// Set for a steer until it is answered.
+    reply: Option<tokio::sync::oneshot::Sender<SteerAnswer>>,
+}
+
+/// A message that was sent and never delivered, as `abort` reports it.
+struct Unsent {
+    id: Option<String>,
+    what: Steering,
+}
+
+impl Unsent {
+    fn json(&self) -> Value {
+        let (kind, message) = match &self.what {
+            Steering::Steer(m) => ("steer", m),
+            Steering::FollowUp(m) => ("follow_up", m),
+        };
+        json!({"id": self.id, "type": kind, "message": message})
+    }
+}
+
+impl SteeringPort {
+    fn new() -> Arc<Self> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        Arc::new(Self {
+            state: Mutex::new(PortState {
+                tx: Some(tx),
+                sent: Vec::new(),
+                delivered: 0,
+            }),
+            receiver: Mutex::new(Some(rx)),
+        })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, PortState> {
+        // No holder can panic between two writes it depends on, so a
+        // poisoned lock still guards a consistent record.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The run's end of the channel, taken once by the run that uses it.
+    pub(crate) fn take_receiver(&self) -> Option<trellis_loop::SteeringRx> {
+        self.receiver
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Records and sends one message. A steer comes back with the receiver
+    /// its answer arrives on; a follow-up with none.
+    fn send(
+        &self,
+        id: Option<&str>,
+        what: Steering,
+    ) -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> {
+        let mut st = self.state();
+        let Some(tx) = &st.tx else {
+            // Only between a run's end and the thread moving on (the next
+            // follow-up, or finishing), when a `prompt` is still refused,
+            // so neither message tells the client to send one now.
+            return Err(match what {
+                Steering::Steer(_) => "the run has just ended; nothing was delivered".into(),
+                Steering::FollowUp(_) => {
+                    "the run has just ended; nothing was queued. Send it again once \
+                     `get_state` shows no run in flight"
+                        .into()
+                }
+            });
+        };
+        // A send fails only once the loop has dropped its receiver, at the
+        // run's end. The record below still holds the message, and the
+        // close that follows hands it back.
+        let _ = tx.send(what.clone());
+        let (reply, answer) = match what {
+            Steering::Steer(_) => {
+                let (t, r) = tokio::sync::oneshot::channel();
+                (Some(t), Some(r))
+            }
+            Steering::FollowUp(_) => (None, None),
+        };
+        st.sent.push(Sent {
+            id: id.map(str::to_string),
+            what,
+            reply,
+        });
+        Ok(answer)
+    }
+
+    /// Called as each model request is made, with the steers it carries.
+    /// Answers each steer the first time a request carries it.
+    fn observe(&self, delivered: &[trellis_loop::Steer]) {
+        let mut st = self.state();
+        let from = st.delivered;
+        if delivered.len() <= from {
+            return;
+        }
+        let steers = st
+            .sent
+            .iter_mut()
+            .filter(|s| matches!(s.what, Steering::Steer(_)));
+        for (s, d) in steers.skip(from).zip(&delivered[from..]) {
+            if let Some(r) = s.reply.take() {
+                let _ = r.send(Ok(d.after_step));
+            }
+        }
+        st.delivered = delivered.len();
+    }
+
+    /// Ends the channel and hands back everything sent and not delivered,
+    /// in the order it was received. A steer among them is answered as not
+    /// delivered.
+    fn close(&self) -> Vec<Unsent> {
+        let mut st = self.state();
+        st.tx = None;
+        let delivered = st.delivered;
+        let mut steers = 0;
+        let mut unsent = Vec::new();
+        for mut s in std::mem::take(&mut st.sent) {
+            if matches!(s.what, Steering::Steer(_)) {
+                steers += 1;
+                if steers <= delivered {
+                    continue;
+                }
+            }
+            if let Some(r) = s.reply.take() {
+                let _ = r.send(Err(STEER_ENDED.into()));
+            }
+            unsent.push(Unsent {
+                id: s.id,
+                what: s.what,
+            });
+        }
+        unsent
+    }
+}
+
+/// A model whose requests are reported to a [`SteeringPort`].
+///
+/// The loop drains the steering channel immediately before each request,
+/// so the steers a request carries are the transcript's delivered ones at
+/// the moment it is made. Reading them here, rather than from the
+/// transcript the run returns, is what makes delivery known on an aborted
+/// run too. With no port it forwards and does nothing else.
+pub(crate) struct Watched<'a, M> {
+    model: &'a mut M,
+    port: Option<&'a SteeringPort>,
+}
+
+impl<'a, M> Watched<'a, M> {
+    pub(crate) fn new(model: &'a mut M, port: Option<&'a SteeringPort>) -> Self {
+        Self { model, port }
+    }
+}
+
+impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
+    fn next_step(
+        &mut self,
+        t: &trellis_loop::Transcript,
+    ) -> impl std::future::Future<Output = Result<trellis_loop::Step, String>> + Send {
+        if let Some(p) = self.port {
+            p.observe(&t.steering.delivered);
+        }
+        self.model.next_step(t)
+    }
+
+    fn tokens_used(&self) -> u64 {
+        self.model.tokens_used()
+    }
+
+    fn prompt_bytes(&self) -> Option<usize> {
+        self.model.prompt_bytes()
+    }
+
+    fn compactions(&self) -> &[trellis_loop::Compacted] {
+        self.model.compactions()
+    }
+
+    fn requested_compactions(&self) -> &[trellis_loop::RequestedCompaction] {
+        self.model.requested_compactions()
+    }
+}
+
+/// The run of a chain in progress. A follow-up replaces it when it starts.
+#[derive(Clone)]
+struct Current {
+    /// The command that started it: the `prompt`, or the `follow_up`.
     id: Option<String>,
     /// `compact` requests, answered by the driver at its next request.
     compact: Arc<trellis_loop::CompactRequests>,
+    steering: Arc<SteeringPort>,
+}
+
+impl Current {
+    fn new(id: Option<String>) -> Self {
+        Self {
+            id,
+            compact: Arc::new(trellis_loop::CompactRequests::default()),
+            steering: SteeringPort::new(),
+        }
+    }
+}
+
+/// A run in flight, and the follow-ups queued behind it.
+struct Running {
+    thread: std::thread::JoinHandle<()>,
+    abort: Arc<output::Abort>,
+    /// Set by the run's thread as it finishes, after `leftover`.
+    done: Arc<AtomicBool>,
+    current: Arc<Mutex<Current>>,
+    /// What was sent and never delivered when the chain stopped on an
+    /// abort, in the order it was received, for `abort`'s answer.
+    leftover: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Running {
+    fn current(&self) -> Current {
+        self.current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 struct Server {
@@ -249,7 +509,7 @@ impl Server {
         let Some(r) = &self.running else {
             return;
         };
-        let requests = r.compact.clone();
+        let requests = r.current().compact;
         let rx = requests.request();
         let (sink, id) = (self.sink.clone(), id.map(str::to_string));
         self.waiters.push(std::thread::spawn(move || {
@@ -267,6 +527,83 @@ impl Server {
                     .unwrap_or_else(|| "the run ended before its next model request".into())),
             };
             respond_on(&sink, id.as_deref(), "compact", result);
+        }));
+    }
+
+    /// `steer` and `follow_up`: refused with no run in flight; otherwise
+    /// sent on the run's steering channel, never the approval channel.
+    ///
+    /// A steer is answered from another thread when a model request carries
+    /// it, with the step it followed, or, if the run ends first, with
+    /// `success: false`. A follow-up is answered at once: accepted, as a
+    /// `prompt` is, and its own run's `run_start` and `run_end` carry its id.
+    fn steer(&mut self, cmd: &Value, id: Option<&str>, kind: &str) {
+        if !self.in_flight() {
+            self.respond(id, kind, Err("no run in flight".into()));
+            return;
+        }
+        let message = match cmd.get("message").and_then(Value::as_str) {
+            Some(m) if !m.trim().is_empty() => m.to_string(),
+            _ => {
+                let e = format!("{kind} needs {{\"message\": \"<text>\"}}, and not an empty one");
+                self.respond(id, kind, Err(e));
+                return;
+            }
+        };
+        let Some(r) = &self.running else {
+            return;
+        };
+        let what = match kind {
+            "steer" => Steering::Steer(message),
+            _ => Steering::FollowUp(message),
+        };
+        match r.current().steering.send(id, what) {
+            Err(e) => self.respond(id, kind, Err(e)),
+            Ok(None) => self.respond(id, kind, Ok(Value::Null)),
+            Ok(Some(answer)) => {
+                let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+                self.waiters.push(std::thread::spawn(move || {
+                    let result = match answer.blocking_recv() {
+                        Ok(Ok(after_step)) => Ok(json!({"after_step": after_step})),
+                        Ok(Err(e)) => Err(e),
+                        // The port answers every steer it holds before it is
+                        // dropped; this is the port gone some other way.
+                        Err(_) => Err(STEER_ENDED.into()),
+                    };
+                    respond_on(&sink, id.as_deref(), "steer", result);
+                }));
+            }
+        }
+    }
+
+    /// `abort`: answered once the run has ended, with everything sent on
+    /// the steering channel and never delivered, in the order received.
+    ///
+    /// After, not at once, because until the run has taken the abort path
+    /// it can still deliver a steer to a request, and an answer given before
+    /// then could name as undelivered a steer the model was sent.
+    fn abort(&mut self, id: Option<&str>) {
+        if !self.in_flight() {
+            self.respond(id, "abort", Err("no run in progress".into()));
+            return;
+        }
+        self.abort_run();
+        let Some(r) = &self.running else {
+            return;
+        };
+        let (done, leftover) = (r.done.clone(), r.leftover.clone());
+        let (sink, id) = (self.sink.clone(), id.map(str::to_string));
+        self.waiters.push(std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let undelivered = leftover.lock().map(|l| l.clone()).unwrap_or_default();
+            respond_on(
+                &sink,
+                id.as_deref(),
+                "abort",
+                Ok(json!({"undelivered": undelivered})),
+            );
         }));
     }
 
@@ -294,15 +631,8 @@ impl Server {
                 let r = self.prompt(cmd, id);
                 self.respond(id, kind, r.map(|()| Value::Null));
             }
-            "abort" => {
-                let r = if self.in_flight() {
-                    self.abort_run();
-                    Ok(Value::Null)
-                } else {
-                    Err("no run in progress".to_string())
-                };
-                self.respond(id, kind, r);
-            }
+            "abort" => self.abort(id),
+            "steer" | "follow_up" => self.steer(cmd, id, kind),
             "get_state" => {
                 let running = self.in_flight();
                 let pending: Vec<String> = self
@@ -312,7 +642,7 @@ impl Server {
                     .unwrap_or_default();
                 let data = json!({
                     "running": running,
-                    "run_request_id": self.running.as_ref().and_then(|r| r.id.clone()),
+                    "run_request_id": self.running.as_ref().and_then(|r| r.current().id),
                     "model": self.model(None).ok(),
                     "root": self.root.display().to_string(),
                     "last_run": self.last.lock().ok().and_then(|l| l.clone()),
@@ -500,105 +830,32 @@ impl Server {
             .map(|c| c.unconstrained())
             .unwrap_or(false);
 
-        if let Ok(mut t) = TURNS.lock() {
-            t.clear();
-        }
         let abort = Arc::new(output::Abort::default());
         let done = Arc::new(AtomicBool::new(false));
-        let run_done = done.clone();
-        let request_id = id.map(str::to_string);
-        let (root, sink, mode) = (self.root.clone(), self.sink.clone(), self.mode);
-        let (approvals, next, last, closed) = (
-            self.approvals.clone(),
-            self.next_approval.clone(),
-            self.last.clone(),
-            self.input_closed.clone(),
-        );
-        let run_abort = abort.clone();
-        let compact = Arc::new(trellis_loop::CompactRequests::default());
-        let run_compact = compact.clone();
-        let rid = request_id.clone();
+        let current = Arc::new(Mutex::new(Current::new(id.map(str::to_string))));
+        let leftover: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let chain = Chain {
+            root: self.root.clone(),
+            sink: self.sink.clone(),
+            mode: self.mode,
+            approvals: self.approvals.clone(),
+            next_approval: self.next_approval.clone(),
+            last: self.last.clone(),
+            input_closed: self.input_closed.clone(),
+            abort: abort.clone(),
+            current: current.clone(),
+            model,
+            model_from_user,
+            unconstrained,
+            flag,
+            skills,
+            focus,
+        };
+        let (run_done, run_leftover) = (done.clone(), leftover.clone());
         let thread = std::thread::spawn(move || {
-            // Approval questions become records on the stream; answers come
-            // back through `approve` and the stored reply channel.
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<trellis_loop::ApprovalRequest>(1);
-            let fwd = {
-                let (sink, approvals, rid) = (sink.clone(), approvals.clone(), rid.clone());
-                let aborted = run_abort.clone();
-                std::thread::spawn(move || {
-                    while let Some(req) = rx.blocking_recv() {
-                        let n = next.fetch_add(1, Ordering::SeqCst) + 1;
-                        let aid = format!("approval-{n}");
-                        if let Ok(mut a) = approvals.lock() {
-                            // Checked under the lock `abort_run` clears
-                            // under: a question arriving after the run took
-                            // the abort path is dropped here, because the
-                            // clear may already have happened.
-                            // The same for end of input: nobody is left
-                            // to answer, and the drop is the no.
-                            if aborted.observed() || closed.load(Ordering::SeqCst) {
-                                continue;
-                            }
-                            a.insert(aid.clone(), req.reply);
-                        }
-                        frame(
-                            &sink,
-                            &json!({"type": "approval_request", "id": aid, "request_id": rid,
-                                    "question": req.question, "detail": req.detail}),
-                        );
-                    }
-                })
-            };
-            let mut human: Box<dyn std::io::Write + Send> = match mode {
-                Mode::Process => output::human(),
-                #[cfg(test)]
-                Mode::Quiet => Box::new(std::io::sink()),
-            };
-            let before = crate::output::RunExtras {
-                skills,
-                request_id: rid.clone(),
-                frames: Some(sink),
-                abort: Some(run_abort),
-                compact: Some(run_compact.clone()),
-                label: None,
-                done: None,
-                // `--image` is `trellis run`'s alone (ADR 0041).
-                images: Vec::new(),
-            };
-            let r = crate::cmd_run_with(
-                &root,
-                &task,
-                crate::ModelChoice {
-                    spec: &model,
-                    unconstrained,
-                },
-                // No agent profile over RPC: the caller is the operator, and
-                // profiles are how `work` runs a task as someone (ADR 0026).
-                RunSeeding {
-                    resume: false,
-                    focus: focus.as_deref(),
-                    profile: None,
-                    model_from_user,
-                    queued: false,
-                },
-                RunControl {
-                    flag,
-                    human: Human::Channel(tx),
-                    steering: None,
-                },
-                before,
-                &mut human,
-            );
-            let _ = fwd.join();
-            // A `compact` still waiting will get no model request to act on.
-            run_compact.close("the run ended before its next model request; nothing was compacted");
-            // Questions still open when the run ended are dropped, which the
-            // gate reads as a no; none can be answered now.
-            if let Ok(mut a) = approvals.lock() {
-                a.clear();
-            }
-            if let Ok(mut l) = last.lock() {
-                *l = Some(summary(&r, rid.as_deref()));
+            let unsent = chain.run(task);
+            if let Ok(mut l) = run_leftover.lock() {
+                *l = unsent;
             }
             run_done.store(true, Ordering::SeqCst);
         });
@@ -606,10 +863,202 @@ impl Server {
             thread,
             abort,
             done,
-            id: request_id,
-            compact,
+            current,
+            leftover,
         });
         Ok(())
+    }
+}
+
+/// A `prompt`'s run and the follow-ups sent during it, run one after
+/// another on one thread.
+///
+/// On the run's thread rather than the reader's because the reader is
+/// blocked on stdin and cannot see a run end. Every run in the chain takes
+/// the prompt's model, control mode, focus and skills: a follow-up is the
+/// same operator continuing the same session, and carries only its text.
+struct Chain {
+    root: PathBuf,
+    sink: Sink,
+    mode: Mode,
+    approvals: Arc<Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    next_approval: Arc<AtomicU64>,
+    last: Arc<Mutex<Option<Value>>>,
+    input_closed: Arc<AtomicBool>,
+    /// One for the chain: an abort stops the run in flight and every
+    /// follow-up behind it.
+    abort: Arc<output::Abort>,
+    current: Arc<Mutex<Current>>,
+    model: String,
+    model_from_user: bool,
+    unconstrained: bool,
+    flag: Option<config::ControlMode>,
+    skills: Vec<String>,
+    focus: Option<String>,
+}
+
+impl Chain {
+    /// Runs the prompt, then each follow-up in the order received, until
+    /// none is left or an abort is requested. Returns, for `abort`, what was
+    /// sent and never delivered when it stopped on one; otherwise nothing,
+    /// since every follow-up ran and every stranded steer was answered.
+    fn run(&self, task: String) -> Vec<Value> {
+        let first = self.current().id;
+        let mut queue: VecDeque<(Option<String>, String)> = VecDeque::from([(first, task)]);
+        let mut started = false;
+        while let Some((id, task)) = queue.pop_front() {
+            if self.abort.requested() {
+                queue.push_front((id, task));
+                return queue
+                    .into_iter()
+                    .map(|(id, task)| {
+                        Unsent {
+                            id,
+                            what: Steering::FollowUp(task),
+                        }
+                        .json()
+                    })
+                    .collect();
+            }
+            // The first run's `Current` was made with the `prompt`, so a
+            // `steer` read before this thread got here still reaches it.
+            if started {
+                *self.current.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Current::new(id.clone());
+            }
+            started = true;
+            let cur = self.current();
+            self.one(&task, &cur);
+            let unsent = cur.steering.close();
+            if self.abort.requested() {
+                // Queued before this run's own, so received before them.
+                let mut all: Vec<Value> = queue
+                    .into_iter()
+                    .map(|(id, task)| {
+                        Unsent {
+                            id,
+                            what: Steering::FollowUp(task),
+                        }
+                        .json()
+                    })
+                    .collect();
+                all.extend(unsent.iter().map(Unsent::json));
+                return all;
+            }
+            // A stranded steer was answered as not delivered by `close`. It
+            // is not run as a task: it was written to redirect this run, and
+            // starting work from it would do something nobody asked for.
+            for u in unsent {
+                if let Steering::FollowUp(text) = u.what {
+                    queue.push_back((u.id, text));
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn current(&self) -> Current {
+        self.current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// One run, as `trellis run` runs it.
+    fn one(&self, task: &str, cur: &Current) {
+        if let Ok(mut t) = TURNS.lock() {
+            t.clear();
+        }
+        let rid = cur.id.clone();
+        // Approval questions become records on the stream; answers come
+        // back through `approve` and the stored reply channel.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<trellis_loop::ApprovalRequest>(1);
+        let fwd = {
+            let (sink, approvals, rid) = (self.sink.clone(), self.approvals.clone(), rid.clone());
+            let (aborted, closed, next) = (
+                self.abort.clone(),
+                self.input_closed.clone(),
+                self.next_approval.clone(),
+            );
+            std::thread::spawn(move || {
+                while let Some(req) = rx.blocking_recv() {
+                    let n = next.fetch_add(1, Ordering::SeqCst) + 1;
+                    let aid = format!("approval-{n}");
+                    if let Ok(mut a) = approvals.lock() {
+                        // Checked under the lock `abort_run` clears
+                        // under: a question arriving after the run took
+                        // the abort path is dropped here, because the
+                        // clear may already have happened.
+                        // The same for end of input: nobody is left
+                        // to answer, and the drop is the no.
+                        if aborted.observed() || closed.load(Ordering::SeqCst) {
+                            continue;
+                        }
+                        a.insert(aid.clone(), req.reply);
+                    }
+                    frame(
+                        &sink,
+                        &json!({"type": "approval_request", "id": aid, "request_id": rid,
+                                "question": req.question, "detail": req.detail}),
+                    );
+                }
+            })
+        };
+        let mut human: Box<dyn std::io::Write + Send> = match self.mode {
+            Mode::Process => output::human(),
+            #[cfg(test)]
+            Mode::Quiet => Box::new(std::io::sink()),
+        };
+        let before = crate::output::RunExtras {
+            skills: self.skills.clone(),
+            request_id: rid.clone(),
+            frames: Some(self.sink.clone()),
+            abort: Some(self.abort.clone()),
+            compact: Some(cur.compact.clone()),
+            label: None,
+            done: None,
+            // `--image` is `trellis run`'s alone (ADR 0041).
+            images: Vec::new(),
+            steer_watch: Some(cur.steering.clone()),
+        };
+        let r = crate::cmd_run_with(
+            &self.root,
+            task,
+            crate::ModelChoice {
+                spec: &self.model,
+                unconstrained: self.unconstrained,
+            },
+            // No agent profile over RPC: the caller is the operator, and
+            // profiles are how `work` runs a task as someone (ADR 0026).
+            RunSeeding {
+                resume: false,
+                focus: self.focus.as_deref(),
+                profile: None,
+                model_from_user: self.model_from_user,
+                queued: false,
+            },
+            RunControl {
+                flag: self.flag,
+                human: Human::Channel(tx),
+                // The one carrier every caller hands a run its steering on
+                // (#115, #116); the port keeps the sending end.
+                steering: cur.steering.take_receiver(),
+            },
+            before,
+            &mut human,
+        );
+        let _ = fwd.join();
+        // A `compact` still waiting will get no model request to act on.
+        cur.compact
+            .close("the run ended before its next model request; nothing was compacted");
+        // Questions still open when the run ended are dropped, which the
+        // gate reads as a no; none can be answered now.
+        if let Ok(mut a) = self.approvals.lock() {
+            a.clear();
+        }
+        if let Ok(mut l) = self.last.lock() {
+            *l = Some(summary(&r, rid.as_deref()));
+        }
     }
 }
 
@@ -1173,6 +1622,54 @@ mod tests {
         c.send(json!({"id": "approval-1", "type": "approve", "yes": false}));
         let rs = c.finish();
         assert!(!of_type(&rs, "run_end").is_empty());
+    }
+
+    #[test]
+    fn rpc_steer_abort_answers_with_the_undelivered_text_in_order() {
+        // The risk: text a person typed lost with the aborted run. The run's
+        // transcript is dropped on abort, so the answer has to come from the
+        // server's own record, and a steer that never reached a request must
+        // be told so rather than left waiting.
+        let (dir, spec) = fixture("steer-abort", "[control]\nmode = \"approve\"\n");
+        let c = Client::start(&dir);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "approval_request");
+        c.send(json!({"id": "u1", "type": "follow_up", "message": "first"}));
+        c.send(json!({"id": "s1", "type": "steer", "message": "second"}));
+        c.send(json!({"id": "u2", "type": "follow_up", "message": "third"}));
+        c.send(json!({"id": "bad", "type": "steer", "message": "  "}));
+        c.send(json!({"id": "x", "type": "abort"}));
+        let rs = c.finish();
+        let by = |id: &str| {
+            rs.iter()
+                .find(|r| r["type"] == "response" && r["id"] == id)
+                .unwrap_or_else(|| panic!("no answer to {id}: {rs:?}"))
+                .clone()
+        };
+        let x = by("x");
+        assert_eq!(x["success"], true, "{x}");
+        assert_eq!(
+            x["data"]["undelivered"],
+            json!([
+                {"id": "u1", "type": "follow_up", "message": "first"},
+                {"id": "s1", "type": "steer", "message": "second"},
+                {"id": "u2", "type": "follow_up", "message": "third"},
+            ]),
+            "{x}"
+        );
+        assert_eq!(by("s1")["success"], false);
+        assert_eq!(by("s1")["error"], STEER_ENDED);
+        assert_eq!(by("bad")["success"], false, "an empty steer is refused");
+        // Stopped: no follow-up ran after the abort.
+        let starts = of_type(&rs, "run_start");
+        assert_eq!(starts.len(), 1, "{rs:?}");
+        assert_eq!(of_type(&rs, "run_end")[0]["outcome"], "interrupted");
+        let abort_at = rs.iter().position(|r| r["id"] == "x").unwrap();
+        let end_at = rs.iter().position(|r| r["type"] == "run_end").unwrap();
+        assert!(
+            end_at < abort_at,
+            "abort is answered once the run has ended"
+        );
     }
 
     #[test]

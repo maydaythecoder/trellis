@@ -110,6 +110,13 @@ pub(crate) struct RunExtras {
     /// `trellis run --image`: files for a hosted tier-1 model's first user
     /// message (ADR 0041). Refused, before the snapshot, for any other.
     pub images: Vec<std::path::PathBuf>,
+    /// RPC's record of its `steer` and `follow_up` (ADR 0025 §5), which the
+    /// run reports each request's delivered steers back to. Watch only: the
+    /// steering input itself arrives on `RunControl::steering`, as it does
+    /// for `tui` and `session`. It exists because an aborted run drops its
+    /// transcript, and with it the loop's record of what was delivered.
+    /// `None` everywhere else, and the run only forwards.
+    pub steer_watch: Option<Arc<crate::rpc::SteeringPort>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -127,6 +134,7 @@ impl Default for RunExtras {
             label: None,
             done: None,
             images: Vec::new(),
+            steer_watch: None,
         }
     }
 }
