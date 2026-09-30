@@ -10,6 +10,15 @@
 //! None of them can produce a pass, rewrite a call, a task or an
 //! observation, or make a run converge: they return exit codes and bytes,
 //! and neither is a `Verdict` (ADR 0004).
+//!
+//! None of them runs in the repository (ADR 0032, "Hooks"). `pre_tool`,
+//! `post_tool` and `turn_end` run in the throwaway clone the orchestrator
+//! keeps for the call, refreshed from the repository before each, and
+//! what one changes in a tracked file comes back through the orchestrator's
+//! carry-back, as a `bash` command's does. `input`, `before_run` and
+//! `after_run` run outside any call, where there is no write path to carry
+//! back through, each in a clone of its own that is removed with whatever
+//! it wrote.
 
 use crate::agent::ToolCall;
 use crate::exec::{self, OUTPUT_CAP, Spec};
@@ -18,6 +27,17 @@ use crate::registry::call_json;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Where one hook runs.
+#[derive(Clone, Copy)]
+enum Place<'a> {
+    /// The call's clone, which the orchestrator refreshed before the hook
+    /// and carries back from after it.
+    Clone(&'a Path),
+    /// A clone made for this hook alone and removed after it, with nothing
+    /// carried back.
+    Throwaway,
+}
 
 /// How much of `before_run`'s stdout reaches the prompt.
 pub const BEFORE_RUN_CAP: usize = 4_096;
@@ -44,6 +64,10 @@ pub enum HookError {
     Untrusted(crate::trust::TrustChanged),
     #[error(transparent)]
     Exec(#[from] exec::ExecError),
+    /// No clone could be made for it, and running it in the repository
+    /// instead is what ADR 0032 exists to stop.
+    #[error("not run, because {0}")]
+    NotIsolated(String),
     #[error("{event} timed out after {secs}s")]
     TimedOut { event: &'static str, secs: u64 },
     /// `before_run` says why on stderr, and that is what the caller prints.
@@ -151,32 +175,67 @@ impl Hooks {
         &self.cfg
     }
 
-    async fn call(&self, argv: &[String], stdin: Vec<u8>) -> Result<exec::Captured, HookError> {
-        self.call_keeping(argv, stdin, false).await
+    async fn call(
+        &self,
+        argv: &[String],
+        stdin: Vec<u8>,
+        place: Place<'_>,
+    ) -> Result<exec::Captured, HookError> {
+        self.call_keeping(argv, stdin, false, place).await
     }
 
     /// `head`: keep the start of each stream as well, which only
     /// `before_run` reads.
+    ///
+    /// The trust guard is read first, before a throwaway clone is made, so
+    /// the copy the hook runs is of what was just checked (as a custom
+    /// tool's is). For the call's clone the orchestrator reads the same
+    /// guard before its refresh, and this is the second reading.
     async fn call_keeping(
         &self,
         argv: &[String],
         stdin: Vec<u8>,
         head: bool,
+        place: Place<'_>,
     ) -> Result<exec::Captured, HookError> {
         if let Some(g) = &self.guard {
             g.check_async().await.map_err(HookError::Untrusted)?;
         }
-        exec::run(Spec {
+        match place {
+            Place::Clone(dir) => self.spawn(argv, stdin, head, dir).await,
+            Place::Throwaway => {
+                let sandbox = crate::isolate::prepare(&self.root)
+                    .await
+                    .map_err(HookError::NotIsolated)?;
+                let r = self.spawn(argv, stdin, head, sandbox.path()).await;
+                crate::isolate::dispose(sandbox).await;
+                r
+            }
+        }
+    }
+
+    /// The hook's process, in `cwd`, with every variable that points git
+    /// at a repository removed, so a `git` it runs acts on its clone.
+    /// Boxed: a spawn's future is about 19 KB and is held by the
+    /// orchestrator's per-call future (see `turn_end`).
+    async fn spawn(
+        &self,
+        argv: &[String],
+        stdin: Vec<u8>,
+        head: bool,
+        cwd: &Path,
+    ) -> Result<exec::Captured, HookError> {
+        Box::pin(exec::run(Spec {
             argv,
-            cwd: &self.root,
+            cwd,
             env: &self.env,
-            env_remove: &[],
+            env_remove: &crate::isolate::GIT_LOCATION_VARS,
             stdin: Some(stdin),
             timeout: self.timeout,
             cap: OUTPUT_CAP,
             head,
             whole: false,
-        })
+        }))
         .await
         .map_err(HookError::from)
     }
@@ -186,6 +245,7 @@ impl Hooks {
         self.cfg.pre_tool.as_ref().map(|argv| HookGate {
             hooks: self.clone(),
             argv: argv.clone(),
+            place: None,
         })
     }
 
@@ -197,30 +257,39 @@ impl Hooks {
     /// check.
     pub async fn before_run(&self) -> Option<Result<String, HookError>> {
         let argv = self.cfg.before_run.as_ref()?;
-        Some(match self.call_keeping(argv, b"{}".to_vec(), true).await {
-            Err(e) => Err(e),
-            Ok(c) if c.timed_out => Err(HookError::TimedOut {
-                event: "before_run",
-                secs: self.timeout.as_secs(),
-            }),
-            Ok(c) if c.code != Some(0) => Err(HookError::BeforeRunExited {
-                code: code(c.code),
-                stderr: c.stderr.render().trim().to_string(),
-            }),
-            // The head, and the stream's true size: this is context read
-            // top down, and `render()` is the tail.
-            Ok(c) => Ok(head_of(&c.stdout.head(), c.stdout.total, BEFORE_RUN_CAP)),
-        })
+        Some(
+            match self
+                .call_keeping(argv, b"{}".to_vec(), true, Place::Throwaway)
+                .await
+            {
+                Err(e) => Err(e),
+                Ok(c) if c.timed_out => Err(HookError::TimedOut {
+                    event: "before_run",
+                    secs: self.timeout.as_secs(),
+                }),
+                Ok(c) if c.code != Some(0) => Err(HookError::BeforeRunExited {
+                    code: code(c.code),
+                    stderr: c.stderr.render().trim().to_string(),
+                }),
+                // The head, and the stream's true size: this is context read
+                // top down, and `render()` is the tail.
+                Ok(c) => Ok(head_of(&c.stdout.head(), c.stdout.total, BEFORE_RUN_CAP)),
+            },
+        )
     }
 
-    /// Runs `post_tool` with the call and its result. Observe only: what it
-    /// prints and how it exits change nothing, and a failure is logged.
-    pub(crate) async fn post_tool(&self, call: &ToolCall, result: serde_json::Value) {
+    /// Runs `post_tool` in the call's clone `dir`, with the call and its
+    /// result. Observe only: what it prints and how it exits change nothing,
+    /// and a failure is logged.
+    pub(crate) async fn post_tool(&self, dir: &Path, call: &ToolCall, result: serde_json::Value) {
         let Some(argv) = &self.cfg.post_tool else {
             return;
         };
         let input = serde_json::json!({ "call": call_json(call), "result": result });
-        match self.call(argv, input.to_string().into_bytes()).await {
+        match self
+            .call(argv, input.to_string().into_bytes(), Place::Clone(dir))
+            .await
+        {
             Ok(c) if c.code == Some(0) => {}
             Ok(c) => tracing::warn!(
                 hook = "post_tool",
@@ -236,7 +305,10 @@ impl Hooks {
     pub async fn after_run(&self, outcome: &serde_json::Value) -> Option<Result<(), HookError>> {
         let argv = self.cfg.after_run.as_ref()?;
         Some(
-            match self.call(argv, outcome.to_string().into_bytes()).await {
+            match self
+                .call(argv, outcome.to_string().into_bytes(), Place::Throwaway)
+                .await
+            {
                 Err(e) => Err(e),
                 Ok(c) if c.code == Some(0) => Ok(()),
                 Ok(c) if c.timed_out => Err(HookError::TimedOut {
@@ -269,7 +341,10 @@ impl Hooks {
         let argv = self.cfg.input.as_ref()?;
         let payload = serde_json::json!({ "run_id": self.run_id(), "task": task });
         Some(
-            match self.call(argv, payload.to_string().into_bytes()).await {
+            match self
+                .call(argv, payload.to_string().into_bytes(), Place::Throwaway)
+                .await
+            {
                 Err(e) => InputDecision::ProceedDespite(e),
                 Ok(c) if c.timed_out => InputDecision::ProceedDespite(HookError::TimedOut {
                     event: "input",
@@ -287,11 +362,12 @@ impl Hooks {
         )
     }
 
-    /// Runs `turn_end` after a model turn. Observe only: its output is
-    /// discarded and its exit changes nothing. The caller brackets it with
-    /// the worktree fingerprint, as it does `post_tool`, because a write
-    /// here lands after the turn's check.
-    pub(crate) async fn turn_end(&self, turn: u32, tool: &str, outcome: TurnOutcome) {
+    /// Runs `turn_end` after a model turn, in the call's clone `dir`.
+    /// Observe only: its output is discarded and its exit changes nothing.
+    /// The caller brackets it and its carry-back with the worktree
+    /// fingerprint, as it does `post_tool`, because a write here lands
+    /// after the turn's check.
+    pub(crate) async fn turn_end(&self, dir: &Path, turn: u32, tool: &str, outcome: TurnOutcome) {
         let Some(argv) = &self.cfg.turn_end else {
             return;
         };
@@ -306,7 +382,7 @@ impl Hooks {
         // thread (`trellis-run`, 8 MiB since #180); before #180 a debug
         // build polled it on the 1 MiB Windows main thread, and
         // `tests/child_env.rs` overflowed it with this inline.
-        match Box::pin(self.call(argv, payload.to_string().into_bytes())).await {
+        match Box::pin(self.call(argv, payload.to_string().into_bytes(), Place::Clone(dir))).await {
             Ok(c) if c.code == Some(0) => {}
             Ok(c) => tracing::warn!(
                 hook = "turn_end",
@@ -423,13 +499,23 @@ fn head_of(head: &str, total: usize, cap: usize) -> String {
 pub struct HookGate {
     hooks: Hooks,
     argv: Vec<String>,
+    /// The call's clone, set by the orchestrator around `check`
+    /// ([`ToolGate::run_in`]). `None` outside an orchestrator: the hook
+    /// then runs in a clone of its own and what it writes is dropped with
+    /// it. Never in the repository.
+    place: Option<Result<PathBuf, String>>,
 }
 
 impl ToolGate for HookGate {
     fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
         Box::pin(async move {
             let input = call_json(call).to_string().into_bytes();
-            let reason = match self.hooks.call(&self.argv, input).await {
+            let ran = match &self.place {
+                Some(Ok(dir)) => self.hooks.call(&self.argv, input, Place::Clone(dir)).await,
+                Some(Err(why)) => Err(HookError::NotIsolated(why.clone())),
+                None => self.hooks.call(&self.argv, input, Place::Throwaway).await,
+            };
+            let reason = match ran {
                 Ok(c) if c.code == Some(0) && !c.timed_out => return GateDecision::Allow,
                 Ok(c) if c.timed_out => format!(
                     "the pre_tool hook did not answer within {}s, so the call was not run",
@@ -461,6 +547,14 @@ impl ToolGate for HookGate {
     fn name(&self) -> Option<&'static str> {
         Some("pre_tool")
     }
+
+    fn runs_repository_code(&self) -> bool {
+        true
+    }
+
+    fn run_in(&mut self, clone: Option<Result<PathBuf, String>>) {
+        self.place = clone;
+    }
 }
 
 #[cfg(test)]
@@ -484,9 +578,23 @@ mod tests {
         ToolCall::ReadFile { path: path.into() }
     }
 
+    /// A directory under git: every hook runs in a clone of the repository
+    /// (ADR 0032, "Hooks"), and a directory that is not one cannot be
+    /// cloned, so a hook there is not run at all.
+    fn git_dir() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .expect("git must be on PATH to run these tests");
+        assert!(out.status.success());
+        d
+    }
+
     #[tokio::test]
     async fn exit_two_denies_with_stderr_as_the_reason() {
-        let d = tempfile::tempdir().unwrap();
+        let d = git_dir();
         let script = if cfg!(windows) {
             "echo vendored code is off limits 1>&2 & exit 2"
         } else {
@@ -506,7 +614,7 @@ mod tests {
     async fn any_other_failure_denies_because_the_gate_fails_closed() {
         // A hook that crashed has not said yes. Reading its failure as an
         // allow would make a broken hook the same as no hook.
-        let d = tempfile::tempdir().unwrap();
+        let d = git_dir();
         for argv in [
             shell_argv("exit 1"),
             shell_argv("exit 3"),
@@ -526,7 +634,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_hook_that_does_not_answer_in_time_denies() {
-        let d = tempfile::tempdir().unwrap();
+        let d = git_dir();
         let script = if cfg!(windows) {
             "ping -n 30 127.0.0.1 >NUL"
         } else {
@@ -552,7 +660,7 @@ mod tests {
     async fn the_hook_reads_the_call_as_json_on_stdin() {
         // A hook that allows only `read_file`, by reading its input: findstr
         // and grep both exit 0 on a match and 1 on none.
-        let d = tempfile::tempdir().unwrap();
+        let d = git_dir();
         let argv: Vec<String> = if cfg!(windows) {
             vec!["findstr".into(), "read_file".into()]
         } else {
@@ -570,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn before_run_output_is_capped_and_fenced() {
-        let d = tempfile::tempdir().unwrap();
+        let d = git_dir();
         let h = Hooks::new(
             d.path(),
             HookConfig {
@@ -639,16 +747,21 @@ mod tests {
         // The risk: the capture kept the *last* 8 KiB and then cut that to
         // its first 4 KiB, so the prompt got a slice from the middle and a
         // byte count that was the slice's, not the hook's.
-        let d = tempfile::tempdir().unwrap();
+        let d = git_dir();
         let script = if cfg!(windows) {
             "for /L %i in (1,1,1500) do @echo line %i"
         } else {
             "i=1; while [ $i -le 1500 ]; do echo line $i; i=$((i+1)); done"
         };
+        // What this defends is which part of the output is kept, not how
+        // fast the hook runs: 1500 `echo`s under cmd on a loaded host took
+        // longer than the 10 s default and the hook timed out (issue #184).
+        // 120 s is the outer bound #173 chose for its gate.
         let h = Hooks::new(
             d.path(),
             HookConfig {
                 before_run: Some(shell_argv(script)),
+                timeout_s: Some(120),
                 ..Default::default()
             },
             vec![],

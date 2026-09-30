@@ -66,6 +66,20 @@ pub trait ToolGate: Send + Sync {
     fn name(&self) -> Option<&'static str> {
         None
     }
+
+    /// Whether `check` runs repository code (the `pre_tool` hook), which
+    /// runs in the call's throwaway clone rather than in the repository
+    /// (ADR 0032, "Hooks"). `false` for every gate that decides in-process.
+    fn runs_repository_code(&self) -> bool {
+        false
+    }
+
+    /// Where the next `check` runs its repository code: the clone's path,
+    /// or why no clone could be made, in which case the gate must deny,
+    /// since a gate that could not run has not allowed anything. `None`
+    /// clears it once the check is done. Called only on a gate whose
+    /// [`runs_repository_code`](Self::runs_repository_code) is `true`.
+    fn run_in(&mut self, _clone: Option<Result<PathBuf, String>>) {}
 }
 
 /// `[governance] deny_write` and the rule documents' write denials, as the
@@ -173,6 +187,7 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "bash",
     "search_notes",
     "read_note",
+    "ask_human",
 ];
 
 /// The tool name a call is listed under in `[control] approve`, `[tools]`,
@@ -192,6 +207,7 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::SearchNotes { .. } => "search_notes",
         ToolCall::ReadNote { .. } => "read_note",
         ToolCall::Custom { name, .. } => name,
+        ToolCall::AskHuman { .. } => "ask_human",
     }
 }
 
@@ -285,6 +301,27 @@ impl ToolGate for ApprovalGate {
                 // The command in full: a person approving a shell command
                 // has to see all of it, not a label cut at the first line.
                 ToolCall::Bash { command } => ("bash".to_string(), command.clone()),
+                // The question in full, quoted: a person letting the run
+                // end on it should read what it asks, and it is model
+                // output, so it arrives as data rather than as a line of
+                // this prompt.
+                ToolCall::AskHuman { question, options } => {
+                    let mut detail = format!(
+                        "question: {question:?}
+"
+                    );
+                    for (i, o) in options.iter().enumerate() {
+                        detail.push_str(&format!(
+                            "option {}: {o:?}
+",
+                            i + 1
+                        ));
+                    }
+                    (
+                        "ask_human (the run ends and the task waits for an answer)".to_string(),
+                        detail,
+                    )
+                }
                 other => (label(other), String::new()),
             };
             let (reply, rx) = oneshot::channel();
@@ -346,6 +383,8 @@ pub(crate) fn label(call: &ToolCall) -> String {
         ToolCall::SearchNotes { query, .. } => format!("search_notes {}", first_line(query)),
         ToolCall::ReadNote { note } => format!("read_note {note}"),
         ToolCall::Custom { name, args } => format!("{name} {args}"),
+        // Quoted and cut: model output, on one line of a log or the trail.
+        ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
     }
 }
 

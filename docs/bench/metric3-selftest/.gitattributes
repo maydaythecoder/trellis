@@ -1,0 +1,3 @@
+# b.py is the CRLF file: the audit must match an LF anchor against it the way
+# the edit tool does. The repository-wide `eol=lf` would normalise it away.
+corpus/pkg/b.py -text

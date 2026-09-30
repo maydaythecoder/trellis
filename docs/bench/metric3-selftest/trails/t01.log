@@ -1,0 +1,35 @@
+# Hand-written. Expected, with the corpus: calls 13, with_path 9,
+# path_exists 6, path_unknown 2, edits 5, anchor_present 2, anchor_unknown 2.
+#  1 exists; anchor present after the defect
+#  2 exists; pkg/b.py is listed as written and an edit preceded this one,
+#    so its content here is not known: unknown, not absent
+#  3 `paths` is a list, not a `path` argument
+#  4 a directory is not a file: absent
+#  5 exists, and `old` occurs, although old == new made the tool refuse it
+#  6 Grep takes a directory: exists
+#  7 Ls takes a directory: exists
+#  8 a new file in an existing directory: exists
+#  9 the file item 8 wrote: path and anchor unknown
+# 10 Bash names no path, but may have changed any file
+# 11 so this path is unknown
+# 12 Custom's JSON arguments are skipped; no path
+# 13 Grep with no path
+snapshot at 0000000000000000000000000000000000000000
+
+   1. Edit { path: "pkg/b.py", old: "return '2'", new: "return 2" }
+   2. Edit { path: "pkg/b.py", old: "return 2", new: "return 4" }
+   3. RunChecks { paths: ["pkg/b.py"], kinds: [Typecheck] } check passed
+   4. Edit { path: "pkg/sub", old: "x", new: "y" }
+   5. Edit { path: "pkg/a.py", old: "value = 1", new: "value = 1" }
+   6. Grep { pattern: "g", path: Some("pkg") }
+   7. Ls { path: "pkg/sub" }
+   8. WriteFile { path: "pkg/new.py", content: "N = 1\n" }
+   9. Edit { path: "pkg/new.py", old: "N = 1", new: "N = 2" }
+  10. Bash { command: "rm pkg/a.py" }
+  11. ReadFile { path: "pkg/a.py" }
+  12. Custom { name: "t", args: Object {"k": String("v}"), "n": Number(1)} }
+  13. Grep { pattern: "x", path: None }
+
+files written: pkg/b.py, pkg/new.py
+
+CONVERGED after 13 iterations.

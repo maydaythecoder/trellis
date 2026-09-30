@@ -15,6 +15,7 @@
 mod ask;
 mod config;
 mod hosted;
+mod install;
 mod liveness;
 mod orchestrate;
 mod process_agent;
@@ -303,6 +304,30 @@ enum Command {
         revoke: bool,
     },
 
+    /// Copy skills and prompt templates from a package source into the user
+    /// config directory's packages/ (ADR 0039).
+    ///
+    /// `<git-url|path>@<ref>`: the ref is required and recorded with the
+    /// commit it resolved to, in packages/packages.toml. Only
+    /// skills/<name>/ text files and prompts/<name>.md are copied; hooks,
+    /// tools and anything else in the source are skipped and named. Runs do
+    /// not read packages/ yet.
+    Install {
+        /// `<git-url|path>@<ref>`.
+        #[arg(
+            value_name = "SOURCE@REF",
+            required_unless_present_any = ["list", "remove"],
+            conflicts_with_all = ["list", "remove"]
+        )]
+        source: Option<String>,
+        /// Print each installed package's source, ref and commit.
+        #[arg(long, conflicts_with = "remove")]
+        list: bool,
+        /// Delete one installed package and its manifest entry.
+        #[arg(long, value_name = "NAME")]
+        remove: Option<String>,
+    },
+
     /// Agent profiles in .trellis/agents/: list, show, pause, resume
     /// (ADR 0026).
     Agents {
@@ -437,8 +462,11 @@ fn main() -> Result<()> {
     // `vault init` joins them for the same reason (ADR 0022 §3, integrated):
     // it creates a vault, possibly before there is a repository to hold it.
     // Every other `vault` action still reads one.
-    let needs_repo = !matches!(cli.command, Some(Command::Init | Command::Model { .. }))
-        && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
+    // `install` joins them too: packages are user state (ADR 0039).
+    let needs_repo = !matches!(
+        cli.command,
+        Some(Command::Init | Command::Model { .. } | Command::Install { .. })
+    ) && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
     let root = match cli.root {
         Some(r) => r,
         None => match discover_root() {
@@ -557,6 +585,8 @@ fn main() -> Result<()> {
                     focus: focus.as_deref(),
                     profile: None,
                     model_from_user,
+                    // `trellis run` has no task for a question to wait on.
+                    queued: false,
                 },
                 RunControl {
                     flag,
@@ -623,6 +653,11 @@ fn main() -> Result<()> {
         }
         Command::Vault(args) => vault_cmd::run(&root, args),
         Command::Trust { show, revoke } => trust_cmd::run(&root, show, revoke),
+        Command::Install {
+            source,
+            list,
+            remove,
+        } => install::run(source, list, remove),
         Command::Rpc => rpc::serve(
             &root,
             std::io::stdin().lock(),
@@ -1091,7 +1126,7 @@ fn pull_model(name: Option<&str>) -> Result<()> {
 /// mid-frame, without unwinding the terminal guard and without the panic hook
 /// firing — `exit` runs no destructors. The exit code is the caller's
 /// decision because only the caller knows whether it *is* the process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RunExit {
     Converged,
     /// The tree was restored, or it was not — which is not the same failure
@@ -1102,16 +1137,26 @@ enum RunExit {
     Interrupted {
         restored: bool,
     },
+    /// The model asked a person a question (`ask_human`), and the tree is
+    /// back as it was. Only a queued task's run is offered the tool, and
+    /// `work` blocks the task on the question (ADR 0026 §1). Both fields
+    /// are model output. A question whose rollback failed is
+    /// `NotConverged { restored: false }`: the tree is the louder fact.
+    Asked {
+        question: String,
+        options: Vec<String>,
+    },
 }
 
 impl RunExit {
     /// 0 converged. 1 did not converge and the tree is back as it was.
     /// 2 the tree is NOT back, which a wrapping script must not treat as an
     /// ordinary failed run. 130 a deliberate abort.
-    fn code(self) -> i32 {
+    fn code(&self) -> i32 {
         match self {
             RunExit::Converged => 0,
-            RunExit::NotConverged { restored: true } => 1,
+            // Not converged, and restored: the code `NotConverged` has.
+            RunExit::NotConverged { restored: true } | RunExit::Asked { .. } => 1,
             RunExit::NotConverged { restored: false } => 2,
             RunExit::Interrupted { restored: true } => 130,
             RunExit::Interrupted { restored: false } => 2,
@@ -1275,6 +1320,9 @@ struct RunSeeding<'a> {
     /// the user's allowlist before a key is sent to it (ADR 0024 §3).
     /// `false` by default, which is the stricter reading.
     model_from_user: bool,
+    /// A queued task's run, from `work`: offered `ask_human`, since only
+    /// here does a question have a task to wait on (ADR 0026 §1).
+    queued: bool,
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -1502,6 +1550,7 @@ fn run_body(
         focus,
         profile,
         model_from_user,
+        queued,
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -1530,6 +1579,11 @@ fn run_body(
     let stamp = trellis_trail::now();
     let run_id = format!("{}-{}", stamp.0, trellis_trail::slugify(task));
     let mut tooling = tooling::prepare(root, &cfg, &run_id, model_spec)?;
+    // Before the profile narrows the set, so a profile with a `tools` list
+    // keeps the question only by naming it, as with any other tool.
+    if queued {
+        tooling.tools = tooling.tools.clone().with_ask_human();
+    }
     // Integrated (ADR 0026 × 0023): a profile's `tools` list narrows the
     // set here, before the driver parses a script against it and before
     // bash joins the approve list, so every consumer gets the narrowed set.
@@ -2506,7 +2560,12 @@ fn run_body(
                     let _ = writeln!(out, "could not write the trail: {e}");
                 }
             }
-            Ok(RunExit::NotConverged { restored })
+            match reason {
+                trellis_loop::NotConverged::AskedHuman { question, options } if restored => {
+                    Ok(RunExit::Asked { question, options })
+                }
+                _ => Ok(RunExit::NotConverged { restored }),
+            }
         }
     }
 }
@@ -3017,6 +3076,8 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
         ToolCall::ReadNote { note } => ("read_note", note.clone()),
         ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
+        // Quoted: model output, and a trail is read back into prompts.
+        ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
     };
 
     trellis_trail::Action {
@@ -3249,6 +3310,10 @@ fn record_trail(
         prompt_tokens: None,
         agent,
         inputs,
+        // The loop's `Transcript` carries no steering channel yet (#113 adds
+        // it), so a run has no mid-run input to record. Empty is omitted on
+        // disk, so a trail written now has the bytes it had before the field.
+        steering: Vec::new(),
     };
 
     let slug = trellis_trail::slugify(task);
@@ -3640,10 +3705,7 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
 /// the file does not record. So the version is printed here instead.
 fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> Vec<String> {
     if !enabled {
-        return vec![
-            "backstop: off (no `[index] backstop` in .trellis/config.toml);              the figures above are the resolver's alone"
-                .to_string(),
-        ];
+        return vec![BACKSTOP_OFF.to_string()];
     }
     let sites = trellis_index::doubt_sites(index);
     let r = trellis_index::run_backstop(
@@ -3652,6 +3714,15 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         &sites,
         &trellis_index::BackstopServer::pyright(),
     );
+    render_backstop(&r)
+}
+
+const BACKSTOP_OFF: &str = "backstop: off (no `[index] backstop` in .trellis/config.toml); \
+     the figures above are the resolver's alone";
+
+/// The report as `trellis index` prints it. Apart from running the server so
+/// the text can be asserted exactly without Pyright installed.
+fn render_backstop(r: &trellis_index::BackstopReport) -> Vec<String> {
     let mut out = Vec::new();
     match &r.status {
         trellis_index::BackstopStatus::NotRun { reason } => {
@@ -3665,9 +3736,7 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         trellis_index::BackstopStatus::Ran { server, stopped } => {
             out.push(format!(
                 "backstop: pyright ran ({})",
-                server
-                    .as_deref()
-                    .unwrap_or("the server did not report its version")
+                server.as_deref().unwrap_or("version unknown")
             ));
             if let Some(why) = stopped {
                 out.push(format!("  stopped part way: {why}"));
@@ -3683,9 +3752,16 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         r.edges.len()
     ));
     out.push(format!(
-        "  left alone       {:>6}  no answer, or one this backstop would not bind",
-        r.left
+        "  no answer        {:>6}  the server returned no location; resolver's verdict kept",
+        r.no_answer
     ));
+    out.push(format!(
+        "  refused          {:>6}  an answer this backstop would not bind; resolver's verdict kept",
+        r.refused_total()
+    ));
+    for (why, n) in &r.refused {
+        out.push(format!("    {:<28} {n:>6}", why.describe()));
+    }
     if r.not_queried > 0 {
         out.push(format!(
             "  not queried      {:>6}  keep the resolver's verdict",
@@ -3693,11 +3769,78 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         ));
     }
     out.push(
-        "  A pyright-bound edge is the server's reading of the annotations, not a          verified callee;
-  those sites stay unpartitionable."
+        "  A pyright-bound edge is the server's reading of the annotations, not a verified callee;"
             .to_string(),
     );
+    out.push("  those sites stay unpartitionable.".to_string());
     out
+}
+
+#[cfg(test)]
+mod backstop_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use trellis_index::{BackstopReport, BackstopStatus, Refusal};
+
+    fn report(status: BackstopStatus) -> BackstopReport {
+        BackstopReport {
+            status,
+            edges: Vec::new(),
+            queried: 7580,
+            no_answer: 5000,
+            refused: BTreeMap::from([
+                (Refusal::OutsideRepository, 700),
+                (Refusal::OutsideCandidates, 21),
+            ]),
+            not_queried: 22,
+            skipped_certain: 0,
+        }
+    }
+
+    #[test]
+    fn backstop_lines_print_single_spaces_and_split_no_answer_from_refused() {
+        // #177: a line continuation inside two literals printed "not a
+        // verified callee" with ten spaces in it, and one count stood for
+        // both "no answer" and "refused". The whole text is asserted, so a
+        // stray run of spaces or a merged count fails here.
+        let ran = report(BackstopStatus::Ran {
+            server: Some("pyright 1.1.414, from its package.json".into()),
+            stopped: None,
+        });
+        assert_eq!(
+            render_backstop(&ran),
+            [
+                "backstop: pyright ran (pyright 1.1.414, from its package.json)",
+                "  queried            7580  Unresolved or Candidates sites only",
+                "  bound by pyright      0  counted apart: not in `resolved`, not in the graph",
+                "  no answer          5000  the server returned no location; resolver's verdict kept",
+                "  refused             721  an answer this backstop would not bind; resolver's verdict kept",
+                "    outside the repository          700",
+                "    outside the Candidates set       21",
+                "  not queried          22  keep the resolver's verdict",
+                "  A pyright-bound edge is the server's reading of the annotations, not a verified callee;",
+                "  those sites stay unpartitionable.",
+            ]
+        );
+        assert_eq!(
+            backstop_lines(&trellis_index::Index::default(), Path::new("."), false),
+            [
+                "backstop: off (no `[index] backstop` in .trellis/config.toml); the figures above are the resolver's alone"
+            ]
+        );
+    }
+
+    #[test]
+    fn backstop_lines_say_version_unknown_only_when_no_source_named_one() {
+        let unknown = report(BackstopStatus::Ran {
+            server: None,
+            stopped: None,
+        });
+        assert_eq!(
+            render_backstop(&unknown)[0],
+            "backstop: pyright ran (version unknown)"
+        );
+    }
 }
 
 /// The codebase as a graph of modules.

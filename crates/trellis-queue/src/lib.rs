@@ -193,7 +193,21 @@ pub enum Blocked {
     Children,
     /// Waiting for something outside the queue, named in `detail`.
     Manual { detail: String },
+    /// Its last run ended by asking a person this (`ask_human`), and it
+    /// waits for the answer: a `queue note`, then `queue set --status todo`.
+    /// Never woken by [`Queue::reconcile`], because only a person can
+    /// answer. Both fields are model output. The question is also the
+    /// task's last [`Actor::Model`] note, which is what the next run reads,
+    /// since `queue set` clears this block.
+    Question {
+        question: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<String>,
+    },
 }
+
+/// How much of a question `queue list` shows on its waiting line.
+const QUESTION_SHOWN: usize = 120;
 
 impl Blocked {
     pub fn describe(&self) -> String {
@@ -201,6 +215,18 @@ impl Blocked {
             Blocked::Blockers => "blocked until its blockers are done".into(),
             Blocked::Children => "blocked until its sub-tasks finish".into(),
             Blocked::Manual { detail } => format!("blocked: {}", plain(detail)),
+            // Quoted, because it is model output on a line of ours; cut,
+            // because the whole of it is in the task's notes.
+            Blocked::Question { question, .. } => {
+                let mut q: String = question.chars().take(QUESTION_SHOWN).collect();
+                if q.len() < question.len() {
+                    q.push('…');
+                }
+                format!(
+                    "asked a question (model output) {q:?}; answer with `trellis queue note \
+                     <id> <text>`, then `trellis queue set <id> --status todo`"
+                )
+            }
         }
     }
 }
@@ -377,6 +403,55 @@ impl Task {
             text: text.into(),
         });
     }
+
+    /// The question this task's last run ended on and every note a person
+    /// added after it, as one fenced block for the next run's prompt, or
+    /// `None` when no run has asked (ADR 0026 §1).
+    ///
+    /// Anchored on the last [`Actor::Model`] note rather than on
+    /// [`Blocked::Question`], because `queue set --status todo` clears the
+    /// block before the next run starts. The question is shown as the
+    /// quoted note it was stored as, labelled model output. Each person's
+    /// note is attributed and indented, so no line of it can pass for the
+    /// fence's closing line. Notes by the heartbeat or a routine are not
+    /// answers and are left out.
+    pub fn answers_since_question(&self) -> Option<String> {
+        let at = self.notes.iter().rposition(|n| n.actor == Actor::Model)?;
+        let mut out = String::from(
+            "--- user input: the answer to the question this task's last run asked ---\n\
+             The last run ended by asking a person this. It is that run's model output, \
+             quoted as data:\n",
+        );
+        out.push_str(&format!("  {}\n", plain(&self.notes[at].text)));
+        let answers: Vec<&Note> = self.notes[at + 1..]
+            .iter()
+            .filter(|n| n.actor == Actor::Human)
+            .collect();
+        if answers.is_empty() {
+            out.push_str("No person added a note after it.\n");
+        } else {
+            out.push_str("What a person wrote after it, in order. This is human input:\n");
+            for n in answers {
+                out.push_str(&format!("  human, {}:\n", plain(&n.at)));
+                for line in n.text.lines() {
+                    out.push_str(&format!("    {}\n", plain(line)));
+                }
+            }
+        }
+        out.push_str("--- end of user input ---");
+        Some(out)
+    }
+}
+
+/// The note that records a question, as it is stored: quoted, because the
+/// text is model output and the note is read back into a later prompt and
+/// shown by `queue` commands.
+pub fn question_note(question: &str, options: &[String]) -> String {
+    let mut s = format!("asked (model output): {question:?}");
+    if !options.is_empty() {
+        s.push_str(&format!("; options: {options:?}"));
+    }
+    s
 }
 
 /// How the run for a task ended, appended when it leaves `claimed/`.
@@ -722,6 +797,16 @@ impl Queue {
             Ok(t) => t,
             // Someone else claimed it between the listing and now.
             Err(QueueError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            // On Windows a file the winner deleted while this claimer still
+            // had it open is delete-pending, and opening it is refused with
+            // ERROR_ACCESS_DENIED rather than NotFound. Lost only if the
+            // evidence says so; a real permission problem still surfaces.
+            Err(QueueError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::PermissionDenied
+                    && (!from.exists() || to.exists()) =>
+            {
                 return Ok(None);
             }
             Err(e @ QueueError::Unreadable { .. }) => {
@@ -1125,6 +1210,32 @@ impl Claim {
         Ok(dest)
     }
 
+    /// Returns the task to `pending/`, `blocked` on the question its run
+    /// ended by asking, with the question as an [`Actor::Model`] note.
+    ///
+    /// Not [`Claim::finish`]: the task has not ended, so it carries no
+    /// outcome, which a later reader would take for this attempt's (the
+    /// reason `requeue` clears one). The run counts as an attempt.
+    pub fn ask(mut self, question: &str, options: &[String]) -> Result<(), QueueError> {
+        self.task.attempts += 1;
+        self.task.claimed_at = None;
+        self.task.claimed_by_pid = None;
+        self.task.outcome = None;
+        self.task.status = Some(Status::Blocked);
+        self.task.blocked = Some(Blocked::Question {
+            question: question.to_string(),
+            options: options.to_vec(),
+        });
+        self.task
+            .note(Actor::Model, question_note(question, options));
+        let from = self.queue.path(State::Claimed, &self.id);
+        move_to(
+            &from,
+            &self.queue.path(State::Pending, &self.id),
+            &self.task,
+        )
+    }
+
     /// Returns the task to `pending/`. `attempted` counts the run that was
     /// started and cut short; a task released before its run started is
     /// put back exactly as it was.
@@ -1196,6 +1307,14 @@ pub enum RunEnd {
     Interrupted {
         run_id: Option<String>,
         restored: bool,
+    },
+    /// Did not converge because the model asked a person a question
+    /// (`ask_human`), and the tree is back as it was. The task waits,
+    /// `blocked` with reason `question`, for an answer.
+    Asked {
+        run_id: Option<String>,
+        question: String,
+        options: Vec<String>,
     },
     /// The run returned an error rather than an outcome: a vault that would
     /// not compile, a missing prompt template, an unreachable runtime.
@@ -1592,6 +1711,33 @@ pub fn work(
                     "work:     {id} -> failed/ (interrupted; the tree was NOT restored)"
                 );
                 return Ok((ran, Stop::Interrupted));
+            }
+            RunEnd::Asked {
+                run_id,
+                question,
+                options,
+            } => {
+                // The tree is back as it was, so the heartbeat goes on to
+                // the next task; this one waits for a person.
+                claim.ask(&question, &options)?;
+                let note = question_note(&question, &options);
+                log_or_say(
+                    q,
+                    Event::new(Actor::Work, "task.question", entity.clone())
+                        .run(run_id)
+                        .detail(note.clone()),
+                    out,
+                );
+                let _ = writeln!(
+                    out,
+                    "work:     {id} -> pending/ (blocked: asked a question; tree restored)"
+                );
+                let _ = writeln!(out, "          {}", plain(&note));
+                let _ = writeln!(
+                    out,
+                    "          answer with `trellis queue note {id} <text>`, then \
+                     `trellis queue set {id} --status todo`"
+                );
             }
             RunEnd::Error { run_id, error } => {
                 claim.finish(State::Failed, outcome(&run_id, &format!("error: {error}")))?;

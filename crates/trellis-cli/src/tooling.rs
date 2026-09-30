@@ -840,18 +840,33 @@ mod run_tests {
         // The risk: after_run runs after the last check, so a file it writes
         // sat in a "converged" change that no check had seen. The guard
         // fingerprints the worktree around it, demotes the run, and the
-        // rollback takes the hook's bytes with the run's.
+        // rollback takes the hook's bytes with the run's. The hook runs in a
+        // throwaway clone (ADR 0032, "Hooks") and what it writes there is
+        // dropped, so it names the repository's file by absolute path: the
+        // writer the clone does not stop, and this guard does. The fixture's
+        // directory is `scratch`'s, known before it is made.
         let script = r#"{"steps":[
             {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
             {"tool":"run_checks","paths":[],"kinds":["typecheck"]},
             {"tool":"done","summary":"checked"}
         ]}"#;
+        let late = std::env::temp_dir()
+            .join(format!(
+                "trellis-ext-after-run-writes-{}",
+                std::process::id()
+            ))
+            .join("late.py");
         let config = format!(
             "[checks]\ntypecheck = {}\n[hooks]\nafter_run = {}\n",
             sh("exit 0"),
-            sh("echo late> late.py")
+            sh(&format!("echo late> {}", late.display()))
         );
         let (dir, spec) = fixture("after-run-writes", &config, script);
+        assert_eq!(
+            dir.join("late.py"),
+            late,
+            "the hook names the fixture's file"
+        );
         trust(&dir);
         let said = run(&dir, &spec);
         assert!(said.contains("NOT CONVERGED"), "{said}");

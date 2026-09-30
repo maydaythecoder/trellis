@@ -1,0 +1,22 @@
+# A starter profile (ADR 0026 §4). Copy this directory's contents into
+# .trellis/agents/ to use it: the `instructions` path below is resolved
+# under .trellis/, so it names .trellis/agents/instructions/docs-writer.md.
+#
+# No `tools` list: the run uses whatever tools the repository enabled and
+# trusted. No `reports_to`: this profile does not hand its work to another
+# agent for judgment, because no agent issues a verdict on another agent's
+# output (ADR 0005). trellis's own checks decide whether a change passes.
+role = "docs-writer"
+instructions = "agents/instructions/docs-writer.md"
+
+# The only paths this profile's runs may write (#182), in deny_write's
+# rule syntax: everything under `docs/`, and any file ending `.md`. The
+# instructions say "documentation only" too, but this list is what
+# enforces it: a write outside it is refused before it happens. Docstrings
+# live in code, so they are outside it; that is the implementer's work.
+allow_write = ["docs/", "*.md"]
+
+[control]
+# Every edit is shown to you before it is written. `work` can claim this
+# profile's tasks only when it runs attached to a terminal (ADR 0026 §4).
+mode = "approve"
