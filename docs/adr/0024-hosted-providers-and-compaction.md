@@ -539,8 +539,15 @@ without a budget against the same replies and compares outcomes.
   *Amended by ADR 0033:* the smallest supported window is now named, as
   4,096 tokens; its byte conversion, measured by #170 on one local
   configuration (Ollama 0.34.2, `qwen2.5:3b`), is 3.853 bytes per token,
-  15,781 bytes (ADR 0033 §1 has the method). `[model] context_bytes` still
-  has no local default, and nothing reads that figure.
+  15,781 bytes (ADR 0033 §1 has the method). *Amended 2026-09-30 (#228):*
+  a **local** spec with no `[model] context_bytes` now uses **14,336
+  bytes** (`LOCAL_CONTEXT_BYTES`: 4,096 tokens at 3.5 bytes per token, a
+  stated margin under 3.695, the densest ratio #170 measured; ADR 0033
+  §1). "With no setting nothing is elided", above, no longer holds for a
+  local spec. The runtime adapter holds the whole prompt to its budget,
+  not only the transcript: with every older observation elided, the
+  newest is cut, and a prompt still over is not sent (ADR 0033 §2). An
+  explicit value wins, larger or smaller.
   *Amended 2026-09-29 (#152), on the owner's decision of 2026-09-28:* a
   **hosted** spec with no `[model] context_bytes` uses **400,000 bytes**
   (`HOSTED_CONTEXT_BYTES`, `crates/trellis-cli/src/hosted.rs`), applied when
@@ -721,10 +728,10 @@ pull request.
 - OAuth, Bedrock, Vertex and Azure request signing.
 - Model-written summaries (§5).
 - Parallel tool calls (ADR 0005).
-- A byte default for `[model] context_bytes` on a local runtime (§5). A
-  hosted spec has one since #152; it rests on a heuristic bytes-per-token
-  ratio. #170 measured 3.853 on one local runtime (ADR 0033 §1); no hosted
-  provider's ratio has been measured.
+- *Built since (#228):* a byte default for `[model] context_bytes` on a
+  local runtime (§5, ADR 0033 §1). A hosted spec has one since #152; it
+  rests on a heuristic bytes-per-token ratio, and no hosted provider's
+  ratio has been measured.
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
 - Model overrides beyond `[model] context_bytes`, `thinking` and
