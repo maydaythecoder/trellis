@@ -222,6 +222,7 @@ mod tests {
                 label: None,
                 inputs: Vec::new(),
                 steering: Vec::new(),
+                suspected_recall_gaps: Vec::new(),
             },
             factual_sha256: String::new(),
             judgment: Judgment::default(),
