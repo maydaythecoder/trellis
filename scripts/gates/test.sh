@@ -11,6 +11,25 @@ case "$limit" in
   '' | *[!0-9]* | 0) fail "GATE_TEST_TIMEOUT_S must be a whole number of seconds above 0, not '$limit'" ;;
 esac
 
+# Test threads per test binary, for unit, integration and doc tests alike.
+# libtest defaults to one per core, and many tests spawn git, a shell or
+# PowerShell, so on a 16-core host the gate ran up to 16 tests and their
+# children at once and failed timing tests on its own load (#226: #207,
+# #212, #221, #222 and integrate's 15 s merge wait). cargo runs the test
+# binaries one after another, so this bounds the whole gate, not each
+# binary on top of the others. 4 is a quarter of the 16-core host the gate
+# runs on, beside up to three implementer builds at CARGO_BUILD_JOBS=4.
+# Measured on a quiet host, same commit (#226): the gate took 558 s at the
+# default 16, 923 s at 8 and 1075 s at 4, so most of the cost is paid by 8
+# and halving the load again costs about 150 s more. Set unconditionally: a
+# caller's larger value would undo the bound. It only changes how many run
+# at once; every test still runs (2118 at #226, the same count at 16, 8 and 4).
+#
+# GATE_TEST_TIMEOUT_S above is per `cargo test`; at 4 threads the longer one
+# (the workspace) spent 645 s in its test binaries, so 2400 still leaves
+# more than 3x for a loaded host and was not changed.
+export RUST_TEST_THREADS=4
+
 bounded() {
   local code=0
   # `timeout` from coreutils (Git Bash and Linux alike). --kill-after, for a
