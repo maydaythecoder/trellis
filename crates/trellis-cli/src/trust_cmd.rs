@@ -145,7 +145,9 @@ pub(crate) const ROLLBACK_LIMIT: &str = "Note: these run unsandboxed with your p
 /// Labels, variable names, paths and detail all come from the repository,
 /// and this is the text a person reads to consent: each goes through
 /// [`crate::plain`], so an escape sequence cannot recolour, erase or
-/// rewrite what is shown, and a newline cannot fabricate a line of its own.
+/// rewrite what is shown. A newline in a label, variable name or path is
+/// escaped too; `detail` is multi-line by design and is escaped per line, so
+/// a newline in it still starts a line (#192).
 fn describe(fp: &Fingerprint, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "This repository would make trellis execute:")?;
     for item in &fp.items {
