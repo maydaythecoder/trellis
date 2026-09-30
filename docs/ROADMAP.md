@@ -84,8 +84,14 @@ hint. What dies: goal state 2, every blast-radius claim in the product copy,
 and multi-agent partitioning, which is built on radius disjointness.
 
 The intermediate band — recall at or above 60% but below 85% — fires the S1
-fallback instead: a semantic backstop before v1.0, decorator unwrapping first,
-Pyright over LSP if that is insufficient.
+fallback instead: a semantic backstop before v1.0, planned as decorator
+unwrapping first, Pyright over LSP if that is insufficient. The backstop is
+Pyright over LSP, decided in
+[ADR 0031](adr/0031-pyright-recall-backstop.md). Its first slice is built
+behind `[index] backstop = "pyright"` (#168), and #177 ran it on poetry:
+1,859 call sites bound by Pyright, counted apart from `resolved` and kept out
+of the graph. That count is not recall; the method is in
+[`bench/pyright-backstop-poetry-20260929.md`](bench/pyright-backstop-poetry-20260929.md).
 
 **The measurement did not land in that band, and the decorator-first ordering
 above is falsified in any case:** `DecoratorIndirection` accounts for 3 of
