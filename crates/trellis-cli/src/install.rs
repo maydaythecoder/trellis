@@ -29,6 +29,17 @@ const MAX_FILE_BYTES: u64 = 1 << 20;
 /// read.
 const MAX_FILES: usize = 2_000;
 const MAX_TOTAL_BYTES: u64 = 32 << 20;
+/// Entries in the source's tree, copied or not. The whole listing is held
+/// in memory for `select` and every skipped path is printed, so the tree
+/// is bounded while it is read, not after. Five times `MAX_FILES` leaves
+/// room for the README, licence, CI and other paths a package carries and
+/// never copies (ADR 0039, 8). Chosen, not measured.
+const MAX_TREE_ENTRIES: usize = 10_000;
+/// Bytes of `ls-tree` output. A count alone does not bound memory: one
+/// entry can carry a path of any length. Derived, not measured: about 100
+/// bytes of fixed fields per record plus an average path of about 700
+/// bytes, over `MAX_TREE_ENTRIES` records (ADR 0039, 8).
+const MAX_LISTING_BYTES: u64 = 8 << 20;
 
 /// One installed package, as `packages.toml` records it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,9 +246,8 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
             plan.skipped.len()
         )?;
         // Every path, uncapped (#120): a count stands in for the one hook
-        // the user would have wanted to see. The listing is already in
-        // memory from `ls-tree`, so naming all of it adds no new bound to
-        // break.
+        // the user would have wanted to see. What bounds this output is
+        // `MAX_TREE_ENTRIES`, enforced while `ls-tree` is read (#200).
         for (path, why) in &plan.skipped {
             writeln!(out, "  {}: {why}", plain(path))?;
         }
@@ -630,42 +640,120 @@ fn resolve(bare: &Path, reference: &str) -> Result<String> {
 }
 
 fn ls_tree(bare: &Path, commit: &str) -> Result<Vec<TreeEntry>> {
-    let out = git_out(
-        git()
-            .arg("-C")
-            .arg(bare)
-            .args(["ls-tree", "-r", "-l", "-z", "--end-of-options", commit]),
-        "list the package's files",
-    )?;
-    parse_ls_tree(&out)
+    const WHAT: &str = "list the package's files";
+    let mut child = git()
+        .arg("-C")
+        .arg(bare)
+        .args(["ls-tree", "-r", "-l", "-z", "--end-of-options", commit])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("cannot run git to {WHAT}"))?;
+    // Drained on its own thread: a child blocked writing stderr would
+    // never finish the stdout this thread is reading.
+    let stderr = child.stderr.take().map(|mut e| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut e, &mut buf);
+            buf
+        })
+    });
+    let stdout = child.stdout.take().context("git's stdout was not piped")?;
+    let read = read_ls_tree(stdout, MAX_TREE_ENTRIES, MAX_LISTING_BYTES);
+    if read.is_err() {
+        // Stopped early: git may be blocked on a full pipe, so `wait`
+        // alone could hang.
+        let _ = child.kill();
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("cannot run git to {WHAT}"))?;
+    let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
+    let entries = read?;
+    if !status.success() {
+        let err = String::from_utf8_lossy(&err);
+        let err = match err.trim() {
+            "" => "no such ref or object".to_string(),
+            e => plain(e),
+        };
+        bail!("could not {WHAT}: {err}");
+    }
+    Ok(entries)
 }
 
-/// `<mode> SP <type> SP <id> SP+ <size> TAB <path> NUL`, repeated. A path
-/// that is not UTF-8 is kept lossily, which cannot pass the component
-/// allowlist, so it is skipped and named.
-fn parse_ls_tree(out: &[u8]) -> Result<Vec<TreeEntry>> {
+/// Reads `ls-tree -z` records one at a time and refuses the listing as soon
+/// as it passes `max_entries` or `max_bytes`, so an oversized tree is never
+/// held whole.
+fn read_ls_tree(
+    out: impl std::io::Read,
+    max_entries: usize,
+    max_bytes: u64,
+) -> Result<Vec<TreeEntry>> {
+    use std::io::BufRead;
+    // One byte past the cap, so output of exactly `max_bytes` is accepted
+    // and anything longer is seen.
+    let mut r = std::io::BufReader::new(out.take(max_bytes.saturating_add(1)));
     let mut v = Vec::new();
-    for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let tab = rec
-            .iter()
-            .position(|b| *b == b'\t')
-            .context("unexpected `git ls-tree` output")?;
-        let head = String::from_utf8_lossy(&rec[..tab]);
-        let path = String::from_utf8_lossy(&rec[tab + 1..]).into_owned();
-        let mut f = head.split_whitespace();
-        let (Some(mode), Some(_kind), Some(blob), Some(size)) =
-            (f.next(), f.next(), f.next(), f.next())
-        else {
+    let mut seen: u64 = 0;
+    let mut rec = Vec::new();
+    loop {
+        rec.clear();
+        let n = r
+            .read_until(0, &mut rec)
+            .context("cannot read `git ls-tree` output")?;
+        if n == 0 {
+            break;
+        }
+        seen += n as u64;
+        if seen > max_bytes {
+            bail!(
+                "the package's file listing is more than {max_bytes} bytes; the limit is \
+                 {max_bytes} (ADR 0039)"
+            );
+        }
+        if rec.last() != Some(&0) {
+            // Within the byte cap, so this is the end of the output: git
+            // ends every `-z` record with NUL.
             bail!("unexpected `git ls-tree` output");
-        };
-        v.push(TreeEntry {
-            mode: mode.to_string(),
-            blob: blob.to_string(),
-            size: size.parse().ok(),
-            path,
-        });
+        }
+        rec.pop();
+        if rec.is_empty() {
+            continue;
+        }
+        if v.len() == max_entries {
+            bail!(
+                "the package's tree has more than {max_entries} entries; the limit is \
+                 {max_entries} (ADR 0039)"
+            );
+        }
+        v.push(parse_ls_tree_record(&rec)?);
     }
     Ok(v)
+}
+
+/// `<mode> SP <type> SP <id> SP+ <size> TAB <path>`, one `-z` record. A
+/// path that is not UTF-8 is kept lossily, which cannot pass the component
+/// allowlist, so it is skipped and named.
+fn parse_ls_tree_record(rec: &[u8]) -> Result<TreeEntry> {
+    let tab = rec
+        .iter()
+        .position(|b| *b == b'\t')
+        .context("unexpected `git ls-tree` output")?;
+    let head = String::from_utf8_lossy(&rec[..tab]);
+    let path = String::from_utf8_lossy(&rec[tab + 1..]).into_owned();
+    let mut f = head.split_whitespace();
+    let (Some(mode), Some(_kind), Some(blob), Some(size)) =
+        (f.next(), f.next(), f.next(), f.next())
+    else {
+        bail!("unexpected `git ls-tree` output");
+    };
+    Ok(TreeEntry {
+        mode: mode.to_string(),
+        blob: blob.to_string(),
+        size: size.parse().ok(),
+        path,
+    })
 }
 
 fn blob(bare: &Path, id: &str) -> Result<Vec<u8>> {
@@ -1134,6 +1222,102 @@ mod tests {
         let plan = select(&tree);
         let copied: Vec<&str> = plan.copy.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(copied, vec!["skills/a/SKILL.md"], "{:?}", plan.skipped);
+    }
+
+    /// A source whose tree holds `n` entries, all one blob, written through
+    /// the index so the test creates no worktree files.
+    fn wide_source(parent: &Path, n: usize) -> PathBuf {
+        let src = parent.join("wide-src");
+        std::fs::create_dir_all(&src).unwrap();
+        git_in(&src, &["init", "-q"]);
+        let blob = git_in(&src, &["hash-object", "-w", "--stdin", "--path", "x"]);
+        let mut info = String::new();
+        for i in 0..n {
+            info.push_str(&format!("100644 {blob}\tprompts/p{i}.md\n"));
+        }
+        let mut child = trellis_vcs::command()
+            .arg("-C")
+            .arg(&src)
+            .args(["update-index", "--add", "--index-info"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("git runs");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(info.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success(), "update-index --index-info");
+        git_in(&src, &["commit", "-q", "-m", "wide"]);
+        git_in(&src, &["tag", "v1"]);
+        src
+    }
+
+    #[test]
+    fn install_tree_listing_bounded_refuses_an_over_limit_tree_and_writes_nothing() {
+        // The risk: the whole `ls-tree` listing was read into memory before
+        // any bound applied, and every skipped entry is printed, so a source
+        // with a huge tree cost unbounded memory and output (#200).
+        let d = tempfile::tempdir().unwrap();
+        let src = wide_source(d.path(), MAX_TREE_ENTRIES + 1);
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        let e = install(&cfg, &spec(&src, "v1"), &mut out).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains(&format!("the limit is {MAX_TREE_ENTRIES}")),
+            "{msg}"
+        );
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        assert!(!cfg.join("packages/wide-src").exists());
+        assert!(load(&cfg.join("packages")).unwrap().packages.is_empty());
+
+        // Exactly at the limit the listing is read whole and the install
+        // goes on to the next bound: every entry is a prompt, so it is
+        // `MAX_FILES` that refuses it.
+        let d = tempfile::tempdir().unwrap();
+        let src = wide_source(d.path(), MAX_TREE_ENTRIES);
+        let cfg = d.path().join("cfg");
+        let e = install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains(&format!("files to install; the limit is {MAX_FILES}")),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn install_tree_listing_bounded_stops_reading_at_the_limit() {
+        // The risk: a bound checked after the listing is collected still
+        // holds the whole listing. The reader here offers far more records
+        // than the limit; the error must come back without them.
+        let record = format!("100644 blob {} 1\tprompts/p.md\0", "0".repeat(40));
+        let many = record.repeat(1_000);
+        let e = read_ls_tree(many.as_bytes(), 10, u64::MAX).unwrap_err();
+        assert!(format!("{e:#}").contains("the limit is 10 "), "{e:#}");
+        assert_eq!(
+            read_ls_tree(many.as_bytes(), 1_000, u64::MAX)
+                .unwrap()
+                .len(),
+            1_000
+        );
+
+        // One record with a path of any length is one entry; the byte cap
+        // is what bounds it.
+        let long = format!(
+            "100644 blob {} 1\tprompts/{}.md\0",
+            "0".repeat(40),
+            "a".repeat(4_096)
+        );
+        let e = read_ls_tree(long.as_bytes(), 10, 1_024).unwrap_err();
+        assert!(format!("{e:#}").contains("the limit is 1024 "), "{e:#}");
+        assert_eq!(
+            read_ls_tree(long.as_bytes(), 10, long.len() as u64)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
