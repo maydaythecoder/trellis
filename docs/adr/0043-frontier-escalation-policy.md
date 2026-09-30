@@ -74,7 +74,8 @@ Facts the decision rests on, read from the code on drain at 8782cc0:
    Windows) has an `[escalation]` table naming a spec. With no such table,
    trellis never escalates and says nothing about escalation.
 
-2. **Only the user names the frontier spec.** `[escalation] spec` is read
+2. **Only the user's config or `--model` can name the frontier spec.**
+   `[escalation] spec` is read
    from the user's file only. A repository `.trellis/config.toml` that sets
    `[escalation]` is refused at load, naming the file, by the same mechanism
    that refuses a repository `key_env` (ADR 0024 §3, ADR 0025 §7). The spec
@@ -96,10 +97,15 @@ Facts the decision rests on, read from the code on drain at 8782cc0:
      `check_outcomes` has `passed: false` (the verdict came from
      `trellis-checks`, which alone can produce one, CLAUDE.md rule 1);
    - the reason is `StoppedWithoutPassingChecks`, `BudgetExhausted`,
-     `ModelFailed`, `ChangedAfterLastCheck`, `NoProgress` or
-     `GovernanceViolation`.
+     `ModelFailed`, `NoProgress` or `GovernanceViolation`. The governance
+     audit is a recorded check: the loop pushes it as a turn with its
+     verdict, and the CLI builds `check_outcomes` from those turns, so a
+     violation is a last entry with `passed: false`.
 
-   Excluded: `TrustChanged`, `GitDirChanged`, `HeadMoved` and
+   Excluded: `ChangedAfterLastCheck` means the last verdict *passed* and
+   the tree changed after it (`pass_went_stale` in `agent.rs`), so there is
+   no failing check to hand over; the answer is to run the checks again,
+   not a frontier model. `TrustChanged`, `GitDirChanged`, `HeadMoved` and
    `AfterRunChangedTree` end a run because the tree or trusted code may have
    been tampered with, and sending a possibly tampered diff to a third party
    is the wrong response to that. `AskedHuman` asked a person, and the
@@ -115,7 +121,10 @@ Facts the decision rests on, read from the code on drain at 8782cc0:
      kind and result, and, once the trail holds it (see 7), the tail of the
      failing check's output, bounded by the same 2,000-character tail the
      model is shown;
-   - the attempted diff, **as the trail records it** (see 7).
+   - the attempted diff, **as the trail records it** (see 7). It is not
+     truncated, because a cut diff misreports what was tried; a diff too
+     large for the frontier model's window is that run's ordinary context
+     problem (ADR 0024 compaction, ADR 0033), not a new bound here.
 
    The rule under both "as the trail records it": nothing from the local run
    leaves the machine that a reader of the trail cannot see afterwards. The
