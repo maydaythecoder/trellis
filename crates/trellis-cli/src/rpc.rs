@@ -562,6 +562,8 @@ impl Server {
                 compact: Some(run_compact.clone()),
                 label: None,
                 done: None,
+                // `--image` is `trellis run`'s alone (ADR 0041).
+                images: Vec::new(),
             };
             let r = crate::cmd_run_with(
                 &root,

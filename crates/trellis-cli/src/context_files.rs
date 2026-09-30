@@ -146,6 +146,7 @@ fn input(kind: &str, name: &str, bytes: usize) -> trellis_trail::Input {
         kind: kind.to_string(),
         name: name.to_string(),
         bytes: bytes as u64,
+        sha256: None,
     }
 }
 
