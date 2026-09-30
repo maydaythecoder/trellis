@@ -181,6 +181,9 @@ errfile="$(mktemp)" || { echo "FAIL: mktemp"; exit 1; }
 trap 'rm -f "$errfile"' EXIT
 
 agree=() extras=() differ=() errors=()
+# G0's own verdicts, so the summary shows whether both sides were exercised:
+# agreement over issues G0 only ever failed says nothing about its passes.
+g0_pass=0 g0_fail=0
 show() {
   local label="$1" rc="$2" out="$3" err="$4"
   echo "  $label (exit $rc):"
@@ -196,6 +199,10 @@ while IFS= read -r n; do
   rd_rc=$?
   rd_err="$(cat "$errfile")"
   result="$(compare "$n" "$g0_rc" "$g0_out" "$rd_rc" "$rd_out")"
+  case "$(g0_verdict "$n" "$g0_rc" "$g0_out")" in
+    pass) g0_pass=$((g0_pass + 1)) ;;
+    fail) g0_fail=$((g0_fail + 1)) ;;
+  esac
   case "$result" in
     agree) agree+=("$n") ;;
     extras) extras+=("$n") ;;
@@ -212,7 +219,7 @@ while IFS= read -r n; do
 done <<<"$issues"
 
 echo
-echo "open issues compared: $count"
+echo "open issues compared: $count (G0 passed $g0_pass, failed $g0_fail)"
 echo "agree on G0:                     ${#agree[@]}  ${agree[*]:-}"
 echo "agree on G0, ready fails extras: ${#extras[@]}  ${extras[*]:-}"
 echo "G0 verdicts differ:              ${#differ[@]}  ${differ[*]:-}"
