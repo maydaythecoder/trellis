@@ -54,7 +54,7 @@ and never inside the repository). A G2 failure also prints every
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
 | G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); no key-shaped literal added |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); gitleaks finds nothing in `$GATE_BASE..HEAD` and fails when absent, after a self-test that plants a token built at run time in a throwaway repository (`scripts/checks/gitleaks-range.sh`, #236; CI's supply-chain job runs it with a release pinned by version and SHA-256); no key-shaped literal added |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
@@ -167,8 +167,10 @@ Changed or dropped:
   monitoring) dropped: trellis is a CLI with no server.
 - **Coverage threshold** not added as a gate: coverage is measured
   (issue #17) but a percentage gate rewards tests written for the number.
-- **Secret scanner**: a key-shape regex over added lines stands in until a
-  real scanner is installed; GitGuardian still runs on the PR.
+- **Secret scanner**: gitleaks runs in G5 and in CI over the change's
+  commits (#236); the key-shape regex over added lines stays beside it
+  because the pre-commit hook shares its patterns. GitGuardian still runs on
+  the PR.
 
 ## CI runners
 
