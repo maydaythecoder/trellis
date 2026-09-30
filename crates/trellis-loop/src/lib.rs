@@ -30,7 +30,9 @@ mod tools;
 mod trust;
 mod wire;
 
-pub use adapter::{CompactRequests, Compacted, HostedModel, RequestedCompaction, RuntimeModel};
+pub use adapter::{
+    CompactRequests, Compacted, HostedModel, LOCAL_CONTEXT_BYTES, RequestedCompaction, RuntimeModel,
+};
 pub use agent::{
     Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Steer, Steering,
     SteeringLog, SteeringRx, Step, ToolCall, Transcript, Turn, VaultContext, run, run_seeded,

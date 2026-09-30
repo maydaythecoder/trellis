@@ -1,0 +1,2 @@
+975
+{"id":"cmpl-279","object":"text_completion","created":1790795214,"model":"qwen2.5:3b","system_fingerprint":"fp_ollama","choices":[{"text":"To address the type check failure in `src/poetry/console/commands/add.py`, we need to ensure that the function `kages_from_input` is correctly defined and that the type hints are accurate. Based on the provided code snippets, it seems that the function `ka

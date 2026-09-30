@@ -1098,9 +1098,12 @@ pub async fn run_seeded<M: Model>(
 /// not converted from the 4,096-token minimum window (ADR 0033). The
 /// adapter keeps an observation's last 2,000 characters and cuts from the
 /// top, and the top of a radius is its coverage header, so a listing sized
-/// past the cap would lose the doubt figure without saying so. How many
-/// bytes 4,096 tokens hold has not been measured; #170 measures it, and
-/// until then a budget derived from it would be an invented figure.
+/// past the cap would lose the doubt figure without saying so.
+///
+/// Revisited after #170 measured the window (#228) and kept: the prompt's
+/// own budget, [`crate::adapter::LOCAL_CONTEXT_BYTES`], now elides older
+/// observations to make room for the newest, and a radius is never cut to
+/// fit it; a prompt that cannot hold one whole is not sent.
 pub(crate) const RADIUS_OBSERVATION_BYTES: usize = crate::adapter::OBSERVATION_TAIL;
 
 // `shown_observation` cuts when `len() > OBSERVATION_TAIL`, in bytes. A

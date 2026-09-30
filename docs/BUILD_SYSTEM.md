@@ -50,11 +50,11 @@ and never inside the repository). A G2 failure also prints every
 |---|---|---|
 | G0 | `ticket-ready.sh <n>` | the issue is open, has `## Done when` and a fenced `## Verify`, is not blocked, needs-human, or split |
 | G1 | `build.sh` | workspace builds, all targets; `trellis-cli --no-default-features` builds |
-| G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173) |
+| G2 | `test.sh` | full workspace suite, and the local-only CLI suite; each `cargo test` fails after `GATE_TEST_TIMEOUT_S` seconds (default 2400) rather than hanging (#173); tests run at most 4 at a time (`RUST_TEST_THREADS=4`) so the gate's own load does not fail timing tests (#226) |
 | G2b | `guards.sh` | `qa/run-guards.py` holds every guard against the fresh debug binary, and fails unless `trellis` resolves to it; needs Ollama at 127.0.0.1:11434. Before #158, on Windows, it ran whatever `trellis` was installed instead |
 | G3 | `lint.sh` | `cargo fmt --check`, `clippy -D warnings`, and no `#[allow(` added by this change |
 | G4 | `no-stubs.sh` | no `TODO`/`FIXME`/`todo!`/`unimplemented!`/mock markers in production lines this change added (test modules, `tests/`, `examples/` excluded) |
-| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); no key-shaped literal added |
+| G5 | `security.sh` | `cargo deny --locked check` and `cargo audit` over the root and `fuzz/` locks; `fuzz/Cargo.lock` is current (`scripts/checks/fuzz-lock-current.sh`, #197); `zizmor --min-severity medium .github/workflows/` is clean and every workflow cargo build/test/clippy/run passes `--locked` (`scripts/checks/workflows-locked.sh`, #215); no key-shaped literal added |
 | G6 | `ticket-verify.sh <n>` | the ticket's own Verify command exits 0 |
 | G7 | in `run-all.sh` | exit 3 when the ticket is `risk:high` or `surface:public`: a person approves the merge |
 
@@ -110,11 +110,15 @@ Two layers (#206):
   code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
   every squash-merge of `drain` into `v0.1-resolver`.
 
-The existing workflows fail `zizmor` today: unpinned `uses:`,
-`excessive-permissions` and `artipacked`. So the first commit that touches
-`.github/workflows/` has to fix what zizmor reports in the files it stages.
-That is deliberate: the audit's Phase 3 pins and scopes them on its own
-ticket.
+The workflows pass `zizmor` at medium and above since #215: every action is
+pinned to a commit SHA resolved from its tag through the GitHub API (the tag
+in a comment beside it), each workflow declares `permissions: contents:
+read`, checkout does not persist the token, and release's rust-cache is
+`lookup-only`. G5 runs zizmor over the whole directory, so a workflow change
+that reached a branch without the hook is still held to it. To move a pin,
+resolve the new tag with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`
+(dereference an annotated tag with `.../git/tags/<sha>`) and never type a
+SHA by hand.
 
 ## The loop
 
@@ -129,9 +133,11 @@ ticket.
 
 `v0.1-resolver` moves only when the owner merges a pull request on GitHub.
 Agent work collects on the integration branch `drain`, which has an open
-draft PR into `v0.1-resolver`. The local pre-push hook refuses every push to
-`v0.1-resolver` from this clone (GitHub branch protection needs Pro on a
-private repository; ADR 0036 records the gap and the ruleset to apply later).
+draft PR into `v0.1-resolver`. The pre-push hook (`scripts/hooks/pre-push`,
+installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
+shows it firing) refuses every push to `v0.1-resolver` from a clone that has
+installed it (GitHub branch protection needs Pro on a private repository;
+ADR 0036 records the gap and the ruleset to apply later).
 
 ## Where a person is needed
 
