@@ -142,7 +142,7 @@ pub struct Factual {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steering: Vec<Steer>,
     /// Integrated-check failures that named files changed by two or more
-    /// partitions (ADR 0005, ADR 0041): a collision the partition plan did
+    /// partitions (ADR 0005, ADR 0042): a collision the partition plan did
     /// not predict, and so evidence the graph's recall missed an edge.
     ///
     /// Suspected, not established: the record says which merged files a

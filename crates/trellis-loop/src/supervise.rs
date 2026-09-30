@@ -7,7 +7,7 @@
 //! carries no verdict, because partition-local passes never substitute for
 //! the integrated check over the merged union (rule 6, S19 patch 2). That
 //! check runs in [`Supervisor::run_integrated`], the only public way to run a
-//! plan, so no caller can merge partitions and skip it (ADR 0041).
+//! plan, so no caller can merge partitions and skip it (ADR 0042).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -90,7 +90,7 @@ pub struct Supervised<T> {
     /// Root-relative paths written or removed, in the order applied.
     pub merged: Vec<String>,
     /// The partition each path in `merged` came from. What the integrated
-    /// check attributes a failure's files to (ADR 0041).
+    /// check attributes a failure's files to (ADR 0042).
     pub owner: HashMap<String, PartitionId>,
 }
 

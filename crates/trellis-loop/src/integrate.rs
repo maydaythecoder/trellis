@@ -1,5 +1,5 @@
 //! The integrated check: what decides whether a plan's merged union
-//! converged (ADR 0005, ADR 0041).
+//! converged (ADR 0005, ADR 0042).
 //!
 //! Optimistic partitioning, pessimistic integration. Each partition's own
 //! checks are a filter; they never decide the run (rule 6, S19 patch 2).
