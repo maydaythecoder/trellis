@@ -94,7 +94,31 @@ pub enum ToolCall {
         name: String,
         args: serde_json::Value,
     },
+    /// A question for a person, with at most eight options. Offered only
+    /// to a queued task's run, where the question has a task to block
+    /// (ADR 0026 §1). Allowed through the gates, it ends the run
+    /// unconverged: an answer is input to the next run, never a verdict on
+    /// this one (ADR 0004). The text is model output, and wherever it is
+    /// shown or stored it is quoted as data.
+    AskHuman {
+        question: String,
+        options: Vec<String>,
+    },
 }
+
+/// The most options an `ask_human` call may offer. Paperclip's decisions
+/// take one to eight; more than that is a survey, not a question blocking
+/// one task.
+pub(crate) const MAX_QUESTION_OPTIONS: usize = 8;
+
+/// The longest question, in characters. It is stored in a task note and
+/// shown on every `queue list`, and it is model output: a model looping
+/// inside a string would otherwise write its whole reply budget into the
+/// queue.
+pub(crate) const MAX_QUESTION_CHARS: usize = 2_000;
+
+/// The longest option, in characters, for the same reason.
+pub(crate) const MAX_OPTION_CHARS: usize = 200;
 
 /// The model's move.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +252,15 @@ pub enum NotConverged {
     HeadMoved {
         detail: String,
     },
+    /// The model asked a person a question (`ask_human`) and the gates let
+    /// it. Not convergence whatever passed before it: only an executed check
+    /// converges a run (ADR 0004), and a question is the model saying it
+    /// cannot finish without an answer. Rolled back like every other ending
+    /// here. Both fields are model output.
+    AskedHuman {
+        question: String,
+        options: Vec<String>,
+    },
 }
 
 impl NotConverged {
@@ -307,6 +340,22 @@ impl NotConverged {
                 ),
                 times, repeated
             ),
+            // Debug-quoted: the question is model output, and quoted it
+            // cannot close a line or pass for a sentence of this one.
+            NotConverged::AskedHuman { question, options } => {
+                let mut s = format!(
+                    concat!(
+                        "the model stopped to ask a person a question, so nothing was ",
+                        "accepted: an answer is input to the next run, not a check. ",
+                        "The question (model output, quoted as data): {:?}"
+                    ),
+                    question
+                );
+                if !options.is_empty() {
+                    s.push_str(&format!("; options: {options:?}"));
+                }
+                s
+            }
         }
     }
 }
@@ -961,6 +1010,27 @@ pub async fn run_seeded<M: Model>(
                         reason: NotConverged::TrustChanged { detail },
                         iterations,
                     };
+                }
+
+                // A question the gates let through ends the run here, after
+                // its turn is recorded, so the trail shows it and the
+                // approval that allowed it. Only on `Output`: a disabled
+                // tool or a declined approval comes back as `Error`, and
+                // then nobody was asked anything and the run goes on.
+                if let (ToolCall::AskHuman { question, options }, ToolResult::Output(_)) =
+                    (&call, &result)
+                {
+                    tracing::info!("the model asked a person a question; stopping");
+                    return (
+                        Outcome::NotConverged {
+                            reason: NotConverged::AskedHuman {
+                                question: question.clone(),
+                                options: options.clone(),
+                            },
+                            iterations,
+                        },
+                        t,
+                    );
                 }
 
                 if repeats >= NO_PROGRESS_REPEATS {
