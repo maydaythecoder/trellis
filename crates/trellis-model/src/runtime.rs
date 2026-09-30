@@ -102,6 +102,11 @@ pub struct Completion {
     /// reported", never "free" — the budget's wall-clock and iteration
     /// ceilings apply regardless (S8).
     pub tokens: u64,
+    /// Tokens the prompt occupied, cached ones included, where the runtime
+    /// reports it; `None` where it does not. An `Option` rather than `tokens`'
+    /// zero, so an unreported prompt cannot be summed into a run's total as
+    /// though it were free (ADR 0027, #106).
+    pub prompt_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +229,10 @@ impl RuntimeClient {
                     .ok_or_else(|| shape("expected a string `content`"))?
                     .to_string(),
                 tokens: v["tokens_predicted"].as_u64().unwrap_or(0),
+                // Not `timings.prompt_n`, which leaves out the tokens served
+                // from the prompt cache; `tokens_evaluated` is the whole
+                // prompt, as OpenAI's `prompt_tokens` is.
+                prompt_tokens: v["tokens_evaluated"].as_u64(),
             }),
             Dialect::VllmOpenAi => Ok(Completion {
                 text: v["choices"][0]["text"]
@@ -231,6 +240,7 @@ impl RuntimeClient {
                     .ok_or_else(|| shape("expected `choices[0].text`"))?
                     .to_string(),
                 tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+                prompt_tokens: v["usage"]["prompt_tokens"].as_u64(),
             }),
             Dialect::Sglang => Ok(Completion {
                 // SGLang returns either an object or a single-element array.
@@ -240,6 +250,10 @@ impl RuntimeClient {
                     .ok_or_else(|| shape("expected a string `text`"))?
                     .to_string(),
                 tokens: v["meta_info"]["completion_tokens"].as_u64().unwrap_or(0),
+                // Not read: #106 covers llama.cpp and the OpenAI-compatible
+                // dialect, and SGLang's figure has not been checked against
+                // theirs.
+                prompt_tokens: None,
             }),
         }
     }
@@ -492,6 +506,43 @@ mod tests {
     }
 
     #[test]
+    fn llamacpp_prompt_tokens_are_tokens_evaluated_not_prompt_n() {
+        // Recorded shape: 480 of the 512 prompt tokens came from the cache,
+        // so `timings.prompt_n` says 32. That is the part recomputed, not the
+        // prompt, and reading it would report a mostly-cached run as cheap.
+        let got = client(Dialect::LlamaCpp)
+            .extract(
+                &json!({"content":"hi","tokens_predicted":7,"tokens_evaluated":512,
+                "tokens_cached":480,"timings":{"prompt_n":32,"predicted_n":7}}),
+            )
+            .unwrap();
+        assert_eq!((got.prompt_tokens, got.tokens), (Some(512), 7));
+    }
+
+    #[test]
+    fn openai_compatible_runtime_prompt_tokens_are_read_from_usage() {
+        let got = client(Dialect::VllmOpenAi)
+            .extract(&json!({"choices":[{"text":"hi"}],
+                "usage":{"prompt_tokens":88,"completion_tokens":3,"total_tokens":91}}))
+            .unwrap();
+        assert_eq!((got.prompt_tokens, got.tokens), (Some(88), 3));
+    }
+
+    #[test]
+    fn a_response_without_a_prompt_figure_has_unknown_prompt_tokens_not_zero() {
+        // `tokens` reads an absent count as 0; the prompt figure must not,
+        // or a run's total would come out low rather than unknown.
+        let got = client(Dialect::LlamaCpp)
+            .extract(&json!({"content":"hi","tokens_predicted":7}))
+            .unwrap();
+        assert_eq!(got.prompt_tokens, None);
+        let got = client(Dialect::VllmOpenAi)
+            .extract(&json!({"choices":[{"text":"hi"}],"usage":{"completion_tokens":3}}))
+            .unwrap();
+        assert_eq!(got.prompt_tokens, None);
+    }
+
+    #[test]
     fn missing_token_counts_report_zero_rather_than_failing() {
         let got = client(Dialect::LlamaCpp)
             .extract(&json!({"content": "hi"}))
@@ -565,7 +616,7 @@ mod tests {
     #[tokio::test]
     async fn a_round_trip_sends_the_schema_and_reads_the_completion() {
         let (base, server) = stub(
-            r#"{"content":"{\"tool\":\"read_file\"}","tokens_predicted":11}"#,
+            r#"{"content":"{\"tool\":\"read_file\"}","tokens_predicted":11,"tokens_evaluated":40}"#,
             "200 OK",
         )
         .await;
@@ -574,6 +625,7 @@ mod tests {
 
         let got = c.complete("hello", Some(&schema), 32).await.unwrap();
         assert_eq!(got.tokens, 11);
+        assert_eq!(got.prompt_tokens, Some(40));
         assert!(got.text.contains("read_file"));
 
         let sent = server.await.unwrap();

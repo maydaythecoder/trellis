@@ -146,6 +146,12 @@ pub struct Reply {
     /// carried no usage figure. Not `0`: an unreported reply is not free,
     /// and reading it as free let budgets never trip.
     pub tokens: Option<u64>,
+    /// Tokens the prompt occupied, as the provider reported them; `None`
+    /// when the reply did not say. Cached tokens are included on every
+    /// protocol, so the figure means the same thing whichever one answered
+    /// (ADR 0027, #106). Not `0` when unreported, for the reason `tokens`
+    /// is not.
+    pub prompt_tokens: Option<u64>,
     /// The assistant message to replay with this call's result.
     pub replay: Value,
 }
@@ -317,6 +323,9 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 .pointer("/choices/0/message")
                 .ok_or_else(|| shape("expected `choices[0].message`"))?;
             let tokens = v["usage"]["completion_tokens"].as_u64();
+            // Already counts cached prompt tokens; Anthropic's figure below is
+            // summed to match it.
+            let prompt_tokens = v["usage"]["prompt_tokens"].as_u64();
             let calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
             let call = match calls.as_slice() {
                 [one] => {
@@ -358,6 +367,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             Ok(Reply {
                 call,
                 tokens,
+                prompt_tokens,
                 replay: Value::Object(replay),
             })
         }
@@ -366,6 +376,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 .as_array()
                 .ok_or_else(|| shape("expected a `content` array"))?;
             let tokens = v["usage"]["output_tokens"].as_u64();
+            let prompt_tokens = anthropic_prompt_tokens(&v["usage"]);
             let uses: Vec<&Value> = content.iter().filter(|b| b["type"] == "tool_use").collect();
             let call = match uses.as_slice() {
                 [one] => Ok(NativeCall {
@@ -398,10 +409,28 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             Ok(Reply {
                 call,
                 tokens,
+                prompt_tokens,
                 replay: json!({ "role": "assistant", "content": content }),
             })
         }
     }
+}
+
+/// Anthropic's prompt figure: `input_tokens` plus the cache-creation and
+/// cache-read tokens it leaves out, so the sum is what OpenAI's
+/// `prompt_tokens` reports (ADR 0027, #106).
+///
+/// Gated on `input_tokens`: a cache field counts as 0 only beside it, since
+/// without it the sum would be a part of the prompt presented as all of it,
+/// and a low number reads as a cheap run.
+fn anthropic_prompt_tokens(usage: &Value) -> Option<u64> {
+    let input = usage["input_tokens"].as_u64()?;
+    let cached = |k: &str| usage[k].as_u64().unwrap_or(0);
+    Some(
+        input
+            .saturating_add(cached("cache_creation_input_tokens"))
+            .saturating_add(cached("cache_read_input_tokens")),
+    )
 }
 
 fn no_call(text: &str) -> String {
@@ -1061,6 +1090,73 @@ mod tests {
                 "{v:?}"
             );
         }
+    }
+
+    #[test]
+    fn openai_chat_prompt_tokens_are_read_from_usage() {
+        // Recorded shape: OpenAI's `prompt_tokens` already includes the
+        // cached part, which `prompt_tokens_details` breaks out.
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}],
+            "usage":{"prompt_tokens":1200,"completion_tokens":9,"total_tokens":1209,
+                "prompt_tokens_details":{"cached_tokens":1024}}});
+        let r = parse_reply(Protocol::OpenAiChat, &v).unwrap();
+        assert_eq!((r.prompt_tokens, r.tokens), (Some(1200), Some(9)));
+    }
+
+    #[test]
+    fn anthropic_prompt_tokens_include_cache_creation_and_cache_read() {
+        // The risk: reading `input_tokens` alone reports only the uncached
+        // tail of a mostly-cached prompt, a fraction of what OpenAI's figure
+        // would say for the same request.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"input_tokens":12,"cache_creation_input_tokens":300,
+                "cache_read_input_tokens":4000,"output_tokens":5}});
+        let r = parse_reply(Protocol::Anthropic, &v).unwrap();
+        assert_eq!((r.prompt_tokens, r.tokens), (Some(4312), Some(5)));
+
+        // An absent cache field is 0 beside a present `input_tokens`.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"input_tokens":12,"output_tokens":5}});
+        assert_eq!(
+            parse_reply(Protocol::Anthropic, &v).unwrap().prompt_tokens,
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_tokens_without_input_tokens_are_unknown_not_the_cache_part() {
+        // The cache fields alone are part of the prompt; summing them would
+        // present that part as the whole.
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}],
+            "usage":{"cache_creation_input_tokens":300,"cache_read_input_tokens":4000,
+                "output_tokens":5}});
+        let r = parse_reply(Protocol::Anthropic, &v).unwrap();
+        assert_eq!((r.prompt_tokens, r.tokens), (None, Some(5)));
+    }
+
+    #[test]
+    fn a_reply_without_usage_has_unknown_prompt_tokens_not_zero() {
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}],
+            "usage":{"completion_tokens":9}});
+        assert_eq!(
+            parse_reply(Protocol::OpenAiChat, &v).unwrap().prompt_tokens,
+            None
+        );
+        let v = json!({"content":[{"type":"tool_use","id":"t","name":"done","input":{}}]});
+        assert_eq!(
+            parse_reply(Protocol::Anthropic, &v).unwrap().prompt_tokens,
+            None
+        );
+        // A reported zero is a figure, and stays one.
+        let v = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"x","type":"function","function":{"name":"done","arguments":"{}"}}]}}],
+            "usage":{"prompt_tokens":0}});
+        assert_eq!(
+            parse_reply(Protocol::OpenAiChat, &v).unwrap().prompt_tokens,
+            Some(0)
+        );
     }
 
     #[test]

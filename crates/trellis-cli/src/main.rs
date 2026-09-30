@@ -2284,6 +2284,13 @@ fn run_body(
         // and `None` once any reply went unreported.
         Driver::Hosted(m) => m.tokens_measured(),
     };
+    // Prompt tokens, summed by the adapter and absent once any call went
+    // unreported (ADR 0027, #106). Its own field, never added to `tokens`.
+    let prompt_tokens = match &driver {
+        Driver::Scripted(_) => None,
+        Driver::Runtime(m) => trellis_loop::Model::prompt_tokens(m),
+        Driver::Hosted(m) => trellis_loop::Model::prompt_tokens(m.as_ref()),
+    };
     let compactions = driver.compactions();
     let requested = driver.requested_compactions();
     let facts = |approved| TrailFacts {
@@ -2294,6 +2301,7 @@ fn run_body(
         gates: &gate_log,
         stamp: Some(&stamp),
         tokens,
+        prompt_tokens,
         agent: profile.map(|p| p.name.clone()),
         inputs: added.inputs.clone(),
         compactions: &compactions,
@@ -3141,6 +3149,9 @@ struct TrailFacts<'a> {
     /// Completion tokens and the agent profile, for the budget ledger
     /// (ADR 0026 §8).
     tokens: Option<u64>,
+    /// Prompt tokens the adapter summed, `None` when any call reported none
+    /// (ADR 0027, #106).
+    prompt_tokens: Option<u64>,
     agent: Option<String>,
     /// Context files, system files and forced skills, by name and size
     /// (ADR 0025, integrated).
@@ -3170,6 +3181,7 @@ fn record_trail(
         gates,
         stamp,
         tokens,
+        prompt_tokens,
         agent,
         inputs,
         compactions,
@@ -3305,9 +3317,7 @@ fn record_trail(
         actions,
         control,
         tokens,
-        // No adapter reports prompt tokens to the loop, so there is no figure
-        // to record; absent reads as unknown, where a zero would be a claim.
-        prompt_tokens: None,
+        prompt_tokens,
         agent,
         inputs,
         // The loop's `Transcript` carries no steering channel yet (#113 adds
@@ -4626,6 +4636,7 @@ mod interrupt_tests {
             gates: &[],
             stamp: None,
             tokens: None,
+            prompt_tokens: None,
             agent: None,
             inputs: Vec::new(),
             compactions: &[],
