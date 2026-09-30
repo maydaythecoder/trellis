@@ -2161,9 +2161,9 @@ fn run_body(
             tools: tooling.tools.clone(),
             extra: added.extra,
         },
-        // `None` for every caller but `trellis tui` (#115) and `session` at a
-        // terminal (#116), and a run given `None` is exactly the one before
-        // #113.
+        // `None` for every caller but `trellis tui` (#115), `session` at a
+        // terminal (#116) and `rpc` (ADR 0025 §5), and a run given `None` is
+        // exactly the one before #113.
         steering: control.steering,
     };
 
@@ -2282,17 +2282,24 @@ fn run_body(
         let raced = tokio::select! {
             out = async {
                 let done = &mut done_summary;
+                // Each driver behind `Watched`, which tells RPC's port which
+                // steers each request carried (with no port it only forwards),
+                // and that behind `SeesDone`, which keeps the `done` summary.
+                let port = extras.steer_watch.as_deref();
                 match &mut driver {
                     Driver::Scripted(m) => {
-                        let mut m = SeesDone { inner: m, done };
+                        let mut w = rpc::Watched::new(m, port);
+                        let mut m = SeesDone { inner: &mut w, done };
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Runtime(m) => {
-                        let mut m = SeesDone { inner: m, done };
+                        let mut w = rpc::Watched::new(m, port);
+                        let mut m = SeesDone { inner: &mut w, done };
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Hosted(m) => {
-                        let mut m = SeesDone { inner: &mut **m, done };
+                        let mut w = rpc::Watched::new(&mut **m, port);
+                        let mut m = SeesDone { inner: &mut w, done };
                         trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed)
                             .await
                     }
