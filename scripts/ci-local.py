@@ -41,8 +41,8 @@ see a push instead) and `origin/<base>` in the clone is made to point where
 this repository's copy of that branch does; `github.event.before` is <ref>'s
 first parent, or forty zeros for a root commit, as GitHub sends for a new
 branch. Any other `${{ ... }}` in a step's `env:` or `run:` fails the job: a
-literal passed through reached gitleaks as a base named `${{
-github.event.before }}` (#237).
+literal passed through reached gitleaks as a base named
+`${{ github.event.before }}` (#237).
 
 Exit 0 only if every step of every selected job exited 0.
 """
