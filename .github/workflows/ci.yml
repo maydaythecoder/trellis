@@ -223,9 +223,12 @@ jobs:
   supply-chain:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
     steps:
+      # Full history: gitleaks scans every commit between the base and HEAD,
+      # and a depth-1 clone has neither the base nor the commits in between.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
         with:
           toolchain: stable
@@ -275,6 +278,36 @@ jobs:
         run: |
           scripts/checks/workflows-locked.sh --self-test
           scripts/checks/workflows-locked.sh
+
+      # The scan G5 runs (#236): gitleaks over every commit this change adds,
+      # which the pre-commit hook reaches only on commits made through it.
+      # The release is pinned by version and by the SHA-256 recorded in its
+      # published gitleaks_8.21.2_checksums.txt, checked before the binary
+      # runs; a different file fails here. It is unpacked under RUNNER_TEMP
+      # and put first on PATH for this step only: the runners are
+      # self-hosted, so nothing is left in the host's own directories and a
+      # gitleaks the host already has does not stand in for the pinned one.
+      # The self-test plants a token built at run time on a branch of a
+      # throwaway repository and shows the scan refuses it. The base is the
+      # PR's target branch, or for a push the commit the branch was at
+      # before; an unresolvable base (an all-zero or unfetched `before`)
+      # fails the step rather than scanning nothing.
+      - name: gitleaks over the change's commits (pinned, checksum-verified)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$dir"
+          tgz="$dir/gitleaks_8.21.2_linux_x64.tar.gz"
+          curl -sSfL -o "$tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" -C "$dir" gitleaks
+          export PATH="$dir:$PATH"
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="$BEFORE"; fi
+          scripts/checks/gitleaks-range.sh --self-test
+          scripts/checks/gitleaks-range.sh "$base"
 
       # Its dependency set differs from the root's (libfuzzer-sys and what it
       # pulls in), so both audits run over it too. deny.toml at the root
