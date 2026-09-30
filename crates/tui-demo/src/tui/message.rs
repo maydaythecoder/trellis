@@ -66,3 +66,19 @@ pub enum Message {
     // internal
     Quit,
 }
+
+/// What the event loop sends on the steer channel (#115).
+///
+/// Steers and tasks leave on different channels, and a driver that has to
+/// tell the last run's leftover steers from the next run's first ones
+/// cannot do it by timing: a pasted task and steer can both be sent before
+/// the driver next runs. `TaskFollows` puts the boundary on the steer
+/// channel itself, in the order the lines were typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SteerOut {
+    /// A line typed while a run was in flight, for that run.
+    Steer(String),
+    /// Sent immediately before a task: every steer ahead of this was typed
+    /// for an earlier task, and every steer after it for this one or later.
+    TaskFollows,
+}

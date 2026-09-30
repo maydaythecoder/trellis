@@ -1,7 +1,7 @@
 //! The loop: one merged stream, redraw on change.
 
 use crate::tui::app::AppState;
-use crate::tui::message::Message;
+use crate::tui::message::{Message, SteerOut};
 use crate::tui::view;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
@@ -61,15 +61,17 @@ where
 /// is a person typing, and the driver does not read this while it is still
 /// deciding what a task is. A bounded channel that filled then would block
 /// this loop, and the interface the person is typing into would freeze.
-/// Without a `steer_tx` a queued steer goes nowhere, and the view says so
-/// when the run ends.
+/// Each task is preceded on `steer_tx` by [`SteerOut::TaskFollows`], in the
+/// order `update` recorded them, so the driver can tell which run a steer
+/// was typed for. Without a `steer_tx` a
+/// queued steer goes nowhere, and the view says so when the run ends.
 pub async fn run_with_steering<B>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut AppState,
     work_rx: mpsc::Receiver<Message>,
     task_tx: mpsc::Sender<String>,
     answer_tx: Option<mpsc::Sender<bool>>,
-    steer_tx: Option<mpsc::UnboundedSender<String>>,
+    steer_tx: Option<mpsc::UnboundedSender<SteerOut>>,
 ) -> anyhow::Result<()>
 where
     B: ratatui::backend::Backend,
@@ -93,7 +95,7 @@ where
 struct Outlets {
     task_tx: mpsc::Sender<String>,
     answer_tx: Option<mpsc::Sender<bool>>,
-    steer_tx: Option<mpsc::UnboundedSender<String>>,
+    steer_tx: Option<mpsc::UnboundedSender<SteerOut>>,
 }
 
 /// The loop, with the terminal's event source passed in.
@@ -151,11 +153,9 @@ where
             state.update(m);
         }
 
-        // Before the task, so that on the wire every steer of a run precedes
-        // the next task: the driver discards what is waiting when a task
-        // arrives, and that is only the last run's leftovers if this order
-        // holds. A steer with nowhere to go is dropped here and reported
-        // not delivered when the run ends.
+        // Before the task, so that a driver holding the task can already see
+        // its boundary on the steer channel. A steer with nowhere to go is
+        // dropped here and reported not delivered when the run ends.
         for steer in state.steered.drain(..) {
             if let Some(tx) = &out.steer_tx {
                 let _ = tx.send(steer);
@@ -361,8 +361,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            steer_rx.try_recv().ok().as_deref(),
-            Some("prefer the smaller diff")
+            steer_rx.try_recv().ok(),
+            Some(SteerOut::Steer("prefer the smaller diff".into()))
         );
         assert!(task_rx.try_recv().is_err(), "a steer is not a task");
         assert!(state.steered.is_empty(), "the loop drained it");
@@ -414,5 +414,63 @@ mod tests {
             .collect();
         assert!(screen.contains("queued: use b.py"), "{screen}");
         assert!(screen.contains("delivered at turn 2: use b.py"), "{screen}");
+    }
+
+    /// The run a steer was typed for is recoverable from the wire alone.
+    ///
+    /// A steer typed during one run and a task typed straight after it can
+    /// both be sent before the driver next runs; without the boundary the
+    /// driver could only guess which run the steer belonged to, and a guess
+    /// that carried it into the next run would steer work it was not about.
+    #[tokio::test]
+    async fn a_steer_before_a_task_is_ahead_of_that_tasks_boundary() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = AppState::default().with_running(true);
+        let (tx, rx) = mpsc::channel(128);
+        let (task_tx, mut task_rx) = mpsc::channel(8);
+        let (steer_tx, mut steer_rx) = mpsc::unbounded_channel();
+
+        for m in typed("old steer") {
+            tx.send(m).await.unwrap();
+        }
+        tx.send(Message::RunFinished).await.unwrap();
+        for m in typed("next task") {
+            tx.send(m).await.unwrap();
+        }
+        for m in typed("new steer") {
+            tx.send(m).await.unwrap();
+        }
+        tx.send(Message::Quit).await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_events(
+                &mut terminal,
+                &mut state,
+                headless(),
+                rx,
+                Outlets {
+                    steer_tx: Some(steer_tx),
+                    ..outlets(task_tx)
+                },
+            ),
+        )
+        .await
+        .expect("must not hang")
+        .unwrap();
+
+        let mut wire = Vec::new();
+        while let Ok(m) = steer_rx.try_recv() {
+            wire.push(m);
+        }
+        assert_eq!(
+            wire,
+            vec![
+                SteerOut::Steer("old steer".into()),
+                SteerOut::TaskFollows,
+                SteerOut::Steer("new steer".into()),
+            ]
+        );
+        assert_eq!(task_rx.try_recv().ok().as_deref(), Some("next task"));
     }
 }

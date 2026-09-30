@@ -15,7 +15,7 @@ use anyhow::Result;
 use std::path::Path;
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
 use tui_demo::tui;
-use tui_demo::tui::message::Message;
+use tui_demo::tui::message::{Message, SteerOut};
 
 /// `cmd_run`'s narration, routed into the transcript instead of the terminal.
 ///
@@ -240,24 +240,46 @@ async fn relay_approvals(
 /// Concurrent with the run rather than before it: a steer is typed while
 /// the run works, and the loop takes whatever is waiting on its channel
 /// before each request (#113). `to_run` is dropped on return, which closes
-/// the run's channel; a line that arrives after that is left in `typed` for
-/// the next task to discard.
+/// the run's channel.
+///
+/// Stops reading at the next task's boundary, and says so in the `bool`:
+/// what follows it was typed for that task. That happens only when the run
+/// has already reported finished and the next task was typed before the
+/// run was joined.
 async fn forward_steers<T>(
     mut run: tokio::task::JoinHandle<T>,
-    typed: &mut UnboundedReceiver<String>,
+    typed: &mut UnboundedReceiver<SteerOut>,
     to_run: UnboundedSender<trellis_loop::Steering>,
-) -> Result<T, tokio::task::JoinError> {
+) -> (Result<T, tokio::task::JoinError>, bool) {
     loop {
         tokio::select! {
-            joined = &mut run => return joined,
-            Some(text) = typed.recv() => {
+            joined = &mut run => return (joined, false),
+            Some(line) = typed.recv() => match line {
                 // A run that has returned has dropped its receiver, and
                 // this line is then undelivered, which the view says when
                 // `RunFinished` arrives.
-                let _ = to_run.send(trellis_loop::Steering::Steer(text));
-            }
+                SteerOut::Steer(text) => {
+                    let _ = to_run.send(trellis_loop::Steering::Steer(text));
+                }
+                SteerOut::TaskFollows => {
+                    drop(to_run);
+                    return (run.await, true);
+                }
+            },
         }
     }
+}
+
+/// Discards steers typed for tasks that have ended, up to the boundary
+/// sent ahead of the task now starting.
+///
+/// Those steers were typed after their run stopped taking them, or while
+/// their task turned out to be a question and no run happened; the view has
+/// already reported them not delivered. Carried into this run, they would
+/// steer work they were not written about. `None` (the interface has gone)
+/// ends the wait as the boundary would.
+async fn skip_to_task_boundary(typed: &mut UnboundedReceiver<SteerOut>) {
+    while let Some(SteerOut::Steer(_)) = typed.recv().await {}
 }
 
 /// One run, as the interface drives it: the loop's events and `cmd_run`'s
@@ -423,7 +445,7 @@ pub(crate) fn run(
         // loop's own steering channel is: the driver does not read this
         // while it is classifying a task, and a bounded channel that filled
         // then would freeze the interface the person is typing into.
-        let (steer_tx, mut steer_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (steer_tx, mut steer_rx) = tokio::sync::mpsc::unbounded_channel::<SteerOut>();
 
         // One driver, serving every task the user types. It owns the
         // subscriber install and the worker thread so the interface does
@@ -463,16 +485,13 @@ pub(crate) fn run(
         let driver = tokio::spawn({
             let tx = tx.clone();
             async move {
+                // Whether the last run's forwarder already read this task's
+                // boundary; it cannot be read twice.
+                let mut at_boundary = false;
                 while let Some(task) = task_rx.recv().await {
-                    // Steers left from the last task: typed after its run
-                    // stopped taking them, or while it turned out to be a
-                    // question and no run happened. The view has already
-                    // reported them not delivered, and the event loop sends
-                    // a run's steers before the next task, so everything
-                    // waiting here belongs to a task that has ended. Carried
-                    // into this run, they would steer work they were not
-                    // written about.
-                    while steer_rx.try_recv().is_ok() {}
+                    if !std::mem::take(&mut at_boundary) {
+                        skip_to_task_boundary(&mut steer_rx).await;
+                    }
                     // `/codebase` is a filesystem read, so the interface
                     // declined it and it arrived here. Answered before the
                     // classifier, because it is not a question for a model
@@ -570,7 +589,8 @@ pub(crate) fn run(
                     let run = tokio::task::spawn_blocking(move || {
                         run_for_tui(&root, &task, &spec, model_from_user, control, &run_tx);
                     });
-                    let joined = forward_steers(run, &mut steer_rx, to_run).await;
+                    let joined;
+                    (joined, at_boundary) = forward_steers(run, &mut steer_rx, to_run).await;
                     // Discarding this `JoinError` reopened the silent pane:
                     // a panicking run reports nothing and never hands input
                     // back. `send` rather than `blocking_send` — this half
@@ -594,6 +614,9 @@ pub(crate) fn run(
         if let Some(t) = task {
             state.push_line(format!("> {t}"));
             state.running = true;
+            // The boundary the driver waits for before any task, sent here
+            // because this task does not come through the event loop.
+            let _ = steer_tx.send(SteerOut::TaskFollows);
             let _ = task_tx.send(t).await;
         } else {
             state.push_line("type a task and press enter · esc to quit".into());
@@ -1028,6 +1051,9 @@ build/
             .expect("a trail was written");
         let raw = std::fs::read_to_string(file.path()).unwrap();
         let trail = trellis_trail::UntrustedTrail::from_json(&raw).unwrap();
+        // The first writer to fill `steering`: a field the digest missed
+        // would make this trail read as altered.
+        assert_eq!(trail.integrity(&raw), trellis_trail::Integrity::Intact);
         let steering = &trail.factual.steering;
         assert_eq!(steering.len(), 1, "{steering:?}");
         assert_eq!(steering[0].text, "prefer the smaller diff");
@@ -1039,18 +1065,73 @@ build/
     async fn tui_steer_typed_while_a_run_works_is_forwarded_to_it() {
         // The driver's half: a line arriving while the run is in flight
         // reaches that run's channel, as a steer and not as a follow-up.
-        let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel();
         let (to_run, mut steering) = tokio::sync::mpsc::unbounded_channel();
         let run = tokio::task::spawn_blocking(move || steering.blocking_recv());
-        typed_tx.send("use b.py".into()).unwrap();
-        let got = tokio::time::timeout(
+        typed_tx.send(SteerOut::Steer("use b.py".into())).unwrap();
+        let (got, at_boundary) = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             forward_steers(run, &mut typed_rx, to_run),
         )
         .await
-        .expect("the forwarder returns once the run does")
-        .expect("the run did not panic");
-        assert_eq!(got, Some(trellis_loop::Steering::Steer("use b.py".into())));
+        .expect("the forwarder returns once the run does");
+        assert_eq!(
+            got.expect("the run did not panic"),
+            Some(trellis_loop::Steering::Steer("use b.py".into()))
+        );
+        assert!(!at_boundary);
+    }
+
+    #[tokio::test]
+    async fn tui_steer_for_the_next_task_is_not_forwarded_to_the_run_ending() {
+        // The run has reported finished, and the next task and a steer for
+        // it were typed before the run was joined. The forwarder stops at
+        // the boundary: the steer is left for the next run and not sent to
+        // this one, and the boundary is reported, or the next task would
+        // wait for one that is never sent again.
+        let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (to_run, mut steering) = tokio::sync::mpsc::unbounded_channel();
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let run = tokio::task::spawn_blocking(move || {
+            let _ = hold.recv();
+        });
+        typed_tx.send(SteerOut::TaskFollows).unwrap();
+        typed_tx
+            .send(SteerOut::Steer("for the next".into()))
+            .unwrap();
+        release.send(()).unwrap();
+        let (joined, at_boundary) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            forward_steers(run, &mut typed_rx, to_run),
+        )
+        .await
+        .expect("the forwarder returns once the run does");
+        joined.expect("the run did not panic");
+        assert!(at_boundary, "the boundary was read, and has to be said so");
+        assert!(steering.try_recv().is_err(), "nothing reached this run");
+        assert_eq!(
+            typed_rx.try_recv().ok(),
+            Some(SteerOut::Steer("for the next".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn tui_steer_left_from_an_ended_task_is_skipped_up_to_the_boundary() {
+        let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel();
+        typed_tx.send(SteerOut::Steer("stale".into())).unwrap();
+        typed_tx.send(SteerOut::TaskFollows).unwrap();
+        typed_tx.send(SteerOut::Steer("fresh".into())).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            skip_to_task_boundary(&mut typed_rx),
+        )
+        .await
+        .expect("the boundary is already there");
+        assert_eq!(
+            typed_rx.try_recv().ok(),
+            Some(SteerOut::Steer("fresh".into())),
+            "only what was typed for the ended task is dropped"
+        );
     }
 
     #[test]
