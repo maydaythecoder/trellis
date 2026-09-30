@@ -141,27 +141,36 @@ pub(crate) const ROLLBACK_LIMIT: &str = "Note: these run unsandboxed with your p
 /// Each item, its argv, the files it names with their digests, and what else
 /// decides what runs. Printed whole: a summary of what will execute is not
 /// what will execute.
+///
+/// Labels, variable names, paths and detail all come from the repository,
+/// and this is the text a person reads to consent: each goes through
+/// [`crate::plain`], so an escape sequence cannot recolour, erase or
+/// rewrite what is shown, and a newline cannot fabricate a line of its own.
 fn describe(fp: &Fingerprint, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "This repository would make trellis execute:")?;
     for item in &fp.items {
         writeln!(out)?;
-        writeln!(out, "  {}", item.label)?;
+        writeln!(out, "  {}", crate::plain(&item.label))?;
         if !item.argv.is_empty() {
+            // `{:?}` already escapes control characters; `plain` again
+            // would double every backslash.
             writeln!(out, "    argv:  {:?}", item.argv)?;
         }
         if !item.receives.is_empty() {
+            let receives: Vec<String> = item.receives.iter().map(|v| crate::plain(v)).collect();
             writeln!(
                 out,
                 "    receives: {}  (from your environment; this command can read, \
                  print or send them)",
-                item.receives.join(", ")
+                receives.join(", ")
             )?;
         }
+        // The sha is computed by trellis, not read from the repository.
         for (path, sha) in &item.files {
-            writeln!(out, "    file:  {path}  sha256 {sha}")?;
+            writeln!(out, "    file:  {}  sha256 {sha}", crate::plain(path))?;
         }
         for line in item.detail.lines() {
-            writeln!(out, "    {line}")?;
+            writeln!(out, "    {}", crate::plain(line))?;
         }
     }
     writeln!(out)?;
@@ -485,5 +494,58 @@ mod tests {
         run_with(d.path(), &store, false, false, &mut out).unwrap();
         assert!(String::from_utf8(out).unwrap().contains("nothing to trust"));
         assert!(!home.path().join("trust.json").exists());
+    }
+
+    #[test]
+    fn trust_describe_prints_repository_strings_inert_on_one_line() {
+        // The risk (#190): labels, variable names, paths and detail come
+        // from the repository, and `trellis trust` is what a person reads
+        // before consenting. Printed raw, an escape sequence could hide or
+        // recolour an item, and a newline could forge a line that looks
+        // like trellis's own.
+        let esc = '\u{1b}';
+        let item = trellis_loop::TrustItem {
+            label: format!("custom tool lint{esc}[2K\nhook fake"),
+            argv: vec!["python".into(), format!("a{esc}b")],
+            detail: format!("description = x{esc}[31m"),
+            files: vec![(format!(".trellis/t{esc}[8m.py"), "ab".repeat(32))],
+            receives: vec![format!("KEY{esc}[0m")],
+        };
+        let fp = Fingerprint {
+            items: vec![item],
+            sha256: "0".repeat(64),
+            refused: None,
+        };
+        let mut out = Vec::new();
+        describe(&fp, &mut out).unwrap();
+        let shown = String::from_utf8(out).unwrap();
+
+        assert!(
+            !shown.contains(esc),
+            "no raw escape reaches the terminal: {shown:?}"
+        );
+        assert!(
+            shown
+                .lines()
+                .any(|l| l == "  custom tool lint\\u{1b}[2K\\nhook fake"),
+            "the label, escaped, on one line: {shown}"
+        );
+        assert!(
+            !shown
+                .lines()
+                .any(|l| l.trim_start().starts_with("hook fake")),
+            "no forged line: {shown}"
+        );
+        assert!(shown.contains("receives: KEY\\u{1b}[0m"), "{shown}");
+        assert!(
+            shown.contains("file:  .trellis/t\\u{1b}[8m.py  sha256 "),
+            "{shown}"
+        );
+        assert!(shown.contains("    description = x\\u{1b}[31m"), "{shown}");
+        // argv keeps `{:?}`, escaped once, not twice.
+        assert!(
+            shown.contains(r#"argv:  ["python", "a\u{1b}b"]"#),
+            "{shown}"
+        );
     }
 }
