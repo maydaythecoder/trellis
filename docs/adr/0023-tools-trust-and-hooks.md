@@ -1128,10 +1128,12 @@ The list is the carry-back's (ADR 0032): the files the orchestrator wrote
 into the repository from the command's clone for this call, recorded where
 it writes them. The owner's decision named a `git status` taken before and
 after each call (`trellis_vcs::pending`); since ADR 0032 the carry-back is
-the only way a command's changes reach the repository, and it already
-knows exactly which files those were. A status diff would also attribute to
-the command whatever a hook or another writer changed during the call, and
-would cost two git spawns per call to learn less.
+the only way trellis brings a command's changes into the repository, and
+it already knows exactly which files those were. The trade: the list is
+exact for what trellis wrote and blind to a command that escapes the clone.
+A status diff would catch an escape that landed on a tracked file, but it
+would also attribute to the command whatever a hook or another writer
+changed during the call, and costs two git spawns per call.
 
 **Best-effort.** It is what trellis wrote on the command's behalf, not
 everything the command did. It does not see:
