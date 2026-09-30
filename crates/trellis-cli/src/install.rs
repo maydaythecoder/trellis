@@ -29,8 +29,6 @@ const MAX_FILE_BYTES: u64 = 1 << 20;
 /// read.
 const MAX_FILES: usize = 2_000;
 const MAX_TOTAL_BYTES: u64 = 32 << 20;
-/// Skipped paths named in the output; the rest are counted.
-const SHOW_SKIPPED: usize = 20;
 
 /// One installed package, as `packages.toml` records it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,11 +234,12 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
              never hooks, tools or other code (ADR 0039)",
             plan.skipped.len()
         )?;
-        for (path, why) in plan.skipped.iter().take(SHOW_SKIPPED) {
+        // Every path, uncapped (#120): a count stands in for the one hook
+        // the user would have wanted to see. The listing is already in
+        // memory from `ls-tree`, so naming all of it adds no new bound to
+        // break.
+        for (path, why) in &plan.skipped {
             writeln!(out, "  {}: {why}", plain(path))?;
-        }
-        if plan.skipped.len() > SHOW_SKIPPED {
-            writeln!(out, "  ... and {} more", plan.skipped.len() - SHOW_SKIPPED)?;
         }
     }
     writeln!(
@@ -930,6 +929,109 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+    }
+
+    /// A package source whose code outnumbers any cap on how many skipped
+    /// paths are shown: 25 hooks, 25 tools, a `.trellis/` with a hook, and a
+    /// script inside a skill. Returns the source and every code path in it.
+    fn code_heavy_source(parent: &Path) -> (PathBuf, Vec<String>) {
+        let src = parent.join("codepkg");
+        std::fs::create_dir_all(&src).unwrap();
+        git_in(&src, &["init", "-q"]);
+        write(&src, "skills/alpha/SKILL.md", "---\nname: alpha\n---\nA\n");
+        let mut code = Vec::new();
+        for i in 0..25 {
+            code.push(format!("hooks/h{i:02}.sh"));
+            code.push(format!("tools/t{i:02}.py"));
+        }
+        code.push(".trellis/config.toml".to_string());
+        code.push(".trellis/hooks/pre_tool.py".to_string());
+        code.push("skills/alpha/run.py".to_string());
+        for p in &code {
+            write(&src, p, "#!/bin/sh\nexit 0\n");
+        }
+        git_in(&src, &["add", "-A"]);
+        git_in(&src, &["commit", "-q", "-m", "package"]);
+        git_in(&src, &["tag", "v1"]);
+        (src, code)
+    }
+
+    #[test]
+    fn install_skips_code_and_names_every_skipped_path() {
+        // The risk: a package with many hooks shows the first few and a
+        // count, so the one the user would have cared about is never named,
+        // and a package never carries code only if nothing of it lands on
+        // disk (#120).
+        let d = tempfile::tempdir().unwrap();
+        let (src, code) = code_heavy_source(d.path());
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        install(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+
+        assert_eq!(
+            files_under(&cfg.join("packages").join("codepkg")),
+            vec!["skills/alpha/SKILL.md"],
+            "{said}"
+        );
+        assert!(code.len() > 50, "the fixture outnumbers the old cap of 20");
+        for p in &code {
+            assert!(
+                said.lines()
+                    .any(|l| l.trim_start().starts_with(&format!("{p}: "))),
+                "{p} not named on its own line in:\n{said}"
+            );
+        }
+        assert!(
+            said.contains(&format!("skipped {} path(s)", code.len())),
+            "{said}"
+        );
+        assert!(
+            !said.contains("... and "),
+            "no path is folded into a count:\n{said}"
+        );
+    }
+
+    #[test]
+    fn install_skips_code_and_leaves_the_trust_store_byte_identical() {
+        // The risk: installing a package records, widens or rewrites trust,
+        // so code nobody ran `trellis trust` on is vouched for. The store is
+        // placed where `TrustStore::user()` puts it in production, beside
+        // `packages/` in the same user config directory, and holds a real
+        // record so a rewrite that kept it valid would still differ.
+        let d = tempfile::tempdir().unwrap();
+        let (src, _) = code_heavy_source(d.path());
+        let cfg = d.path().join("cfg");
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(repo.join(".trellis/hooks")).unwrap();
+        std::fs::write(repo.join(".trellis/hooks/gate.py"), "print('ok')\n").unwrap();
+        let hooks = trellis_loop::HookConfig {
+            pre_tool: Some(vec!["python".into(), ".trellis/hooks/gate.py".into()]),
+            ..Default::default()
+        };
+        let fp = trellis_loop::Fingerprint::of(&repo, &hooks, &[], None);
+        let store = trellis_loop::TrustStore::at(cfg.join("trust.json"));
+        store.trust(&repo, &fp).unwrap();
+        let before = std::fs::read(store.path()).unwrap();
+
+        install(&cfg, &spec(&src, "v1"), &mut Vec::new()).unwrap();
+
+        assert_eq!(std::fs::read(store.path()).unwrap(), before);
+        assert!(
+            !cfg.join("trust.json.tmp").exists(),
+            "the store's write-then-rename path was not taken"
+        );
+        assert_eq!(
+            store.state(&repo, &fp).unwrap(),
+            trellis_loop::TrustState::Trusted
+        );
+        // Nothing beside the store and the packages directory appeared.
+        let mut top: Vec<String> = std::fs::read_dir(&cfg)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        top.sort();
+        assert_eq!(top, vec!["packages", "trust.json"]);
     }
 
     #[test]
