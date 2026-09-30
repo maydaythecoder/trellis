@@ -51,15 +51,49 @@ where
     B: ratatui::backend::Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
+    run_with_steering(terminal, state, work_rx, task_tx, answer_tx, None).await
+}
+
+/// As [`run_with_answers`], and each line typed while a run is in flight
+/// goes out on `steer_tx` as a steer for that run (#115).
+///
+/// Unbounded for the reason the loop's own steering channel is: the sender
+/// is a person typing, and the driver does not read this while it is still
+/// deciding what a task is. A bounded channel that filled then would block
+/// this loop, and the interface the person is typing into would freeze.
+/// Without a `steer_tx` a queued steer goes nowhere, and the view says so
+/// when the run ends.
+pub async fn run_with_steering<B>(
+    terminal: &mut ratatui::Terminal<B>,
+    state: &mut AppState,
+    work_rx: mpsc::Receiver<Message>,
+    task_tx: mpsc::Sender<String>,
+    answer_tx: Option<mpsc::Sender<bool>>,
+    steer_tx: Option<mpsc::UnboundedSender<String>>,
+) -> anyhow::Result<()>
+where
+    B: ratatui::backend::Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     run_with_events(
         terminal,
         state,
         EventStream::new(),
         work_rx,
-        task_tx,
-        answer_tx,
+        Outlets {
+            task_tx,
+            answer_tx,
+            steer_tx,
+        },
     )
     .await
+}
+
+/// Where the loop sends what `update` recorded.
+struct Outlets {
+    task_tx: mpsc::Sender<String>,
+    answer_tx: Option<mpsc::Sender<bool>>,
+    steer_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// The loop, with the terminal's event source passed in.
@@ -72,8 +106,7 @@ async fn run_with_events<B, S>(
     state: &mut AppState,
     mut term_events: S,
     mut work_rx: mpsc::Receiver<Message>,
-    task_tx: mpsc::Sender<String>,
-    answer_tx: Option<mpsc::Sender<bool>>,
+    out: Outlets,
 ) -> anyhow::Result<()>
 where
     B: ratatui::backend::Backend,
@@ -118,10 +151,21 @@ where
             state.update(m);
         }
 
+        // Before the task, so that on the wire every steer of a run precedes
+        // the next task: the driver discards what is waiting when a task
+        // arrives, and that is only the last run's leftovers if this order
+        // holds. A steer with nowhere to go is dropped here and reported
+        // not delivered when the run ends.
+        for steer in state.steered.drain(..) {
+            if let Some(tx) = &out.steer_tx {
+                let _ = tx.send(steer);
+            }
+        }
+
         // Drained after every batch: a task typed during a burst of work
         // messages must not wait for the next keystroke to be noticed.
         if let Some(task) = state.submitted.take()
-            && task_tx.send(task).await.is_err()
+            && out.task_tx.send(task).await.is_err()
         {
             // Nothing is listening for tasks any more, so nothing can run.
             // Saying so beats an input box that silently does nothing.
@@ -136,7 +180,7 @@ where
         // Drained the same way, and before quitting is considered: an
         // answer given in the same batch as a quit still reaches the run.
         if let Some(yes) = state.answered.take()
-            && let Some(tx) = &answer_tx
+            && let Some(tx) = &out.answer_tx
         {
             let _ = tx.send(yes).await;
         }
@@ -159,6 +203,14 @@ mod tests {
         futures_util::stream::pending()
     }
 
+    fn outlets(task_tx: mpsc::Sender<String>) -> Outlets {
+        Outlets {
+            task_tx,
+            answer_tx: None,
+            steer_tx: None,
+        }
+    }
+
     /// The exit path, driven through the real loop.
     ///
     /// The terminal source here never yields (crossterm's own panics with no
@@ -179,7 +231,7 @@ mod tests {
 
         let out = tokio::time::timeout(
             Duration::from_secs(5),
-            run_with_events(&mut terminal, &mut state, headless(), rx, task_tx, None),
+            run_with_events(&mut terminal, &mut state, headless(), rx, outlets(task_tx)),
         )
         .await
         .expect("the loop must not hang on Quit");
@@ -206,7 +258,7 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_secs(5),
-            run_with_events(&mut terminal, &mut state, headless(), rx, task_tx, None),
+            run_with_events(&mut terminal, &mut state, headless(), rx, outlets(task_tx)),
         )
         .await
         .expect("must not hang")
@@ -250,13 +302,117 @@ mod tests {
                 &mut state,
                 headless(),
                 rx,
-                task_tx,
-                Some(answer_tx),
+                Outlets {
+                    answer_tx: Some(answer_tx),
+                    ..outlets(task_tx)
+                },
             ),
         )
         .await
         .expect("must not hang")
         .unwrap();
         assert_eq!(answer_rx.try_recv().ok(), Some(true));
+    }
+
+    fn typed(text: &str) -> Vec<Message> {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        text.chars()
+            .map(|c| Message::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)))
+            .chain(std::iter::once(Message::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))))
+            .collect()
+    }
+
+    /// A line typed mid-run leaves on the steer channel, and not as a task.
+    ///
+    /// Queued on screen but never sent, a steer would read as taken while
+    /// the run went on without it; sent as a task, it would start a second
+    /// run against the worktree the first is editing.
+    #[tokio::test]
+    async fn a_steer_typed_mid_run_leaves_on_the_steer_channel_and_not_as_a_task() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = AppState::default().with_running(true);
+        let (tx, rx) = mpsc::channel(64);
+        let (task_tx, mut task_rx) = mpsc::channel(8);
+        let (steer_tx, mut steer_rx) = mpsc::unbounded_channel();
+
+        for m in typed("prefer the smaller diff") {
+            tx.send(m).await.unwrap();
+        }
+        tx.send(Message::Quit).await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_events(
+                &mut terminal,
+                &mut state,
+                headless(),
+                rx,
+                Outlets {
+                    steer_tx: Some(steer_tx),
+                    ..outlets(task_tx)
+                },
+            ),
+        )
+        .await
+        .expect("must not hang")
+        .unwrap();
+
+        assert_eq!(
+            steer_rx.try_recv().ok().as_deref(),
+            Some("prefer the smaller diff")
+        );
+        assert!(task_rx.try_recv().is_err(), "a steer is not a task");
+        assert!(state.steered.is_empty(), "the loop drained it");
+    }
+
+    /// What the person sees: the queued line, then its delivery, drawn.
+    #[tokio::test]
+    async fn a_steer_is_drawn_queued_then_delivered() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = AppState::default().with_running(true);
+        let (tx, rx) = mpsc::channel(64);
+        let (task_tx, _task_rx) = mpsc::channel(8);
+        let (steer_tx, _steer_rx) = mpsc::unbounded_channel();
+
+        for m in typed("use b.py") {
+            tx.send(m).await.unwrap();
+        }
+        tx.send(Message::SteerDelivered { nth: 0, turn: 2 })
+            .await
+            .unwrap();
+        tx.send(Message::Quit).await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_events(
+                &mut terminal,
+                &mut state,
+                headless(),
+                rx,
+                Outlets {
+                    steer_tx: Some(steer_tx),
+                    ..outlets(task_tx)
+                },
+            ),
+        )
+        .await
+        .expect("must not hang")
+        .unwrap();
+        // The loop leaves on `Quit` without drawing the batch that carried
+        // it, so draw the state it left once more, as the next frame would.
+        terminal.draw(|frame| view::render(&state, frame)).unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("queued: use b.py"), "{screen}");
+        assert!(screen.contains("delivered at turn 2: use b.py"), "{screen}");
     }
 }

@@ -582,6 +582,7 @@ impl Server {
                 RunControl {
                     flag,
                     human: Human::Channel(tx),
+                    steering: None,
                 },
                 before,
                 &mut human,

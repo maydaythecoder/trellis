@@ -51,6 +51,17 @@ pub enum Message {
     ApprovalRequested {
         diff: String,
     },
+    /// A steer the view queued reached the model (#113, #115).
+    ///
+    /// `nth` is its position among the steers queued during this run, counted
+    /// from 0, and not the text: the loop reports a delivery without the text,
+    /// and naming it by position rather than taking the oldest one still
+    /// pending means a lost or repeated message cannot pin one steer's
+    /// delivery on another. `turn` is the turn whose request carried it.
+    SteerDelivered {
+        nth: usize,
+        turn: usize,
+    },
     RunFinished,
     // internal
     Quit,
