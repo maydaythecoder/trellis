@@ -26,20 +26,24 @@ fn repo() -> tempfile::TempDir {
     d
 }
 
-/// A repository under git, for the tools that ask git.
+/// A repository under git, for the tools that ask git: a copy of one built
+/// once per process (`testutil`). Each writer still gets its own clone of
+/// the copy (ADR 0032).
 fn git_repo() -> tempfile::TempDir {
-    let d = repo();
-    for args in [
-        ["init", "-q"].as_slice(),
-        &["config", "core.autocrlf", "false"],
-    ] {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(d.path())
-            .output()
-            .expect("git must be on PATH to run these tests");
-    }
-    d
+    static T: std::sync::OnceLock<crate::testutil::Template> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        crate::testutil::Template::build(|root| {
+            std::fs::create_dir_all(root.join("app")).unwrap();
+            std::fs::write(root.join("app/util.py"), "def helper():\n    return 1\n").unwrap();
+            for args in [
+                ["init", "-q"].as_slice(),
+                &["config", "core.autocrlf", "false"],
+            ] {
+                crate::testutil::git(root, args);
+            }
+        })
+    })
+    .instance()
 }
 
 fn budget() -> Budget {
