@@ -27,9 +27,23 @@ staged=$(git diff --cached --name-only --diff-filter=ACMR)
 added=$(git diff --cached -U0 --diff-filter=ACMR | grep -E '^\+[^+]' || true)
 
 # 1. Key-shaped literals and credentials in URLs, on added lines only (G5's
-#    patterns, from the scripts G5 reads).
-keys=$(scripts/checks/key-pattern.sh)
-auth=$(scripts/checks/no-auth-urls.sh --pattern)
+#    patterns, from the scripts G5 reads). A branch older than #206 has no
+#    such scripts, so install.sh puts copies beside the hook. With neither,
+#    an empty pattern would match nothing and pass everything: refuse
+#    instead (#208).
+pattern() { # <script> [args]: the repository's copy, else the installed one
+  local s
+  for s in "scripts/checks/$1" "$(dirname "$0")/trellis-security/$1"; do
+    if [ -f "$s" ]; then shift; bash "$s" "$@"; return; fi
+  done
+  return 1
+}
+keys=$(pattern key-pattern.sh) || keys=
+auth=$(pattern no-auth-urls.sh --pattern) || auth=
+if [ -z "$keys" ] || [ -z "$auth" ]; then
+  say "cannot load the key or basic-auth pattern (scripts/checks/, or trellis-security/ beside this hook); refusing rather than scanning with nothing. Run scripts/hooks/install.sh from a checkout that has them."
+  exit 1
+fi
 hits=$(printf '%s\n' "$added" | grep -oE "$keys" || true)
 if [ -n "$hits" ]; then
   say "key-shaped literal staged (build test canaries at run time instead):"
