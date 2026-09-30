@@ -91,20 +91,22 @@ impl Inputs {
     }
 }
 
-/// Each process agent's `command` (ADR 0026 §11), as a trust item: an argv
-/// from `.trellis/agents/*.toml` that `work` runs in the worktree, which is
-/// repository code as much as a hook is. A profile set that does not load
-/// contributes nothing here; `work` refuses it before anything runs.
+/// Each process agent's `command` (ADR 0026 §11), and each profile's
+/// services (§12), as trust items: argvs from `.trellis/agents/*.toml` that
+/// `work` runs in the worktree, which are repository code as much as a hook
+/// is. A profile set that does not load contributes nothing here; `work`
+/// refuses it before anything runs.
 fn process_agents(root: &Path, cache: &trellis_loop::HashCache) -> Vec<trellis_loop::TrustItem> {
-    trellis_queue::profile::load_all(root)
+    let mut items = Vec::new();
+    for p in trellis_queue::profile::load_all(root)
         .unwrap_or_default()
         .into_values()
-        .filter_map(|p| {
-            let argv = p.file.command.clone()?;
+    {
+        if let Some(argv) = &p.file.command {
             let mut item = trellis_loop::TrustItem::command_cached(
                 root,
                 format!("process agent {}", p.name),
-                &argv,
+                argv,
                 format!("timeout_s = {:?}", p.file.timeout_s),
                 cache,
             );
@@ -112,9 +114,23 @@ fn process_agents(root: &Path, cache: &trellis_loop::HashCache) -> Vec<trellis_l
             // by name: the profile file's hash alone put them in the digest
             // without anyone being told.
             item.receives = p.file.pass_env.clone();
-            Some(item)
-        })
-        .collect()
+            items.push(item);
+        }
+        for svc in &p.file.services {
+            // No `receives`: a service gets the scrubbed environment and no
+            // `pass_env`, whatever its profile passes its process agent.
+            items.push(trellis_loop::TrustItem::command_cached(
+                root,
+                format!("service {}/{}", p.name, svc.name),
+                &svc.command,
+                "runs beside each task of this profile; killed with its process tree when \
+                 the task ends"
+                    .to_string(),
+                cache,
+            ));
+        }
+    }
+    items
 }
 
 /// `Ok(())` when the repository's executable configuration is trusted,
@@ -250,6 +266,14 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
             .count();
         if agents > 0 {
             parts.push(format!("process agents: {agents} present"));
+        }
+        let services = fp
+            .items
+            .iter()
+            .filter(|i| i.label.starts_with("service "))
+            .count();
+        if services > 0 {
+            parts.push(format!("services: {services} present"));
         }
         match &refused {
             Some(reason) => format!("{}, cannot be trusted: {reason}", parts.join(", ")),

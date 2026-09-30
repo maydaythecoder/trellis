@@ -1036,6 +1036,7 @@ impl Chain {
                 profile: None,
                 model_from_user: self.model_from_user,
                 queued: false,
+                services: &[],
             },
             RunControl {
                 flag: self.flag,

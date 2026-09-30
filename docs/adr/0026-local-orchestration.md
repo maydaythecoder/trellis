@@ -3,7 +3,8 @@
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
 was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
-for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). Each amendment is marked in place. §4's `tools` list and skill deny
+for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). §12 added for
+services (#60), with a line in §4. Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -363,6 +364,10 @@ deny = []
 monthly_tokens = 2000000
 lifetime_tokens = 50000000
 warn_at = 0.8
+
+# [[services]]                          # started beside each task (§12, #60)
+# name = "web"
+# command = ["python", "-m", "http.server", "8000"]
 ```
 
 **Validation** happens whenever profiles are loaded, which is every command
@@ -385,6 +390,10 @@ that reads them:
 - *Amended (#182):* an `allow_write` entry that is blank is refused: it
   parses as the exact path "", which admits nothing, and would read as a
   scope that is not one.
+- *Amended (#60):* each `[[services]]` entry has exactly `name` and
+  `command`. The name uses a profile name's alphabet (it becomes part of a
+  file name), is unique within the profile, and `command` must name a
+  program. Either kind of profile may declare services (§12).
 
 **What a profile changes about a run of its tasks:**
 - **`instructions`**: the file's text goes ahead of the task, the same way
@@ -1329,6 +1338,93 @@ and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
 `trellis trust` prints one line stating the limit when it records trust for
 any of these writers.
 
+### 12. Services
+
+*Added for #60 (owner's decision of 2026-09-28, recorded on the issue).*
+Paperclip lets a workspace run runtime services, such as a dev server. A
+profile declares them as `[[services]]` (§4), and every task that profile
+runs gets them:
+
+1. **Trust.** A service's argv is repository code, as a process agent's is.
+   Each one is an item in the trust fingerprint, labelled `service
+   <agent>/<name>` and shown by `trellis trust`, and the profile file is
+   under `.trellis/`, so it is in the digest as every byte there is. A task
+   whose profile declares a service is not claimed until the repository is
+   trusted (the same gate and reason as §11 step 0), and `work` checks
+   again right before it spawns. Like a process agent's, a service's argv
+   may name code outside `.trellis/` (`python manage.py runserver`): the
+   refusal of ADR 0023 §4 applies to hooks and custom tools only.
+2. **Where and when.** Each service starts in the worktree the task runs
+   in, after the task's text has been built and before the run itself (the
+   model loop or the process agent), in the order declared. There is no
+   readiness wait: a task that needs the port open must wait for it
+   itself. Until #24 gives each task a worktree of its own, "the task's
+   worktree" is the one `work` runs in.
+3. **Environment.** The scrubbed environment every child gets (ADR 0024
+   §3), plus `TRELLIS_TASK_ID`, `TRELLIS_AGENT` and `TRELLIS_SERVICE`.
+   Nothing is put back: a profile's `pass_env` is for its process agent,
+   and its services never receive those variables. Evidence:
+   `service_gets_the_scrubbed_environment_and_not_its_profile_s_pass_env`
+   in `tests/child_env.rs`.
+4. **Output.** stdin is empty. stdout and stderr go to
+   `<git-dir>/trellis/services/<agent>.<name>.log`, truncated at each
+   start, never to the terminal: under `work --json` stdout carries JSONL
+   only, and on Unix a service in a process group of its own writing to the
+   terminal would be stopped by SIGTTOU. Nothing reads the log. It is not
+   bounded in size while the task runs.
+5. **Stopping, on every way out of the task.** The services are held by a
+   guard in `work`'s runner, and dropping it kills each one with its whole
+   process tree, in reverse order: after a converged or failed run, an
+   error, Ctrl-C (the run returns as interrupted and the guard drops after
+   it) and a panic that unwinds through the runner. If one service cannot
+   start, those already started are killed before the task ends as an
+   error.
+   - **Windows:** each service is in a Job Object of its own, with
+     kill-on-close and no breakaway (ADR 0035); the job is terminated and
+     the service reaped. If trellis itself is killed, closing the job
+     handle ends the tree.
+   - **Unix:** each service leads a process group of its own and is not
+     reaped until it is stopped, so the group id stays its own and `kill
+     -KILL -- -<pgid>` (`trellis_core::process::kill_tree`) cannot reach a
+     stranger; then the service is killed and reaped. A process that left
+     the group (`setsid`) is not reached. If trellis is killed with
+     SIGKILL, nothing stops the group.
+   Evidence: `service_is_killed_with_its_tree_when_the_task_ends` in
+   `tests/orchestration.rs`: a service backgrounds a heartbeat, and a second
+   task in the same `work` measures it and finds it stopped. The second
+   task is what makes this a test of the task's end rather than of
+   trellis's exit, which on Windows ends the job anyway. With the guard's
+   stop removed, it failed. Run on Windows here; the Unix branch of the
+   same test has not been run on this host.
+6. **Records, and `doctor`.** Each started service is recorded at
+   `<git-dir>/trellis/services/<pid>.json` (pid, the start time the
+   liveness probe of ADR 0020 §5 reports, agent, service, task, argv). The
+   record is removed once the service has been killed and reaped within two
+   seconds, and left otherwise. `trellis doctor` lists every recorded
+   service whose pid is alive with the recorded start time (or without one,
+   when either time is unknown). One whose task is not claimed is listed as
+   having outlived its task; one whose task is still claimed is listed
+   apart, as running for that task, which is expected while `work` runs it
+   (a claim a dead `work` left behind also reads as claimed, until it is
+   released as ADR 0020 §5 describes). Only the service's own pid is
+   recorded: a process it started that escaped the kill is not listed.
+7. **The trail.** Each service is one action, tool `service`, target
+   `<name>: <argv>`, first in the list under turn 1. Its outcome says it
+   was started and that its output is a log, not a check. `Action` has no
+   pass field, and nothing a service prints or returns reaches
+   `check_outcomes` (ADR 0004). Evidence:
+   `service_starts_in_the_task_s_worktree_and_the_trail_records_it_never_as_a_check`.
+
+**What rollback guarantees with a service, stated.** A service is an
+unsandboxed writer with the user's authority, of the same kind as a hook
+or a process agent, and it runs while the run is judged and while it is
+rolled back. Everything §11's "What rollback guarantees when trellis is not
+the only writer" lists applies to it. A service that writes into the
+worktree before the snapshot makes the run refuse to start (ADR 0009); one
+that writes during the run has its writes judged, and rolled back, as the
+run's own. No post-hoc check is added for it; the fix is isolation (ADR
+0032, "What is not built").
+
 ## What is not built
 
 - ~~**IANA timezone names** (§7).~~ Built for #47; see §7's amendment.
@@ -1345,6 +1441,10 @@ any of these writers.
   which the catch-up policy then handles.
 - **Webhook and API triggers.** ADR 0021 excludes them.
 - **Grandchildren of a timed-out process agent are not reaped** (§11).
+- **Services (§12): no readiness wait, no per-task worktree until #24, no
+  declaration on a single task** (only on a profile), and no services for
+  `trellis run`, which runs no profile. On Unix a SIGKILL of trellis leaves
+  a service's group running; `doctor` is what reports it.
 
 ## Alternatives rejected
 
