@@ -3,7 +3,8 @@
 **Status:** Accepted. First slice built in #168: behind `[index] backstop =
 "pyright"`, with the version printed in `trellis index` output and not stored
 in `.trellis/index.bin`, and its edges kept out of the graph, so the
-conservative partitioning reading below still holds.
+conservative partitioning reading below still holds. Amended 2026-09-29
+(#186): an answer naming an overridden or abstract callee is refused.
 **Date:** 2026-09-29
 **Decided:** 2026-09-28 by the owner, via the coordinator (issue #125)
 **Builds on:** ADR 0002 (thresholds), ADR 0012 (receiver typing), ADR 0014
@@ -106,6 +107,51 @@ So:
   (zero violations) and 100% precision on the audited sample. Pyright can only
   act on a site after the resolver has given its verdict. It does not feed
   back into the resolver.
+
+### Amendment, 2026-09-29 (#186): an overridden or abstract callee is refused
+
+Decided by the owner, via the coordinator, after #177's run on poetry.
+
+**Rule.** The backstop refuses a Pyright answer whose one symbol is a method
+a first-party subclass overrides, or a function or method that is
+`@abstractmethod` (bare or as `abc.abstractmethod`) or whose body, after an
+optional docstring, is only `...`, `pass` or `raise NotImplementedError`.
+The site keeps the resolver's verdict (`Candidates` stays `Candidates`,
+`Unresolved` stays `Unresolved`), and the refusal is counted under its own
+reason, `overridden or abstract`, apart from "no answer" and the other
+refusals. What the backstop still binds is judged by the human audit (#3).
+
+**Why.** `textDocument/definition` names the member of the receiver's
+*declared* type. ADR 0012's first invariant is that a declared type is an
+upper bound, not an identity: when a first-party subclass overrides the
+method, the call may reach the override, and the resolver keeps the base and
+every override as `Candidates` rather than choose. An answer inside a
+`Candidates` set passed the `OutsideCandidates` check while dropping the
+overrides; an `Unresolved` site had no set to check against at all. On
+poetry (#177) 813 of 857 bindings from `Candidates` sites, and 150 of 1,002
+from `Unresolved` sites, named such a method (a text proxy; see
+[`docs/bench/pyright-backstop-poetry-20260929.md`](../bench/pyright-backstop-poetry-20260929.md)).
+An abstract or stub body is never the one that runs.
+
+**How the override question is answered.** With the resolver's own rule,
+not a second copy of it: the search is rooted at the class that defines the
+method and walks its whole first-party subtree, as `typed_receiver` does.
+`Index` holds no class hierarchy and `.trellis/index.bin` does not store one,
+so the backstop reads and parses the indexed files again and rebuilds it.
+Symbol ids are positional, so if a file is unreadable or its content hash
+differs from the index's, or the rebuilt symbols do not line up with the
+index's, the backstop does not run and says so: binding without the rule is
+what this amendment decided against.
+
+**Order.** For a `Candidates` site, an answer outside the set is counted as
+`outside the Candidates set` even when it is also overridden; this rule is
+applied to what remains.
+
+**`self.m()` is not exempt.** ADR 0012 does not apply the override rule to
+`self.m()`, because the audit protocol binds it to the enclosing class. The
+resolver does that before the backstop is asked anything, so a `self.m()`
+that reaches the backstop is one that rule did not bind, and the exemption
+has nothing left to protect.
 
 ## Constraints the implementation inherits
 
