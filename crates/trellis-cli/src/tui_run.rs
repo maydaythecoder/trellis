@@ -243,9 +243,11 @@ async fn relay_approvals(
 /// the run's channel.
 ///
 /// Stops reading at the next task's boundary, and says so in the `bool`:
-/// what follows it was typed for that task. That happens only when the run
-/// has already reported finished and the next task was typed before the
-/// run was joined.
+/// what follows it was typed for that task. That happens when the run has
+/// already reported finished and the next task was typed before the run
+/// was joined, or before this returned: once the run is joined, what is
+/// already queued is read up to the boundary, and steers among it are
+/// dropped rather than sent to the run that has ended.
 async fn forward_steers<T>(
     mut run: tokio::task::JoinHandle<T>,
     typed: &mut UnboundedReceiver<SteerOut>,
@@ -253,7 +255,28 @@ async fn forward_steers<T>(
 ) -> (Result<T, tokio::task::JoinError>, bool) {
     loop {
         tokio::select! {
-            joined = &mut run => return (joined, false),
+            // The join is polled first so that a steer queued once the run
+            // has ended is never sent to it; `select!` otherwise picks among
+            // ready branches at random.
+            biased;
+            joined = &mut run => {
+                // #202: with the join and a queued boundary both ready,
+                // taking the join used to return `false` with the boundary
+                // unread. The driver's `skip_to_task_boundary` then consumed
+                // it, so no task was lost, but the `bool` said something
+                // untrue. Reading what is already queued makes it exact:
+                // a boundary sent before this point is always seen here.
+                // The steers dropped are the ones that skip drops too,
+                // typed for a run that no longer takes them; nothing after
+                // the boundary is read.
+                loop {
+                    match typed.try_recv() {
+                        Ok(SteerOut::TaskFollows) => return (joined, true),
+                        Ok(SteerOut::Steer(_)) => {}
+                        Err(_) => return (joined, false),
+                    }
+                }
+            }
             Some(line) = typed.recv() => match line {
                 // A run that has returned has dropped its receiver, and
                 // this line is then undelivered, which the view says when
@@ -1087,8 +1110,10 @@ build/
         // The run has reported finished, and the next task and a steer for
         // it were typed before the run was joined. The forwarder stops at
         // the boundary: the steer is left for the next run and not sent to
-        // this one, and the boundary is reported, or the next task would
-        // wait for one that is never sent again.
+        // this one, and the boundary is reported, since the driver reads
+        // the `bool` to decide whether to skip to a boundary itself (#202:
+        // when the join won the race the boundary went unread and this
+        // said `false`).
         let (typed_tx, mut typed_rx) = tokio::sync::mpsc::unbounded_channel();
         let (to_run, mut steering) = tokio::sync::mpsc::unbounded_channel();
         let (release, hold) = std::sync::mpsc::channel::<()>();
