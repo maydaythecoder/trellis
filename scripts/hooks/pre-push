@@ -1,0 +1,15 @@
+#!/bin/sh
+# Local stand-in for branch protection on v0.1-resolver (GitHub refuses
+# protection on a private repository without Pro). v0.1-resolver moves only
+# when the owner merges a pull request on GitHub, so this clone never pushes
+# to it: no update, no force-push, no deletion. Agent work goes to the
+# integration branch `drain` and reaches main through its PR.
+# Bypass deliberately with --no-verify.
+protected="refs/heads/v0.1-resolver"
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "$protected" ]; then
+    echo "pre-push: refusing to push to v0.1-resolver; merge through a pull request on GitHub" >&2
+    exit 1
+  fi
+done
+exit 0
