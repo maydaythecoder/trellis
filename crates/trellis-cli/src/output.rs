@@ -99,7 +99,19 @@ pub(crate) struct RunExtras {
     /// request (ADR 0025 §5). The run closes them for a driver that renders
     /// no prompt; its caller closes them when the run ends.
     pub compact: Option<Arc<trellis_loop::CompactRequests>>,
+    /// The session's `/name` label, recorded in the trail as
+    /// `Factual::label`. `None` everywhere but a named session.
+    pub label: Option<String>,
+    /// Where the run leaves the model's `done` summary, when the loop ended
+    /// on one. `Outcome` does not carry it, so the run observes it on the
+    /// way past and hands it back here; the session's `/copy` reads it.
+    /// Left untouched by a run that ended any other way.
+    pub done: Option<DoneSlot>,
 }
+
+/// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
+/// `rpc` builds its extras on a thread of its own.
+pub(crate) type DoneSlot = Arc<Mutex<Option<String>>>;
 
 impl Default for RunExtras {
     fn default() -> Self {
@@ -109,6 +121,8 @@ impl Default for RunExtras {
             frames: json().then(stdout_sink),
             abort: None,
             compact: None,
+            label: None,
+            done: None,
         }
     }
 }

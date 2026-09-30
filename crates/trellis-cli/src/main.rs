@@ -1178,6 +1178,43 @@ enum Driver {
     Hosted(Box<trellis_loop::HostedModel>),
 }
 
+/// A driver that remembers the `done` summary it handed the loop.
+///
+/// `Outcome` does not carry the summary, and the session's `/copy` wants it.
+/// Observing it on the way past keeps that inside the binary: the loop's
+/// types stay as they are, and every other method passes straight through,
+/// so the budget, the context figures and the compactions are the driver's
+/// own.
+struct SeesDone<'a, M> {
+    inner: &'a mut M,
+    done: &'a mut Option<String>,
+}
+
+impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
+    async fn next_step(
+        &mut self,
+        t: &trellis_loop::Transcript,
+    ) -> Result<trellis_loop::Step, String> {
+        let step = self.inner.next_step(t).await;
+        if let Ok(trellis_loop::Step::Done { summary }) = &step {
+            *self.done = Some(summary.clone());
+        }
+        step
+    }
+
+    fn tokens_used(&self) -> u64 {
+        self.inner.tokens_used()
+    }
+
+    fn prompt_bytes(&self) -> Option<usize> {
+        self.inner.prompt_bytes()
+    }
+
+    fn compactions(&self) -> &[trellis_loop::Compacted] {
+        self.inner.compactions()
+    }
+}
+
 impl Driver {
     /// Builds the driver a parsed spec names.
     ///
@@ -2150,17 +2187,22 @@ fn run_body(
         // precisely because the orchestrator is a separate task that owns
         // the only write path: dropping this future cannot interrupt a write
         // half-done, it can only stop new ones being asked for.
+        let mut done_summary = None;
         let out = tokio::select! {
             out = async {
+                let done = &mut done_summary;
                 match &mut driver {
                     Driver::Scripted(m) => {
-                        trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
+                        let mut m = SeesDone { inner: m, done };
+                        trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Runtime(m) => {
-                        trellis_loop::run_seeded(task, m, &handle, &cfg.budget(), seed).await
+                        let mut m = SeesDone { inner: m, done };
+                        trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed).await
                     }
                     Driver::Hosted(m) => {
-                        trellis_loop::run_seeded(task, &mut **m, &handle, &cfg.budget(), seed)
+                        let mut m = SeesDone { inner: &mut **m, done };
+                        trellis_loop::run_seeded(task, &mut m, &handle, &cfg.budget(), seed)
                             .await
                     }
                 }
@@ -2170,6 +2212,15 @@ fn run_body(
             // `rpc`'s `abort` (ADR 0025 §5): the same path as Ctrl-C.
             _ = output::aborted(extras.abort.clone()) => None,
         };
+        // Only a loop that returned can have ended on `done`; an interrupt
+        // leaves the slot as it was, so `/copy` keeps the previous summary
+        // rather than one from a run the person stopped.
+        if out.is_some()
+            && let (Some(slot), Some(summary)) = (&extras.done, done_summary)
+            && let Ok(mut slot) = slot.lock()
+        {
+            *slot = Some(summary);
+        }
         // Test-only injection point: a panic with the run's edits in the
         // tree, where a real one (a provider value that overflows, an index
         // bug) would unwind out of `block_on`.
@@ -2303,6 +2354,7 @@ fn run_body(
         tokens,
         prompt_tokens,
         agent: profile.map(|p| p.name.clone()),
+        label: extras.label.clone(),
         inputs: added.inputs.clone(),
         compactions: &compactions,
         requested: &requested,
@@ -3153,6 +3205,8 @@ struct TrailFacts<'a> {
     /// (ADR 0027, #106).
     prompt_tokens: Option<u64>,
     agent: Option<String>,
+    /// The session's `/name` label, when it has one.
+    label: Option<String>,
     /// Context files, system files and forced skills, by name and size
     /// (ADR 0025, integrated).
     inputs: Vec<trellis_trail::Input>,
@@ -3212,6 +3266,7 @@ fn record_trail(
         tokens,
         prompt_tokens,
         agent,
+        label,
         inputs,
         compactions,
         requested,
@@ -3348,6 +3403,7 @@ fn record_trail(
         tokens,
         prompt_tokens,
         agent,
+        label,
         inputs,
         // Empty on a run nobody steered, and empty is omitted on disk, so
         // such a trail has the bytes it had before the field (ADR 0034).
@@ -4666,6 +4722,7 @@ mod interrupt_tests {
             tokens: None,
             prompt_tokens: None,
             agent: None,
+            label: None,
             inputs: Vec::new(),
             compactions: &[],
             requested: &[],
