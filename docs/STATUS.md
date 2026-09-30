@@ -1925,6 +1925,11 @@ name the test that would fail if it were reverted.
 poetry 2.5.0. Full write-up and every deviation from the designed protocol in
 `BENCHMARK_AND_EVAL.md` §5.
 
+Both configurations' logs were searched for the chunked-reply client bug
+(#229): no logged run of either ended on it (§5.9, which gives the grep and
+the per-directory counts). Coder-3B's t18 and t19 have no log, so for them it
+is unknown; neither is in the figures below.
+
 ```
 budget-exhausted 16   format-failure 3   no-recovery 1
 0 repaired of 20      errors_after == errors_before on all 20

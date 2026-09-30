@@ -1,0 +1,439 @@
+{
+  "triage_version": 2,
+  "issues": [
+    {
+      "number": 201,
+      "title": "Trust: a hook argv naming a file under the user's packages/ is neither refused nor hashed",
+      "story": "S07",
+      "labels": [
+        "parked",
+        "triage:needs-human"
+      ],
+      "blocked_by": [
+        120
+      ],
+      "area": {
+        "outcome": "abstained",
+        "rule": "§5 area: from file paths",
+        "reason": "`crates/trellis-loop/src/trust.rs` is under no path in the area table"
+      },
+      "kind": {
+        "outcome": "decided",
+        "value": "kind:feature",
+        "rule": "§5 kind: otherwise"
+      },
+      "risk": {
+        "outcome": "abstained",
+        "rule": "§5 risk",
+        "reason": "surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff"
+      },
+      "surface": {
+        "outcome": "abstained",
+        "rule": "§5 surface: a pub fn or pub struct diff in a lib crate",
+        "reason": "`crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff"
+      },
+      "effort": {
+        "outcome": "decided",
+        "value": "effort:s",
+        "rule": "§5 effort: 1-2 files, 0-1 new tests"
+      },
+      "origin": {
+        "outcome": "abstained",
+        "rule": "§2 origin: recorded when the ticket is created",
+        "reason": "no `origin:` label is recorded"
+      },
+      "flags": {
+        "outcome": "abstained",
+        "rule": "§5 !needs-adr",
+        "reason": "surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff"
+      },
+      "ready": {
+        "outcome": "abstained",
+        "rule": "§5 ready",
+        "reason": "!needs-adr unknown: surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff"
+      },
+      "triage": {
+        "outcome": "decided",
+        "value": {
+          "route": "triage:needs-human",
+          "reasons": [
+            "area abstained: `crates/trellis-loop/src/trust.rs` is under no path in the area table",
+            "surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff",
+            "risk abstained: surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff",
+            "origin abstained: no `origin:` label is recorded",
+            "flags abstained: surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff"
+          ]
+        },
+        "rule": "§6 needs-human: a dimension abstained, source: agent, or risk:high"
+      },
+      "agent_ok": {
+        "outcome": "abstained",
+        "rule": "§5 !agent-ok rule 2",
+        "reason": "rule 2 (no Done when line needing judgment) has no deterministic check, so the rules neither set nor clear !agent-ok (#195)"
+      },
+      "notes": []
+    },
+    {
+      "number": 60,
+      "title": "Start and stop dev servers for a task's workspace",
+      "story": "S09",
+      "labels": [
+        "!needs-adr",
+        "P2",
+        "area:agents",
+        "deferred",
+        "effort:m",
+        "from-paperclip",
+        "kind:feature",
+        "origin:plan",
+        "risk:medium",
+        "surface:cli",
+        "triage:auto",
+        "type:ticket"
+      ],
+      "blocked_by": [
+        98,
+        21
+      ],
+      "area": {
+        "outcome": "abstained",
+        "rule": "§5 area: from file paths",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "kind": {
+        "outcome": "abstained",
+        "rule": "§5 kind: only tests, docs or build files touched",
+        "reason": "the body has no `**Files:**` line, so whether only tests, docs or build files are touched is unknown"
+      },
+      "risk": {
+        "outcome": "abstained",
+        "rule": "§5 risk",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "surface": {
+        "outcome": "abstained",
+        "rule": "§5 surface",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "effort": {
+        "outcome": "abstained",
+        "rule": "§5 effort: from files and new tests",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "origin": {
+        "outcome": "decided",
+        "value": "origin:plan",
+        "rule": "§2 origin: recorded when the ticket is created"
+      },
+      "flags": {
+        "outcome": "abstained",
+        "rule": "§5 !needs-adr",
+        "reason": "surface abstained: the body has no `**Files:**` line"
+      },
+      "ready": {
+        "outcome": "abstained",
+        "rule": "§5 ready",
+        "reason": "effort abstained: the body has no `**Files:**` line"
+      },
+      "triage": {
+        "outcome": "abstained",
+        "rule": "§6 triage",
+        "reason": "the state of blocker #98 was not supplied"
+      },
+      "agent_ok": {
+        "outcome": "abstained",
+        "rule": "§5 !agent-ok rule 2",
+        "reason": "rule 2 (no Done when line needing judgment) has no deterministic check, so the rules neither set nor clear !agent-ok (#195)"
+      },
+      "notes": [
+        "blocker #98 could not be read: no recording for #98",
+        "blocker #21 could not be read: no recording for #21"
+      ]
+    },
+    {
+      "number": 77,
+      "title": "Add trellis ticket triage",
+      "story": "S13",
+      "labels": [
+        "!agent-ok",
+        "P2",
+        "area:cli",
+        "effort:m",
+        "kind:feature",
+        "origin:manual",
+        "risk:medium",
+        "surface:cli",
+        "triage:auto",
+        "type:ticket"
+      ],
+      "blocked_by": [
+        75,
+        76
+      ],
+      "area": {
+        "outcome": "abstained",
+        "rule": "§5 area: from file paths",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "kind": {
+        "outcome": "abstained",
+        "rule": "§5 kind: only tests, docs or build files touched",
+        "reason": "the body has no `**Files:**` line, so whether only tests, docs or build files are touched is unknown"
+      },
+      "risk": {
+        "outcome": "abstained",
+        "rule": "§5 risk",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "surface": {
+        "outcome": "abstained",
+        "rule": "§5 surface",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "effort": {
+        "outcome": "abstained",
+        "rule": "§5 effort: from files and new tests",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "origin": {
+        "outcome": "decided",
+        "value": "origin:manual",
+        "rule": "§2 origin: recorded when the ticket is created"
+      },
+      "flags": {
+        "outcome": "abstained",
+        "rule": "§5 !needs-adr",
+        "reason": "surface abstained: the body has no `**Files:**` line"
+      },
+      "ready": {
+        "outcome": "abstained",
+        "rule": "§5 ready",
+        "reason": "effort abstained: the body has no `**Files:**` line"
+      },
+      "triage": {
+        "outcome": "decided",
+        "value": {
+          "route": "triage:needs-human",
+          "reasons": [
+            "area abstained: the body has no `**Files:**` line",
+            "kind abstained: the body has no `**Files:**` line, so whether only tests, docs or build files are touched is unknown",
+            "surface abstained: the body has no `**Files:**` line",
+            "risk abstained: the body has no `**Files:**` line",
+            "effort abstained: the body has no `**Files:**` line",
+            "flags abstained: surface abstained: the body has no `**Files:**` line"
+          ]
+        },
+        "rule": "§6 needs-human: a dimension abstained, source: agent, or risk:high"
+      },
+      "agent_ok": {
+        "outcome": "abstained",
+        "rule": "§5 !agent-ok rule 2",
+        "reason": "rule 2 (no Done when line needing judgment) has no deterministic check, so the rules neither set nor clear !agent-ok (#195)"
+      },
+      "notes": []
+    },
+    {
+      "number": 94,
+      "title": "S13: As a maintainer, I want the ticketing standard implemented as a trellis-tickets crate with a trellis ticket CLI so that labels, readiness and triage are computed rather than hand-applied",
+      "story": "S13",
+      "labels": [
+        "P2",
+        "type:story"
+      ],
+      "blocked_by": [],
+      "area": {
+        "outcome": "abstained",
+        "rule": "§5 area: from file paths",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "kind": {
+        "outcome": "abstained",
+        "rule": "§5 kind",
+        "reason": "a story is not classified as a ticket; its tickets are"
+      },
+      "risk": {
+        "outcome": "abstained",
+        "rule": "§5 risk",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "surface": {
+        "outcome": "abstained",
+        "rule": "§5 surface",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "effort": {
+        "outcome": "abstained",
+        "rule": "§5 effort: from files and new tests",
+        "reason": "the body has no `**Files:**` line"
+      },
+      "origin": {
+        "outcome": "abstained",
+        "rule": "§2 origin: recorded when the ticket is created",
+        "reason": "no `origin:` label is recorded"
+      },
+      "flags": {
+        "outcome": "abstained",
+        "rule": "§5 !needs-adr",
+        "reason": "surface abstained: the body has no `**Files:**` line"
+      },
+      "ready": {
+        "outcome": "abstained",
+        "rule": "§5 ready",
+        "reason": "effort abstained: the body has no `**Files:**` line"
+      },
+      "triage": {
+        "outcome": "abstained",
+        "rule": "§6 triage",
+        "reason": "a story is not triaged as a ticket; its tickets are"
+      },
+      "agent_ok": {
+        "outcome": "abstained",
+        "rule": "§5 !agent-ok rule 2",
+        "reason": "rule 2 (no Done when line needing judgment) has no deterministic check, so the rules neither set nor clear !agent-ok (#195)"
+      },
+      "notes": []
+    },
+    {
+      "number": 198,
+      "title": "doctor's trust line leaves process agents out",
+      "story": null,
+      "labels": [
+        "ready",
+        "triage:auto"
+      ],
+      "blocked_by": [
+        60
+      ],
+      "area": {
+        "outcome": "decided",
+        "value": "area:cli",
+        "rule": "§5 area: from file paths"
+      },
+      "kind": {
+        "outcome": "decided",
+        "value": "kind:feature",
+        "rule": "§5 kind: otherwise"
+      },
+      "risk": {
+        "outcome": "decided",
+        "value": "risk:medium",
+        "rule": "§5 risk:medium: surface above internal"
+      },
+      "surface": {
+        "outcome": "decided",
+        "value": "surface:cli",
+        "rule": "§5 surface: a command definition (crates/trellis-cli/src) touched"
+      },
+      "effort": {
+        "outcome": "decided",
+        "value": "effort:s",
+        "rule": "§5 effort: 1-2 files, 0-1 new tests"
+      },
+      "origin": {
+        "outcome": "abstained",
+        "rule": "§2 origin: recorded when the ticket is created",
+        "reason": "no `origin:` label is recorded"
+      },
+      "flags": {
+        "outcome": "decided",
+        "value": [],
+        "rule": "§5 flags: !breaking, !security, !blocked-ext as recorded; !needs-adr by §5; !agent-ok never set, rule 2 has no deterministic check here"
+      },
+      "ready": {
+        "outcome": "decided",
+        "value": {
+          "ready": false,
+          "failures": [
+            "blocked by #60 (OPEN)"
+          ]
+        },
+        "rule": "§5 ready"
+      },
+      "triage": {
+        "outcome": "decided",
+        "value": {
+          "route": "triage:needs-human",
+          "reasons": [
+            "origin abstained: no `origin:` label is recorded"
+          ]
+        },
+        "rule": "§6 needs-human: a dimension abstained, source: agent, or risk:high"
+      },
+      "agent_ok": {
+        "outcome": "abstained",
+        "rule": "§5 !agent-ok rule 2",
+        "reason": "rule 2 (no Done when line needing judgment) has no deterministic check, so the rules neither set nor clear !agent-ok (#195)"
+      },
+      "notes": []
+    },
+    {
+      "number": 202,
+      "title": "tui: forward_steers can return before reading a task boundary typed before the run ended",
+      "story": null,
+      "labels": [
+        "ready",
+        "triage:auto"
+      ],
+      "blocked_by": [],
+      "area": {
+        "outcome": "decided",
+        "value": "area:cli",
+        "rule": "§5 area: from file paths"
+      },
+      "kind": {
+        "outcome": "decided",
+        "value": "kind:feature",
+        "rule": "§5 kind: otherwise"
+      },
+      "risk": {
+        "outcome": "decided",
+        "value": "risk:medium",
+        "rule": "§5 risk:medium: surface above internal"
+      },
+      "surface": {
+        "outcome": "decided",
+        "value": "surface:cli",
+        "rule": "§5 surface: a command definition (crates/trellis-cli/src) touched"
+      },
+      "effort": {
+        "outcome": "decided",
+        "value": "effort:s",
+        "rule": "§5 effort: 1-2 files, 0-1 new tests"
+      },
+      "origin": {
+        "outcome": "abstained",
+        "rule": "§2 origin: recorded when the ticket is created",
+        "reason": "no `origin:` label is recorded"
+      },
+      "flags": {
+        "outcome": "decided",
+        "value": [],
+        "rule": "§5 flags: !breaking, !security, !blocked-ext as recorded; !needs-adr by §5; !agent-ok never set, rule 2 has no deterministic check here"
+      },
+      "ready": {
+        "outcome": "decided",
+        "value": {
+          "ready": true,
+          "failures": []
+        },
+        "rule": "§5 ready"
+      },
+      "triage": {
+        "outcome": "decided",
+        "value": {
+          "route": "triage:needs-human",
+          "reasons": [
+            "origin abstained: no `origin:` label is recorded"
+          ]
+        },
+        "rule": "§6 needs-human: a dimension abstained, source: agent, or risk:high"
+      },
+      "agent_ok": {
+        "outcome": "abstained",
+        "rule": "§5 !agent-ok rule 2",
+        "reason": "rule 2 (no Done when line needing judgment) has no deterministic check, so the rules neither set nor clear !agent-ok (#195)"
+      },
+      "notes": []
+    }
+  ]
+}

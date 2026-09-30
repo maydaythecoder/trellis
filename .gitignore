@@ -29,3 +29,7 @@
 # but an older build writes chat.log here, and a tracked copy that changes
 # makes the worktree dirty, which refuses a run (ADR 0009).
 /chat.log
+
+# Python bytecode: running or importing a script must not dirty the tree (#224).
+__pycache__/
+*.py[cod]

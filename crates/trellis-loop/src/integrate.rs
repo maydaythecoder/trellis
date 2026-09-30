@@ -516,6 +516,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rule5_a_partitions_own_passing_verdict_is_not_the_runs_verdict() {
+        // Rule 5 (ADR 0005, ADR 0042 §3). The risk: a partition hands back a
+        // real, sealed, passing `Verdict` from its own worktree, and the
+        // supervisor accepts it as the run's pass, so one agent's check
+        // stands in for a judgment on work it never saw. `run_integrated`
+        // takes the partition's result as an opaque `T`, so it cannot read
+        // that verdict by signature; this defends the behavioural half: a
+        // plan whose every partition carries a pass still converges only on
+        // the integrated verdicts, and here those fail.
+        let (dir, base) = repo();
+        let checks = collision_checker(&["a.py", "b.py"]);
+        let local = checks.clone();
+        let b = budget();
+        let out = supervisor(dir.path(), &base, &b, FailurePolicy::AllOrNothing)
+            .run_integrated(&plan(), &checks, move |task| {
+                let local = local.clone();
+                async move {
+                    let (file, body) = match task.id.0 {
+                        0 => ("a.py", "def a():\n    return 'A_NEW'\n"),
+                        _ => ("b.py", "def b():\n    return 'B_NEW'\n"),
+                    };
+                    std::fs::write(task.root.join(file), body).map_err(|e| e.to_string())?;
+                    // The only way to hold a `Verdict` outside
+                    // `trellis-checks` is to run a check (rule 1).
+                    let v =
+                        trellis_checks::typecheck(&task.root, &local, &[PathBuf::from(".")]).await;
+                    Ok::<_, String>((task.root.clone(), v))
+                }
+            })
+            .await
+            .unwrap();
+
+        // The premise: each partition carries its own genuine pass.
+        let carried: Vec<&(PathBuf, Verdict)> = out
+            .reports
+            .iter()
+            .map(|r| r.outcome.as_ref().expect("every partition landed"))
+            .collect();
+        assert_eq!(carried.len(), 2);
+        for (_, v) in &carried {
+            assert!(v.passed(), "a partition's local check passed: {v:?}");
+            assert_eq!(v.kind(), CheckKind::Typecheck);
+        }
+        // No partition could judge another's output: each checked a
+        // worktree of its own, neither of them the root the union lands in.
+        assert_ne!(carried[0].0, carried[1].0);
+        for (root, _) in &carried {
+            assert_ne!(root.as_path(), dir.path());
+        }
+
+        // The run is decided by the integrated verdicts alone.
+        assert_eq!(out.merged, ["a.py", "b.py"]);
+        assert!(!out.converged(), "{:?}", out.integration);
+        assert!(
+            matches!(&out.integration, Integration::RolledBack(why) if why.contains("Typecheck")),
+            "{:?}",
+            out.integration
+        );
+        assert_eq!(out.checks.len(), 2);
+        assert_eq!(out.checks[0].kind(), CheckKind::Typecheck);
+        assert!(
+            !out.checks[0].passed(),
+            "the integrated type check ran on the union and failed"
+        );
+        assert!(at_base(dir.path()));
+    }
+
+    #[tokio::test]
     async fn integrated_check_cross_partition_failure_records_a_suspected_recall_gap() {
         // A failure naming files that two partitions own separately is a
         // collision the plan said could not happen: the graph missed an
@@ -674,19 +742,20 @@ mod tests {
         let merged = |f: &str| {
             std::fs::read_to_string(dir.path().join(f)).is_ok_and(|s| s.contains("A_NEW"))
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        // No wall-clock deadline: the future is the deadline. `run_plan` has
+        // no await between writing the merge and the type check's first poll,
+        // so once both files show the merge, the future is parked inside the
+        // 20 s check, and it cannot finish before the merge is visible. A
+        // fixed wait here measured host load (#225): under parallel test
+        // load the partitions alone outlasted 15 s.
         loop {
             tokio::select! {
-                _ = &mut fut => panic!("the check ended before the run was interrupted"),
+                out = &mut fut => panic!("the run ended before it was interrupted: {out:?}"),
                 () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
             }
             if merged("a.py") && merged("b.py") {
                 break;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the merge never landed"
-            );
         }
         drop(fut);
 

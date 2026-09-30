@@ -21,6 +21,18 @@ under the run directory (`cargo install` in supply-chain), no provider-key
 variables, and OPENAI_BASE_URL pointed at a closed port so the live-model
 tests skip as they do on a GitHub runner.
 
+Each step's environment is the workflow's `env:`, then the job's, then the
+step's own, later ones winning, as on GitHub. Step output is decoded as UTF-8
+with replacement: a step that printed a byte the Windows locale codec leaves
+undefined (cp1252 has five) once left an empty log behind an exit code of 0
+(#223).
+
+On a Linux host a Linux leg runs natively in a clean clone, and a Windows leg
+fails; it is not skipped. CI_LOCAL_DIR, if set, replaces the run directory:
+the logs of every leg, and the clone and throwaway home of native legs; the self-test
+(scripts/checks/ci-local-selftest.sh) sets it so that it never touches the
+clone a real run reuses.
+
 Exit 0 only if every step of every selected job exited 0.
 """
 
@@ -36,7 +48,10 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-WIN_DIR = Path("C:/ci-local")  # short: the tree has paths near MAX_PATH
+ON_WINDOWS = os.name == "nt"
+# Short on Windows: the tree has paths near MAX_PATH.
+WIN_DIR = Path(os.environ.get("CI_LOCAL_DIR")
+               or ("C:/ci-local" if ON_WINDOWS else Path.home() / "ci-local"))
 WSL_DIR = "$HOME/ci-local"
 DISTRO = "Ubuntu"
 KEYS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY"]
@@ -44,11 +59,20 @@ KNOWN_USES = ("actions/checkout@", "dtolnay/rust-toolchain@", "Swatinem/rust-cac
               "actions/setup-python@")
 
 
+# Every child's output is read with these. The default is the locale codec,
+# cp1252 on this host, and the reader thread decoding it died on a byte cp1252
+# leaves undefined: the log came out empty and the exit code still said 0
+# (#223). Replacement keeps every line and never raises.
+UTF8 = dict(text=True, encoding="utf-8", errors="replace")
+
+
 def sh(cmd, **kw):
-    return subprocess.run(cmd, check=True, text=True, capture_output=True, **kw).stdout.strip()
+    return subprocess.run(cmd, check=True, capture_output=True, **UTF8, **kw).stdout.strip()
 
 
 def git_bash():
+    if not ON_WINDOWS:
+        return shutil.which("bash") or sys.exit("bash not found")
     # `bash` on PATH can be System32\bash.exe, which is WSL's.
     for c in [r"C:\Program Files\Git\bin\bash.exe", shutil.which("bash") or ""]:
         if c and "system32" not in c.lower() and Path(c).exists():
@@ -65,7 +89,7 @@ def wsl(script):
     # home and not in whichever Windows directory this script was started from.
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
     return subprocess.run(["wsl.exe", "-d", DISTRO, "--cd", "~", "--exec", "bash", "-lc", script],
-                          text=True, capture_output=True, env=env)
+                          capture_output=True, env=env, **UTF8)
 
 
 def to_wsl(path):
@@ -116,7 +140,10 @@ def run_leg(name, platform, job, top_env, sha, logdir):
     venv = any(s.get("uses", "").startswith("actions/setup-python@") for s in steps)
     env = dict(top_env or {}, **(job.get("env") or {}))
     tag = f"{name}-{platform}"
-    if platform == "windows":
+    native = (platform == "windows") == ON_WINDOWS
+    if platform == "windows" and not native:
+        return False, "a windows leg cannot run on this host"
+    if native:
         work = WIN_DIR / "win"
         if not (work / ".git").exists():
             shutil.rmtree(work, ignore_errors=True)
@@ -128,6 +155,10 @@ def run_leg(name, platform, job, top_env, sha, logdir):
         ci_home = (WIN_DIR / "home-win").as_posix()
         Path(ci_home).mkdir(parents=True, exist_ok=True)
         Path(ci_home, "gitconfig").write_text("[core]\n\tlongpaths = true\n")
+        # As the WSL checkout does. A Windows leg has never had one made (its
+        # PATH entry names no directory, so the host Python runs); unchanged.
+        if venv and not ON_WINDOWS and not Path(ci_home, "venv/bin/python").exists():
+            sh([sys.executable, "-m", "venv", f"{ci_home}/venv"])
     else:
         # The common git dir, not ROOT: in a linked worktree ROOT/.git is a
         # file naming a `C:/...` gitdir, which git inside WSL cannot follow.
@@ -150,14 +181,16 @@ def run_leg(name, platform, job, top_env, sha, logdir):
         if "run" not in st:
             continue
         label = st.get("name") or st["run"].strip().splitlines()[0][:60]
-        body = prelude(env, platform, venv) + st["run"]
+        # Step env over job env, per step, so one step's `env:` never
+        # reaches the next.
+        body = prelude(dict(env, **(st.get("env") or {})), platform, venv) + st["run"]
         script = logdir / f"{tag}-{i:02d}.sh"
         script.write_text(body, encoding="utf-8", newline="\n")
         log = logdir / f"{tag}-{i:02d}.log"
         t = time.time()
-        if platform == "windows":
-            p = subprocess.run([git_bash(), script.as_posix()], cwd=WIN_DIR / "win", text=True,
-                               capture_output=True, env=dict(os.environ, CI_HOME=ci_home))
+        if native:
+            p = subprocess.run([git_bash(), script.as_posix()], cwd=WIN_DIR / "win",
+                               capture_output=True, env=dict(os.environ, CI_HOME=ci_home), **UTF8)
         else:
             spath = to_wsl(script)
             p = wsl(f"export CI_HOME={WSL_DIR}/home; cd {WSL_DIR}/trellis && bash {spath}")
@@ -171,6 +204,9 @@ def run_leg(name, platform, job, top_env, sha, logdir):
 
 
 def main():
+    # A failing step's tail is printed, and stdout may be a pipe in the
+    # locale codec; a character that codec cannot encode must not raise.
+    sys.stdout.reconfigure(errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default="HEAD")
     ap.add_argument("--job", action="append", default=[])

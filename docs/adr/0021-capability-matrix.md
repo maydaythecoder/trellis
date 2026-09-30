@@ -124,7 +124,7 @@ override any row.
 | 2.7 catalog overlay | built (`trellis model`) |
 | 2.8 thinking levels | W-C, where the provider protocol carries it |
 | 2.9 scoped model cycling | W-D (`session` `/model` already switches; add a list) |
-| 2.10 llama.cpp router | built in part (`trellis model pull`); router deferred. **Amended 2026-09-29 (#45):** the owner kept the router deferred on 2026-09-28. Listing, loading and unloading models on a running llama.cpp router is not built; `trellis model pull` is the download half. |
+| 2.10 llama.cpp router | built in part (`trellis model pull`); router deferred. **Amended 2026-09-29 (#45):** the owner kept the router deferred on 2026-09-28. Listing, loading and unloading models on a running llama.cpp router is not built; `trellis model pull` is the download half. **Amended 2026-09-30 (#216):** `pull` fetches at a pinned commit and verifies SHA-256 before the file is moved into place (ADR 0044). |
 | 2.11 Radius gateway | excluded: networked service we would control (ADR 0010) |
 | 2.12 custom providers | W-C (a `[[providers]]` table naming a protocol and base URL) |
 | 2.13 transports / proxy | W-C (HTTPS; proxy from the environment); websocket excluded. **Amended 2026-09-29 (#160):** W-C did not build the proxy (see "Where this stands"). `HTTPS_PROXY` and `NO_PROXY` are landing (#150, an ADR 0024 §1 amendment), not yet merged. |

@@ -1023,14 +1023,20 @@ fn list_models() -> Result<()> {
     println!("weights in {}", dir.display());
     println!();
     for e in trellis_model::CATALOG {
-        let path = dir.join(e.file);
-        let have = std::fs::metadata(&path).ok().map(|m| m.len());
-        let state = match have {
-            Some(n) if n >= e.bytes => "downloaded".to_string(),
+        let size = |p: PathBuf| std::fs::metadata(p).ok().map(|m| m.len());
+        // A download is staged under `.part` until its SHA-256 matches the
+        // pin (ADR 0044); a wrong-length file at the final name is one from
+        // before the pin, which `pull` resumes.
+        let placed = size(dir.join(e.file));
+        let staged = size(dir.join(trellis_model::pull::partial_name(e.file)));
+        let state = match (placed, staged) {
+            (Some(n), _) if n == e.bytes => "downloaded".to_string(),
             // A partial file is worth naming rather than hiding: on a slow
             // link the difference between resuming and restarting is hours.
-            Some(n) => format!("partial {:.0}%", n as f64 / e.bytes as f64 * 100.0),
-            None => "not fetched".to_string(),
+            (_, Some(n)) | (Some(n), None) => {
+                format!("partial {:.0}%", n as f64 / e.bytes as f64 * 100.0)
+            }
+            (None, None) => "not fetched".to_string(),
         };
         let marker = if e.name == trellis_model::DEFAULT {
             " (default)"
@@ -1067,24 +1073,26 @@ fn pull_model(name: Option<&str>) -> Result<()> {
     let dir = models_dir()?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(e.file);
+    let part = dir.join(trellis_model::pull::partial_name(e.file));
 
-    let have = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if have >= e.bytes {
-        println!("{} is already here: {}", e.name, path.display());
+    // Before the header: a complete file names no URL, because nothing is
+    // fetched.
+    if let Some(p) = trellis_model::pull::already_here(e, &dir)? {
+        println!("{} is already here: {}", e.name, p.display());
         return Ok(());
     }
 
     println!("{}  {}", e.name, e.license);
     println!("  from {}", e.url());
     println!("  to   {}", path.display());
+    println!("  sha256 {}", e.sha256);
+    let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if have > 0 {
         println!(
             "  resuming at {:.1} GiB of {:.1}",
             have as f64 / 1_073_741_824.0,
             e.gib()
         );
-    } else {
-        println!("  {:.1} GiB", e.gib());
     }
     println!();
 
@@ -1092,45 +1100,35 @@ fn pull_model(name: Option<&str>) -> Result<()> {
     // fresh GET. This is not laziness: fetching multi-gigabyte weights over a
     // connection that drops is the normal case, and a range-resuming fetch
     // that survives a hundred attempts is worth more here than avoiding a
-    // dependency on a binary every platform already ships.
-    let status = trellis_core::secrets::scrub(&mut std::process::Command::new("curl"))
-        .args([
-            "-L",
-            "-C",
-            "-",
-            "--retry",
-            "0",
-            "--fail",
-            "-o",
-            &path.display().to_string(),
-            &e.url(),
-        ])
-        .status()
-        .context("could not run curl; it is needed to fetch weights")?;
-
-    let now = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if now >= e.bytes {
-        println!();
-        println!("complete: {} bytes", now);
-        println!("serve it with llama.cpp, then:");
-        println!("  trellis run --model llamacpp:http://127.0.0.1:8080 \"<task>\"");
-        return Ok(());
-    }
-
-    // An incomplete download is not a failure to start over from. Saying so
-    // is the difference between a user re-fetching gigabytes and resuming.
-    anyhow::bail!(
-        "incomplete: {} of {} bytes ({:.0}%){}. \
-         Run the same command again to resume — the partial file is kept.",
-        now,
-        e.bytes,
-        now as f64 / e.bytes as f64 * 100.0,
-        if status.success() {
-            ""
-        } else {
-            ", and curl reported a failure"
+    // dependency on a binary every platform already ships. Whether its
+    // output is accepted is `trellis_model::pull`'s decision, made on the
+    // bytes: curl only moves them.
+    let fetch = |url: &str, part: &Path| {
+        trellis_core::secrets::scrub(&mut std::process::Command::new("curl"))
+            .args(["-L", "-C", "-", "--retry", "0", "--fail", "-o"])
+            .arg(part)
+            .arg(url)
+            .status()
+            .map(|s| s.success())
+            .map_err(|err| {
+                std::io::Error::new(
+                    err.kind(),
+                    format!("could not run curl; it is needed to fetch weights: {err}"),
+                )
+            })
+    };
+    match trellis_model::pull::pull(e, &e.url(), &dir, fetch)? {
+        trellis_model::Pulled::AlreadyHere(p) => {
+            println!("{} is already here: {}", e.name, p.display());
         }
-    )
+        trellis_model::Pulled::Verified { bytes, .. } => {
+            println!();
+            println!("complete: {bytes} bytes, SHA-256 matches the pin");
+            println!("serve it with llama.cpp, then:");
+            println!("  trellis run --model llamacpp:http://127.0.0.1:8080 \"<task>\"");
+        }
+    }
+    Ok(())
 }
 
 /// How a run ended, and what the process should exit with.
@@ -1281,7 +1279,7 @@ impl Driver {
                     } else {
                         trellis_loop::RuntimeModel::constrained(client)
                     }
-                    .with_context_bytes(cfg.context_bytes()),
+                    .with_context_bytes(Some(hosted::runtime_context_bytes(cfg))),
                 ))
             }
             trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. } => {

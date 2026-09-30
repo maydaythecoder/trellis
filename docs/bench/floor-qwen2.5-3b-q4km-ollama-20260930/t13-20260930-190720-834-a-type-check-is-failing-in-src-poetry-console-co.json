@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190720-834-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/build.py; fix it",
+  "base_commit": "c10a1456a553f49a040fdde8d27cb904a604ac76",
+  "started_at": "2026-09-30T19:07:20Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9763,
+      "peak_prompt_bytes": 14723,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/commands/build.py. `old` must be text copied from the file, not reco…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 253,
+    "prompt_tokens": 9404
+  },
+  "factual_sha256": "9913653e1731818aaea6ec5511b142e104b2be2a3df88a2eed0bb74e62fcb905",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

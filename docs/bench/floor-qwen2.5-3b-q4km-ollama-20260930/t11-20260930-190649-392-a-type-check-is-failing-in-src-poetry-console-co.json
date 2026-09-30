@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190649-392-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/add.py; fix it",
+  "base_commit": "c05e293f59a1c2e73b38ac169389d7c93e56cb6c",
+  "started_at": "2026-09-30T19:06:49Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9761,
+      "peak_prompt_bytes": 14400,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/add.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/add.py",
+        "outcome": "error: edit anchor occurs 2 times in src/poetry/console/commands/add.py; it must occur exactly once so the edit is unam…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/add.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 159,
+    "prompt_tokens": 9399
+  },
+  "factual_sha256": "b4b86a8f67b185ca01c60c2f846ccf1ce6196e49fba65293d956c404faab03e9",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

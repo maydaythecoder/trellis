@@ -361,8 +361,19 @@ impl RuntimeClient {
 
     /// Sends one request and reads the whole response.
     ///
-    /// `Connection: close` means the body runs to EOF, which avoids
-    /// implementing chunked transfer decoding for a localhost call.
+    /// `Connection: close` only says the connection ends with the response.
+    /// It does not stop the server framing the body with
+    /// `Transfer-Encoding: chunked`, and RFC 9112 §6.3 puts that framing
+    /// ahead of reading to EOF. Ollama does chunk: #170's floor run ended six
+    /// runs on bodies that began with a hex chunk-size line (`975`, `e7e`,
+    /// `806`, `bb2`, `1bc5`, `b0d`: 2054 to 7109 bytes) followed by a
+    /// well-formed `text_completion` object. Those were successful
+    /// completions, not errors of another shape, reported as "not JSON"
+    /// because the size line was parsed as the start of the JSON. Ollama had
+    /// truncated each prompt to the window, and the reply says nothing about
+    /// that (no field in it does; only the server's own log records it), so
+    /// the one thing wrong with the reply was its framing. It is decoded
+    /// here by the parser the hosted transport uses.
     async fn request(&self, req: &str) -> Result<String, RuntimeError> {
         let addr = crate::transport::socket_addr(&self.host, self.port);
         let mut stream =
@@ -398,23 +409,15 @@ impl RuntimeClient {
                 cap >> 20
             )));
         }
-        let text = String::from_utf8_lossy(&raw).into_owned();
-
-        let (head, body) = text
-            .split_once("\r\n\r\n")
-            .ok_or_else(|| RuntimeError::Shape("no HTTP header terminator".into()))?;
-        let status: u16 = head
-            .split_whitespace()
-            .nth(1)
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| RuntimeError::Shape(format!("no HTTP status in `{head}`")))?;
+        let crate::transport::Response { status, body, .. } =
+            crate::transport::parse_response(&raw).map_err(RuntimeError::Shape)?;
         if !(200..300).contains(&status) {
             return Err(RuntimeError::Http {
                 status,
                 body: body.chars().take(400).collect(),
             });
         }
-        Ok(body.to_string())
+        Ok(body)
     }
 }
 
@@ -762,6 +765,84 @@ mod tests {
             format!("{e}").contains("/props is not JSON"),
             "the error must name what it was reading: {e}"
         );
+        server.await.unwrap();
+    }
+
+    /// A stub that answers with `raw` byte for byte, headers included, so a
+    /// test controls the framing as well as the body.
+    async fn stub_raw(raw: String) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let accepted = tokio::time::timeout(ACCEPT_WINDOW, listener.accept()).await;
+            let Ok(Ok((mut sock, _))) = accepted else {
+                return NO_REQUEST.to_string();
+            };
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            sock.write_all(raw.as_bytes()).await.unwrap();
+            sock.shutdown().await.ok();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// The first 400 characters of the body t11 of #170's floor run ended
+    /// on (`docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930/t11.log`), as
+    /// the error quoted them: a chunk-size line, `975`, then the start of an
+    /// Ollama `text_completion` object. The rest of the body was never
+    /// recorded, because the error quotes only its head.
+    const T11_RECORDED_HEAD: &str = include_str!("../tests/fixtures/ollama-reply-t11-head.txt");
+
+    #[tokio::test]
+    async fn truncated_prompt_reply_as_recorded_is_reported_as_chunked_framing_not_as_not_json() {
+        // The risk: a successful reply framed with `Transfer-Encoding:
+        // chunked` was read to EOF and handed to the JSON parser size line
+        // and all, so six floor runs ended on "response is not JSON" and the
+        // message pointed at the model's output instead of at the framing.
+        //
+        // The captured log lost the CR after the size line; on the wire a
+        // chunk-size line ends in CRLF, so it is put back. The response
+        // headers were not recorded either: a body that opens with a hex
+        // size line is what `Transfer-Encoding: chunked` produces, so that
+        // is the header sent. Only the recorded 395 of the declared 0x975
+        // bytes are served, so the honest outcome is "cut short inside a
+        // chunk", which names the cause, rather than a parse of the JSON.
+        // Before the fix these same bytes gave "response is not JSON:
+        // trailing characters at line 2 column 1", as the log shows.
+        let body = T11_RECORDED_HEAD.replacen('\n', "\r\n", 1);
+        assert!(body.starts_with("975\r\n{\"id\":\"cmpl-279\""), "{body}");
+        let (base, server) = stub_raw(format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{body}"
+        ))
+        .await;
+        let c = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let e = c.complete("p", None, 16).await.unwrap_err().to_string();
+        assert!(!e.contains("not JSON"), "{e}");
+        assert!(e.contains("cut short inside a chunk"), "{e}");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn truncated_prompt_reply_whole_and_chunked_is_read_as_the_completion_it_is() {
+        // Synthetic, not recorded: the whole of a floor-run body was never
+        // captured. It has the recorded shape (Ollama's `text_completion`,
+        // chunked) split over two chunks, so a decoder that kept only the
+        // first chunk, or kept a size line, fails here.
+        let json = r#"{"id":"cmpl-1","object":"text_completion","model":"qwen2.5:3b","choices":[{"text":"a long prose reply","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":2050,"completion_tokens":5,"total_tokens":2055}}"#;
+        let (a, b) = json.split_at(40);
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n\
+             {:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n\r\n",
+            a.len(),
+            b.len()
+        );
+        let (base, server) = stub_raw(raw).await;
+        let c = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let got = c.complete("p", None, 16).await.unwrap();
+        assert_eq!(got.text, "a long prose reply");
+        assert_eq!(got.tokens, 5);
+        assert_eq!(got.prompt_tokens, Some(2050));
         server.await.unwrap();
     }
 

@@ -44,6 +44,7 @@ cargo run -p trellis-tickets -- ready <n>                 # G0's checks + 4 name
 cargo run -p trellis-tickets -- new --title <t> --body-file <p> [--dry-run]   # files one issue with triage's labels; refuses a body G0/G6 would; prints the plan first (ADR 0040)
 cargo run -p trellis-tickets -- sweep [--dry-run|--apply]  # label drift on every open issue; writes only with --apply; skips parked/split; never ready, !agent-ok, or a lower risk (ADR 0040)
 cargo run -p trellis-tickets -- scan [<path>]              # G4's markers in Rust source as file:line proposals; files nothing (ADR 0040)
+cargo run -p trellis-tickets -- index [--out <p>]          # open issues' triage as JSON, triage_version 2, by story then number; same issues, same bytes (docs/TICKETING.md, ADR 0040)
 
 # ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
 # it is built, deferred, or excluded (and by which clause).
