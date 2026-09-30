@@ -1089,9 +1089,10 @@ impl Runner for CliRunner<'_> {
                 "agent `{name}` is in approve mode, and `work` has no terminal to ask on"
             ));
         }
-        // A process agent's command is repository code (ADR 0026 §11), so
-        // it waits for the same decision a hook does (ADR 0023 §4).
-        if p.is_process() {
+        // A process agent's command is repository code (ADR 0026 §11), and
+        // so is a service's (§12), so either waits for the same decision a
+        // hook does (ADR 0023 §4).
+        if p.is_process() || !p.file.services.is_empty() {
             let (check, root) = (self.trust_check, self.root);
             if let Err(why) = self.trust.get_or_insert_with(|| check(root)) {
                 return Some(format!("agent `{name}` runs a repository command; {why}"));
@@ -1140,8 +1141,43 @@ impl Runner for CliRunner<'_> {
                 };
             }
         };
+        let id = self.current.clone().unwrap_or_default();
+        // Started now, after the task text is known to build and before the
+        // run, and held to the end of this function: every way out of it (a
+        // result, an error, Ctrl-C, which the run returns as `Interrupted`,
+        // or a panic unwinding) drops the guard, which kills each service
+        // with its process tree (ADR 0026 §12).
+        let services = match profile.as_ref().filter(|p| !p.file.services.is_empty()) {
+            Some(p) => {
+                // Checked again right before the spawn, as a process agent's
+                // runner does: the gate's answer is the tick's, and
+                // `.trellis/` may have changed since.
+                if let Err(why) = (self.trust_check)(self.root) {
+                    return RunEnd::Error {
+                        run_id: None,
+                        error: format!("agent `{}` runs a repository command; {why}", p.name),
+                    };
+                }
+                match crate::services::Services::start(
+                    self.root,
+                    &self.queue.trellis_dir(),
+                    p,
+                    &id,
+                    &mut crate::output::human(),
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return RunEnd::Error {
+                            run_id: None,
+                            error: format!("{e:#}"),
+                        };
+                    }
+                }
+            }
+            None => crate::services::Services::none(),
+        };
+        let service_actions = services.trail_actions();
         if let Some(p) = profile.as_ref().filter(|p| p.is_process()) {
-            let id = self.current.clone().unwrap_or_default();
             return crate::process_agent::run(
                 crate::process_agent::ProcessRun {
                     root: self.root,
@@ -1149,6 +1185,7 @@ impl Runner for CliRunner<'_> {
                     task_id: &id,
                     text: &text,
                     stop: &self.stop,
+                    services: &service_actions,
                 },
                 // The human stream, not stdout: under `work --json` stdout
                 // carries JSONL only (ADR 0025 §4).
@@ -1198,6 +1235,7 @@ impl Runner for CliRunner<'_> {
                 profile: profile.as_ref(),
                 model_from_user,
                 queued: true,
+                services: &service_actions,
             },
             control,
             &mut crate::output::human(),

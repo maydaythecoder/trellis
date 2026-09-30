@@ -655,6 +655,283 @@ fn job_object_kills_a_process_agent_s_tree() {
     let _ = std::fs::remove_dir_all(&beat);
 }
 
+/// A process agent that waits about `secs` seconds and changes nothing:
+/// long enough for a service to do what it does before the task ends.
+fn waits(secs: u32) -> String {
+    if cfg!(windows) {
+        format!("['cmd', '/C', 'ping -n {} 127.0.0.1 >NUL']", secs + 1)
+    } else {
+        format!("['sh', '-c', 'sleep {secs}']")
+    }
+}
+
+/// `work`, with its output in a file rather than a pipe: a process that
+/// escaped the kill inherits the pipe, and waiting for it to close would
+/// hide the escape (as in `job_object_kills_a_process_agent_s_tree`).
+fn work_to_file(d: &Path, log: &Path) -> (bool, String) {
+    let st = trellis_command(d, &["work"])
+        .stdout(std::fs::File::create(log).unwrap())
+        .stderr(std::fs::File::create(log.with_extension("err")).unwrap())
+        .status()
+        .unwrap();
+    let s = format!(
+        "{}{}",
+        std::fs::read_to_string(log).unwrap_or_default(),
+        std::fs::read_to_string(log.with_extension("err")).unwrap_or_default()
+    );
+    (st.success(), s)
+}
+
+/// The `.json` records left in `<git-dir>/trellis/services/`.
+fn service_records(d: &Path) -> Vec<String> {
+    std::fs::read_dir(d.join(".git/trellis/services"))
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".json"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn service_starts_in_the_task_s_worktree_and_the_trail_records_it_never_as_a_check() {
+    // ADR 0026 §12. The risks: the service ran somewhere other than the
+    // worktree the task runs in, the trail did not say it ran, or its
+    // output reached the trail as though it were evidence. The service
+    // proves its working directory by finding a file only the worktree has,
+    // and writes outside the repository so the run's tree is untouched.
+    let out = scratch("svc-start-out");
+    let marker = out.join("here.txt");
+    let probe = if cfg!(windows) {
+        format!(
+            "['cmd', '/C', 'if exist app\\core.py (echo in-the-worktree> {}) & echo %TRELLIS_SERVICE%-says-passed']",
+            marker.display()
+        )
+    } else {
+        format!(
+            "['sh', '-c', 'test -f app/core.py && echo in-the-worktree > {}; echo $TRELLIS_SERVICE-says-passed']",
+            marker.display()
+        )
+    };
+    let d = fixture(
+        "svc-start",
+        &[(
+            ".trellis/agents/maker.toml",
+            &format!(
+                "command = {}\ntimeout_s = 60\n[[services]]\nname = \"web\"\ncommand = {probe}\n",
+                waits(3)
+            ),
+        )],
+    );
+    // Untrusted, a service does not start and its task waits (ADR 0023 §4).
+    let _ = std::fs::remove_dir_all(d.with_extension("home"));
+    let id = queued_id(&ok(&d, &["queue", "add", "serve", "--assignee", "maker"]));
+    let s = ok(&d, &["work"]);
+    assert!(!marker.exists(), "a service ran untrusted:\n{s}");
+    assert_eq!(ids(&d, "pending"), vec![id.clone()], "{s}");
+    let t = ok(&d, &["trust"]);
+    assert!(t.contains("service maker/web"), "{t}");
+
+    let (ran, s) = work_to_file(&d, &out.join("work.log"));
+    assert!(ran, "{s}");
+    assert!(s.contains("service:  web started"), "{s}");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap_or_default().trim(),
+        "in-the-worktree",
+        "the service did not run in the task's worktree:\n{s}"
+    );
+    // The agent changed nothing, so the task failed; the service's own
+    // "passed" is a log line and changed nothing about that.
+    assert_eq!(ids(&d, "failed"), vec![id.clone()], "{s}");
+    let log = std::fs::read_to_string(d.join(".git/trellis/services/maker.web.log")).unwrap();
+    // Printed from its environment, so the text is in the log and not in
+    // the argv the trail records.
+    assert!(log.contains("web-says-passed"), "{log}");
+    let task = task(&d, "failed", &id);
+    let run = trail(&d, task["outcome"]["run_id"].as_str().unwrap());
+    let actions = run["factual"]["actions"].as_array().unwrap();
+    let svc: Vec<_> = actions.iter().filter(|a| a["tool"] == "service").collect();
+    assert_eq!(svc.len(), 1, "{actions:?}");
+    assert!(svc[0]["target"].as_str().unwrap().starts_with("web: "));
+    assert!(
+        !run.to_string().contains("web-says-passed"),
+        "the service's output reached the trail"
+    );
+    assert!(
+        run["factual"]["check_outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["kind"] != "service"),
+        "{run}"
+    );
+    assert!(
+        service_records(&d).is_empty(),
+        "the record outlived a clean stop"
+    );
+    assert_eq!(porcelain(&d), "", "the trail is committed, nothing else");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn service_is_killed_with_its_tree_when_the_task_ends() {
+    // ADR 0026 §12. The risk: a service, or a process it started, kept
+    // running after its task, writing into the worktree after the run was
+    // judged or rolled back and holding a port the next task needs. The
+    // service backgrounds a heartbeat that appends to a file outside the
+    // repository about once a second, for 30 beats (bounded, so a
+    // regression fails here rather than holding the test run), then waits.
+    //
+    // Measured by a second task in the same `work`, while trellis is still
+    // alive: on Windows the job is also killed when trellis exits
+    // (kill-on-close), so a check made only after `work` returns would pass
+    // even if nothing were stopped at the end of the task.
+    let beat = scratch("svc-kill-beat");
+    let hb = beat.join("hb");
+    let (service, watcher) = if cfg!(windows) {
+        std::fs::write(
+            beat.join("beat.cmd"),
+            "@for /L %%i in (1,1,30) do @(echo x>>\"%~dp0hb\"& ping -n 2 127.0.0.1 >NUL)
+",
+        )
+        .unwrap();
+        std::fs::write(
+            beat.join("watch.cmd"),
+            "@for %%A in (\"%~dp0hb\") do @echo %%~zA> \"%~dp0a.txt\"
+             @ping -n 4 127.0.0.1 >NUL
+             @for %%A in (\"%~dp0hb\") do @echo %%~zA> \"%~dp0b.txt\"
+",
+        )
+        .unwrap();
+        (
+            format!(
+                "['cmd', '/C', 'start /B cmd /C {} >NUL 2>&1 & ping -n 60 127.0.0.1 >NUL']",
+                beat.join("beat.cmd").display()
+            ),
+            format!("['cmd', '/C', '{}']", beat.join("watch.cmd").display()),
+        )
+    } else {
+        std::fs::write(
+            beat.join("beat.sh"),
+            format!(
+                "i=0; while [ $i -lt 30 ]; do echo x >> '{}'; i=$((i+1)); sleep 1; done
+",
+                hb.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            beat.join("watch.sh"),
+            format!(
+                "wc -c < '{hb}' > '{a}'; sleep 3; wc -c < '{hb}' > '{b}'
+",
+                hb = hb.display(),
+                a = beat.join("a.txt").display(),
+                b = beat.join("b.txt").display()
+            ),
+        )
+        .unwrap();
+        (
+            format!(
+                "['sh', '-c', 'sh {} & sleep 60']",
+                beat.join("beat.sh").display()
+            ),
+            format!("['sh', '{}']", beat.join("watch.sh").display()),
+        )
+    };
+    let d = fixture(
+        "svc-kill",
+        &[
+            (
+                ".trellis/agents/maker.toml",
+                &format!(
+                    "command = {}
+timeout_s = 60
+[[services]]
+name = \"beat\"
+command = {service}
+",
+                    waits(3)
+                ),
+            ),
+            (
+                ".trellis/agents/watcher.toml",
+                &format!(
+                    "command = {watcher}
+timeout_s = 60
+"
+                ),
+            ),
+        ],
+    );
+    let _ = std::fs::remove_dir_all(d.with_extension("home"));
+    ok(&d, &["trust"]);
+    ok(
+        &d,
+        &[
+            "queue",
+            "add",
+            "serve",
+            "--assignee",
+            "maker",
+            "--priority",
+            "high",
+        ],
+    );
+    ok(&d, &["queue", "add", "watch", "--assignee", "watcher"]);
+    let started = std::time::Instant::now();
+    let (ran, s) = work_to_file(&d, &beat.join("work.log"));
+    assert!(ran && s.contains("service:  beat started"), "{s}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(40),
+        "`work` waited for the service instead of killing it:
+{s}"
+    );
+    let size_at = |f: &str| -> u64 {
+        std::fs::read_to_string(beat.join(f))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the watcher did not write {f}: {e}
+{s}"
+                )
+            })
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{f}: {e}
+{s}"
+                )
+            })
+    };
+    let (a, b) = (size_at("a.txt"), size_at("b.txt"));
+    // Without a beat before the task ended, a stopped heartbeat proves
+    // nothing.
+    assert!(
+        a > 0,
+        "the service's heartbeat never beat:
+{s}"
+    );
+    assert_eq!(
+        a, b,
+        "the service's backgrounded heartbeat kept writing after its task ended,          while the next task ran:
+{s}"
+    );
+    assert!(
+        service_records(&d).is_empty(),
+        "a killed and reaped service left its record for doctor"
+    );
+    let doctor = combined(&trellis(&d, &["doctor"]));
+    assert!(
+        doctor.contains("no recorded service outlived its task"),
+        "{doctor}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&beat);
+}
+
 #[test]
 fn a_process_agent_whose_checks_fail_is_rolled_back_whatever_its_exit_code() {
     // The command exits 0. That is data, not a verdict (ADR 0004): the
