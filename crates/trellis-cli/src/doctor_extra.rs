@@ -167,41 +167,70 @@ fn agents_line(root: &Path) -> String {
 }
 
 /// Services whose record is still in the git directory and whose process is
-/// still alive (ADR 0026 §12). A record is removed once trellis has killed
-/// the service's tree and reaped it, so one left behind with a live process
-/// is a service that outlived its task: trellis was killed first, or the
-/// reap timed out. Only the service's own pid is recorded; what it started
-/// is not listed.
+/// still alive (ADR 0026 §12). A record lives while its task runs and is
+/// removed once trellis has killed the service's tree and reaped it. So a
+/// live one whose task is still claimed is most likely running as it should
+/// (`work` is running that task), and one whose task is not claimed outlived
+/// it: trellis was killed first, or the reap timed out. Only the service's
+/// own pid is recorded; what it started is not listed.
 fn services_line(root: &Path) -> String {
-    let dir = match trellis_queue::Queue::for_repo(root) {
-        Ok(q) => q.trellis_dir(),
+    let queue = match trellis_queue::Queue::for_repo(root) {
+        Ok(q) => q,
         Err(e) => return format!("services:   not checked: {}", crate::plain(&e.to_string())),
     };
+    let dir = queue.trellis_dir();
     let (alive, unreadable) = crate::services::outliving(&dir, &crate::liveness::SystemLiveness);
-    let mut line = if alive.is_empty() {
-        "services:   no recorded service outlived its task".to_string()
-    } else {
-        format!(
-            "services:   {} recorded service(s) still alive after their task ended: {};              kill each (and what it started), then delete its record in {}",
-            alive.len(),
-            alive
+    // The task id comes from a file in the git directory; one that is not
+    // an id's alphabet is not looked up by path.
+    let claimed = |task: &str| {
+        !task.is_empty()
+            && task
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            && matches!(queue.find(task), Ok((trellis_queue::State::Claimed, _)))
+    };
+    let describe = |r: &crate::services::Record| {
+        crate::plain(&format!(
+            "pid {} ({}/{}, task {}: {})",
+            r.pid,
+            r.agent,
+            r.service,
+            r.task,
+            r.argv.join(" ")
+        ))
+    };
+    let (running, outlived): (Vec<_>, Vec<_>) = alive.iter().partition(|r| claimed(&r.task));
+    let mut parts = Vec::new();
+    if !outlived.is_empty() {
+        parts.push(format!(
+            "{} recorded service(s) alive after their task ended: {}; kill each (and what it \
+             started), then delete its record in {}",
+            outlived.len(),
+            outlived
                 .iter()
-                .map(|r| crate::plain(&format!(
-                    "pid {} ({}/{}, task {}: {})",
-                    r.pid,
-                    r.agent,
-                    r.service,
-                    r.task,
-                    r.argv.join(" ")
-                )))
+                .map(|r| describe(r))
                 .collect::<Vec<_>>()
                 .join("; "),
             crate::plain(&dir.join(crate::services::DIR).display().to_string())
-        )
-    };
+        ));
+    }
+    if !running.is_empty() {
+        parts.push(format!(
+            "{} running for a task still claimed (expected while `work` runs it): {}",
+            running.len(),
+            running
+                .iter()
+                .map(|r| describe(r))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if parts.is_empty() {
+        parts.push("no recorded service outlived its task".to_string());
+    }
     if !unreadable.is_empty() {
-        line.push_str(&format!(
-            "; unreadable record(s): {}",
+        parts.push(format!(
+            "unreadable record(s): {}",
             unreadable
                 .iter()
                 .map(|u| crate::plain(u))
@@ -209,7 +238,7 @@ fn services_line(root: &Path) -> String {
                 .join("; ")
         ));
     }
-    line
+    format!("services:   {}", parts.join("; "))
 }
 
 /// Where a routine's IANA zone name is looked up (ADR 0026 §7). Bundled data

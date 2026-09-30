@@ -793,16 +793,14 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
     let (service, watcher) = if cfg!(windows) {
         std::fs::write(
             beat.join("beat.cmd"),
-            "@for /L %%i in (1,1,30) do @(echo x>>\"%~dp0hb\"& ping -n 2 127.0.0.1 >NUL)
-",
+            "@for /L %%i in (1,1,30) do @(echo x>>\"%~dp0hb\"& ping -n 2 127.0.0.1 >NUL)\r\n",
         )
         .unwrap();
         std::fs::write(
             beat.join("watch.cmd"),
-            "@for %%A in (\"%~dp0hb\") do @echo %%~zA> \"%~dp0a.txt\"
-             @ping -n 4 127.0.0.1 >NUL
-             @for %%A in (\"%~dp0hb\") do @echo %%~zA> \"%~dp0b.txt\"
-",
+            "@for %%A in (\"%~dp0hb\") do @echo %%~zA> \"%~dp0a.txt\"\r\n\
+             @ping -n 4 127.0.0.1 >NUL\r\n\
+             @for %%A in (\"%~dp0hb\") do @echo %%~zA> \"%~dp0b.txt\"\r\n",
         )
         .unwrap();
         (
@@ -816,8 +814,7 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
         std::fs::write(
             beat.join("beat.sh"),
             format!(
-                "i=0; while [ $i -lt 30 ]; do echo x >> '{}'; i=$((i+1)); sleep 1; done
-",
+                "i=0; while [ $i -lt 30 ]; do echo x >> '{}'; i=$((i+1)); sleep 1; done\n",
                 hb.display()
             ),
         )
@@ -825,8 +822,7 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
         std::fs::write(
             beat.join("watch.sh"),
             format!(
-                "wc -c < '{hb}' > '{a}'; sleep 3; wc -c < '{hb}' > '{b}'
-",
+                "wc -c < '{hb}' > '{a}'; sleep 3; wc -c < '{hb}' > '{b}'\n",
                 hb = hb.display(),
                 a = beat.join("a.txt").display(),
                 b = beat.join("b.txt").display()
@@ -847,22 +843,14 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
             (
                 ".trellis/agents/maker.toml",
                 &format!(
-                    "command = {}
-timeout_s = 60
-[[services]]
-name = \"beat\"
-command = {service}
-",
+                    "command = {}\ntimeout_s = 60\n\
+                     [[services]]\nname = \"beat\"\ncommand = {service}\n",
                     waits(3)
                 ),
             ),
             (
                 ".trellis/agents/watcher.toml",
-                &format!(
-                    "command = {watcher}
-timeout_s = 60
-"
-                ),
+                &format!("command = {watcher}\ntimeout_s = 60\n"),
             ),
         ],
     );
@@ -886,38 +874,23 @@ timeout_s = 60
     assert!(ran && s.contains("service:  beat started"), "{s}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(40),
-        "`work` waited for the service instead of killing it:
-{s}"
+        "`work` waited for the service instead of killing it:\n{s}"
     );
     let size_at = |f: &str| -> u64 {
         std::fs::read_to_string(beat.join(f))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "the watcher did not write {f}: {e}
-{s}"
-                )
-            })
+            .unwrap_or_else(|e| panic!("the watcher did not write {f}: {e}\n{s}"))
             .trim()
             .parse()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{f}: {e}
-{s}"
-                )
-            })
+            .unwrap_or_else(|e| panic!("{f}: {e}\n{s}"))
     };
     let (a, b) = (size_at("a.txt"), size_at("b.txt"));
     // Without a beat before the task ended, a stopped heartbeat proves
     // nothing.
-    assert!(
-        a > 0,
-        "the service's heartbeat never beat:
-{s}"
-    );
+    assert!(a > 0, "the service's heartbeat never beat:\n{s}");
     assert_eq!(
         a, b,
-        "the service's backgrounded heartbeat kept writing after its task ended,          while the next task ran:
-{s}"
+        "the service's backgrounded heartbeat kept writing after its task ended, \
+         while the next task ran:\n{s}"
     );
     assert!(
         service_records(&d).is_empty(),
