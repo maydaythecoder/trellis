@@ -1,15 +1,19 @@
 //! `trellis-tickets`: the ticketing standard's commands (ADR 0040).
 //!
-//! `triage` (#77), `ready` (#78) and `new` (#79) are built. ADR 0040 lists
-//! three more; each lands with its own ticket, and until then clap reports
-//! it as an unknown subcommand rather than something that appears to run.
+//! `triage` (#77), `ready` (#78), `new` (#79), `sweep` and `scan` (#80) are
+//! built. ADR 0040 lists one more, `index`; it lands with its own ticket,
+//! and until then clap reports it as an unknown subcommand rather than
+//! something that appears to run.
 //! `triage` and `ready` are read-only: the one argv they spawn is
 //! `gh issue view`. `new` spawns that too, for its blockers, and
-//! `gh issue create`, which is the one write, and not on `--dry-run`.
+//! `gh issue create`, which is its one write, and not on `--dry-run`.
+//! `sweep` spawns `gh issue list` and `gh issue view`, and `gh issue edit`
+//! only with `--apply`. `scan` spawns nothing.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -61,6 +65,28 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Re-triage every open issue and print each label that differs from
+    /// what the rules compute, as `#n: -label +label (rule: ...)`. A dry
+    /// run unless `--apply`. Never touches an issue labelled `parked` or
+    /// `split`, the `ready` label or `!agent-ok`; never lowers `risk:`; and
+    /// leaves any dimension whose rule abstained as it is, printed as
+    /// `abstained`.
+    Sweep {
+        /// Print the drift and write nothing (the default).
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        /// After printing the whole plan, write the label changes and the
+        /// triage-block lines that record them.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Find G4's stub markers (scripts/gates/no-stubs.sh) in Rust source,
+    /// with G4's exclusions, and print a `file:line` proposal for an
+    /// origin:code ticket for each. Files nothing.
+    Scan {
+        /// A directory, or one `.rs` file. Defaults to the current directory.
+        path: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<ExitCode> {
@@ -100,6 +126,29 @@ fn main() -> Result<ExitCode> {
             if let Some(url) = outcome.created {
                 println!("filed: {}", trellis_tickets::printable(url.trim()));
             }
+        }
+        // `--dry-run` is the default spelled out; only `--apply` writes.
+        Cmd::Sweep { dry_run: _, apply } => {
+            let secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("the system clock is before 1970")?
+                .as_secs();
+            trellis_tickets::sweep_with(
+                apply,
+                &trellis_tickets::utc_timestamp(secs),
+                || gh_list().map_err(|e| format!("{e:#}")),
+                |n| gh_view(n).map_err(|e| format!("{e:#}")),
+                |s| print!("{s}"),
+                |args, body| gh_edit(args, body).map_err(|e| format!("{e:#}")),
+            )?;
+        }
+        Cmd::Scan { path } => {
+            let root = path.unwrap_or_else(|| PathBuf::from("."));
+            let found = trellis_tickets::scan(&root)?;
+            for p in &found {
+                print!("{}", p.text());
+            }
+            println!("{} proposal(s); nothing filed", found.len());
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -170,4 +219,64 @@ fn gh_create(args: &[String], body: &str) -> Result<String> {
         );
     }
     Ok(stdout)
+}
+
+/// `gh issue list` for every open issue, the read `sweep` starts from.
+fn gh_list() -> Result<String> {
+    let out = gh()
+        .args(trellis_tickets::gh_list_args())
+        .stdin(Stdio::null())
+        .output()
+        .context("running `gh`; is the GitHub CLI installed and on PATH?")?;
+    if !out.status.success() {
+        bail!(
+            "`gh issue list` exited with {}: {}",
+            out.status,
+            trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
+        );
+    }
+    String::from_utf8(out.stdout).context("`gh issue list` printed non-UTF-8")
+}
+
+/// `gh issue edit` with `args` ([`trellis_tickets::IssuePlan::gh_edit_args`])
+/// and, when the triage block changes, the new body on stdin.
+fn gh_edit(args: &[String], body: Option<&str>) -> Result<()> {
+    let mut child = gh()
+        .args(args)
+        .stdin(if body.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running `gh`; is the GitHub CLI installed and on PATH?")?;
+    let wrote = match body {
+        Some(b) => child
+            .stdin
+            .take()
+            .context("`gh issue edit` was spawned with no stdin")?
+            .write_all(b.as_bytes()),
+        None => Ok(()),
+    };
+    // The stdin handle is dropped above, so `gh` sees the end of the body.
+    let out = child
+        .wait_with_output()
+        .context("waiting for `gh issue edit`")?;
+    if !out.status.success() {
+        bail!(
+            "`gh issue edit` exited with {}: {}",
+            out.status,
+            trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
+        );
+    }
+    // `gh` succeeded on a body it may not have read to the end, so the
+    // issue's body may now be cut short. Say so rather than report success.
+    if let Err(e) = wrote {
+        bail!(
+            "`gh issue edit` succeeded but writing the body to it failed ({e}); check that issue's body"
+        );
+    }
+    Ok(())
 }
