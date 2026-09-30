@@ -527,8 +527,23 @@ trellis starts has; see §4), and a timeout
   it writes there comes back, ADR 0032 "Hooks"; the order is unchanged.)
 - **`after_run`**: the outcome as JSON on stdin. Runs when the loop ends and
   before the rollback, so on a run that did not converge the rollback also
-  undoes what it wrote inside the worktree. It does not run on Ctrl-C. On
-  a converged run, a write by it demotes the run (see "After a pass").
+  undoes what it wrote inside the worktree. On a converged run, a write by
+  it demotes the run (see "After a pass"). (*Amended 2026-09-29, #138; the
+  owner decided it on 2026-09-28*: it had not run on Ctrl-C.) On Ctrl-C
+  and on `rpc`'s `abort` it runs too, before the interrupt's rollback, with
+  `"reason": "interrupted"`, `"converged": false` and `"iterations": null`
+  (the loop's count was in the future the interrupt dropped, and a guessed
+  number would be a false one). `touched` is what the orchestrator
+  recorded. It is bounded by `timeout_s`, as every hook is; the throwaway
+  clone it runs in (ADR 0032, "Hooks") is made before that timer starts
+  and is not bounded by it. A second Ctrl-C while it runs drops it, which
+  kills its process (on Unix the process itself, `kill_on_drop`, and not
+  what it started, as for any hook dropped during an interrupt; on Windows
+  its Job Object, ADR 0035), and the rollback goes ahead. `rpc` has no
+  second interrupt, since a second `abort` asks for what was already
+  asked, so there the timeout is the only bound. Tested by
+  `after_run_interrupted_*`: through `rpc`'s `abort` on every OS, and
+  through SIGINT to the binary on Unix.
 - **`turn_end`** (*amended 2026-09-29, #137; the owner decided the schema
   on 2026-09-28*): after each model turn, that is after each call the
   model made (a denied one too) and after that call's `post_tool`; never
@@ -1211,7 +1226,8 @@ names are in the code beside each.
 - **What hooks receive.** `pre_tool`: the call's flat wire JSON.
   `post_tool`: `{"call": <wire JSON>, "result": <the ToolResult as
   serialized>}`. `before_run`: `{}`. `after_run`: `{"run_id", "converged",
-  "iterations", "reason", "touched"}`. `turn_end` and `input` (added by
+  "iterations", "reason", "touched"}` (on an interrupt, `reason` is
+  `"interrupted"` and `iterations` is null; §5, #138). `turn_end` and `input` (added by
   #137): the schemas in §5. `before_run` output is indented line
   by line inside its fence, so no line it prints can be the fence's closing
   line, and control characters other than newline and tab are dropped. It is

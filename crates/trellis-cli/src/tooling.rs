@@ -388,6 +388,20 @@ pub(crate) fn outcome_json(
     })
 }
 
+/// What `after_run` is given when the run was interrupted (Ctrl-C or
+/// `rpc`'s `abort`). The keys are `outcome_json`'s, so a hook reads one
+/// schema. `iterations` is null: the loop's count lived in the future the
+/// interrupt dropped, and a guessed number would be a false one.
+pub(crate) fn interrupted_json(touched: &[String], run_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": run_id,
+        "converged": false,
+        "iterations": null,
+        "reason": "interrupted",
+        "touched": touched,
+    })
+}
+
 #[cfg(test)]
 mod run_tests {
     //! ADR 0023 through `cmd_run`: a committed repository, a scripted
@@ -401,26 +415,10 @@ mod run_tests {
     use trellis_loop::{TrustState, TrustStore};
 
     /// Every test here shares one store in the scratch directory; entries
-    /// are keyed by repository root, and each test has its own.
-    ///
-    /// The store is emptied once, when this process first opens it (#199).
-    /// It is named by process id and was never removed, and every fixture
-    /// repository is named by the same id with the same bytes in it, so its
-    /// fingerprint is the same in every run. Windows reuses process ids, so
-    /// a test process that inherited an earlier one's id found a store that
-    /// already trusted its own repository at the same path with the same
-    /// fingerprint, and `hook_input_refusal_...`'s untrusted first run ran
-    /// the hook. `scratch` deletes its directory first for the same reason.
-    /// Once per process, not per call: tests trust in parallel, and a wipe
-    /// on every call would erase another test's entry mid-test.
+    /// are keyed by repository root, and each test has its own. The store
+    /// is `testutil`'s, emptied once per process there (#199).
     fn store() -> TrustStore {
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            let dir = std::env::temp_dir().join(format!("trellis-trust-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            TrustStore::use_for_this_process(dir.join("trust.json"));
-        });
-        TrustStore::user().unwrap()
+        crate::testutil::trust_store()
     }
 
     /// A shell argv for `script`, as TOML, with literal strings so a Windows
@@ -486,8 +484,7 @@ mod run_tests {
     }
 
     fn trust(dir: &Path) {
-        let cfg = crate::config::RepoConfig::load(dir).unwrap();
-        store().trust(dir, &super::fingerprint(dir, &cfg)).unwrap();
+        crate::testutil::trust(dir);
     }
 
     const EDIT_THEN_STOP: &str = r#"{"steps":[

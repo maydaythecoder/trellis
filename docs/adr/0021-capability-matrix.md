@@ -42,9 +42,10 @@ wherever the two disagree. The items those sections name as not built are:
   There is no typing event on a command line; `vault new` is the explicit
   form.
 - **W-B (0023):** per-item trust (one digest covers hooks, custom tools and
-  bash together); tracking what bash writes in the worktree; `after_run`
-  on Ctrl-C. (A configurable custom-tool timeout was listed here; #135
-  built it, and 0023 "As built" records how.)
+  bash together); tracking what bash writes in the worktree. (A
+  configurable custom-tool timeout was listed here; #135 built it, and
+  0023 "As built" records how. So was `after_run` on Ctrl-C; #138 built
+  it, and 0023 §5 records how.)
 - **W-C (0024):** streaming, `HTTPS_PROXY`, a `Retry-After` given as a date,
   summaries written by the model, and OAuth/Bedrock/Vertex/Azure. (The
   `ask` classifier on hosted models was built by #41.) Hosted runs have
