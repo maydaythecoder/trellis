@@ -6,6 +6,8 @@
 **Amended:** 2026-09-29 (#119): §10, how runs read installed packages.
 **Amended:** 2026-09-30 (#120): §5 and §9, every skipped path named and
 the trust store untouched, each held by a test.
+**Amended:** 2026-09-30 (#200): §8, the tree listing bounded while it is
+read.
 **Amends:** ADR 0021 row 10 ("packages: deferred ... needs the trust store
 first"). Grows the CLI surface fixed by brief 4.12, as the owner directed.
 
@@ -91,6 +93,22 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 8. **Bounds.** Before any file is read: at most 2,000 files, 1 MiB each,
    32 MiB in total. Over any of them the install is refused, not trimmed.
 
+   The listing those bounds are applied to is bounded too, while
+   `ls-tree` is read and before the entry list is complete (#200): at most
+   10,000 entries in the source's tree, copied or not, and 8 MiB of
+   listing. Without it a source with a huge tree was held whole in memory,
+   and #120 prints one line per skipped entry. Over either, the install is
+   refused with a message naming the limit, and git is stopped.
+   - *10,000 entries* is chosen, not measured: five times the 2,000 files
+     that may be copied, leaving room for the README, licence, CI and other
+     paths a package carries and never copies. No package corpus was
+     surveyed; a real package over it is the evidence that would move it.
+   - *8 MiB* is derived, not measured: about 100 bytes of fixed fields per
+     `-z` record (mode, type, a 64-hex id, size, separators) plus an
+     assumed average path of about 700 bytes, over 10,000 records. It is
+     there because a count alone does not bound memory: a tree entry's path
+     has no length limit this code can rely on, so one entry can be large.
+
 9. **Why the trust store is not the gate.** Row 10 assumed it would be.
    The argument ADR 0025 made for user-level skills holds here: the trust
    store vouches for what one repository makes trellis execute, keyed by
@@ -156,7 +174,7 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
   install.
 - **The fetch itself is not bounded.** `git clone` downloads the whole
   source before the bounds in 8 apply, and a slow or huge source is waited
-  on. The bounds cap what is written, not what is fetched.
+  on. The bounds cap what is listed and written, not what is fetched.
 
 ## Alternatives rejected
 
@@ -171,4 +189,6 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
 - ADR 0021 row 10 now reads "built in part".
 - Evidence: `crates/trellis-cli/src/install.rs`, tests `install_*`
   (`cargo test -p trellis-cli install_`), which install from a local git
-  repository and never touch the network.
+  repository and never touch the network. The listing bound in 8:
+  `install_tree_listing_bounded_*`
+  (`cargo test -p trellis-cli install_tree_listing_bounded_`).
