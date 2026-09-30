@@ -750,9 +750,8 @@ impl HostedClient {
                 vec![("anthropic-version", "2023-06-01")],
             ),
         };
-        let mut attempt = 1;
-        loop {
-            let sent = transport::post(
+        self.send_via(|| {
+            transport::post(
                 &self.endpoint,
                 self.proxy.as_ref(),
                 path,
@@ -761,7 +760,25 @@ impl HostedClient {
                 &text,
                 self.timeout,
             )
-            .await;
+        })
+        .await
+    }
+
+    /// The retry policy around `attempt`, which makes one request. Split
+    /// from `send` so a test can make one attempt fail in a way a loopback
+    /// socket cannot be made to on demand (an OS connect timeout).
+    ///
+    /// Every retry goes to the same endpoint through the same `attempt`, so
+    /// where the key is sent does not change with the attempt number
+    /// (ADR 0024 §3).
+    async fn send_via<F, Fut>(&self, mut attempt_once: F) -> Result<Reply, RuntimeError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<transport::Response, SendError>>,
+    {
+        let mut attempt = 1;
+        loop {
+            let sent = attempt_once().await;
             let wait = match sent {
                 Ok(r) if (200..300).contains(&r.status) => {
                     let v: Value = serde_json::from_str(&r.body).map_err(|e| {
@@ -805,6 +822,35 @@ impl HostedClient {
                     let d = retry_delay(None, attempt);
                     tracing::warn!(attempt, error = %e, "request failed mid-flight; retrying");
                     d
+                }
+                // #210: a run against a loopback stub ended on `os error
+                // 10060` while the host was loaded, because every connect
+                // failure was treated as a refusal. A handshake the OS timed
+                // out gets the policy a broken request gets: at most
+                // MAX_ATTEMPTS (4) attempts, 1, 2, 4 s apart. Each attempt's
+                // connect is bounded by the OS and then by `self.timeout`, so
+                // an endpoint that never answers now fails after up to four
+                // OS connect timeouts and 7 s of waits, not one timeout.
+                // `e` is the transport's message, the address and the OS
+                // error: it holds no key and no request body.
+                Err(SendError::ConnectTimedOut(e)) if attempt < MAX_ATTEMPTS => {
+                    let d = retry_delay(None, attempt);
+                    tracing::warn!(
+                        attempt,
+                        wait_ms = d.as_millis() as u64,
+                        error = %e,
+                        "connect timed out; retrying"
+                    );
+                    d
+                }
+                Err(SendError::ConnectTimedOut(e)) => {
+                    return Err(RuntimeError::Connect {
+                        base: self.base.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("{e} (after {MAX_ATTEMPTS} attempts)"),
+                        ),
+                    });
                 }
                 Err(SendError::Broken(e)) | Err(SendError::Connect(e)) => {
                     return Err(RuntimeError::Connect {
@@ -1410,6 +1456,124 @@ mod tests {
         let e = c.send(&json!({})).await.unwrap_err();
         assert!(matches!(e, RuntimeError::Http { status: 503, .. }), "{e}");
         assert_eq!(h.await.unwrap().len(), MAX_ATTEMPTS as usize);
+    }
+
+    /// `c.send_via` where attempt `n` (from 1) fails with `fail(n)` when that
+    /// returns one, and otherwise makes the real request `send` makes.
+    /// Returns the result and how many attempts were made.
+    async fn send_failing(
+        c: &HostedClient,
+        fail: impl Fn(u32) -> Option<SendError>,
+    ) -> (Result<Reply, RuntimeError>, u32) {
+        let text = json!({}).to_string();
+        let n = std::cell::Cell::new(0u32);
+        let r = c
+            .send_via(|| {
+                n.set(n.get() + 1);
+                let injected = fail(n.get());
+                let text = &text;
+                async move {
+                    match injected {
+                        Some(e) => Err(e),
+                        None => {
+                            transport::post(
+                                &c.endpoint,
+                                None,
+                                "/chat/completions",
+                                &[],
+                                None,
+                                text,
+                                c.timeout,
+                            )
+                            .await
+                        }
+                    }
+                }
+            })
+            .await;
+        (r, n.get())
+    }
+
+    fn timed_out() -> SendError {
+        SendError::ConnectTimedOut(
+            "cannot reach 127.0.0.1:9: A connection attempt failed (os error 10060)".into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn connect_retry_a_timed_out_connect_is_retried_and_the_second_attempt_succeeds() {
+        // The risk (#210): an OS connect timeout on a loaded host was
+        // treated as a refusal, so one slow handshake ended the whole run.
+        let ok = r#"{"choices":[{"message":{"role":"assistant","content":null,
+            "tool_calls":[{"id":"c","type":"function",
+            "function":{"name":"done","arguments":"{}"}}]}}]}"#;
+        let (base, h) = stub(vec![("200 OK", "", ok)]).await;
+        let c = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let (r, attempts) = send_failing(&c, |n| (n == 1).then(timed_out)).await;
+        assert_eq!(
+            r.expect("the second attempt succeeds").call.unwrap().name,
+            "done"
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            h.await.unwrap().len(),
+            1,
+            "one connection reached the endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_retry_stops_at_the_cap_and_says_how_many_attempts() {
+        // The risk: an endpoint that never answers retried without bound.
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "m",
+            "K",
+            None,
+        )
+        .unwrap();
+        // Real waits (tokio's paused clock needs its `test-util` feature,
+        // which this workspace does not enable): 7 s.
+        let started = std::time::Instant::now();
+        let (r, attempts) = send_failing(&c, |_| Some(timed_out())).await;
+        assert_eq!(attempts, MAX_ATTEMPTS);
+        // 1, 2 and 4 s between the four attempts.
+        assert!(
+            started.elapsed() >= Duration::from_secs(7),
+            "{:?}",
+            started.elapsed()
+        );
+        match r {
+            Err(RuntimeError::Connect { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+                let m = source.to_string();
+                assert!(m.contains("10060") && m.contains("after 4 attempts"), "{m}");
+            }
+            other => panic!("expected a connect error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_retry_does_not_apply_to_a_refused_connection() {
+        // The risk: retrying a refusal, which is nothing listening and only
+        // repeats, adding 7 s to every mistyped port (ADR 0024 §4).
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "m",
+            "K",
+            None,
+        )
+        .unwrap();
+        let (r, attempts) = send_failing(&c, |_| {
+            Some(SendError::Connect(
+                "cannot reach 127.0.0.1:9: refused".into(),
+            ))
+        })
+        .await;
+        assert_eq!(attempts, 1);
+        assert!(matches!(r, Err(RuntimeError::Connect { .. })), "{r:?}");
     }
 
     #[tokio::test]

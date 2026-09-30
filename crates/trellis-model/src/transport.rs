@@ -262,7 +262,7 @@ pub(crate) async fn connect_tunnel(
 ) -> Result<TcpStream, SendError> {
     let mut s = TcpStream::connect(proxy.to_string())
         .await
-        .map_err(|e| SendError::Connect(format!("cannot reach the proxy at {proxy}: {e}")))?;
+        .map_err(|e| connect_error(e, format!("cannot reach the proxy at {proxy}")))?;
     let dest = socket_addr(&target.host, target.port);
     tracing::debug!(%proxy, %dest, "opening a CONNECT tunnel");
     s.write_all(format!("CONNECT {dest} HTTP/1.1\r\nHost: {dest}\r\n\r\n").as_bytes())
@@ -340,14 +340,42 @@ impl Response {
 }
 
 /// Transport failures, split by whether retrying could help.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum SendError {
-    /// Nothing is listening, or the name does not resolve. Retrying repeats it.
+    /// Nothing is listening, the name does not resolve, or a proxy refused
+    /// the tunnel. Retrying repeats it.
+    #[error("{0}")]
     Connect(String),
+    /// The operating system gave up on the TCP handshake (`TimedOut`; on
+    /// Windows `os error 10060`, WSAETIMEDOUT). Nothing answered the SYN in
+    /// time, which a loaded host produces even on loopback (#210), and a
+    /// later attempt can get past. Worth a retry, where a refusal is not.
+    #[error("{0}")]
+    ConnectTimedOut(String),
     /// The connection was made and then failed mid-request. Worth a retry.
+    #[error("{0}")]
     Broken(String),
+    /// The whole request outran the client's timeout.
+    #[error("the request timed out")]
     Timeout,
+    #[error("{0}")]
     Config(String),
+}
+
+/// A failed TCP connect as a `SendError`, `what` naming where it was going.
+///
+/// The connect has no timeout of its own: it runs inside the request's
+/// timeout (`post`'s `timeout`, 300 s by default), so how long a handshake
+/// may take is the operating system's to decide. Only its `TimedOut` is
+/// kept apart, as the one kind a retry can get past; a refusal, a name
+/// that does not resolve and the rest stay `Connect`, which is not retried
+/// (ADR 0024 §4, amended by #210).
+fn connect_error(e: std::io::Error, what: String) -> SendError {
+    if e.kind() == std::io::ErrorKind::TimedOut {
+        SendError::ConnectTimedOut(format!("{what}: {e}"))
+    } else {
+        SendError::Connect(format!("{what}: {e}"))
+    }
 }
 
 /// The request line and the fixed headers, without the key.
@@ -412,7 +440,7 @@ pub(crate) async fn post(
                 let addr = socket_addr(&ep.host, ep.port);
                 TcpStream::connect(&addr)
                     .await
-                    .map_err(|e| SendError::Connect(format!("cannot reach {addr}: {e}")))?
+                    .map_err(|e| connect_error(e, format!("cannot reach {addr}")))?
             }
         };
         if ep.tls {
@@ -1270,6 +1298,34 @@ mod tests {
                 other => panic!("{status}: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn connect_retry_only_an_os_connect_timeout_is_marked_retryable() {
+        // The risk: the classification the retry rests on. A timeout is
+        // kept apart; a refusal and a name that does not resolve are not.
+        let kind = |k: std::io::ErrorKind| connect_error(std::io::Error::from(k), "to x".into());
+        assert!(matches!(
+            kind(std::io::ErrorKind::TimedOut),
+            SendError::ConnectTimedOut(m) if m.starts_with("to x: ")
+        ));
+        for k in [
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::Other,
+        ] {
+            assert!(matches!(kind(k), SendError::Connect(_)), "{k:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn connect_retry_windows_connect_errors_map_to_the_kinds_the_retry_reads() {
+        // #210's failure was `os error 10060`. If Rust stopped reading
+        // WSAETIMEDOUT as `TimedOut`, the retry would silently stop applying.
+        let os = |n: i32| std::io::Error::from_raw_os_error(n).kind();
+        assert_eq!(os(10060), std::io::ErrorKind::TimedOut);
+        assert_eq!(os(10061), std::io::ErrorKind::ConnectionRefused);
     }
 
     #[cfg(feature = "hosted")]
