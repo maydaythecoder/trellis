@@ -1231,12 +1231,26 @@ two `Verdict`s that `trellis-checks` constructs from processes it ran itself.
 one premise: during a run the orchestrator is the only writer (ADR 0005).
 With `edit` and `write_file` as the only writers that premise holds, and
 the rollback's guarantee is exact. When `bash`, a custom tool, a hook or a
-process agent is enabled, it does not. Each of those is an unsandboxed
-process running with the user's authority, with write access to the whole
-worktree and to `.git/`. For them the rollback is **best-effort against
-git's view of the tree**: it restores what `git reset --hard`, `git clean
--fd`, the ignored-file listing and the git guard can see, and a writer
-that shapes git's view can place a change outside all four.
+process agent was enabled, it did not: each was an unsandboxed process
+running in the repository with the user's authority, with write access to
+the whole worktree and to `.git/`, and for them the rollback was
+best-effort against git's view of the tree.
+
+*Amended 2026-09-30, #54:* that caveat no longer holds for these four
+writers. Each runs in a throwaway clone (ADR 0032), and no configuration
+runs it in the repository instead; what it changes there reaches the
+repository only through a carry-back under the refusals every writer
+meets. For what such a writer does where it runs, `.git/` included, the
+rollback's guarantee is exact, as for `edit` and `write_file`. What a
+clone does not stop is stated once, in ADR 0032, "Limits": no network
+isolation, reads outside the clone, writes that reach the repository by
+absolute path, and processes that outlive the call. The list below is
+kept as the record of what the review rounds found; it now holds only
+for a writer that reaches the repository by absolute path. Evidence: the
+four `isolated_writer_*` tests in `crates/trellis-loop/src/isolate.rs`,
+one per writer, each showing a planted file, `core.hooksPath`, a branch,
+a tag and a `skip-worktree` flag written from inside it leave every byte
+under the repository's `.git/` as it was.
 
 This is a limit, not a defect awaiting another guard. Eleven review rounds
 have closed one route after another with a post-hoc git check, and each

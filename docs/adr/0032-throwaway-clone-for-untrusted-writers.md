@@ -420,3 +420,20 @@ The earlier tests of the git guard, the `HEAD` check and the ignored-file
 snapshot for process agents now write into the repository by absolute
 path (`in_repo`, `{ROOT}`), which is the writer those guards are still
 for, as the `bash` tests did when `bash` moved into the clone.
+
+## One test per writer (amendment, #54)
+
+The owner's decision on #54 routes all four writers through this clone
+with no switch to run them in the repository, which the sections above
+already do. #54 adds one test per writer, in
+`crates/trellis-loop/src/isolate.rs`, each running the same `.git/`
+writes from where the writer stands (a planted file, `core.hooksPath`, a
+branch, a tag, a `skip-worktree` flag), checking they landed in its clone,
+and checking every byte under the repository's `.git/` is unchanged:
+`isolated_writer_bash_git_dir_writes_do_not_reach_the_repository`,
+`isolated_writer_custom_tool_git_dir_writes_do_not_reach_the_repository`,
+`isolated_writer_hook_git_dir_writes_do_not_reach_the_repository` and
+`isolated_writer_process_agent_git_dir_writes_do_not_reach_the_repository`.
+The process-agent test spawns as `trellis-cli`'s `process_agent` does
+(`AgentClone::confine`, then the key scrub, then `carry_back`). ADR 0023
+§5 and ADR 0026 §11 now point here for the limits a clone leaves.
