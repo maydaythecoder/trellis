@@ -832,6 +832,8 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         // Nothing reaches a process agent after it starts, so nothing
         // typed mid-run can be recorded for it.
         steering: Vec::new(),
+        // One process, one tree: no partitions to collide (ADR 0041).
+        suspected_recall_gaps: Vec::new(),
     };
     let (timestamp, started_at) = trellis_trail::now();
     let slug = trellis_trail::slugify(t.task);

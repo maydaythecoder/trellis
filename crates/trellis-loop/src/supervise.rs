@@ -6,8 +6,8 @@
 //! partition's output to decide about another's (rule 5). What it returns
 //! carries no verdict, because partition-local passes never substitute for
 //! the integrated check over the merged union (rule 6, S19 patch 2). That
-//! check is the caller's next step, run on the root after [`Supervisor::run_plan`]
-//! returns.
+//! check runs in [`Supervisor::run_integrated`], the only public way to run a
+//! plan, so no caller can merge partitions and skip it (ADR 0041).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -89,6 +89,9 @@ pub struct Supervised<T> {
     pub reports: Vec<PartitionReport<T>>,
     /// Root-relative paths written or removed, in the order applied.
     pub merged: Vec<String>,
+    /// The partition each path in `merged` came from. What the integrated
+    /// check attributes a failure's files to (ADR 0041).
+    pub owner: HashMap<String, PartitionId>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +107,12 @@ pub enum SuperviseError {
         #[source]
         source: std::io::Error,
     },
+    /// The root could not be snapshotted before the plan ran (a dirty
+    /// worktree, rule 7), or could not be rolled back after it. A failed
+    /// rollback leaves the root mid-run, and the message says how to
+    /// finish by hand.
+    #[error(transparent)]
+    Vcs(#[from] trellis_vcs::VcsError),
 }
 
 /// Removes its worktree when dropped, however the partition ended.
@@ -181,7 +190,7 @@ impl Supervisor<'_> {
     ///
     /// `work` is called on the supervisor's task; the future it returns runs
     /// on its own.
-    pub async fn run_plan<T, E, F, Fut>(
+    pub(crate) async fn run_plan<T, E, F, Fut>(
         &self,
         plan: &Plan,
         work: F,
@@ -245,7 +254,7 @@ impl Supervisor<'_> {
             .collect();
         finished.sort_by_key(|f| position.get(&f.id).copied().unwrap_or(usize::MAX));
 
-        let merged = merge(root, self.base, self.policy, &mut finished)?;
+        let (merged, owner) = merge(root, self.base, self.policy, &mut finished)?;
 
         let mut reports = Vec::with_capacity(finished.len());
         for f in finished {
@@ -261,7 +270,11 @@ impl Supervisor<'_> {
         // so a worktree that failed to go is left where the warning named it.
         let _ = std::fs::remove_dir(root.join(".trellis").join("work").join(run));
 
-        Ok(Supervised { reports, merged })
+        Ok(Supervised {
+            reports,
+            merged,
+            owner,
+        })
     }
 
     /// Runs `parts` in a `JoinSet`, at most `width` at once.
@@ -402,7 +415,7 @@ fn merge<T>(
     base: &str,
     policy: FailurePolicy,
     finished: &mut [Finished<T>],
-) -> Result<Vec<String>, SuperviseError> {
+) -> Result<(Vec<String>, HashMap<String, PartitionId>), SuperviseError> {
     let mut plans: Vec<(usize, Vec<Change>)> = Vec::new();
     let mut claimed: HashMap<String, PartitionId> = HashMap::new();
 
@@ -445,10 +458,11 @@ fn merge<T>(
     }
 
     if policy == FailurePolicy::AllOrNothing && finished.iter().any(|f| f.outcome.is_err()) {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), HashMap::new()));
     }
 
     let mut merged = Vec::new();
+    let mut owner = HashMap::new();
     for (i, changes) in plans {
         let f = &finished[i];
         let Some(wt) = f.guard.as_ref().and_then(WorktreeGuard::path) else {
@@ -475,10 +489,11 @@ fn merge<T>(
                     Err(e) => return Err(err(e)),
                 },
             }
+            owner.insert(c.path().to_string(), f.id);
             merged.push(c.path().to_string());
         }
     }
-    Ok(merged)
+    Ok((merged, owner))
 }
 
 /// Refuses a path the merge must not write into the root.
