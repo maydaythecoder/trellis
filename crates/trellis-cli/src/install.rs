@@ -564,7 +564,8 @@ fn check_bounds(copy: &[Accepted]) -> Result<()> {
 ///   than waiting on a prompt nobody may be watching.
 fn git() -> std::process::Command {
     let mut c = trellis_vcs::command();
-    // The default first: a later, per-name setting overrides it.
+    // A per-name `protocol.<name>.allow` takes precedence over the
+    // `protocol.allow` default, whatever their order.
     c.args([
         "-c",
         "protocol.allow=never",
@@ -1077,12 +1078,10 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        let never = args.iter().position(|a| a == "protocol.allow=never");
-        assert!(never.is_some(), "{args:?}");
+        assert!(args.iter().any(|a| a == "protocol.allow=never"), "{args:?}");
         for name in ["https", "ssh", "git", "file"] {
             let allow = format!("protocol.{name}.allow=always");
-            let at = args.iter().position(|a| *a == allow);
-            assert!(at > never, "{allow} must follow the default: {args:?}");
+            assert!(args.contains(&allow), "{allow} missing: {args:?}");
         }
         assert_eq!(
             args.iter().filter(|a| a.ends_with(".allow=always")).count(),
