@@ -75,13 +75,13 @@ impl ReadyReport {
 }
 
 /// G0's `grep -qE '^## Done when'`: a line that starts with the heading.
-fn has_done_when(body: &str) -> bool {
+pub(crate) fn has_done_when(body: &str) -> bool {
     body.lines().any(|l| l.starts_with("## Done when"))
 }
 
 /// G0's awk: a line starting with three backticks anywhere after the first
 /// line starting with `## Verify`.
-fn has_fenced_verify(body: &str) -> bool {
+pub(crate) fn has_fenced_verify(body: &str) -> bool {
     body.lines()
         .skip_while(|l| !l.starts_with("## Verify"))
         .skip(1)

@@ -15,17 +15,22 @@
 //! [`ready_with`] is `ready <n>`'s gate: G0's checks as
 //! `scripts/gates/ticket-ready.sh` reads them, beside the named extras from
 //! [`ready`]'s rule.
+//!
+//! [`new_with`] is `new`'s: the body checked as G0 and G6 read it, the
+//! labels the rules compute, and the filing as a closure the caller passes.
 
 mod gate;
 mod labels;
+mod new;
 mod parse;
 mod report;
 mod rules;
 
 pub use gate::{Abstention, ReadyReport, ready_gate, ready_with};
 pub use labels::{Area, Effort, Flag, Kind, Origin, Risk, Route, Surface};
+pub use new::{NewError, NewOutcome, NewPlan, new_with, plan_new};
 pub use report::{
-    GH_VIEW_FIELDS, IntakeError, Line, Report, TriageError, Value, gh_view_args, report,
+    GH_VIEW_FIELDS, IntakeError, Line, Report, TriageError, Value, gh_view_args, printable, report,
     ticket_from_gh_json, triage_with,
 };
 pub use rules::{
