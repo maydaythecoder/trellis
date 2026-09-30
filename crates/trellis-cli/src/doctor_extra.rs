@@ -23,6 +23,7 @@ pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
         },
         trust_line(root, cfg),
         agents_line(root),
+        services_line(root),
         tz_line(),
         vault_line(root, cfg),
     ]
@@ -123,6 +124,14 @@ pub(crate) fn trust_line_with(
     if cfg.bash_requested() {
         what.push("bash".to_string());
     }
+    let services = fp
+        .items
+        .iter()
+        .filter(|i| i.label.starts_with("service "))
+        .count();
+    if services > 0 {
+        what.push(format!("{services} service(s)"));
+    }
     let state = match store.map_err(|e| e.to_string()).and_then(|s| {
         s.state(root, &fp)
             .map(|st| (s, st))
@@ -155,6 +164,52 @@ fn agents_line(root: &Path) -> String {
             format!("agents:     {} profile(s), {routines}", profiles.len())
         }
     }
+}
+
+/// Services whose record is still in the git directory and whose process is
+/// still alive (ADR 0026 §12). A record is removed once trellis has killed
+/// the service's tree and reaped it, so one left behind with a live process
+/// is a service that outlived its task: trellis was killed first, or the
+/// reap timed out. Only the service's own pid is recorded; what it started
+/// is not listed.
+fn services_line(root: &Path) -> String {
+    let dir = match trellis_queue::Queue::for_repo(root) {
+        Ok(q) => q.trellis_dir(),
+        Err(e) => return format!("services:   not checked: {}", crate::plain(&e.to_string())),
+    };
+    let (alive, unreadable) = crate::services::outliving(&dir, &crate::liveness::SystemLiveness);
+    let mut line = if alive.is_empty() {
+        "services:   no recorded service outlived its task".to_string()
+    } else {
+        format!(
+            "services:   {} recorded service(s) still alive after their task ended: {};              kill each (and what it started), then delete its record in {}",
+            alive.len(),
+            alive
+                .iter()
+                .map(|r| crate::plain(&format!(
+                    "pid {} ({}/{}, task {}: {})",
+                    r.pid,
+                    r.agent,
+                    r.service,
+                    r.task,
+                    r.argv.join(" ")
+                )))
+                .collect::<Vec<_>>()
+                .join("; "),
+            crate::plain(&dir.join(crate::services::DIR).display().to_string())
+        )
+    };
+    if !unreadable.is_empty() {
+        line.push_str(&format!(
+            "; unreadable record(s): {}",
+            unreadable
+                .iter()
+                .map(|u| crate::plain(u))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    line
 }
 
 /// Where a routine's IANA zone name is looked up (ADR 0026 §7). Bundled data
