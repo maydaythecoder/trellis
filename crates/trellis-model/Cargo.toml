@@ -15,6 +15,9 @@ llguidance = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+# SHA-256 of fetched weights against the catalogue's pin (issue #216). Already
+# the workspace's hash, used by trellis-loop and trellis-trail.
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
