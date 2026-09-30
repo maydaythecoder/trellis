@@ -141,7 +141,7 @@ override any row.
 | 9.2–9.3 JSON event mode | built as `--log-json`; stdout JSONL → W-D (`--json`) |
 | 9.4–9.5 RPC | W-D (`trellis rpc`, a subset: prompt, abort, get_state, get_messages, set_model, compact, approve) |
 | 9.6 SDK | built in effect (the crates are libraries) |
-| 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B. **Amended 2026-09-29 (#118, ADR 0039):** built in part: `trellis install <source>@<ref>`, `--list`, `--remove` copy skills and prompt templates into `<user config dir>/packages/`, recorded in `packages.toml`; packages carry no code; runs do not read them yet |
+| 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B. **Amended 2026-09-29 (#118, ADR 0039):** built in part: `trellis install <source>@<ref>`, `--list`, `--remove` copy skills and prompt templates into `<user config dir>/packages/`, recorded in `packages.toml`; packages carry no code. **Amended (#119, ADR 0039 §10):** runs read installed skills and templates after the repository's, which wins a name |
 | 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |

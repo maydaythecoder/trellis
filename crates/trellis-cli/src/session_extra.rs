@@ -64,9 +64,15 @@ fn shell_command(cmd: &str) -> std::process::Command {
 
 /// `/prompts`.
 pub(crate) fn print_prompts(root: &Path) {
-    let list = crate::templates::list(root);
+    let list = match crate::templates::list(root) {
+        Ok(l) => l,
+        Err(e) => {
+            println!("templates not listed: {e:#}");
+            return;
+        }
+    };
     if list.is_empty() {
-        println!("no templates in .trellis/prompts/");
+        println!("no templates in .trellis/prompts/ or in an installed package");
         return;
     }
     for t in list {
