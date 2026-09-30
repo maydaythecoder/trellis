@@ -61,18 +61,38 @@ pub enum TriageError {
     Intake(#[from] IntakeError),
 }
 
+/// One issue as `gh issue view --json` and `gh issue list --json` print it
+/// with [`GH_VIEW_FIELDS`].
 #[derive(Deserialize)]
-struct GhIssue {
-    number: u64,
+pub(crate) struct GhIssue {
+    pub(crate) number: u64,
     title: String,
     body: String,
     labels: Vec<GhLabel>,
-    state: String,
+    pub(crate) state: String,
 }
 
 #[derive(Deserialize)]
 struct GhLabel {
     name: String,
+}
+
+impl GhIssue {
+    /// The ticket, or `None` when the state is neither of the two the rules
+    /// read.
+    pub(crate) fn into_ticket(self) -> Option<Ticket> {
+        let state = match self.state.as_str() {
+            "OPEN" => State::Open,
+            "CLOSED" => State::Closed,
+            _ => return None,
+        };
+        Some(Ticket {
+            title: self.title,
+            body: self.body,
+            labels: self.labels.into_iter().map(|l| l.name).collect(),
+            state,
+        })
+    }
 }
 
 /// Reads `gh issue view <asked> --json number,title,body,labels,state`.
@@ -88,20 +108,9 @@ pub fn ticket_from_gh_json(asked: u64, json: &str) -> Result<Ticket, IntakeError
             got: issue.number,
         });
     }
-    let state = match issue.state.as_str() {
-        "OPEN" => State::Open,
-        "CLOSED" => State::Closed,
-        _ => {
-            return Err(IntakeError::UnknownState {
-                number: asked,
-                state: issue.state,
-            });
-        }
-    };
-    Ok(Ticket {
-        title: issue.title,
-        body: issue.body,
-        labels: issue.labels.into_iter().map(|l| l.name).collect(),
+    let state = issue.state.clone();
+    issue.into_ticket().ok_or(IntakeError::UnknownState {
+        number: asked,
         state,
     })
 }
