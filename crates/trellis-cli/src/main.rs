@@ -3460,7 +3460,7 @@ fn record_trail(
         // such a trail has the bytes it had before the field (ADR 0034).
         steering: steering_entries(&turns.steering, turns.turns.len()),
         // A single-agent run has no partitions, so no failure of its can
-        // name files from two of them (ADR 0041). Empty is omitted on disk.
+        // name files from two of them (ADR 0042). Empty is omitted on disk.
         suspected_recall_gaps: Vec::new(),
     };
 

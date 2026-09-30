@@ -1,4 +1,4 @@
-# ADR 0041 — Amends ADR 0037: the integrated check after partitions merge
+# ADR 0042 — Amends ADR 0037: the integrated check after partitions merge
 
 **Status:** Accepted.
 **Date:** 2026-09-29
