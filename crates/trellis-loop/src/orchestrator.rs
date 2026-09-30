@@ -147,7 +147,9 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         | ToolCall::Find { .. }
         | ToolCall::Ls { .. }
         | ToolCall::SearchNotes { .. }
-        | ToolCall::ReadNote { .. } => false,
+        | ToolCall::ReadNote { .. }
+        | ToolCall::CallersOf { .. }
+        | ToolCall::CalleesOf { .. } => false,
         // Nothing is written: the question travels back to the loop in the
         // call itself, and the binary records it on the task.
         ToolCall::AskHuman { .. } => false,
@@ -799,6 +801,8 @@ impl Orchestrator {
                 Some(n) => crate::notes::read(n, note),
                 None => ToolResult::Error("no note vault is configured for this run".into()),
             },
+            ToolCall::CallersOf { symbol } => self.callers_of(symbol),
+            ToolCall::CalleesOf { symbol } => self.callees_of(symbol),
             ToolCall::Custom { name, args } => self.custom(name, args).await,
             // Nothing to run. `Output` is what tells the loop the gates let
             // the question through; it ends the run on it. The words are
@@ -1145,35 +1149,27 @@ impl Orchestrator {
 
     fn blast_radius(&self, symbol: &str) -> ToolResult {
         let index = self.session.index();
-        let qualified = |s: &trellis_index::SymbolEntry| {
-            format!(
-                "{}.{}",
-                index.files[s.file.index()].module,
-                index.interner.resolve(s.name)
-            )
-        };
-        let matches: Vec<_> = index
-            .symbols
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                let q = qualified(s);
-                q == symbol
-                    || q.ends_with(&format!(".{symbol}"))
-                    || index.interner.resolve(s.name) == symbol
-            })
-            .map(|(i, _)| trellis_core::SymbolId::from_index(i))
-            .collect();
+        match crate::graph_tools::find_symbol(index, symbol) {
+            Ok(id) => ToolResult::Radius(trellis_index::radius::blast_radius(index, id)),
+            Err(e) => ToolResult::Error(e),
+        }
+    }
 
-        match matches.len() {
-            0 => ToolResult::Error(format!(
-                "no first-party definition matches `{symbol}`; only definitions \
-                 inside the repository root are indexed"
-            )),
-            1 => ToolResult::Radius(trellis_index::radius::blast_radius(index, matches[0])),
-            n => ToolResult::Error(format!(
-                "`{symbol}` matches {n} definitions; qualify it further"
-            )),
+    /// `callers_of`, resolving `symbol` exactly as `blast_radius` does.
+    fn callers_of(&self, symbol: &str) -> ToolResult {
+        let index = self.session.index();
+        match crate::graph_tools::find_symbol(index, symbol) {
+            Ok(id) => crate::graph_tools::callers_of(index, &self.root, id),
+            Err(e) => ToolResult::Error(e),
+        }
+    }
+
+    /// `callees_of`, resolving `symbol` exactly as `blast_radius` does.
+    fn callees_of(&self, symbol: &str) -> ToolResult {
+        let index = self.session.index();
+        match crate::graph_tools::find_symbol(index, symbol) {
+            Ok(id) => crate::graph_tools::callees_of(index, &self.root, id),
+            Err(e) => ToolResult::Error(e),
         }
     }
 

@@ -3141,6 +3141,8 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         ToolCall::Bash { command } => ("bash", summarise(command)),
         ToolCall::SearchNotes { query, .. } => ("search_notes", summarise(query)),
         ToolCall::ReadNote { note } => ("read_note", note.clone()),
+        ToolCall::CallersOf { symbol } => ("callers_of", symbol.clone()),
+        ToolCall::CalleesOf { symbol } => ("callees_of", symbol.clone()),
         ToolCall::Custom { name, args } => (name.as_str(), summarise(&args.to_string())),
         // Quoted: model output, and a trail is read back into prompts.
         ToolCall::AskHuman { question, .. } => ("ask_human", summarise(&format!("{question:?}"))),
