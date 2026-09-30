@@ -207,6 +207,58 @@ pub(crate) fn blocked_by(body: &str) -> Result<Vec<u64>, String> {
     Ok(out)
 }
 
+/// The story's id and number (`S13` and 13) from the body's `story:` line.
+/// `Ok(None)` when there is none.
+///
+/// When the body has a generated triage block, only the block is read: it
+/// is what the triage wrote, and a `story:` line elsewhere could be text
+/// the block supersedes. A body with no block is read line by line, as G0
+/// reads `blocked_by`, because many open issues carry `story:` and
+/// `blocked_by:` as bare lines with no block. Only a line that starts with
+/// `story:` counts. A value that is not `S` and digits, or two `story:`
+/// lines, is malformed intake, not a story.
+pub(crate) fn story(body: &str) -> Result<Option<(String, u64)>, String> {
+    let region = match body.find(TRIAGE_START) {
+        Some(start) => {
+            let end = body[start..]
+                .find(TRIAGE_END)
+                .map(|i| start + i)
+                .ok_or_else(|| "the triage block is opened and never closed".to_string())?;
+            &body[start..end]
+        }
+        None => body,
+    };
+    let mut found = None;
+    for line in region.lines() {
+        let Some(value) = line.strip_prefix("story:") else {
+            continue;
+        };
+        if found.is_some() {
+            return Err("more than one `story:` line".to_string());
+        }
+        let value = value.trim();
+        let n = story_number(value)
+            .ok_or_else(|| format!("`story: {value}` is not `S` followed by a number"))?;
+        found = Some((value.to_string(), n));
+    }
+    Ok(found)
+}
+
+/// A story issue's own id, from the `S<n>:` its title starts with, as the
+/// story issues on this repository are titled (`S13: As a maintainer, ...`).
+pub(crate) fn story_of_title(title: &str) -> Option<(String, u64)> {
+    let (id, _) = title.split_once(':')?;
+    story_number(id).map(|n| (id.to_string(), n))
+}
+
+fn story_number(id: &str) -> Option<u64> {
+    let digits = id.strip_prefix('S')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 const DECISION_STEMS: [&str; 5] = ["design", "decid", "investigat", "explor", "consider"];
 
 /// The decision words (§5 `!agent-ok` rule 3) in the title and body, sorted
@@ -295,6 +347,43 @@ mod tests {
         assert!(blocked_by("blocked_by: [75, child-a]").is_err());
         assert_eq!(blocked_by("blocked_by: [75, 76]").unwrap(), [75, 76]);
         assert_eq!(blocked_by("blocked_by: []").unwrap(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn story_is_read_from_the_block_when_there_is_one_and_never_guessed() {
+        // A body with a block: a bare `story:` outside it is not read, so
+        // the block the triage wrote decides.
+        let body = "story: S1
+<!-- triage:start -->
+story: S13
+<!-- triage:end -->";
+        assert_eq!(story(body).unwrap(), Some(("S13".to_string(), 13)));
+        // No block, as #201 and many open issues are written: the bare line.
+        assert_eq!(
+            story(
+                "## Verify
+
+story: S07
+blocked_by: [120]"
+            )
+            .unwrap(),
+            Some(("S07".to_string(), 7))
+        );
+        // Mid-line mentions are prose, not the field.
+        assert_eq!(story("the history: S13 of it").unwrap(), None);
+        assert!(story("story: thirteen").is_err());
+        assert!(
+            story(
+                "story: S1
+story: S2"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            story_of_title("S07: As a user"),
+            Some(("S07".to_string(), 7))
+        );
+        assert_eq!(story_of_title("Scope: tidy"), None);
     }
 
     #[test]
