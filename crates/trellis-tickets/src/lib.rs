@@ -18,6 +18,10 @@
 //!
 //! [`new_with`] is `new`'s: the body checked as G0 and G6 read it, the
 //! labels the rules compute, and the filing as a closure the caller passes.
+//!
+//! [`sweep_with`] is `sweep`'s: every open issue re-triaged, the drift
+//! shown, and each edit a closure called only with `apply`. [`scan`] is
+//! `scan`'s: G4's markers in a tree, as proposals, with nothing filed.
 
 mod gate;
 mod labels;
@@ -25,6 +29,8 @@ mod new;
 mod parse;
 mod report;
 mod rules;
+mod scan;
+mod sweep;
 
 pub use gate::{Abstention, ReadyReport, ready_gate, ready_with};
 pub use labels::{Area, Effort, Flag, Kind, Origin, Risk, Route, Surface};
@@ -35,6 +41,11 @@ pub use report::{
 };
 pub use rules::{
     Readiness, Triage, area, effort, flags, kind, origin, ready, risk, surface, triage,
+};
+pub use scan::{Proposal, ScanError, g4_markers, scan};
+pub use sweep::{
+    Change, Held, IssuePlan, SWEEP_LIST_LIMIT, SweepError, SweepOutcome, SweepPlan, gh_list_args,
+    plan_sweep, sweep_with, utc_timestamp,
 };
 
 /// The rule set's version, written as `triage_version` in every triage
