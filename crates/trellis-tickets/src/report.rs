@@ -198,27 +198,41 @@ pub fn triage_with(
     number: u64,
     mut fetch: impl FnMut(u64) -> Result<String, String>,
 ) -> Result<Report, TriageError> {
-    let get = |n: u64, fetch: &mut dyn FnMut(u64) -> Result<String, String>| {
-        let json = fetch(n).map_err(|reason| TriageError::Fetch { number: n, reason })?;
-        Ok::<Ticket, TriageError>(ticket_from_gh_json(n, &json)?)
-    };
-    let t = get(number, &mut fetch)?;
+    let t = fetch_ticket(number, &mut fetch)?;
+    let blockers = blocker_states(&t.body, &mut fetch)?;
+    Ok(report(number, &t, &blockers))
+}
+
+fn fetch_ticket(
+    n: u64,
+    fetch: &mut dyn FnMut(u64) -> Result<String, String>,
+) -> Result<Ticket, TriageError> {
+    let json = fetch(n).map_err(|reason| TriageError::Fetch { number: n, reason })?;
+    Ok(ticket_from_gh_json(n, &json)?)
+}
+
+/// The state of each distinct issue in `body`'s `blocked_by`, each read
+/// once through `fetch`. `triage` and `new` both hand this to the rules.
+pub(crate) fn blocker_states(
+    body: &str,
+    fetch: &mut dyn FnMut(u64) -> Result<String, String>,
+) -> Result<BTreeMap<u64, State>, TriageError> {
     let mut blockers = BTreeMap::new();
     // An unreadable `blocked_by` is not dropped: the rules re-read it and
     // abstain with the reason, and that abstention is what gets printed.
-    if let Ok(named) = parse::blocked_by(&t.body) {
+    if let Ok(named) = parse::blocked_by(body) {
         for n in named {
             if let Entry::Vacant(e) = blockers.entry(n) {
-                e.insert(get(n, &mut fetch)?.state);
+                e.insert(fetch_ticket(n, fetch)?.state);
             }
         }
     }
-    Ok(report(number, &t, &blockers))
+    Ok(blockers)
 }
 
 /// Issue text with control characters escaped, so a title or body quoted in
 /// a reason cannot move the cursor or recolour the terminal it prints to.
-pub(crate) fn printable(s: &str) -> String {
+pub fn printable(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_control() {
@@ -228,6 +242,16 @@ pub(crate) fn printable(s: &str) -> String {
         }
     }
     out
+}
+
+/// One dimension's printed line: the value and the rule that set it, or
+/// `abstained:` and the reason, then the rule that abstained.
+pub(crate) fn line_text(name: &str, line: &Line) -> String {
+    let (what, rule) = match line {
+        Line::Decided { value, rule } => (shown(value), rule),
+        Line::Abstained { rule, reason } => (format!("abstained: {reason}"), rule),
+    };
+    format!("{name:<8}{}  (rule: {rule})\n", printable(&what))
 }
 
 fn shown(v: &Value) -> String {
@@ -267,11 +291,7 @@ impl Report {
             self.triage_version
         );
         for (name, line) in self.lines() {
-            let (what, rule) = match line {
-                Line::Decided { value, rule } => (shown(value), rule),
-                Line::Abstained { rule, reason } => (format!("abstained: {reason}"), rule),
-            };
-            out.push_str(&format!("{name:<8}{}  (rule: {rule})\n", printable(&what)));
+            out.push_str(&line_text(name, line));
         }
         out
     }
