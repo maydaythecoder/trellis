@@ -131,6 +131,10 @@ impl Services {
                 target: format!("{}: {}", s.name, s.argv.join(" ")),
                 outcome: "started before the task; its output is a log, not a check".to_string(),
                 wrote: false,
+                // A service writes nothing through trellis, so it has no
+                // changed paths to record; what it touches is not a proposal.
+                changed: Vec::new(),
+                changed_count: 0,
             })
             .collect()
     }
