@@ -66,6 +66,20 @@ pub trait ToolGate: Send + Sync {
     fn name(&self) -> Option<&'static str> {
         None
     }
+
+    /// Whether `check` runs repository code (the `pre_tool` hook), which
+    /// runs in the call's throwaway clone rather than in the repository
+    /// (ADR 0032, "Hooks"). `false` for every gate that decides in-process.
+    fn runs_repository_code(&self) -> bool {
+        false
+    }
+
+    /// Where the next `check` runs its repository code: the clone's path,
+    /// or why no clone could be made, in which case the gate must deny,
+    /// since a gate that could not run has not allowed anything. `None`
+    /// clears it once the check is done. Called only on a gate whose
+    /// [`runs_repository_code`](Self::runs_repository_code) is `true`.
+    fn run_in(&mut self, _clone: Option<Result<PathBuf, String>>) {}
 }
 
 /// `[governance] deny_write` and the rule documents' write denials, as the
