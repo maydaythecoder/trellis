@@ -414,3 +414,28 @@ the issue instead:
 A rule that cannot decide returns `Outcome::Abstained { rule, reason }`
 rather than §10's `None`: the same fail-to-human design, with the reason
 carried so that `triage <n>` can print why (§10, last paragraph).
+
+### Where the rules could not be applied as written
+
+`crates/trellis-tickets` implements §5 and §6 over an issue's title, body,
+labels and state. The standard assumes inputs (a diff, a repository
+context) that an issue does not carry. Each rule abstains only when an input
+it cannot read could change its answer. Where that would make a rule abstain
+on every ticket, or where the standard names no signal, the table records
+what the rule does instead.
+
+| Rule | What the code does | Why |
+|---|---|---|
+| Files | The `**Files:**` line is split on `;` and `,`; parentheticals and a word after a path (`§4`) are commentary; `src/...` after `crates/<name>/...` continues that crate. An entry that is not a path (`if built: ...`, `no crate files`) makes the line unreadable. | Dropping an entry would undercount files and could lower effort and risk. |
+| `area:` | §5's table as written, plus `crates/trellis-cli/**` → `area:cli` and `docs/**` → `area:docs`. Every other path (`trellis-index`, `-loop`, `-vault`, `-queue`, `-trail`, `-vcs`, `-core`, `scripts/`, `.github/`, `Cargo.toml`) maps to nothing, and the rule abstains. With two areas, the first-listed file's area labels the ticket. | §5 names crates this repository does not have and omits most that it does; mapping them is the owner's call. The two additions are the ones whose names are the area's. §5 allows two areas without saying which one wins. |
+| `kind:` | §5's table in order. If the files cannot be read and the title does not decide `bug`, the rule abstains. A directory entry leaves "only `*.md`" and the other "only" rows unknown. | The file rows come before `feature` in the table, so an unreadable file list could change the answer. |
+| `surface:` | `protocol/**` → protocol. A file in a library crate's `src/` (any crate but `trellis-cli`, which is binary-only) abstains. Otherwise `crates/trellis-cli/src/**` → cli, else internal. | The public row needs a `pub fn`/`pub struct` diff, and an issue has none. |
+| `risk:` | High on `!breaking`, `!security`, a file under `crates/trellis-checks` or `protocol/`, even when `area` abstained. A `Cargo.toml` in the files abstains: the workspace forbids `unsafe`, so only a manifest edit can introduce it. **Touching rollback, worktree teardown or session persistence is not detected**: this repository has no path table for them. An on-disk format change is expected to carry `!breaking`. | These are the signals the files and labels carry. |
+| `effort:` | `s` needs both 1-2 files and 0-1 new tests; 6+ files is `l`; anything else is `m`. New tests are the `<min>` of the Verify block's `scripts/tickets/verify-tests.sh` lines. A directory entry abstains. | §5's table leaves the mixed rows open; `m` is the only value left when `s` fails and `l` does not apply. The Verify line is the one test count an issue records. |
+| `origin:` | Read from the one `origin:` label. None, two, or an unknown value abstains. | §2 has the creation path set it; it is not in the text. |
+| `!breaking`, `!security`, `!blocked-ext` | Carried from the labels. | §5 uses them as inputs and gives no derivation. |
+| `!needs-adr` | §5's list. A `Cargo.toml` or `Cargo.lock` in the files abstains unless another condition already set the flag. | Whether a dependency changes needs the diff. |
+| `!agent-ok` | **Never set.** | Rule 2 ("no line needing judgment") has no deterministic check. The flag asserts all six conditions were shown, and rule 2 cannot be shown. `scripts/tickets/next.sh` does not read the flag, so what agents start is unchanged. |
+| Decision words | The `## Decision` section and the generated triage block are not scanned. The rest of the body is scanned as §5 lists it, so prose that mentions a past decision ("ADR 0031 decided ...") still fails. | Those two record decisions already made. |
+| `ready:` | "Status is draft or todo" is read as the issue being open. `!needs-adr` always fails the gate as `needs ADR`, because no ADR is linked from an issue. A blocker whose state the caller did not supply abstains. G0's label checks (`parked`, `split`, `triage:needs-human`) are not in §5's list and are not in this rule. | #78's `ready` command adds G0's checks. |
+| `triage:` | A ticket that is not ready and not blocked matches no row of §6's table and goes to `needs-human`, with its failures as the reasons. A story abstains. | Fail to human, never guess (§1). |
