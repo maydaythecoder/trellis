@@ -14,8 +14,9 @@
 //! Each started service is recorded at `<git-dir>/trellis/services/<pid>.json`
 //! and the record is removed once its tree has been killed and the service
 //! reaped. A record that is still there names a service trellis did not see
-//! end (trellis itself was killed, or the reap timed out), and `trellis
-//! doctor` lists the ones whose process is still alive.
+//! end yet: its task is still running, or trellis itself was killed, or the
+//! reap timed out. `trellis doctor` lists the ones whose process is still
+//! alive, and says which of them belong to a task still claimed.
 
 use crate::liveness::SystemLiveness;
 use anyhow::{Context, Result};

@@ -1402,9 +1402,12 @@ runs gets them:
    record is removed once the service has been killed and reaped within two
    seconds, and left otherwise. `trellis doctor` lists every recorded
    service whose pid is alive with the recorded start time (or without one,
-   when either time is unknown), as a service that outlived its task.
-   Only the service's own pid is recorded: a process it started that
-   escaped the kill is not listed.
+   when either time is unknown). One whose task is not claimed is listed as
+   having outlived its task; one whose task is still claimed is listed
+   apart, as running for that task, which is expected while `work` runs it
+   (a claim a dead `work` left behind also reads as claimed, until it is
+   released as ADR 0020 §5 describes). Only the service's own pid is
+   recorded: a process it started that escaped the kill is not listed.
 7. **The trail.** Each service is one action, tool `service`, target
    `<name>: <argv>`, first in the list under turn 1. Its outcome says it
    was started and that its output is a log, not a check. `Action` has no
