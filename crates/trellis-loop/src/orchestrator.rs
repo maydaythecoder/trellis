@@ -149,7 +149,8 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         | ToolCall::SearchNotes { .. }
         | ToolCall::ReadNote { .. }
         | ToolCall::CallersOf { .. }
-        | ToolCall::CalleesOf { .. } => false,
+        | ToolCall::CalleesOf { .. }
+        | ToolCall::CoverageReport { .. } => false,
         // Nothing is written: the question travels back to the loop in the
         // call itself, and the binary records it on the task.
         ToolCall::AskHuman { .. } => false,
@@ -803,6 +804,7 @@ impl Orchestrator {
             },
             ToolCall::CallersOf { symbol } => self.callers_of(symbol),
             ToolCall::CalleesOf { symbol } => self.callees_of(symbol),
+            ToolCall::CoverageReport { paths } => self.coverage_report(paths),
             ToolCall::Custom { name, args } => self.custom(name, args).await,
             // Nothing to run. `Output` is what tells the loop the gates let
             // the question through; it ends the run on it. The words are
@@ -1171,6 +1173,25 @@ impl Orchestrator {
             Ok(id) => crate::graph_tools::callees_of(index, &self.root, id),
             Err(e) => ToolResult::Error(e),
         }
+    }
+
+    /// `coverage_report`, after every path passes the check `read_file`
+    /// makes: the report names files and lines, so a path outside the
+    /// repository or into `.git` is refused rather than answered with a
+    /// count of zero that would read as "nothing in doubt there".
+    fn coverage_report(&self, paths: &[String]) -> ToolResult {
+        if paths.is_empty() {
+            return ToolResult::Error(
+                "coverage_report needs at least one path; it reports on the files named,                  not on the whole repository"
+                    .into(),
+            );
+        }
+        for p in paths {
+            if let Some(why) = read_refusal(&self.root, p) {
+                return ToolResult::Error(format!("coverage_report refused: {why}"));
+            }
+        }
+        crate::graph_tools::coverage_report(self.session.index(), &self.root, paths)
     }
 
     fn read_file(&self, path: &str) -> ToolResult {

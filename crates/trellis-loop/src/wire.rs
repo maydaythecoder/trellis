@@ -84,6 +84,9 @@ pub enum ToolCallWire {
     CallersOf { symbol: String },
     /// What a symbol's own call sites bound to, and how many bound to nothing.
     CalleesOf { symbol: String },
+    /// The call sites in the named files that bound to no definition, by
+    /// reason. Required: an empty or missing list is not "every file".
+    CoverageReport { paths: Vec<String> },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
@@ -171,6 +174,9 @@ impl ToolCallWire {
             ToolCallWire::AskHuman { question, options } => ask_human(question, options)?,
             ToolCallWire::CallersOf { symbol } => Step::Call(ToolCall::CallersOf { symbol }),
             ToolCallWire::CalleesOf { symbol } => Step::Call(ToolCall::CalleesOf { symbol }),
+            ToolCallWire::CoverageReport { paths } => {
+                Step::Call(ToolCall::CoverageReport { paths })
+            }
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }

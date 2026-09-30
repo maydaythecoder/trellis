@@ -1291,6 +1291,9 @@ names are in the code beside each.
   `Output` with its doubt as counts: `callers_of` the symbol's
   `RadiusCoverage`, `callees_of` its own unbound call sites by reason
   (`graph_tools` in `crates/trellis-loop/src`).
+- **`coverage_report` is an opt-in built-in** (#129), after `callees_of`:
+  `doubt_in_files` over the named paths as counts only, never the
+  index-wide `resolved` figure or a percentage.
 
 Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust (kept
 out on purpose, above),
