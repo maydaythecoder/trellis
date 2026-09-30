@@ -69,6 +69,9 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
   output.
 - Never merge to `v0.1-resolver` and never force-push. Merging `drain`'s
   pull request into it is the owner's decision.
+- Before a `drain` pull request is squash-merged, the `security-auditor`
+  agent runs over that head. An "Exposed — rotate now" or Critical finding
+  stops the merge until the owner acts (#206).
 - If a ticket turns out to need a decision, stop, file an ADR ticket for the
   architect, and block the original on it (`blocked_by` in its triage block).
   The implementer does not decide architecture.

@@ -85,6 +85,37 @@ this file; the output is in the commit message.
 - G0 fails on every existing ticket until the architect adds `## Done when`
   and `## Verify`; that is the orchestrator's first job.
 
+## Security: before every commit, and before every merge to main
+
+Two layers (#206):
+
+- **`scripts/hooks/pre-commit`**, installed into the shared git dir by
+  `scripts/hooks/install.sh`, so it runs in the main checkout and in every
+  worktree. It refuses a commit when:
+  - its added lines carry a key-shaped literal or a basic-auth URL (G5's
+    patterns, read from `scripts/checks/key-pattern.sh` and
+    `no-auth-urls.sh`, so the two cannot drift);
+  - it adds a secret-shaped file;
+  - it edits the secret scanner's ignore files;
+  - `gitleaks protect --staged` finds something;
+  - it touches `.github/workflows/` and uses `pull_request_target`, puts a
+    `${{ github.event.* }}` expression inside `run:`, or fails `actionlint`
+    or `zizmor` at medium severity or above.
+
+  Hits print redacted. `scripts/checks/pre-commit-selftest.sh` plants each
+  case in a throwaway repository and shows the refusal fires. trellis's own
+  git spawns disable hooks, so a run never executes it.
+- **The `security-auditor` agent** (`.claude/agents/security-auditor.md`)
+  runs the full audit: history, live credentials, GitHub settings, Actions,
+  code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
+  every squash-merge of `drain` into `v0.1-resolver`.
+
+The existing workflows fail `zizmor` today: unpinned `uses:`,
+`excessive-permissions` and `artipacked`. So the first commit that touches
+`.github/workflows/` has to fix what zizmor reports in the files it stages.
+That is deliberate: the audit's Phase 3 pins and scopes them on its own
+ticket.
+
 ## The loop
 
 1. `scripts/tickets/next.sh` → the next ready ticket (`--why` explains every
