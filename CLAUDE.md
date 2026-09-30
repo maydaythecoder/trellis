@@ -148,14 +148,16 @@ of them.
 - **A pass stops counting once the tree changes.** So does a run whose HEAD
   moved, or whose trusted code or `.git/` changed during the run.
   (ADR 0004, 0009, 0023)
-- **Rollback is complete only for trellis's own writes.** `bash` and custom
-  tools run in a throwaway clone and their tracked-file edits come back
-  through the orchestrator's write path, so those are trellis's writes too
-  (ADR 0032). With hooks or process agents enabled, or a command that
-  reaches the repository by absolute path, it is best-effort, and the ADRs
-  list the known ways around it. Do not add another post-hoc git check to
-  close one more of those; the fix is isolation (ADR 0032, "What is not
-  built").
+- **Rollback is complete only for trellis's own writes.** `bash`, custom
+  tools, hooks and process agents run in a throwaway clone, and what they
+  changed there comes back under the refusals every writer meets, so
+  those are trellis's writes too (ADR 0032): tracked-file edits through
+  the orchestrator's write path for the first three, and edits, new files
+  and deletions through its own carry-back for a process agent. Against a
+  command that reaches the repository by absolute path it is best-effort,
+  and the ADRs list the known ways around it. Do not add another post-hoc
+  git check to close one more of those; the fix is isolation (ADR 0032,
+  "What is not built").
 
 ## Rules that need an ADR to change
 

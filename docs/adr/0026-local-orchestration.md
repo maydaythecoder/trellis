@@ -1221,9 +1221,11 @@ are not assumed closed:
   elsewhere in the repository is an ordinary file a run may edit.
 
 **What holds.** For trellis's own edits (`edit`, `write_file`), and for
-the edits a `bash` or custom-tool command makes inside its clone and that
-are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
-0009 states. A run with none of
+the edits a `bash` or custom-tool command or a hook makes inside its
+clone, and the edits, new files and deletions a process agent makes
+inside its own, that are carried back (ADR 0032; hooks and process
+agents *amended 2026-09-29*, #174 and #175), the rollback's guarantee
+is exact, as ADR 0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
@@ -1235,8 +1237,12 @@ rollback covers them exactly. Against a `bash` or custom-tool command that
 writes where it runs, every item in the list above is closed: its
 `.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
 in the clone, and what it started writes into a directory that is removed.
-The list still holds, in full, for **hooks and process agents**, which are
-not isolated yet, and for any writer that reaches the repository by
+*Amended 2026-09-29, #174 and #175:* hooks and process agents run in
+clones too (ADR 0032, "Hooks" and "Process agents"). A hook's edits
+come back through the same write path; a process agent's edits, new
+files and deletions come back through its own carry-back, under the
+same refusals, where the rollback covers them exactly. The list still
+holds, in full, for any writer that reaches the repository by
 absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network
