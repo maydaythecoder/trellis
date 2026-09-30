@@ -2084,9 +2084,8 @@ fn run_body(
             tools: tooling.tools.clone(),
             extra: added.extra,
         },
-        // `None` unless the caller sends input while the run is in progress
-        // (`trellis tui`, #115), and then the run is exactly the one before
-        // #113.
+        // `None` for every caller but `trellis tui` (#115), and a run given
+        // `None` is exactly the one before #113.
         steering: control.steering,
     };
 

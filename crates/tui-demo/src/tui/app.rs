@@ -4,7 +4,7 @@
 //! subprocess. It is a pure state transition, which is what makes every test
 //! in this file runnable without a terminal.
 
-use crate::tui::message::Message;
+use crate::tui::message::{Message, SteerOut};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 /// How many transcript lines are kept.
@@ -34,9 +34,12 @@ pub struct AppState {
     /// something outside it does the work.
     pub submitted: Option<String>,
     /// Lines typed while a run is in flight, to be sent to it as steers
-    /// (#115). Drained by the event loop like `submitted`, and a `Vec`
-    /// because one batch of keys — a paste — can carry several Enters.
-    pub steered: Vec<String>,
+    /// (#115), with a [`SteerOut::TaskFollows`] wherever a task was
+    /// submitted between them. Drained by the event loop like `submitted`.
+    /// A `Vec`, in typing order, because one batch of keys can carry
+    /// several Enters, and the order is what tells a driver which run a
+    /// steer was typed for.
+    pub steered: Vec<SteerOut>,
     /// The steers queued during the run in flight, in the order they were
     /// sent, and the turn each reached if it has. Private: the order is what
     /// `Message::SteerDelivered` names a steer by, and it holds only while
@@ -426,7 +429,7 @@ impl AppState {
                 text: task.clone(),
                 delivered: None,
             });
-            self.steered.push(task);
+            self.steered.push(SteerOut::Steer(task));
             return;
         }
         self.input.clear();
@@ -455,6 +458,7 @@ impl AppState {
 
         self.running = true;
         self.push_line(format!("> {task}"));
+        self.steered.push(SteerOut::TaskFollows);
         self.submitted = Some(task);
     }
 
@@ -1193,7 +1197,11 @@ mod input_tests {
         type_in(&mut s, "second");
         s.update(press(KeyCode::Enter));
         assert!(s.submitted.is_none(), "the second must not be submitted");
-        assert_eq!(s.steered, vec!["second".to_string()], "it is a steer");
+        assert_eq!(
+            s.steered,
+            vec![SteerOut::TaskFollows, SteerOut::Steer("second".into())],
+            "it is a steer, typed after the task's boundary"
+        );
         assert!(s.input.is_empty(), "and the line is cleared");
         assert_eq!(s.transcript.last().unwrap(), "· queued: second");
         assert!(s.running, "queuing a steer does not end the run");
@@ -1207,7 +1215,7 @@ mod input_tests {
         type_in(&mut s, "third");
         s.update(press(KeyCode::Enter));
         assert_eq!(s.submitted.as_deref(), Some("third"));
-        assert!(s.steered.is_empty());
+        assert_eq!(s.steered, vec![SteerOut::TaskFollows]);
     }
 
     #[test]
