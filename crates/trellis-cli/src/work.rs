@@ -201,6 +201,22 @@ fn reconcile(q: &Queue) -> Result<()> {
     Ok(())
 }
 
+/// The variables trellis sets on the children of a run, and only there:
+/// `TRELLIS_RUN_ID` for `bash`, custom tools and hooks (`tooling.rs`), and
+/// `TRELLIS_TASK_ID` for a process agent, which is not given a run id
+/// (`process_agent.rs`). Either one present means the caller descends from
+/// a run. A child that removes them on purpose is not caught here; that
+/// writer is the sandbox's to stop (ADR 0032).
+const RUN_MARKERS: [&str; 2] = ["TRELLIS_RUN_ID", "TRELLIS_TASK_ID"];
+
+/// The first run marker present, and its value. Presence is what counts,
+/// an empty value included: no person's shell sets these.
+fn run_marker(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<(&'static str, String)> {
+    RUN_MARKERS
+        .iter()
+        .find_map(|&name| var(name).map(|v| (name, v.to_string_lossy().into_owned())))
+}
+
 pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
     let q = Queue::for_repo(root)?;
     match action {
@@ -475,6 +491,21 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             reconcile(&q)
         }
         QueueAction::Note { id, text } => {
+            // Before the edit: a child of a run that wrote this note would
+            // be an agent waking an agent (ADR 0005, ADR 0026 §1).
+            if let Some((var, value)) = run_marker(|name| std::env::var_os(name)) {
+                let run_id = (var == "TRELLIS_RUN_ID").then(|| value.clone());
+                q.log(
+                    Event::new(Actor::Human, "task.note_refused", format!("task:{id}"))
+                        .run(run_id)
+                        .detail(format!("{var}={value} is set: {text}")),
+                )?;
+                anyhow::bail!(
+                    "refused: {var} is set, so this runs inside a trellis run, and a run \
+                     cannot write a person's note (ADR 0026 §1). Nothing was written to \
+                     {id}; the refusal is in `trellis queue log`"
+                );
+            }
             // The one writer of a person's note: an `@name` in it wakes that
             // profile's task on the next `work` tick (trellis_queue::mention).
             q.edit(&id, |t, _| {
