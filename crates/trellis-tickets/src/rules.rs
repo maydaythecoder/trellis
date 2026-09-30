@@ -386,7 +386,7 @@ pub fn origin(t: &Ticket) -> Outcome<Origin> {
 }
 
 /// Whether `!needs-adr` applies (§5), with the reason it cannot be told.
-fn needs_adr(t: &Ticket) -> Result<bool, String> {
+pub(crate) fn needs_adr(t: &Ticket) -> Result<bool, String> {
     let surface = surface(t);
     if matches!(surface.decided(), Some(Surface::Protocol | Surface::Public)) {
         return Ok(true);
