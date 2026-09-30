@@ -38,10 +38,20 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["json"] }
 rustyline.workspace = true
 # `trellis vault` (ADR 0022): dates.json records *local* calendar days, as
-# Apex's JavaScript `Date` computes them, and std has no time zones. Already
-# in the lockfile through tui-logger; the vault crate takes days as strings
-# so it stays free of it.
-jiff = "0.2.37"
+# Apex's JavaScript `Date` computes them, and std has no time zones. The vault
+# crate takes days as strings so it stays free of it. Only the features the
+# two calls in `vault_cmd.rs` need (#154):
+#   std                  `Zoned::now` and `Timestamp: TryFrom<SystemTime>`.
+#   tz-system            `TimeZone::system()`: the machine's zone is what
+#                        makes the day local.
+#   tzdb-bundle-platform Windows has no system zoneinfo, so the zone's rules
+#                        come from data compiled in.
+#   tzdb-zoneinfo        Unix: the rules come from /usr/share/zoneinfo.
+# Dropped defaults: `perf-inline`, `tz-fat`, `tzdb-concatenated` (Android's
+# tzdb format). Features unify across the workspace, and this set contains
+# trellis-queue's (`std`, `tzdb-bundle-platform`, `tzdb-zoneinfo`), so its
+# zone lookup is unaffected.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 tui-demo = { path = "../tui-demo", default-features = false }
 
 # Windows Job Objects for what this crate spawns (ADR 0035).
