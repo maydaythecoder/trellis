@@ -22,10 +22,16 @@
 //! [`sweep_with`] is `sweep`'s: every open issue re-triaged, the drift
 //! shown, and each edit a closure called only with `apply`. [`scan`] is
 //! `scan`'s: G4's markers in a tree, as proposals, with nothing filed.
+//!
+//! [`index_with`] is `index`'s: every open issue's triage as one JSON
+//! document, sorted by story then issue number, the same bytes on every run
+//! over the same issues.
 
 mod gate;
+mod index;
 mod labels;
 mod new;
+mod open;
 mod parse;
 mod report;
 mod rules;
@@ -33,6 +39,7 @@ mod scan;
 mod sweep;
 
 pub use gate::{Abstention, ReadyReport, ready_gate, ready_with};
+pub use index::{Index, IndexEntry, IndexError, build_index, index_with};
 pub use labels::{Area, Effort, Flag, Kind, Origin, Risk, Route, Surface};
 pub use new::{NewError, NewOutcome, NewPlan, new_with, plan_new};
 pub use report::{
