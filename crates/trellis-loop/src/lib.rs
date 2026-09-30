@@ -14,6 +14,7 @@ mod extension_tests;
 mod extra_context;
 mod gate;
 mod governance;
+mod graph_tools;
 mod hooks;
 mod isolate;
 mod listing;

@@ -1256,6 +1256,11 @@ names are in the code beside each.
 - **The `tools:` line** prints the set, the shell and its policy, and the
   loaded hooks, whenever the set is not the measured default or hooks are
   loaded. An unconfigured run prints what it printed before.
+- **`callers_of` and `callees_of` are opt-in built-ins** (#128, ADR 0027),
+  after `read_note` and on only through `[tools] enable`. Each returns
+  `Output` with its doubt as counts: `callers_of` the symbol's
+  `RadiusCoverage`, `callees_of` its own unbound call sites by reason
+  (`graph_tools` in `crates/trellis-loop/src`).
 
 Not built: a `search_notes` tool (ADR 0021 row 30), per-item trust (kept
 out on purpose, above),
