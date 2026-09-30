@@ -166,3 +166,20 @@ chunked framing (#229, fixed in 4f612eb). Those six are the report's six
 (`BENCHMARK_AND_EVAL.md` §5.9, which gives the grep). **This configuration is
 marked for re-run** with a binary at or after 4f612eb; its figures are not
 re-scored by hand and stand only as a record of this run until then.
+
+## The same floor with a 14,336-byte budget (#228, ADR 0033 §1, §6)
+
+`floor-qwen2.5-3b-q4km-ollama-20260930-budget/`: #170's method and
+configuration, re-run with the local default budget #228 added (4,096 tokens
+at 3.5 bytes per token), from a debug binary at 6a2c6b9 rather than a release
+one. **0 of 150 requests passed 4,096 tokens**: Ollama logged no truncation,
+its largest prompt was 3,750 tokens, and the largest trellis sent was 14,321
+bytes. `bytes_per_token.py` over it: 20 of 20 runs used, pooled 3.811, first
+prompts 3.695, per request 3.636 to 4.027. The 3.636 request is denser than
+the 3.695 the budget was derived from, which is why the budget carries a
+margin. 0 of 20 repaired (16 no-progress, 2 format-failure, 2
+budget-exhausted; `…-20260930-budget.json`).
+
+```
+python docs/bench/bytes_per_token.py docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget
+```

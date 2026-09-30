@@ -242,9 +242,23 @@ fn origin_of(base: &str) -> Option<String> {
 /// there.
 ///
 /// Hosted only. A local runtime's window is whatever its server was started
-/// with, and an unset budget there still means no elision, so a local
-/// prompt stays byte for byte what it was.
+/// with; an unset budget there is `trellis_loop::LOCAL_CONTEXT_BYTES`, the
+/// smallest supported window in bytes (ADR 0033).
 pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
+
+/// The byte budget a local runtime's prompt is held to (ADR 0033): `[model]
+/// context_bytes` when set, larger or smaller, else
+/// [`trellis_loop::LOCAL_CONTEXT_BYTES`].
+///
+/// A default and not unset, because a local server's window cannot be read
+/// from here and a prompt over it is not refused: Ollama cut each one in
+/// #170's floor run to its last 2,050 tokens, system text and task gone.
+/// The default is the smallest supported window, so a larger one costs
+/// elision a run did not need, and a user who knows their window says so.
+pub(crate) fn runtime_context_bytes(cfg: &RepoConfig) -> usize {
+    cfg.context_bytes()
+        .unwrap_or(trellis_loop::LOCAL_CONTEXT_BYTES)
+}
 
 /// The byte budget a hosted run elides to (ADR 0024 §5).
 ///
@@ -952,6 +966,27 @@ mod tests {
              base_url = \"http://127.0.0.1:1/v1\"\n{extra}"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn context_budget_a_local_runtime_without_a_setting_is_held_to_the_minimum_window() {
+        // The #170 configuration set no `context_bytes`, so its prompts had
+        // no budget at all and 7 of 20 runs sent one the runtime cut from the
+        // front. An explicit value still wins either way: a user whose server
+        // runs a larger window must be able to use it.
+        assert_eq!(
+            runtime_context_bytes(&RepoConfig::default()),
+            trellis_loop::LOCAL_CONTEXT_BYTES
+        );
+        for set in [4_000u64, 1_000_000] {
+            let cfg: RepoConfig = toml::from_str(&format!(
+                "[model]
+context_bytes = {set}
+"
+            ))
+            .unwrap();
+            assert_eq!(runtime_context_bytes(&cfg), set as usize);
+        }
     }
 
     #[test]

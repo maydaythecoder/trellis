@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "run_id": "20260930-204058-702-a-type-check-is-failing-in-src-poetry-config-fil",
+  "task": "a type check is failing in src/poetry/config/file_config_source.py; fix it",
+  "base_commit": "1125cc3cc92180d322c9f142a5c176f09ff24ef6",
+  "started_at": "2026-09-30T20:40:58Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/config/file_config_source.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9766,
+      "peak_prompt_bytes": 12903,
+      "turns_measured": 5
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/config/file_config_source.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/file_config_source.py",
+        "outcome": "edited src/poetry/config/file_config_source.py (applied: true, bytes 1606..1612)",
+        "wrote": true
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 146,
+    "prompt_tokens": 15417
+  },
+  "factual_sha256": "b9be34e3886c1c094b33673be6dd24fb4cb444572d8e164d48b628ea515d37d9",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
