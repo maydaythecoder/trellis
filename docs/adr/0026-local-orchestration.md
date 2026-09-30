@@ -2,7 +2,8 @@
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
-was closed. §7 amended again for IANA zone names (#47). Each amendment is marked in place. §4's `tools` list and skill deny
+was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
+for `@profile` mention wakes (#57). Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -50,7 +51,7 @@ written under ADR 0020 still loads unchanged.
 | `assignee` | An agent profile name (§4) |
 | `blockers` | Task ids this task waits for |
 | `needs_approval`, `approval` | §6 |
-| `notes` | `[{at, actor, text}]`, appended by `queue note` and by the queue |
+| `notes` | `[{at, actor, text, id?, mentions_read?}]`, appended by `queue note` and by the queue. `id` and `mentions_read` are #57's, below; both are omitted when absent |
 | `routine` | The routine that created the task, if any (§7) |
 | `args` | Arguments for the task's `prompt` template, the one unsplit string `run --args` takes (§3). Omitted from the file when absent |
 
@@ -172,6 +173,45 @@ unchanged. The reverse does not hold: a build from before this amendment
 cannot parse a task that uses them, so its `queue list` shows the file as
 unreadable and its `work` moves it to `failed/`, as it does any file that is
 not valid task JSON.
+
+*Amended 2026-09-29 (#57), by the owner's decision of 2026-09-28:* **a
+person's `@profile` mention wakes that profile's task.** A note added with
+`trellis queue note` that contains `@<name>`, where `<name>` is an existing
+profile that is not paused, puts the task back for that profile: `work`,
+at the top of each tick and before it claims, sets the task's `assignee` to
+`<name>`, its status to `todo` with no `blocked` reason and no `outcome`,
+and moves it to `pending/`. The task is then claimable exactly as any `todo`
+task is: unresolved blockers, a missing approval, and the profile's gate
+(§4) still hold it. Each wake is logged as `mention_wake` (§9) with the note
+id, and the heartbeat adds its own note saying so.
+
+- **A token** is a whitespace-separated word that starts with `@`, after
+  any opening bracket or quote, whose remainder less trailing punctuation
+  is a valid profile name. `@reviewer,` is a mention; `ops@example.com` is
+  not.
+- **Unknown and paused names** are logged as `mention_ignored`, with why,
+  and nothing moves. A pause in the profile file or the overlay both count;
+  a mention is not a way round one. A note that names several runnable
+  profiles wakes the task for the first and logs the rest as ignored.
+- **Once per note.** Each note carries `mentions_read`, set in the same
+  edit that wakes the task, and set too when every name in it was ignored,
+  so nothing is logged or woken twice whether one heartbeat or several read
+  it. A task in `claimed/` is skipped with its notes unread and read on a
+  later tick.
+- **Only a person's note counts.** `queue note` is the only writer of a
+  note `id` (`n` and the note's 1-based position in the task's list, so
+  `n1`, `n3` when the queue wrote the second), and a note wakes only if its
+  actor is `human` *and* it has one. The actor alone is not enough: the
+  queue also writes `human` notes on a person's behalf (a cancel reason, an
+  approval, a manual routine fire), and those are records, not messages to
+  an agent. Notes by the heartbeat, a routine, or a model never wake
+  anything, so one agent's output cannot start another agent (the intent of
+  ADR 0005). A note written before #57 has no id and wakes nothing.
+- **Known limit.** A run with `bash`, a hook, a custom tool or a process
+  agent enabled can spawn `trellis queue note` itself, and the queue records
+  that as a person's note. This is the same limit ADR 0023 states for those
+  writers; it is not closed here with an environment check a child process
+  could unset.
 
 ### 2. Changing a file that already exists
 
@@ -778,6 +818,7 @@ variants and dispatch:*
 
 **What is logged:**
 - task add, set, note, cancel, claim, finish, requeue, wake
+- `mention_wake` and `mention_ignored`, each naming the note (§1, #57)
 - approval request, approve, reject
 - agent pause and resume, including budget pauses and resumes
 - routine fire, coalesce, skip and missed-drop
@@ -1258,8 +1299,8 @@ any of these writers.
 - ~~**A profile's skill deny list does not stop `read_skill` by exact name**
   (§4). It only narrows the list the model is shown.~~ Integrated; see
   below.
-- **`@profile` mentions in notes do not wake anything.** ADR 0021 defers
-  them.
+- ~~**`@profile` mentions in notes do not wake anything.** ADR 0021 defers
+  them.~~ Built for #57; see §1's amendment.
 - **No prompt-token or dollar accounting** (§5).
 - **Routines fire only while `work` is running.** There is no daemon
   (ADR 0020). A schedule with no `work` running accumulates missed fires,
