@@ -1,4 +1,5 @@
-//! `callers_of` and `callees_of`: the depth-1 graph queries (ADR 0027).
+//! `callers_of` and `callees_of`: the depth-1 graph queries (ADR 0027),
+//! and `coverage_report`, the per-file doubt behind the approval prompt.
 //!
 //! `blast_radius` answers "what reaches this symbol", transitively. These two
 //! answer one step of it in each direction. Both return reach, so CLAUDE.md
@@ -23,6 +24,11 @@ use trellis_index::{Index, Reason, Target};
 /// A `Candidates` edge can name every override in a hierarchy, and one line
 /// per call site is the unit the selector budgets in.
 const NAMED_CANDIDATES: usize = 3;
+
+/// How many unbound call sites a `coverage_report` lists before it counts
+/// the rest. The counts above the list are the answer; the list is where to
+/// start reading.
+pub(crate) const COVERAGE_REPORT_SITES: usize = 50;
 
 /// `module.name`, the form `blast_radius` matches against.
 pub(crate) fn qualified(index: &Index, id: SymbolId) -> String {
@@ -234,6 +240,83 @@ pub(crate) fn callees_of(index: &Index, root: &Path, sym: SymbolId) -> ToolResul
         &sites,
     );
     ToolResult::Output(rendered.text)
+}
+
+/// The call sites in `paths` that bound to no definition: the population
+/// `doubt_in_files` counts for the approval prompt (ADR 0016), as text.
+///
+/// Counts only. It never prints the index-wide `resolved` figure or any
+/// percentage: that figure is a lower bound on recall that reads as recall
+/// (CLAUDE.md, "The number that is easy to misread"), and a fraction of it
+/// would divide two populations (rule 3). Files named and files examined are
+/// both given, so a named file the index never parsed shows as a difference
+/// rather than as a file with nothing in doubt.
+///
+/// The caller has already refused any path outside the repository or into
+/// `.git`.
+pub(crate) fn coverage_report(index: &Index, root: &Path, paths: &[String]) -> ToolResult {
+    let d = trellis_index::doubt_in_files(index, paths);
+    let mut text = format!(
+        "Python files named: {}. In the index and examined: {}.",
+        d.files_named, d.files_examined
+    );
+    if d.files_examined < d.files_named {
+        text.push_str(&format!(
+            " Named but not in the index, so nothing is known about their calls: {}.",
+            d.files_named - d.files_examined
+        ));
+    }
+    // `doubt_in_files` drops these before it counts, so without this line
+    // a named `setup.cfg` would vanish from both counts.
+    let skipped = paths.iter().filter(|p| !p.ends_with(".py")).count();
+    if skipped > 0 {
+        text.push_str(&format!(
+            " Paths named that do not end in .py, not counted: {skipped}."
+        ));
+    }
+    let reasons = if d.by_reason.is_empty() {
+        String::new()
+    } else {
+        format!(", by reason: {}", by_reason(&d.by_reason))
+    };
+    text.push_str(&format!(
+        concat!(
+            "
+
+{} call sites in the examined files bound to no definition{}. ",
+            "Each may call anything, first-party or not. This counts what the ",
+            "graph could not follow; it says nothing about how much of the rest ",
+            "it followed."
+        ),
+        d.unbound, reasons
+    ));
+    if d.sites.is_empty() {
+        return ToolResult::Output(text);
+    }
+    text.push_str(
+        "
+Call sites bound to no definition (path:line enclosing-symbol reason):",
+    );
+    let mut locate = SiteLocator::new(index, root);
+    for s in d.sites.iter().take(COVERAGE_REPORT_SITES) {
+        let line = locate
+            .line_in(&s.path, s.offset)
+            .map_or_else(|| "?".to_string(), |n| n.to_string());
+        let enclosing = s.enclosing.as_deref().unwrap_or("<module>");
+        text.push_str(&format!(
+            "
+{}:{line} {enclosing} {}",
+            s.path, s.reason
+        ));
+    }
+    let left_out = d.sites.len().saturating_sub(COVERAGE_REPORT_SITES);
+    if left_out > 0 {
+        text.push_str(&format!(
+            "
+{left_out} more not listed; name fewer files to see them."
+        ));
+    }
+    ToolResult::Output(text)
 }
 
 #[cfg(test)]
@@ -555,5 +638,226 @@ mod tests {
                 .contains("Coverage of this symbol's blast radius")
         );
         assert!(t.turns[1].observation.contains("bound to no definition"));
+    }
+
+    fn with_report() -> ToolSet {
+        ToolSet::build(ToolSelection {
+            enable: vec!["coverage_report".into()],
+            ..Default::default()
+        })
+        .expect("coverage_report is an opt-in built-in")
+    }
+
+    fn report(paths: &[&str]) -> ToolCall {
+        ToolCall::CoverageReport {
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn coverage_report_gives_files_named_and_examined_and_the_unbound_count_by_reason() {
+        // The two file counts are what make a zero legible: a named file the
+        // index never parsed must show as a difference, not as a file with
+        // nothing in doubt (the default-FileDoubt defect ADR 0016 records).
+        let d = repo();
+        let h = spawn(d.path(), with_report());
+        let got = output(
+            &h,
+            report(&["app/main.py", "app/util.py", "app/missing.py", "README.md"]),
+        )
+        .await;
+        assert!(
+            got.starts_with(
+                "Python files named: 3. In the index and examined: 2. \
+                 Named but not in the index, so nothing is known about their calls: 1. \
+                 Paths named that do not end in .py, not counted: 1."
+            ),
+            "{got}"
+        );
+        assert!(
+            got.contains(
+                "\n\n1 call sites in the examined files bound to no definition, by reason: \
+                 MethodDispatchUntyped 1."
+            ),
+            "{got}"
+        );
+        assert!(
+            got.contains("\napp/main.py:6 go MethodDispatchUntyped"),
+            "{got}"
+        );
+        assert!(!got.contains("more not listed"), "{got}");
+
+        // The same population the approval prompt counts, not a second one.
+        let orch = Orchestrator::new(d.path(), CheckConfig::default());
+        let doubt = trellis_index::doubt_in_files(
+            orch.index(),
+            &["app/main.py".into(), "app/util.py".into()],
+        );
+        assert_eq!(doubt.unbound, 1, "{doubt:?}");
+    }
+
+    #[tokio::test]
+    async fn coverage_report_prints_no_percentage_and_no_index_wide_resolved_count() {
+        // `trellis index` prints how many call sites the resolver bound. That
+        // is a lower bound on recall that reads as recall (CLAUDE.md), and a
+        // per-file doubt count beside it invites the ratio rule 3 forbids.
+        // The repository is built so the index-wide figure is a number no
+        // per-file count or line in the report can be.
+        let d = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 1\n",
+        )
+        .unwrap();
+        let mut body = String::from("from app.util import helper\n\ndef caller():\n");
+        for _ in 0..37 {
+            body.push_str("    helper()\n");
+        }
+        std::fs::write(d.path().join("app/busy.py"), body).unwrap();
+        std::fs::write(
+            d.path().join("app/edge.py"),
+            "def mystery(thing):\n    return thing.run()\n",
+        )
+        .unwrap();
+
+        let orch = Orchestrator::new(d.path(), CheckConfig::default());
+        let c = &orch.index().coverage;
+        assert!(c.resolved >= 37, "{c:?}");
+        let (resolved, total) = (c.resolved.to_string(), c.total().to_string());
+
+        let h = spawn(d.path(), with_report());
+        let got = output(&h, report(&["app/edge.py"])).await;
+        assert!(
+            got.contains("\napp/edge.py:2 mystery MethodDispatchUntyped"),
+            "{got}"
+        );
+        assert!(!got.contains('%'), "{got}");
+        assert!(!got.to_lowercase().contains("resolved"), "{got}");
+        assert!(!got.contains("complete"), "{got}");
+        for figure in [&resolved, &total] {
+            assert!(
+                !got.split(|ch: char| !ch.is_ascii_digit())
+                    .any(|n| n == figure.as_str()),
+                "index-wide figure {figure} in {got}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn coverage_report_refuses_a_path_outside_the_repository_or_into_git_as_read_file_does() {
+        // The report names files and lines. A path read_file would refuse
+        // must be refused here too, with the same reason, and never answered
+        // with a zero that reads as "nothing in doubt there".
+        let d = repo();
+        let h = spawn(d.path(), with_report());
+        let absolute = d.path().join("app/main.py").to_string_lossy().into_owned();
+        for bad in [
+            "../elsewhere.py",
+            ".git/config",
+            ".git/hooks/x.py",
+            absolute.as_str(),
+        ] {
+            let want = match h
+                .call(&ToolCall::ReadFile { path: bad.into() })
+                .await
+                .result
+            {
+                ToolResult::Error(e) => {
+                    e.replacen("read_file refused", "coverage_report refused", 1)
+                }
+                other => panic!("read_file {bad} gave {other:?}"),
+            };
+            assert!(want.starts_with("coverage_report refused: "), "{want}");
+            match h.call(&report(&["app/main.py", bad])).await.result {
+                ToolResult::Error(e) => assert_eq!(e, want, "{bad}"),
+                other => panic!("coverage_report {bad} gave {other:?}"),
+            }
+        }
+        assert!(matches!(
+            h.call(&report(&[])).await.result,
+            ToolResult::Error(e) if e.contains("at least one path")
+        ));
+    }
+
+    #[tokio::test]
+    async fn coverage_report_lists_at_most_fifty_sites_counts_the_rest_and_is_shown_whole() {
+        // Fifty listed lines overrun the tail window every other observation
+        // is cut to. Cut from the top, the model would keep the sites and
+        // lose the counts, which is the doubt figure dropped without a word.
+        let d = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        let mut body = String::from("def a_function_with_a_long_descriptive_name(thing):\n");
+        for _ in 0..61 {
+            body.push_str("    thing.run()\n");
+        }
+        std::fs::write(
+            d.path()
+                .join("app/a_module_with_a_long_descriptive_name.py"),
+            body,
+        )
+        .unwrap();
+        let h = spawn(d.path(), with_report());
+        let call = report(&["app/a_module_with_a_long_descriptive_name.py"]);
+        let got = output(&h, call.clone()).await;
+
+        let listed = got
+            .lines()
+            .filter(|l| {
+                l.ends_with(" a_function_with_a_long_descriptive_name MethodDispatchUntyped")
+            })
+            .count();
+        assert_eq!(listed, crate::graph_tools::COVERAGE_REPORT_SITES, "{got}");
+        assert!(
+            got.ends_with("\n11 more not listed; name fewer files to see them."),
+            "{got}"
+        );
+        assert!(
+            got.contains("\n\n61 call sites in the examined files bound to no definition"),
+            "{got}"
+        );
+
+        assert!(
+            got.len() > crate::adapter::OBSERVATION_TAIL,
+            "{} bytes",
+            got.len()
+        );
+        assert_eq!(crate::adapter::shown_observation(&call, &got), got);
+    }
+
+    #[tokio::test]
+    async fn a_run_of_only_coverage_report_does_not_converge() {
+        // Counting doubt is not evidence the code is right (ADR 0004): the
+        // tool returns Output or Error, never a Verdict.
+        let d = repo();
+        let tools = with_report();
+        let h = spawn(d.path(), tools.clone());
+        let mut m = ScriptedModel::from_json_with(
+            r#"{"steps":[
+                {"tool":"coverage_report","paths":["app/main.py"]},
+                {"tool":"done","summary":"one unbound call, looks fine"}
+            ]}"#,
+            &tools,
+        )
+        .expect("valid script");
+        let budget = Budget {
+            max_iterations: 10,
+            ..Budget::default()
+        };
+        let (outcome, t) = run("look", &mut m, &h, &budget).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::StoppedWithoutPassingChecks { .. },
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(t.turns.len(), 1);
+        assert_eq!(t.turns[0].verdict_passed, None);
+        assert!(!t.turns[0].may_have_changed_tree);
+        assert!(t.turns[0].observation.contains("bound to no definition"));
     }
 }

@@ -190,6 +190,7 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "read_note",
     "callers_of",
     "callees_of",
+    "coverage_report",
     "ask_human",
 ];
 
@@ -211,6 +212,7 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::ReadNote { .. } => "read_note",
         ToolCall::CallersOf { .. } => "callers_of",
         ToolCall::CalleesOf { .. } => "callees_of",
+        ToolCall::CoverageReport { .. } => "coverage_report",
         ToolCall::Custom { name, .. } => name,
         ToolCall::AskHuman { .. } => "ask_human",
     }
@@ -389,6 +391,7 @@ pub(crate) fn label(call: &ToolCall) -> String {
         ToolCall::ReadNote { note } => format!("read_note {note}"),
         ToolCall::CallersOf { symbol } => format!("callers_of {symbol}"),
         ToolCall::CalleesOf { symbol } => format!("callees_of {symbol}"),
+        ToolCall::CoverageReport { paths } => format!("coverage_report {}", paths.join(", ")),
         ToolCall::Custom { name, args } => format!("{name} {args}"),
         // Quoted and cut: model output, on one line of a log or the trail.
         ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
