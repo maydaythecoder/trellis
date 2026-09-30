@@ -152,6 +152,26 @@ impl Sandbox {
         &self.dir
     }
 
+    /// Brings every file copied in back to the repository's bytes as they
+    /// are now, and takes those as the new baseline: what the hooks of one
+    /// call share (ADR 0032, "Hooks"). Between two hooks the call's tool,
+    /// and the carry-back of the hook before, wrote into the repository,
+    /// and `post_tool` is there to look at what the tool did.
+    ///
+    /// Filesystem only in the clone, like `copy_in`: `ls-files` runs in the
+    /// repository, and no `git` runs in a clone a command has had. A change
+    /// the last hook made and the carry-back refused is overwritten, so no
+    /// hook sees another's refused edit as the repository's.
+    ///
+    /// Blocking. `Err` leaves the clone in an unknown state; the caller
+    /// drops it and prepares another.
+    pub(crate) fn refresh(&mut self, host: &Path) -> Result<(), IsolateError> {
+        let host = std::path::absolute(host).map_err(|e| IsolateError::Io(e.to_string()))?;
+        let files = listed(&host)?;
+        self.baseline.clear();
+        self.copy_in(&host, &files)
+    }
+
     /// Writes each listed file's bytes from `host` into the clone, where
     /// the checkout left different ones or none, and records what it was
     /// given. A file that is not a regular file in `host` (a link, a
@@ -291,6 +311,22 @@ impl Drop for Sandbox {
             );
         }
     }
+}
+
+/// [`Sandbox::prepare`] off the async runtime, with the failure as the
+/// sentence a caller reports.
+pub(crate) async fn prepare(host: &Path) -> Result<Sandbox, String> {
+    let host = host.to_path_buf();
+    tokio::task::spawn_blocking(move || Sandbox::prepare(&host))
+        .await
+        .map_err(|e| format!("preparing its throwaway clone failed: {e}"))?
+        .map_err(|e| format!("its throwaway clone could not be prepared: {e}"))
+}
+
+/// Drops a clone on a blocking thread: removing it walks the whole tree,
+/// which on the runtime's own thread stalls every other task.
+pub(crate) async fn dispose(sandbox: Sandbox) {
+    let _ = tokio::task::spawn_blocking(move || drop(sandbox)).await;
 }
 
 /// Whether `rel` is one of [`GIT_INSTRUCTION_FILES`], by any spelling
@@ -839,6 +875,270 @@ mod tests {
         let now = std::fs::read_to_string(root.join("app/util.py")).unwrap();
         assert!(!now.contains("SECRET"), "{now}");
         assert!(orch.touched().await.is_empty());
+    }
+
+    // --- Hooks (ADR 0032, "Hooks") ---------------------------------------
+
+    fn hooked(root: &Path, cfg: crate::hooks::HookConfig) -> crate::hooks::Hooks {
+        crate::hooks::Hooks::new(root, cfg, vec![("TRELLIS_RUN_ID".into(), "run-7".into())])
+    }
+
+    /// Wired as `trellis run` wires them: the `pre_tool` gate in the gate
+    /// list, and the same hooks for `post_tool` and `turn_end`.
+    fn with_hooks(root: &Path, h: crate::hooks::Hooks, g: crate::governance::Governance) -> Handle {
+        let mut o = Orchestrator::new(root, CheckConfig::default()).with_governance(g);
+        if let Some(pre) = h.pre_tool_gate() {
+            o = o.with_gate(Box::new(pre));
+        }
+        o.with_hooks(h).spawn().0
+    }
+
+    fn read_util() -> ToolCall {
+        ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn isolated_hook_writes_reach_the_repository_only_as_carried_back_tracked_edits() {
+        // The risk (ADR 0023 §5, #174): a hook ran in the repository, so a
+        // `pre_tool` script could edit `.gitignore`, set `core.hooksPath`,
+        // plant a file under `.git/`, leave an untracked file, or rewrite
+        // `.trellis/`, where the rollback's git checks do not look. In the
+        // call's clone only its edit to a tracked file comes back, through
+        // the carry-back `bash` uses, and it is in `touched`.
+        let d = committed();
+        let root = d.path();
+        git(root, &["status", "--porcelain"]);
+        let gitignore = std::fs::read(root.join(".gitignore")).unwrap();
+        let write = if cfg!(windows) {
+            "echo *.py>> .gitignore& echo planted> .git\\planted& \
+             git config core.hooksPath evil& echo x> made.txt& \
+             echo [hooks]> .trellis\\config.toml& echo def helper(): return 3 > app\\util.py"
+        } else {
+            "echo '*.py' >> .gitignore; echo planted > .git/planted; \
+             git config core.hooksPath evil; echo x > made.txt; \
+             echo '[hooks]' > .trellis/config.toml; echo 'def helper(): return 3' > app/util.py"
+        };
+        let h = hooked(
+            root,
+            crate::hooks::HookConfig {
+                pre_tool: Some(shell_argv(write)),
+                timeout_s: Some(30),
+                ..Default::default()
+            },
+        );
+        let orch = with_hooks(root, h, crate::governance::Governance::default());
+        let d1 = orch.call(&read_util()).await;
+        // Carried back after the gate and before the tool: the read sees it.
+        match &d1.result {
+            ToolResult::FileContent(s) => assert!(s.contains("return 3"), "{s}"),
+            other => panic!("the hook allowed the call: {other:?}"),
+        }
+        assert!(
+            d1.may_have_changed_tree,
+            "a carried-back hook write voids a pass"
+        );
+        assert_eq!(orch.touched().await, ["app/util.py"], "the rollback has it");
+        assert_eq!(std::fs::read(root.join(".gitignore")).unwrap(), gitignore);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".trellis/config.toml")).unwrap(),
+            "[checks]\n"
+        );
+        assert!(
+            !root.join("made.txt").exists(),
+            "a new file stays in the clone"
+        );
+        assert!(!root.join(".git/planted").exists());
+        let hooks_path = std::process::Command::new("git")
+            .args(["config", "--get", "core.hooksPath"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            !hooks_path.status.success(),
+            "core.hooksPath was set in the repository"
+        );
+        assert_eq!(
+            git(root, &["status", "--porcelain"]).trim(),
+            "M app/util.py"
+        );
+    }
+
+    #[tokio::test]
+    async fn isolated_hook_post_tool_sees_the_call_s_edit_in_the_clone_pre_tool_shared() {
+        // The risk: a clone taken before the call shows `post_tool` the
+        // tree as it was before the tool ran, and `post_tool` is there to
+        // inspect what the call did. The clone is refreshed before each
+        // hook; the result still arrives on stdin; and it is one clone per
+        // call, so a file `pre_tool` left is there for `post_tool`.
+        let d = committed();
+        let root = d.path();
+        let logs = tempfile::tempdir().unwrap();
+        let log = logs.path().join("post.log");
+        let (pre, post) = if cfg!(windows) {
+            (
+                "echo seen> seen.txt".to_string(),
+                format!(
+                    "cd >> {log}& type app\\util.py >> {log}& \
+                     if exist seen.txt echo SHARED-CLONE>> {log}& more >> {log}",
+                    log = log.display()
+                ),
+            )
+        } else {
+            (
+                "echo seen > seen.txt".to_string(),
+                format!(
+                    "pwd >> '{log}'; cat app/util.py >> '{log}'; \
+                     [ -f seen.txt ] && echo SHARED-CLONE >> '{log}'; cat >> '{log}'",
+                    log = log.display()
+                ),
+            )
+        };
+        let h = hooked(
+            root,
+            crate::hooks::HookConfig {
+                pre_tool: Some(shell_argv(&pre)),
+                post_tool: Some(shell_argv(&post)),
+                timeout_s: Some(30),
+                ..Default::default()
+            },
+        );
+        let orch = with_hooks(root, h, crate::governance::Governance::default());
+        let e = orch
+            .call(&ToolCall::Edit {
+                path: "app/util.py".into(),
+                old: "return 1".into(),
+                new: "return 2".into(),
+            })
+            .await;
+        assert!(matches!(e.result, ToolResult::Edit(_)), "{:?}", e.result);
+        let seen = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            seen.contains("trellis-clone-"),
+            "not in the repository: {seen}"
+        );
+        assert!(seen.contains("return 2"), "the tree after the edit: {seen}");
+        assert!(seen.contains("SHARED-CLONE"), "pre_tool's clone: {seen}");
+        assert!(seen.contains(r#""result""#), "the result on stdin: {seen}");
+        assert!(!root.join("seen.txt").exists());
+        assert_eq!(orch.touched().await, ["app/util.py"]);
+    }
+
+    #[tokio::test]
+    async fn isolated_hook_write_is_refused_by_deny_write_then_allow_write() {
+        // The risk (#182's, for hooks): a hook's write judged by fewer rules
+        // than `bash`'s. The carry-back is the one `bash` uses, so
+        // `deny_write` is asked first and a profile's `allow_write` after.
+        let d = committed();
+        let root = d.path();
+        std::fs::write(root.join("top.py"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "old\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-qm", "top"]);
+        let write = if cfg!(windows) {
+            "echo changed> app\\util.py& echo changed> top.py& echo new> docs\\a.md"
+        } else {
+            "echo changed > app/util.py; echo changed > top.py; echo new > docs/a.md"
+        };
+        let h = hooked(
+            root,
+            crate::hooks::HookConfig {
+                turn_end: Some(shell_argv(write)),
+                timeout_s: Some(30),
+                ..Default::default()
+            },
+        );
+        let g = crate::governance::Governance::new(&["app/".into()])
+            .with_allow_write("docs", &["app/".into(), "docs/".into()]);
+        let orch = with_hooks(root, h, g);
+        let d1 = orch.call(&read_util()).await;
+        assert!(
+            matches!(d1.result, ToolResult::FileContent(_)),
+            "{:?}",
+            d1.result
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("app/util.py")).unwrap(),
+            "def helper():\n    return 1\n",
+            "denied by deny_write, which allow_write cannot widen"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("top.py")).unwrap(),
+            "x = 1\n",
+            "outside allow_write"
+        );
+        // The control: the hook ran, and a write both rules admit came back.
+        assert!(
+            std::fs::read_to_string(root.join("docs/a.md"))
+                .unwrap()
+                .starts_with("new")
+        );
+        assert_eq!(orch.touched().await, ["docs/a.md"]);
+        assert!(d1.may_have_changed_tree);
+    }
+
+    #[tokio::test]
+    async fn isolated_hook_pre_tool_denies_when_no_clone_can_be_made() {
+        // The risk: a hook that could not be isolated run in the repository
+        // instead, or read as an allow. `pre_tool` is a gate in front of a
+        // write, so it fails closed.
+        let d = tempfile::tempdir().unwrap(); // not a git repository
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(d.path().join("app/util.py"), "x = 1\n").unwrap();
+        let write = if cfg!(windows) {
+            "echo hooked> app\\util.py"
+        } else {
+            "echo hooked > app/util.py"
+        };
+        let h = hooked(
+            d.path(),
+            crate::hooks::HookConfig {
+                pre_tool: Some(shell_argv(write)),
+                ..Default::default()
+            },
+        );
+        let orch = with_hooks(d.path(), h, crate::governance::Governance::default());
+        match orch.call(&read_util()).await.result {
+            ToolResult::Error(e) => assert!(e.contains("throwaway clone"), "{e}"),
+            other => panic!("a pre_tool that could not run must deny: {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("app/util.py")).unwrap(),
+            "x = 1\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn isolated_hook_input_runs_in_a_clone_and_nothing_it_writes_comes_back() {
+        // The risk: `input` runs before the snapshot, and the ignored-file
+        // listing and the `.git/` digest are taken after it, so a write it
+        // made to an ignored file or under `.git/` became the baseline no
+        // guard compares against. It runs in a clone of its own, and
+        // nothing comes back: before the snapshot there is no write path.
+        let d = committed();
+        let root = d.path();
+        let write = if cfg!(windows) {
+            "echo planted> .git\\planted& echo x> debug.log& echo changed> app\\util.py"
+        } else {
+            "echo planted > .git/planted; echo x > debug.log; echo changed > app/util.py"
+        };
+        let h = hooked(
+            root,
+            crate::hooks::HookConfig {
+                input: Some(shell_argv(write)),
+                timeout_s: Some(30),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            h.input("t").await,
+            Some(crate::hooks::InputDecision::Proceed)
+        ));
+        assert!(!root.join(".git/planted").exists());
+        assert!(!root.join("debug.log").exists(), "an ignored file");
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
     }
 
     #[test]
