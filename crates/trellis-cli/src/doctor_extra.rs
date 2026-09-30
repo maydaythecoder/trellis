@@ -16,7 +16,11 @@ pub(crate) fn lines(root: &Path, cfg: &RepoConfig) -> Vec<String> {
     vec![
         user_config_line(),
         context_line(root, cfg),
-        user_skills_line(root, &user_config::skill_dirs()),
+        match user_config::skill_dirs() {
+            Ok(dirs) => user_skills_line(root, &dirs),
+            // Said on its line, so doctor still gets to the end.
+            Err(e) => format!("user skills: not read: {e:#}"),
+        },
         trust_line(root, cfg),
         agents_line(root),
         tz_line(),

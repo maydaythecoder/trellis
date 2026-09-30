@@ -353,19 +353,21 @@ impl Session {
                     "/skill needs a skill and a task, e.g. `/skill profiling speed up parse()`"
                 ),
             },
-            other
-                if other.len() > 1
-                    && other.starts_with('/')
-                    && crate::templates::list(&self.root)
-                        .iter()
-                        .any(|t| t.name == other[1..]) =>
-            {
-                let args = (!rest.is_empty()).then_some(rest);
-                let text = crate::templates::render(&self.root, &other[1..], args)?;
-                self.run_task(&text, Vec::new())
-            }
+            // One arm, so that a package manifest that cannot be read is
+            // said as that, not as "unknown command" for a template the
+            // user installed.
             other if other.starts_with('/') => {
-                anyhow::bail!("unknown command `{other}`. /help lists them.")
+                let name = &other[1..];
+                if name.is_empty()
+                    || !crate::templates::list(&self.root)?
+                        .iter()
+                        .any(|t| t.name == name)
+                {
+                    anyhow::bail!("unknown command `{other}`. /help lists them.")
+                }
+                let args = (!rest.is_empty()).then_some(rest);
+                let text = crate::templates::render(&self.root, name, args)?;
+                self.run_task(&text, Vec::new())
             }
             _ => self.task(line),
         }
