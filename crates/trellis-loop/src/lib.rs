@@ -63,5 +63,8 @@ pub use supervise::{
     PartitionFailure, PartitionReport, PartitionTask, SuperviseError, Supervised, Supervisor,
 };
 pub use tools::{EditOutcome, ToolResult};
-pub use trust::{Fingerprint, HashCache, TrustGuard, TrustItem, TrustState, TrustStore};
+pub use trust::{
+    Fingerprint, HashCache, ItemChange, TrustDiagnosis, TrustGuard, TrustItem, TrustState,
+    TrustStore,
+};
 pub use wire::ToolCallWire;

@@ -94,6 +94,15 @@ fn user_skills_line(root: &Path, dirs: &[PathBuf]) -> String {
 }
 
 pub(crate) fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
+    trust_line_with(root, cfg, trellis_loop::TrustStore::user())
+}
+
+/// [`trust_line`] against `store`, so a test can name its own.
+pub(crate) fn trust_line_with(
+    root: &Path,
+    cfg: &RepoConfig,
+    store: Result<trellis_loop::TrustStore, impl std::fmt::Display>,
+) -> String {
     let fp = tooling::fingerprint(root, cfg);
     if fp.is_empty() {
         return "trust:      nothing declared needs trust (no hooks, custom tools or bash)"
@@ -110,15 +119,20 @@ pub(crate) fn trust_line(root: &Path, cfg: &RepoConfig) -> String {
     if cfg.bash_requested() {
         what.push("bash".to_string());
     }
-    let state = match trellis_loop::TrustStore::user().and_then(|s| s.state(root, &fp)) {
-        Ok(trellis_loop::TrustState::Trusted) => "trusted; they load".to_string(),
-        Ok(trellis_loop::TrustState::Changed) => {
-            "NOT trusted: changed since trusted; they do not load until `trellis trust`".to_string()
-        }
-        Ok(trellis_loop::TrustState::Unknown) => {
+    let state = match store.map_err(|e| e.to_string()).and_then(|s| {
+        s.state(root, &fp)
+            .map(|st| (s, st))
+            .map_err(|e| e.to_string())
+    }) {
+        Ok((_, trellis_loop::TrustState::Trusted)) => "trusted; they load".to_string(),
+        Ok((s, trellis_loop::TrustState::Changed)) => format!(
+            "NOT trusted: changed since trusted ({}); they do not load until `trellis trust`",
+            crate::trust_cmd::changed_items(&s, root, &fp)
+        ),
+        Ok((_, trellis_loop::TrustState::Unknown)) => {
             "NOT trusted; they do not load until `trellis trust`".to_string()
         }
-        Ok(trellis_loop::TrustState::Refused { reason }) => {
+        Ok((_, trellis_loop::TrustState::Refused { reason })) => {
             format!("NOT trusted, and `trellis trust` would refuse: {reason}")
         }
         Err(e) => format!("trust store unreadable ({e}); treated as not trusted"),
