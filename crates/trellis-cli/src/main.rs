@@ -3705,10 +3705,7 @@ fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
 /// the file does not record. So the version is printed here instead.
 fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> Vec<String> {
     if !enabled {
-        return vec![
-            "backstop: off (no `[index] backstop` in .trellis/config.toml);              the figures above are the resolver's alone"
-                .to_string(),
-        ];
+        return vec![BACKSTOP_OFF.to_string()];
     }
     let sites = trellis_index::doubt_sites(index);
     let r = trellis_index::run_backstop(
@@ -3717,6 +3714,15 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         &sites,
         &trellis_index::BackstopServer::pyright(),
     );
+    render_backstop(&r)
+}
+
+const BACKSTOP_OFF: &str = "backstop: off (no `[index] backstop` in .trellis/config.toml); \
+     the figures above are the resolver's alone";
+
+/// The report as `trellis index` prints it. Apart from running the server so
+/// the text can be asserted exactly without Pyright installed.
+fn render_backstop(r: &trellis_index::BackstopReport) -> Vec<String> {
     let mut out = Vec::new();
     match &r.status {
         trellis_index::BackstopStatus::NotRun { reason } => {
@@ -3730,9 +3736,7 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         trellis_index::BackstopStatus::Ran { server, stopped } => {
             out.push(format!(
                 "backstop: pyright ran ({})",
-                server
-                    .as_deref()
-                    .unwrap_or("the server did not report its version")
+                server.as_deref().unwrap_or("version unknown")
             ));
             if let Some(why) = stopped {
                 out.push(format!("  stopped part way: {why}"));
@@ -3748,9 +3752,16 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         r.edges.len()
     ));
     out.push(format!(
-        "  left alone       {:>6}  no answer, or one this backstop would not bind",
-        r.left
+        "  no answer        {:>6}  the server returned no location; resolver's verdict kept",
+        r.no_answer
     ));
+    out.push(format!(
+        "  refused          {:>6}  an answer this backstop would not bind; resolver's verdict kept",
+        r.refused_total()
+    ));
+    for (why, n) in &r.refused {
+        out.push(format!("    {:<28} {n:>6}", why.describe()));
+    }
     if r.not_queried > 0 {
         out.push(format!(
             "  not queried      {:>6}  keep the resolver's verdict",
@@ -3758,11 +3769,78 @@ fn backstop_lines(index: &trellis_index::Index, root: &Path, enabled: bool) -> V
         ));
     }
     out.push(
-        "  A pyright-bound edge is the server's reading of the annotations, not a          verified callee;
-  those sites stay unpartitionable."
+        "  A pyright-bound edge is the server's reading of the annotations, not a verified callee;"
             .to_string(),
     );
+    out.push("  those sites stay unpartitionable.".to_string());
     out
+}
+
+#[cfg(test)]
+mod backstop_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use trellis_index::{BackstopReport, BackstopStatus, Refusal};
+
+    fn report(status: BackstopStatus) -> BackstopReport {
+        BackstopReport {
+            status,
+            edges: Vec::new(),
+            queried: 7580,
+            no_answer: 5000,
+            refused: BTreeMap::from([
+                (Refusal::OutsideRepository, 700),
+                (Refusal::OutsideCandidates, 21),
+            ]),
+            not_queried: 22,
+            skipped_certain: 0,
+        }
+    }
+
+    #[test]
+    fn backstop_lines_print_single_spaces_and_split_no_answer_from_refused() {
+        // #177: a line continuation inside two literals printed "not a
+        // verified callee" with ten spaces in it, and one count stood for
+        // both "no answer" and "refused". The whole text is asserted, so a
+        // stray run of spaces or a merged count fails here.
+        let ran = report(BackstopStatus::Ran {
+            server: Some("pyright 1.1.414, from its package.json".into()),
+            stopped: None,
+        });
+        assert_eq!(
+            render_backstop(&ran),
+            [
+                "backstop: pyright ran (pyright 1.1.414, from its package.json)",
+                "  queried            7580  Unresolved or Candidates sites only",
+                "  bound by pyright      0  counted apart: not in `resolved`, not in the graph",
+                "  no answer          5000  the server returned no location; resolver's verdict kept",
+                "  refused             721  an answer this backstop would not bind; resolver's verdict kept",
+                "    outside the repository          700",
+                "    outside the Candidates set       21",
+                "  not queried          22  keep the resolver's verdict",
+                "  A pyright-bound edge is the server's reading of the annotations, not a verified callee;",
+                "  those sites stay unpartitionable.",
+            ]
+        );
+        assert_eq!(
+            backstop_lines(&trellis_index::Index::default(), Path::new("."), false),
+            [
+                "backstop: off (no `[index] backstop` in .trellis/config.toml); the figures above are the resolver's alone"
+            ]
+        );
+    }
+
+    #[test]
+    fn backstop_lines_say_version_unknown_only_when_no_source_named_one() {
+        let unknown = report(BackstopStatus::Ran {
+            server: None,
+            stopped: None,
+        });
+        assert_eq!(
+            render_backstop(&unknown)[0],
+            "backstop: pyright ran (version unknown)"
+        );
+    }
 }
 
 /// The codebase as a graph of modules.
