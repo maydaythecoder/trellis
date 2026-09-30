@@ -380,13 +380,14 @@ that reads them:
     `.trellis/agents/<name>.toml`;
   - a `bash` or custom-tool command's changes, at the throwaway clone's
     carry-back (ADR 0032), refused and named in the tool's output;
-  - a process agent (§11), over the files git shows the command changed,
-    in the judge read before the command runs: each out-of-scope file is
-    named as `governance: refused:` and the run does not converge and is
-    rolled back. Process agents do not run in the throwaway clone yet
-    (ADR 0032, "What is not built"; #175), so this is the post-command
-    judge, the same one that applies `deny_write` to them; the clone's
-    carry-back must apply it when #175 lands.
+  - a process agent (§11), at its throwaway clone's carry-back (ADR
+    0032, "Process agents", #175), over every file it edited, created or
+    deleted there, `deny_write` first, with the rules read before the
+    command ran: each out-of-scope file is named as `governance:
+    refused:`, is never written into the repository, and the run does not
+    converge and is rolled back. The post-command judge still applies it
+    to what git shows changed in the repository, for a command that wrote
+    there by absolute path, which the clone does not stop.
   Ignored files are outside what `allow_write` judges: the checks and the
   tests write caches there on every run, and a scope that counted them
   would refuse every run of a scoped agent. They are not part of the change
@@ -863,7 +864,11 @@ This is Paperclip's `process` adapter. A profile with
    tasks before the change.
 1. **Snapshot** (ADR 0009). The worktree must be clean, exactly as for a
    model run.
-2. **Run** the command in the worktree root. Its stdin is the task text,
+2. **Run** the command in the worktree root. *Amended (#175):* in a
+   throwaway clone of the repository, and what it changed there is carried
+   back under the refusals every writer meets; ADR 0032, "Process agents",
+   is where that is recorded, with what it closes and what it does not.
+   Its stdin is the task text,
    with the instructions file prepended, and its environment has
    `TRELLIS_TASK`, `TRELLIS_TASK_ID` and `TRELLIS_AGENT` set. Its stdout and
    stderr go to `work`'s terminal.
@@ -1216,9 +1221,11 @@ are not assumed closed:
   elsewhere in the repository is an ordinary file a run may edit.
 
 **What holds.** For trellis's own edits (`edit`, `write_file`), and for
-the edits a `bash` or custom-tool command makes inside its clone and that
-are carried back (ADR 0032), the rollback's guarantee is exact, as ADR
-0009 states. A run with none of
+the edits a `bash` or custom-tool command or a hook makes inside its
+clone, and the edits, new files and deletions a process agent makes
+inside its own, that are carried back (ADR 0032; hooks and process
+agents *amended 2026-09-29*, #174 and #175), the rollback's guarantee
+is exact, as ADR 0009 states. A run with none of
 these writers enabled (the default: `bash` off, and an untrusted
 repository loads no hook, custom tool or process agent) keeps it.
 
@@ -1230,8 +1237,12 @@ rollback covers them exactly. Against a `bash` or custom-tool command that
 writes where it runs, every item in the list above is closed: its
 `.gitignore` edit, index flags, `.git/` writes, refs and ignored files stay
 in the clone, and what it started writes into a directory that is removed.
-The list still holds, in full, for **hooks and process agents**, which are
-not isolated yet, and for any writer that reaches the repository by
+*Amended 2026-09-29, #174 and #175:* hooks and process agents run in
+clones too (ADR 0032, "Hooks" and "Process agents"). A hook's edits
+come back through the same write path; a process agent's edits, new
+files and deletions come back through its own carry-back, under the
+same refusals, where the rollback covers them exactly. The list still
+holds, in full, for any writer that reaches the repository by
 absolute path, which a clone does not stop (ADR 0032, "Limits": no network
 isolation, reads and writes outside the clone still possible). The guards
 above are kept for those writers. Containers or an OS sandbox, for network

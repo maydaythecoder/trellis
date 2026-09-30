@@ -2,11 +2,13 @@
 //! as the only judge (ADR 0026 §11).
 //!
 //! A profile with `command = [argv]` runs its tasks by running that command
-//! in the worktree, then running the same two grounded checks `trellis
-//! check` runs, and the governance rules a model run obeys. The run
-//! converged if and only if the command changed
-//! something and both checks passed; anything else is rolled back exactly
-//! as a failed model run is (ADR 0009).
+//! in a throwaway clone of the repository (ADR 0032, "Process agents"),
+//! carrying back what it changed there under the refusals every writer
+//! meets, then running the same two grounded checks `trellis check` runs,
+//! and the governance rules a model run obeys. The run converged if and
+//! only if the command changed something, all of it came back, and both
+//! checks passed; anything else is rolled back exactly as a failed model
+//! run is (ADR 0009).
 //!
 //! **The external agent never produces a verdict (ADR 0004).** Its exit
 //! code, its output and whatever it writes are data. The two `Verdict`s
@@ -233,7 +235,20 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             };
         }
     };
+    // The command runs here, not in the repository (ADR 0032). A clone
+    // that cannot be made is never a reason to run it in place.
+    let clone = match trellis_loop::AgentClone::prepare(root) {
+        Ok(c) => c,
+        Err(e) => {
+            return RunEnd::Error {
+                run_id: None,
+                error: format!("the agent's throwaway clone could not be prepared: {e}"),
+            };
+        }
+    };
     // Last before the spawn, so what differs afterwards is the command's.
+    // The guards on the repository stay for a command that writes there by
+    // absolute path, which the clone does not stop (ADR 0032, "Limits").
     let ignored_before = match IgnoredSnapshot::take(root) {
         Ok(s) => s,
         Err(e) => {
@@ -247,7 +262,6 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let started = Instant::now();
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
-        .current_dir(root)
         .stdin(Stdio::piped())
         .env("TRELLIS_TASK", text)
         .env("TRELLIS_TASK_ID", task_id)
@@ -255,6 +269,9 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         // As for hooks and tools (`exec::run`): bytecode it wrote under
         // `.trellis/` would untrust the repository it was trusted in.
         .env("PYTHONDONTWRITEBYTECODE", "1");
+    // Its working directory is the clone, and no `GIT_DIR` or the like
+    // sends a `git` it runs back to the repository.
+    clone.confine(&mut cmd);
     trellis_core::secrets::scrub(&mut cmd);
     // After the scrub, so exactly the names the profile lists come back. An
     // external agent may need a key of its own; whatever it then prints goes
@@ -333,6 +350,22 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     for f in &git_unrestored {
         let _ = writeln!(out, "git:      could NOT be put back: {f}");
     }
+    // After `.git/` is back, since the carry-back asks the repository's git
+    // what it ignores. Only a command that ran to its end is carried back:
+    // what a timed-out or interrupted one left is half a change.
+    let back = if matches!(ended, Ended::Exited(_)) {
+        let back = clone.carry_back(root, &judge.deny);
+        report_carry_back(&back, out);
+        back
+    } else {
+        let _ = writeln!(
+            out,
+            "clone:    nothing carried back from an unfinished command"
+        );
+        trellis_loop::CarriedBack::default()
+    };
+    // The clone, and whatever the command left in it.
+    drop(clone);
     // After `.git/` is back, before anything is judged: a commit, reset or
     // checkout is a breach whatever else the command did. What it
     // committed is invisible to `git status`, so without this the
@@ -390,12 +423,19 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     // a timed-out or interrupted command left a tree nobody should verify,
     // and an unchanged tree has nothing to verify.
     let mut verdicts = Vec::new();
-    // Ignored writes are judged whether or not anything git shows changed.
+    // Ignored writes are judged whether or not anything git shows changed,
+    // and so is what the carry-back refused on the judge's grounds.
     let mut denied = ignored_denied;
+    denied.extend(
+        back.breaches
+            .iter()
+            .map(|b| format!("{} ({})", b.path, b.why)),
+    );
     let mut checked = false;
     let judge_touched = touched
         .iter()
         .chain(ignored.all())
+        .chain(back.breaches.iter().map(|b| &b.path))
         .any(|p| trellis_loop::names_trellis_dir(p));
     if matches!(ended, Ended::Exited(_)) && !touched.is_empty() {
         let (d, audit) = judge.governance(root, &touched);
@@ -450,6 +490,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
     let converged = checked
         && verdicts.iter().all(|v| v.passed())
         && denied.is_empty()
+        && back.refused.is_empty()
         && git_changed.is_empty()
         && head_moved.is_none()
         && ignored_unread.is_none();
@@ -469,9 +510,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             _ if ignored_unread.is_some() => {
                 "not converged: what the command did to ignored files could not be read"
             }
-            _ if touched.is_empty() => {
-                "not converged: the command changed nothing, so there was nothing to verify"
-            }
+            // Before "changed nothing": a command whose every change was
+            // refused left nothing in the repository, and that is not why.
             _ if judge_touched => {
                 "not converged: the command changed .trellis/, which holds the checks and \
                  rules that judge it"
@@ -479,6 +519,13 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             _ if !denied.is_empty() => {
                 "not converged: the command wrote where [governance] deny_write refuses, \
                  or outside the agent's allow_write"
+            }
+            _ if !back.refused.is_empty() => {
+                "not converged: part of what the command changed in its clone could not be \
+                 carried back"
+            }
+            _ if touched.is_empty() => {
+                "not converged: the command changed nothing, so there was nothing to verify"
             }
             _ => "not converged: a check failed",
         }
@@ -521,6 +568,31 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         _ if converged => RunEnd::Converged { run_id },
         _ if restored => RunEnd::RolledBack { run_id },
         _ => RunEnd::NotRestored { run_id },
+    }
+}
+
+/// What the carry-back did, one line per kind. The judge's refusals are
+/// printed with the rest of governance's, as `governance: refused:`.
+fn report_carry_back(back: &trellis_loop::CarriedBack, out: &mut dyn Write) {
+    use trellis_vcs::ignored::shown;
+    for (what, list) in [
+        ("edited", &back.written),
+        ("created", &back.created),
+        ("deleted", &back.deleted),
+    ] {
+        if !list.is_empty() {
+            let _ = writeln!(out, "clone:    {what} from the clone: {}", shown(list));
+        }
+    }
+    if !back.ignored.is_empty() {
+        let _ = writeln!(
+            out,
+            "clone:    left in the clone, as the repository's git ignores it: {}",
+            shown(&back.ignored)
+        );
+    }
+    for r in &back.refused {
+        let _ = writeln!(out, "clone:    not carried back: {}", r.why);
     }
 }
 
