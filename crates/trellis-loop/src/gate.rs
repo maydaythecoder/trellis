@@ -171,8 +171,9 @@ impl ToolGate for GovernanceGate {
 /// The tool names a `[control] approve` list may contain.
 ///
 /// `read_skill` is here because ADR 0019 added the tool after ADR 0018 listed
-/// the approvable ones. It is read-only, like `read_file`. The last five are
-/// ADR 0023's built-ins. A repository's own tools are approvable by name too,
+/// the approvable ones. It is read-only, like `read_file`. The tools after it
+/// are opt-in built-ins added since (ADR 0023, ADR 0024 §6, ADR 0027's
+/// graph queries). A repository's own tools are approvable by name too,
 /// and `[control] approve` is checked against those where it is read.
 pub const APPROVABLE_TOOLS: &[&str] = &[
     "edit",
@@ -187,6 +188,8 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "bash",
     "search_notes",
     "read_note",
+    "callers_of",
+    "callees_of",
     "ask_human",
 ];
 
@@ -206,6 +209,8 @@ pub fn tool_name(call: &ToolCall) -> &str {
         ToolCall::Bash { .. } => "bash",
         ToolCall::SearchNotes { .. } => "search_notes",
         ToolCall::ReadNote { .. } => "read_note",
+        ToolCall::CallersOf { .. } => "callers_of",
+        ToolCall::CalleesOf { .. } => "callees_of",
         ToolCall::Custom { name, .. } => name,
         ToolCall::AskHuman { .. } => "ask_human",
     }
@@ -382,6 +387,8 @@ pub(crate) fn label(call: &ToolCall) -> String {
         ToolCall::Bash { command } => format!("bash {}", first_line(command)),
         ToolCall::SearchNotes { query, .. } => format!("search_notes {}", first_line(query)),
         ToolCall::ReadNote { note } => format!("read_note {note}"),
+        ToolCall::CallersOf { symbol } => format!("callers_of {symbol}"),
+        ToolCall::CalleesOf { symbol } => format!("callees_of {symbol}"),
         ToolCall::Custom { name, args } => format!("{name} {args}"),
         // Quoted and cut: model output, on one line of a log or the trail.
         ToolCall::AskHuman { question, .. } => format!("ask_human {:?}", first_line(question)),
