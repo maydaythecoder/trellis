@@ -3,7 +3,7 @@
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
 was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
-for `@profile` mention wakes (#57). §5 amended again for prompt tokens (#108). Each amendment is marked in place. §4's `tools` list and skill deny
+for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
 **Date:** 2026-09-27
@@ -207,11 +207,22 @@ id, and the heartbeat adds its own note saying so.
   an agent. Notes by the heartbeat, a routine, or a model never wake
   anything, so one agent's output cannot start another agent (the intent of
   ADR 0005). A note written before #57 has no id and wakes nothing.
-- **Known limit.** A run with `bash`, a hook, a custom tool or a process
-  agent enabled can spawn `trellis queue note` itself, and the queue records
-  that as a person's note. This is the same limit ADR 0023 states for those
-  writers; it is not closed here with an environment check a child process
-  could unset.
+- **A run cannot write a person's note.** *Amended 2026-09-30 (#189),
+  replacing the "known limit" this bullet stated:* a run with `bash`, a
+  hook, a custom tool or a process agent enabled can spawn `trellis queue
+  note` itself, and without a check the queue would record that as a
+  person's note, so one agent could wake another. `queue note` now refuses
+  when `TRELLIS_RUN_ID` (set for `bash`, custom tools and hooks) or
+  `TRELLIS_TASK_ID` (set for a process agent, which gets no run id) is
+  present in its environment, an empty value included. It writes nothing
+  to the task, exits non-zero with a message saying a run cannot write a
+  person's note, and logs `task.note_refused` (§9).
+  **Its limit, stated:** this stops the accidental path, a child that
+  inherits the run's environment and calls `trellis queue note`. A child
+  that removes those variables on purpose, or starts a process that does
+  not inherit them, is not caught by it; stopping that writer is the
+  sandbox's job (ADR 0032, "Limits" and "What is not built"), not another
+  environment check.
 
 ### 2. Changing a file that already exists
 
@@ -828,6 +839,10 @@ variants and dispatch:*
 **What is logged:**
 - task add, set, note, cancel, claim, finish, requeue, wake
 - `mention_wake` and `mention_ignored`, each naming the note (§1, #57)
+- `task.note_refused`: a `queue note` refused because it ran inside a run
+  (§1, #189). Its actor is `human`, the identity the command claims; its
+  `run_id` is `TRELLIS_RUN_ID`'s value when that was the variable found,
+  and its detail names the variable and the note's text
 - approval request, approve, reject
 - agent pause and resume, including budget pauses and resumes
 - routine fire, coalesce, skip and missed-drop
