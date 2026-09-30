@@ -115,6 +115,7 @@ pub(crate) fn spend_records(root: &Path) -> Vec<SpendRecord> {
             Some(SpendRecord {
                 agent: e.trail.factual.agent.clone()?,
                 tokens: e.trail.factual.tokens,
+                prompt_tokens: e.trail.factual.prompt_tokens,
                 started_at: e.trail.started_at.clone().unwrap_or_default(),
                 altered: e.integrity == trellis_trail::Integrity::Altered,
             })
@@ -751,5 +752,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn spend_records_read_prompt_tokens_from_the_trail_and_keep_absent_unknown() {
+        // The risk: the reader drops the trail's prompt figure, or turns a
+        // trail that has none (every trail before #105) into a known 0.
+        // Hand-written trails: read back as untrusted data (ADR 0007), so a
+        // digest that does not match is counted and flagged, not refused.
+        let d = tempfile::tempdir().unwrap();
+        let runs = d.path().join(".trellis").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let trail = |id: &str, at: &str, factual_extra: &str| {
+            format!(
+                r#"{{"schema":1,"run_id":"{id}","task":"t","base_commit":"abc1234","started_at":"{at}","provenance":{{"trellis_version":"0.0.1","model":null,"tier":null}},"factual":{{"proposed":[],"radius":{{"reached_resolved":0,"reached_ambiguous":0,"widest_unbound_in_touched_files":0,"radius_queries":0}},"checks":[],"check_outcomes":[],"approved_by":"Human","mode_counts":{{"verified":0,"reviewed":0}},"context":null,"actions":[],"agent":"rev"{factual_extra}}},"factual_sha256":"0000","judgment":{{"tech_debt_projection":null,"rationale":null}}}}"#
+            )
+        };
+        std::fs::write(
+            runs.join("20260930-235959-a.json"),
+            trail(
+                "20260930-235959-a",
+                "2026-09-30T23:59:59Z",
+                r#","tokens":10,"prompt_tokens":1000"#,
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("20261001-000000-b.json"),
+            trail(
+                "20261001-000000-b",
+                "2026-10-01T00:00:00Z",
+                r#","tokens":5,"prompt_tokens":200"#,
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("20261002-000000-c.json"),
+            trail(
+                "20261002-000000-c",
+                "2026-10-02T00:00:00Z",
+                r#","tokens":7"#,
+            ),
+        )
+        .unwrap();
+
+        let records = super::spend_records(d.path());
+        let mut prompts: Vec<_> = records.iter().map(|r| r.prompt_tokens).collect();
+        prompts.sort();
+        assert_eq!(prompts, [None, Some(200), Some(1000)]);
+        assert!(records.iter().all(|r| r.altered), "digest does not match");
+
+        let s = trellis_queue::ledger::spend(&records, "rev", "2026-10");
+        assert_eq!((s.prompt_month, s.prompt_lifetime), (200, 1200));
+        assert_eq!(s.runs_without_prompt_count, 1);
+        assert_eq!((s.month, s.lifetime), (12, 22));
     }
 }
