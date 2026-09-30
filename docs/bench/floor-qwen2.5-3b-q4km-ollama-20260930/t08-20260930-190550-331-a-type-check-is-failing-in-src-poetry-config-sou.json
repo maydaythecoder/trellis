@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190550-331-a-type-check-is-failing-in-src-poetry-config-sou",
+  "task": "a type check is failing in src/poetry/config/source.py; fix it",
+  "base_commit": "f86bbc7856afe98917d02a4541651d637ec6b7c8",
+  "started_at": "2026-09-30T19:05:50Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9754,
+      "peak_prompt_bytes": 11030,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/config/source.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/source.py",
+        "outcome": "error: edit anchor occurs 6 times in src/poetry/config/source.py; it must occur exactly once so the edit is unambiguous…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 440,
+    "prompt_tokens": 18643
+  },
+  "factual_sha256": "9cd13a98bf1f0240263fa23414d0cab38ca1970d8b3b7a7625f7079693c847af",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

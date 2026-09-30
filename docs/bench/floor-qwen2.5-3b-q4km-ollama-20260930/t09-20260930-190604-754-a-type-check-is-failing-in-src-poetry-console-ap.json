@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190604-754-a-type-check-is-failing-in-src-poetry-console-ap",
+  "task": "a type check is failing in src/poetry/console/application.py; fix it",
+  "base_commit": "93d3a8bd55e92f6c350b4c63009b817443e22695",
+  "started_at": "2026-09-30T19:06:04Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Tests",
+        "passed": false
+      },
+      {
+        "kind": "Tests",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9760,
+      "peak_prompt_bytes": 16315,
+      "turns_measured": 5
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/application.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/application.py",
+        "outcome": "error: edit anchor occurs 4 times in src/poetry/console/application.py; it must occur exactly once so the edit is unamb…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "read_file",
+        "target": "src/poetry/console/application.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Tests on src/poetry/console/application.py",
+        "outcome": "Tests: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "run_checks",
+        "target": "Tests on src/poetry/console/application.py",
+        "outcome": "Tests: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 130,
+    "prompt_tokens": 17357
+  },
+  "factual_sha256": "d2d55000cf612ef50e5a95b1c8cac317ac8a4a2d5a7e172faa621f33db0e781d",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

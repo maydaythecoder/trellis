@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "run_id": "20260930-190940-300-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/command.py; fix it",
+  "base_commit": "eb346ad8fd5e871cd47baf2b6d53c587120e83c4",
+  "started_at": "2026-09-30T19:09:40Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen2.5:3b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9765,
+      "peak_prompt_bytes": 9765,
+      "turns_measured": 1
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/console/commands/command.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 478,
+    "prompt_tokens": 14398
+  },
+  "factual_sha256": "048a5b47b72dcd83f89e2e4ee248314c77e694612f17073d3188626f7b16d8b3",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
