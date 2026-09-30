@@ -95,6 +95,22 @@ pub(crate) fn installed_dirs(config: &Path) -> Result<Vec<PathBuf>> {
 
 /// Installs `spec` (`<git-url|path>@<ref>`) under `<config>/packages/<name>/`.
 pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<Entry> {
+    // `<helper>::<address>` makes git run `git-remote-<helper>` from PATH,
+    // so the source string would pick which installed program runs.
+    // `protocol.allow=never` in `git()` refuses it too; refusing here says
+    // why before any git runs. It is checked on the whole spec, before the
+    // split, because `split_spec` would refuse `foo::https://host@v1` for
+    // naming no ref, which is not the reason. A ref cannot hold `:`, so the
+    // helper prefix of the spec is that of its source.
+    if let Some(helper) = remote_helper(spec) {
+        bail!(
+            "`{}` names the git remote helper `{}`, which would run a program \
+             from PATH; give a URL (https://, ssh://, git://, file://), an scp-style \
+             user@host:path address, or a local path",
+            plain(spec),
+            plain(helper)
+        );
+    }
     let (source, reference) = split_spec(spec)?;
     if let Some(why) = unacceptable_source(source) {
         bail!("{why}");
@@ -341,6 +357,18 @@ fn unacceptable_source(source: &str) -> Option<String> {
     None
 }
 
+/// The `<helper>` of a `<helper>::<address>` source, by git's own rule
+/// (`transport_get`): a scheme-like run of characters, a letter then
+/// letters, digits, `+`, `-` or `.`, followed directly by `::`.
+fn remote_helper(source: &str) -> Option<&str> {
+    let (helper, _) = source.split_once("::")?;
+    let mut chars = helper.chars();
+    let first = chars.next()?;
+    (first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
+    .then_some(helper)
+}
+
 /// The package's name: the source's last path component, less `.git`.
 fn package_name(source: &str) -> Result<String> {
     let trimmed = source.trim_end_matches(['/', '\\']);
@@ -526,17 +554,29 @@ fn check_bounds(copy: &[Accepted]) -> Result<()> {
 /// `git` from `trellis_vcs`, so a planted `core.fsmonitor` or hooks path
 /// never runs and the environment is scrubbed of keys, with the settings a
 /// fetch from an untrusted source needs:
-/// - `protocol.ext.allow=never`: the `ext::` transport runs a command named
-///   in the URL;
+/// - `protocol.allow=never`, then `always` for `https`, `ssh`, `git` and
+///   `file` only: every other transport is refused, among them `ext::`,
+///   which runs a command named in the URL, and any `<helper>::` form,
+///   which runs `git-remote-<helper>` from PATH;
 /// - `transfer.fsckObjects=true`: git's own checks on what it receives,
 ///   which reject `..` and `.git` tree entries among others;
 /// - `GIT_TERMINAL_PROMPT=0`: a source that wants credentials fails rather
 ///   than waiting on a prompt nobody may be watching.
 fn git() -> std::process::Command {
     let mut c = trellis_vcs::command();
+    // A per-name `protocol.<name>.allow` takes precedence over the
+    // `protocol.allow` default, whatever their order.
     c.args([
         "-c",
-        "protocol.ext.allow=never",
+        "protocol.allow=never",
+        "-c",
+        "protocol.https.allow=always",
+        "-c",
+        "protocol.ssh.allow=always",
+        "-c",
+        "protocol.git.allow=always",
+        "-c",
+        "protocol.file.allow=always",
         "-c",
         "transfer.fsckObjects=true",
     ]);
@@ -992,5 +1032,73 @@ mod tests {
         let plan = select(&tree);
         let copied: Vec<&str> = plan.copy.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(copied, vec!["skills/a/SKILL.md"], "{:?}", plan.skipped);
+    }
+
+    #[test]
+    fn install_transport_helper_sources_are_refused_before_git_runs() {
+        // The risk: `<helper>::<url>` makes git run `git-remote-<helper>`
+        // from the user's PATH, so the package source string would choose
+        // which installed program runs. It must be refused before any git
+        // spawn, and `ext::` (which names a command outright) with it.
+        let d = tempfile::tempdir().unwrap();
+        let cfg = d.path().join("cfg");
+        for source in [
+            "ext::sh -c touch% pwned",
+            "foo::https://x",
+            "git+x.y-z::https://x/p",
+        ] {
+            let mut out = Vec::new();
+            let e = install(&cfg, &format!("{source}@v1"), &mut out).unwrap_err();
+            let msg = format!("{e:#}");
+            assert!(msg.contains("remote helper"), "{source}: {msg}");
+            assert!(msg.contains("https://") && msg.contains("file://"), "{msg}");
+            assert!(out.is_empty(), "nothing is reported as fetched");
+            // The packages directory is created before the clone; its
+            // absence shows the refusal came before the git path.
+            assert!(
+                !cfg.join("packages").exists(),
+                "{source} reached the clone path"
+            );
+        }
+        // Addresses that hold `::` without a helper prefix, or none at all,
+        // are not mistaken for one.
+        assert_eq!(remote_helper("https://h/[::1]/p"), None);
+        assert_eq!(remote_helper("git@host:o/p.git"), None);
+        assert_eq!(remote_helper(r"C:\src\pkg"), None);
+        assert_eq!(remote_helper("1x::y"), None);
+        assert_eq!(remote_helper("foo::https://x"), Some("foo"));
+    }
+
+    #[test]
+    fn install_transport_local_file_source_still_installs() {
+        // The risk: `protocol.allow=never` also shuts the `file` transport a
+        // local path goes through under `--no-local`, so a local package
+        // would stop installing. The allowlist must also be what git gets.
+        let args: Vec<String> = git()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|a| a == "protocol.allow=never"), "{args:?}");
+        for name in ["https", "ssh", "git", "file"] {
+            let allow = format!("protocol.{name}.allow=always");
+            assert!(args.contains(&allow), "{allow} missing: {args:?}");
+        }
+        assert_eq!(
+            args.iter().filter(|a| a.ends_with(".allow=always")).count(),
+            4,
+            "no transport beyond the four: {args:?}"
+        );
+
+        let d = tempfile::tempdir().unwrap();
+        let src = source(d.path());
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        let entry = install(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        assert_eq!(entry.name, "pkg-src");
+        assert!(
+            cfg.join("packages/pkg-src/skills/alpha/SKILL.md").is_file(),
+            "{:?}",
+            files_under(&cfg)
+        );
     }
 }
