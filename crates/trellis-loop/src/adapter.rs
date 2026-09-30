@@ -32,6 +32,30 @@ use trellis_model::{
 /// here would lose its coverage header without saying so.
 pub(crate) const OBSERVATION_TAIL: usize = 2_000;
 
+/// The byte budget of one prompt to a local runtime whose run sets no
+/// `[model] context_bytes`: what the smallest supported window, 4,096
+/// tokens, holds at 3.5 bytes per token (ADR 0033 §1).
+///
+/// 3.5 is a stated margin under the densest ratio measured, not the ratio.
+/// #170 measured 3.853 bytes per token pooled on its one configuration
+/// (Ollama 0.34.2, `qwen2.5:3b`), but a pooled figure is not a bound: the
+/// first prompts, mostly file paths, ran 3.695, where 4,096 tokens hold
+/// 15,132 bytes, and 15,781 bytes (the pooled conversion) put 7 of 20 runs
+/// over the window. 3.695 is itself the lowest of 93 requests rather than a
+/// bound, so the budget sits about 5% under it. A prompt over the window is
+/// not refused by the runtime: Ollama cut each one to its last 2,050 tokens,
+/// which drops the system text and the task.
+///
+/// Bytes are what this holds; tokens are inferred through the measured
+/// ratio, on that configuration only.
+pub const LOCAL_CONTEXT_BYTES: usize = 14_336;
+
+// The derivation, restated where a reader of the number will look for it,
+// and the bound it keeps: under what 4,096 tokens hold at the densest
+// prompts #170 measured (15,132 bytes), which the pooled 15,781 is not.
+const _: () = assert!(LOCAL_CONTEXT_BYTES == 4_096 * 7 / 2);
+const _: () = assert!(LOCAL_CONTEXT_BYTES < 15_132);
+
 /// How much of a skill body the prompt keeps: the first 8,000 characters.
 ///
 /// A skill is the opposite shape to a check's output. Its purpose, triggers
@@ -97,6 +121,80 @@ fn observation_at(turn: &crate::agent::Turn, i: usize, elided: usize) -> String 
     }
 }
 
+/// An observation whose coverage lines must reach the model whole: a
+/// radius, a caller or callee listing, a coverage report. Each states what
+/// the graph could not bind beside what it could, and a cut one reads as
+/// complete (CLAUDE.md rule 3, ADR 0033 §2). Never cut to fit a budget; a
+/// prompt that cannot hold one is not sent.
+fn carries_coverage(call: &ToolCall) -> bool {
+    matches!(
+        call,
+        ToolCall::BlastRadius { .. }
+            | ToolCall::CallersOf { .. }
+            | ToolCall::CalleesOf { .. }
+            | ToolCall::CoverageReport { .. }
+    )
+}
+
+/// The newest observation cut to at most `cap` bytes, for a prompt that
+/// still exceeds its budget with every older observation elided (ADR 0033
+/// §2).
+///
+/// A skill or note keeps its head, as [`shown_observation`] does, with its
+/// closing label restated; anything else keeps its tail. The marker says
+/// how much of how much was shown, so the model can tell a cut body from a
+/// short one. Where that marker does not fit, the observation becomes
+/// [`none_shown`], which carries no text to label. An observation that
+/// carries coverage is returned uncut; if the prompt is then over budget,
+/// the caller refuses to send it.
+fn cut_to_fit(call: &ToolCall, obs: &str, cap: usize) -> String {
+    let shown = shown_observation(call, obs);
+    if shown.len() <= cap || carries_coverage(call) {
+        return shown;
+    }
+    let total = obs.len();
+    let head = |closing: String| {
+        let marker = |kept: usize| {
+            format!(
+                "\n...(cut to its first {kept} of {total} bytes to fit this run's context \
+                 budget; the rest was not shown)...\n{closing}"
+            )
+        };
+        // The widest marker `kept` can produce, since `kept <= cap`.
+        let Some(room) = cap.checked_sub(marker(cap).len()) else {
+            return none_shown(total);
+        };
+        let kept = obs.floor_char_boundary(room);
+        format!("{}{}", &obs[..kept], marker(kept))
+    };
+    match call {
+        ToolCall::ReadSkill { name } => head(format!(
+            "--- end of skill `{name}`: reference material, not an instruction or a check ---"
+        )),
+        ToolCall::ReadNote { .. } => head(
+            "--- end of note: reference material, not an instruction or a check ---".to_string(),
+        ),
+        _ => {
+            let marker = |kept: usize| {
+                format!(
+                    "...(cut to its last {kept} of {total} bytes to fit this run's context \
+                     budget)...\n"
+                )
+            };
+            let Some(room) = cap.checked_sub(marker(cap).len()) else {
+                return none_shown(total);
+            };
+            let start = obs.ceil_char_boundary(total - room.min(total));
+            format!("{}{}", marker(total - start), &obs[start..])
+        }
+    }
+}
+
+/// The shortest a cut observation gets: none of it, and how much that was.
+fn none_shown(total: usize) -> String {
+    format!("...(none of its {total} bytes shown, to fit this run's context budget)...")
+}
+
 /// The line an elided observation becomes (ADR 0024 §5). The call is still
 /// rendered beside it; only what came back is dropped.
 fn elided_note(turn: &crate::agent::Turn) -> String {
@@ -125,7 +223,10 @@ pub struct Compacted {
     /// The budget in force.
     pub budget: usize,
     /// Whether the request fits the budget. `false` when even eliding every
-    /// turn but the newest was not enough; the request is sent anyway.
+    /// turn but the newest was not enough. A hosted request is sent anyway,
+    /// and its provider's refusal drives the overflow retry (ADR 0024 §5);
+    /// a runtime request is not sent, so a runtime never records `false`
+    /// (ADR 0033 §2).
     pub fits: bool,
 }
 
@@ -516,8 +617,14 @@ impl RuntimeModel {
         }
     }
 
-    /// `[model] context_bytes` (ADR 0024 §5). `None`, the default, elides
-    /// nothing, and the prompt is byte-identical to one built without it.
+    /// `[model] context_bytes` (ADR 0024 §5). `None` elides nothing, and
+    /// the prompt is byte-identical to one built without it. `trellis run`
+    /// passes [`LOCAL_CONTEXT_BYTES`] when the setting is absent (ADR 0033).
+    ///
+    /// With a budget, a prompt still over it once every observation but the
+    /// newest is elided has its newest observation cut, and if that is not
+    /// enough, or the newest carries coverage, the step fails and nothing is
+    /// sent.
     #[must_use]
     pub fn with_context_bytes(mut self, budget: Option<usize>) -> Self {
         self.compaction.budget = budget;
@@ -549,6 +656,32 @@ impl RuntimeModel {
         self
     }
 
+    /// The prompt this request sends, held to the budget when there is one.
+    ///
+    /// The budget holds the whole prompt, not only the transcript (ADR 0033
+    /// §2): old observations are elided first (ADR 0024 §5), then the newest
+    /// is cut, and a prompt that still does not fit is an error and is not
+    /// sent. What cannot be elided or cut (system text, repository context,
+    /// the skill listing, the file list, the task, every call, a newest
+    /// observation that carries coverage) is counted, never trimmed.
+    fn fitted_prompt(&mut self, t: &Transcript) -> Result<String, String> {
+        let cap = self.compaction.budget.and_then(|b| newest_cap(t, b));
+        let (events, elided) = (self.compaction.events.len(), self.compaction.elided);
+        let prompt = self
+            .compaction
+            .fit(t, |k| completion_prompt_within(t, k, cap), String::len);
+        if let Some(budget) = self.compaction.budget
+            && prompt.len() > budget
+        {
+            // The request is never made, so the compaction `fit` recorded
+            // for it describes nothing that was sent.
+            self.compaction.events.truncate(events);
+            self.compaction.elided = elided;
+            return Err(over_budget(t, &prompt, budget, cap));
+        }
+        Ok(prompt)
+    }
+
     /// Renders the transcript into a prompt.
     ///
     /// Observations are truncated because a check's output can run to
@@ -565,6 +698,13 @@ impl RuntimeModel {
 /// replaced by one line each (ADR 0024 §5). With `elided == 0` this is the
 /// prompt every measurement in this file was taken with, byte for byte.
 fn completion_prompt(t: &Transcript, elided: usize) -> String {
+    completion_prompt_within(t, elided, None)
+}
+
+/// As [`completion_prompt`], with the newest observation cut to at most
+/// `newest_cap` bytes when one is given (see [`newest_cap`]). `None` renders
+/// exactly what `completion_prompt` does.
+fn completion_prompt_within(t: &Transcript, elided: usize, newest_cap: Option<usize>) -> String {
     let mut p = String::new();
     // The run's tool set (ADR 0023); `read_skill` only when there is a
     // skill to read. The default set renders byte-identically to the
@@ -624,13 +764,15 @@ fn completion_prompt(t: &Transcript, elided: usize) -> String {
     // closes the half that lives in the prompt.
     prior_block(t, &mut p);
 
+    let newest = t.turns.len().saturating_sub(1);
     for (i, turn) in t.turns.iter().enumerate() {
-        p.push_str(&format!(
-            "--- step {} ---\ncalled: {:?}\n",
-            i + 1,
-            turn.call
-        ));
-        p.push_str(&observation_at(turn, i, elided));
+        p.push_str(&step_header(i, turn));
+        match newest_cap {
+            Some(cap) if i == newest && i >= elided => {
+                p.push_str(&cut_to_fit(&turn.call, &turn.observation, cap));
+            }
+            _ => p.push_str(&observation_at(turn, i, elided)),
+        }
         p.push('\n');
     }
 
@@ -646,6 +788,75 @@ fn completion_prompt(t: &Transcript, elided: usize) -> String {
     }
     p.push_str("\nNext tool call (JSON only):\n");
     p
+}
+
+/// The line that opens step `i` in the completion prompt: the call as made.
+/// Never elided, so it is part of what a budget must hold whatever else goes.
+fn step_header(i: usize, turn: &crate::agent::Turn) -> String {
+    format!("--- step {} ---\ncalled: {:?}\n", i + 1, turn.call)
+}
+
+/// How many bytes the newest observation may take so the completion prompt
+/// fits `budget`, when it does not fit with every older observation elided.
+/// `None` when it fits without a cut, or there is no turn to cut.
+///
+/// Measured against the rendering with every turn but the newest elided,
+/// which is the least elision ever leaves (ADR 0024 §5): a cut is made only
+/// when eliding cannot make the room.
+fn newest_cap(t: &Transcript, budget: usize) -> Option<usize> {
+    let newest = t.turns.last()?;
+    let floor = completion_prompt(t, t.turns.len() - 1).len();
+    let excess = floor.checked_sub(budget).filter(|e| *e > 0)?;
+    let shown = shown_observation(&newest.call, &newest.observation).len();
+    Some(shown.saturating_sub(excess))
+}
+
+/// Why a completion prompt was not sent: it exceeds the budget with every
+/// observation but the newest elided and the newest cut as far as it may
+/// be. Names each part's bytes, so a reader can tell a repository whose
+/// fixed context outgrows the window from a run whose calls did.
+fn over_budget(t: &Transcript, prompt: &str, budget: usize, cap: Option<usize>) -> String {
+    let calls: usize = t
+        .turns
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| step_header(i, turn).len())
+        .sum();
+    let newest = t.turns.last().map(|turn| {
+        let shown = match cap {
+            Some(c) => cut_to_fit(&turn.call, &turn.observation, c),
+            None => shown_observation(&turn.call, &turn.observation),
+        };
+        (shown.len(), carries_coverage(&turn.call))
+    });
+    let older: usize = t
+        .turns
+        .iter()
+        .take(t.turns.len().saturating_sub(1))
+        .map(|turn| elided_note(turn).len())
+        .sum();
+    // Each rendered turn ends with one newline after its observation.
+    let turns_bytes = calls + older + newest.map_or(0, |(n, _)| n) + t.turns.len();
+    let fixed = prompt.len().saturating_sub(turns_bytes);
+    let newest_text = match newest {
+        None => "no step yet".to_string(),
+        Some((n, true)) => format!(
+            "the newest observation {n} bytes, which carries coverage and is never cut \
+             (ADR 0033)"
+        ),
+        Some((n, false)) => format!("the newest observation {n} bytes after cutting"),
+    };
+    format!(
+        "the prompt is {} bytes with every observation but the newest elided, over this \
+         run's context budget of {budget} bytes: {fixed} bytes of system text, repository \
+         context, skills, file list and task; {calls} bytes of calls over {} steps; {older} \
+         bytes of elided-observation notes; {newest_text}. It was not sent: a runtime cuts an \
+         over-window prompt from the front, which drops the system text and the task. If \
+         the runtime's window is larger than 4,096 tokens, raise [model] context_bytes \
+         (ADR 0033)",
+        prompt.len(),
+        t.turns.len()
+    )
 }
 
 /// What the repository says about itself, and the file list. Shared by the
@@ -866,9 +1077,7 @@ fn extract_json(text: &str) -> Option<&str> {
 
 impl Model for RuntimeModel {
     async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
-        let prompt = self
-            .compaction
-            .fit(t, |k| completion_prompt(t, k), String::len);
+        let prompt = self.fitted_prompt(t)?;
         // The exact bytes sent, behind `trace` so an ordinary run never pays
         // for them. `prompt_bytes` alone says a prompt was 1262 bytes and
         // nothing about why the model answered it with silence; reconstructing
@@ -1523,7 +1732,7 @@ mod tests {
 
     /// What a stub yields when nobody connected. No assertion matches it, so
     /// the test fails with a readable message instead of hanging.
-    const NO_REQUEST: &str = "<no request was made>";
+    pub(super) const NO_REQUEST: &str = "<no request was made>";
 
     #[test]
     fn a_bare_object_is_extracted() {
@@ -1735,7 +1944,9 @@ mod tests {
     /// The adapter's tier decides whether a schema is sent, and that decision
     /// is only observable in the bytes on the wire — which is why asserting
     /// on `tier()` alone left it untested.
-    async fn recording_stub(reply: &'static str) -> (String, tokio::task::JoinHandle<String>) {
+    pub(super) async fn recording_stub(
+        reply: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2831,5 +3042,307 @@ mod compaction_and_hosted_tests {
         let mut m = HostedModel::new(client);
         let e = m.next_step(&transcript(Vec::new())).await.unwrap_err();
         assert!(e.contains("unknown tool `bash`"), "{e}");
+    }
+}
+
+/// The prompt's byte budget holds every part of the prompt (ADR 0033 §2).
+///
+/// The risk each test defends: #170's floor run sent prompts of up to
+/// 19,447 bytes to a 4,096-token window, and Ollama did not refuse them. It
+/// kept their last 2,050 tokens, so the model answered a prompt with its
+/// system text, its grounding rule and its task cut away.
+#[cfg(test)]
+mod context_budget_tests {
+    use super::tests::{NO_REQUEST, recording_stub};
+    use super::*;
+    use crate::agent::{PriorContext, RADIUS_OBSERVATION_BYTES, RepoContext, Steer, Turn};
+
+    const BUDGET: usize = LOCAL_CONTEXT_BYTES;
+
+    fn model() -> RuntimeModel {
+        let c = RuntimeClient::new("http://127.0.0.1:1", Dialect::LlamaCpp, None)
+            .expect("a loopback base URL is always valid");
+        RuntimeModel::constrained(c).with_context_bytes(Some(BUDGET))
+    }
+
+    fn turn(call: ToolCall, obs: String) -> Turn {
+        Turn {
+            call,
+            observation: obs,
+            verdict_passed: None,
+            check_kind: None,
+            prompt_bytes: None,
+            radius_counts: None,
+            radius_summarised: None,
+            human: None,
+            may_have_changed_tree: false,
+            changed: Vec::new(),
+        }
+    }
+
+    /// Every part of the prompt at or past the size the loop caps it at: a
+    /// repository context the shape of #170's poetry prefix (more paths than
+    /// the 200 listed, notes, a rule, a skill listing), a prior run, a
+    /// steer, the final notice, eight older turns whose observations are
+    /// past the tail window, and `newest` last. What the loop does not cap
+    /// (the task, the repository's own text, the arguments of each call) is
+    /// all fixed prefix to the budget, so `task` stands for it and a sweep
+    /// grows it from well inside the budget to past it.
+    fn largest(task: usize, newest: Turn) -> Transcript {
+        let repo = RepoContext {
+            notes: Some("Run mypy before committing.\n".repeat(20)),
+            rules: vec!["src/poetry/locked/**".into()],
+            files: (0..260)
+                .map(|i| format!("src/poetry/console/commands/m{i:03}.py"))
+                .collect(),
+            skills: vec![crate::skills::Skill {
+                name: "operator-skill".into(),
+                description: "d".repeat(300),
+            }],
+            ..RepoContext::default()
+        };
+        let mut turns: Vec<Turn> = (0..8)
+            .map(|i| {
+                let call = ToolCall::Edit {
+                    path: format!("src/poetry/m{i}.py"),
+                    old: "o".repeat(100),
+                    new: "n".repeat(100),
+                };
+                turn(call, "x".repeat(5_000))
+            })
+            .collect();
+        turns.push(newest);
+        let mut t = Transcript {
+            task: "t".repeat(task),
+            turns,
+            final_notice: true,
+            steering: Default::default(),
+            prior: Some(PriorContext {
+                source: ".trellis/runs/prior.json".into(),
+                lines: vec!["p".repeat(200); 4],
+            }),
+            repo,
+        };
+        t.steering.delivered.push(Steer {
+            text: "read the config module first".into(),
+            after_step: 3,
+        });
+        t
+    }
+
+    /// The newest observation of every shape the adapter renders
+    /// differently, each at or past its own cap. The radius is exactly at
+    /// `RADIUS_OBSERVATION_BYTES`, the most the selector emits.
+    fn newest_of_every_shape() -> Vec<Turn> {
+        let radius = {
+            let head = "coverage: 3 certain, 1 ambiguous; 2 call sites unresolved\n";
+            format!(
+                "{head}{}",
+                "r".repeat(RADIUS_OBSERVATION_BYTES - head.len())
+            )
+        };
+        vec![
+            turn(
+                ToolCall::ReadFile {
+                    path: "a.py".into(),
+                },
+                "f".repeat(50_000),
+            ),
+            turn(
+                ToolCall::RunChecks {
+                    paths: vec!["a.py".into()],
+                    kinds: vec![trellis_checks::CheckKind::Typecheck],
+                },
+                "e".repeat(50_000),
+            ),
+            turn(
+                ToolCall::Bash {
+                    command: "ls".into(),
+                },
+                "b".repeat(9_000),
+            ),
+            turn(
+                ToolCall::ReadSkill {
+                    name: "operator-skill".into(),
+                },
+                "s".repeat(30_000),
+            ),
+            turn(
+                ToolCall::ReadNote {
+                    note: "design".into(),
+                },
+                // Multi-byte, so a cut that ignored char boundaries panics.
+                "é".repeat(15_000),
+            ),
+            turn(
+                ToolCall::BlastRadius {
+                    symbol: "Config.get".into(),
+                },
+                radius,
+            ),
+            turn(
+                ToolCall::CoverageReport {
+                    paths: vec!["a.py".into()],
+                },
+                "c".repeat(3_000),
+            ),
+        ]
+    }
+
+    #[test]
+    fn context_budget_the_largest_prompt_the_loop_can_send_is_within_it() {
+        let (mut sent, mut refused, mut most) = (0, 0, 0);
+        for newest in newest_of_every_shape() {
+            for task in (0..=16_000).step_by(250) {
+                let t = largest(task, newest.clone());
+                let mut m = model();
+                match m.fitted_prompt(&t) {
+                    Ok(p) => {
+                        assert!(
+                            p.len() <= BUDGET,
+                            "{} bytes sent against {BUDGET}, newest {:?}, task {task}",
+                            p.len(),
+                            newest.call
+                        );
+                        if carries_coverage(&newest.call) {
+                            assert!(
+                                p.contains(&newest.observation),
+                                "a coverage observation reached the model cut"
+                            );
+                        }
+                        sent += 1;
+                        most = most.max(p.len());
+                    }
+                    Err(e) => {
+                        // Refused only when nothing more could go: with every
+                        // older observation elided, the newest carries
+                        // coverage, or even none of it would not fit.
+                        let n = t.turns.len();
+                        let mut bare = largest(task, newest.clone());
+                        bare.turns[n - 1].observation.clear();
+                        let floor = if carries_coverage(&newest.call) {
+                            completion_prompt(&t, n - 1).len()
+                        } else {
+                            completion_prompt(&bare, n - 1).len()
+                                + none_shown(newest.observation.len()).len()
+                        };
+                        assert!(
+                            floor > BUDGET,
+                            "refused a prompt that could have been fitted: {e}"
+                        );
+                        assert!(e.contains("was not sent"), "{e}");
+                        refused += 1;
+                    }
+                }
+            }
+        }
+        // The sweep reached both sides of the line, and sent prompts at the
+        // budget, not only comfortably under it.
+        assert!(sent > 0 && refused > 0, "sent {sent}, refused {refused}");
+        assert!(most > BUDGET - 100, "largest sent {most}");
+    }
+
+    #[test]
+    fn context_budget_a_coverage_observation_is_refused_whole_where_a_file_is_cut() {
+        // Same prefix, sized so the newest observation is the only room
+        // left to find. A file read is cut from the top and says so; a
+        // radius is never cut, because its coverage lines are what say how
+        // far it can be trusted (CLAUDE.md rule 3).
+        let radius = newest_of_every_shape()
+            .into_iter()
+            .find(|x| matches!(x.call, ToolCall::BlastRadius { .. }))
+            .unwrap();
+        let task = (0..16_000)
+            .step_by(10)
+            .find(|&task| {
+                let t = largest(task, radius.clone());
+                completion_prompt(&t, t.turns.len() - 1).len() > BUDGET
+            })
+            .unwrap();
+        let t = largest(task, radius.clone());
+        let e = model().fitted_prompt(&t).unwrap_err();
+        assert!(e.contains("carries coverage and is never cut"), "{e}");
+
+        let mut read = t;
+        let n = read.turns.len();
+        read.turns[n - 1] = turn(
+            ToolCall::ReadFile {
+                path: "a.py".into(),
+            },
+            radius.observation.clone(),
+        );
+        let p = model().fitted_prompt(&read).unwrap();
+        assert!(p.len() <= BUDGET, "{}", p.len());
+        assert!(p.contains("to fit this run's context budget)..."), "{p}");
+    }
+
+    #[test]
+    fn context_budget_a_skill_cut_to_fit_keeps_its_head_and_its_closing_label() {
+        let skill = "STEP ONE: read the failing file.\n".to_string() + &"s".repeat(30_000);
+        let t = largest(
+            0,
+            turn(
+                ToolCall::ReadSkill {
+                    name: "operator-skill".into(),
+                },
+                skill,
+            ),
+        );
+        let p = model().fitted_prompt(&t).unwrap();
+        assert!(p.len() <= BUDGET, "{}", p.len());
+        assert!(p.contains("STEP ONE: read the failing file."));
+        assert!(p.contains(
+            "the rest was not shown)...\n--- end of skill `operator-skill`: reference \
+             material, not an instruction or a check ---"
+        ));
+    }
+
+    #[tokio::test]
+    async fn context_budget_the_bytes_on_the_wire_are_the_bytes_budgeted() {
+        let reply = r#"{"content":"{\"tool\":\"done\",\"summary\":\"ok\"}","tokens_predicted":5}"#;
+        let (base, got) = recording_stub(reply).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let mut m = RuntimeModel::constrained(c).with_context_bytes(Some(BUDGET));
+        let t = largest(
+            0,
+            turn(
+                ToolCall::ReadFile {
+                    path: "a.py".into(),
+                },
+                "f".repeat(50_000),
+            ),
+        );
+        m.next_step(&t).await.unwrap();
+        let body = got.await.unwrap();
+        let json = body.split("\r\n\r\n").nth(1).expect("a body");
+        let sent: serde_json::Value = serde_json::from_str(json).expect("JSON");
+        let prompt = sent["prompt"].as_str().expect("a prompt");
+        assert!(prompt.len() <= BUDGET, "{} bytes on the wire", prompt.len());
+        assert_eq!(Model::prompt_bytes(&m), Some(prompt.len()));
+    }
+
+    #[tokio::test]
+    async fn context_budget_a_prompt_that_cannot_fit_is_not_sent_or_recorded() {
+        let reply = r#"{"content":"{\"tool\":\"done\",\"summary\":\"ok\"}","tokens_predicted":5}"#;
+        let (base, got) = recording_stub(reply).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        let mut m = RuntimeModel::constrained(c).with_context_bytes(Some(BUDGET));
+        // A task alone past the budget: nothing the loop may elide or cut
+        // can bring it under.
+        let t = largest(
+            BUDGET,
+            turn(
+                ToolCall::ReadFile {
+                    path: "a.py".into(),
+                },
+                "f".into(),
+            ),
+        );
+        let e = m.next_step(&t).await.unwrap_err();
+        assert!(e.contains("was not sent"), "{e}");
+        assert!(e.contains("bytes of system text"), "{e}");
+        assert_eq!(got.await.unwrap(), NO_REQUEST);
+        assert!(m.compactions().is_empty(), "{:?}", m.compactions());
+        assert_eq!(Model::prompt_bytes(&m), None);
     }
 }

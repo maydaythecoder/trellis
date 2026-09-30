@@ -1279,7 +1279,7 @@ impl Driver {
                     } else {
                         trellis_loop::RuntimeModel::constrained(client)
                     }
-                    .with_context_bytes(cfg.context_bytes()),
+                    .with_context_bytes(Some(hosted::runtime_context_bytes(cfg))),
                 ))
             }
             trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. } => {
