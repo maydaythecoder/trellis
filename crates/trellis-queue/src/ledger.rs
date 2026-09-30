@@ -2,6 +2,9 @@
 //!
 //! Spend is what trails recorded: completion tokens as the runtime adapter
 //! reported them, per run, attributed to the profile the run executed as.
+//! Prompt tokens are summed beside them and never into them: the two are
+//! different quantities (a prompt is re-sent every turn), budgets limit
+//! completion tokens only, and one total would hide which of the two moved.
 //! This crate does not read trails — it takes [`SpendRecord`]s, so the
 //! arithmetic and the thresholds are tested without a repository, and the
 //! binary is the one place that turns trail files into records.
@@ -22,6 +25,10 @@ pub struct SpendRecord {
     /// `None` when the trail recorded no count: a scripted run, a process
     /// agent, or a trail written before ADR 0026.
     pub tokens: Option<u64>,
+    /// Prompt tokens, read from the trail's own `prompt_tokens` and kept
+    /// apart from `tokens`. `None` means the adapter reported no prompt
+    /// figure, which is not the same as a prompt of zero tokens.
+    pub prompt_tokens: Option<u64>,
     /// The trail's `started_at`: which month the run belongs to.
     pub started_at: String,
     /// The trail's factual digest did not match. Counted anyway — it is the
@@ -37,6 +44,15 @@ pub struct Spend {
     pub runs: u32,
     /// Runs attributed to this profile whose trail recorded no token count.
     pub runs_without_count: u32,
+    /// Prompt tokens this month and lifetime, from the runs that recorded a
+    /// prompt figure. Deliberately no method adds these to `month` or
+    /// `lifetime`: see the module comment.
+    pub prompt_month: u64,
+    pub prompt_lifetime: u64,
+    /// Runs whose trail recorded no prompt figure. The prompt sums are a
+    /// lower bound whenever this is non-zero, and a reader has to be told so
+    /// rather than shown a smaller number as if it were complete.
+    pub runs_without_prompt_count: u32,
     pub altered: u32,
 }
 
@@ -48,12 +64,25 @@ pub fn spend(records: &[SpendRecord], agent: &str, month: &str) -> Spend {
         if r.altered {
             s.altered += 1;
         }
+        let this_month = crate::month_of(&r.started_at).as_deref() == Some(month);
+        // Before the completion figure, whose absence ends this iteration:
+        // the two counts are reported independently and one missing does
+        // not make the other unknown.
+        match r.prompt_tokens {
+            Some(p) => {
+                s.prompt_lifetime = s.prompt_lifetime.saturating_add(p);
+                if this_month {
+                    s.prompt_month = s.prompt_month.saturating_add(p);
+                }
+            }
+            None => s.runs_without_prompt_count += 1,
+        }
         let Some(t) = r.tokens else {
             s.runs_without_count += 1;
             continue;
         };
         s.lifetime = s.lifetime.saturating_add(t);
-        if crate::month_of(&r.started_at).as_deref() == Some(month) {
+        if this_month {
             s.month = s.month.saturating_add(t);
         }
     }
@@ -288,9 +317,81 @@ mod tests {
         SpendRecord {
             agent: agent.into(),
             tokens,
+            prompt_tokens: None,
             started_at: at.into(),
             altered: false,
         }
+    }
+
+    fn prompted(agent: &str, tokens: Option<u64>, prompt: Option<u64>, at: &str) -> SpendRecord {
+        SpendRecord {
+            prompt_tokens: prompt,
+            ..rec(agent, tokens, at)
+        }
+    }
+
+    #[test]
+    fn prompt_tokens_sum_apart_from_completion_across_a_month_boundary() {
+        // The risk: prompt tokens folded into the completion sums (which
+        // budgets limit), or attributed to the wrong month. Each figure is
+        // chosen so any cross-addition lands on a number asserted against.
+        let r = [
+            prompted("a", Some(10), Some(1_000), "2026-09-30T23:59:59Z"),
+            prompted("a", Some(5), Some(200), "2026-10-01T00:00:00Z"),
+            prompted("a", Some(7), Some(30), "2026-10-15T12:00:00Z"),
+            prompted("b", Some(1), Some(90_000), "2026-10-02T00:00:00Z"),
+        ];
+        let oct = spend(&r, "a", "2026-10");
+        assert_eq!((oct.prompt_month, oct.prompt_lifetime), (230, 1_230));
+        assert_eq!((oct.month, oct.lifetime), (12, 22), "completion unchanged");
+        assert_eq!(oct.runs_without_prompt_count, 0);
+        let sep = spend(&r, "a", "2026-09");
+        assert_eq!((sep.prompt_month, sep.prompt_lifetime), (1_000, 1_230));
+        assert_eq!(sep.month, 10);
+    }
+
+    #[test]
+    fn prompt_tokens_unknown_is_counted_not_summed_as_zero() {
+        // The risk: a run with no prompt figure read as a prompt of 0, so the
+        // sum looks complete while under-counting. It must add nothing and be
+        // counted, and it must not disturb its completion figure (nor a
+        // missing completion figure disturb its prompt figure).
+        let r = [
+            prompted("a", Some(10), None, "2026-10-01T00:00:00Z"),
+            prompted("a", None, Some(400), "2026-10-02T00:00:00Z"),
+            prompted("a", Some(3), Some(50), "2026-10-03T00:00:00Z"),
+            prompted("a", None, None, "2026-10-04T00:00:00Z"),
+        ];
+        let s = spend(&r, "a", "2026-10");
+        assert_eq!((s.prompt_month, s.prompt_lifetime), (450, 450));
+        assert_eq!(s.runs_without_prompt_count, 2);
+        assert_eq!((s.month, s.lifetime), (13, 13));
+        assert_eq!((s.runs, s.runs_without_count), (4, 2));
+    }
+
+    #[test]
+    fn prompt_tokens_do_not_reach_budget_enforcement() {
+        // The risk: a budget of completion tokens tripped by prompt tokens.
+        // `assess` reads `month`/`lifetime` only; a large prompt spend with
+        // no completion spend is still under a small limit.
+        let p = crate::profile::parse(
+            "rev",
+            "[budget]
+monthly_tokens = 100
+",
+        )
+        .unwrap();
+        let r = [prompted(
+            "rev",
+            Some(1),
+            Some(1_000_000),
+            "2026-10-01T00:00:00Z",
+        )];
+        let s = spend(&r, "rev", "2026-10");
+        assert_eq!(
+            assess(&p, &Overlay::default(), &s, "2026-10"),
+            Assessment::Ok
+        );
     }
 
     #[test]
