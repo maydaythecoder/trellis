@@ -11,6 +11,7 @@
 //! carrying more than one is treated as malformed. Answering one of two
 //! call ids would be a 400 on both APIs.
 
+use crate::image::Image;
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
 use crate::transport::{self, Auth, Endpoint, Proxy, SendError};
@@ -127,6 +128,10 @@ pub struct Conversation {
     pub exchanges: Vec<Exchange>,
     /// Text after the last result, e.g. the budget notice.
     pub trailing: Option<String>,
+    /// `trellis run --image`, carried in the first user message on every
+    /// request (ADR 0041). Empty for every other run, whose bodies are then
+    /// exactly what they were before images existed.
+    pub images: Vec<Image>,
 }
 
 /// A tool call read out of a reply.
@@ -208,9 +213,22 @@ fn openai_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
+    // A plain string when there is no image, so every other body is byte
+    // for byte what it was; a parts array, the text first, when there is.
+    let user = if conv.images.is_empty() {
+        json!(conv.user)
+    } else {
+        let mut parts = vec![json!({ "type": "text", "text": conv.user })];
+        parts.extend(conv.images.iter().map(|i| {
+            json!({ "type": "image_url", "image_url": {
+                "url": format!("data:{};base64,{}", i.media_type(), i.base64())
+            }})
+        }));
+        Value::Array(parts)
+    };
     let mut messages = vec![
         json!({ "role": "system", "content": conv.system }),
-        json!({ "role": "user", "content": conv.user }),
+        json!({ "role": "user", "content": user }),
     ];
     for x in &conv.exchanges {
         messages.push(x.replay.clone().unwrap_or_else(|| {
@@ -265,9 +283,18 @@ fn anthropic_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
-    let mut messages = vec![json!({ "role": "user", "content": [
-        { "type": "text", "text": conv.user }
-    ]})];
+    // Images before the text, the order Anthropic's documentation asks for.
+    let mut first: Vec<Value> = conv
+        .images
+        .iter()
+        .map(|i| {
+            json!({ "type": "image", "source": {
+                "type": "base64", "media_type": i.media_type(), "data": i.base64()
+            }})
+        })
+        .collect();
+    first.push(json!({ "type": "text", "text": conv.user }));
+    let mut messages = vec![json!({ "role": "user", "content": first })];
     for x in &conv.exchanges {
         messages.push(x.replay.clone().unwrap_or_else(|| {
             json!({ "role": "assistant", "content": [
@@ -818,6 +845,7 @@ mod tests {
                 replay: None,
             }],
             trailing: Some("last step".into()),
+            images: Vec::new(),
         }
     }
 
@@ -882,6 +910,39 @@ mod tests {
         assert_eq!(m[2]["content"][0]["tool_use_id"], "c1");
         assert_eq!(m[2]["content"][1]["text"], "last step");
         assert!(b.get("thinking").is_none());
+    }
+
+    #[test]
+    fn an_image_rides_in_the_first_user_message_in_each_protocol_s_format() {
+        let img = Image::from_bytes(b"GIF89a-pixels").unwrap();
+        let data = img.base64().to_string();
+        let mut c = conv();
+        c.images = vec![img];
+        let b = request_body(Protocol::Anthropic, "m", &c, &tools(), 100, Thinking::Off);
+        let first = &b["messages"][0]["content"];
+        assert_eq!(first[0]["type"], "image");
+        assert_eq!(first[0]["source"]["type"], "base64");
+        assert_eq!(first[0]["source"]["media_type"], "image/gif");
+        assert_eq!(first[0]["source"]["data"], data.as_str());
+        assert_eq!(first[1]["text"], "Task: fix it");
+        let b = request_body(Protocol::OpenAiChat, "m", &c, &tools(), 100, Thinking::Off);
+        let user = &b["messages"][1]["content"];
+        assert_eq!(user[0]["text"], "Task: fix it");
+        assert_eq!(user[1]["type"], "image_url");
+        assert_eq!(
+            user[1]["image_url"]["url"],
+            format!("data:image/gif;base64,{data}").as_str()
+        );
+        // Without one, the user content is the plain string it always was.
+        let b = request_body(
+            Protocol::OpenAiChat,
+            "m",
+            &conv(),
+            &tools(),
+            100,
+            Thinking::Off,
+        );
+        assert_eq!(b["messages"][1]["content"], "Task: fix it");
     }
 
     #[test]

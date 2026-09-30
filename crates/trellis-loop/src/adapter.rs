@@ -1036,6 +1036,9 @@ pub struct HostedModel {
     pending: Option<(usize, Issued)>,
     /// Set, and said once, when thinking was withheld from a request.
     thinking_withheld: bool,
+    /// `trellis run --image`, sent with the first user message of every
+    /// request (ADR 0041).
+    images: Vec<trellis_model::Image>,
 }
 
 #[derive(Debug, Clone)]
@@ -1059,7 +1062,16 @@ impl HostedModel {
             issued: Vec::new(),
             pending: None,
             thinking_withheld: false,
+            images: Vec::new(),
         }
+    }
+
+    /// Images for the first user message (ADR 0041). Their base64 is part
+    /// of every body, so the context budget counts it like any other byte.
+    #[must_use]
+    pub fn with_images(mut self, images: Vec<trellis_model::Image>) -> Self {
+        self.images = images;
+        self
     }
 
     /// Ends the run at the first reply with no usage figure, rather than
@@ -1175,6 +1187,7 @@ fn conversation(
     issued: &[Option<Issued>],
     protocol: Protocol,
     elided: usize,
+    images: &[trellis_model::Image],
 ) -> Conversation {
     let mut user = format!("Task: {}\n\n", t.task);
     prior_block(t, &mut user);
@@ -1208,6 +1221,7 @@ fn conversation(
         user: user.trim_end().to_string(),
         exchanges,
         trailing: hosted_trailing(t),
+        images: images.to_vec(),
     }
 }
 
@@ -1311,13 +1325,14 @@ impl Model for HostedModel {
             );
         }
         while attempt < MAX_FORMAT_RETRIES {
-            let (client, issued, max) = (&self.client, &self.issued, self.max_tokens);
+            let (client, issued, max, images) =
+                (&self.client, &self.issued, self.max_tokens, &self.images);
             // Each observation is one JSON string in the body, so its cost
             // is its escaped length; `fit_by` checks that against a real
             // render and falls back to the scan if it is ever wrong.
             let body = self.compaction.fit_by(
                 t,
-                |k| client.body(&conversation(t, issued, protocol, k), &tools, max),
+                |k| client.body(&conversation(t, issued, protocol, k, images), &tools, max),
                 |b| b.to_string().len(),
                 |s| serde_json::to_string(s).map_or(s.len(), |j| j.len()),
             );
@@ -1335,8 +1350,9 @@ impl Model for HostedModel {
                 .unwrap_or_else(|| body.to_string().len());
             self.last_prompt_bytes = Some(bytes);
             tracing::debug!(prompt_bytes = bytes, turns = t.turns.len());
-            // The key is not in the body; it is added by the transport.
-            tracing::trace!(request = %body, "request as sent");
+            // The key is not in the body; it is added by the transport. An
+            // image's bytes are, and a log is not where they go (ADR 0041).
+            tracing::trace!(request = %trellis_model::redact_images(&body), "request as sent");
             let reply = match self.client.send(&body).await {
                 Ok(r) => r,
                 Err(RuntimeError::ContextOverflow(why)) if overflows < MAX_OVERFLOW_RETRIES => {
@@ -2001,7 +2017,7 @@ mod compaction_and_hosted_tests {
         // person's words as something a tool returned.
         let mut t = transcript(vec![turn(read("a.py"), "contents", None)]);
         for protocol in [Protocol::OpenAiChat, Protocol::Anthropic] {
-            let c = conversation(&t, &[], protocol, 0);
+            let c = conversation(&t, &[], protocol, 0, &[]);
             assert_eq!(c.trailing, None, "nothing steered, nothing trailing");
         }
 
@@ -2011,7 +2027,7 @@ mod compaction_and_hosted_tests {
         });
         t.final_notice = true;
         for protocol in [Protocol::OpenAiChat, Protocol::Anthropic] {
-            let c = conversation(&t, &[], protocol, 0);
+            let c = conversation(&t, &[], protocol, 0, &[]);
             let trailing = c.trailing.expect("a steer was delivered");
             assert!(trailing.contains("STEER-HOSTED stop and read b.py"));
             assert!(trailing.contains("from the person running this task"));
@@ -2703,7 +2719,7 @@ mod compaction_and_hosted_tests {
             for p in [Protocol::Anthropic, Protocol::OpenAiChat] {
                 assert_eq!(
                     every_turn_replayed(&t, &rec),
-                    trellis_model::every_turn_replayed(&conversation(&t, &rec, p, 0)),
+                    trellis_model::every_turn_replayed(&conversation(&t, &rec, p, 0, &[])),
                     "{} turns, {rec:?}",
                     t.turns.len()
                 );

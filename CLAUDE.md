@@ -36,6 +36,7 @@ cargo run -p trellis-cli -- rpc                            # JSONL commands on s
 cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
 cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail, as data (ADR 0038)
 cargo run -p trellis-cli -- install <source>@<ref> | --list | --remove <name>   # skills and templates only (ADR 0039)
+cargo run -p trellis-cli -- run "<task>" --image <path>    # hosted tier 1 only, repeatable (ADR 0041)
 cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
 cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040); no binary yet
 
