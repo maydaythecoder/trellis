@@ -40,8 +40,9 @@
 use std::collections::BTreeMap;
 
 use crate::labels::Flag;
-use crate::parse::{self, TRIAGE_START};
-use crate::report::{GhIssue, Line, Value, printable, report, ticket_from_gh_json};
+use crate::open::{Blockers, ListError, open_issues};
+use crate::parse::TRIAGE_START;
+use crate::report::{Line, Value, printable, report, ticket_from_gh_json};
 use crate::{State, TRIAGE_VERSION, Ticket};
 
 /// How many open issues `sweep` asks `gh` for. A list this long may have
@@ -269,7 +270,7 @@ const FLAG_ORDER: [Flag; 5] = [
     Flag::BlockedExt,
 ];
 
-fn risk_rank(label: &str) -> Option<u8> {
+pub(crate) fn risk_rank(label: &str) -> Option<u8> {
     match label {
         "risk:low" => Some(0),
         "risk:medium" => Some(1),
@@ -617,30 +618,13 @@ pub fn plan_sweep(
     mut fetch: impl FnMut(u64) -> Result<String, String>,
     now: &str,
 ) -> Result<SweepPlan, SweepError> {
-    let issues: Vec<GhIssue> = serde_json::from_str(list_json).map_err(SweepError::ListJson)?;
-    if issues.len() >= SWEEP_LIST_LIMIT {
-        return Err(SweepError::Truncated {
-            limit: SWEEP_LIST_LIMIT,
-        });
-    }
-    let mut open: Vec<(u64, Ticket)> = Vec::with_capacity(issues.len());
-    for issue in issues {
-        let number = issue.number;
-        if open.iter().any(|(n, _)| *n == number) {
-            return Err(SweepError::Duplicate { number });
-        }
-        let state = issue.state.clone();
-        match issue.into_ticket() {
-            Some(t) if t.state == State::Open => open.push((number, t)),
-            _ => return Err(SweepError::NotOpen { number, state }),
-        }
-    }
-
-    // What every blocker's state is known to be: the open list's, then each
-    // other one read once. A read that fails is kept as its reason, so the
-    // rules see the blocker as unsupplied and abstain rather than proceed.
-    let mut known: BTreeMap<u64, Result<State, String>> =
-        open.iter().map(|(n, _)| (*n, Ok(State::Open))).collect();
+    let open = open_issues(list_json).map_err(|e| match e {
+        ListError::Json(e) => SweepError::ListJson(e),
+        ListError::Truncated { limit } => SweepError::Truncated { limit },
+        ListError::Duplicate { number } => SweepError::Duplicate { number },
+        ListError::NotOpen { number, state } => SweepError::NotOpen { number, state },
+    })?;
+    let mut known = Blockers::new(&open);
     let mut plans = Vec::with_capacity(open.len());
     for (number, t) in &open {
         if let Some(label) = ["parked", "split"]
@@ -661,25 +645,7 @@ pub fn plan_sweep(
             });
             continue;
         }
-        let mut blockers = BTreeMap::new();
-        let mut notes = Vec::new();
-        if let Ok(named) = parse::blocked_by(&t.body) {
-            for b in named {
-                let state = known.entry(b).or_insert_with(|| {
-                    fetch(b).and_then(|json| {
-                        ticket_from_gh_json(b, &json)
-                            .map(|x| x.state)
-                            .map_err(|e| e.to_string())
-                    })
-                });
-                match state {
-                    Ok(s) => {
-                        blockers.insert(b, *s);
-                    }
-                    Err(reason) => notes.push(format!("blocker #{b} could not be read: {reason}")),
-                }
-            }
-        }
+        let (blockers, notes) = known.of(&t.body, &mut fetch);
         plans.push(plan_issue(*number, t, &blockers, notes, now));
     }
     Ok(SweepPlan { issues: plans })
