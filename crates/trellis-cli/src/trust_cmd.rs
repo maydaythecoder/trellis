@@ -321,6 +321,31 @@ mod tests {
         assert_eq!(item.receives, ["ANTHROPIC_API_KEY"]);
     }
 
+    #[test]
+    fn doctor_trust_line_names_process_agents() {
+        // The risk (#198): a repository whose only trusted item is a process
+        // agent printed `trust:      : trusted`, so doctor said something
+        // was trusted without saying what.
+        let d = repo_with("[control]\nmode = \"auto\"\n");
+        let agents = d.path().join(".trellis/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("agent.py"), "print('agent')\n").unwrap();
+        std::fs::write(
+            agents.join("ext.toml"),
+            "command = [\"python\", \".trellis/agents/agent.py\"]\n",
+        )
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(home.path().join("trust.json"));
+        run_with(d.path(), &store, false, false, &mut Vec::new()).unwrap();
+
+        let line = doctor(d.path(), &store);
+        assert_eq!(
+            line, "trust:      1 process agent(s) (ext): trusted; they load",
+            "{line}"
+        );
+    }
+
     /// Two hooks on the events #137 added and a custom tool with the
     /// `timeout_s` #135 added, each with its script under `.trellis/`.
     fn repo_with_three_items(lint_timeout: u32) -> tempfile::TempDir {
