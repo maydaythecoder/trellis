@@ -218,7 +218,7 @@ pub fn triage_with(
 
 /// Issue text with control characters escaped, so a title or body quoted in
 /// a reason cannot move the cursor or recolour the terminal it prints to.
-fn printable(s: &str) -> String {
+pub(crate) fn printable(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_control() {
