@@ -591,14 +591,32 @@ question.
 | Qwen2.5-0.5B-Instruct Q4_K_M, candle CPU, tier 2 | as at `24bba3d` | **0 / 20** | — | 16 | 3 | 209 |
 | the same | with the two §5.3 fixes | **0 / 9** | — | 9 | 0 | — |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M, candle CPU, tier 2 | with the no-progress stop | **0 / 17** | 14 | 3 | 0 | ~150 |
+| `qwen2.5:3b` Q4_K_M, Ollama 0.34.2, `/v1/completions` | debug build at `6a2c6b9`: #229's chunked-reply decode and #228's 14,336-byte prompt budget | **0 / 20** | 16 | 2 | 2 | 15.1 |
 
-The 3B row is 17 tasks, not 20: the host stopped the job for memory pressure
+The Coder-3B row is 17 tasks, not 20: the host stopped the job for memory pressure
 with three outstanding. See §5.6. `no-progress` did not exist when the first
 two rows were measured, which is why they show none — the cost columns are
 comparable only within a harness version, the `repaired` column across all of
 them.
 
 `errors_after == errors_before` on all 20 tasks of the first row.
+
+The Ollama row is `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`
+and its `.json` report (#228, c049a0d): the re-run §5.9 called for of the
+configuration #170 measured and reported in `docs/bench/README.md`. It is
+**not a like-for-like re-run of #170's harness**. Besides #229's fix it also
+carries #228's prompt budget, which compacts the transcript to hold a prompt
+to 14,336 bytes (the largest in this run, from each log's `peak`, was
+14,321), and #170 had no such budget. A difference from #170's
+outcomes can come from either change. Its figures are read from that report:
+`outcomes` and `check_recovery`, and `errors_after == errors_before` on all 20
+tasks. Its median is the report's `wall_clock_s.median`, which `run_floor.py`
+takes as the upper of the two middle values, as it does for the first row's
+209. The conventional median of the 20 `seconds` values is 14.2. Seconds are
+comparable only within this row: it ran a debug binary, where #170 ran a
+release one, and on Ollama, where the rows above ran candle.
+`bytes_per_token.py` over the directory: see `docs/bench/README.md`, beside
+#170's.
 
 The second row is **9 tasks, not 20**: the run was stopped by the host at task
 9 for system memory pressure, which is unrelated to the run and says nothing
@@ -937,6 +955,7 @@ records:
 | `floor-qwen2.5-0.5b-q4km-fixed-harness` | 9 (t00–t08) | **0** | — |
 | `floor-qwen2.5-coder-3b-q4km` | 18 (t00–t17) | **0** of 18; t18 and t19 **unknown** | t18 and t19 have no log (`skipped` in the report) |
 | `floor-qwen2.5-3b-q4km-ollama-20260930` | 20 (t00–t19) | **6** | t09, t11, t12, t13, t17, t18 |
+| `floor-qwen2.5-3b-q4km-ollama-20260930-budget` | 20 (t00–t19) | **0** | — |
 
 Method:
 
@@ -965,11 +984,28 @@ Method:
   in `docs/bench/README.md` rather than §5.2) scores 0 of 20 repaired, with
   `no-recovery` 6, and its six `no-recovery` tasks are exactly the six runs
   above. Those six outcomes were set by the client. They are **not re-scored
-  here** and no figure is changed: that configuration is **marked for re-run**
-  with a binary at or after 4f612eb, and its figures stand only as a record of
-  that run until the re-run replaces them.
+  here** and no figure is changed.
+- **The re-run, `floor-qwen2.5-3b-q4km-ollama-20260930-budget` (#228,
+  c049a0d), has no client-set run.** Its binary, a debug build at 6a2c6b9,
+  includes 4f612eb. The same `grep -l -E` pattern over its 20 logs, its 20
+  trails and its report lists nothing, and so does
+  `grep -l -E 'runtime call failed|response is not JSON|not the expected shape'`
+  over the same files. `grep -l 'the model could not continue'` lists t08 and
+  t11, each `no valid tool call after 4 attempts`, which are the report's 2
+  `format-failure`s and are model output. Of the other 18 logs, 16 end on the
+  no-progress stop and 2 (t12, t18) on the iteration ceiling, matching the
+  report's 16 `no-progress` and 2 `budget-exhausted`. Its
+  `ollama-requests.txt` records 150 `/v1/completions` requests, every one
+  answered `200`, and none with `truncated = 1`. Run over the files as
+  committed in c049a0d.
+- **The re-run does not replace #170's figures.** Besides #229's fix it also
+  carries #228's 14,336-byte prompt budget, so it is not a like-for-like
+  re-run of #170's harness: a difference between the two can come from either
+  change. #170's figures stand as the record of that run, whose six
+  `no-recovery` outcomes were set by the client. The re-run is its own §5.2
+  row.
 
-The three runs in §5.2 (two configurations), and the per-call audit in §5.4,
+The four runs in §5.2 (three configurations), and the per-call audit in §5.4,
 rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
 
 ### Exit criteria for v0.1
