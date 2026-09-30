@@ -3,8 +3,8 @@
 //!
 //! A test that needs a committed repository used to run `git init`, three
 //! `git config`s, `add`, `commit` and `rev-parse` for itself: seven process
-//! spawns before the code under test ran, which on Windows under a loaded
-//! gate cost seconds per test (#227, #232). A [`Template`] runs those once,
+//! spawns before the code under test ran, in tests #227 found bound by
+//! process spawns rather than by work (#232). A [`Template`] runs those once,
 //! reads every byte of the result into memory and deletes it; each
 //! [`Template::instance`] writes the bytes into a fresh temporary directory.
 //! Nothing is hard-linked and no path is shared, so no test's writes, to
