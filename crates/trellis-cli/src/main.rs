@@ -20,6 +20,7 @@ mod install;
 mod liveness;
 mod orchestrate;
 mod process_agent;
+mod services;
 mod session;
 #[cfg(test)]
 mod testutil;
@@ -599,6 +600,7 @@ fn main() -> Result<()> {
                     model_from_user,
                     // `trellis run` has no task for a question to wait on.
                     queued: false,
+                    services: &[],
                 },
                 RunControl {
                     flag,
@@ -1374,6 +1376,10 @@ struct RunSeeding<'a> {
     /// A queued task's run, from `work`: offered `ask_human`, since only
     /// here does a question have a task to wait on (ADR 0026 §1).
     queued: bool,
+    /// The profile's services `work` started for this task, as trail
+    /// actions: that each ran, never its output (ADR 0026 §12). Empty for
+    /// every caller but `work`.
+    services: &'a [trellis_trail::Action],
 }
 
 /// Who answers an approval question in approve mode (ADR 0018).
@@ -1632,6 +1638,7 @@ fn run_body(
         profile,
         model_from_user,
         queued,
+        services,
     } = seeding;
     let cfg = config::RepoConfig::load(root)?;
 
@@ -2483,6 +2490,7 @@ fn run_body(
         inputs: added.inputs.iter().chain(&images.inputs).cloned().collect(),
         compactions: &compactions,
         requested: &requested,
+        services,
     };
     let Some(outcome) = outcome else {
         // The interrupt path rolls back itself and then commits a trail; a
@@ -3378,6 +3386,9 @@ struct TrailFacts<'a> {
     /// Compactions a client asked for over RPC (ADR 0025 §5), filed the
     /// same way. Empty outside RPC.
     requested: &'a [trellis_loop::RequestedCompaction],
+    /// The services that ran beside the task (ADR 0026 §12), recorded
+    /// ahead of the first turn's actions. Empty outside `work`.
+    services: &'a [trellis_trail::Action],
 }
 
 /// What a person sent during the run, as the trail records it (ADR 0034).
@@ -3433,6 +3444,7 @@ fn record_trail(
         inputs,
         compactions,
         requested,
+        services,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -3538,8 +3550,9 @@ fn record_trail(
         })
         .collect();
     // A compaction for the request that produced `done` has no turn of its
-    // own to sit under; it goes last, where it happened.
-    let mut actions = actions;
+    // own to sit under; it goes last, where it happened. Services started
+    // before the first turn, so they go first.
+    let mut actions: Vec<trellis_trail::Action> = services.iter().cloned().chain(actions).collect();
     actions.extend(
         compactions
             .iter()
@@ -4896,6 +4909,7 @@ mod interrupt_tests {
             inputs: Vec::new(),
             compactions: &[],
             requested: &[],
+            services: &[],
         }
     }
 

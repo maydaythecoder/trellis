@@ -170,6 +170,9 @@ pub(crate) struct ProcessRun<'a> {
     /// The task text, with the profile's instructions ahead of it.
     pub text: &'a str,
     pub stop: &'a AtomicBool,
+    /// The profile's services, started by the caller before this run and
+    /// recorded first among the trail's actions (ADR 0026 §12).
+    pub services: &'a [trellis_trail::Action],
 }
 
 pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
@@ -179,6 +182,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         task_id,
         text,
         stop,
+        services,
     } = p;
     let argv = profile.file.command.clone().unwrap_or_default();
     let timeout = Duration::from_secs(
@@ -559,6 +563,7 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
             exit_text: &exit_text,
             ignored: &ignored,
             verdicts,
+            services,
         },
         out,
     );
@@ -769,6 +774,7 @@ struct TrailInput<'a> {
     exit_text: &'a str,
     ignored: &'a IgnoredChanges,
     verdicts: Vec<trellis_checks::Verdict>,
+    services: &'a [trellis_trail::Action],
 }
 
 /// The trail for a process run, built from `trellis-trail` types: the
@@ -797,28 +803,32 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         approved_by: Approval::None,
         mode_counts: crate::audit_modes(root, t.touched),
         context: None,
-        actions: std::iter::once(Action {
-            turn: 1,
-            tool: "process".into(),
-            target: t.argv.join(" "),
-            outcome: t.exit_text.to_string(),
-            wrote: !t.touched.is_empty(),
-            changed: Vec::new(),
-            changed_count: 0,
-        })
-        // What it did to files git ignores: not `proposed`, which is what
-        // a commit would carry, but recorded, since a converged run keeps
-        // what it created there (ADR 0026 §11).
-        .chain((!t.ignored.is_empty()).then(|| Action {
-            turn: 1,
-            tool: "process".into(),
-            target: "files git ignores".into(),
-            outcome: t.ignored.summary(),
-            wrote: true,
-            changed: Vec::new(),
-            changed_count: 0,
-        }))
-        .collect(),
+        actions: t
+            .services
+            .iter()
+            .cloned()
+            .chain(std::iter::once(Action {
+                turn: 1,
+                tool: "process".into(),
+                target: t.argv.join(" "),
+                outcome: t.exit_text.to_string(),
+                wrote: !t.touched.is_empty(),
+                changed: Vec::new(),
+                changed_count: 0,
+            }))
+            // What it did to files git ignores: not `proposed`, which is what
+            // a commit would carry, but recorded, since a converged run keeps
+            // what it created there (ADR 0026 §11).
+            .chain((!t.ignored.is_empty()).then(|| Action {
+                turn: 1,
+                tool: "process".into(),
+                target: "files git ignores".into(),
+                outcome: t.ignored.summary(),
+                wrote: true,
+                changed: Vec::new(),
+                changed_count: 0,
+            }))
+            .collect(),
         control: Some("auto (process agent)".into()),
         // An external process's tokens are not visible to trellis.
         tokens: None,
