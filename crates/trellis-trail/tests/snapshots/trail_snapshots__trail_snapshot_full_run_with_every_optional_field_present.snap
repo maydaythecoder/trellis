@@ -89,9 +89,17 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "name": "refactor",
         "bytes": 512
       }
+    ],
+    "steering": [
+      {
+        "turn": 2,
+        "kind": "steer",
+        "text": "keep the old name as an alias",
+        "len": 29
+      }
     ]
   },
-  "factual_sha256": "f8cb38ac4275706e286c6b990587c910b1de1bd511fa538cb59a68f4c5505375",
+  "factual_sha256": "84c331662d71b67a4dd92fc2ebb59c9eb2ef52f7c2c8b87131f5da4ecd62fdbe",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

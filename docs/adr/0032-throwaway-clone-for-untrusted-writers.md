@@ -1,7 +1,8 @@
 # ADR 0032 — A throwaway clone for the writers trellis does not control
 
-**Status:** Accepted. First slice built: `bash` and custom tools. Hooks and
-process agents are not yet isolated (see "What is not built").
+**Status:** Accepted. Built: `bash` and custom tools (#20), and hooks
+(#174, "Hooks" below). Process agents are not yet isolated (see "What is
+not built").
 **Date:** 2026-09-29
 **Issue:** #20. The owner chose the mechanism on 2026-09-28 (the issue's
 `## Decision`); this ADR records it and its limits.
@@ -169,12 +170,128 @@ machine. Stated so they are not assumed closed:
 - `may_change_tree` is unchanged: a `bash` or custom-tool call still marks
   the turn as one that may have changed the tree.
 
+## Hooks (amended 2026-09-29, #174)
+
+The owner's decision on #20 covers hooks; this section records the shape
+they run in. Before it, every hook (ADR 0023 §5) ran with the repository
+as its working directory, the one writer trellis starts that the first
+slice left there.
+
+**`pre_tool`, `post_tool` and `turn_end`: one clone per call, shared,
+refreshed before each hook, carried back after each.** For a model call
+(`crates/trellis-loop/src/orchestrator.rs`, `hook_clone_path` and
+`carry_back_hook`):
+
+1. At the call's first hook, the clone is made as for `bash` (steps 1 to
+   3 above). A call with none of the three hooks declared makes none,
+   and one that governance refuses makes one only for `turn_end`, which
+   runs after a denied call too.
+2. Before each later hook of the same call it is **refreshed**
+   (`Sandbox::refresh`): the repository is listed again and every listed
+   file is copied in where the clone's bytes differ, or put back where
+   the clone lost it, and those bytes become the new baseline. Between
+   `pre_tool` and `post_tool` the tool ran, and `edit`, `write_file` or a
+   `bash` carry-back wrote into the repository; the refresh is what lets
+   `post_tool` look at the tree the call left, which is its contract. The
+   call and its result still arrive on stdin as before. The refresh runs
+   `git ls-files` in the repository and only filesystem operations in the
+   clone, so step 5's rule holds: no `git` runs in a clone a hook has had.
+   A clone that cannot be refreshed (a hook put a link to outside the
+   clone where a tracked directory was) is removed and a new one made.
+3. The hook runs with the clone as its working directory and the
+   `GIT_LOCATION_VARS` removed, through `exec::run` (bounded output,
+   timeout, key scrub) as before.
+4. Right after it exits, what it changed among the copied-in files is
+   **carried back through the same `carry_back` `bash` uses**: the same
+   refusals (`write_refusal`: `.git/`, `.trellis/`, links, outside the
+   repository; `.gitignore`, `.gitattributes`, `.gitmodules`), the
+   repository's `deny_write` and then a profile's `allow_write` (#182),
+   the check that the repository's copy still has the bytes copied in,
+   recorded in `touched`, and the index session updated. A hook has no
+   observation to report into, so what was carried back and what was
+   refused is logged (`tracing`, warn).
+5. The clone is removed when the call ends, whichever way it ended.
+
+Shared rather than one clone per hook, because a clone is the expensive
+step and a call with `pre_tool` and `post_tool` would otherwise pay two
+or three; and since the refresh resets every tracked file to the
+repository's bytes before each hook, what one hook leaves for the next is
+only what is not tracked (a scratch file, the clone's `.git/`). Only
+trusted hooks run in it: `bash` and custom tools get clones of their own.
+
+`pre_tool` is a gate in the orchestrator's gate list, built by the
+binary. The orchestrator hands it the clone through two provided methods
+on `ToolGate` (`runs_repository_code`, `run_in`); the defaults leave every
+other gate as it was. **Fail closed:** when no clone can be made the gate
+is handed the reason and denies the call. A `HookGate` used outside an
+orchestrator runs its hook in a clone of its own and drops what it wrote.
+It never runs in the repository. `post_tool` and `turn_end` only observe,
+so when no clone can be made they are not run, and that is logged.
+
+The worktree brackets of ADR 0023 ("after a pass") stay around each hook
+and now enclose its carry-back, so a hook whose edit came back marks the
+turn as one that may have changed the tree, as before. They also stay for
+the hook that writes into the repository by absolute path, which no clone
+stops (the "Writes outside the clone" limit).
+
+The trust guard is read before the refresh (so the copy the hook runs is
+of what was just checked) and again by the hook before it spawns.
+
+**`input`, `before_run` and `after_run`: a clone of their own, nothing
+carried back.** They run outside any call, where no orchestrator and so
+no carry-back exists, and none of their contracts is to write:
+
+- **`input`** runs before the snapshot. It moves into a clone. In the
+  repository, a write by it to a tracked or visible file dirtied the tree
+  and the snapshot refused the run, but a write to an ignored file (a
+  `.venv/.../sitecustomize.py`) or under `.git/` was taken before the
+  ignored-file listing and the `.git/` digest (ADR 0023 §5), so it became
+  the baseline those guards compare against and was never seen. Nothing
+  it writes in the clone comes back; it can still refuse the task.
+- **`before_run`** adds context from its stdout. It runs after the
+  snapshot but before the orchestrator exists, so there is no write path
+  to carry back through; its stdout is unchanged.
+- **`after_run`** runs after the last check. A write by it could only
+  ever demote a converged run (ADR 0023, "after a pass"), so nothing is
+  carried back. The binary's fingerprint around it stays, for the writer
+  that names the repository by absolute path.
+
+When no clone can be made, `input` goes on as for any other failure of
+the hook (`HookError::NotIsolated`, printed as a `hook:` line),
+`before_run` adds nothing and says why, and `after_run`'s failure is
+logged.
+
+What this closes, for hooks, against a hook that writes where it runs:
+everything the Decision lists for `bash` (`.gitignore` edits, index
+flags, `.git/` writes, ignored and new files, `.trellis/` rewrites), and
+the gap above for `input`.
+
+Limits, in addition to those above, which apply to hooks as they do to
+`bash`:
+
+- **Clone cost per call.** A repository that declares `pre_tool`,
+  `post_tool` or `turn_end` pays one clone per model call, and a
+  refresh (a listing and a hash of every tracked file) per further hook.
+  `input`, `before_run` and `after_run` pay one clone each per run.
+- **Ignored hook scripts are absent.** A hook named relatively
+  (`["python", ".trellis/hooks/pre.py"]`, ADR 0023 §4) runs the clone's
+  copy, which exists only when the script is tracked or untracked and
+  not ignored. A git-ignored script is not in the clone, the hook fails
+  to start, and `pre_tool` then denies every call. The same holds for a
+  hook that needs a virtualenv or other ignored file.
+- **A hook's view is a copy.** A hook that read state trellis does not
+  copy (ignored files, the repository's `.git/`, its reflog or remote)
+  sees the clone's instead.
+
+Tests, in `crates/trellis-loop/src/isolate.rs`:
+`isolated_hook_writes_reach_the_repository_only_as_carried_back_tracked_edits`,
+`isolated_hook_post_tool_sees_the_call_s_edit_in_the_clone_pre_tool_shared`,
+`isolated_hook_write_is_refused_by_deny_write_then_allow_write`,
+`isolated_hook_pre_tool_denies_when_no_clone_can_be_made`, and
+`isolated_hook_input_runs_in_a_clone_and_nothing_it_writes_comes_back`.
+
 ## What is not built
 
-- **Hooks** (`pre_tool`, `post_tool`, `before_run`) still run in the
-  repository. They run around every call, so a clone per hook per call is
-  a cost to weigh separately, and `post_tool`'s view of the tree is part of
-  its contract. Follow-up ticket.
 - **Process agents** (ADR 0026) still run in the repository. They are
   started from `trellis-cli`, not the orchestrator, and their output is
   the run's change, so the carry-back there is the whole of their work.

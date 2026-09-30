@@ -82,14 +82,14 @@ grammar-valid call whose path does not exist (`src/poeetry/`). Tier 2
 guarantees the call parses, never that its arguments refer to anything real,
 and this audit is the direct measure of that gap.
 
-The audit is computed from each task's trail, which records every call with
-its arguments (the per-task files under `docs/bench/floor-*/`). **No script
-computes it yet**, and #144's scope does not include one: writing it is its
-own ticket. Until then metric 3 is pending. The trails of #144's run are the
-first it is to be applied to, and the two configurations already in §5.2 can
-be re-scored from their committed trails by the same script; until they are,
-their argument evidence is the verbatim calls quoted in §5.3 and §5.6, not an
-audit figure.
+The audit is computed from each task's record of its calls under
+`docs/bench/floor-*/`. **`docs/bench/metric3_audit.py` computes it** (#167),
+and `scripts/checks/metric3-audit-selftest.sh` holds it to two hand-counted
+trails. The calls are read from the per-task `tNN.log` (the run's printed
+turns, each call with its arguments), not from the `.json` trail, which in
+the committed runs records no calls. The three runs already in §5.2 are
+re-scored by it in §5.4, with the command, commit and method beside the
+table. The trails of #144's run are next.
 
 What would reopen it: a corpus with real history, so that a gold trace exists
 again. Then the gold-trace comparison is the stronger measure and returns.

@@ -115,7 +115,7 @@ override any row.
 | 1.15 prompt-cache warming | excluded: a dollar heuristic for hosted APIs; COST_MODEL.md owns cost. **Amended 2026-09-29 (#67):** deferred to v1.x. Its trigger is a dollar estimate, and no dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted. |
 | 2.1–2.4 30+ providers, OAuth, cloud platforms | **W-C covers the two wire protocols most of them speak** (OpenAI-compatible chat completions, Anthropic Messages) over HTTPS with keys from environment variables. OAuth and device login are excluded because ADR 0010 says a key never goes in a file trellis reads. Bedrock, Vertex and Azure request signing are deferred. **Amended 2026-09-29 (#45):** the owner kept signing deferred on 2026-09-28 and took per-model input limits first (#162). A signing scheme must keep ADR 0010 (credentials come from the environment or the platform's own ambient chain, never a file trellis writes), and is accepted only with its signing tested against recorded vectors and a loopback stub. |
 | 2.5 credential precedence | W-C, environment only (ADR 0010) |
-| 2.6 `models.json` endpoints and overrides | built (`[model] spec`, catalog); overrides → W-C |
+| 2.6 `models.json` endpoints and overrides | built (`[model] spec`, catalog); overrides → W-C. **Amended 2026-09-29 (#162):** per-model input limits built, as `[[providers]] input_bytes` (ADR 0024 §5); cache lifetimes and cost tables not built. |
 | 2.7 catalog overlay | built (`trellis model`) |
 | 2.8 thinking levels | W-C, where the provider protocol carries it |
 | 2.9 scoped model cycling | W-D (`session` `/model` already switches; add a list) |
@@ -141,7 +141,7 @@ override any row.
 | 9.2–9.3 JSON event mode | built as `--log-json`; stdout JSONL → W-D (`--json`) |
 | 9.4–9.5 RPC | W-D (`trellis rpc`, a subset: prompt, abort, get_state, get_messages, set_model, compact, approve) |
 | 9.6 SDK | built in effect (the crates are libraries) |
-| 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B |
+| 10 packages | deferred: `trellis install` for skills and prompts needs the trust store first; revisit after W-B. **Amended 2026-09-29 (#118, ADR 0039):** built in part: `trellis install <source>@<ref>`, `--list`, `--remove` copy skills and prompt templates into `<user config dir>/packages/`, recorded in `packages.toml`; packages carry no code; runs do not read them yet |
 | 11 TUI features | excluded [cosmetic]; `@` file search is built in `tui` (paths from `git ls-files`, so ignored files are never offered; #52), and `session` line mode has none |
 | 12 settings layering | W-D (user-level `~/.config/trellis/config.toml` under the repo's) |
 | 13.1–13.2 trust | W-B |
@@ -191,7 +191,8 @@ override any row.
 | 25 comments | W-E (a notes log per task; `@profile` mentions are deferred) |
 | 26–28 documents, attachments, work products | deferred; the trail and the diff are the work product. **Amended 2026-09-29 (#56):** excluded, for the same reason: the trail and the diff are the work product. A task's `focus` note (ADR 0017) and files in the repository cover input documents, and copies stored in the git dir would be lost with a linked worktree (ADR 0020 §1) and not versioned by git. |
 | 29 labels | W-E |
-| 30–31, 34, 37–38 interactions, work modes, decisions, cases, feedback training | deferred. **Amended 2026-09-29:** 30–31 work modes excluded (#141): a proposed breakdown is model text, and the human files tasks with `queue add --parent`; a mode whose output filed tasks would let the model create its own work queue with no human step. 37 cases and pipelines excluded (#58): a case is a parent task with blockers (rows 23–24), and a second hierarchy beside parent tasks would be a second source of truth for the same ordering. 38 feedback votes excluded until something reads them (#142): a vote nothing consumes is a record without a use, and feeding votes into prompts would make human approval read as evidence of correctness (ADR 0004). 34 decisions stays deferred. |
+| 30, 34 interactions, decisions | built in part (ADR 0026 §1, #140): a queued task's run may end on an `ask_human` question with up to 8 options; the task waits `blocked` (reason `question`) and a person answers with `queue note` and `queue set --status todo`. A structured decision record is deferred |
+| 31, 37–38 work modes, cases, feedback training | deferred. **Amended 2026-09-29:** 31 work modes excluded (#141): a proposed breakdown is model text, and the human files tasks with `queue add --parent`; a mode whose output filed tasks would let the model create its own work queue with no human step. 37 cases and pipelines excluded (#58): a case is a parent task with blockers (rows 23–24), and a second hierarchy beside parent tasks would be a second source of truth for the same ordering. 38 feedback votes excluded until something reads them (#142): a vote nothing consumes is a record without a use, and feeding votes into prompts would make human approval read as evidence of correctness (ADR 0004). |
 | 32 execution policy (review stage) | W-E (`needs_approval` on a task: `work` does not claim it until `trellis queue approve`) |
 | 33 watchdogs | built in part (stale claims listed); deferred beyond that |
 | 35–36 attention feed, inbox policy | excluded [web-ui][multi-user] |
@@ -275,7 +276,7 @@ summary:
 
 - Kept excluded, with a further reason: parallel tool calls, pi 1.7 (#63).
 - Excluded, from deferred or W-A: Paperclip 26–28 attachments (#56),
-  30–31 work modes (#141), 37 cases and pipelines (#58) and 38 feedback
+  31 work modes (#141), 37 cases and pipelines (#58) and 38 feedback
   votes (#142); pi 8.8 HTML export (#143); Apex 22 auto-create linked
   (#61).
 - Built in effect: pi 13.4 `plan-mode`, as a read-only profile (#141).

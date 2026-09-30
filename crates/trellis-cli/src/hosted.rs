@@ -235,20 +235,44 @@ fn origin_of(base: &str) -> Option<String> {
 ///
 /// About 100,000 tokens at roughly 4 bytes per token. That ratio is a
 /// heuristic, not a measurement: #170 measures it on trails that carry both
-/// prompt bytes and prompt tokens, and per-model input limits replace this
-/// figure when they exist. Without it an unconfigured hosted run sent its
-/// whole transcript every turn until the provider refused one, and the
-/// overflow retry could only shrink from there.
+/// prompt bytes and prompt tokens, and a model's `[[providers]]
+/// input_bytes` replaces this figure for that model (#162). Without it an
+/// unconfigured hosted run sent its whole transcript every turn until the
+/// provider refused one, and the overflow retry could only shrink from
+/// there.
 ///
 /// Hosted only. A local runtime's window is whatever its server was started
 /// with, and an unset budget there still means no elision, so a local
 /// prompt stays byte for byte what it was.
 pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
 
-/// The byte budget a hosted run elides to: the configured one when set,
-/// whatever its size, else [`HOSTED_CONTEXT_BYTES`].
-fn hosted_context_bytes(cfg: &RepoConfig) -> usize {
-    cfg.context_bytes().unwrap_or(HOSTED_CONTEXT_BYTES)
+/// The byte budget a hosted run elides to (ADR 0024 §5).
+///
+/// With both `[model] context_bytes` and the model's `[[providers]]
+/// input_bytes` set, the smaller: each is a ceiling, and a request over the
+/// model's own limit is refused by the endpoint however large the run's
+/// budget, so only the smaller of two ceilings is one. With one of them, that
+/// one, larger or smaller than [`HOSTED_CONTEXT_BYTES`]. With neither,
+/// [`HOSTED_CONTEXT_BYTES`].
+///
+/// A spec that names no `[[providers]]` entry (`openai:<url>#<model>`) has
+/// no per-model limit. Which file's entry supplies the limit is settled by
+/// layering: on a name both files define the user's entry wins whole, so a
+/// repository cannot raise a limit the user set (ADR 0024 §3), and under
+/// the minimum its `context_bytes` can only lower one.
+fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usize> {
+    let limit = match &r.provider {
+        Some(name) => cfg
+            .provider(name)?
+            .input_bytes
+            .get(&r.model)
+            .map(|&n| usize::try_from(n).unwrap_or(usize::MAX)),
+        None => None,
+    };
+    Ok(match (cfg.context_bytes(), limit) {
+        (Some(c), Some(l)) => c.min(l),
+        (c, l) => c.or(l).unwrap_or(HOSTED_CONTEXT_BYTES),
+    })
 }
 
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
@@ -260,7 +284,8 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
         .with_thinking(cfg.thinking()?);
-    Ok(HostedModel::new(client).with_context_bytes(Some(hosted_context_bytes(cfg))))
+    let budget = hosted_context_bytes(r, cfg)?;
+    Ok(HostedModel::new(client).with_context_bytes(Some(budget)))
 }
 
 /// The run banner's `model:` line.
@@ -753,6 +778,15 @@ mod tests {
     /// run` makes it: the request bodies the provider received, the
     /// compactions, and the observation bytes the transcript held.
     fn hosted_run(cfg: &RepoConfig) -> (Vec<String>, Vec<Compacted>, usize) {
+        hosted_run_via(cfg, None)
+    }
+
+    /// [`hosted_run`] for model `m` through the `[[providers]]` entry
+    /// `provider`, as `provider:<provider>#m` resolves.
+    fn hosted_run_via(
+        cfg: &RepoConfig,
+        provider: Option<&str>,
+    ) -> (Vec<String>, Vec<Compacted>, usize) {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("app")).unwrap();
         for i in 0..FILES {
@@ -767,7 +801,7 @@ mod tests {
             base,
             model: "m".into(),
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
-            provider: None,
+            provider: provider.map(str::to_string),
         };
         let mut m = build(&r, cfg).unwrap();
         let checks = trellis_checks::CheckConfig {
@@ -842,5 +876,141 @@ mod tests {
         );
         let largest = bodies.iter().map(String::len).max().unwrap();
         assert!(largest <= 100_000, "{largest} bytes sent");
+    }
+
+    /// A `[[providers]]` entry `p` (loopback, no key), with `extra` appended
+    /// to it, after whatever `before` puts at the top of the file.
+    fn with_provider(before: &str, extra: &str) -> RepoConfig {
+        toml::from_str(&format!(
+            "{before}[[providers]]\nname = \"p\"\nprotocol = \"openai\"\n\
+             base_url = \"http://127.0.0.1:1/v1\"\n{extra}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn model_input_limit_smaller_than_context_bytes_wins() {
+        // The risk: a run budget larger than the model's own limit sent
+        // requests the endpoint refuses, leaving the overflow retry to find
+        // the limit by paying for refusals.
+        let cfg = with_provider(
+            "[model]\ncontext_bytes = 1000000\n",
+            "input_bytes = { m = 100000 }\n",
+        );
+        let (bodies, events, _) = hosted_run_via(&cfg, Some("p"));
+        assert!(!events.is_empty(), "the transcript outgrew the limit");
+        assert!(
+            events.iter().all(|e| e.budget == 100_000 && e.fits),
+            "{events:?}"
+        );
+        let largest = bodies.iter().map(String::len).max().unwrap();
+        assert!(largest <= 100_000, "{largest} bytes sent");
+
+        // And the other way round: a smaller `context_bytes` is still the
+        // run's ceiling under a larger model limit.
+        let cfg = with_provider(
+            "[model]\ncontext_bytes = 100000\n",
+            "input_bytes = { m = 1000000 }\n",
+        );
+        let r = Resolved {
+            protocol: Protocol::OpenAiChat,
+            base: "http://127.0.0.1:1/v1".into(),
+            model: "m".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: Some("p".into()),
+        };
+        assert_eq!(hosted_context_bytes(&r, &cfg).unwrap(), 100_000);
+    }
+
+    #[test]
+    fn model_input_limit_absent_is_today_s_behaviour() {
+        // The risk: the new field changing a run that does not use it. An
+        // entry without `input_bytes` parses as before, and a limit for
+        // another model on the same entry does not apply to this one: the
+        // 400,000-byte default and an explicit `context_bytes` hold as #152
+        // left them.
+        let r = |provider: Option<&str>| Resolved {
+            protocol: Protocol::OpenAiChat,
+            base: "http://127.0.0.1:1/v1".into(),
+            model: "m".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: provider.map(str::to_string),
+        };
+        let plain = with_provider("", "");
+        assert!(plain.provider("p").unwrap().input_bytes.is_empty());
+        assert_eq!(
+            hosted_context_bytes(&r(Some("p")), &plain).unwrap(),
+            HOSTED_CONTEXT_BYTES
+        );
+        let explicit = with_provider("[model]\ncontext_bytes = 1000000\n", "");
+        assert_eq!(
+            hosted_context_bytes(&r(Some("p")), &explicit).unwrap(),
+            1_000_000
+        );
+        // A spec naming no entry has no per-model limit, whatever the
+        // entries say.
+        let other = with_provider("", "input_bytes = { m = 100000 }\n");
+        assert_eq!(
+            hosted_context_bytes(&r(None), &other).unwrap(),
+            HOSTED_CONTEXT_BYTES
+        );
+
+        let other = with_provider("", "input_bytes = { other-model = 100000 }\n");
+        let (_, events, _) = hosted_run_via(&other, Some("p"));
+        assert!(!events.is_empty(), "the transcript outgrew the default");
+        assert!(
+            events
+                .iter()
+                .all(|e| e.budget == HOSTED_CONTEXT_BYTES && e.fits),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn model_input_limit_replaces_the_hosted_default_even_above_it() {
+        // The risk: implementing "replaces the default" as the smaller of
+        // the two, which would clamp a model with a larger window to
+        // 400,000 bytes.
+        let cfg = with_provider("", "input_bytes = { m = 1000000 }\n");
+        let (bodies, events, _) = hosted_run_via(&cfg, Some("p"));
+        assert!(events.is_empty(), "{events:?}");
+        let largest = bodies.iter().map(String::len).max().unwrap();
+        assert!(
+            largest > HOSTED_CONTEXT_BYTES,
+            "the run passed the default and nothing was elided: {largest} bytes"
+        );
+    }
+
+    #[test]
+    fn model_input_limit_a_repository_cannot_raise_the_user_s() {
+        // The risk: a cloned repository lifting a limit the user set, by
+        // redefining the user's entry with a larger one or by setting a
+        // larger `[model] context_bytes` (ADR 0024 §3's rule for keys,
+        // applied to the limit).
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(
+            d.path().join(".trellis/config.toml"),
+            "[model]\ncontext_bytes = 5000000\n[[providers]]\nname = \"p\"\n\
+             protocol = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+             input_bytes = { m = 5000000 }\n",
+        )
+        .unwrap();
+        let user = d.path().join("user.toml");
+        std::fs::write(
+            &user,
+            "[[providers]]\nname = \"p\"\nprotocol = \"openai\"\n\
+             base_url = \"http://127.0.0.1:1/v1\"\ninput_bytes = { m = 100000 }\n",
+        )
+        .unwrap();
+        let cfg = RepoConfig::load_with_user(d.path(), Some(&user)).unwrap();
+        let r = Resolved {
+            protocol: Protocol::OpenAiChat,
+            base: "http://127.0.0.1:1/v1".into(),
+            model: "m".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: Some("p".into()),
+        };
+        assert_eq!(hosted_context_bytes(&r, &cfg).unwrap(), 100_000);
     }
 }
