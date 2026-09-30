@@ -478,6 +478,7 @@ mod tests {
             prompt_tokens: None,
             agent: None,
             inputs: Vec::new(),
+            steering: Vec::new(),
         };
         let digest = crate::Trail::compute_factual_sha256(&factual);
         let factual_json = serde_json::to_string(&factual).unwrap();

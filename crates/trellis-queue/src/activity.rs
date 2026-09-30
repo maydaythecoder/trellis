@@ -23,6 +23,10 @@ pub enum Actor {
     Work,
     /// A routine firing.
     Routine,
+    /// The model, through `ask_human`: the question a run ended on. Its
+    /// own actor so a note written by a model is never read as a person's
+    /// (ADR 0026 §1), and so the next run can find where the answers begin.
+    Model,
 }
 
 impl Actor {
@@ -31,6 +35,7 @@ impl Actor {
             Actor::Human => "human",
             Actor::Work => "work",
             Actor::Routine => "routine",
+            Actor::Model => "model",
         }
     }
 }

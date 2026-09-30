@@ -154,8 +154,9 @@ pub(crate) struct ModelSection {
     pub thinking: Option<String>,
     /// A ceiling on one request's size in bytes; over it, the oldest
     /// observations are elided (ADR 0024 §5). Unset means no ceiling for a
-    /// local runtime and `hosted::HOSTED_CONTEXT_BYTES` for a hosted one;
-    /// that default is applied when the driver is built, not here.
+    /// local runtime and, for a hosted one, the model's `[[providers]]
+    /// input_bytes` or else `hosted::HOSTED_CONTEXT_BYTES`; those are
+    /// applied when the driver is built, not here.
     pub context_bytes: Option<u64>,
 }
 
@@ -1115,6 +1116,12 @@ pub(crate) struct ProviderSection {
     /// (ADR 0024 §3).
     #[serde(default)]
     pub key_env: String,
+    /// Per-model input limits in bytes, keyed by the model name as the spec
+    /// writes it after `#` (ADR 0024 §5, #162). The byte ceiling of one
+    /// request for that model on this endpoint. Absent, the entry parses as
+    /// it did before the field existed.
+    #[serde(default)]
+    pub input_bytes: std::collections::BTreeMap<String, u64>,
 }
 
 impl RepoConfig {

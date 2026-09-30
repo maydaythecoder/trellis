@@ -750,6 +750,9 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         agent: Some(t.profile.to_string()),
         // A process agent is given its task on stdin and nothing else.
         inputs: Vec::new(),
+        // Nothing reaches a process agent after it starts, so nothing
+        // typed mid-run can be recorded for it.
+        steering: Vec::new(),
     };
     let (timestamp, started_at) = trellis_trail::now();
     let slug = trellis_trail::slugify(t.task);

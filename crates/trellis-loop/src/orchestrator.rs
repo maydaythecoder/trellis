@@ -142,6 +142,9 @@ pub(crate) fn may_change_tree(call: &ToolCall, wrote: bool) -> bool {
         | ToolCall::Ls { .. }
         | ToolCall::SearchNotes { .. }
         | ToolCall::ReadNote { .. } => false,
+        // Nothing is written: the question travels back to the loop in the
+        // call itself, and the binary records it on the task.
+        ToolCall::AskHuman { .. } => false,
     }
 }
 
@@ -328,6 +331,10 @@ pub struct Orchestrator {
     /// may have changed the tree (ADR 0023 §5). The same latch the hooks
     /// hold, so a breach found by either ends the run.
     guard: Option<crate::trust::TrustGuard>,
+    /// The throwaway clone the hooks of the call being served run in
+    /// (ADR 0032, "Hooks"): made at the first hook, refreshed before each
+    /// later one, removed when the call ends.
+    hook_clone: Option<crate::isolate::Sandbox>,
 }
 
 impl Orchestrator {
@@ -350,6 +357,7 @@ impl Orchestrator {
             wrote: false,
             denied: false,
             guard: None,
+            hook_clone: None,
         }
     }
 
@@ -511,6 +519,10 @@ impl Orchestrator {
         if let Some(tool) = tool {
             d.may_have_changed_tree |= self.turn_end(&tool, &d.result).await;
         }
+        // Whichever way the call ended; a panic drops it too.
+        if let Some(sandbox) = self.hook_clone.take() {
+            crate::isolate::dispose(sandbox).await;
+        }
         if let Some(g) = &self.guard {
             if d.may_have_changed_tree {
                 // Latches on failure; the reason is read below.
@@ -521,19 +533,21 @@ impl Orchestrator {
         d
     }
 
-    /// Runs `turn_end`, when one is declared, and says whether the worktree
-    /// changed across it. Bracketed on its own, as `post_tool` is: a write
-    /// here lands after the turn's check, so it marks the turn as one that
-    /// may have changed the tree and the pass stops counting (ADR 0023,
-    /// "after a pass").
-    async fn turn_end(&self, tool: &str, result: &ToolResult) -> bool {
-        let Some(h) = self
+    /// Runs `turn_end`, when one is declared, in the call's clone, carries
+    /// back what it changed, and says whether the worktree changed across
+    /// the two. Bracketed on its own, as `post_tool` is: a write here lands
+    /// after the turn's check, so it marks the turn as one that may have
+    /// changed the tree and the pass stops counting (ADR 0023, "after a
+    /// pass"). The bracket stays for the hook that writes into the
+    /// repository by absolute path, which no clone stops (ADR 0032).
+    async fn turn_end(&mut self, tool: &str, result: &ToolResult) -> bool {
+        if self
             .hooks
             .as_ref()
-            .filter(|h| h.config().turn_end.is_some())
-        else {
+            .is_none_or(|h| h.config().turn_end.is_none())
+        {
             return false;
-        };
+        }
         let outcome = match result {
             _ if self.denied => TurnOutcome::Denied,
             ToolResult::Error(_) => TurnOutcome::Error,
@@ -542,8 +556,85 @@ impl Orchestrator {
             _ => TurnOutcome::Ok,
         };
         let before = Some(worktree_digest(&self.root).await);
-        h.turn_end(self.calls, tool, outcome).await;
+        match self.hook_clone_path().await {
+            Ok(dir) => {
+                if let Some(h) = &self.hooks {
+                    h.turn_end(&dir, self.calls, tool, outcome).await;
+                }
+                self.carry_back_hook("turn_end").await;
+            }
+            // It only observes: not run, and said so, rather than run in
+            // the repository.
+            Err(why) => tracing::warn!(hook = "turn_end", "hook not run: {why}"),
+        }
         changed_since(&self.root, before).await
+    }
+
+    /// The path of the call's clone for its hooks, made now if this is the
+    /// call's first hook, and otherwise refreshed from the repository, so
+    /// the hook sees what the tool and the hooks before it left there
+    /// (ADR 0032, "Hooks"). A clone that cannot be refreshed is replaced.
+    /// `Err` when no clone can be made; the hook is then not run.
+    async fn hook_clone_path(&mut self) -> Result<PathBuf, String> {
+        // Read before the copy, so the copy the hook runs is of what was
+        // just checked. A failure latches, and the hook's own reading of
+        // the same guard then refuses to start it.
+        if let Some(g) = &self.guard {
+            let _ = g.check_async().await;
+        }
+        if let Some(mut sandbox) = self.hook_clone.take() {
+            let root = self.root.clone();
+            let refreshed = tokio::task::spawn_blocking(move || {
+                let r = sandbox.refresh(&root);
+                (sandbox, r)
+            })
+            .await;
+            match refreshed {
+                Ok((sandbox, Ok(()))) => {
+                    let dir = sandbox.path().to_path_buf();
+                    self.hook_clone = Some(sandbox);
+                    return Ok(dir);
+                }
+                Ok((sandbox, Err(e))) => {
+                    tracing::warn!("a hook clone could not be refreshed, so another is made: {e}");
+                    crate::isolate::dispose(sandbox).await;
+                }
+                // The clone was dropped, so removed, as the task unwound.
+                Err(e) => tracing::warn!("refreshing a hook clone failed: {e}"),
+            }
+        }
+        let sandbox = crate::isolate::prepare(&self.root).await?;
+        let dir = sandbox.path().to_path_buf();
+        self.hook_clone = Some(sandbox);
+        Ok(dir)
+    }
+
+    /// Carries back into the repository what the hook `event` changed in
+    /// the call's clone, through [`carry_back`](Self::carry_back): the
+    /// refusals `bash` gets, `deny_write` and `allow_write`, recorded in
+    /// `touched`. A hook has no observation to report into, so what was
+    /// carried back and what was refused is logged.
+    async fn carry_back_hook(&mut self, event: &'static str) {
+        let Some(sandbox) = self.hook_clone.take() else {
+            return;
+        };
+        let read = tokio::task::spawn_blocking(move || {
+            let c = sandbox.changes();
+            (sandbox, c)
+        })
+        .await;
+        let Ok((sandbox, changes)) = read else {
+            tracing::warn!(
+                hook = event,
+                "reading what the hook changed in its clone failed; nothing was carried back"
+            );
+            return;
+        };
+        let report = self.carry_back(&sandbox, changes);
+        self.hook_clone = Some(sandbox);
+        if !report.is_empty() {
+            tracing::warn!(hook = event, report = %report.trim(), "a hook changed files in its clone");
+        }
     }
 
     /// Consults the gates in order, then dispatches. The first `Deny` wins
@@ -582,6 +673,7 @@ impl Orchestrator {
             let c = h.config();
             (c.pre_tool.is_some(), c.post_tool.is_some())
         });
+        let pre = pre || self.gates.iter().any(|g| g.runs_repository_code());
         // The gate loop holds `pre_tool`; the other gates (governance, the
         // bash policy, a person's approval) do not write.
         let before_gates = if pre {
@@ -590,22 +682,42 @@ impl Orchestrator {
             None
         };
         for i in 0..=self.gates.len() {
+            // A gate that runs repository code (`pre_tool`) runs it in the
+            // call's clone, made or refreshed before the borrow below, and
+            // what it changed there is carried back after it.
+            let isolated = i > 0 && self.gates[i - 1].runs_repository_code();
+            let place = if isolated {
+                Some(self.hook_clone_path().await)
+            } else {
+                None
+            };
             let gate: &mut dyn ToolGate = match i {
                 0 => &mut self.governance,
                 _ => self.gates[i - 1].as_mut(),
             };
 
             let asked_at = Instant::now();
+            if place.is_some() {
+                gate.run_in(place);
+            }
             let decision = gate.check(&call).await;
-            if gate.human_decided() {
+            if isolated {
+                gate.run_in(None);
+            }
+            let human_decided = gate.human_decided();
+            let gate_name = gate.name();
+            if human_decided {
                 human = Some(HumanDecision {
                     approved: decision == GateDecision::Allow,
                     waited: asked_at.elapsed(),
                 });
             }
+            if isolated {
+                self.carry_back_hook(gate_name.unwrap_or("pre_tool")).await;
+            }
             if let GateDecision::Deny { reason } = decision {
                 self.denied = true;
-                if let Some(gate) = gate.name() {
+                if let Some(gate) = gate_name {
                     self.gate_log.push(GateDenial {
                         call: self.calls,
                         gate: gate.to_string(),
@@ -674,6 +786,14 @@ impl Orchestrator {
                 None => ToolResult::Error("no note vault is configured for this run".into()),
             },
             ToolCall::Custom { name, args } => self.custom(name, args).await,
+            // Nothing to run. `Output` is what tells the loop the gates let
+            // the question through; it ends the run on it. The words are
+            // for the trail, since no later turn reads them.
+            ToolCall::AskHuman { .. } => ToolResult::Output(
+                "question recorded; the run ends here without converging, and the task \
+                 waits for a person's answer"
+                    .into(),
+            ),
         };
         // Read now, before `post_tool` runs: a hook that rewrites a file would
         // otherwise shift the bytes the line numbers are counted from.
@@ -685,15 +805,24 @@ impl Orchestrator {
         };
         // Observe only. The result is already decided and is what the model
         // receives, whatever the hook prints or returns.
+        // In the call's clone, refreshed first, so the hook sees the tree
+        // with what the tool just did; the result itself it gets on stdin.
         let mut post_changed = false;
-        if let Some(h) = &self.hooks {
-            let before_post = if post {
-                Some(worktree_digest(&self.root).await)
-            } else {
-                None
-            };
-            let as_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
-            h.post_tool(&call, as_json).await;
+        if post {
+            let before_post = Some(worktree_digest(&self.root).await);
+            match self.hook_clone_path().await {
+                Ok(dir) => {
+                    if let Some(h) = &self.hooks {
+                        let as_json =
+                            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+                        h.post_tool(&dir, &call, as_json).await;
+                    }
+                    self.carry_back_hook("post_tool").await;
+                }
+                // It only observes: not run, and said so, rather than run
+                // in the repository.
+                Err(why) => tracing::warn!(hook = "post_tool", "hook not run: {why}"),
+            }
             post_changed = changed_since(&self.root, before_post).await;
         }
         Dispatched {
@@ -856,11 +985,7 @@ impl Orchestrator {
         stdin: Option<Vec<u8>>,
         timeout: Duration,
     ) -> Result<(crate::exec::Captured, String), String> {
-        let root = self.root.clone();
-        let sandbox = tokio::task::spawn_blocking(move || crate::isolate::Sandbox::prepare(&root))
-            .await
-            .map_err(|e| format!("preparing its throwaway clone failed: {e}"))?
-            .map_err(|e| format!("its throwaway clone could not be prepared: {e}"))?;
+        let sandbox = crate::isolate::prepare(&self.root).await?;
         let r = crate::exec::run(crate::exec::Spec {
             argv,
             cwd: sandbox.path(),
@@ -883,12 +1008,12 @@ impl Orchestrator {
         let captured = match r {
             Ok(c) => c,
             Err(e) => {
-                drop_off_runtime(sandbox).await;
+                crate::isolate::dispose(sandbox).await;
                 return Err(e.to_string());
             }
         };
         let report = self.carry_back(&sandbox, changes);
-        drop_off_runtime(sandbox).await;
+        crate::isolate::dispose(sandbox).await;
         Ok((captured, report))
     }
 
@@ -1487,12 +1612,6 @@ fn excerpt(src: &str) -> String {
         out.push_str("\n...cut here; the rest of this file is too large to show.");
     }
     out
-}
-
-/// Drops a clone on a blocking thread: removing it walks the whole tree,
-/// which on the runtime's own thread stalls every other task.
-async fn drop_off_runtime(sandbox: crate::isolate::Sandbox) {
-    let _ = tokio::task::spawn_blocking(move || drop(sandbox)).await;
 }
 
 /// The worktree digest around a hook (ADR 0023, "after a pass"), off the

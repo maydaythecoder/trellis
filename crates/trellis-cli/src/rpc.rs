@@ -574,6 +574,7 @@ impl Server {
                     focus: focus.as_deref(),
                     profile: None,
                     model_from_user,
+                    queued: false,
                 },
                 RunControl {
                     flag,

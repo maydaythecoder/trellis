@@ -850,28 +850,48 @@ pub fn discard_pending(root: &Path) -> Result<(), VcsError> {
 /// earlier than necessary on the one path that exists to recover from
 /// failure.
 fn reset_and_clean(root: &Path, to: &str) -> Result<(), VcsError> {
-    let reset = git(root, &["reset", "--hard", to]);
-    let clean = git(root, &["clean", "-fd"]);
-    match (reset, clean) {
-        (Ok(_), Ok(_)) => Ok(()),
-        (r, c) => {
-            let mut detail = String::new();
-            if let Err(e) = r {
-                detail.push_str(&format!("reset --hard: {e}"));
+    recovery_steps(
+        root,
+        to,
+        String::new(),
+        &[
+            ("reset --hard", &["reset", "--hard", to]),
+            ("clean -fd", &["clean", "-fd"]),
+        ],
+    )
+}
+
+/// Runs every step in order, each even when an earlier one failed, and
+/// appends each failure to `detail` as `<label>: <error>`, one per line.
+/// `Err(RollbackFailed)` when `detail` is non-empty afterwards, so a caller
+/// that starts it with a failure of its own always gets the error back.
+///
+/// The one place recovery steps run: [`reset_and_clean`] and
+/// [`Snapshot::rollback`]'s fallback each hand-built this before, on the
+/// one path that must stay correct, and two copies are two chances to drift
+/// in what they attempt or how they report it.
+fn recovery_steps(
+    root: &Path,
+    head: &str,
+    mut detail: String,
+    steps: &[(&str, &[&str])],
+) -> Result<(), VcsError> {
+    for (label, args) in steps {
+        if let Err(e) = git(root, args) {
+            if !detail.is_empty() {
+                detail.push_str("\n  ");
             }
-            if let Err(e) = c {
-                if !detail.is_empty() {
-                    detail.push_str("\n  ");
-                }
-                detail.push_str(&format!("clean -fd: {e}"));
-            }
-            Err(VcsError::RollbackFailed {
-                root: root.display().to_string(),
-                head: to.to_string(),
-                detail,
-            })
+            detail.push_str(&format!("{label}: {e}"));
         }
     }
+    if detail.is_empty() {
+        return Ok(());
+    }
+    Err(VcsError::RollbackFailed {
+        root: root.display().to_string(),
+        head: head.to_string(),
+        detail,
+    })
 }
 
 pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
@@ -903,26 +923,27 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
 /// rollback returned before restoring anything (review round 11). Exit 1
 /// with `-q` is "not a symbolic ref": detached.
 fn branch_of(root: &Path) -> Result<Option<String>, VcsError> {
-    let args = ["symbolic-ref", "-q", "HEAD"];
-    let out = command().args(args).current_dir(root).output()?;
-    if out.status.code() == Some(1) {
-        return Ok(None);
-    }
-    if !out.status.success() {
-        return Err(VcsError::GitFailed {
-            command: format!("git {}", args.join(" ")),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
-    }
-    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((!name.is_empty()).then_some(name))
+    Ok(git_opt(root, &["symbolic-ref", "-q", "HEAD"])?
+        .map(|out| out.trim().to_string())
+        .filter(|name| !name.is_empty()))
 }
 
 /// The commit `HEAD` resolves to, or `None` when it resolves to none: an
 /// unborn branch, which a writer's `checkout --orphan` leaves. That is a
 /// move to report, not an error that stops the report.
 fn head_commit(root: &Path) -> Result<Option<String>, VcsError> {
-    let args = ["rev-parse", "-q", "--verify", "HEAD^{commit}"];
+    Ok(
+        git_opt(root, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])?
+            .map(|out| out.trim().to_string()),
+    )
+}
+
+/// `git <args>`'s stdout, `None` on exit 1, `GitFailed` on any other
+/// failure. Only for a query run with `-q`, where exit 1 is git's answer
+/// "there is none" (detached, unborn) rather than a failure: without `-q`
+/// the same state is reported on stderr with another code, and reading
+/// every exit 1 as absent would hide a real failure.
+fn git_opt(root: &Path, args: &[&str]) -> Result<Option<String>, VcsError> {
     let out = command().args(args).current_dir(root).output()?;
     if out.status.code() == Some(1) {
         return Ok(None);
@@ -933,9 +954,7 @@ fn head_commit(root: &Path) -> Result<Option<String>, VcsError> {
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         });
     }
-    Ok(Some(
-        String::from_utf8_lossy(&out.stdout).trim().to_string(),
-    ))
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
 fn describe_head(sha: &str, branch: &Option<String>) -> String {
@@ -983,18 +1002,18 @@ impl Snapshot {
         let Err(head) = self.put_head_back() else {
             return reset_and_clean(&self.root, &self.head);
         };
-        let mut detail = format!("HEAD could not be put back where it was: {head}");
-        if let Err(e) = git(&self.root, &["read-tree", "--reset", "-u", &self.head]) {
-            detail.push_str(&format!("\n  read-tree --reset -u: {e}"));
-        }
-        if let Err(e) = git(&self.root, &["clean", "-fd"]) {
-            detail.push_str(&format!("\n  clean -fd: {e}"));
-        }
-        Err(VcsError::RollbackFailed {
-            root: self.root.display().to_string(),
-            head: self.head.clone(),
-            detail,
-        })
+        recovery_steps(
+            &self.root,
+            &self.head,
+            format!("HEAD could not be put back where it was: {head}"),
+            &[
+                (
+                    "read-tree --reset -u",
+                    &["read-tree", "--reset", "-u", &self.head],
+                ),
+                ("clean -fd", &["clean", "-fd"]),
+            ],
+        )
     }
 
     /// Re-points `HEAD` at the recorded branch, or detaches it at the

@@ -530,13 +530,32 @@ without a budget against the same replies and compares outcomes.
   bytes per token, and that ratio is a **heuristic, not a measurement**:
   #170 measures it on trails carrying both prompt bytes and prompt tokens,
   and per-model input limits (split from #45) replace this default when
-  they exist. An explicit value always wins, larger or smaller. A local
+  they exist. An explicit value always wins over the default, larger or
+  smaller. A local
   spec is unchanged: unset still means nothing is elided and its prompt is
   byte for byte what it was. Config parsing is unchanged; `[model]
   context_bytes` still reads as unset when it is absent. The overflow retry
   above still applies, now shrinking from 400,000 bytes or less. Held by
   `hosted_context_default_elides_an_unconfigured_run_below_400000_bytes` and
   `hosted_context_default_yields_to_an_explicit_value_above_or_below_it`.
+  *Amended 2026-09-29 (#162), on the owner's decision of 2026-09-28:* a
+  `[[providers]]` entry may name per-model input limits in bytes, as
+  `input_bytes = { "<model>" = <bytes> }`, keyed by the model name the spec
+  writes after `#`. For a `provider:<name>#<model>` spec the budget is: with
+  both `[model] context_bytes` and that model's limit set, **the smaller**;
+  with one, that one, larger or smaller than 400,000 (a limit replaces the
+  default for its model); with neither, 400,000. The smaller of two, not
+  `context_bytes` first, because both are ceilings and the endpoint refuses
+  a request over the model's own limit however large the run's budget is.
+  A spec that names no entry (`openai:<url>#<model>`) has no per-model
+  limit. A repository cannot raise a limit the user set: on a provider name
+  both files define, the user's entry wins whole (§3's layering, unchanged),
+  and under the minimum the repository's `context_bytes` can only lower it.
+  The field is optional, so an entry without it parses as before. Held by
+  `model_input_limit_smaller_than_context_bytes_wins`,
+  `model_input_limit_absent_is_today_s_behaviour`,
+  `model_input_limit_replaces_the_hosted_default_even_above_it` and
+  `model_input_limit_a_repository_cannot_raise_the_user_s`.
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
@@ -689,6 +708,7 @@ pull request.
   ratio, and a measured one is pending #170.
 - A hosted run has not been made against a real provider: every test uses
   a loopback stub. The first measured hosted run is pending.
-- Model overrides beyond `[model] context_bytes` and `thinking` (row 2.6):
-  per-model input limits, cache lifetimes and cost tables are not read.
+- Model overrides beyond `[model] context_bytes`, `thinking` and
+  `[[providers]] input_bytes` (row 2.6): cache lifetimes and cost tables
+  are not read. Per-model input limits are read since #162 (§5).
 - Stripping the key from child processes' environments (§3).

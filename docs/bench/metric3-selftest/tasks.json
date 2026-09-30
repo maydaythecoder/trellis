@@ -1,0 +1,21 @@
+{
+ "corpus": "metric3-selftest",
+ "checker": "mypy",
+ "count": 2,
+ "tasks": [
+  {
+   "id": "t00",
+   "file": "pkg/a.py",
+   "defect_old": "def f(x: int) -> int:",
+   "defect_new": "def f(x: int) -> str:",
+   "kind": "return-type-annotation"
+  },
+  {
+   "id": "t01",
+   "file": "pkg/b.py",
+   "defect_old": "return 2",
+   "defect_new": "return '2'",
+   "kind": "wrong-return-value"
+  }
+ ]
+}
