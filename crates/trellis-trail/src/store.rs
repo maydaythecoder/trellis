@@ -220,6 +220,7 @@ mod tests {
                 prompt_tokens: None,
                 agent: None,
                 inputs: Vec::new(),
+                steering: Vec::new(),
             },
             factual_sha256: String::new(),
             judgment: Judgment::default(),

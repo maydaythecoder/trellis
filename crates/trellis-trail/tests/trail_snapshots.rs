@@ -19,7 +19,7 @@
 
 use trellis_trail::{
     Action, Approval, CheckOutcome, ContextFill, Factual, Input, Integrity, Judgment, ModeCounts,
-    Provenance, RadiusCounts, SCHEMA, Trail, UntrustedTrail,
+    Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, Trail, UntrustedTrail,
 };
 
 /// Builds a trail around `factual` with fixed identity fields and the digest
@@ -137,6 +137,11 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 bytes: 512,
             },
         ],
+        steering: vec![Steer::new(
+            2,
+            SteerKind::Steer,
+            "keep the old name as an alias",
+        )],
     };
     let judgment = Judgment {
         tech_debt_projection: Some("the alias will need removing".into()),
@@ -170,6 +175,7 @@ fn trail_snapshot_rolled_back_run_omits_absent_optional_fields() {
         prompt_tokens: None,
         agent: None,
         inputs: vec![],
+        steering: vec![],
     };
     insta::assert_snapshot!(trail_json("fix flaky test", factual, Judgment::default()));
 }

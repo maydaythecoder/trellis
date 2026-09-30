@@ -33,6 +33,7 @@ pub const BUILTIN_TOOLS: &[&str] = &[
     "bash",
     "search_notes",
     "read_note",
+    "ask_human",
 ];
 
 /// On unless disabled. This is the set the prompt was measured with, so a
@@ -59,6 +60,12 @@ const OPT_IN: &[&str] = &[
     "read_note",
 ];
 
+/// Offered by the binary to a queued task's run only
+/// ([`ToolSet::with_ask_human`]), where a question has a task to block
+/// (ADR 0026 §1). Neither on by default nor enabled by `[tools]`: a
+/// question from `trellis run` would have nowhere to wait.
+const ASK_HUMAN: &str = "ask_human";
+
 /// The tools that read the note vault.
 const NOTE_TOOLS: &[&str] = &["search_notes", "read_note"];
 
@@ -75,6 +82,11 @@ pub enum ToolConfigError {
     DeclaredTwice(String),
     #[error("[tools] enable lists `bash`; bash has its own switch, [tools] bash = true")]
     EnableBash,
+    #[error(
+        "[tools] enable lists `ask_human`, which is offered to a queued task's run on its \
+         own, where a question has a task to wait on; `[tools] disable` can turn it off"
+    )]
+    EnableAskHuman,
     #[error(
         "[tools] enable lists `{name}`, which is not a tool; the ones that are off by default \
          are {}",
@@ -148,6 +160,7 @@ fn args_hint(name: &str) -> &'static str {
         "bash" => "command",
         "search_notes" => "query,limit",
         "read_note" => "note",
+        "ask_human" => "question,options",
         _ => "",
     }
 }
@@ -220,6 +233,11 @@ pub struct ToolSet {
     custom: Vec<CustomTool>,
     bash: Option<BashSettings>,
     notes: Option<NotesSource>,
+    /// `[tools] disable` named `ask_human`, so [`ToolSet::with_ask_human`]
+    /// leaves it off. Held because the tool is added after the set is
+    /// built, and a disable that the later add ignored would be the silent
+    /// no-op `build` refuses for every other name.
+    no_ask_human: bool,
 }
 
 impl Default for ToolSet {
@@ -230,6 +248,7 @@ impl Default for ToolSet {
             custom: Vec::new(),
             bash: None,
             notes: None,
+            no_ask_human: false,
         }
     }
 }
@@ -243,6 +262,7 @@ impl ToolSet {
             custom: Vec::new(),
             bash: None,
             notes: None,
+            no_ask_human: false,
         }
     }
 
@@ -265,6 +285,9 @@ impl ToolSet {
             if name == "bash" {
                 return Err(ToolConfigError::EnableBash);
             }
+            if name == ASK_HUMAN {
+                return Err(ToolConfigError::EnableAskHuman);
+            }
             if let Some(b) = OPT_IN.iter().find(|b| **b == name) {
                 if !builtins.contains(b) {
                     builtins.push(b);
@@ -283,6 +306,7 @@ impl ToolSet {
 
         let mut custom = sel.custom;
         let mut bash = sel.bash;
+        let no_ask_human = sel.disable.iter().any(|n| n == ASK_HUMAN);
         for name in &sel.disable {
             if name == "run_checks" {
                 return Err(ToolConfigError::DisableRunChecks);
@@ -310,6 +334,7 @@ impl ToolSet {
             custom,
             bash,
             notes: None,
+            no_ask_human,
         })
     }
 
@@ -344,6 +369,7 @@ impl ToolSet {
                 // The vault stays attached; whether a note tool is offered
                 // is the builtins filter above, by name like any other.
                 notes: self.notes.clone(),
+                no_ask_human: self.no_ask_human,
             },
             not_offered,
         )
@@ -362,6 +388,19 @@ impl ToolSet {
         }
         self.notes = notes;
         Ok(self)
+    }
+
+    /// Adds `ask_human`, for a queued task's run (ADR 0026 §1), unless
+    /// `[tools] disable` named it. Called before an agent profile narrows
+    /// the set, so a profile with a `tools` list keeps it only by naming it.
+    #[must_use]
+    pub fn with_ask_human(mut self) -> Self {
+        if !self.no_ask_human && !self.builtins.contains(&ASK_HUMAN) {
+            self.builtins.push(ASK_HUMAN);
+            self.builtins
+                .sort_by_key(|b| BUILTIN_TOOLS.iter().position(|x| x == b));
+        }
+        self
     }
 
     /// The vault the note tools read, when configured.
@@ -769,6 +808,9 @@ pub fn call_json(call: &ToolCall) -> Value {
             json!({ "tool": "search_notes", "query": query, "limit": limit })
         }
         ToolCall::ReadNote { note } => json!({ "tool": "read_note", "note": note }),
+        ToolCall::AskHuman { question, options } => {
+            json!({ "tool": "ask_human", "question": question, "options": options })
+        }
         ToolCall::Custom { name, args } => {
             let mut m = args.as_object().cloned().unwrap_or_default();
             m.insert("tool".into(), Value::String(name.clone()));

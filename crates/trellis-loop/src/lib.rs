@@ -22,6 +22,7 @@ pub mod partition;
 mod registry;
 mod scripted;
 mod skills;
+mod supervise;
 mod tools;
 mod trust;
 mod wire;
@@ -31,7 +32,7 @@ pub use agent::{
     Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Steer, Steering,
     SteeringLog, SteeringRx, Step, ToolCall, Transcript, Turn, VaultContext, run, run_seeded,
 };
-pub use budget::{Budget, CostRegime, Exhaustion, Spend};
+pub use budget::{Budget, BudgetTooSmall, CostRegime, Exhaustion, Spend};
 pub use exec::{ExecError, default_shell};
 pub use extra_context::{
     ContextFile, DEFAULT_ROLE, ExtraContext, FORCED_SKILL_HEAD, ForcedSkill, GROUNDING,
@@ -57,6 +58,9 @@ pub use scripted::{ScriptError, ScriptedModel};
 pub use skills::{
     DISCLOSURE_CAP, Disclosed, InvalidSkill, SKILLS_DIR, Skill, SkillAccess, SkillCatalog,
     SkillError, SkillPolicy, read_body, read_body_in,
+};
+pub use supervise::{
+    PartitionFailure, PartitionReport, PartitionTask, SuperviseError, Supervised, Supervisor,
 };
 pub use tools::{EditOutcome, ToolResult};
 pub use trust::{Fingerprint, HashCache, TrustGuard, TrustItem, TrustState, TrustStore};

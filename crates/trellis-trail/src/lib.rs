@@ -114,6 +114,70 @@ pub struct Factual {
     /// keeps its shape and its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<Input>,
+    /// What the person running the task typed while it ran (ADR 0034):
+    /// each steer and follow-up, verbatim up to [`STEER_TEXT_MAX_CHARS`],
+    /// with the turn it belongs to.
+    ///
+    /// Without it a trail shows the model changing course at turn 4 and
+    /// not that a person told it to, which reads as the model's own
+    /// judgment. Inside `factual`, so under the digest: an edit that puts
+    /// words in the user's mouth is as visible as any other. Omitted when
+    /// empty, so a trail with no steering keeps its shape and its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering: Vec<Steer>,
+}
+
+/// The most characters of one steer's text a trail keeps (ADR 0034).
+///
+/// A person can paste a log into the steering box, and a trail is
+/// committed; the cut bounds what one message adds to the repository,
+/// and [`Steer::len`] keeps the true size so the cut is never silent.
+pub const STEER_TEXT_MAX_CHARS: usize = 2_000;
+
+/// Which channel a person's mid-run text arrived on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerKind {
+    /// Delivered into the running task as user text in the next request.
+    Steer,
+    /// Set aside for a later run; never delivered into this one.
+    FollowUp,
+}
+
+/// One message a person sent while a run was in progress, as
+/// `Factual::steering` records it.
+///
+/// User input, not a fact about the code and not an instruction to
+/// anyone reading the trail later: read back, it goes through
+/// `UntrustedTrail::context_lines`, which fences it (ADR 0007).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Steer {
+    /// 1-based, matching `Action::turn`: the turn whose request carried a
+    /// steer, or the turn the run had reached when a follow-up arrived.
+    pub turn: u32,
+    pub kind: SteerKind,
+    /// The text as typed, cut at [`STEER_TEXT_MAX_CHARS`] characters.
+    pub text: String,
+    /// The text's true length in characters, the unit the cut is
+    /// measured in. Larger than `text`'s own length exactly when it was cut.
+    pub len: u64,
+}
+
+impl Steer {
+    /// The one way a writer should build a record, so no path can store
+    /// more than the cut allows.
+    ///
+    /// Cut by characters, not bytes: a byte offset at 2,000 can land
+    /// inside a multi-byte character and would either panic or store
+    /// invalid text.
+    pub fn new(turn: u32, kind: SteerKind, text: &str) -> Self {
+        Steer {
+            turn,
+            kind,
+            text: text.chars().take(STEER_TEXT_MAX_CHARS).collect(),
+            len: text.chars().count() as u64,
+        }
+    }
 }
 
 /// One file a run was given, as `Factual::inputs` records it.
@@ -493,6 +557,7 @@ mod tests {
                 prompt_tokens: None,
                 agent: None,
                 inputs: Vec::new(),
+                steering: Vec::new(),
             },
 
             factual_sha256: String::new(),

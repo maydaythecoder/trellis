@@ -70,11 +70,50 @@ pub enum ToolCallWire {
     },
     /// Read one vault note by stem, path or title. Reference material.
     ReadNote { note: String },
+    /// Ask a person a question this task cannot go on without, with at most
+    /// eight options. Ends the run without converging; the task waits for
+    /// the answer, which the next run is given.
+    AskHuman {
+        question: String,
+        #[serde(default)]
+        #[schemars(length(max = 8))]
+        options: Vec<String>,
+    },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
         summary: String,
     },
+}
+
+/// Validates an `ask_human` call. Refused rather than trimmed: a question
+/// cut to fit would be a different question, put to a person in the
+/// model's name, and the model is told why and may ask again.
+fn ask_human(question: String, options: Vec<String>) -> Result<Step, String> {
+    use crate::agent::{MAX_OPTION_CHARS, MAX_QUESTION_CHARS, MAX_QUESTION_OPTIONS};
+    if question.trim().is_empty() {
+        return Err("`ask_human` needs a non-empty `question`".into());
+    }
+    if question.chars().count() > MAX_QUESTION_CHARS {
+        return Err(format!(
+            "`ask_human` question is over {MAX_QUESTION_CHARS} characters; ask one shorter question"
+        ));
+    }
+    if options.len() > MAX_QUESTION_OPTIONS {
+        return Err(format!(
+            "`ask_human` takes at most {MAX_QUESTION_OPTIONS} options, and was given {}",
+            options.len()
+        ));
+    }
+    if options
+        .iter()
+        .any(|o| o.trim().is_empty() || o.chars().count() > MAX_OPTION_CHARS)
+    {
+        return Err(format!(
+            "each `ask_human` option must be 1 to {MAX_OPTION_CHARS} characters"
+        ));
+    }
+    Ok(Step::Call(ToolCall::AskHuman { question, options }))
 }
 
 fn default_kinds() -> Vec<String> {
@@ -124,6 +163,7 @@ impl ToolCallWire {
                 Step::Call(ToolCall::SearchNotes { query, limit })
             }
             ToolCallWire::ReadNote { note } => Step::Call(ToolCall::ReadNote { note }),
+            ToolCallWire::AskHuman { question, options } => ask_human(question, options)?,
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }

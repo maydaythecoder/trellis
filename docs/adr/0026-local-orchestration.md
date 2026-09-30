@@ -1,7 +1,7 @@
 # ADR 0026 — Local orchestration: task model, agent profiles, routines, budgets
 
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
-§10. §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
+§10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
 was closed. §7 amended again for IANA zone names (#47). Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
@@ -120,6 +120,58 @@ prints each waiting task and its reason once, and it stops with
 `Stop::Waiting(n)`: "nothing claimable; n pending task(s) waiting". This
 exits 0, like an empty queue, because nothing is wrong: the tasks are waiting
 as designed. "Queue empty" is printed only when nothing is pending.
+
+*Amended for #140 (owner decision, 2026-09-28): a run may end by asking a
+person a question.* Paperclip tasks can put a question or a one-to-eight
+option decision to a person and wait (ADR 0021, Paperclip 30 and 34). Here:
+
+- **The tool.** `ask_human {question, options}` is a model tool with at
+  most 8 options. The question is 1 to 2,000 characters and each option 1 to
+  200; a call outside that is refused with the reason and the model may ask
+  again. It is offered only to a run of a queued task (`work`), because
+  only there does a question have a task to wait on; `trellis run`,
+  `session`, `tui` and `rpc` do not offer it. `[tools] disable` can turn it
+  off, `[tools] enable` naming it is refused, and a profile's `tools` list
+  keeps it only by naming it (it is added before the profile narrows the
+  set). It counts as one turn, and `[control] approve` may list it: in
+  approve mode the person sees the question quoted and a "no" is a refusal
+  like any other, after which the run goes on.
+- **It never converges.** Allowed through the gates, the question ends the
+  run as `NotConverged::AskedHuman`, after its turn is recorded, whatever
+  passed before it: only an executed check converges a run (ADR 0004). The
+  run is rolled back like every other unconverged one. If the rollback
+  fails, the run is reported as not restored and the question is left to
+  the trail, since the tree is the more urgent fact.
+- **The task waits.** `work` puts the task back in `pending/` with status
+  `blocked` and a new reason, `question`, which carries the question and
+  its options: `{"reason": "question", "question": "…", "options": […]}`.
+  The run counts as an attempt; the task gets no `outcome`, because it has
+  not ended. `reconcile` never wakes it, since only a person can answer.
+  The heartbeat then goes on to the next task, as after any restored run.
+- **The question is a note, by a new actor.** It is recorded as a note
+  whose `actor` is `model`, so model output is never read as a person's
+  note, and the activity log gets a `task.question` event with the run id.
+  The note text, the event detail, the heartbeat's output and `queue
+  list`'s waiting line all carry the question Debug-quoted, so model output
+  cannot start a line of its own or pass for a sentence of ours.
+- **The answer uses what exists.** `trellis queue note <id> "<answer>"`,
+  then `trellis queue set <id> --status todo`. There is no new command,
+  flag or `--reason` value. (The ticket said `--status pending`; `pending`
+  is a directory, and `todo` is the status that lives in it.)
+- **The next run gets the answer.** When the claimed task has a `model`
+  note, `work` appends one fenced block after the task text: the last such
+  note, labelled as the previous run's model output and still quoted, then
+  every note by a person after it, each attributed and indented so that no
+  line of it can close the fence. Notes by the heartbeat or a routine are
+  left out. A task that never asked is given the text it always was. The
+  answer is input to the run, like the task; it is never a verdict.
+
+Both additions are additive on disk: `blocked.reason` gains a value and
+`notes[].actor` gains one, and a task file written before them parses
+unchanged. The reverse does not hold: a build from before this amendment
+cannot parse a task that uses them, so its `queue list` shows the file as
+unreadable and its `work` moves it to `failed/`, as it does any file that is
+not valid task JSON.
 
 ### 2. Changing a file that already exists
 
