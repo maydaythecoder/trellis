@@ -976,32 +976,55 @@ mod tests {
         // rollback, forever. `rpc` has no second Ctrl-C to stop it (a second
         // `abort` asks for what was already asked), so `[hooks] timeout_s`
         // is the bound.
-        let sleep = if cfg!(windows) {
-            "ping -n 31 127.0.0.1 >NUL"
+        //
+        // What the timeout controls is the hook's lifetime, so that is what
+        // is asserted: the hook marks its start, sleeps 30 s, then marks
+        // that the sleep finished. Without the timeout the run waits for
+        // the hook, so the second marker exists by the time the run ends,
+        // however fast or slow the host is. With it, the hook is killed
+        // mid-sleep and the marker is never written. A wall-clock bound on
+        // the run measured host load as much as the timeout (#207). The
+        // markers live outside the repository, where the rollback cannot
+        // touch them; the hook runs in a throwaway clone (ADR 0032), so it
+        // names them by absolute path.
+        let marks = crate::testutil::scratch("rpc-after-run-timeout-marks");
+        let (started, slept) = (marks.join("started"), marks.join("slept"));
+        let script = if cfg!(windows) {
+            format!(
+                "echo started> {} & ping -n 31 127.0.0.1 >NUL & echo slept> {}",
+                started.display(),
+                slept.display()
+            )
         } else {
-            "sleep 30"
+            format!(
+                "echo started > {}; sleep 30; echo slept > {}",
+                started.display(),
+                slept.display()
+            )
         };
         let (dir, spec) = fixture(
             "after-run-timeout",
             &format!(
                 "[control]\nmode = \"approve\"\n[hooks]\ntimeout_s = 1\nafter_run = {}\n",
-                sh(sleep)
+                sh(&script)
             ),
         );
         crate::testutil::trust(&dir);
         let c = Client::start(&dir);
         c.send(json!({"type": "prompt", "task": "change f", "model": spec}));
         c.wait_for(|r| r["type"] == "approval_request");
-        let asked = Instant::now();
         c.send(json!({"id": "x", "type": "abort"}));
         let rs = c.finish();
-        let took = asked.elapsed();
         let end = of_type(&rs, "run_end")[0];
         assert_eq!(end["outcome"], "interrupted", "{rs:?}");
         assert_eq!(end["restored"], true, "{rs:?}");
         assert!(
-            took < Duration::from_secs(20),
-            "the 30 s hook was not stopped at its 1 s timeout: the run took {took:?}"
+            started.exists(),
+            "after_run never started, so nothing here tested its timeout: {rs:?}"
+        );
+        assert!(
+            !slept.exists(),
+            "the run waited out the 30 s hook: it was not stopped at its 1 s timeout"
         );
     }
 
