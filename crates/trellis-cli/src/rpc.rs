@@ -218,10 +218,15 @@ impl SteeringPort {
     ) -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> {
         let mut st = self.state();
         let Some(tx) = &st.tx else {
+            // Only between a run's end and the thread moving on (the next
+            // follow-up, or finishing), when a `prompt` is still refused,
+            // so neither message tells the client to send one now.
             return Err(match what {
-                Steering::Steer(_) => "the run has ended; nothing was delivered".into(),
+                Steering::Steer(_) => "the run has just ended; nothing was delivered".into(),
                 Steering::FollowUp(_) => {
-                    "the run has ended; send the follow-up as a `prompt`".into()
+                    "the run has just ended; nothing was queued. Send it again once \
+                     `get_state` shows no run in flight"
+                        .into()
                 }
             });
         };
