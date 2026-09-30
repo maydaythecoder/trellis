@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# G5: licences and advisories clean, and no key-shaped literal added.
+# G5: licences and advisories clean, workflows pass zizmor and build --locked,
+# and no key-shaped literal added.
 #
 # The key scan is a fallback for a real secret scanner (none is installed
 # here; GitGuardian runs on the PR). It looks only at lines this change
@@ -21,6 +22,24 @@ cargo audit
 scripts/checks/fuzz-lock-current.sh
 cargo deny --locked --manifest-path fuzz/Cargo.toml check
 cargo audit --file fuzz/Cargo.lock
+# The workflows, as the pre-commit hook audits them but over the whole
+# directory, so a workflow change that reached the branch without the hook
+# (another clone, --no-verify) is still held to it (#215). zizmor at medium
+# and above: unpinned actions, token scope, persisted credentials, cache
+# poisoning, injection. It installs where git's PATH does not look (pipx, go
+# install), as the hook notes; absent, the gate fails rather than skips.
+for d in "$HOME/go/bin" "$HOME/.local/bin"; do
+  [ -d "$d" ] && PATH="$PATH:$d"
+done
+command -v zizmor >/dev/null 2>&1 \
+  || fail "zizmor not installed (pipx install zizmor); G5 cannot audit .github/workflows/ without it"
+zizmor --min-severity medium .github/workflows/ \
+  || fail "zizmor found a medium-or-higher finding in .github/workflows/ (listed above)"
+# Every cargo build/test/clippy/run in a workflow passes --locked, so CI
+# builds what Cargo.lock records. The self-test first: a check that cannot
+# fail cannot pass.
+scripts/checks/workflows-locked.sh --self-test
+scripts/checks/workflows-locked.sh
 # The pattern is shared with the pre-commit hook, so the two cannot drift
 # (#206).
 keys=$(scripts/checks/key-pattern.sh)
@@ -44,4 +63,4 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
   exit 1
 fi
-echo "OK: fuzz/Cargo.lock current; cargo deny, cargo audit (root and fuzz/ locks), no key-shaped literal or basic-auth URL added"
+echo "OK: fuzz/Cargo.lock current; cargo deny, cargo audit (root and fuzz/ locks); zizmor clean and every workflow cargo command --locked; no key-shaped literal or basic-auth URL added"

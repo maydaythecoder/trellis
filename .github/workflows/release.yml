@@ -44,13 +44,23 @@ jobs:
             bin: trellis
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      # lookup-only: a tag build must not restore a cache that a pull_request
+      # run of ci.yml could have written (zizmor cache-poisoning, #215). With
+      # it the action only checks for an entry and restores nothing, so the
+      # release is built from an empty target directory; this step no longer
+      # saves time. GitHub-hosted only, as in ci.yml (#158).
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.environment == 'github-hosted'
         with:
           key: ${{ matrix.target }}
+          lookup-only: true
 
       - name: Pin line endings
         run: git config --global core.autocrlf false
@@ -59,10 +69,10 @@ jobs:
       # `codegen-units = 1` change what the optimiser may do, and a test suite
       # that only ever sees the dev profile cannot notice.
       - name: Test, on the profile that ships
-        run: cargo test --workspace --release --target ${{ matrix.target }}
+        run: cargo test --locked --workspace --release --target ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release -p trellis-cli --target ${{ matrix.target }}
+        run: cargo build --locked --release -p trellis-cli --target ${{ matrix.target }}
 
       # A binary that cannot answer `--version` is not a release candidate,
       # and on a cross-built target this is the first moment anything has
@@ -83,7 +93,7 @@ jobs:
           # deserves a way to check what arrived is what was built.
           (cd "dist/$out" && sha256sum "${{ matrix.bin }}" > SHA256SUMS)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: trellis-${{ matrix.target }}
           path: dist/trellis-${{ matrix.target }}/
