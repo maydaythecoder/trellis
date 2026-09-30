@@ -792,18 +792,37 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
     //
     // Killed, not waited for, is read from the service's own evidence: a
     // service `work` waited for finishes its 120 s wait and writes `slept`,
-    // however fast or slow the host; one killed at the end of its 3 s task
-    // never does. A bound on the whole `work` run's wall clock measured host
+    // however fast or slow the host; one killed when its task ends never
+    // does. A bound on the whole `work` run's wall clock measured host
     // load as much as the kill, and a loaded run exceeded it (#222, the same
     // class as #207). The heartbeat cannot show this
     // on its own: waited for, its 30 beats end before the next task looks.
+    //
+    // The task lasts until the heartbeat has beaten, not a fixed 3 s: the
+    // `a > 0` premise is that event, a fixed wait could end before a loaded
+    // host ran the first beat, and on a quiet one it spent seconds after it
+    // (#227). Bounded at about 30 s, inside the task's 60 s timeout, so a
+    // heartbeat that never beats fails on the watcher's reading of `hb`,
+    // not on the task's timeout.
+    // The watcher's 3 s window stays fixed: it is the absence proof (no
+    // beat for about three beat periods), and absence has no event.
     let beat = scratch("svc-kill-beat");
     let hb = beat.join("hb");
     let slept = beat.join("slept");
-    let (service, watcher) = if cfg!(windows) {
+    let (service, maker, watcher) = if cfg!(windows) {
         std::fs::write(
             beat.join("beat.cmd"),
             "@for /L %%i in (1,1,30) do @(echo x>>\"%~dp0hb\"& ping -n 2 127.0.0.1 >NUL)\r\n",
+        )
+        .unwrap();
+        // `1%%~zA GTR 10`: a missing file has an empty size, and a bare
+        // `GTR 0` would then be a syntax error that ends the script.
+        std::fs::write(
+            beat.join("first.cmd"),
+            "@for /L %%i in (1,1,30) do @(\r\n\
+             @for %%A in (\"%~dp0hb\") do @if 1%%~zA GTR 10 exit 0\r\n\
+             @ping -n 2 127.0.0.1 >NUL\r\n\
+             )\r\n",
         )
         .unwrap();
         std::fs::write(
@@ -819,6 +838,7 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
                 beat.join("beat.cmd").display(),
                 slept.display()
             ),
+            format!("['cmd', '/C', '{}']", beat.join("first.cmd").display()),
             format!("['cmd', '/C', '{}']", beat.join("watch.cmd").display()),
         )
     } else {
@@ -840,12 +860,21 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
             ),
         )
         .unwrap();
+        std::fs::write(
+            beat.join("first.sh"),
+            format!(
+                "i=0; while [ ! -s '{}' ] && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done\n",
+                hb.display()
+            ),
+        )
+        .unwrap();
         (
             format!(
                 "['sh', '-c', 'sh {} & sleep 120; echo slept > {}']",
                 beat.join("beat.sh").display(),
                 slept.display()
             ),
+            format!("['sh', '{}']", beat.join("first.sh").display()),
             format!("['sh', '{}']", beat.join("watch.sh").display()),
         )
     };
@@ -855,9 +884,8 @@ fn service_is_killed_with_its_tree_when_the_task_ends() {
             (
                 ".trellis/agents/maker.toml",
                 &format!(
-                    "command = {}\ntimeout_s = 60\n\
-                     [[services]]\nname = \"beat\"\ncommand = {service}\n",
-                    waits(3)
+                    "command = {maker}\ntimeout_s = 60\n\
+                     [[services]]\nname = \"beat\"\ncommand = {service}\n"
                 ),
             ),
             (
