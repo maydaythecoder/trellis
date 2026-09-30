@@ -1,14 +1,13 @@
 //! `trellis-tickets`: the ticketing standard's commands (ADR 0040).
 //!
-//! `triage` (#77), `ready` (#78), `new` (#79), `sweep` and `scan` (#80) are
-//! built. ADR 0040 lists one more, `index`; it lands with its own ticket,
-//! and until then clap reports it as an unknown subcommand rather than
-//! something that appears to run.
+//! `triage` (#77), `ready` (#78), `new` (#79), `sweep` and `scan` (#80) and
+//! `index` (#81): the six commands ADR 0040 lists.
 //! `triage` and `ready` are read-only: the one argv they spawn is
 //! `gh issue view`. `new` spawns that too, for its blockers, and
 //! `gh issue create`, which is its one write, and not on `--dry-run`.
 //! `sweep` spawns `gh issue list` and `gh issue view`, and `gh issue edit`
-//! only with `--apply`. `scan` spawns nothing.
+//! only with `--apply`. `scan` spawns nothing. `index` spawns what `sweep`
+//! reads with and nothing else, and writes only the `--out` file.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -87,6 +86,15 @@ enum Cmd {
         /// A directory, or one `.rs` file. Defaults to the current directory.
         path: Option<PathBuf>,
     },
+    /// Every open issue's triage as one JSON document with top-level
+    /// `"triage_version": 2`, sorted by story then issue number, for
+    /// diffing between runs. The schema is in docs/TICKETING.md. Read-only
+    /// on GitHub; the same issues give the same bytes.
+    Index {
+        /// Write the JSON to this file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<ExitCode> {
@@ -149,6 +157,25 @@ fn main() -> Result<ExitCode> {
                 print!("{}", p.text());
             }
             println!("{} proposal(s); nothing filed", found.len());
+        }
+        Cmd::Index { out } => {
+            let index = trellis_tickets::index_with(
+                || gh_list().map_err(|e| format!("{e:#}")),
+                |n| gh_view(n).map_err(|e| format!("{e:#}")),
+            )?;
+            match out {
+                Some(p) => {
+                    index
+                        .write(&p)
+                        .with_context(|| format!("writing {}", p.display()))?;
+                    println!(
+                        "{} open issue(s) indexed to {}",
+                        index.issues.len(),
+                        p.display()
+                    );
+                }
+                None => print!("{}", index.json()),
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -221,7 +248,8 @@ fn gh_create(args: &[String], body: &str) -> Result<String> {
     Ok(stdout)
 }
 
-/// `gh issue list` for every open issue, the read `sweep` starts from.
+/// `gh issue list` for every open issue, the read `sweep` and `index`
+/// start from.
 fn gh_list() -> Result<String> {
     let out = gh()
         .args(trellis_tickets::gh_list_args())

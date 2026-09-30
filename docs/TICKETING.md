@@ -441,3 +441,51 @@ what the rule does instead.
 | `triage:` | A ticket that is not ready and not blocked matches no row of §6's table and goes to `needs-human`, with its failures as the reasons. A story abstains. | Fail to human, never guess (§1). |
 | Sweep (§9) | `trellis-tickets sweep` (#80) reports label drift only: a dry run unless `--apply`, and it skips `parked` and `split` issues. A dimension whose rule abstained keeps its labels and is printed as `abstained`. It never writes `ready` or the block's `ready:`/`ready_failures:` lines, never sets or clears `!agent-ok`, and never lowers `risk:` (a lower value is printed as abstained). `triage:` is applied only when every other dimension was decided and applied. On an issue whose labels change, the block's `labels:`, `flags:`, `triaged_at:` and `triage_version:` lines are rewritten, and `triage:`/`triage_reasons:` when the route was applied; no other byte of the body changes, and an issue that changed after it was read is not written. §9's staleness rows (`doing`, `review`, age) read the board, which the tool does not. | `ready` is `scripts/tickets/sync-ready.py`'s until `sweep --apply` reproduces it (ADR 0040 decision 7). `!agent-ok` has no rule (#195). The risk rule cannot see rollback, worktree teardown or session persistence (#196). A route that follows from an abstention (most often #194's unmapped crates) would move issues out of `triage:auto` on an open question. |
 | Scan (§2) | `trellis-tickets scan` (#80) reports G4's markers, read from `scripts/gates/no-stubs.sh`, with G4's exclusions, as `file:line` proposals. It files nothing and does not rewrite the marker with an ID. It walks the files and skips `target/` and dot-directories, which a diff never shows G4. | §2 has scan file and renumber; ADR 0040 has it propose only. It cannot spawn `git` (ADR 0040 decision 6). |
+| Index (§10) | `trellis-tickets index [--out <p>]` (#81) writes JSON, not §10's `INDEX.md`, with `"triage_version": 2` at the top; the schema is below. It indexes the open issues, the list `sweep` reads. It reports what the rules compute and adds two abstentions of its own: `!agent-ok` on every issue, and a computed `risk:` below the recorded label, with `triage` (and, when the recorded risk is high, `flags` and `ready`, through `!needs-adr`). The order is by story, then issue number, and holds no timestamp, so a re-run over the same issues writes the same bytes. | The owner decided the JSON shape for S13 on 2026-09-28 (#81). `!agent-ok` has no rule (#195), so its absence from `flags` would read as a decision. The risk rule cannot see rollback, worktree teardown or session persistence (#196), and `sweep` never lowers the label for the same reason. An area the table does not map (#194) arrives abstained from the rule. A `triaged_at` would change every run and hide the lines that moved. §11 keeps priority out of the order, and it is. |
+
+### The `index` schema
+
+`trellis-tickets index` prints, or writes to `--out`, one JSON object,
+pretty-printed with two-space indents and one final newline. DEL and the
+C1 control characters, which JSON allows raw, are written as `\u` escapes,
+so the document parses to the same strings and cannot drive a terminal.
+
+```
+{
+  "triage_version": 2,
+  "issues": [ <entry>, ... ]
+}
+```
+
+`triage_version` is the rule set's version (`TRIAGE_VERSION`), the value
+every triage block carries. `issues` holds one entry per open issue, sorted
+by story number, then by the id as a string (`S07` before `S7`), then by issue number; an
+issue with no story comes after every story.
+
+Each entry has these fields, in this order:
+
+| Field | Type | What it is |
+|---|---|---|
+| `number` | integer | The issue number. |
+| `title` | string | The title as on GitHub. |
+| `story` | string or null | `S<n>`. A `type:story` issue's comes from its title's `S<n>:` prefix. Any other issue's comes from the `story:` line of its triage block, or, when it has no block, from a line that starts `story:` anywhere in the body (as G0 reads `blocked_by:`). Null when there is none; null with a note when the line is not `S` and digits, or there are two. |
+| `labels` | array of strings | The labels on GitHub now, sorted, each once. |
+| `blocked_by` | array of integers, or null | The `blocked_by:` entries in the order written; null, with a note, when they cannot be read. |
+| `area`, `kind`, `risk`, `surface`, `effort`, `origin`, `flags`, `ready`, `triage` | line | Each rule's outcome, the same object `triage <n> --json` prints for that dimension. |
+| `agent_ok` | line | Always abstained, with the reason (#195). |
+| `notes` | array of strings | Intake that could not be read: a blocker whose state could not be fetched (its `ready` and `triage` then abstain), a `story:` or `blocked_by:` that is malformed. Empty when there is none. |
+
+A line is one of two objects:
+
+```
+{ "outcome": "decided", "value": <value>, "rule": "<the rule that set it>" }
+{ "outcome": "abstained", "rule": "<the rule that abstained>", "reason": "<why>" }
+```
+
+`value` is a label string (`"area:cli"`) for the six dimensions; an array
+of flag labels, sorted, for `flags`; `{"ready": bool, "failures": [string]}`
+for `ready`; and `{"route": "triage:<route>", "reasons": [string]}` for
+`triage`.
+
+There is no `triaged_at`: the index is for diffing two runs, and a field
+that changes on every run would be a diff on every issue.
