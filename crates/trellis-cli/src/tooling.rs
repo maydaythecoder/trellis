@@ -402,11 +402,24 @@ mod run_tests {
 
     /// Every test here shares one store in the scratch directory; entries
     /// are keyed by repository root, and each test has its own.
+    ///
+    /// The store is emptied once, when this process first opens it (#199).
+    /// It is named by process id and was never removed, and every fixture
+    /// repository is named by the same id with the same bytes in it, so its
+    /// fingerprint is the same in every run. Windows reuses process ids, so
+    /// a test process that inherited an earlier one's id found a store that
+    /// already trusted its own repository at the same path with the same
+    /// fingerprint, and `hook_input_refusal_...`'s untrusted first run ran
+    /// the hook. `scratch` deletes its directory first for the same reason.
+    /// Once per process, not per call: tests trust in parallel, and a wipe
+    /// on every call would erase another test's entry mid-test.
     fn store() -> TrustStore {
-        let path = std::env::temp_dir()
-            .join(format!("trellis-trust-{}", std::process::id()))
-            .join("trust.json");
-        TrustStore::use_for_this_process(path);
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("trellis-trust-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            TrustStore::use_for_this_process(dir.join("trust.json"));
+        });
         TrustStore::user().unwrap()
     }
 
