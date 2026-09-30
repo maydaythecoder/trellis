@@ -79,6 +79,11 @@ pub enum ToolCallWire {
         #[schemars(length(max = 8))]
         options: Vec<String>,
     },
+    /// The call sites that call a symbol directly, with the coverage
+    /// `blast_radius` gives for it.
+    CallersOf { symbol: String },
+    /// What a symbol's own call sites bound to, and how many bound to nothing.
+    CalleesOf { symbol: String },
     /// Stop. Not a claim of success: the loop decides that from the checks.
     Done {
         #[serde(default)]
@@ -164,6 +169,8 @@ impl ToolCallWire {
             }
             ToolCallWire::ReadNote { note } => Step::Call(ToolCall::ReadNote { note }),
             ToolCallWire::AskHuman { question, options } => ask_human(question, options)?,
+            ToolCallWire::CallersOf { symbol } => Step::Call(ToolCall::CallersOf { symbol }),
+            ToolCallWire::CalleesOf { symbol } => Step::Call(ToolCall::CalleesOf { symbol }),
             ToolCallWire::Done { summary } => Step::Done { summary },
         })
     }
@@ -213,6 +220,8 @@ mod tests {
             "edit",
             "run_checks",
             "read_skill",
+            "callers_of",
+            "callees_of",
             "done",
         ] {
             assert!(s.contains(tool), "schema omits `{tool}`: {s}");
