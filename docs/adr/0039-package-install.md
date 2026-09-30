@@ -101,7 +101,9 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    under a repository's `.trellis/` only; `packages/` holds no code for a
    digest to cover. Evidence:
    `install_skips_code_and_leaves_the_trust_store_byte_identical`, with the
-   store where ADR 0023 puts it, beside `packages/`. Letting a package
+   store where ADR 0023 puts it, beside `packages/` (the two share a
+   directory unless `TRELLIS_CONFIG_DIR` is set, which moves `packages/`
+   and not the store). Letting a package
    carry code would reverse the owner's answer on #120 and needs its own
    ADR, which would have to put that code under the trust digest by
    content before anything of it runs.
