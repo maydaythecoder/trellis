@@ -65,6 +65,13 @@ trellis-vault  = { path = "crates/trellis-vault" }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+# cargo-fuzz builds every crate with `--cfg fuzzing`; `trellis-model` exposes
+# its HTTP response parser to the fuzz target only under it (issue #97, ADR
+# 0027). Declared here so the ordinary build does not warn on an unknown cfg,
+# which G3's `-D warnings` would turn into a failure. The lint stays on for
+# every other cfg name.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 # `pub` on an item nothing outside the crate can reach is a claim about API
 # that is not true. It matters most in `trellis-cli`, which is a binary: `pub`
 # there reaches nobody at all, and seventeen items were written that way.
