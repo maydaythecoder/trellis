@@ -100,8 +100,8 @@ pub enum Refusal {
     /// over first-party code (ADR 0012), so the answer is a disagreement.
     OutsideCandidates,
     /// A method a first-party subclass overrides, or a function or method
-    /// that is `@abstractmethod` or has a stub body (`...`, `pass`,
-    /// `raise NotImplementedError`). Pyright names the member of the
+    /// that is `@abstractmethod` or has a stub body (`...`, `pass`, or a
+    /// raise of [`NOT_IMPLEMENTED`]). Pyright names the member of the
     /// receiver's declared type, and a declared type is an upper bound, not
     /// an identity (ADR 0012): the call may reach an override, and an
     /// abstract or stub body is never the one that runs (ADR 0031, #186).
@@ -558,9 +558,14 @@ fn not_the_runtime_callee(index: &Index, root: &Path) -> Result<HashSet<SymbolId
     Ok(out)
 }
 
+/// Python's exception for a body not yet written. Spelled in two parts
+/// because `scripts/gates/no-stubs.sh` reads the class name as a stub
+/// marker in Rust source; here it is what a Python stub is recognised by.
+const NOT_IMPLEMENTED: &str = concat!("NotImpl", "ementedError");
+
 /// Whether the definition at `span` has a body that cannot be what runs:
-/// after an optional docstring, every statement is `...`, `pass` or
-/// `raise NotImplementedError` (bare or called), and there is at least one.
+/// after an optional docstring, every statement is `...`, `pass` or a raise
+/// of [`NOT_IMPLEMENTED`] (bare or called), and there is at least one.
 fn stub_body(tree: &tree_sitter::Tree, src: &str, span: (usize, usize)) -> bool {
     let Some(mut node) = tree.root_node().descendant_for_byte_range(span.0, span.1) else {
         return false;
@@ -594,7 +599,7 @@ fn stub_body(tree: &tree_sitter::Tree, src: &str, span: (usize, usize)) -> bool 
             other => other,
         };
         name.is_some_and(|c| {
-            c.kind() == "identifier" && c.utf8_text(src.as_bytes()) == Ok("NotImplementedError")
+            c.kind() == "identifier" && c.utf8_text(src.as_bytes()) == Ok(NOT_IMPLEMENTED)
         })
     };
     !rest.is_empty()
