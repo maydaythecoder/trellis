@@ -16,7 +16,8 @@ why="${1:-}"
 # runs of tab, which drops empty fields.
 gh issue list --state open --limit 300 --json number,title,labels,body --jq '
   def prio: ([.labels[].name] | if index("P0") then 0 elif index("P1") then 1 else 2 end);
-  sort_by(prio, .number)[] |
+  # A body edited from Windows is CRLF; parse it as its LF form, as G0 does (#205).
+  sort_by(prio, .number)[] | .body |= gsub("\r"; "") |
   [(.number | tostring), (prio | tostring), ([.labels[].name] | join(" ")),
    ([.body | scan("(?m)^blocked_by: \\[([^\\]]*)\\]") | .[0]] | join(" ")),
    (if (.body | test("(?m)^## Done when")) then "y" else "n" end),
