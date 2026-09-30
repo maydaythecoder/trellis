@@ -1126,9 +1126,19 @@ mod run_tests {
 
     #[test]
     fn custom_tool_timeout_a_run_just_under_it_completes() {
+        // The risk: the configured bound is applied early (a smaller
+        // constant, milliseconds for seconds, 0-means-1 applied to every
+        // value), so a tool that finishes well inside `timeout_s` is killed.
+        // The two numbers split that claim in two. The nap sets what is
+        // caught: any enforced bound under about 2 s kills it. The gap to
+        // `timeout_s` is what load may take: a 1 s nap against 4 s was
+        // reported killed at 4 s on a host running three builds and a model
+        // (#212): more than 3 s went to something other than the nap (not
+        // measured; process start or a late exit notice), so 28 s is kept.
+        // "just under" in the name is kept for the ticket's Verify filter.
         let (dir, spec) = fixture(
             "custom-timeout-under",
-            &nap_tool(1, "timeout_s = 4\n"),
+            &nap_tool(2, "timeout_s = 30\n"),
             NAP_THEN_STOP,
         );
         trust(&dir);
