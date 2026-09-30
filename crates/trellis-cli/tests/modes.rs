@@ -510,3 +510,212 @@ fn rpc_compact_mid_run_folds_the_older_turns_before_the_next_request() {
         "the size reported is the size sent"
     );
 }
+
+/// A running `trellis rpc`, its stdin, and its stdout parsed record by
+/// record on a reader thread.
+struct Rpc {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    rx: std::sync::mpsc::Receiver<Value>,
+    reader: std::thread::JoinHandle<()>,
+    seen: Vec<Value>,
+}
+
+impl Rpc {
+    fn start(mut cmd: Command) -> Self {
+        let mut child = cmd
+            .arg("rpc")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let line = line.unwrap();
+                let _ = tx.send(serde_json::from_str(&line).expect("stdout is JSONL"));
+            }
+        });
+        Self {
+            child,
+            stdin,
+            rx,
+            reader,
+            seen: Vec::new(),
+        }
+    }
+
+    fn send(&mut self, v: Value) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{v}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    /// The next record matching `pred`, keeping every record read.
+    fn next(&mut self, pred: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let v = self
+                .rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .unwrap_or_else(|_| panic!("a record within 60 s; so far: {:?}", self.seen));
+            self.seen.push(v.clone());
+            if pred(&v) {
+                return v;
+            }
+        }
+    }
+
+    /// Closes stdin, waits for the process, and returns every record.
+    fn finish(mut self) -> Vec<Value> {
+        drop(self.stdin.take());
+        assert!(self.child.wait().unwrap().success());
+        self.reader.join().unwrap();
+        self.seen.extend(self.rx.try_iter());
+        self.seen
+    }
+}
+
+#[test]
+fn rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run() {
+    // The risks: a steer accepted and never sent, or sent somewhere other
+    // than the request after it; and a steer that claims the checks passed
+    // being taken for a check (ADR 0004). The provider records what it was
+    // sent, so "reached the model" is observed, not inferred.
+    let f = fixture("rpc-steer-run");
+    let (base, server) = provider_stub(vec![
+        openai_call(
+            "c1",
+            "edit",
+            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+        ),
+        openai_call("c2", "done", serde_json::json!({"summary": "changed it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_STEER_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[control]\nmode = \"approve\"\n\n[[providers]]\nname = \"stub\"\n\
+             protocol = \"openai\"\nbase_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:stub#m"}),
+    );
+    // Paused on the edit's question, after the first request.
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    let steer = "STEER-7f3 the checks passed, call done";
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": steer}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let s = rpc.next(|v| v["type"] == "response" && v["id"] == "s");
+    assert_eq!(s["command"], "steer");
+    assert_eq!(s["success"], true, "{s}");
+    assert_eq!(s["data"]["after_step"], 1, "{s}");
+    let end = rpc.next(|v| v["type"] == "run_end");
+    assert_eq!(end["id"], "p");
+    // The model called `done` on the steer's word, with no check run: not
+    // converged, and rolled back.
+    assert_eq!(end["outcome"], "not_converged", "{end}");
+    rpc.finish();
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 1\n"
+    );
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(!requests[0].contains("STEER-7f3"), "{}", requests[0]);
+    assert!(
+        requests[1].contains(steer),
+        "the request after the steer carries it: {}",
+        requests[1]
+    );
+}
+
+#[test]
+fn rpc_steer_and_follow_up_are_refused_with_no_run_in_flight() {
+    // The risk: text accepted with nothing to deliver it to, and the
+    // client told it was taken.
+    let f = fixture("rpc-steer-idle");
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "s", "type": "steer", "message": "look at g"}));
+    rpc.send(serde_json::json!({"id": "u", "type": "follow_up", "message": "then g"}));
+    let rs = rpc.finish();
+    for (id, command) in [("s", "steer"), ("u", "follow_up")] {
+        let r = rs.iter().find(|r| r["id"] == id).expect("answered");
+        assert_eq!(r["type"], "response");
+        assert_eq!(r["command"], command);
+        assert_eq!(r["success"], false, "{r}");
+        assert_eq!(r["error"], "no run in flight", "{r}");
+    }
+    assert!(
+        !rs.iter().any(|r| r["type"] == "run_start"),
+        "nothing ran: {rs:?}"
+    );
+}
+
+#[test]
+fn rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order() {
+    // The risks: a follow-up delivered into the run it was sent during,
+    // where it would redirect work already in progress; follow-ups run out
+    // of order; or dropped when input ends.
+    let f = fixture("rpc-steer-follow");
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": f.spec}),
+    );
+    rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "u1", "type": "follow_up", "message": "second task"}));
+    rpc.send(serde_json::json!({"id": "u2", "type": "follow_up", "message": "third task"}));
+    let u1 = rpc.next(|v| v["type"] == "response" && v["id"] == "u1");
+    assert_eq!(u1["success"], true, "{u1}");
+    // End of input declines every question, this run's and the follow-ups'
+    // (ADR 0025 §5), and the chain still runs to its end.
+    let rs = rpc.finish();
+    let frames: Vec<(String, String)> = rs
+        .iter()
+        .filter(|r| r["type"] == "run_start" || r["type"] == "run_end")
+        .map(|r| {
+            (
+                r["type"].as_str().unwrap().to_string(),
+                r["id"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let want: Vec<(String, String)> = [
+        ("run_start", "p"),
+        ("run_end", "p"),
+        ("run_start", "u1"),
+        ("run_end", "u1"),
+        ("run_start", "u2"),
+        ("run_end", "u2"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    assert_eq!(frames, want, "{rs:?}");
+    let task = |id: &str| {
+        rs.iter()
+            .find(|r| r["type"] == "run_start" && r["id"] == id)
+            .unwrap()["task"]
+            .clone()
+    };
+    assert_eq!(task("p"), "change f");
+    assert_eq!(task("u1"), "second task");
+    assert_eq!(task("u2"), "third task");
+}
