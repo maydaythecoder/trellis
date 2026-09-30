@@ -1,6 +1,7 @@
 //! Prompt templates with arguments (ADR 0025 §3).
 //!
-//! `.trellis/prompts/<name>.md`, optionally with frontmatter (`description`,
+//! `.trellis/prompts/<name>.md`, then each installed package's
+//! `prompts/<name>.md` (ADR 0039), optionally with frontmatter (`description`,
 //! `argument-hint`), expanded with pi's substitutions. The argument string is
 //! split here, by one splitter, for all three surfaces that take one
 //! (`run --args`, the session's `/<name> args`, RPC's `"args"`), so a
@@ -10,7 +11,7 @@
 //! `RepoConfig::prompt`): nothing in it can set a model or lift a rule.
 
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One template as listed by `/prompts` and `get_commands`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +111,8 @@ pub(crate) fn render_text(text: &str, args: Option<&[String]>) -> String {
     out
 }
 
-/// `.trellis/prompts/<name>.md` rendered with `args` split from a string.
+/// The template `name` (the repository's, else an installed package's)
+/// rendered with `args` split from a string.
 pub(crate) fn render(root: &Path, name: &str, args: Option<&str>) -> Result<String> {
     let split = args.map(split_args).transpose()?;
     // The name guard and the "known templates" message live in
@@ -149,12 +151,61 @@ fn raw(root: &Path, name: &str) -> Result<String> {
     crate::config::RepoConfig::prompt_raw(root, name)
 }
 
-/// Every template in `.trellis/prompts/`, by name.
-pub(crate) fn list(root: &Path) -> Vec<Listed> {
-    let Ok(rd) = std::fs::read_dir(root.join(".trellis").join("prompts")) else {
+/// Every template in `.trellis/prompts/` and in each installed package's
+/// `prompts/` (ADR 0039), by name. An error when the package manifest
+/// cannot be read, rather than a list that silently lacks its templates.
+pub(crate) fn list(root: &Path) -> Result<Vec<Listed>> {
+    Ok(list_in(root, &crate::user_config::prompt_dirs()?))
+}
+
+/// [`list`] with the installed `prompts/` directories given, in precedence
+/// order. A name is listed once, from the first place that has it, which is
+/// the one `RepoConfig::prompt_raw` reads: the repository's, then the
+/// packages' in order.
+pub(crate) fn list_in(root: &Path, installed: &[PathBuf]) -> Vec<Listed> {
+    let mut out: Vec<Listed> = Vec::new();
+    for (path, name) in md_files(&root.join(".trellis").join("prompts")) {
+        // Listed with why it cannot be used rather than with the
+        // description of whatever a link points at, outside the
+        // repository: this is printed, and a run would refuse it.
+        match crate::context_files::read_repo_text(root, &path) {
+            Ok(Some(text)) => out.push(listed(name, &text)),
+            Ok(None) => {}
+            Err(e) => out.push(Listed {
+                name,
+                description: crate::plain(&format!("refused: {e:#}")),
+                argument_hint: None,
+            }),
+        }
+    }
+    for base in installed {
+        for (path, name) in md_files(base) {
+            // Only a name `prompt_raw` would read: listing one it refuses
+            // offers a template that cannot be run.
+            if out.iter().any(|l| l.name == name) || !crate::config::prompt_name_ok(&name) {
+                continue;
+            }
+            // The user's own installed file, read as it is (ADR 0039 §9).
+            match std::fs::read_to_string(&path) {
+                Ok(text) => out.push(listed(name, &text)),
+                Err(e) => out.push(Listed {
+                    name,
+                    description: crate::plain(&format!("unreadable: {e}")),
+                    argument_hint: None,
+                }),
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// `(path, stem)` of each `*.md` entry in `dir`; absent is none.
+fn md_files(dir: &Path) -> Vec<(PathBuf, String)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut out: Vec<Listed> = rd
+    let mut v: Vec<(PathBuf, String)> = rd
         .filter_map(Result::ok)
         .filter_map(|e| {
             let path = e.path();
@@ -162,42 +213,33 @@ pub(crate) fn list(root: &Path) -> Vec<Listed> {
                 return None;
             }
             let name = path.file_stem()?.to_str()?.to_string();
-            // Listed with why it cannot be used rather than with the
-            // description of whatever a link points at, outside the
-            // repository: this is printed, and a run would refuse it.
-            let text = match crate::context_files::read_repo_text(root, &path) {
-                Ok(t) => t?,
-                Err(e) => {
-                    return Some(Listed {
-                        name,
-                        description: crate::plain(&format!("refused: {e:#}")),
-                        argument_hint: None,
-                    });
-                }
-            };
-            let p = parse(&text);
-            // As in pi: no description falls back to the first non-empty
-            // line. Control characters are dropped because this is printed
-            // to a terminal and a template is repository content.
-            let description = p
-                .description
-                .or_else(|| {
-                    p.body
-                        .lines()
-                        .map(str::trim)
-                        .find(|l| !l.is_empty())
-                        .map(str::to_string)
-                })
-                .unwrap_or_default();
-            Some(Listed {
-                name,
-                description: crate::plain(&description),
-                argument_hint: p.argument_hint.map(|h| crate::plain(&h)),
-            })
+            Some((path, name))
         })
         .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    v.sort();
+    v
+}
+
+fn listed(name: String, text: &str) -> Listed {
+    let p = parse(text);
+    // As in pi: no description falls back to the first non-empty line.
+    // Control characters are dropped because this is printed to a terminal
+    // and a template is repository or package content.
+    let description = p
+        .description
+        .or_else(|| {
+            p.body
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    Listed {
+        name,
+        description: crate::plain(&description),
+        argument_hint: p.argument_hint.map(|h| crate::plain(&h)),
+    }
 }
 
 /// Splits an argument string the way a POSIX shell would, without expanding
@@ -449,11 +491,56 @@ mod tests {
         )
         .unwrap();
         std::fs::write(p.join("plain.md"), "\n\nFirst line\nsecond\n").unwrap();
-        let l = list(d.path());
+        let l = list(d.path()).unwrap();
         assert_eq!(l.len(), 2);
         assert_eq!(l[0].name, "plain");
         assert_eq!(l[0].description, "First line");
         assert_eq!(l[1].argument_hint.as_deref(), Some("<path>"));
         assert_eq!(render(d.path(), "review", Some("x")).unwrap(), "body\n\nx");
+    }
+
+    #[test]
+    fn installed_template_is_listed_and_read_and_the_repository_wins_a_name() {
+        // The risk: the listing showing one source's template while
+        // `--prompt` reads another's, or a package replacing a template the
+        // repository wrote.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("repo");
+        let repo = root.join(".trellis/prompts");
+        let a = d.path().join("cfg/packages/pkg-a/prompts");
+        let b = d.path().join("cfg/packages/pkg-b/prompts");
+        for p in [&repo, &a, &b] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        std::fs::write(
+            repo.join("review.md"),
+            "---\ndescription: REPO\n---\nrepo\n",
+        )
+        .unwrap();
+        std::fs::write(a.join("review.md"), "---\ndescription: PKGA\n---\npkga\n").unwrap();
+        std::fs::write(a.join("triage.md"), "---\ndescription: PKGA\n---\npkga\n").unwrap();
+        std::fs::write(b.join("triage.md"), "---\ndescription: PKGB\n---\npkgb\n").unwrap();
+        std::fs::write(b.join("audit.md"), "Audit $1\n").unwrap();
+        let installed = [a.clone(), b.clone()];
+
+        let l = list_in(&root, &installed);
+        let by = |n: &str| l.iter().find(|t| t.name == n).unwrap().description.clone();
+        assert_eq!(l.len(), 3, "a name is listed once: {l:?}");
+        assert_eq!(by("review"), "REPO");
+        assert_eq!(by("triage"), "PKGA");
+        assert_eq!(by("audit"), "Audit $1");
+
+        let read =
+            |n: &str| crate::config::RepoConfig::prompt_raw_in(&root, n, || Ok(installed.to_vec()));
+        assert!(read("review").unwrap().contains("repo"));
+        assert!(read("triage").unwrap().contains("pkga"));
+        assert_eq!(
+            render_text(&read("audit").unwrap(), Some(&v(&["x"]))),
+            "Audit x"
+        );
+        let e = format!("{:#}", read("nosuch").unwrap_err());
+        assert!(e.contains("Known: audit, review, triage"), "{e}");
+        // The name check still guards the packages' directories.
+        assert!(read("../pkg-a/prompts/review").is_err());
     }
 }

@@ -66,8 +66,31 @@ pub(crate) fn run(source: Option<String>, list: bool, remove: Option<String>) ->
     }
 }
 
-fn packages_dir(config: &Path) -> PathBuf {
+pub(crate) fn packages_dir(config: &Path) -> PathBuf {
     config.join("packages")
+}
+
+/// `<config>/packages/<name>` for every package the manifest records, in
+/// name order: that order decides which of two packages wins a skill or
+/// template name they both carry, so it must not depend on the order they
+/// were installed in or on `read_dir`.
+///
+/// The manifest, not a directory listing, is what counts as installed: a
+/// staging directory mid-install, or a directory `--list` and `--remove`
+/// do not know, is never read into a run. A manifest that cannot be read
+/// or parsed is an error rather than no packages, because a run that
+/// silently lost every installed skill would look like one that had them.
+pub(crate) fn installed_dirs(config: &Path) -> Result<Vec<PathBuf>> {
+    let dir = packages_dir(config);
+    let mut names: Vec<String> = load(&dir)?.packages.into_iter().map(|e| e.name).collect();
+    // The manifest is a file the user can edit, and a name becomes a path.
+    for name in &names {
+        if let Some(why) = bad_name(name) {
+            bail!("{}: {why}", dir.join(MANIFEST).display());
+        }
+    }
+    names.sort();
+    Ok(names.into_iter().map(|n| dir.join(n)).collect())
 }
 
 /// Installs `spec` (`<git-url|path>@<ref>`) under `<config>/packages/<name>/`.
@@ -206,8 +229,8 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
     }
     writeln!(
         out,
-        "note: runs do not read packages/ yet. Skills load from <user config dir>/skills \
-         and templates from .trellis/prompts (ADR 0039)."
+        "note: runs read it after the repository's own skills and templates, which win a \
+         name; a skill in <user config dir>/skills also wins over it (ADR 0039)."
     )?;
     Ok(entry)
 }
@@ -855,7 +878,10 @@ mod tests {
             assert!(said.contains(skipped), "{skipped} not named in:\n{said}");
         }
         assert!(said.contains("never hooks, tools or other code"), "{said}");
-        assert!(said.contains("runs do not read packages/ yet"), "{said}");
+        assert!(
+            said.contains("after the repository's own skills and templates, which win a name"),
+            "{said}"
+        );
         assert_eq!(entry.commit, git_in(&src, &["rev-parse", "v1^{commit}"]));
         // The staging clone is gone; only the package and its manifest stay.
         let mut left: Vec<String> = std::fs::read_dir(cfg.join("packages"))

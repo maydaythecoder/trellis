@@ -347,28 +347,29 @@ impl Server {
                     .iter()
                     .map(|(n, d)| json!({"name": n, "description": d}))
                     .collect();
-                let prompts: Vec<Value> = crate::templates::list(&self.root)
+                // A package manifest that cannot be read is the answer, not
+                // an empty list of what it would have added.
+                let listed = (|| -> anyhow::Result<Value> {
+                    let prompts: Vec<Value> = crate::templates::list(&self.root)?
+                        .into_iter()
+                        .map(|t| {
+                            json!({"name": t.name, "description": t.description,
+                                   "argument_hint": t.argument_hint})
+                        })
+                        .collect();
+                    // The same catalog a run lists, user-level and installed
+                    // skills included, since `prompt {skill}` can force any.
+                    let skills: Vec<Value> = trellis_loop::SkillCatalog::discover_with(
+                        &self.root,
+                        &crate::user_config::skill_dirs()?,
+                    )
+                    .valid
                     .into_iter()
-                    .map(|t| {
-                        json!({"name": t.name, "description": t.description,
-                               "argument_hint": t.argument_hint})
-                    })
+                    .map(|s| json!({"name": s.name, "description": s.description}))
                     .collect();
-                // The same catalog a run lists, user-level skills included,
-                // since `prompt {skill}` can force either.
-                let skills: Vec<Value> = trellis_loop::SkillCatalog::discover_with(
-                    &self.root,
-                    &crate::user_config::skill_dirs(),
-                )
-                .valid
-                .into_iter()
-                .map(|s| json!({"name": s.name, "description": s.description}))
-                .collect();
-                self.respond(
-                    id,
-                    kind,
-                    Ok(json!({"commands": commands, "prompts": prompts, "skills": skills})),
-                );
+                    Ok(json!({"commands": commands, "prompts": prompts, "skills": skills}))
+                })();
+                self.respond(id, kind, listed.map_err(|e| format!("{e:#}")));
             }
             "quit" => {
                 self.abort_run();

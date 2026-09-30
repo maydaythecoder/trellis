@@ -91,14 +91,50 @@ Its paths, file modes and sizes are all chosen by whoever wrote it.
    nothing. What makes a package safe to install is 5 and 6, not a digest
    of a repository's hooks.
 
+10. **How runs read installed packages** (#119; the owner's order,
+    decided 2026-09-28: repository, installed package, `~/.agents/skills`).
+    - **Which packages.** Those `packages.toml` records, in package-name
+      order, whatever order they were installed in. A directory under
+      `packages/` the manifest does not name (a staging directory
+      mid-install, a stray copy) is not read. A manifest that cannot be
+      read or parsed refuses the run and `rpc`'s `get_commands`, and
+      `doctor` prints it on its line, rather than a run going ahead
+      without skills the user installed. A manifest name is held to the
+      alphabet in 3 before it becomes a path.
+    - **Skills.** The lookup order is the repository's `.trellis/skills`,
+      then `<user config dir>/skills`, then each package's `skills/`, then
+      `~/.agents/skills`. The first source holding a name wins it, in the
+      listing, in `read_skill` and for a forced `--skill` alike, because
+      all three take the same directory list. The user's own
+      `<user config dir>/skills` sits above packages, which the owner's
+      order does not name: a skill the user wrote on this machine is a
+      more specific statement than one fetched. Between two packages the
+      name order above decides.
+    - **The `repo:` line** counts installed skills apart from the user's
+      own, says neither was gated on repository trust, and names every
+      collision with the source that won it and the ones it won over.
+    - **Not trust-gated,** for the reason in 9, which is the one ADR 0025
+      ("Integrated") gives for user-level skills: the trust store vouches
+      for what a repository makes trellis execute, and a package is in no
+      repository and executes nothing.
+    - **One cap.** ADR 0019's 4,096-byte disclosure cap applies to the
+      merged, name-sorted list of every source, unchanged. Installing a
+      package does not buy a second allowance.
+    - **Templates.** `.trellis/prompts/<name>.md`, else the first package
+      in name order with `prompts/<name>.md`. The same name check guards
+      both, `/prompts` and `get_commands` list each name once from the
+      source that would be read, and an installed template is still a
+      task, never configuration (ADR 0025 §3). The manifest is read only
+      when the repository has no template of that name.
+    - Installed files are the user's own, outside any repository, so they
+      are read as they are, as user-level skills are; the
+      repository-input rule (ADR 0025) is for what a repository supplies.
+    - Evidence: tests `installed_skill_*` in `crates/trellis-cli/src/context_files.rs`
+      (`cargo test -p trellis-cli installed_skill_`) and
+      `installed_template_is_listed_and_read_and_the_repository_wins_a_name`.
+
 ## Not built
 
-- **Runs do not read `packages/` yet.** Skills still load from
-  `<user config dir>/skills` and `~/.agents/skills` (ADR 0025, integrated),
-  and templates from `.trellis/prompts`. Adding `packages/*/skills` and
-  `packages/*/prompts` to those lists changes what the model is shown and
-  in what precedence, so it is its own change. The install command says so
-  when it finishes, rather than looking like it did more than it did.
 - **Upgrade in place.** Reinstalling a name is refused; `--remove` then
   install.
 - **The fetch itself is not bounded.** `git clone` downloads the whole
