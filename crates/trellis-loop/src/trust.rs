@@ -137,6 +137,31 @@ fn repo_file(root: &Path, arg: &str, cache: &HashCache) -> Option<(String, Strin
     Some((rel(root, &full), cache.digest(&full)?))
 }
 
+/// Control characters shown as escapes, the text kept on one line: the
+/// same rule as `plain` in trellis-cli. Labels and paths in a refusal come
+/// from the repository and are printed indented under `state:`, so a
+/// newline in one could add a line that reads as trellis's own, and an
+/// escape sequence could repaint one (#192). Applied where a message is
+/// assembled, not to the paths the digest keys on, so a digest over text
+/// with no control characters is unchanged. A `.trellis/` refusal is also
+/// kept in that item's `detail`, so a refused fingerprint whose refusal
+/// holds a control character hashes differently than before; a refused
+/// fingerprint is never trusted or compared, so no trust decision moves.
+fn plain(s: &str) -> String {
+    if !s.chars().any(char::is_control) {
+        return s.to_string();
+    }
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 fn rel(root: &Path, full: &Path) -> String {
     full.strip_prefix(root)
         .unwrap_or(full)
@@ -241,13 +266,16 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
                 let real = std::fs::canonicalize(&path).ok();
                 if linked && let Some(why) = self.refusal(real.as_deref()) {
                     let to = std::fs::read_link(&path)
-                        .map(|t| t.display().to_string())
+                        .map(|t| plain(&t.display().to_string()))
                         .unwrap_or_else(|_| "?".into());
                     return Err(format!(
                         "`{}` is a symbolic link to `{to}`, {why}. Trust covers the files \
                          under .trellis/, and this one cannot be covered: replace the link \
                          with the files, or remove it",
-                        rel(&self.real_root, &path_for_message(&self.real_root, &path))
+                        plain(&rel(
+                            &self.real_root,
+                            &path_for_message(&self.real_root, &path)
+                        ))
                     ));
                 }
                 let Some(real) = real else { continue };
@@ -283,7 +311,7 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
         return Err(format!(
             "`.trellis` resolves to `{}`, which is not a directory inside the repository. \
              Trust covers the files under .trellis/, and these cannot be covered",
-            real_dot.display()
+            plain(&real_dot.display().to_string())
         ));
     }
     let mut w = Walk {
@@ -360,7 +388,7 @@ fn outside_code(root: &Path, items: &[TrustItem]) -> Option<String> {
     for item in items {
         for (path, _) in &item.files {
             if !crate::orchestrator::names_trellis_dir(path) {
-                note(format!("{} names `{path}`", item.label));
+                note(format!("{} names `{}`", plain(&item.label), plain(path)));
             }
         }
         for tok in argv_candidates(&item.argv) {
@@ -371,9 +399,14 @@ fn outside_code(root: &Path, items: &[TrustItem]) -> Option<String> {
                 continue; // already named above, by the same path
             }
             note(if tok.replace('\\', "/") == real {
-                format!("{} names `{real}`", item.label)
+                format!("{} names `{}`", plain(&item.label), plain(&real))
             } else {
-                format!("{} names `{tok}`, which is `{real}`", item.label)
+                format!(
+                    "{} names `{}`, which is `{}`",
+                    plain(&item.label),
+                    plain(tok),
+                    plain(&real)
+                )
             });
         }
     }
@@ -771,6 +804,8 @@ fn describe_change(was: &Fingerprint, now: &Fingerprint) -> String {
         .collect();
     changed.sort();
     changed.dedup();
+    // Escaped after the dedup, so two paths that escape alike stay two.
+    let changed: Vec<String> = changed.iter().map(|p| plain(p)).collect();
     if changed.is_empty() {
         "the trusted configuration changed since the run started (a hook, custom tool \
          or bash setting)"
@@ -1887,5 +1922,52 @@ mod tests {
         let g = TrustGuard::new(|| Err("changed".into()));
         assert!(g.check().is_err());
         assert_eq!(g.check_full().unwrap_err().to_string(), "changed");
+    }
+
+    #[test]
+    fn trust_reason_escaped_so_a_label_or_path_cannot_add_a_line_or_repaint_one() {
+        // The risk (#192): the refusal is printed as `state:   cannot be
+        // trusted: {why}`, and the guard's error is printed as is. A label
+        // or path with a newline in it could add an indented line that reads
+        // as trellis's own ("state: trusted"), and an escape sequence could
+        // repaint the line that says what is wrong. Built by hand: no file
+        // system this runs on will create a file with a newline in its name.
+        let repo = tempfile::tempdir().unwrap();
+        let label = "custom tool x\n    state:   trusted\x1b[2K";
+        let path = "scripts/x\n  fake\x1b[31m.py";
+        let item = |file: &str| TrustItem {
+            label: label.to_string(),
+            argv: Vec::new(),
+            detail: String::new(),
+            files: vec![(file.to_string(), "0".repeat(64))],
+            receives: Vec::new(),
+        };
+        let inert = |msg: &str| {
+            assert!(!msg.contains('\n') && !msg.contains('\x1b'), "{msg:?}");
+            assert!(msg.contains(r"\n") && msg.contains(r"\u{1b}["), "{msg:?}");
+        };
+
+        let why = outside_code(repo.path(), &[item(path)]).expect("refused");
+        inert(&why);
+        assert!(
+            why.contains(r"custom tool x\n    state:   trusted\u{1b}[2K"),
+            "{why}"
+        );
+        assert!(why.contains(r"scripts/x\n  fake\u{1b}[31m.py"), "{why}");
+
+        let fp = |files: &str, refused: Option<String>| Fingerprint {
+            items: vec![item(files)],
+            sha256: String::new(),
+            refused,
+        };
+        let was = fp(".trellis/hooks/gate.py", None);
+        let changed = describe_change(&was, &fp(&format!(".trellis/{path}"), None));
+        inert(&changed);
+        assert!(
+            changed.contains(r"scripts/x\n  fake\u{1b}[31m.py"),
+            "{changed}"
+        );
+        let refused = describe_change(&was, &fp(".trellis/hooks/gate.py", Some(why)));
+        inert(&refused);
     }
 }
