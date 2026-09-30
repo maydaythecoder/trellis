@@ -2226,7 +2226,7 @@ fn run_body(
         // the only write path: dropping this future cannot interrupt a write
         // half-done, it can only stop new ones being asked for.
         let mut done_summary = None;
-        let out = tokio::select! {
+        let raced = tokio::select! {
             out = async {
                 let done = &mut done_summary;
                 match &mut driver {
@@ -2253,7 +2253,7 @@ fn run_body(
         // Only a loop that returned can have ended on `done`; an interrupt
         // leaves the slot as it was, so `/copy` keeps the previous summary
         // rather than one from a run the person stopped.
-        if out.is_some()
+        if raced.is_some()
             && let (Some(slot), Some(summary)) = (&extras.done, done_summary)
             && let Ok(mut slot) = slot.lock()
         {
@@ -2266,22 +2266,49 @@ fn run_body(
         if panic_in_run {
             panic!("injected: a panic inside the run");
         }
+        // On an interrupt `after_run` still runs (ADR 0023 §5, #138), and a
+        // second Ctrl-C stops it. The listener for that second press is
+        // registered here, before the awaits below, so a press made while
+        // the orchestrator answers is not lost.
+        let hook_on_interrupt = match (&raced, &tooling.hooks) {
+            (None, Some(h)) if h.config().after_run.is_some() => Some((h, next_interrupt())),
+            _ => None,
+        };
         // Asked after the race either way: the orchestrator is still alive
         // and still knows what this run wrote, which is what the rollback and
         // the trail both need.
         let touched = handle.touched().await;
         let gate_log = handle.gate_log().await;
-        // Before the rollback, so on a run that did not converge the
-        // rollback also undoes what the hook wrote in the worktree. Not on
-        // an interrupt: Ctrl-C means stop.
-        //
+        // Before the rollback, which comes after this block on every path,
+        // so the rollback also undoes what the hook wrote in the worktree.
+        // A hook that locked something or announced the run is told it
+        // ended, with `"reason": "interrupted"`. It is bounded by
+        // `[hooks] timeout_s` as every hook is; a second Ctrl-C drops it,
+        // which kills its process, and the rollback goes ahead.
+        if let Some((h, again)) = hook_on_interrupt {
+            let _ = writeln!(
+                out,
+                "hook:     after_run (reason: interrupted); Ctrl-C again stops it"
+            );
+            let payload = tooling::interrupted_json(&touched, &run_id);
+            tokio::select! {
+                r = h.after_run(&payload) => {
+                    if let Some(Err(e)) = r {
+                        let _ = writeln!(out, "hook:     after_run: {e}");
+                    }
+                }
+                () = again => {
+                    let _ = writeln!(out, "hook:     after_run stopped by a second Ctrl-C");
+                }
+            }
+        }
         // On a converged run the hook runs after the last check, so any byte
         // it writes is one no check saw. The worktree is fingerprinted
         // around it, and a difference (or a fingerprint that could not be
         // taken) demotes the run: it is reported, and the rollback below
         // removes the hook's bytes together with the run's (ADR 0023,
         // "after a pass").
-        let mut out = out;
+        let mut out = raced;
         // A run may not change what judges it (ADR 0023 §5). The guard runs
         // after every call that may change the tree, and a check is not one,
         // though a checker can write under `.trellis/` (a coverage file
@@ -2871,6 +2898,34 @@ fn on_run_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
             Err(payload) => std::panic::resume_unwind(payload),
         }
     })
+}
+
+/// Resolves at the next Ctrl-C after this call.
+///
+/// Not `tokio::signal::ctrl_c()`, which registers its listener only when
+/// first polled: a press between the call and the poll is not seen. These
+/// register now. A listener that cannot be registered never resolves, so
+/// the hook it would have stopped still ends at its own timeout. Must be
+/// called inside the runtime.
+fn next_interrupt() -> impl std::future::Future<Output = ()> {
+    #[cfg(unix)]
+    let listener = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+    #[cfg(windows)]
+    let listener = tokio::signal::windows::ctrl_c();
+    async move {
+        match listener {
+            Ok(mut l) => {
+                if l.recv().await.is_none() {
+                    // The runtime is going away; nothing more will arrive.
+                    std::future::pending::<()>().await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot listen for a second Ctrl-C");
+                std::future::pending::<()>().await;
+            }
+        }
+    }
 }
 
 fn interrupted_run(
