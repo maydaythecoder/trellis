@@ -3154,8 +3154,9 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
         // Only an applied edit or a created file changes the tree through
         // the orchestrator. A refused one is an action that happened and
         // wrote nothing, which is exactly what this distinguishes. What bash
-        // or a custom tool wrote is not known here and not claimed
-        // (ADR 0023 §3).
+        // or a custom tool changed is recorded in `changed` instead, from
+        // what the orchestrator carried back (ADR 0023 §7), and `wrote`
+        // keeps the meaning older trails gave it.
         wrote: match &t.call {
             ToolCall::Edit { .. } => t.observation.contains("applied: true"),
             ToolCall::WriteFile { path, .. } => {
@@ -3163,7 +3164,10 @@ fn action_from(index: usize, t: &trellis_loop::Turn) -> trellis_trail::Action {
             }
             _ => false,
         },
+        changed: Vec::new(),
+        changed_count: 0,
     }
+    .with_changed(&t.changed)
 }
 
 /// An observation reduced to one line a person can read in a list.
@@ -3340,6 +3344,8 @@ fn record_trail(
                 target: format!("{} {}", act.tool, act.target),
                 outcome: if approved { "approved" } else { "declined" }.to_string(),
                 wrote: false,
+                changed: Vec::new(),
+                changed_count: 0,
             });
             // A named gate's refusal, the same way: its own action, under
             // the turn and before the call it refused. None on a run where
@@ -3353,6 +3359,8 @@ fn record_trail(
                     target: summarise(&g.target),
                     outcome: summarise(&format!("denied: {}", g.reason)),
                     wrote: false,
+                    changed: Vec::new(),
+                    changed_count: 0,
                 })
                 .collect();
             let at = act.turn;
@@ -4906,6 +4914,7 @@ mod interrupt_tests {
             radius_summarised: summarised,
             human: None,
             may_have_changed_tree: false,
+            changed: Vec::new(),
         };
         let transcript = |turns| trellis_loop::Transcript {
             task: "a wide radius".to_string(),
@@ -5307,6 +5316,7 @@ mod init_tests {
             radius_summarised: None,
             human: None,
             may_have_changed_tree: false,
+            changed: Vec::new(),
         }
     }
 
@@ -5500,6 +5510,42 @@ mod init_tests {
             ),
         );
         assert_eq!(a.target, "Tests on whole repository", "{a:?}");
+    }
+
+    #[test]
+    fn changed_paths_reach_the_trail_action_cut_to_fifty_with_the_true_count() {
+        // The risk: the paths a bash call changed reaching the turn and
+        // stopping there, or reaching the trail whole. And `wrote` keeping
+        // the meaning older trails gave it: set by `edit` and `write_file`.
+        let mut t = turn(
+            trellis_loop::ToolCall::Bash {
+                command: "python gen.py".into(),
+            },
+            "exit 0
+carried back from the clone: app/util.py",
+        );
+        t.changed = vec!["app/util.py".into()];
+        let a = action_from(0, &t);
+        assert_eq!(a.changed, ["app/util.py"]);
+        assert_eq!(a.changed_count, 1);
+        assert!(!a.wrote);
+
+        t.changed = (0..60).map(|i| format!("pkg/f{i:02}.py")).collect();
+        let a = action_from(0, &t);
+        assert_eq!(a.changed.len(), 50);
+        assert_eq!(a.changed[..], t.changed[..50]);
+        assert_eq!(a.changed_count, 60);
+
+        let read = action_from(
+            1,
+            &turn(
+                trellis_loop::ToolCall::ReadFile {
+                    path: "app/util.py".into(),
+                },
+                "def helper(): ...",
+            ),
+        );
+        assert!(read.changed.is_empty() && read.changed_count == 0);
     }
 
     #[test]

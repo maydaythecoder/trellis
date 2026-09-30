@@ -1729,3 +1729,131 @@ fn ask_human_is_offered_only_when_added_and_takes_at_most_eight_options() {
         .to_string();
     assert!(blank.contains("non-empty"), "{blank}");
 }
+
+// ---------------------------------------------------------------------------
+// What a `bash` or custom-tool call changed, as the trail records it
+// (ADR 0023 §7): the carry-back's own list.
+// ---------------------------------------------------------------------------
+
+/// Appends a line to each of `paths`, in the platform shell's syntax.
+fn append_to(paths: &[String]) -> String {
+    let (sep, join) = if cfg!(windows) {
+        ("\\", "& ")
+    } else {
+        ("/", "; ")
+    };
+    paths
+        .iter()
+        .map(|p| format!("echo changed>> {}", p.replace('/', sep)))
+        .collect::<Vec<_>>()
+        .join(join)
+}
+
+#[tokio::test]
+async fn changed_paths_a_bash_call_that_edits_a_file_records_it_on_its_turn() {
+    // The risk (#139): a bash call rewrote a file and nothing in the run's
+    // record said which call did it; `proposed` names the file, not the
+    // action. And the other half: a call that changed nothing claims
+    // nothing, and neither does a read, whose `changed` stays empty.
+    let d = git_repo(); // bash runs in a clone of it (ADR 0032)
+    let tools = with_bash(&[], true, Duration::from_secs(60));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .spawn();
+    let edit = serde_json::to_string(&append_to(&["app/util.py".to_string()])).unwrap();
+    // A file the command creates is not carried back, so it did not change
+    // the repository and is not listed.
+    let create = if cfg!(windows) {
+        "echo x> made.txt"
+    } else {
+        "echo x > made.txt"
+    };
+    let mut m = script(
+        &tools,
+        &format!(
+            r#"{{"steps":[
+                {{"tool":"bash","command":{edit}}},
+                {{"tool":"bash","command":"{create}"}},
+                {{"tool":"read_file","path":"app/util.py"}},
+                {{"tool":"done","summary":"ok"}}
+            ]}}"#
+        ),
+    );
+    let (_outcome, t) = run("change it", &mut m, &orch, &budget()).await;
+    assert!(
+        std::fs::read_to_string(d.path().join("app/util.py"))
+            .unwrap()
+            .contains("changed"),
+        "{:?}",
+        t.turns[0]
+    );
+    assert_eq!(t.turns[0].changed, ["app/util.py"], "{:?}", t.turns[0]);
+    assert!(!d.path().join("made.txt").exists());
+    assert!(t.turns[1].changed.is_empty(), "{:?}", t.turns[1]);
+    assert!(t.turns[2].changed.is_empty(), "{:?}", t.turns[2]);
+}
+
+#[tokio::test]
+async fn changed_paths_sixty_files_a_command_changes_all_reach_the_turn() {
+    // The risk: the turn holding a cut list, so the trail's count would be
+    // the cap rather than the truth. The turn carries every path; the trail
+    // keeps the first fifty and the count of sixty (`with_changed`).
+    let d = git_repo();
+    std::fs::create_dir_all(d.path().join("pkg")).unwrap();
+    let sixty: Vec<String> = (0..60).map(|i| format!("pkg/f{i:02}.txt")).collect();
+    for p in &sixty {
+        std::fs::write(d.path().join(p), "start\n").unwrap();
+    }
+    let tools = with_bash(&[], true, Duration::from_secs(120));
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools)
+        .spawn();
+    let out = orch
+        .call(&ToolCall::Bash {
+            command: append_to(&sixty),
+        })
+        .await;
+    let mut changed = out.changed.clone();
+    changed.sort();
+    assert_eq!(changed, sixty, "{:?}", out.result);
+    assert_eq!(orch.touched().await.len(), 60);
+}
+
+#[tokio::test]
+async fn changed_paths_a_custom_tool_that_fails_still_records_what_came_back() {
+    // A failing command's changes are carried back too (ADR 0032), so its
+    // `Error` result must not drop them from the record: the repository
+    // changed whatever the exit code said.
+    let d = git_repo();
+    let mut command = shell_argv(&format!(
+        "{}{}exit 3",
+        append_to(&["app/util.py".to_string()]),
+        if cfg!(windows) { "& " } else { "; " }
+    ));
+    let tool = CustomTool {
+        name: "mangle".into(),
+        description: "Change a file, then fail.".into(),
+        command: std::mem::take(&mut command),
+        schema: serde_json::json!({ "type": "object", "properties": {} }),
+        timeout_s: None,
+    };
+    let tools = ToolSet::build(ToolSelection {
+        custom: vec![tool],
+        ..Default::default()
+    })
+    .unwrap();
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(tools.clone())
+        .spawn();
+    let mut m = script(
+        &tools,
+        r#"{"steps":[{"tool":"mangle"},{"tool":"done","summary":"ok"}]}"#,
+    );
+    let (_outcome, t) = run("mangle", &mut m, &orch, &budget()).await;
+    assert!(
+        t.turns[0].observation.contains("exited with 3"),
+        "{:?}",
+        t.turns[0]
+    );
+    assert_eq!(t.turns[0].changed, ["app/util.py"], "{:?}", t.turns[0]);
+}

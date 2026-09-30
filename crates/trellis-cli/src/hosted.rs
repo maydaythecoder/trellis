@@ -388,6 +388,8 @@ pub(crate) fn compaction_action(e: &Compacted) -> trellis_trail::Action {
             if e.fits { "" } else { ", still over" }
         ),
         wrote: false,
+        changed: Vec::new(),
+        changed_count: 0,
     }
 }
 
@@ -417,6 +419,8 @@ pub(crate) fn requested_compaction_action(e: &RequestedCompaction) -> trellis_tr
             e.elided_bytes, e.bytes_after, e.bytes_before
         ),
         wrote: false,
+        changed: Vec::new(),
+        changed_count: 0,
     }
 }
 
