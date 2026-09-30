@@ -81,9 +81,11 @@ pub(crate) fn run_with(
         out,
         "trusted. Any change to the above makes this repository untrusted again."
     )?;
-    // Every item here is a hook, a custom tool, bash or a process agent:
-    // each one writes with the user's authority, so trellis is no longer
-    // the only writer and rollback is best-effort against it (ADR 0023 §5).
+    // Every item here is a hook, a custom tool, bash or a process agent.
+    // Each runs in a throwaway clone (ADR 0032), but with the user's
+    // authority and no OS sandbox: one that reaches the repository by
+    // absolute path is still a writer trellis does not control, and
+    // rollback is best-effort against it (ADR 0032 "Limits").
     writeln!(out, "{ROLLBACK_LIMIT}")?;
     Ok(())
 }
@@ -133,10 +135,14 @@ pub(crate) fn changed_items(store: &TrustStore, root: &Path, fp: &Fingerprint) -
 }
 
 /// Printed when trust is recorded. One line, plain: what the person gives
-/// up by trusting these, which no git check after the fact restores.
-pub(crate) const ROLLBACK_LIMIT: &str = "Note: these run unsandboxed with your permissions and \
-     can write anywhere in the repository, .git included, so rollback undoes trellis's own \
-     edits but is best-effort for theirs (ADR 0023 §5).";
+/// up by trusting these, which no git check after the fact restores. The
+/// clone (ADR 0032) contains a writer that edits where it stands; it is
+/// not an OS sandbox, so what is named here is what ADR 0032 "Limits"
+/// lists, and the text claims no more isolation than that.
+pub(crate) const ROLLBACK_LIMIT: &str = "Note: these run in a throwaway clone of the \
+     repository, not an OS sandbox, with your permissions: they can read anything you can \
+     and use the network, and one that reaches the repository by absolute path can write \
+     there, .git included, where rollback is best-effort (ADR 0032 \"Limits\").";
 
 /// Each item, its argv, the files it names with their digests, and what else
 /// decides what runs. Printed whole: a summary of what will execute is not
@@ -231,6 +237,22 @@ mod tests {
             "recording trust in something that writes says what rollback no longer \
              guarantees: {recorded}"
         );
+        // #203: the note once said these writers run in the repository and
+        // can write anywhere in it, which ADR 0032 made untrue. It names the
+        // clone and the limit that remains, and the section that lists it.
+        for fact in [
+            "throwaway clone",
+            "not an OS sandbox",
+            "by absolute path",
+            "best-effort",
+            "ADR 0032 \"Limits\"",
+        ] {
+            assert!(recorded.contains(fact), "missing {fact:?}: {recorded}");
+        }
+        assert!(
+            !recorded.contains("can write anywhere in the repository"),
+            "{recorded}"
+        );
 
         std::fs::write(
             d.path().join(".trellis/hooks/pre.py"),
@@ -266,6 +288,7 @@ mod tests {
         assert!(!home.path().join("trust.json").exists(), "nothing recorded");
         let shown = String::from_utf8(out).unwrap();
         assert!(!shown.contains(ROLLBACK_LIMIT), "{shown}");
+        assert!(!shown.contains("ADR 0032 \"Limits\""), "{shown}");
     }
 
     #[test]

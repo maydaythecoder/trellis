@@ -24,10 +24,14 @@ merge passed CI on Linux and Windows. The findings split into two classes:
 
 For the second class, ADR 0023 §5 and ADR 0026 §11 now state the limit as a
 first-class section, "What rollback guarantees when trellis is not the only
-writer". ADR 0009's guarantee holds for trellis's own edits and is
-best-effort for these writers. The real fix is sandboxing, row 13.3 below,
-which is still deferred. The rows below for `bash`, hooks, custom tools and
-process agents mean "built, with that limit".
+writer". Since ADR 0032 all four run in a throwaway clone of the
+repository, and their edits come back through trellis's own write path.
+The clone is not an OS sandbox: a writer that reaches the repository by
+absolute path can still write there, `.git` included, and against that
+writer ADR 0009's guarantee is best-effort; nor are network access or
+reads outside the clone contained (ADR 0032 "Limits"). An OS sandbox or
+container, row 13.3 below, is still deferred. The rows below for `bash`,
+hooks, custom tools and process agents mean "built, with that limit".
 
 **When the waves landed** (2026-09-27):
 
