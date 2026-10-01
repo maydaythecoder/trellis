@@ -31,7 +31,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = trellis_vcs::command()
         .args(args)
         .current_dir(root)
         .output()
@@ -426,11 +426,16 @@ fn session_ask(d: &Path, input: &str) -> (String, String) {
 }
 
 fn head(d: &Path) -> String {
-    let out = Command::new("git")
+    let out = trellis_vcs::command()
         .args(["rev-parse", "HEAD"])
         .current_dir(d)
         .output()
         .unwrap();
+    assert!(
+        out.status.success(),
+        "git rev-parse HEAD: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 

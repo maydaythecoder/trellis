@@ -5295,13 +5295,7 @@ mod doctor_tests {
 ",
         )
         .unwrap();
-        for args in [vec!["add", "-A"], vec!["commit", "-qm", "init"]] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&dir)
-                .output()
-                .unwrap();
-        }
+        crate::testutil::git_commit_all(&dir, "init");
         dir
     }
 
@@ -5400,11 +5394,7 @@ mod doctor_tests {
         let dir = std::env::temp_dir().join(format!("trellis-doctor-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dir)
-            .output()
-            .unwrap();
+        crate::testutil::git_ok(&dir, &["init", "-q"]);
         let cfg = config::RepoConfig::load(&dir).unwrap();
         let lines = repo_lines(&dir, &cfg).join(
             "

@@ -14,7 +14,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = trellis_vcs::command()
         .args(args)
         .current_dir(root)
         .output()

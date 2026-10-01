@@ -1478,11 +1478,7 @@ mod tests {
         let _s = session(d.path());
         git_repo(d.path());
         std::fs::write(d.path().join("app/m.py"), "def helper():\n    return 7\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(d.path())
-            .output()
-            .expect("git add");
+        crate::testutil::git_ok(d.path(), &["add", "-A"]);
 
         let raw = trellis_vcs::diff(d.path()).unwrap();
         assert!(
@@ -1564,15 +1560,8 @@ mod tests {
 
         s.dispatch("/accept a message with several words")
             .expect("commits");
-        let log = std::process::Command::new("git")
-            .args(["log", "-1", "--pretty=%s"])
-            .current_dir(d.path())
-            .output()
-            .unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&log.stdout).trim(),
-            "a message with several words"
-        );
+        let log = crate::testutil::git_stdout(d.path(), &["log", "-1", "--pretty=%s"]);
+        assert_eq!(log.trim(), "a message with several words");
     }
 
     // ---- S6: degradation UX at the approval prompt ---------------------
@@ -1614,12 +1603,7 @@ mod tests {
         s.accept_with("test commit", &mut || answers.next())
             .unwrap();
 
-        let log = std::process::Command::new("git")
-            .args(["log", "-1", "--format=%B"])
-            .current_dir(d.path())
-            .output()
-            .unwrap();
-        let msg = String::from_utf8_lossy(&log.stdout);
+        let msg = crate::testutil::git_stdout(d.path(), &["log", "-1", "--format=%B"]);
         assert!(msg.contains("test commit"), "{msg}");
         assert!(
             msg.contains("Coverage at approval"),
@@ -1949,12 +1933,7 @@ def other():
     }
     /// The message of the commit `accept` just wrote.
     fn head_message(root: &Path) -> String {
-        let out = std::process::Command::new("git")
-            .args(["log", "-1", "--format=%B"])
-            .current_dir(root)
-            .output()
-            .expect("git log");
-        String::from_utf8_lossy(&out.stdout).to_string()
+        crate::testutil::git_stdout(root, &["log", "-1", "--format=%B"])
     }
 
     #[test]
