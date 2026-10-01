@@ -4915,12 +4915,28 @@ mod interrupt_tests {
         let dir = crate::testutil::scratch(&format!("cli-test-{name}"));
         crate::testutil::git_init(&dir);
         std::fs::write(dir.join("a.py"), "def f():\n    return 1\n").unwrap();
-        for args in [vec!["add", "-A"], vec!["commit", "-qm", "init"]] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&dir)
-                .output()
-                .unwrap();
+        // The file's mtime is pinned to a fixed past second, as a file in a
+        // real repository was checked out long before the run (#238). Git
+        // matches a worktree file to its index entry by stat, and the
+        // Ubuntu build the WSL runner uses compares whole seconds. Written
+        // milliseconds before its commit, `a.py` was one clock step from a
+        // same-size edit in its own second: on the runner the VM's clock
+        // went back about 110 s between the fixture's commit and the test's
+        // edit (the leftover repository's reflog has the commit at
+        // 1790811766 and the later reset at 1790811655), the edit matched
+        // the stale entry in size, inode, mtime and ctime second, and the
+        // index was newer than that second, so git did not re-read the
+        // file. `reset --hard` left the edit in place and
+        // `rollback_and_report` said, correctly, that the worktree was not
+        // restored. No clock step reaches back to 2001.
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("a.py"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .unwrap();
+        for args in [["add", "-A"].as_slice(), &["commit", "-qm", "init"]] {
+            crate::testutil::git_ok(&dir, args);
         }
         dir
     }
@@ -5251,7 +5267,14 @@ mod interrupt_tests {
         let snap = trellis_vcs::snapshot(&dir).unwrap();
         std::fs::write(dir.join("a.py"), "def f():\n    return 5\n").unwrap();
 
-        assert!(rollback_and_report(&snap, &mut Vec::new()));
+        // What it printed goes into the failure: on the runner it went to
+        // a discarded buffer, and the log said only that it returned false.
+        let mut out = Vec::new();
+        assert!(
+            rollback_and_report(&snap, &mut out),
+            "rollback_and_report said:\n{}",
+            String::from_utf8_lossy(&out)
+        );
         assert!(snap.is_restored().unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
