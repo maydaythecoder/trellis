@@ -51,6 +51,11 @@ scripts/checks/gitleaks-range.sh "$GATE_BASE"
 # fail cannot pass.
 scripts/checks/workflows-locked.sh --self-test
 scripts/checks/workflows-locked.sh
+# trellis-cli's test fixtures spawn git only through trellis_vcs, with the
+# exit status asserted; tests/hygiene.rs exempts test code, so this is the
+# check that keeps a bare spawn from coming back (#240, #241).
+scripts/checks/no-bare-git-in-cli-tests.sh --self-test
+scripts/checks/no-bare-git-in-cli-tests.sh
 # The pattern is shared with the pre-commit hook, so the two cannot drift
 # (#206).
 keys=$(scripts/checks/key-pattern.sh)
