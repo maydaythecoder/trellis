@@ -34,8 +34,12 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
+/// `git <args>` in `root` through `trellis_vcs::command()`, as trellis runs
+/// it, panicking unless it exits 0; returns what git printed. A fixture or
+/// read-back that failed silently left a test asserting on a repository
+/// that was not the one it built (#240).
+fn git(root: &Path, args: &[&str]) -> String {
+    let out = trellis_vcs::command()
         .args(args)
         .current_dir(root)
         .output()
@@ -45,6 +49,7 @@ fn git(root: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// A git repository holding a two-module Python package.
@@ -401,13 +406,7 @@ fn a_missing_scripted_model_fails_before_anything_is_touched() {
     );
     assert!(!out.status.success(), "{}", combined(&out));
     assert!(
-        std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&d)
-            .output()
-            .unwrap()
-            .stdout
-            .is_empty(),
+        porcelain(&d).is_empty(),
         "a failed start must leave the tree exactly as it was"
     );
     let _ = std::fs::remove_dir_all(&d);
@@ -803,13 +802,8 @@ fn an_unreachable_runtime_costs_nothing() {
                 .unwrap_or(true),
         "a run that never started must not write a trail"
     );
-    let status = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&d)
-        .output()
-        .unwrap();
     assert!(
-        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        porcelain(&d).trim().is_empty(),
         "the worktree must be untouched"
     );
 
@@ -2260,12 +2254,7 @@ fn repo_with_vault(name: &str, config: &str) -> (PathBuf, String) {
 }
 
 fn porcelain(d: &Path) -> String {
-    let out = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(d)
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout).to_string()
+    git(d, &["status", "--porcelain"])
 }
 
 #[test]
@@ -2736,16 +2725,8 @@ fn approve_mode_without_a_terminal_refuses_before_anything_is_touched() {
         !d.join(".trellis/runs").exists(),
         "no trail for a run that never began"
     );
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&d)
-        .output()
-        .unwrap();
-    assert!(
-        status.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&status.stdout)
-    );
+    let status = porcelain(&d);
+    assert!(status.is_empty(), "{status}");
 
     // And `--auto` is the way out it names.
     let out = run(&d, &["run", "--auto", "--model", &spec, "change greet"]);
@@ -3001,16 +2982,7 @@ fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
     // the run converged with nothing to review and the commit stayed on
     // the user's branch, past any rollback.
     let (d, run) = ignored_model_fixture("model-commit");
-    let head = String::from_utf8_lossy(
-        &Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&d)
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .trim()
-    .to_string();
+    let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
     // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
     // command that names the repository is the writer this guard is still for.
     let p = d.display();
@@ -3041,13 +3013,9 @@ fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
     assert!(said.contains("NOT CONVERGED"), "{said}");
     assert!(said.contains("HEAD moved"), "{said}");
     assert!(!d.join("b.py").exists(), "{said}");
-    let parent = Command::new("git")
-        .args(["rev-parse", "HEAD~1"])
-        .current_dir(&d)
-        .output()
-        .unwrap();
+    let parent = git(&d, &["rev-parse", "HEAD~1"]);
     assert_eq!(
-        String::from_utf8_lossy(&parent.stdout).trim(),
+        parent.trim(),
         head,
         "only the trail's commit sits on the snapshot:\n{said}"
     );
@@ -3103,15 +3071,26 @@ fn script_beside(d: &Path, name: &str, steps: serde_json::Value) -> String {
 }
 
 /// `core.fsmonitor` as the repository's config has it, if set.
+///
+/// `--local`, because `trellis_vcs::command()` passes `-c core.fsmonitor=`
+/// and `config --get` without a scope reports that command-line value, so
+/// every call would read `Some("")` and the `None` assertions could not
+/// pass. Exit 1 is git's "not set"; any other failure is the fixture's.
 fn fsmonitor(d: &Path) -> Option<String> {
-    let o = Command::new("git")
-        .args(["config", "--get", "core.fsmonitor"])
+    let o = trellis_vcs::command()
+        .args(["config", "--local", "--get", "core.fsmonitor"])
         .current_dir(d)
         .output()
         .unwrap();
-    o.status
-        .success()
-        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    match o.status.code() {
+        Some(0) => Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Some(1) => None,
+        _ => panic!(
+            "git config --local --get core.fsmonitor failed ({}): {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr)
+        ),
+    }
 }
 
 #[test]
@@ -3210,6 +3189,10 @@ fn a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run() 
     // back in place runs it, so the assertion above is about trellis.
     git(&d, &["config", "core.fsmonitor", &slash(&fsm)]);
     std::fs::write(d.join("a.py"), "x = 3\n").unwrap();
+    // Bare `git` on purpose, the one fixture spawn that is: the control
+    // needs git without trellis_vcs's overrides, which would switch the
+    // fsmonitor off. scripts/checks/no-bare-git-in-cli-tests.sh allows
+    // exactly this one.
     let _ = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(&d)

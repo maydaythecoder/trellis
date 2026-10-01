@@ -55,6 +55,14 @@ pub(crate) fn git_init(dir: &Path) {
 /// `trellis_vcs` so a fixture runs git as trellis does, with no hook or
 /// fsmonitor from the environment's configuration.
 pub(crate) fn git_ok(dir: &Path, args: &[&str]) {
+    git_stdout(dir, args);
+}
+
+/// [`git_ok`], returning what git printed: for a test that reads the
+/// repository back (`log`, `status`, `rev-parse`). A read that failed would
+/// otherwise come back as empty output, which reads as "clean" or "no
+/// commit" and lets the assertion on it pass or fail for the wrong reason.
+pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> String {
     let out = trellis_vcs::command()
         .args(args)
         .current_dir(dir)
@@ -68,17 +76,17 @@ pub(crate) fn git_ok(dir: &Path, args: &[&str]) {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Stages everything and commits it.
+/// Stages everything and commits it, through [`git_ok`].
+///
+/// It used to spawn bare `git` and drop both exit statuses (#240), so a
+/// fixture whose commit failed (nothing staged, no identity) went on with
+/// no commit and failed later at an unrelated assertion.
 pub(crate) fn git_commit_all(dir: &Path, message: &str) {
-    for args in [["add", "-A"].as_slice(), &["commit", "-qm", message]] {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git");
-    }
+    git_ok(dir, &["add", "-A"]);
+    git_ok(dir, &["commit", "-qm", message]);
 }
 
 /// The trust store every test in this process uses, never the user's.
