@@ -1,6 +1,83 @@
-crates/trellis-model/src/catalog.rs:128:27: replace / with % in CatalogEntry::gib
-crates/trellis-model/src/catalog.rs:128:27: replace / with * in CatalogEntry::gib
-crates/trellis-model/src/catalog.rs:128:9: replace CatalogEntry::gib -> f64 with -1.0
-crates/trellis-model/src/catalog.rs:128:9: replace CatalogEntry::gib -> f64 with 1.0
-crates/trellis-model/src/catalog.rs:128:9: replace CatalogEntry::gib -> f64 with 0.0
-crates/trellis-model/src/tier.rs:104:9: replace BatchingCapability::supports_multi_agent -> bool with false
+crates/trellis-model/src/lib.rs:51:5: replace fuzz_parse_response with ()
+crates/trellis-model/src/hosted.rs:42:9: replace Protocol::parse_config -> Option<Self> with None
+crates/trellis-model/src/hosted.rs:43:13: delete match arm "openai" | "openai-chat" in Protocol::parse_config
+crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with ""
+crates/trellis-model/src/hosted.rs:44:13: delete match arm "anthropic" in Protocol::parse_config
+crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with "xyzzy"
+crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with ""
+crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with "xyzzy"
+crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with None
+crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with Some(Default::default())
+crates/trellis-model/src/hosted.rs:79:13: delete match arm "off" in Thinking::parse
+crates/trellis-model/src/hosted.rs:80:13: delete match arm "low" in Thinking::parse
+crates/trellis-model/src/hosted.rs:81:13: delete match arm "medium" in Thinking::parse
+crates/trellis-model/src/hosted.rs:82:13: delete match arm "high" in Thinking::parse
+crates/trellis-model/src/hosted.rs:422:25: delete match arm Some("max_tokens") in parse_reply
+crates/trellis-model/src/hosted.rs:425:25: delete match arm Some("refusal") in parse_reply
+crates/trellis-model/src/hosted.rs:488:5: replace retryable -> bool with true
+crates/trellis-model/src/hosted.rs:517:33: replace && with || in retry_delay_at
+crates/trellis-model/src/hosted.rs:561:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:560:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:558:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:559:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:557:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:39: replace % with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:39: replace % with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:64: replace == with != in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:58: replace % with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:58: replace % with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:580:9: delete match arm 4 | 6 | 9 | 11 in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:78: replace > with >= in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with ""
+crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with "xyzzy"
+crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with ""
+crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with "xyzzy"
+crates/trellis-model/src/hosted.rs:718:9: replace HostedClient::thinking -> Thinking with Default::default()
+crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with None
+crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("")
+crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("xyzzy")
+crates/trellis-model/src/hosted.rs:728:9: replace HostedClient::body -> Value with Default::default()
+crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with true in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with false in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:821:54: replace < with == in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:821:54: replace < with > in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:821:54: replace < with <= in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with String::new()
+crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with "xyzzy".into()
+crates/trellis-model/src/image.rs:16:45: replace * with +
+crates/trellis-model/src/image.rs:16:38: replace * with +
+crates/trellis-model/src/image.rs:31:9: replace <impl std::fmt::Debug for Image>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 0
+crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 1
+crates/trellis-model/src/image.rs:79:9: replace Image::base64 -> &str with "xyzzy"
+crates/trellis-model/src/image.rs:106:40: replace | with ^ in base64
+crates/trellis-model/src/pull.rs:74:5: replace partial_name -> String with "xyzzy".into()
+crates/trellis-model/src/pull.rs:81:5: replace already_here -> Result<Option<PathBuf>, PullError> with Ok(None)
+crates/trellis-model/src/pull.rs:120:24: delete ! in pull
+crates/trellis-model/src/pull.rs:175:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in len
+crates/trellis-model/src/runtime.rs:405:22: replace > with >= in RuntimeClient::request
+crates/trellis-model/src/runtime.rs:428:5: replace head -> String with String::new()
+crates/trellis-model/src/runtime.rs:428:5: replace head -> String with "xyzzy".into()
+crates/trellis-model/src/secret.rs:26:9: replace ApiKey::from_env -> Option<Self> with None
+crates/trellis-model/src/secret.rs:60:29: replace < with == in ApiKey::scrub
+crates/trellis-model/src/secret.rs:60:29: replace < with <= in ApiKey::scrub
+crates/trellis-model/src/transport.rs:313:36: replace * with +
+crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with true in post
+crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with false in post
+crates/trellis-model/src/transport.rs:471:5: replace tls_exchange -> Result<Response, SendError> with Ok(Default::default())
+crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with true in exchange
+crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with false in exchange
+crates/trellis-model/src/transport.rs:518:34: replace > with >= in exchange
+crates/trellis-model/src/transport.rs:518:30: replace + with * in exchange
+crates/trellis-model/src/transport.rs:527:56: replace > with >= in exchange
+crates/trellis-model/src/transport.rs:533:32: replace == with != in exchange
+crates/trellis-model/src/transport.rs:595:27: replace += with *= in Framer::complete
+crates/trellis-model/src/transport.rs:595:40: replace - with + in Framer::complete
+crates/trellis-model/src/transport.rs:707:67: replace + with - in chunked
+crates/trellis-model/src/transport.rs:707:67: replace + with * in chunked
+crates/trellis-model/src/transport.rs:710:39: replace > with == in chunked
+crates/trellis-model/src/transport.rs:710:39: replace > with >= in chunked
+crates/trellis-model/src/transport.rs:726:31: replace < with <= in chunked
+crates/trellis-model/src/transport.rs:735:31: replace < with <= in chunked
+crates/trellis-model/src/transport.rs:738:27: replace += with -= in chunked
+crates/trellis-model/src/transport.rs:802:20: replace < with <= in dechunk

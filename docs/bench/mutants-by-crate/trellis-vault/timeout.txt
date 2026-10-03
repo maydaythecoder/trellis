@@ -1,0 +1,20 @@
+crates/trellis-vault/src/compile.rs:52:15: replace += with *= in link_stems
+crates/trellis-vault/src/compile.rs:60:5: replace match_link -> Option<(&str, usize)> with Some(("", 0))
+crates/trellis-vault/src/compile.rs:60:5: replace match_link -> Option<(&str, usize)> with Some(("xyzzy", 0))
+crates/trellis-vault/src/dates.rs:351:16: replace += with *= in reconcile
+crates/trellis-vault/src/dates.rs:374:11: replace += with *= in reconcile
+crates/trellis-vault/src/edit.rs:239:12: delete ! in available_path
+crates/trellis-vault/src/edit.rs:242:16: replace += with *= in available_path
+crates/trellis-vault/src/graph.rs:273:16: replace += with *= in Graph::build
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((0, 0, ""))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((0, 0, "xyzzy"))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((0, 1, ""))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((0, 1, "xyzzy"))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((1, 0, ""))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((1, 0, "xyzzy"))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((1, 1, ""))
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with Some((1, 1, "xyzzy"))
+crates/trellis-vault/src/refs.rs:100:15: replace + with - in next_link
+crates/trellis-vault/src/refs.rs:100:15: replace + with * in next_link
+crates/trellis-vault/src/refs.rs:221:19: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:221:19: replace + with * in rewrite_links
