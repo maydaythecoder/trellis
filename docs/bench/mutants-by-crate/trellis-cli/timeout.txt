@@ -1,1 +1,18 @@
-crates/trellis-cli/src/tui/mod.rs:181:5: replace spawn_run with ()
+crates/trellis-cli/src/main.rs:983:5: replace models_dir -> Result<PathBuf> with Ok(Default::default())
+crates/trellis-cli/src/main.rs:3477:20: delete ! in record_trail
+crates/trellis-cli/src/hosted.rs:48:42: delete ! in resolve
+crates/trellis-cli/src/install.rs:543:5: replace check_bounds -> Result<()> with Ok(())
+crates/trellis-cli/src/install.rs:543:19: replace > with == in check_bounds
+crates/trellis-cli/src/install.rs:543:19: replace > with < in check_bounds
+crates/trellis-cli/src/process_agent.rs:715:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
+crates/trellis-cli/src/output.rs:253:9: replace Abort::observed -> bool with false
+crates/trellis-cli/src/output.rs:263:5: replace aborted with ()
+crates/trellis-cli/src/rpc.rs:283:24: replace += with -= in SteeringPort::close
+crates/trellis-cli/src/rpc.rs:613:24: replace match guard !r.thread.is_finished() with false in Server::in_flight
+crates/trellis-cli/src/rpc.rs:613:24: delete ! in Server::in_flight
+crates/trellis-cli/src/rpc.rs:745:37: replace && with || in Server::abort_run
+crates/trellis-cli/src/rpc.rs:745:19: delete ! in Server::abort_run
+crates/trellis-cli/src/rpc.rs:994:47: replace || with && in Chain::one
+crates/trellis-cli/src/templates.rs:322:30: replace + with - in substitute
+crates/trellis-cli/src/templates.rs:322:30: replace + with * in substitute
+crates/trellis-cli/src/doctor_extra.rs:207:57: replace == with != in services_line

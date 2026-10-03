@@ -1,0 +1,897 @@
+crates/trellis-queue/src/lib.rs:98:9: replace State::dir_name -> &'static str with ""
+crates/trellis-queue/src/lib.rs:98:9: replace State::dir_name -> &'static str with "xyzzy"
+crates/trellis-queue/src/lib.rs:182:9: replace Status::is_terminal -> bool with true
+crates/trellis-queue/src/lib.rs:182:9: replace Status::is_terminal -> bool with false
+crates/trellis-queue/src/lib.rs:215:9: replace Blocked::describe -> String with String::new()
+crates/trellis-queue/src/lib.rs:215:9: replace Blocked::describe -> String with "xyzzy".into()
+crates/trellis-queue/src/lib.rs:268:9: replace Priority::is_default -> bool with true
+crates/trellis-queue/src/lib.rs:309:5: replace is_false -> bool with true
+crates/trellis-queue/src/lib.rs:268:9: replace Priority::is_default -> bool with false
+crates/trellis-queue/src/lib.rs:268:15: replace == with != in Priority::is_default
+crates/trellis-queue/src/lib.rs:309:5: replace is_false -> bool with false
+crates/trellis-queue/src/lib.rs:309:5: delete ! in is_false
+crates/trellis-queue/src/lib.rs:397:25: replace match guard st.home() == s with false in Task::status_in
+crates/trellis-queue/src/lib.rs:397:35: replace == with != in Task::status_in
+crates/trellis-queue/src/lib.rs:404:13: replace && with || in Task::awaiting_approval
+crates/trellis-queue/src/lib.rs:403:9: replace Task::awaiting_approval -> bool with true
+crates/trellis-queue/src/lib.rs:404:16: delete ! in Task::awaiting_approval
+crates/trellis-queue/src/lib.rs:403:9: replace Task::awaiting_approval -> bool with false
+crates/trellis-queue/src/lib.rs:414:9: replace Task::note with ()
+crates/trellis-queue/src/lib.rs:435:9: replace Task::answers_since_question -> Option<String> with Some("xyzzy".into())
+crates/trellis-queue/src/lib.rs:435:9: replace Task::answers_since_question -> Option<String> with Some(String::new())
+crates/trellis-queue/src/lib.rs:435:9: replace Task::answers_since_question -> Option<String> with None
+crates/trellis-queue/src/lib.rs:435:58: replace == with != in Task::answers_since_question
+crates/trellis-queue/src/lib.rs:442:49: replace + with - in Task::answers_since_question
+crates/trellis-queue/src/lib.rs:444:33: replace == with != in Task::answers_since_question
+crates/trellis-queue/src/lib.rs:468:9: replace Task::note_from_person -> String with String::new()
+crates/trellis-queue/src/lib.rs:468:9: replace Task::note_from_person -> String with "xyzzy".into()
+crates/trellis-queue/src/lib.rs:484:5: replace question_note -> String with String::new()
+crates/trellis-queue/src/lib.rs:484:5: replace question_note -> String with "xyzzy".into()
+crates/trellis-queue/src/lib.rs:485:8: delete ! in question_note
+crates/trellis-queue/src/lib.rs:546:9: replace Index::status -> Option<Status> with None
+crates/trellis-queue/src/lib.rs:553:9: replace Index::unresolved -> Vec<&'a str> with vec![]
+crates/trellis-queue/src/lib.rs:553:9: replace Index::unresolved -> Vec<&'a str> with vec![""]
+crates/trellis-queue/src/lib.rs:555:40: replace != with == in Index::unresolved
+crates/trellis-queue/src/lib.rs:553:9: replace Index::unresolved -> Vec<&'a str> with vec!["xyzzy"]
+crates/trellis-queue/src/lib.rs:571:5: replace clear_claim with ()
+crates/trellis-queue/src/lib.rs:607:9: replace Queue::trellis_dir -> PathBuf with Default::default()
+crates/trellis-queue/src/lib.rs:629:9: replace Queue::state_dir -> PathBuf with Default::default()
+crates/trellis-queue/src/lib.rs:625:9: replace Queue::log -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/lib.rs:614:9: replace Queue::locks -> PathBuf with Default::default()
+crates/trellis-queue/src/lib.rs:633:9: replace Queue::path -> PathBuf with Default::default()
+crates/trellis-queue/src/lib.rs:637:9: replace Queue::ensure -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/lib.rs:651:9: replace Queue::add -> Result<String, QueueError> with Ok("xyzzy".into())
+crates/trellis-queue/src/lib.rs:651:9: replace Queue::add -> Result<String, QueueError> with Ok(String::new())
+crates/trellis-queue/src/lib.rs:653:17: delete field task from struct NewTask expression in Queue::add
+crates/trellis-queue/src/lib.rs:670:9: replace Queue::add_task -> Result<String, QueueError> with Ok(String::new())
+crates/trellis-queue/src/lib.rs:654:17: delete field focus from struct NewTask expression in Queue::add
+crates/trellis-queue/src/lib.rs:670:9: replace Queue::add_task -> Result<String, QueueError> with Ok("xyzzy".into())
+crates/trellis-queue/src/lib.rs:678:13: delete field task from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:673:16: delete ! in Queue::add_task
+crates/trellis-queue/src/lib.rs:679:13: delete field focus from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:682:13: delete field added_at from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:683:13: delete field priority from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:687:13: delete field blockers from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:686:13: delete field assignee from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:685:13: delete field parent from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:688:13: delete field needs_approval from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:689:13: delete field routine from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:690:13: delete field routine_at from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:725:9: replace Queue::list -> Result<Vec<Entry>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/lib.rs:695:19: delete ! in Queue::add_task
+crates/trellis-queue/src/lib.rs:745:9: replace Queue::index -> Result<Index, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:749:9: replace Queue::index_of -> Index with Default::default()
+crates/trellis-queue/src/lib.rs:798:9: replace Queue::ids -> Result<Vec<String>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/lib.rs:798:9: replace Queue::ids -> Result<Vec<String>, QueueError> with Ok(vec![String::new()])
+crates/trellis-queue/src/lib.rs:798:9: replace Queue::ids -> Result<Vec<String>, QueueError> with Ok(vec!["xyzzy".into()])
+crates/trellis-queue/src/lib.rs:801:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in Queue::ids
+crates/trellis-queue/src/lib.rs:801:32: replace == with != in Queue::ids
+crates/trellis-queue/src/lib.rs:828:9: replace Queue::claim -> Result<Option<Claim>, QueueError> with Ok(None)
+crates/trellis-queue/src/lib.rs:869:12: delete ! in Queue::claim
+crates/trellis-queue/src/lib.rs:877:12: delete ! in Queue::claim
+crates/trellis-queue/src/lib.rs:905:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in Queue::set_aside
+crates/trellis-queue/src/lib.rs:906:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in Queue::set_aside
+crates/trellis-queue/src/lib.rs:906:32: replace == with != in Queue::set_aside
+crates/trellis-queue/src/lib.rs:905:32: replace == with != in Queue::set_aside
+crates/trellis-queue/src/lib.rs:911:20: delete ! in Queue::set_aside
+crates/trellis-queue/src/lib.rs:925:24: delete ! in Queue::set_aside
+crates/trellis-queue/src/lib.rs:941:9: replace Queue::claim_next -> Result<Option<Claim>, QueueError> with Ok(None)
+crates/trellis-queue/src/lib.rs:947:9: replace Queue::waiting_reason -> Option<String> with None
+crates/trellis-queue/src/lib.rs:947:9: replace Queue::waiting_reason -> Option<String> with Some(String::new())
+crates/trellis-queue/src/lib.rs:947:9: replace Queue::waiting_reason -> Option<String> with Some("xyzzy".into())
+crates/trellis-queue/src/lib.rs:948:13: delete match arm Status::Backlog in Queue::waiting_reason
+crates/trellis-queue/src/lib.rs:985:52: replace == with != in Queue::claim_next_where
+crates/trellis-queue/src/lib.rs:960:12: delete ! in Queue::waiting_reason
+crates/trellis-queue/src/lib.rs:949:13: delete match arm Status::Blocked in Queue::waiting_reason
+crates/trellis-queue/src/lib.rs:980:9: replace Queue::claim_next_where -> Result<ClaimOutcome, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:1031:13: delete match arm State::Claimed in Queue::edit
+crates/trellis-queue/src/lib.rs:1035:13: delete match arm State::Pending in Queue::edit
+crates/trellis-queue/src/lib.rs:1093:15: replace == with != in Queue::edit_finished
+crates/trellis-queue/src/lib.rs:1099:15: replace == with != in Queue::edit_finished
+crates/trellis-queue/src/lib.rs:1116:9: replace Queue::reconcile -> Result<Vec<(String, String)>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/lib.rs:1116:9: replace Queue::reconcile -> Result<Vec<(String, String)>, QueueError> with Ok(vec![(String::new(), String::new())])
+crates/trellis-queue/src/lib.rs:1116:9: replace Queue::reconcile -> Result<Vec<(String, String)>, QueueError> with Ok(vec![(String::new(), "xyzzy".into())])
+crates/trellis-queue/src/lib.rs:1116:9: replace Queue::reconcile -> Result<Vec<(String, String)>, QueueError> with Ok(vec![("xyzzy".into(), String::new())])
+crates/trellis-queue/src/lib.rs:1116:9: replace Queue::reconcile -> Result<Vec<(String, String)>, QueueError> with Ok(vec![("xyzzy".into(), "xyzzy".into())])
+crates/trellis-queue/src/lib.rs:1119:52: replace == with != in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1121:44: replace != with == in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1130:17: delete match arm Some(Blocked::Children) in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1126:24: replace match guard !t.blockers.is_empty() && ix.unresolved(t).is_empty() with false in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1126:24: replace match guard !t.blockers.is_empty() && ix.unresolved(t).is_empty() with true in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1126:47: replace && with || in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1126:24: delete ! in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1133:28: delete ! in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1133:25: replace || with && in Queue::reconcile
+crates/trellis-queue/src/lib.rs:1171:16: delete ! in Queue::requeue
+crates/trellis-queue/src/lib.rs:1193:9: replace Queue::publish_as -> Result<bool, QueueError> with Ok(true)
+crates/trellis-queue/src/lib.rs:1201:14: replace == with != in Queue::remove_task
+crates/trellis-queue/src/lib.rs:1193:9: replace Queue::publish_as -> Result<bool, QueueError> with Ok(false)
+crates/trellis-queue/src/lib.rs:1199:9: replace Queue::remove_task -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/lib.rs:1235:28: replace += with *= in Claim::finish
+crates/trellis-queue/src/lib.rs:1235:28: replace += with -= in Claim::finish
+crates/trellis-queue/src/lib.rs:1234:9: replace Claim::finish -> Result<PathBuf, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:1254:28: replace += with -= in Claim::ask
+crates/trellis-queue/src/lib.rs:1254:28: replace += with *= in Claim::ask
+crates/trellis-queue/src/lib.rs:1238:13: delete match arm State::Done in Claim::finish
+crates/trellis-queue/src/lib.rs:1254:9: replace Claim::ask -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/lib.rs:1278:32: replace += with -= in Claim::release
+crates/trellis-queue/src/lib.rs:1278:32: replace += with *= in Claim::release
+crates/trellis-queue/src/lib.rs:1297:5: replace slugify -> String with String::new()
+crates/trellis-queue/src/lib.rs:1277:9: replace Claim::release -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/lib.rs:1301:37: replace && with || in slugify
+crates/trellis-queue/src/lib.rs:1297:5: replace slugify -> String with "xyzzy".into()
+crates/trellis-queue/src/lib.rs:1301:40: delete ! in slugify
+crates/trellis-queue/src/lib.rs:1301:19: delete ! in slugify
+crates/trellis-queue/src/lib.rs:1304:20: replace >= with < in slugify
+crates/trellis-queue/src/lib.rs:1379:9: replace Runner::gate -> Option<String> with Some(String::new())
+crates/trellis-queue/src/lib.rs:1316:5: replace plain -> String with "xyzzy".into()
+crates/trellis-queue/src/lib.rs:1316:5: replace plain -> String with String::new()
+crates/trellis-queue/src/lib.rs:1379:9: replace Runner::gate -> Option<String> with Some("xyzzy".into())
+crates/trellis-queue/src/lib.rs:1432:9: replace Stop::code -> i32 with 0
+crates/trellis-queue/src/lib.rs:1432:9: replace Stop::code -> i32 with 1
+crates/trellis-queue/src/lib.rs:1432:9: replace Stop::code -> i32 with -1
+crates/trellis-queue/src/lib.rs:1493:5: replace release_stale_and_say with ()
+crates/trellis-queue/src/lib.rs:1531:5: replace log_or_say with ()
+crates/trellis-queue/src/lib.rs:1547:38: replace == with != in work
+crates/trellis-queue/src/lib.rs:1560:8: delete ! in work
+crates/trellis-queue/src/lib.rs:1581:47: replace >= with < in work
+crates/trellis-queue/src/lib.rs:1591:30: replace == with != in work
+crates/trellis-queue/src/lib.rs:1610:20: delete ! in work
+crates/trellis-queue/src/lib.rs:1610:43: delete ! in work
+crates/trellis-queue/src/lib.rs:1624:28: delete ! in work
+crates/trellis-queue/src/lib.rs:1629:29: replace match guard waiting.is_empty() with true in work
+crates/trellis-queue/src/lib.rs:1629:29: replace match guard waiting.is_empty() with false in work
+crates/trellis-queue/src/lib.rs:1662:13: replace += with -= in work
+crates/trellis-queue/src/lib.rs:1662:13: replace += with *= in work
+crates/trellis-queue/src/activity.rs:95:9: replace ActivityLog::append -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/activity.rs:117:9: replace ActivityLog::tail -> Result<Vec<Event>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/approval.rs:39:5: replace path -> PathBuf with Default::default()
+crates/trellis-queue/src/approval.rs:35:5: replace dir -> PathBuf with Default::default()
+crates/trellis-queue/src/approval.rs:48:5: replace list -> Result<Vec<BudgetRequest>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/approval.rs:51:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in list
+crates/trellis-queue/src/approval.rs:51:28: replace == with != in list
+crates/trellis-queue/src/approval.rs:59:20: delete ! in list
+crates/trellis-queue/src/approval.rs:58:45: replace == with != in list
+crates/trellis-queue/src/approval.rs:74:76: replace && with || in same_pause
+crates/trellis-queue/src/approval.rs:74:5: replace same_pause -> bool with true
+crates/trellis-queue/src/approval.rs:74:5: replace same_pause -> bool with false
+crates/trellis-queue/src/approval.rs:74:24: replace && with || in same_pause
+crates/trellis-queue/src/approval.rs:74:14: replace == with != in same_pause
+crates/trellis-queue/src/approval.rs:74:55: replace || with && in same_pause
+crates/trellis-queue/src/approval.rs:74:66: replace == with != in same_pause
+crates/trellis-queue/src/approval.rs:74:35: replace == with != in same_pause
+crates/trellis-queue/src/approval.rs:74:87: replace == with != in same_pause
+crates/trellis-queue/src/approval.rs:99:5: replace open_budget_request -> Result<String, QueueError> with Ok("xyzzy".into())
+crates/trellis-queue/src/approval.rs:99:5: replace open_budget_request -> Result<String, QueueError> with Ok(String::new())
+crates/trellis-queue/src/approval.rs:100:65: replace == with != in open_budget_request
+crates/trellis-queue/src/approval.rs:101:28: replace && with || in open_budget_request
+crates/trellis-queue/src/approval.rs:143:5: replace close_open_requests -> Result<Vec<String>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/approval.rs:143:5: replace close_open_requests -> Result<Vec<String>, QueueError> with Ok(vec!["xyzzy".into()])
+crates/trellis-queue/src/approval.rs:143:5: replace close_open_requests -> Result<Vec<String>, QueueError> with Ok(vec![String::new()])
+crates/trellis-queue/src/approval.rs:144:65: replace == with != in close_open_requests
+crates/trellis-queue/src/approval.rs:157:8: delete ! in supersede
+crates/trellis-queue/src/approval.rs:155:5: replace supersede -> Result<bool, QueueError> with Ok(true)
+crates/trellis-queue/src/approval.rs:155:5: replace supersede -> Result<bool, QueueError> with Ok(false)
+crates/trellis-queue/src/approval.rs:192:14: replace == with != in approve_budget
+crates/trellis-queue/src/approval.rs:201:8: delete ! in approve_budget
+crates/trellis-queue/src/approval.rs:224:30: replace == with != in approve_budget
+crates/trellis-queue/src/approval.rs:272:8: delete ! in reject_budget
+crates/trellis-queue/src/approval.rs:294:5: replace approve_task -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/approval.rs:295:14: replace != with == in approve_task
+crates/trellis-queue/src/approval.rs:301:12: delete ! in approve_task
+crates/trellis-queue/src/approval.rs:324:5: replace reject_task -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/approval.rs:325:14: replace != with == in reject_task
+crates/trellis-queue/src/cron.rs:104:5: replace value -> Result<u32, FieldError> with Ok(0)
+crates/trellis-queue/src/cron.rs:104:5: replace value -> Result<u32, FieldError> with Ok(1)
+crates/trellis-queue/src/cron.rs:107:28: replace + with - in value
+crates/trellis-queue/src/cron.rs:114:15: replace || with && in value
+crates/trellis-queue/src/cron.rs:107:28: replace + with * in value
+crates/trellis-queue/src/cron.rs:114:10: replace < with == in value
+crates/trellis-queue/src/cron.rs:114:10: replace < with > in value
+crates/trellis-queue/src/cron.rs:114:10: replace < with <= in value
+crates/trellis-queue/src/cron.rs:114:20: replace > with < in value
+crates/trellis-queue/src/cron.rs:114:20: replace > with == in value
+crates/trellis-queue/src/cron.rs:114:20: replace > with >= in value
+crates/trellis-queue/src/cron.rs:127:5: replace field -> Result<(u64, bool), FieldError> with Ok((0, false))
+crates/trellis-queue/src/cron.rs:127:5: replace field -> Result<(u64, bool), FieldError> with Ok((0, true))
+crates/trellis-queue/src/cron.rs:127:5: replace field -> Result<(u64, bool), FieldError> with Ok((1, true))
+crates/trellis-queue/src/cron.rs:127:5: replace field -> Result<(u64, bool), FieldError> with Ok((1, false))
+crates/trellis-queue/src/cron.rs:145:23: replace > with < in field
+crates/trellis-queue/src/cron.rs:145:23: replace > with == in field
+crates/trellis-queue/src/cron.rs:152:31: replace == with != in field
+crates/trellis-queue/src/cron.rs:161:14: replace > with == in field
+crates/trellis-queue/src/cron.rs:145:23: replace > with >= in field
+crates/trellis-queue/src/cron.rs:161:14: replace > with >= in field
+crates/trellis-queue/src/cron.rs:161:14: replace > with < in field
+crates/trellis-queue/src/cron.rs:167:45: replace <= with > in field
+crates/trellis-queue/src/cron.rs:168:23: replace << with >> in field
+crates/trellis-queue/src/cron.rs:168:18: replace |= with &= in field
+crates/trellis-queue/src/cron.rs:196:21: replace && with || in Cron::parse
+crates/trellis-queue/src/cron.rs:195:21: replace && with || in Cron::parse
+crates/trellis-queue/src/cron.rs:205:20: replace != with == in Cron::parse
+crates/trellis-queue/src/cron.rs:199:24: replace == with != in Cron::parse
+crates/trellis-queue/src/cron.rs:218:17: replace & with | in Cron::parse
+crates/trellis-queue/src/cron.rs:218:28: replace != with == in Cron::parse
+crates/trellis-queue/src/cron.rs:218:17: replace & with ^ in Cron::parse
+crates/trellis-queue/src/cron.rs:218:22: replace << with >> in Cron::parse
+crates/trellis-queue/src/cron.rs:219:31: replace & with ^ in Cron::parse
+crates/trellis-queue/src/cron.rs:219:31: replace & with | in Cron::parse
+crates/trellis-queue/src/cron.rs:219:26: replace | with ^ in Cron::parse
+crates/trellis-queue/src/cron.rs:219:26: replace | with & in Cron::parse
+crates/trellis-queue/src/cron.rs:238:9: replace Cron::day_matches -> bool with false
+crates/trellis-queue/src/cron.rs:238:9: replace Cron::day_matches -> bool with true
+crates/trellis-queue/src/cron.rs:238:39: replace == with != in Cron::day_matches
+crates/trellis-queue/src/cron.rs:238:24: replace & with | in Cron::day_matches
+crates/trellis-queue/src/cron.rs:238:29: replace << with >> in Cron::day_matches
+crates/trellis-queue/src/cron.rs:238:24: replace & with ^ in Cron::day_matches
+crates/trellis-queue/src/cron.rs:242:25: replace + with - in Cron::day_matches
+crates/trellis-queue/src/cron.rs:242:25: replace + with * in Cron::day_matches
+crates/trellis-queue/src/cron.rs:243:45: replace != with == in Cron::day_matches
+crates/trellis-queue/src/cron.rs:243:32: replace & with | in Cron::day_matches
+crates/trellis-queue/src/cron.rs:243:32: replace & with ^ in Cron::day_matches
+crates/trellis-queue/src/cron.rs:243:37: replace << with >> in Cron::day_matches
+crates/trellis-queue/src/cron.rs:244:45: replace != with == in Cron::day_matches
+crates/trellis-queue/src/cron.rs:244:32: replace & with | in Cron::day_matches
+crates/trellis-queue/src/cron.rs:244:37: replace << with >> in Cron::day_matches
+crates/trellis-queue/src/cron.rs:244:32: replace & with ^ in Cron::day_matches
+crates/trellis-queue/src/cron.rs:249:26: replace || with && in Cron::day_matches
+crates/trellis-queue/src/cron.rs:268:9: replace Cron::next_after -> Option<i64> with None
+crates/trellis-queue/src/cron.rs:250:20: replace && with || in Cron::day_matches
+crates/trellis-queue/src/cron.rs:252:20: replace || with && in Cron::day_matches
+crates/trellis-queue/src/cron.rs:268:23: replace + with * in Cron::next_after
+crates/trellis-queue/src/cron.rs:269:42: replace * with + in Cron::next_after
+crates/trellis-queue/src/cron.rs:269:47: replace + with * in Cron::next_after
+crates/trellis-queue/src/cron.rs:269:42: replace * with / in Cron::next_after
+crates/trellis-queue/src/cron.rs:275:26: replace * with + in Cron::next_after
+crates/trellis-queue/src/cron.rs:276:59: replace * with + in Cron::next_after
+crates/trellis-queue/src/cron.rs:275:26: replace * with / in Cron::next_after
+crates/trellis-queue/src/cron.rs:276:59: replace * with / in Cron::next_after
+crates/trellis-queue/src/cron.rs:279:46: replace == with != in Cron::next_after
+crates/trellis-queue/src/cron.rs:279:40: replace << with >> in Cron::next_after
+crates/trellis-queue/src/cron.rs:279:35: replace & with ^ in Cron::next_after
+crates/trellis-queue/src/cron.rs:279:35: replace & with | in Cron::next_after
+crates/trellis-queue/src/cron.rs:282:37: replace == with != in Cron::next_after
+crates/trellis-queue/src/cron.rs:284:41: replace & with | in Cron::next_after
+crates/trellis-queue/src/cron.rs:284:41: replace & with ^ in Cron::next_after
+crates/trellis-queue/src/cron.rs:284:52: replace == with != in Cron::next_after
+crates/trellis-queue/src/cron.rs:284:46: replace << with >> in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:49: replace + with - in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:71: replace + with - in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:71: replace + with * in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:49: replace + with * in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:40: replace * with + in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:40: replace * with / in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:64: replace * with + in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:64: replace * with / in Cron::next_after
+crates/trellis-queue/src/cron.rs:289:41: replace match guard at > t with false in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:86: replace * with + in Cron::next_after
+crates/trellis-queue/src/cron.rs:289:41: replace match guard at > t with true in Cron::next_after
+crates/trellis-queue/src/cron.rs:287:86: replace * with / in Cron::next_after
+crates/trellis-queue/src/cron.rs:289:44: replace > with == in Cron::next_after
+crates/trellis-queue/src/cron.rs:289:44: replace > with < in Cron::next_after
+crates/trellis-queue/src/cron.rs:296:17: replace += with -= in Cron::next_after
+crates/trellis-queue/src/cron.rs:296:17: replace += with *= in Cron::next_after
+crates/trellis-queue/src/cron.rs:327:5: replace stamp -> Timestamp with Default::default()
+crates/trellis-queue/src/cron.rs:334:42: replace || with && in Tz::parse
+crates/trellis-queue/src/cron.rs:334:47: replace == with != in Tz::parse
+crates/trellis-queue/src/cron.rs:334:76: replace == with != in Tz::parse
+crates/trellis-queue/src/cron.rs:338:13: delete match arm Some(b'+') in Tz::parse
+crates/trellis-queue/src/cron.rs:334:59: replace == with != in Tz::parse
+crates/trellis-queue/src/cron.rs:339:13: delete match arm Some(b'-') in Tz::parse
+crates/trellis-queue/src/cron.rs:350:32: delete ! in Tz::parse
+crates/trellis-queue/src/cron.rs:339:27: delete - in Tz::parse
+crates/trellis-queue/src/cron.rs:350:24: replace != with == in Tz::parse
+crates/trellis-queue/src/cron.rs:350:29: replace || with && in Tz::parse
+crates/trellis-queue/src/cron.rs:362:14: replace > with < in Tz::parse
+crates/trellis-queue/src/cron.rs:362:24: replace > with < in Tz::parse
+crates/trellis-queue/src/cron.rs:365:27: replace * with + in Tz::parse
+crates/trellis-queue/src/cron.rs:365:27: replace * with / in Tz::parse
+crates/trellis-queue/src/cron.rs:365:32: replace * with + in Tz::parse
+crates/trellis-queue/src/cron.rs:365:39: replace + with - in Tz::parse
+crates/trellis-queue/src/cron.rs:365:39: replace + with * in Tz::parse
+crates/trellis-queue/src/cron.rs:365:32: replace * with / in Tz::parse
+crates/trellis-queue/src/cron.rs:365:43: replace * with + in Tz::parse
+crates/trellis-queue/src/cron.rs:365:43: replace * with / in Tz::parse
+crates/trellis-queue/src/cron.rs:397:9: replace Tz::instant -> Option<i64> with None
+crates/trellis-queue/src/cron.rs:384:9: replace Tz::offset_at -> i64 with -1
+crates/trellis-queue/src/cron.rs:384:9: replace Tz::offset_at -> i64 with 1
+crates/trellis-queue/src/cron.rs:384:9: replace Tz::offset_at -> i64 with 0
+crates/trellis-queue/src/cron.rs:397:9: replace Tz::instant -> Option<i64> with Some(0)
+crates/trellis-queue/src/cron.rs:397:9: replace Tz::instant -> Option<i64> with Some(-1)
+crates/trellis-queue/src/cron.rs:397:9: replace Tz::instant -> Option<i64> with Some(1)
+crates/trellis-queue/src/cron.rs:399:46: replace - with + in Tz::instant
+crates/trellis-queue/src/cron.rs:405:66: replace - with + in Tz::instant
+crates/trellis-queue/src/cron.rs:399:46: replace - with / in Tz::instant
+crates/trellis-queue/src/cron.rs:405:66: replace - with / in Tz::instant
+crates/trellis-queue/src/cron.rs:406:63: replace - with + in Tz::instant
+crates/trellis-queue/src/cron.rs:421:9: replace Tz::date_time -> (String, String) with (String::new(), String::new())
+crates/trellis-queue/src/cron.rs:406:63: replace - with / in Tz::instant
+crates/trellis-queue/src/cron.rs:413:39: replace - with + in Tz::instant
+crates/trellis-queue/src/cron.rs:413:39: replace - with / in Tz::instant
+crates/trellis-queue/src/cron.rs:421:9: replace Tz::date_time -> (String, String) with (String::new(), "xyzzy".into())
+crates/trellis-queue/src/cron.rs:421:9: replace Tz::date_time -> (String, String) with ("xyzzy".into(), String::new())
+crates/trellis-queue/src/cron.rs:421:9: replace Tz::date_time -> (String, String) with ("xyzzy".into(), "xyzzy".into())
+crates/trellis-queue/src/cron.rs:421:54: replace + with - in Tz::date_time
+crates/trellis-queue/src/cron.rs:421:54: replace + with * in Tz::date_time
+crates/trellis-queue/src/cron.rs:428:9: replace <impl std::fmt::Display for Tz>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-queue/src/cron.rs:431:34: replace < with > in <impl std::fmt::Display for Tz>::fmt
+crates/trellis-queue/src/cron.rs:431:34: replace < with == in <impl std::fmt::Display for Tz>::fmt
+crates/trellis-queue/src/files.rs:50:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in read_settled
+crates/trellis-queue/src/files.rs:50:28: replace == with != in read_settled
+crates/trellis-queue/src/files.rs:69:5: replace side -> PathBuf with Default::default()
+crates/trellis-queue/src/files.rs:62:19: replace || with && in present
+crates/trellis-queue/src/files.rs:62:5: replace present -> bool with true
+crates/trellis-queue/src/files.rs:62:5: replace present -> bool with false
+crates/trellis-queue/src/files.rs:81:5: replace read_json_opt -> Result<Option<T>, QueueError> with Ok(None)
+crates/trellis-queue/src/files.rs:76:5: replace unside -> Option<&str> with Some("")
+crates/trellis-queue/src/files.rs:76:5: replace unside -> Option<&str> with None
+crates/trellis-queue/src/files.rs:76:5: replace unside -> Option<&str> with Some("xyzzy")
+crates/trellis-queue/src/files.rs:83:61: replace == with != in read_json_opt
+crates/trellis-queue/src/files.rs:83:47: replace match guard source.kind() == std::io::ErrorKind::NotFound with false in read_json_opt
+crates/trellis-queue/src/files.rs:91:5: replace write_json -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/files.rs:102:5: replace publish -> Result<bool, QueueError> with Ok(true)
+crates/trellis-queue/src/files.rs:119:19: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in publish
+crates/trellis-queue/src/files.rs:119:19: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in publish
+crates/trellis-queue/src/files.rs:129:5: replace link -> std::io::Result<()> with Ok(())
+crates/trellis-queue/src/files.rs:119:28: replace == with != in publish
+crates/trellis-queue/src/files.rs:161:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in remove
+crates/trellis-queue/src/files.rs:161:28: replace == with != in remove
+crates/trellis-queue/src/files.rs:171:5: replace move_to -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/files.rs:171:8: delete ! in move_to
+crates/trellis-queue/src/files.rs:202:5: replace replace -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/files.rs:204:8: delete ! in replace
+crates/trellis-queue/src/files.rs:233:5: replace settle -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/files.rs:234:8: delete ! in settle
+crates/trellis-queue/src/files.rs:237:8: delete ! in settle
+crates/trellis-queue/src/files.rs:310:9: replace <impl Drop for Lock>::drop with ()
+crates/trellis-queue/src/ledger.rs:62:48: replace == with != in spend
+crates/trellis-queue/src/ledger.rs:63:16: replace += with -= in spend
+crates/trellis-queue/src/ledger.rs:61:5: replace spend -> Spend with Default::default()
+crates/trellis-queue/src/ledger.rs:63:16: replace += with *= in spend
+crates/trellis-queue/src/ledger.rs:67:68: replace == with != in spend
+crates/trellis-queue/src/ledger.rs:78:49: replace += with -= in spend
+crates/trellis-queue/src/ledger.rs:78:49: replace += with *= in spend
+crates/trellis-queue/src/ledger.rs:81:34: replace += with -= in spend
+crates/trellis-queue/src/ledger.rs:81:34: replace += with *= in spend
+crates/trellis-queue/src/ledger.rs:130:18: replace >= with < in assess
+crates/trellis-queue/src/ledger.rs:137:35: replace && with || in assess
+crates/trellis-queue/src/ledger.rs:137:17: replace == with != in assess
+crates/trellis-queue/src/ledger.rs:137:53: replace >= with < in assess
+crates/trellis-queue/src/ledger.rs:137:68: replace * with / in assess
+crates/trellis-queue/src/ledger.rs:137:68: replace * with + in assess
+crates/trellis-queue/src/ledger.rs:180:5: replace enforce -> Result<Enforced, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/ledger.rs:194:12: delete ! in enforce
+crates/trellis-queue/src/ledger.rs:197:24: replace match guard m != month with false in enforce
+crates/trellis-queue/src/ledger.rs:197:24: replace match guard m != month with true in enforce
+crates/trellis-queue/src/ledger.rs:197:26: replace != with == in enforce
+crates/trellis-queue/src/ledger.rs:286:39: replace == with != in enforce
+crates/trellis-queue/src/ledger.rs:255:40: replace == with != in enforce
+crates/trellis-queue/src/mention.rs:50:5: replace mentions -> Vec<String> with vec![]
+crates/trellis-queue/src/mention.rs:50:5: replace mentions -> Vec<String> with vec![String::new()]
+crates/trellis-queue/src/mention.rs:57:65: replace == with != in mentions
+crates/trellis-queue/src/mention.rs:50:5: replace mentions -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-queue/src/mention.rs:57:41: delete ! in mentions
+crates/trellis-queue/src/mention.rs:66:29: replace && with || in unread_from_person
+crates/trellis-queue/src/mention.rs:66:47: replace && with || in unread_from_person
+crates/trellis-queue/src/mention.rs:66:5: replace unread_from_person -> bool with true
+crates/trellis-queue/src/mention.rs:66:5: replace unread_from_person -> bool with false
+crates/trellis-queue/src/mention.rs:66:13: replace == with != in unread_from_person
+crates/trellis-queue/src/mention.rs:66:50: delete ! in unread_from_person
+crates/trellis-queue/src/mention.rs:84:9: replace Queue::wake_mentions -> Result<Vec<Mention>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/mention.rs:86:24: replace == with != in Queue::wake_mentions
+crates/trellis-queue/src/mention.rs:111:9: replace Queue::decide -> Result<Vec<(String, MentionOutcome)>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/mention.rs:144:9: replace Queue::apply -> Result<Vec<Mention>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/mention.rs:146:31: replace == with != in Queue::apply
+crates/trellis-queue/src/mention.rs:153:43: replace == with != in Queue::apply
+crates/trellis-queue/src/mention.rs:174:12: delete ! in Queue::apply
+crates/trellis-queue/src/mention.rs:203:5: replace wake_and_say with ()
+crates/trellis-queue/src/portable.rs:100:5: replace copy -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/portable.rs:108:5: replace tomls -> Result<Vec<(String, PathBuf)>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/portable.rs:108:5: replace tomls -> Result<Vec<(String, PathBuf)>, QueueError> with Ok(vec![(String::new(), Default::default())])
+crates/trellis-queue/src/portable.rs:108:5: replace tomls -> Result<Vec<(String, PathBuf)>, QueueError> with Ok(vec![("xyzzy".into(), Default::default())])
+crates/trellis-queue/src/portable.rs:110:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in tomls
+crates/trellis-queue/src/portable.rs:110:28: replace == with != in tomls
+crates/trellis-queue/src/portable.rs:143:18: replace += with *= in export
+crates/trellis-queue/src/portable.rs:143:18: replace += with -= in export
+crates/trellis-queue/src/portable.rs:129:22: replace && with || in export
+crates/trellis-queue/src/portable.rs:129:5: replace export -> Result<Exported, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/portable.rs:155:20: replace += with -= in export
+crates/trellis-queue/src/portable.rs:155:20: replace += with *= in export
+crates/trellis-queue/src/portable.rs:148:32: replace += with *= in export
+crates/trellis-queue/src/portable.rs:148:32: replace += with -= in export
+crates/trellis-queue/src/portable.rs:174:21: replace += with -= in export
+crates/trellis-queue/src/portable.rs:159:18: replace == with != in export
+crates/trellis-queue/src/portable.rs:174:21: replace += with *= in export
+crates/trellis-queue/src/portable.rs:181:5: replace valid_id -> bool with false
+crates/trellis-queue/src/portable.rs:181:5: delete ! in valid_id
+crates/trellis-queue/src/portable.rs:184:45: replace || with && in valid_id
+crates/trellis-queue/src/portable.rs:184:72: replace == with != in valid_id
+crates/trellis-queue/src/portable.rs:184:67: replace || with && in valid_id
+crates/trellis-queue/src/portable.rs:188:5: replace free_name -> String with String::new()
+crates/trellis-queue/src/portable.rs:188:5: replace free_name -> String with "xyzzy".into()
+crates/trellis-queue/src/portable.rs:200:5: replace plan_import -> Result<Plan, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/portable.rs:201:9: delete field src from struct Plan expression in plan_import
+crates/trellis-queue/src/portable.rs:210:39: replace match guard m.contains("not a profile") with false in plan_import
+crates/trellis-queue/src/portable.rs:226:25: delete ! in plan_import
+crates/trellis-queue/src/portable.rs:254:51: replace == with != in plan_import
+crates/trellis-queue/src/portable.rs:287:17: replace && with || in plan_import
+crates/trellis-queue/src/portable.rs:286:17: replace && with || in plan_import
+crates/trellis-queue/src/portable.rs:303:25: delete ! in plan_import
+crates/trellis-queue/src/portable.rs:342:18: replace == with != in plan_import
+crates/trellis-queue/src/portable.rs:349:16: delete ! in plan_import
+crates/trellis-queue/src/portable.rs:362:49: replace == with != in plan_import
+crates/trellis-queue/src/portable.rs:362:46: replace match guard on == OnConflict::Replace with false in plan_import
+crates/trellis-queue/src/portable.rs:418:37: replace != with == in plan_import
+crates/trellis-queue/src/portable.rs:468:30: replace == with != in apply_import
+crates/trellis-queue/src/portable.rs:428:5: replace apply_import -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/portable.rs:471:20: delete ! in apply_import
+crates/trellis-queue/src/profile.rs:114:9: replace Profile::warn_at -> f64 with 0.0
+crates/trellis-queue/src/profile.rs:114:9: replace Profile::warn_at -> f64 with -1.0
+crates/trellis-queue/src/profile.rs:114:9: replace Profile::warn_at -> f64 with 1.0
+crates/trellis-queue/src/profile.rs:134:5: replace valid_name -> bool with false
+crates/trellis-queue/src/profile.rs:134:5: replace valid_name -> bool with true
+crates/trellis-queue/src/profile.rs:136:9: replace && with || in valid_name
+crates/trellis-queue/src/profile.rs:135:9: replace && with || in valid_name
+crates/trellis-queue/src/profile.rs:134:5: delete ! in valid_name
+crates/trellis-queue/src/profile.rs:135:23: replace <= with > in valid_name
+crates/trellis-queue/src/profile.rs:138:80: replace || with && in valid_name
+crates/trellis-queue/src/profile.rs:138:67: replace || with && in valid_name
+crates/trellis-queue/src/profile.rs:138:45: replace || with && in valid_name
+crates/trellis-queue/src/profile.rs:138:72: replace == with != in valid_name
+crates/trellis-queue/src/profile.rs:138:85: replace == with != in valid_name
+crates/trellis-queue/src/profile.rs:142:5: replace relative_inside -> bool with true
+crates/trellis-queue/src/profile.rs:143:5: delete ! in relative_inside
+crates/trellis-queue/src/profile.rs:144:9: replace && with || in relative_inside
+crates/trellis-queue/src/profile.rs:142:5: replace relative_inside -> bool with false
+crates/trellis-queue/src/profile.rs:160:5: replace validate -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/profile.rs:169:30: replace && with || in validate
+crates/trellis-queue/src/profile.rs:162:12: delete ! in validate
+crates/trellis-queue/src/profile.rs:182:32: replace && with || in validate
+crates/trellis-queue/src/profile.rs:202:32: replace && with || in validate
+crates/trellis-queue/src/profile.rs:191:32: replace && with || in validate
+crates/trellis-queue/src/profile.rs:202:35: delete ! in validate
+crates/trellis-queue/src/profile.rs:226:16: delete ! in validate
+crates/trellis-queue/src/profile.rs:248:32: replace && with || in validate
+crates/trellis-queue/src/profile.rs:256:24: replace == with != in validate
+crates/trellis-queue/src/profile.rs:260:16: delete ! in validate
+crates/trellis-queue/src/profile.rs:270:18: replace != with == in validate
+crates/trellis-queue/src/profile.rs:269:18: replace != with == in validate
+crates/trellis-queue/src/profile.rs:279:16: delete ! in validate
+crates/trellis-queue/src/profile.rs:279:26: replace && with || in validate
+crates/trellis-queue/src/profile.rs:279:20: replace > with == in validate
+crates/trellis-queue/src/profile.rs:279:20: replace > with < in validate
+crates/trellis-queue/src/profile.rs:279:31: replace <= with > in validate
+crates/trellis-queue/src/profile.rs:284:18: replace == with != in validate
+crates/trellis-queue/src/profile.rs:287:16: delete ! in validate
+crates/trellis-queue/src/profile.rs:314:5: replace load_all -> Result<BTreeMap<String, Profile>, QueueError> with Ok(BTreeMap::new())
+crates/trellis-queue/src/profile.rs:318:5: replace load_dir -> Result<BTreeMap<String, Profile>, QueueError> with Ok(BTreeMap::new())
+crates/trellis-queue/src/profile.rs:321:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in load_dir
+crates/trellis-queue/src/profile.rs:321:28: replace == with != in load_dir
+crates/trellis-queue/src/profile.rs:360:9: replace Window::as_str -> &'static str with ""
+crates/trellis-queue/src/profile.rs:402:9: replace Overlay::limit -> Option<u64> with None
+crates/trellis-queue/src/profile.rs:360:9: replace Window::as_str -> &'static str with "xyzzy"
+crates/trellis-queue/src/profile.rs:402:9: replace Overlay::limit -> Option<u64> with Some(0)
+crates/trellis-queue/src/profile.rs:402:9: replace Overlay::limit -> Option<u64> with Some(1)
+crates/trellis-queue/src/profile.rs:408:21: replace && with || in Overlay::limit
+crates/trellis-queue/src/profile.rs:407:26: replace == with != in Overlay::limit
+crates/trellis-queue/src/profile.rs:408:32: replace == with != in Overlay::limit
+crates/trellis-queue/src/profile.rs:408:52: replace || with && in Overlay::limit
+crates/trellis-queue/src/profile.rs:417:5: replace overlay_path -> PathBuf with Default::default()
+crates/trellis-queue/src/profile.rs:408:74: replace == with != in Overlay::limit
+crates/trellis-queue/src/profile.rs:421:5: replace overlay -> Result<Overlay, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/profile.rs:444:5: replace paused_reason -> Option<String> with None
+crates/trellis-queue/src/profile.rs:444:5: replace paused_reason -> Option<String> with Some(String::new())
+crates/trellis-queue/src/profile.rs:444:5: replace paused_reason -> Option<String> with Some("xyzzy".into())
+crates/trellis-queue/src/routine.rs:84:5: replace placeholders -> Vec<String> with vec![]
+crates/trellis-queue/src/routine.rs:84:5: replace placeholders -> Vec<String> with vec![String::new()]
+crates/trellis-queue/src/routine.rs:84:5: replace placeholders -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-queue/src/routine.rs:87:29: replace + with - in placeholders
+crates/trellis-queue/src/routine.rs:87:29: replace + with * in placeholders
+crates/trellis-queue/src/routine.rs:90:25: replace + with * in placeholders
+crates/trellis-queue/src/routine.rs:97:8: delete ! in parse
+crates/trellis-queue/src/routine.rs:130:18: replace == with != in parse
+crates/trellis-queue/src/routine.rs:130:28: replace > with < in parse
+crates/trellis-queue/src/routine.rs:144:41: replace && with || in parse
+crates/trellis-queue/src/routine.rs:159:44: replace && with || in parse
+crates/trellis-queue/src/routine.rs:159:47: delete ! in parse
+crates/trellis-queue/src/routine.rs:159:12: delete ! in parse
+crates/trellis-queue/src/routine.rs:185:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in load_dir
+crates/trellis-queue/src/routine.rs:185:28: replace == with != in load_dir
+crates/trellis-queue/src/routine.rs:211:33: replace + with * in Routine::render
+crates/trellis-queue/src/routine.rs:211:33: replace + with - in Routine::render
+crates/trellis-queue/src/routine.rs:206:9: replace Routine::render -> String with String::new()
+crates/trellis-queue/src/routine.rs:206:9: replace Routine::render -> String with "xyzzy".into()
+crates/trellis-queue/src/routine.rs:225:29: replace + with - in Routine::render
+crates/trellis-queue/src/routine.rs:225:29: replace + with * in Routine::render
+crates/trellis-queue/src/routine.rs:232:9: replace Routine::new_task -> NewTask with Default::default()
+crates/trellis-queue/src/routine.rs:265:5: replace state_path -> PathBuf with Default::default()
+crates/trellis-queue/src/routine.rs:340:33: replace != with == in seen
+crates/trellis-queue/src/routine.rs:383:26: replace == with != in fire
+crates/trellis-queue/src/routine.rs:450:61: replace - with + in evaluate
+crates/trellis-queue/src/routine.rs:423:5: replace evaluate -> Result<Tick, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/routine.rs:450:61: replace - with / in evaluate
+crates/trellis-queue/src/routine.rs:450:67: replace * with + in evaluate
+crates/trellis-queue/src/routine.rs:450:67: replace * with / in evaluate
+crates/trellis-queue/src/routine.rs:462:15: replace += with -= in evaluate
+crates/trellis-queue/src/routine.rs:459:17: replace > with >= in evaluate
+crates/trellis-queue/src/routine.rs:462:15: replace += with *= in evaluate
+crates/trellis-queue/src/routine.rs:464:22: replace > with == in evaluate
+crates/trellis-queue/src/routine.rs:464:22: replace > with < in evaluate
+crates/trellis-queue/src/routine.rs:464:22: replace > with >= in evaluate
+crates/trellis-queue/src/routine.rs:469:14: replace == with != in evaluate
+crates/trellis-queue/src/routine.rs:472:25: replace - with + in evaluate
+crates/trellis-queue/src/routine.rs:472:25: replace - with / in evaluate
+crates/trellis-queue/src/stale.rs:103:9: replace Queue::claimant -> Option<&Claimant> with None
+crates/trellis-queue/src/stale.rs:113:9: replace Queue::release_stale_claims -> Result<Vec<(String, Swept)>, QueueError> with Ok(vec![])
+crates/trellis-queue/src/stale.rs:152:26: replace || with && in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:152:18: replace != with == in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:152:33: replace != with == in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:188:27: replace < with == in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:188:27: replace < with <= in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:188:20: replace - with + in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:188:27: replace < with > in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:188:20: replace - with / in Queue::sweep_one
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (0, 0, 0)
+crates/trellis-queue/src/stale.rs:220:68: replace != with == in Queue::release_dead
+crates/trellis-queue/src/stale.rs:220:29: replace != with == in Queue::release_dead
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (0, 0, 1)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (0, 1, 1)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (0, 1, 0)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (1, 0, 0)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (1, 0, 1)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (1, 1, 0)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (-1, 0, 0)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (1, 1, 1)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (-1, 0, 1)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (-1, 1, 0)
+crates/trellis-queue/src/stamp.rs:16:5: replace civil -> (i64, u32, u32) with (-1, 1, 1)
+crates/trellis-queue/src/stamp.rs:16:18: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:16:18: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:19:65: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:19:65: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:19:48: replace - with + in civil
+crates/trellis-queue/src/stamp.rs:19:33: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:19:20: replace - with + in civil
+crates/trellis-queue/src/stamp.rs:19:20: replace - with / in civil
+crates/trellis-queue/src/stamp.rs:19:26: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:19:39: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:19:26: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:19:39: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:19:54: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:19:54: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:20:19: replace - with + in civil
+crates/trellis-queue/src/stamp.rs:20:19: replace - with / in civil
+crates/trellis-queue/src/stamp.rs:20:32: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:20:42: replace - with / in civil
+crates/trellis-queue/src/stamp.rs:20:32: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:20:42: replace - with + in civil
+crates/trellis-queue/src/stamp.rs:20:26: replace * with / in civil
+crates/trellis-queue/src/stamp.rs:20:38: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:20:26: replace * with + in civil
+crates/trellis-queue/src/stamp.rs:20:38: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:20:48: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:21:28: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:20:48: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:21:28: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:21:23: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:21:17: replace * with / in civil
+crates/trellis-queue/src/stamp.rs:21:17: replace * with + in civil
+crates/trellis-queue/src/stamp.rs:21:23: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:22:18: replace - with + in civil
+crates/trellis-queue/src/stamp.rs:22:39: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:22:39: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:22:18: replace - with / in civil
+crates/trellis-queue/src/stamp.rs:22:35: replace / with % in civil
+crates/trellis-queue/src/stamp.rs:22:30: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:22:35: replace / with * in civil
+crates/trellis-queue/src/stamp.rs:22:25: replace * with + in civil
+crates/trellis-queue/src/stamp.rs:23:19: replace < with > in civil
+crates/trellis-queue/src/stamp.rs:23:19: replace < with == in civil
+crates/trellis-queue/src/stamp.rs:22:25: replace * with / in civil
+crates/trellis-queue/src/stamp.rs:23:19: replace < with <= in civil
+crates/trellis-queue/src/stamp.rs:23:29: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:23:29: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:23:45: replace - with + in civil
+crates/trellis-queue/src/stamp.rs:23:45: replace - with / in civil
+crates/trellis-queue/src/stamp.rs:24:29: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:24:29: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:24:17: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:24:17: replace + with * in civil
+crates/trellis-queue/src/stamp.rs:24:23: replace * with + in civil
+crates/trellis-queue/src/stamp.rs:24:23: replace * with / in civil
+crates/trellis-queue/src/stamp.rs:24:43: replace <= with > in civil
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 0, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (0, 1, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 0, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (1, 1, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 0, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:29:5: replace parts -> (i64, u32, u32, u64, u64, u64) with (-1, 1, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:29:34: replace / with % in parts
+crates/trellis-queue/src/stamp.rs:29:34: replace / with * in parts
+crates/trellis-queue/src/stamp.rs:31:20: replace / with % in parts
+crates/trellis-queue/src/stamp.rs:30:20: replace % with + in parts
+crates/trellis-queue/src/stamp.rs:30:20: replace % with / in parts
+crates/trellis-queue/src/stamp.rs:31:20: replace / with * in parts
+crates/trellis-queue/src/stamp.rs:31:32: replace % with / in parts
+crates/trellis-queue/src/stamp.rs:31:39: replace / with * in parts
+crates/trellis-queue/src/stamp.rs:31:39: replace / with % in parts
+crates/trellis-queue/src/stamp.rs:31:32: replace % with + in parts
+crates/trellis-queue/src/stamp.rs:36:5: replace iso_now -> String with String::new()
+crates/trellis-queue/src/stamp.rs:31:49: replace % with + in parts
+crates/trellis-queue/src/stamp.rs:31:49: replace % with / in parts
+crates/trellis-queue/src/stamp.rs:36:5: replace iso_now -> String with "xyzzy".into()
+crates/trellis-queue/src/stamp.rs:40:5: replace iso -> String with String::new()
+crates/trellis-queue/src/stamp.rs:40:5: replace iso -> String with "xyzzy".into()
+crates/trellis-queue/src/stamp.rs:62:5: replace days_from_civil -> i64 with 0
+crates/trellis-queue/src/stamp.rs:62:5: replace days_from_civil -> i64 with 1
+crates/trellis-queue/src/stamp.rs:62:5: replace days_from_civil -> i64 with -1
+crates/trellis-queue/src/stamp.rs:62:18: replace <= with > in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:82: replace - with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:62:27: replace - with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:62:27: replace - with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:67: replace + with - in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:82: replace - with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:63: replace / with % in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:67: replace + with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:58: replace + with - in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:63: replace / with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:58: replace + with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:20: replace * with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:20: replace * with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:28: replace > with == in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:28: replace > with < in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:28: replace > with >= in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:36: replace - with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:36: replace - with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:51: replace + with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:66:51: replace + with - in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:47: replace + with - in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:47: replace + with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:35: replace - with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:35: replace - with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:25: replace + with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:19: replace * with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:25: replace + with - in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:19: replace * with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:41: replace / with % in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:31: replace / with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:31: replace / with % in days_from_civil
+crates/trellis-queue/src/stamp.rs:67:41: replace / with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:68:19: replace + with - in days_from_civil
+crates/trellis-queue/src/stamp.rs:68:25: replace - with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:68:19: replace + with * in days_from_civil
+crates/trellis-queue/src/stamp.rs:68:25: replace - with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:68:9: replace * with + in days_from_civil
+crates/trellis-queue/src/stamp.rs:68:9: replace * with / in days_from_civil
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 0, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (0, 1, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 0, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (1, 1, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 0, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 0, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 0, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 0, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 0, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 1, 0, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 1, 0, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 0, 1, 1)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 1, 1, 0)
+crates/trellis-queue/src/stamp.rs:73:5: replace civil_from_secs -> (i64, u32, u32, u32, u32, u32) with (-1, 1, 1, 1, 1, 1)
+crates/trellis-queue/src/stamp.rs:79:14: replace / with % in civil_from_secs
+crates/trellis-queue/src/stamp.rs:79:14: replace / with * in civil_from_secs
+crates/trellis-queue/src/stamp.rs:80:21: replace / with % in civil_from_secs
+crates/trellis-queue/src/stamp.rs:80:14: replace % with + in civil_from_secs
+crates/trellis-queue/src/stamp.rs:80:14: replace % with / in civil_from_secs
+crates/trellis-queue/src/stamp.rs:80:21: replace / with * in civil_from_secs
+crates/trellis-queue/src/stamp.rs:86:5: replace secs_from_civil -> i64 with 1
+crates/trellis-queue/src/stamp.rs:86:5: replace secs_from_civil -> i64 with 0
+crates/trellis-queue/src/stamp.rs:81:14: replace % with / in civil_from_secs
+crates/trellis-queue/src/stamp.rs:81:14: replace % with + in civil_from_secs
+crates/trellis-queue/src/stamp.rs:86:5: replace secs_from_civil -> i64 with -1
+crates/trellis-queue/src/stamp.rs:86:83: replace + with - in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:62: replace + with - in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:83: replace + with * in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:62: replace + with * in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:31: replace * with + in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:40: replace + with - in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:40: replace + with * in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:31: replace * with / in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:55: replace * with / in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:55: replace * with + in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:78: replace * with + in secs_from_civil
+crates/trellis-queue/src/stamp.rs:86:78: replace * with / in secs_from_civil
+crates/trellis-queue/src/stamp.rs:98:5: replace parse_iso -> Option<i64> with None
+crates/trellis-queue/src/stamp.rs:91:5: replace secs_to_iso -> String with String::new()
+crates/trellis-queue/src/stamp.rs:91:5: replace secs_to_iso -> String with "xyzzy".into()
+crates/trellis-queue/src/stamp.rs:98:5: replace parse_iso -> Option<i64> with Some(0)
+crates/trellis-queue/src/stamp.rs:98:5: replace parse_iso -> Option<i64> with Some(1)
+crates/trellis-queue/src/stamp.rs:98:5: replace parse_iso -> Option<i64> with Some(-1)
+crates/trellis-queue/src/stamp.rs:99:16: replace != with == in parse_iso
+crates/trellis-queue/src/stamp.rs:99:30: replace != with == in parse_iso
+crates/trellis-queue/src/stamp.rs:99:46: replace != with == in parse_iso
+crates/trellis-queue/src/stamp.rs:99:63: replace != with == in parse_iso
+crates/trellis-queue/src/stamp.rs:99:80: replace != with == in parse_iso
+crates/trellis-queue/src/stamp.rs:105:8: delete ! in parse_iso
+crates/trellis-queue/src/stamp.rs:105:35: delete ! in parse_iso
+crates/trellis-queue/src/stamp.rs:105:63: replace > with < in parse_iso
+crates/trellis-queue/src/stamp.rs:105:63: replace > with == in parse_iso
+crates/trellis-queue/src/stamp.rs:105:74: replace > with < in parse_iso
+crates/trellis-queue/src/stamp.rs:105:74: replace > with >= in parse_iso
+crates/trellis-queue/src/stamp.rs:105:63: replace > with >= in parse_iso
+crates/trellis-queue/src/stamp.rs:105:74: replace > with == in parse_iso
+crates/trellis-queue/src/stamp.rs:105:86: replace > with < in parse_iso
+crates/trellis-queue/src/stamp.rs:114:5: replace month_of -> Option<String> with None
+crates/trellis-queue/src/stamp.rs:114:5: replace month_of -> Option<String> with Some(String::new())
+crates/trellis-queue/src/stamp.rs:114:5: replace month_of -> Option<String> with Some("xyzzy".into())

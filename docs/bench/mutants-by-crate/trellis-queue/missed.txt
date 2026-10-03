@@ -1,0 +1,185 @@
+crates/trellis-queue/src/lib.rs:141:9: replace Status::as_str -> &'static str with ""
+crates/trellis-queue/src/lib.rs:141:9: replace Status::as_str -> &'static str with "xyzzy"
+crates/trellis-queue/src/lib.rs:154:9: replace Status::parse -> Option<Status> with None
+crates/trellis-queue/src/lib.rs:155:13: delete match arm "backlog" in Status::parse
+crates/trellis-queue/src/lib.rs:156:13: delete match arm "todo" in Status::parse
+crates/trellis-queue/src/lib.rs:157:13: delete match arm "in_progress" in Status::parse
+crates/trellis-queue/src/lib.rs:158:13: delete match arm "in_review" in Status::parse
+crates/trellis-queue/src/lib.rs:159:13: delete match arm "blocked" in Status::parse
+crates/trellis-queue/src/lib.rs:160:13: delete match arm "done" in Status::parse
+crates/trellis-queue/src/lib.rs:161:13: delete match arm "cancelled" in Status::parse
+crates/trellis-queue/src/lib.rs:162:13: delete match arm "failed" in Status::parse
+crates/trellis-queue/src/lib.rs:223:28: replace < with == in Blocked::describe
+crates/trellis-queue/src/lib.rs:223:28: replace < with > in Blocked::describe
+crates/trellis-queue/src/lib.rs:258:9: replace Priority::parse -> Option<Priority> with None
+crates/trellis-queue/src/lib.rs:258:9: replace Priority::parse -> Option<Priority> with Some(Default::default())
+crates/trellis-queue/src/lib.rs:249:9: replace Priority::as_str -> &'static str with ""
+crates/trellis-queue/src/lib.rs:249:9: replace Priority::as_str -> &'static str with "xyzzy"
+crates/trellis-queue/src/lib.rs:223:28: replace < with <= in Blocked::describe
+crates/trellis-queue/src/lib.rs:259:13: delete match arm "critical" in Priority::parse
+crates/trellis-queue/src/lib.rs:262:13: delete match arm "low" in Priority::parse
+crates/trellis-queue/src/lib.rs:261:13: delete match arm "medium" in Priority::parse
+crates/trellis-queue/src/lib.rs:260:13: delete match arm "high" in Priority::parse
+crates/trellis-queue/src/lib.rs:397:25: replace match guard st.home() == s with true in Task::status_in
+crates/trellis-queue/src/lib.rs:442:49: replace + with * in Task::answers_since_question
+crates/trellis-queue/src/lib.rs:655:17: delete field prompt from struct NewTask expression in Queue::add
+crates/trellis-queue/src/lib.rs:680:13: delete field prompt from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:681:13: delete field args from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:684:13: delete field labels from struct Task expression in Queue::add_task
+crates/trellis-queue/src/lib.rs:801:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in Queue::ids
+crates/trellis-queue/src/lib.rs:833:51: replace match guard source.kind() == std::io::ErrorKind::NotFound with true in Queue::claim
+crates/trellis-queue/src/lib.rs:833:51: replace match guard source.kind() == std::io::ErrorKind::NotFound with false in Queue::claim
+crates/trellis-queue/src/lib.rs:841:20: replace match guard source.kind() == std::io::ErrorKind::PermissionDenied && (!from.exists() || to.exists()) with true in Queue::claim
+crates/trellis-queue/src/lib.rs:841:20: replace match guard source.kind() == std::io::ErrorKind::PermissionDenied && (!from.exists() || to.exists()) with false in Queue::claim
+crates/trellis-queue/src/lib.rs:833:65: replace == with != in Queue::claim
+crates/trellis-queue/src/lib.rs:842:21: replace && with || in Queue::claim
+crates/trellis-queue/src/lib.rs:841:34: replace == with != in Queue::claim
+crates/trellis-queue/src/lib.rs:842:40: replace || with && in Queue::claim
+crates/trellis-queue/src/lib.rs:842:25: delete ! in Queue::claim
+crates/trellis-queue/src/lib.rs:906:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in Queue::set_aside
+crates/trellis-queue/src/lib.rs:905:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in Queue::set_aside
+crates/trellis-queue/src/lib.rs:921:39: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in Queue::set_aside
+crates/trellis-queue/src/lib.rs:921:39: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in Queue::set_aside
+crates/trellis-queue/src/lib.rs:921:48: replace == with != in Queue::set_aside
+crates/trellis-queue/src/lib.rs:1212:9: replace Queue::fresh_id -> String with String::new()
+crates/trellis-queue/src/lib.rs:1212:9: replace Queue::fresh_id -> String with "xyzzy".into()
+crates/trellis-queue/src/lib.rs:1395:9: replace Runner::now -> i64 with 0
+crates/trellis-queue/src/lib.rs:1383:9: replace Runner::next_due -> Option<Duration> with Some(Default::default())
+crates/trellis-queue/src/lib.rs:1395:9: replace Runner::now -> i64 with 1
+crates/trellis-queue/src/lib.rs:1395:9: replace Runner::now -> i64 with -1
+crates/trellis-queue/src/lib.rs:1401:9: replace Runner::profiles -> Option<&BTreeMap<String, profile::Profile>> with Some(Box::leak(Box::new(BTreeMap::new())))
+crates/trellis-queue/src/lib.rs:1443:9: replace <impl std::fmt::Display for Stop>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:1471:5: replace reconcile_and_say with ()
+crates/trellis-queue/src/lib.rs:1550:12: delete ! in work
+crates/trellis-queue/src/lib.rs:1610:40: replace && with || in work
+crates/trellis-queue/src/activity.rs:34:9: replace Actor::as_str -> &'static str with ""
+crates/trellis-queue/src/activity.rs:34:9: replace Actor::as_str -> &'static str with "xyzzy"
+crates/trellis-queue/src/activity.rs:119:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in ActivityLog::tail
+crates/trellis-queue/src/activity.rs:119:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in ActivityLog::tail
+crates/trellis-queue/src/activity.rs:119:32: replace == with != in ActivityLog::tail
+crates/trellis-queue/src/approval.rs:43:5: replace is_request_id -> bool with true
+crates/trellis-queue/src/approval.rs:43:5: replace is_request_id -> bool with false
+crates/trellis-queue/src/approval.rs:51:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in list
+crates/trellis-queue/src/approval.rs:59:17: replace && with || in list
+crates/trellis-queue/src/approval.rs:242:13: delete match arm Ok(true) in approve_budget
+crates/trellis-queue/src/cron.rs:192:56: replace || with && in Cron::parse
+crates/trellis-queue/src/cron.rs:194:27: replace > with == in Cron::parse
+crates/trellis-queue/src/cron.rs:194:27: replace > with < in Cron::parse
+crates/trellis-queue/src/cron.rs:194:27: replace > with >= in Cron::parse
+crates/trellis-queue/src/cron.rs:196:40: replace - with + in Cron::parse
+crates/trellis-queue/src/cron.rs:196:40: replace - with / in Cron::parse
+crates/trellis-queue/src/cron.rs:199:43: replace || with && in Cron::parse
+crates/trellis-queue/src/cron.rs:234:9: replace Cron::as_str -> &str with ""
+crates/trellis-queue/src/cron.rs:234:9: replace Cron::as_str -> &str with "xyzzy"
+crates/trellis-queue/src/cron.rs:268:23: replace + with - in Cron::next_after
+crates/trellis-queue/src/cron.rs:269:47: replace + with - in Cron::next_after
+crates/trellis-queue/src/cron.rs:289:44: replace > with >= in Cron::next_after
+crates/trellis-queue/src/cron.rs:319:5: replace tz_source -> String with String::new()
+crates/trellis-queue/src/cron.rs:319:5: replace tz_source -> String with "xyzzy".into()
+crates/trellis-queue/src/cron.rs:334:71: replace || with && in Tz::parse
+crates/trellis-queue/src/cron.rs:334:54: replace || with && in Tz::parse
+crates/trellis-queue/src/cron.rs:362:19: replace || with && in Tz::parse
+crates/trellis-queue/src/cron.rs:362:14: replace > with >= in Tz::parse
+crates/trellis-queue/src/cron.rs:362:14: replace > with == in Tz::parse
+crates/trellis-queue/src/cron.rs:362:24: replace > with == in Tz::parse
+crates/trellis-queue/src/cron.rs:362:24: replace > with >= in Tz::parse
+crates/trellis-queue/src/cron.rs:376:27: replace || with && in Tz::named
+crates/trellis-queue/src/cron.rs:431:34: replace < with <= in <impl std::fmt::Display for Tz>::fmt
+crates/trellis-queue/src/files.rs:50:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in read_settled
+crates/trellis-queue/src/files.rs:83:47: replace match guard source.kind() == std::io::ErrorKind::NotFound with true in read_json_opt
+crates/trellis-queue/src/files.rs:161:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in remove
+crates/trellis-queue/src/files.rs:240:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in settle
+crates/trellis-queue/src/files.rs:240:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in settle
+crates/trellis-queue/src/files.rs:240:32: replace == with != in settle
+crates/trellis-queue/src/files.rs:259:20: replace match guard e.kind() == std::io::ErrorKind::PermissionDenied && waited < Duration::from_secs(5) with false in patiently
+crates/trellis-queue/src/files.rs:260:31: replace < with == in patiently
+crates/trellis-queue/src/files.rs:260:31: replace < with > in patiently
+crates/trellis-queue/src/files.rs:260:31: replace < with <= in patiently
+crates/trellis-queue/src/files.rs:263:24: replace += with -= in patiently
+crates/trellis-queue/src/files.rs:264:30: replace * with / in patiently
+crates/trellis-queue/src/ledger.rs:65:23: replace += with *= in spend
+crates/trellis-queue/src/ledger.rs:65:23: replace += with -= in spend
+crates/trellis-queue/src/ledger.rs:184:9: delete field paused from struct Overlay expression in enforce
+crates/trellis-queue/src/mention.rs:57:38: replace && with || in mentions
+crates/trellis-queue/src/mention.rs:153:57: replace && with || in Queue::apply
+crates/trellis-queue/src/portable.rs:34:9: replace OnConflict::parse -> Option<Self> with None
+crates/trellis-queue/src/portable.rs:35:13: delete match arm "skip" in OnConflict::parse
+crates/trellis-queue/src/portable.rs:36:13: delete match arm "replace" in OnConflict::parse
+crates/trellis-queue/src/portable.rs:37:13: delete match arm "rename" in OnConflict::parse
+crates/trellis-queue/src/portable.rs:52:9: replace Kind::as_str -> &'static str with ""
+crates/trellis-queue/src/portable.rs:52:9: replace Kind::as_str -> &'static str with "xyzzy"
+crates/trellis-queue/src/portable.rs:110:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in tomls
+crates/trellis-queue/src/portable.rs:160:35: replace += with *= in export
+crates/trellis-queue/src/portable.rs:160:35: replace += with -= in export
+crates/trellis-queue/src/portable.rs:182:9: replace && with || in valid_id
+crates/trellis-queue/src/portable.rs:181:5: replace valid_id -> bool with true
+crates/trellis-queue/src/portable.rs:210:39: replace match guard m.contains("not a profile") with true in plan_import
+crates/trellis-queue/src/portable.rs:234:55: replace || with && in plan_import
+crates/trellis-queue/src/portable.rs:276:51: replace == with != in plan_import
+crates/trellis-queue/src/portable.rs:288:21: replace != with == in plan_import
+crates/trellis-queue/src/portable.rs:310:60: replace || with && in plan_import
+crates/trellis-queue/src/portable.rs:362:46: replace match guard on == OnConflict::Replace with true in plan_import
+crates/trellis-queue/src/portable.rs:439:28: replace == with != in apply_import
+crates/trellis-queue/src/profile.rs:110:9: replace Profile::is_process -> bool with true
+crates/trellis-queue/src/profile.rs:110:9: replace Profile::is_process -> bool with false
+crates/trellis-queue/src/profile.rs:123:9: replace Profile::instructions_path -> Option<PathBuf> with Some(Default::default())
+crates/trellis-queue/src/profile.rs:123:9: replace Profile::instructions_path -> Option<PathBuf> with None
+crates/trellis-queue/src/profile.rs:178:30: replace || with && in validate
+crates/trellis-queue/src/profile.rs:215:62: replace || with && in validate
+crates/trellis-queue/src/profile.rs:215:43: replace || with && in validate
+crates/trellis-queue/src/profile.rs:279:20: replace > with >= in validate
+crates/trellis-queue/src/profile.rs:321:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load_dir
+crates/trellis-queue/src/routine.rs:90:25: replace + with - in placeholders
+crates/trellis-queue/src/routine.rs:130:23: replace || with && in parse
+crates/trellis-queue/src/routine.rs:130:28: replace > with == in parse
+crates/trellis-queue/src/routine.rs:130:28: replace > with >= in parse
+crates/trellis-queue/src/routine.rs:178:5: replace load_all -> Result<BTreeMap<String, Routine>, QueueError> with Ok(BTreeMap::new())
+crates/trellis-queue/src/routine.rs:182:5: replace load_dir -> Result<BTreeMap<String, Routine>, QueueError> with Ok(BTreeMap::new())
+crates/trellis-queue/src/routine.rs:185:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load_dir
+crates/trellis-queue/src/routine.rs:269:5: replace state -> Result<Option<RoutineState>, QueueError> with Ok(Some(Default::default()))
+crates/trellis-queue/src/routine.rs:269:5: replace state -> Result<Option<RoutineState>, QueueError> with Ok(None)
+crates/trellis-queue/src/routine.rs:294:5: replace active -> Result<Option<String>, QueueError> with Ok(Some(String::new()))
+crates/trellis-queue/src/routine.rs:294:5: replace active -> Result<Option<String>, QueueError> with Ok(None)
+crates/trellis-queue/src/routine.rs:294:5: replace active -> Result<Option<String>, QueueError> with Ok(Some("xyzzy".into()))
+crates/trellis-queue/src/routine.rs:299:41: replace == with != in active
+crates/trellis-queue/src/routine.rs:344:31: replace match guard claimed.is_none() with true in seen
+crates/trellis-queue/src/routine.rs:344:31: replace match guard claimed.is_none() with false in seen
+crates/trellis-queue/src/routine.rs:345:31: replace match guard pending.is_none() with false in seen
+crates/trellis-queue/src/routine.rs:345:31: replace match guard pending.is_none() with true in seen
+crates/trellis-queue/src/routine.rs:424:9: delete field name from struct Tick expression in evaluate
+crates/trellis-queue/src/routine.rs:473:20: replace > with == in evaluate
+crates/trellis-queue/src/routine.rs:473:20: replace > with < in evaluate
+crates/trellis-queue/src/routine.rs:473:20: replace > with >= in evaluate
+crates/trellis-queue/src/routine.rs:512:5: replace next_due -> Option<i64> with Some(1)
+crates/trellis-queue/src/routine.rs:512:5: replace next_due -> Option<i64> with Some(0)
+crates/trellis-queue/src/routine.rs:512:5: replace next_due -> Option<i64> with None
+crates/trellis-queue/src/routine.rs:512:5: replace next_due -> Option<i64> with Some(-1)
+crates/trellis-queue/src/stale.rs:39:13: delete match arm "list" in StaleClaims::parse
+crates/trellis-queue/src/stale.rs:38:9: replace StaleClaims::parse -> Option<StaleClaims> with None
+crates/trellis-queue/src/stale.rs:38:9: replace StaleClaims::parse -> Option<StaleClaims> with Some(Default::default())
+crates/trellis-queue/src/routine.rs:514:21: delete ! in next_due
+crates/trellis-queue/src/stale.rs:40:13: delete match arm "release" in StaleClaims::parse
+crates/trellis-queue/src/stale.rs:81:9: replace Liveness::os -> String with "xyzzy".into()
+crates/trellis-queue/src/stale.rs:81:9: replace Liveness::os -> String with String::new()
+crates/trellis-queue/src/stale.rs:119:24: replace match guard source.kind() == std::io::ErrorKind::NotFound with true in Queue::release_stale_claims
+crates/trellis-queue/src/stale.rs:119:24: replace match guard source.kind() == std::io::ErrorKind::NotFound with false in Queue::release_stale_claims
+crates/trellis-queue/src/stale.rs:119:38: replace == with != in Queue::release_stale_claims
+crates/trellis-queue/src/stale.rs:215:51: replace match guard source.kind() == std::io::ErrorKind::NotFound with true in Queue::release_dead
+crates/trellis-queue/src/stale.rs:215:51: replace match guard source.kind() == std::io::ErrorKind::NotFound with false in Queue::release_dead
+crates/trellis-queue/src/stale.rs:215:65: replace == with != in Queue::release_dead
+crates/trellis-queue/src/stale.rs:220:52: replace || with && in Queue::release_dead
+crates/trellis-queue/src/stamp.rs:19:48: replace - with / in civil
+crates/trellis-queue/src/stamp.rs:19:33: replace + with - in civil
+crates/trellis-queue/src/stamp.rs:57:5: replace now_secs -> i64 with 0
+crates/trellis-queue/src/stamp.rs:57:5: replace now_secs -> i64 with 1
+crates/trellis-queue/src/stamp.rs:57:5: replace now_secs -> i64 with -1
+crates/trellis-queue/src/stamp.rs:99:71: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:99:54: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:99:38: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:99:22: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:105:58: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:105:68: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:105:79: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:105:32: replace || with && in parse_iso
+crates/trellis-queue/src/stamp.rs:105:86: replace > with == in parse_iso
+crates/trellis-queue/src/stamp.rs:105:86: replace > with >= in parse_iso
