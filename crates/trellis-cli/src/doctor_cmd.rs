@@ -806,7 +806,7 @@ mod doctor_tests {
 mod init_tests {
     use super::*;
     use crate::index_cmd::MAX_EDGES_DRAWN;
-    use crate::{action_from, summarise};
+    use crate::run_cmd::{action_from, summarise};
 
     fn bare(name: &str) -> PathBuf {
         crate::testutil::scratch(&format!("init-{name}"))
