@@ -1,0 +1,41 @@
+# 120x40 at 03:30:52Z
+ TRELLIS   model vllm:http://127.0.0.1:11434#qwen2.5:3b  tier 4, no schema  worktree clean
+┌ transcript ──────────────────────────────────────────────────────────┐┌ actions ─────────────────────────────────────┐
+│type a task and press enter · esc to quit                             ││  blast_radius     ○─┐                        │
+│> afix the describe annotation                                        ││  read_file        ○─┤                        │
+│model:    VllmOpenAi, tier 4, no schema; the reply is validated after ││  edit          16 ●─┤──◆ 16 actions          │
+│— degradation: malformed tool calls are retried, not prevented;       ││  run_checks       ○─┘                        │
+│slower, and a run can fail on format alone                            ││  nothing written to the tree                 │
+│control:  auto                                                        ││  · edit app/calc.py                          │
+│schema:   sent and ignored by this runtime, so it is not enforced.    ││  · edit app/calc.py                          │
+│Running                                                               ││  · edit app/calc.py                          │
+│          unconstrained; malformed calls are retried rather than      ││  · edit app/calc.py                          │
+│prevented.                                                            ││  · edit app/calc.py                          │
+│snapshot at 31daaafc8e0a32b528692c10e525ace88ca6b3cf                  ││  · edit app/calc.py                          │
+│files:    5 first-party Python file(s) named to the model             ││  · edit app/calc.py                          │
+│· edit app/calc.py                                                    │└──────────────────────────────────────────────┘
+│        """Returns a human-readable count. The annotation says int; it│┌ edits ───────────────────────────────────────┐
+│is not."""                                                            ││                                              │
+│        return f"count={n}"                                           ││                                              │
+│                                                                      ││                                              │
+│                                                                      ││                                              │
+│    def total(xs: list[int]) -> int:                                  │└──────────────────────────────────────────────┘
+│        return sum(xs)                                                │┌ checks ──────────────────────────────────────┐
+│malformed tool call; retrying                                         ││                                              │
+│malformed tool call; retrying                                         ││                                              │
+│malformed tool call; retrying                                         ││                                              │
+│malformed tool call; retrying                                         ││                                              │
+│   1. Edit { path: "app/calc.py", old:                                ││                                              │
+│"__afix_the_describe_annotation__", new: "from unittest import        │└──────────────────────────────────────────────┘
+│mock\n\ndef test_add(self):\n    with mock.patch('os.path.exists',    │┌ radius ──────────────────────────────────────┐
+│return_value=True):\n                                                 ││  resolved       0 ●─┐                        │
+│self.assertTrue(os.path.exists('/some/path'))" }                      ││  candidates     0 ◐─┤──◆ reach               │
+│files written: none                                                   ││  unresolved     0 ○─┘                        │
+│context:  1484 B first prompt, 1484 B peak over 1 turns (1.0x)        ││  a floor on reach, not a boundary            │
+└──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────┘
+┌ budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│█████████████████████████████████████iteration 3/4  ·  2424 tokens  ·  0s elapsed ███████                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ─────────────────────────────────────────────────┐
+│█                                                                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
