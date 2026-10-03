@@ -1,0 +1,41 @@
+# 120x40 at 03:33:54Z
+ TRELLIS   model scripted:/home/mayda/trellis-qa15/qa/fixtures/scripted-annotate.json  tier scripted  worktree 1 edit(s)
+┌ transcript ──────────────────────────────────────────────────────────┐┌ actions ─────────────────────────────────────┐
+│type a task and press enter · esc to quit                             ││  blast_radius     ○─┐                        │
+│> fix the describe annotation                                         ││  read_file        ○─┤                        │
+│model:    scripted, 3 steps — real loop, real checks, real rollback;  ││  edit           1 ●─┤──◆ 2 actions           │
+│judgement stubbed                                                     ││  run_checks     1 ●─┘                        │
+│control:  auto                                                        ││  1 wrote to the tree                         │
+│snapshot at 31daaafc8e0a32b528692c10e525ace88ca6b3cf                  ││  * edit app/calc.py                          │
+│files:    5 first-party Python file(s) named to the model             ││  · run_checks [Typecheck] app/calc.py        │
+│· edit app/calc.py                                                    ││                                              │
+│    edited app/calc.py (applied: true, bytes 59..87)                  ││                                              │
+│· run_checks [Typecheck] app/calc.py  ✗ check FAILED                  ││                                              │
+│    Typecheck: FAILED                                                 ││                                              │
+│    command: python -m mypy --ignore-missing-imports                  ││                                              │
+│--no-error-summary --no-incremental app/calc.py                       │└──────────────────────────────────────────────┘
+│   1. Edit { path: "app/calc.py", old: "def describe(n: int) -> int:",│┌ edits ───────────────────────────────────────┐
+│new: "def describe(n: int) -> str:" }                                 ││~ app/calc.py                                 │
+│   2. RunChecks { paths: ["app/calc.py"], kinds: [Typecheck] } check  ││                                              │
+│FAILED                                                                ││                                              │
+│why the check failed:                                                 ││                                              │
+│  Typecheck: FAILED                                                   │└──────────────────────────────────────────────┘
+│  command: python -m mypy --ignore-missing-imports --no-error-summary │┌ checks ──────────────────────────────────────┐
+│--no-incremental app/calc.py                                          ││FAIL Typecheck                                │
+│files written: app/calc.py                                            ││                                              │
+│NOT CONVERGED after 2 iterations.                                     ││                                              │
+│  the model stopped without a passing check. Its own summary was:     ││                                              │
+│annotation corrected and typechecked. Nothing was accepted, because   ││                                              │
+│only an executed check can accept it.                                 │└──────────────────────────────────────────────┘
+│Rolled back to 31daaafc8e0a32b528692c10e525ace88ca6b3cf. Worktree     │┌ radius ──────────────────────────────────────┐
+│restored: true.                                                       ││  resolved       0 ●─┐                        │
+│trail written but not committed: git command failed: git commit --only││  candidates     0 ◐─┤──◆ reach               │
+│-m trellis: trail for fix the describe annotation --                  ││  unresolved     0 ○─┘                        │
+│.trellis/runs/20261003-033257-273-fix-the-describe-annotation.json    ││  a floor on reach, not a boundary            │
+└──────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────┘
+┌ budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│██████████████████████████████████████iteration 2/4  ·  0 tokens  ·  0s elapsed                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ task  ·  enter to run  ·  /help  ·  esc to clear, esc again to quit ─────────────────────────────────────────────────┐
+│█                                                                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
