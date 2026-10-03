@@ -532,7 +532,7 @@ pub(crate) fn run(
                         // would freeze the interface that is meant to be
                         // showing it.
                         let lines = tokio::task::spawn_blocking(move || {
-                            crate::codebase_lines(&root, limit)
+                            crate::doctor_cmd::codebase_lines(&root, limit)
                         })
                         .await
                         .unwrap_or_else(|_| {
