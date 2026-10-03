@@ -59,3 +59,27 @@ Current defaults (40 iterations, 20 minutes, 2M tokens) are **placeholders**,
 marked as such in `trellis-loop/src/budget.rs` and in `ASSUMPTIONS.md` A-7.
 They are not measurements and must not be cited as any. Calibration comes from
 real usage after v0.2, per configuration, per `COST_MODEL.md`.
+
+## Amendment 2026-10-02: the calibration rule, and why the defaults did not move
+
+The rule (decided by the owner on #148, 2026-09-28): the default for each
+dimension is the p90 of converged measured runs plus 50% headroom, rounded up
+to a whole iteration count, whole minutes and 100k tokens. Tokens are
+completion tokens until prompt tokens are counted in the ledger (#105-#108).
+
+The runs it was to be applied to are the eight in
+[`docs/bench/cost-by-radius.md`](../bench/cost-by-radius.md) (#147: poetry
+2.5.0, qwen3:8b on Ollama, `a6463af`). **None converged**: every one stopped on
+the model's tool-call format after 1-3 iterations, 69-145 s and 4,377-9,881
+completion tokens. A p90 of converged runs does not exist, so the rule leaves
+the defaults where they were, and figures from runs that failed on format are
+not used in its place: they measure how fast this model fails, not what a
+change needs.
+
+Recorded defaults: 40 iterations, 20 minutes, 2000000 tokens.
+
+That line is asserted against `Budget::default()` by
+`default_budget_matches_adr_0008` in `crates/trellis-loop/src/budget.rs`, so
+changing one without the other fails a test. They are still placeholders, and
+"What changes our mind" above still holds: the rule is applied again when a
+measured set contains converged runs.

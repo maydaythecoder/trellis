@@ -37,7 +37,10 @@ impl Default for Budget {
     fn default() -> Self {
         // ASSUMPTION A-7: these are placeholders pending calibration from
         // real usage (S8). They are not measurements and must not be cited
-        // as any. See ASSUMPTIONS.md.
+        // as any. See ASSUMPTIONS.md. ADR 0008's 2026-10-02 amendment
+        // records them and the rule that will replace them (p90 of
+        // converged runs + 50%), which had no converged run to apply to;
+        // `default_budget_matches_adr_0008` keeps the two in step.
         Self {
             max_iterations: 40,
             max_wall_clock: Duration::from_secs(20 * 60),
@@ -163,6 +166,37 @@ pub struct BudgetTooSmall {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The risk: the defaults move in code and the ADR that justifies them
+    /// keeps describing the old ones, or the reverse, and a reader cites
+    /// whichever they found first. The ADR's "Recorded defaults" line is the
+    /// written source, so the test reads it rather than a copy of it.
+    #[test]
+    fn default_budget_matches_adr_0008() {
+        const ADR: &str = include_str!("../../../docs/adr/0008-budgets.md");
+        let recorded = ADR
+            .lines()
+            .filter(|l| l.starts_with("Recorded defaults:"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "ADR 0008 must record the defaults exactly once: {recorded:?}"
+        );
+        let b = Budget::default();
+        let shipped = format!(
+            "Recorded defaults: {} iterations, {} minutes, {} tokens.",
+            b.max_iterations,
+            b.max_wall_clock.as_secs() / 60,
+            b.max_tokens
+        );
+        assert_eq!(
+            b.max_wall_clock.as_secs() % 60,
+            0,
+            "the ADR records whole minutes"
+        );
+        assert_eq!(recorded[0].trim_end(), shipped);
+    }
 
     #[test]
     fn budgets_divide_across_partitions() {
