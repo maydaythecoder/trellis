@@ -12,7 +12,7 @@ inherited.
 | A-4 | Hand-rolled interner instead of `lasso` | `lasso` upstream stale since 2024-08-19 (verified). Forty lines of surface | Easy — Q-3 |
 | A-5 | `postcard` for the index, `bincode` dropped | `bincode` 3.0.0 is a protest release that deliberately fails to compile; 2.x works but the 3.0 squat makes version hygiene a hazard. postcard is MIT/Apache-2.0 and maintained | Easy |
 | A-6 | `trellis-vcs` shells out to `git` rather than using `git2` | Brief blesses it. Exact semantics for the path that must never lose work. `git2` retained for worktrees | Easy — ADR 0009 |
-| A-7 | Budget defaults: 40 iterations, 20 min wall-clock, 2M tokens | **Placeholders, not measurements.** Marked as such in source | Must change — S8 |
+| A-7 | Budget defaults: 40 iterations, 20 min wall-clock, 2M tokens | **Measured on 8 runs, 2026-10-02, and unchanged**: none of the 8 runs in `docs/bench/cost-by-radius.md` converged (all stopped on tool-call format), so the calibration rule in ADR 0008 (p90 of converged runs + 50%) had nothing to apply to. Still placeholders, not measurements; marked as such in source | Must change — S8, when a measured set contains converged runs |
 | A-8 | Default check commands `mypy` and `pytest -q` | Most common in the Python ecosystem. Configured, never detected | Per-repo config |
 | A-9 | `trellis doctor` reports tier `ValidateAndRetry` and batching `Unknown` until probing exists | The pessimistic default. Reporting an optimistic guess is exactly the failure S17 and S18 describe | v0.2 |
 | A-10 | Recall thresholds 85% gate / 60% pivot | Reasoned from the cost of the unresolved list to the user. See `BENCHMARK_AND_EVAL.md` §3 | Must not change after measuring — that is the point |
