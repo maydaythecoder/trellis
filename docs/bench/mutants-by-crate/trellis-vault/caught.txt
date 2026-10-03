@@ -1,0 +1,661 @@
+crates/trellis-vault/src/compile.rs:41:5: replace link_stems -> Vec<String> with vec![]
+crates/trellis-vault/src/compile.rs:41:5: replace link_stems -> Vec<String> with vec![String::new()]
+crates/trellis-vault/src/compile.rs:41:5: replace link_stems -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-vault/src/compile.rs:43:13: replace < with == in link_stems
+crates/trellis-vault/src/compile.rs:43:13: replace < with > in link_stems
+crates/trellis-vault/src/compile.rs:47:33: replace && with || in link_stems
+crates/trellis-vault/src/compile.rs:47:16: delete ! in link_stems
+crates/trellis-vault/src/compile.rs:47:36: delete ! in link_stems
+crates/trellis-vault/src/compile.rs:47:58: replace == with != in link_stems
+crates/trellis-vault/src/compile.rs:50:15: replace += with -= in link_stems
+crates/trellis-vault/src/compile.rs:50:15: replace += with *= in link_stems
+crates/trellis-vault/src/compile.rs:52:15: replace += with -= in link_stems
+crates/trellis-vault/src/compile.rs:60:5: replace match_link -> Option<(&str, usize)> with None
+crates/trellis-vault/src/compile.rs:60:5: replace match_link -> Option<(&str, usize)> with Some(("", 1))
+crates/trellis-vault/src/compile.rs:60:5: replace match_link -> Option<(&str, usize)> with Some(("xyzzy", 1))
+crates/trellis-vault/src/compile.rs:79:36: replace + with * in match_link
+crates/trellis-vault/src/compile.rs:79:23: replace - with + in match_link
+crates/trellis-vault/src/compile.rs:76:8: delete ! in match_link
+crates/trellis-vault/src/compile.rs:62:16: replace == with != in match_link
+crates/trellis-vault/src/compile.rs:90:5: replace heading -> String with String::new()
+crates/trellis-vault/src/compile.rs:105:5: replace section -> String with String::new()
+crates/trellis-vault/src/compile.rs:90:5: replace heading -> String with "xyzzy".into()
+crates/trellis-vault/src/compile.rs:105:5: replace section -> String with "xyzzy".into()
+crates/trellis-vault/src/compile.rs:136:8: delete ! in compile_with_dates
+crates/trellis-vault/src/compile.rs:168:35: replace == with != in compile_with_dates
+crates/trellis-vault/src/compile.rs:237:26: replace < with == in compile_with_dates
+crates/trellis-vault/src/compile.rs:181:43: replace || with && in compile_with_dates
+crates/trellis-vault/src/compile.rs:237:26: replace < with > in compile_with_dates
+crates/trellis-vault/src/compile.rs:237:26: replace < with <= in compile_with_dates
+crates/trellis-vault/src/compile.rs:251:23: replace <= with > in compile_with_dates
+crates/trellis-vault/src/compile.rs:255:60: replace - with + in compile_with_dates
+crates/trellis-vault/src/compile.rs:255:60: replace - with / in compile_with_dates
+crates/trellis-vault/src/dates.rs:24:38: replace * with /
+crates/trellis-vault/src/dates.rs:24:31: replace * with /
+crates/trellis-vault/src/dates.rs:30:5: replace required -> Result<Option<String>, D::Error> with Ok(None)
+crates/trellis-vault/src/dates.rs:30:5: replace required -> Result<Option<String>, D::Error> with Ok(Some(String::new()))
+crates/trellis-vault/src/dates.rs:30:5: replace required -> Result<Option<String>, D::Error> with Ok(Some("xyzzy".into()))
+crates/trellis-vault/src/dates.rs:82:5: replace line_anchor -> String with String::new()
+crates/trellis-vault/src/dates.rs:87:19: replace ^= with |= in line_anchor
+crates/trellis-vault/src/dates.rs:82:5: replace line_anchor -> String with "xyzzy".into()
+crates/trellis-vault/src/dates.rs:87:19: replace ^= with &= in line_anchor
+crates/trellis-vault/src/dates.rs:87:75: replace + with * in line_anchor
+crates/trellis-vault/src/dates.rs:87:75: replace + with - in line_anchor
+crates/trellis-vault/src/dates.rs:88:51: replace + with - in line_anchor
+crates/trellis-vault/src/dates.rs:88:51: replace + with * in line_anchor
+crates/trellis-vault/src/dates.rs:88:55: replace * with + in line_anchor
+crates/trellis-vault/src/dates.rs:88:55: replace * with / in line_anchor
+crates/trellis-vault/src/dates.rs:89:19: replace ^= with |= in line_anchor
+crates/trellis-vault/src/dates.rs:89:19: replace ^= with &= in line_anchor
+crates/trellis-vault/src/dates.rs:89:28: replace >> with << in line_anchor
+crates/trellis-vault/src/dates.rs:134:5: replace logical_lines -> Result<Vec<&str>, DatesError> with Ok(vec![])
+crates/trellis-vault/src/dates.rs:134:5: replace logical_lines -> Result<Vec<&str>, DatesError> with Ok(vec![""])
+crates/trellis-vault/src/dates.rs:134:5: replace logical_lines -> Result<Vec<&str>, DatesError> with Ok(vec!["xyzzy"])
+crates/trellis-vault/src/dates.rs:134:39: replace > with == in logical_lines
+crates/trellis-vault/src/dates.rs:134:39: replace > with < in logical_lines
+crates/trellis-vault/src/dates.rs:134:35: replace + with - in logical_lines
+crates/trellis-vault/src/dates.rs:144:5: replace leap -> bool with true
+crates/trellis-vault/src/dates.rs:144:5: replace leap -> bool with false
+crates/trellis-vault/src/dates.rs:144:25: replace && with || in leap
+crates/trellis-vault/src/dates.rs:144:52: replace || with && in leap
+crates/trellis-vault/src/dates.rs:144:29: delete ! in leap
+crates/trellis-vault/src/dates.rs:149:5: replace normalize_day -> Option<String> with None
+crates/trellis-vault/src/dates.rs:149:5: replace normalize_day -> Option<String> with Some(String::new())
+crates/trellis-vault/src/dates.rs:149:5: replace normalize_day -> Option<String> with Some("xyzzy".into())
+crates/trellis-vault/src/dates.rs:151:16: replace != with == in normalize_day
+crates/trellis-vault/src/dates.rs:152:17: replace != with == in normalize_day
+crates/trellis-vault/src/dates.rs:153:17: replace != with == in normalize_day
+crates/trellis-vault/src/dates.rs:154:12: delete ! in normalize_day
+crates/trellis-vault/src/dates.rs:155:12: delete ! in normalize_day
+crates/trellis-vault/src/dates.rs:156:12: delete ! in normalize_day
+crates/trellis-vault/src/dates.rs:164:9: delete match arm 1 | 3 | 5 | 7 | 8 | 10 | 12 in normalize_day
+crates/trellis-vault/src/dates.rs:165:9: delete match arm 4 | 6 | 9 | 11 in normalize_day
+crates/trellis-vault/src/dates.rs:166:14: replace match guard leap(y) with true in normalize_day
+crates/trellis-vault/src/dates.rs:166:14: replace match guard leap(y) with false in normalize_day
+crates/trellis-vault/src/dates.rs:170:23: replace && with || in normalize_day
+crates/trellis-vault/src/dates.rs:170:13: replace && with || in normalize_day
+crates/trellis-vault/src/dates.rs:170:8: replace >= with < in normalize_day
+crates/trellis-vault/src/dates.rs:170:18: replace >= with < in normalize_day
+crates/trellis-vault/src/dates.rs:170:28: replace <= with > in normalize_day
+crates/trellis-vault/src/dates.rs:194:5: replace manual_marker -> Option<(bool, String)> with Some((true, String::new()))
+crates/trellis-vault/src/dates.rs:194:5: replace manual_marker -> Option<(bool, String)> with None
+crates/trellis-vault/src/dates.rs:194:5: replace manual_marker -> Option<(bool, String)> with Some((true, "xyzzy".into()))
+crates/trellis-vault/src/dates.rs:194:5: replace manual_marker -> Option<(bool, String)> with Some((false, String::new()))
+crates/trellis-vault/src/dates.rs:194:5: replace manual_marker -> Option<(bool, String)> with Some((false, "xyzzy".into()))
+crates/trellis-vault/src/dates.rs:209:8: delete ! in manual_marker
+crates/trellis-vault/src/dates.rs:214:19: replace || with && in manual_marker
+crates/trellis-vault/src/dates.rs:214:14: replace == with != in manual_marker
+crates/trellis-vault/src/dates.rs:214:24: replace == with != in manual_marker
+crates/trellis-vault/src/dates.rs:215:16: replace == with != in manual_marker
+crates/trellis-vault/src/dates.rs:220:8: delete ! in manual_marker
+crates/trellis-vault/src/dates.rs:228:5: replace is_heading -> bool with true
+crates/trellis-vault/src/dates.rs:229:41: replace == with != in is_heading
+crates/trellis-vault/src/dates.rs:228:5: replace is_heading -> bool with false
+crates/trellis-vault/src/dates.rs:277:35: replace - with + in seed
+crates/trellis-vault/src/dates.rs:277:35: replace - with / in seed
+crates/trellis-vault/src/dates.rs:278:25: replace && with || in seed
+crates/trellis-vault/src/dates.rs:281:22: replace && with || in seed
+crates/trellis-vault/src/dates.rs:281:17: replace >= with < in seed
+crates/trellis-vault/src/dates.rs:293:33: replace + with - in seed
+crates/trellis-vault/src/dates.rs:293:33: replace + with * in seed
+crates/trellis-vault/src/dates.rs:307:5: replace unique_positions -> BTreeMap<&str, usize> with BTreeMap::new()
+crates/trellis-vault/src/dates.rs:307:5: replace unique_positions -> BTreeMap<&str, usize> with BTreeMap::from_iter([("", 0)])
+crates/trellis-vault/src/dates.rs:307:5: replace unique_positions -> BTreeMap<&str, usize> with BTreeMap::from_iter([("", 1)])
+crates/trellis-vault/src/dates.rs:307:5: replace unique_positions -> BTreeMap<&str, usize> with BTreeMap::from_iter([("xyzzy", 0)])
+crates/trellis-vault/src/dates.rs:307:5: replace unique_positions -> BTreeMap<&str, usize> with BTreeMap::from_iter([("xyzzy", 1)])
+crates/trellis-vault/src/dates.rs:349:27: replace && with || in reconcile
+crates/trellis-vault/src/dates.rs:349:18: replace < with <= in reconcile
+crates/trellis-vault/src/dates.rs:349:46: replace == with != in reconcile
+crates/trellis-vault/src/dates.rs:351:16: replace += with -= in reconcile
+crates/trellis-vault/src/dates.rs:353:58: replace - with + in reconcile
+crates/trellis-vault/src/dates.rs:353:58: replace - with / in reconcile
+crates/trellis-vault/src/dates.rs:353:86: replace - with + in reconcile
+crates/trellis-vault/src/dates.rs:353:86: replace - with / in reconcile
+crates/trellis-vault/src/dates.rs:355:40: replace && with || in reconcile
+crates/trellis-vault/src/dates.rs:355:24: replace && with || in reconcile
+crates/trellis-vault/src/dates.rs:355:19: replace >= with < in reconcile
+crates/trellis-vault/src/dates.rs:355:35: replace >= with < in reconcile
+crates/trellis-vault/src/dates.rs:355:65: replace == with != in reconcile
+crates/trellis-vault/src/dates.rs:357:17: replace -= with += in reconcile
+crates/trellis-vault/src/dates.rs:357:17: replace -= with /= in reconcile
+crates/trellis-vault/src/dates.rs:358:17: replace -= with += in reconcile
+crates/trellis-vault/src/dates.rs:358:17: replace -= with /= in reconcile
+crates/trellis-vault/src/dates.rs:363:26: replace - with + in reconcile
+crates/trellis-vault/src/dates.rs:365:13: replace <= with > in reconcile
+crates/trellis-vault/src/dates.rs:368:34: replace == with != in reconcile
+crates/trellis-vault/src/dates.rs:369:27: replace > with == in reconcile
+crates/trellis-vault/src/dates.rs:374:11: replace += with -= in reconcile
+crates/trellis-vault/src/dates.rs:385:5: replace valid_note_path -> bool with true
+crates/trellis-vault/src/dates.rs:385:5: replace valid_note_path -> bool with false
+crates/trellis-vault/src/dates.rs:389:51: replace && with || in valid_note_path
+crates/trellis-vault/src/dates.rs:389:21: replace && with || in valid_note_path
+crates/trellis-vault/src/dates.rs:389:59: replace == with != in valid_note_path
+crates/trellis-vault/src/dates.rs:395:44: replace || with && in valid_note_path
+crates/trellis-vault/src/dates.rs:395:37: replace == with != in valid_note_path
+crates/trellis-vault/src/dates.rs:395:50: replace == with != in valid_note_path
+crates/trellis-vault/src/dates.rs:399:47: replace - with + in valid_note_path
+crates/trellis-vault/src/dates.rs:399:47: replace - with / in valid_note_path
+crates/trellis-vault/src/dates.rs:403:5: replace valid_anchor -> bool with true
+crates/trellis-vault/src/dates.rs:403:5: replace valid_anchor -> bool with false
+crates/trellis-vault/src/dates.rs:403:13: replace == with != in valid_anchor
+crates/trellis-vault/src/dates.rs:405:41: replace || with && in valid_anchor
+crates/trellis-vault/src/dates.rs:411:20: replace != with == in validate
+crates/trellis-vault/src/dates.rs:411:5: replace validate -> Result<(), DatesError> with Ok(())
+crates/trellis-vault/src/dates.rs:414:24: replace > with < in validate
+crates/trellis-vault/src/dates.rs:419:12: delete ! in validate
+crates/trellis-vault/src/dates.rs:424:12: delete ! in validate
+crates/trellis-vault/src/dates.rs:427:29: replace > with < in validate
+crates/trellis-vault/src/dates.rs:430:15: replace += with -= in validate
+crates/trellis-vault/src/dates.rs:431:18: replace > with < in validate
+crates/trellis-vault/src/dates.rs:438:16: delete ! in validate
+crates/trellis-vault/src/dates.rs:435:16: delete ! in validate
+crates/trellis-vault/src/dates.rs:451:5: replace to_bytes -> Vec<u8> with vec![]
+crates/trellis-vault/src/dates.rs:451:5: replace to_bytes -> Vec<u8> with vec![0]
+crates/trellis-vault/src/dates.rs:451:5: replace to_bytes -> Vec<u8> with vec![1]
+crates/trellis-vault/src/dates.rs:456:5: replace parse -> Result<Document, DatesError> with Ok(Default::default())
+crates/trellis-vault/src/dates.rs:465:5: replace path -> PathBuf with Default::default()
+crates/trellis-vault/src/dates.rs:469:5: replace is_symlink -> bool with true
+crates/trellis-vault/src/dates.rs:476:5: replace read_bounded -> std::io::Result<Option<Vec<u8>>> with Ok(None)
+crates/trellis-vault/src/dates.rs:476:5: replace read_bounded -> std::io::Result<Option<Vec<u8>>> with Ok(Some(vec![]))
+crates/trellis-vault/src/dates.rs:476:5: replace read_bounded -> std::io::Result<Option<Vec<u8>>> with Ok(Some(vec![0]))
+crates/trellis-vault/src/dates.rs:476:5: replace read_bounded -> std::io::Result<Option<Vec<u8>>> with Ok(Some(vec![1]))
+crates/trellis-vault/src/dates.rs:484:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in read_bounded
+crates/trellis-vault/src/dates.rs:484:28: replace == with != in read_bounded
+crates/trellis-vault/src/dates.rs:488:8: delete ! in read_bounded
+crates/trellis-vault/src/dates.rs:488:38: replace > with < in read_bounded
+crates/trellis-vault/src/dates.rs:545:9: replace File::save -> Result<bool, DatesError> with Ok(true)
+crates/trellis-vault/src/dates.rs:545:9: replace File::save -> Result<bool, DatesError> with Ok(false)
+crates/trellis-vault/src/dates.rs:547:16: replace == with != in File::save
+crates/trellis-vault/src/dates.rs:560:5: replace atomic_write -> std::io::Result<()> with Ok(())
+crates/trellis-vault/src/dates.rs:601:31: replace != with == in atomic_write
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 0, 0, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 0, 0, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 0, 0, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 0, 1, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 0, 1, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 0, 1, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 1, 0, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 1, 0, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 1, 0, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 1, 1, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 1, 1, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (0, 1, 1, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 0, 0, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 0, 0, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 0, 0, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 0, 1, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 0, 1, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 0, 1, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 1, 0, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 1, 0, vec![String::new()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 1, 0, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 1, 1, vec![])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 1, 1, vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:679:5: replace refresh -> (usize, usize, usize, Vec<String>) with (1, 1, 1, vec![String::new()])
+crates/trellis-vault/src/dates.rs:704:24: replace += with -= in refresh
+crates/trellis-vault/src/dates.rs:723:33: replace - with + in refresh
+crates/trellis-vault/src/dates.rs:704:24: replace += with *= in refresh
+crates/trellis-vault/src/dates.rs:723:33: replace - with / in refresh
+crates/trellis-vault/src/dates.rs:736:9: replace Touched::is_empty -> bool with true
+crates/trellis-vault/src/dates.rs:736:61: replace && with || in Touched::is_empty
+crates/trellis-vault/src/dates.rs:736:33: replace && with || in Touched::is_empty
+crates/trellis-vault/src/dates.rs:749:5: replace after_edit -> Result<Option<String>, DatesError> with Ok(None)
+crates/trellis-vault/src/dates.rs:749:5: replace after_edit -> Result<Option<String>, DatesError> with Ok(Some(String::new()))
+crates/trellis-vault/src/dates.rs:749:5: replace after_edit -> Result<Option<String>, DatesError> with Ok(Some("xyzzy".into()))
+crates/trellis-vault/src/dates.rs:771:21: delete field today from struct Seed expression in after_edit
+crates/trellis-vault/src/dates.rs:770:21: delete field is_new from struct Seed expression in after_edit
+crates/trellis-vault/src/edit.rs:28:5: replace escape -> String with String::new()
+crates/trellis-vault/src/edit.rs:28:5: replace escape -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:32:5: replace parent_line -> String with String::new()
+crates/trellis-vault/src/edit.rs:32:5: replace parent_line -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:40:5: replace compose_raw -> String with String::new()
+crates/trellis-vault/src/edit.rs:40:5: replace compose_raw -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:50:5: replace create_raw -> String with String::new()
+crates/trellis-vault/src/edit.rs:50:5: replace create_raw -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:81:9: replace Session::resolve -> Result<usize, VaultError> with Ok(0)
+crates/trellis-vault/src/edit.rs:81:9: replace Session::resolve -> Result<usize, VaultError> with Ok(1)
+crates/trellis-vault/src/edit.rs:96:9: replace Session::link_to -> String with String::new()
+crates/trellis-vault/src/edit.rs:96:9: replace Session::link_to -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:103:9: replace Session::parent_of -> Option<String> with None
+crates/trellis-vault/src/edit.rs:103:9: replace Session::parent_of -> Option<String> with Some(String::new())
+crates/trellis-vault/src/edit.rs:103:9: replace Session::parent_of -> Option<String> with Some("xyzzy".into())
+crates/trellis-vault/src/edit.rs:123:42: replace == with != in write_note
+crates/trellis-vault/src/edit.rs:122:5: replace write_note -> Result<bool, VaultError> with Ok(false)
+crates/trellis-vault/src/edit.rs:122:5: replace write_note -> Result<bool, VaultError> with Ok(true)
+crates/trellis-vault/src/edit.rs:132:5: replace manifest_text -> String with String::new()
+crates/trellis-vault/src/edit.rs:143:5: replace sync_manifest -> Result<bool, VaultError> with Ok(true)
+crates/trellis-vault/src/edit.rs:143:5: replace sync_manifest -> Result<bool, VaultError> with Ok(false)
+crates/trellis-vault/src/edit.rs:132:5: replace manifest_text -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:145:8: delete ! in sync_manifest
+crates/trellis-vault/src/edit.rs:157:5: replace prune_layout -> Result<Option<Result<usize, String>>, VaultError> with Ok(None)
+crates/trellis-vault/src/edit.rs:157:5: replace prune_layout -> Result<Option<Result<usize, String>>, VaultError> with Ok(Some(Ok(0)))
+crates/trellis-vault/src/edit.rs:157:5: replace prune_layout -> Result<Option<Result<usize, String>>, VaultError> with Ok(Some(Ok(1)))
+crates/trellis-vault/src/edit.rs:160:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in prune_layout
+crates/trellis-vault/src/edit.rs:172:26: replace - with + in prune_layout
+crates/trellis-vault/src/edit.rs:171:45: replace == with != in prune_layout
+crates/trellis-vault/src/edit.rs:160:28: replace == with != in prune_layout
+crates/trellis-vault/src/edit.rs:173:16: replace > with == in prune_layout
+crates/trellis-vault/src/edit.rs:172:26: replace - with / in prune_layout
+crates/trellis-vault/src/edit.rs:173:16: replace > with < in prune_layout
+crates/trellis-vault/src/edit.rs:173:16: replace > with >= in prune_layout
+crates/trellis-vault/src/edit.rs:185:5: replace after_set_change -> Result<(), VaultError> with Ok(())
+crates/trellis-vault/src/edit.rs:200:5: replace available_title -> String with String::new()
+crates/trellis-vault/src/edit.rs:200:5: replace available_title -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:222:5: replace available_path -> String with String::new()
+crates/trellis-vault/src/edit.rs:222:5: replace available_path -> String with "xyzzy".into()
+crates/trellis-vault/src/edit.rs:223:14: replace match guard b.is_empty() with true in available_path
+crates/trellis-vault/src/edit.rs:234:30: replace == with != in available_path
+crates/trellis-vault/src/edit.rs:242:16: replace += with -= in available_path
+crates/trellis-vault/src/edit.rs:252:5: replace create -> Result<(String, Outcome), VaultError> with Ok((String::new(), Default::default()))
+crates/trellis-vault/src/edit.rs:252:5: replace create -> Result<(String, Outcome), VaultError> with Ok(("xyzzy".into(), Default::default()))
+crates/trellis-vault/src/edit.rs:278:5: replace reparent -> Result<Outcome, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/edit.rs:311:5: replace link -> Result<Outcome, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/edit.rs:313:10: replace == with != in link
+crates/trellis-vault/src/edit.rs:321:54: replace == with != in link
+crates/trellis-vault/src/edit.rs:345:5: replace retitle -> Result<Outcome, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/edit.rs:352:31: replace == with != in retitle
+crates/trellis-vault/src/edit.rs:364:30: replace && with || in retitle
+crates/trellis-vault/src/edit.rs:371:31: replace != with == in retitle
+crates/trellis-vault/src/edit.rs:399:57: replace == with != in retitle
+crates/trellis-vault/src/edit.rs:403:33: replace && with || in retitle
+crates/trellis-vault/src/edit.rs:403:19: replace && with || in retitle
+crates/trellis-vault/src/edit.rs:403:14: replace != with == in retitle
+crates/trellis-vault/src/edit.rs:403:28: replace == with != in retitle
+crates/trellis-vault/src/edit.rs:406:15: replace += with -= in retitle
+crates/trellis-vault/src/edit.rs:407:17: replace += with -= in retitle
+crates/trellis-vault/src/edit.rs:408:22: replace == with != in retitle
+crates/trellis-vault/src/edit.rs:436:14: replace == with != in remove
+crates/trellis-vault/src/edit.rs:426:5: replace remove -> Result<Outcome, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/edit.rs:443:43: replace == with != in remove
+crates/trellis-vault/src/edit.rs:440:57: replace == with != in remove
+crates/trellis-vault/src/edit.rs:444:18: replace == with != in remove
+crates/trellis-vault/src/edit.rs:444:23: replace && with || in remove
+crates/trellis-vault/src/edit.rs:452:15: replace += with -= in remove
+crates/trellis-vault/src/edit.rs:444:26: delete ! in remove
+crates/trellis-vault/src/edit.rs:453:17: replace += with -= in remove
+crates/trellis-vault/src/edit.rs:466:5: replace init -> Result<Outcome, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/edit.rs:508:9: replace Report::gate_ok -> bool with false
+crates/trellis-vault/src/edit.rs:517:5: replace fix -> Result<(Vec<String>, Touched), VaultError> with Ok((vec![], Default::default()))
+crates/trellis-vault/src/edit.rs:517:5: replace fix -> Result<(Vec<String>, Touched), VaultError> with Ok((vec![String::new()], Default::default()))
+crates/trellis-vault/src/edit.rs:517:5: replace fix -> Result<(Vec<String>, Touched), VaultError> with Ok((vec!["xyzzy".into()], Default::default()))
+crates/trellis-vault/src/graph.rs:21:9: replace Resolved::note -> Option<usize> with None
+crates/trellis-vault/src/graph.rs:21:9: replace Resolved::note -> Option<usize> with Some(0)
+crates/trellis-vault/src/graph.rs:21:9: replace Resolved::note -> Option<usize> with Some(1)
+crates/trellis-vault/src/graph.rs:22:13: delete match arm Resolved::Note(i) in Resolved::note
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![], vec![])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![], vec![String::new()])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![], vec!["xyzzy".into()])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![0], vec![])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![0], vec!["xyzzy".into()])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![0], vec![String::new()])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![1], vec![])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![1], vec![String::new()])]
+crates/trellis-vault/src/graph.rs:85:9: replace Resolver::duplicates -> Vec<(Vec<usize>, Vec<String>)> with vec![(vec![1], vec!["xyzzy".into()])]
+crates/trellis-vault/src/graph.rs:87:24: replace > with == in Resolver::duplicates
+crates/trellis-vault/src/graph.rs:87:24: replace > with < in Resolver::duplicates
+crates/trellis-vault/src/graph.rs:87:24: replace > with >= in Resolver::duplicates
+crates/trellis-vault/src/graph.rs:109:9: replace Resolver::key_for -> String with String::new()
+crates/trellis-vault/src/graph.rs:109:9: replace Resolver::key_for -> String with "xyzzy".into()
+crates/trellis-vault/src/graph.rs:145:9: replace Issue::kind -> &'static str with ""
+crates/trellis-vault/src/graph.rs:145:9: replace Issue::kind -> &'static str with "xyzzy"
+crates/trellis-vault/src/graph.rs:156:9: replace <impl std::fmt::Display for Issue>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-vault/src/graph.rs:207:5: replace bump with ()
+crates/trellis-vault/src/graph.rs:207:41: replace == with != in bump
+crates/trellis-vault/src/graph.rs:208:28: replace += with -= in bump
+crates/trellis-vault/src/graph.rs:208:28: replace += with *= in bump
+crates/trellis-vault/src/graph.rs:257:27: replace || with && in Graph::build
+crates/trellis-vault/src/graph.rs:257:22: replace == with != in Graph::build
+crates/trellis-vault/src/graph.rs:271:18: replace < with == in Graph::build
+crates/trellis-vault/src/graph.rs:271:18: replace < with <= in Graph::build
+crates/trellis-vault/src/graph.rs:271:18: replace < with > in Graph::build
+crates/trellis-vault/src/graph.rs:273:16: replace += with -= in Graph::build
+crates/trellis-vault/src/graph.rs:279:34: replace + with - in Graph::build
+crates/trellis-vault/src/graph.rs:279:34: replace + with * in Graph::build
+crates/trellis-vault/src/graph.rs:291:37: replace && with || in Graph::build
+crates/trellis-vault/src/graph.rs:328:9: replace Graph::is_descendant_or_self -> bool with true
+crates/trellis-vault/src/graph.rs:328:9: replace Graph::is_descendant_or_self -> bool with false
+crates/trellis-vault/src/graph.rs:334:16: delete ! in Graph::is_descendant_or_self
+crates/trellis-vault/src/graph.rs:331:18: replace == with != in Graph::is_descendant_or_self
+crates/trellis-vault/src/graph.rs:344:9: replace Graph::counts -> (usize, usize) with (0, 0)
+crates/trellis-vault/src/graph.rs:344:9: replace Graph::counts -> (usize, usize) with (0, 1)
+crates/trellis-vault/src/graph.rs:344:9: replace Graph::counts -> (usize, usize) with (1, 1)
+crates/trellis-vault/src/graph.rs:344:9: replace Graph::counts -> (usize, usize) with (1, 0)
+crates/trellis-vault/src/graph.rs:350:52: replace || with && in Graph::counts
+crates/trellis-vault/src/js.rs:14:5: replace is_ws -> bool with true
+crates/trellis-vault/src/js.rs:14:5: replace is_ws -> bool with false
+crates/trellis-vault/src/js.rs:18:26: replace || with && in is_ws
+crates/trellis-vault/src/js.rs:23:5: replace is_line_terminator -> bool with true
+crates/trellis-vault/src/js.rs:27:5: replace trim -> &str with ""
+crates/trellis-vault/src/js.rs:27:5: replace trim -> &str with "xyzzy"
+crates/trellis-vault/src/js.rs:50:14: replace == with != in normalize
+crates/trellis-vault/src/js.rs:46:5: replace normalize -> String with String::new()
+crates/trellis-vault/src/js.rs:46:5: replace normalize -> String with "xyzzy".into()
+crates/trellis-vault/src/js.rs:51:29: replace == with != in normalize
+crates/trellis-vault/src/reader.rs:15:5: replace notes_root -> PathBuf with Default::default()
+crates/trellis-vault/src/reader.rs:20:18: replace match guard m.is_dir() with false in notes_root
+crates/trellis-vault/src/reader.rs:39:5: replace walk -> Result<(), VaultError> with Ok(())
+crates/trellis-vault/src/reader.rs:53:32: replace && with || in walk
+crates/trellis-vault/src/reader.rs:62:5: replace note_paths -> Result<Vec<String>, VaultError> with Ok(vec![])
+crates/trellis-vault/src/reader.rs:62:5: replace note_paths -> Result<Vec<String>, VaultError> with Ok(vec![String::new()])
+crates/trellis-vault/src/reader.rs:62:5: replace note_paths -> Result<Vec<String>, VaultError> with Ok(vec!["xyzzy".into()])
+crates/trellis-vault/src/reader.rs:69:5: replace file_of -> PathBuf with Default::default()
+crates/trellis-vault/src/reader.rs:74:5: replace read_text -> Result<String, VaultError> with Ok(String::new())
+crates/trellis-vault/src/reader.rs:74:5: replace read_text -> Result<String, VaultError> with Ok("xyzzy".into())
+crates/trellis-vault/src/reader.rs:104:9: replace Note::parent_target -> Option<String> with None
+crates/trellis-vault/src/reader.rs:104:9: replace Note::parent_target -> Option<String> with Some(String::new())
+crates/trellis-vault/src/reader.rs:104:9: replace Note::parent_target -> Option<String> with Some("xyzzy".into())
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (true, "", "")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (true, "", "xyzzy")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (true, "xyzzy", "")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (false, "", "")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (true, "xyzzy", "xyzzy")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (false, "", "xyzzy")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (false, "xyzzy", "")
+crates/trellis-vault/src/reader.rs:110:5: replace split_markdown -> (bool, &str, &str) with (false, "xyzzy", "xyzzy")
+crates/trellis-vault/src/reader.rs:110:8: delete ! in split_markdown
+crates/trellis-vault/src/reader.rs:113:74: replace + with - in split_markdown
+crates/trellis-vault/src/reader.rs:113:74: replace + with * in split_markdown
+crates/trellis-vault/src/reader.rs:119:45: replace + with - in split_markdown
+crates/trellis-vault/src/reader.rs:119:45: replace + with * in split_markdown
+crates/trellis-vault/src/reader.rs:125:5: replace strip_leading_blank -> &str with ""
+crates/trellis-vault/src/reader.rs:125:5: replace strip_leading_blank -> &str with "xyzzy"
+crates/trellis-vault/src/reader.rs:125:22: replace - with + in strip_leading_blank
+crates/trellis-vault/src/reader.rs:125:22: replace - with / in strip_leading_blank
+crates/trellis-vault/src/reader.rs:127:25: replace + with - in strip_leading_blank
+crates/trellis-vault/src/reader.rs:127:25: replace + with * in strip_leading_blank
+crates/trellis-vault/src/reader.rs:134:5: replace key_line -> Option<(&str, &str)> with None
+crates/trellis-vault/src/reader.rs:134:5: replace key_line -> Option<(&str, &str)> with Some(("", ""))
+crates/trellis-vault/src/reader.rs:134:5: replace key_line -> Option<(&str, &str)> with Some(("", "xyzzy"))
+crates/trellis-vault/src/reader.rs:134:5: replace key_line -> Option<(&str, &str)> with Some(("xyzzy", ""))
+crates/trellis-vault/src/reader.rs:134:5: replace key_line -> Option<(&str, &str)> with Some(("xyzzy", "xyzzy"))
+crates/trellis-vault/src/reader.rs:137:12: delete ! in key_line
+crates/trellis-vault/src/reader.rs:139:48: replace || with && in key_line
+crates/trellis-vault/src/reader.rs:143:28: replace + with - in key_line
+crates/trellis-vault/src/reader.rs:143:28: replace + with * in key_line
+crates/trellis-vault/src/reader.rs:154:5: replace unquote -> String with String::new()
+crates/trellis-vault/src/reader.rs:154:5: replace unquote -> String with "xyzzy".into()
+crates/trellis-vault/src/reader.rs:155:21: replace && with || in unquote
+crates/trellis-vault/src/reader.rs:155:16: replace >= with < in unquote
+crates/trellis-vault/src/reader.rs:158:21: replace && with || in unquote
+crates/trellis-vault/src/reader.rs:158:16: replace >= with < in unquote
+crates/trellis-vault/src/reader.rs:159:29: replace - with + in unquote
+crates/trellis-vault/src/reader.rs:159:29: replace - with / in unquote
+crates/trellis-vault/src/reader.rs:166:5: replace is_null_parent -> bool with true
+crates/trellis-vault/src/reader.rs:166:5: replace is_null_parent -> bool with false
+crates/trellis-vault/src/reader.rs:175:5: replace first_heading -> Option<String> with None
+crates/trellis-vault/src/reader.rs:175:5: replace first_heading -> Option<String> with Some(String::new())
+crates/trellis-vault/src/reader.rs:175:5: replace first_heading -> Option<String> with Some("xyzzy".into())
+crates/trellis-vault/src/reader.rs:194:30: delete ! in first_heading
+crates/trellis-vault/src/reader.rs:202:42: replace - with + in first_heading
+crates/trellis-vault/src/reader.rs:202:42: replace - with / in first_heading
+crates/trellis-vault/src/reader.rs:216:8: delete ! in parse_note
+crates/trellis-vault/src/reader.rs:222:21: delete match arm "title" in parse_note
+crates/trellis-vault/src/reader.rs:223:21: delete match arm "parent" in parse_note
+crates/trellis-vault/src/reader.rs:233:21: delete ! in parse_note
+crates/trellis-vault/src/reader.rs:238:21: delete ! in parse_note
+crates/trellis-vault/src/reader.rs:239:52: delete ! in parse_note
+crates/trellis-vault/src/reader.rs:243:21: delete ! in parse_note
+crates/trellis-vault/src/reader.rs:274:12: delete ! in Vault::open
+crates/trellis-vault/src/reader.rs:291:9: replace Vault::index_of -> Option<usize> with None
+crates/trellis-vault/src/reader.rs:291:9: replace Vault::index_of -> Option<usize> with Some(0)
+crates/trellis-vault/src/reader.rs:291:9: replace Vault::index_of -> Option<usize> with Some(1)
+crates/trellis-vault/src/reader.rs:291:47: replace == with != in Vault::index_of
+crates/trellis-vault/src/refs.rs:16:5: replace fold -> String with String::new()
+crates/trellis-vault/src/refs.rs:18:21: delete ! in fold
+crates/trellis-vault/src/refs.rs:16:5: replace fold -> String with "xyzzy".into()
+crates/trellis-vault/src/refs.rs:29:5: replace slugify -> String with String::new()
+crates/trellis-vault/src/refs.rs:33:35: replace || with && in slugify
+crates/trellis-vault/src/refs.rs:29:5: replace slugify -> String with "xyzzy".into()
+crates/trellis-vault/src/refs.rs:36:19: delete ! in slugify
+crates/trellis-vault/src/refs.rs:50:5: replace strip_notes_prefix -> &str with ""
+crates/trellis-vault/src/refs.rs:50:5: replace strip_notes_prefix -> &str with "xyzzy"
+crates/trellis-vault/src/refs.rs:50:46: replace && with || in strip_notes_prefix
+crates/trellis-vault/src/refs.rs:50:21: replace && with || in strip_notes_prefix
+crates/trellis-vault/src/refs.rs:50:16: replace >= with < in strip_notes_prefix
+crates/trellis-vault/src/refs.rs:59:5: replace strip_md -> &str with ""
+crates/trellis-vault/src/refs.rs:59:5: replace strip_md -> &str with "xyzzy"
+crates/trellis-vault/src/refs.rs:60:44: replace && with || in strip_md
+crates/trellis-vault/src/refs.rs:60:15: replace && with || in strip_md
+crates/trellis-vault/src/refs.rs:60:10: replace >= with < in strip_md
+crates/trellis-vault/src/refs.rs:60:39: replace - with + in strip_md
+crates/trellis-vault/src/refs.rs:60:51: replace - with + in strip_md
+crates/trellis-vault/src/refs.rs:60:51: replace - with / in strip_md
+crates/trellis-vault/src/refs.rs:61:16: replace - with + in strip_md
+crates/trellis-vault/src/refs.rs:61:16: replace - with / in strip_md
+crates/trellis-vault/src/refs.rs:68:5: replace has_md_ext -> bool with false
+crates/trellis-vault/src/refs.rs:68:5: replace has_md_ext -> bool with true
+crates/trellis-vault/src/refs.rs:68:23: replace != with == in has_md_ext
+crates/trellis-vault/src/refs.rs:73:5: replace normalize_key -> String with String::new()
+crates/trellis-vault/src/refs.rs:73:5: replace normalize_key -> String with "xyzzy".into()
+crates/trellis-vault/src/refs.rs:92:5: replace next_link -> Option<(usize, usize, &str)> with None
+crates/trellis-vault/src/refs.rs:94:19: replace + with - in next_link
+crates/trellis-vault/src/refs.rs:94:19: replace + with * in next_link
+crates/trellis-vault/src/refs.rs:95:26: replace + with - in next_link
+crates/trellis-vault/src/refs.rs:95:26: replace + with * in next_link
+crates/trellis-vault/src/refs.rs:97:16: replace > with == in next_link
+crates/trellis-vault/src/refs.rs:97:16: replace > with < in next_link
+crates/trellis-vault/src/refs.rs:98:35: replace + with - in next_link
+crates/trellis-vault/src/refs.rs:98:31: replace + with - in next_link
+crates/trellis-vault/src/refs.rs:98:31: replace + with * in next_link
+crates/trellis-vault/src/refs.rs:108:24: replace == with != in parse_wiki_target
+crates/trellis-vault/src/refs.rs:118:20: delete ! in parse_wiki_target
+crates/trellis-vault/src/refs.rs:122:27: replace match guard !last.is_empty() with false in parse_wiki_target
+crates/trellis-vault/src/refs.rs:122:27: delete ! in parse_wiki_target
+crates/trellis-vault/src/refs.rs:131:5: replace clean_wiki_ref -> Option<String> with None
+crates/trellis-vault/src/refs.rs:131:5: replace clean_wiki_ref -> Option<String> with Some(String::new())
+crates/trellis-vault/src/refs.rs:131:5: replace clean_wiki_ref -> Option<String> with Some("xyzzy".into())
+crates/trellis-vault/src/refs.rs:132:20: replace && with || in clean_wiki_ref
+crates/trellis-vault/src/refs.rs:132:6: delete ! in clean_wiki_ref
+crates/trellis-vault/src/refs.rs:132:25: replace != with == in clean_wiki_ref
+crates/trellis-vault/src/refs.rs:137:5: replace alias_keys -> Vec<String> with vec![]
+crates/trellis-vault/src/refs.rs:137:5: replace alias_keys -> Vec<String> with vec![String::new()]
+crates/trellis-vault/src/refs.rs:137:5: replace alias_keys -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-vault/src/refs.rs:141:21: delete ! in alias_keys
+crates/trellis-vault/src/refs.rs:153:17: delete ! in alias_keys
+crates/trellis-vault/src/refs.rs:160:5: replace graph_links -> Vec<WikiTarget> with vec![]
+crates/trellis-vault/src/refs.rs:164:12: delete ! in graph_links
+crates/trellis-vault/src/refs.rs:180:5: replace mask_fences -> String with String::new()
+crates/trellis-vault/src/refs.rs:180:5: replace mask_fences -> String with "xyzzy".into()
+crates/trellis-vault/src/refs.rs:183:23: replace + with - in mask_fences
+crates/trellis-vault/src/refs.rs:183:23: replace + with * in mask_fences
+crates/trellis-vault/src/refs.rs:184:38: replace + with * in mask_fences
+crates/trellis-vault/src/refs.rs:184:38: replace + with - in mask_fences
+crates/trellis-vault/src/refs.rs:187:37: replace + with * in mask_fences
+crates/trellis-vault/src/refs.rs:187:29: replace + with - in mask_fences
+crates/trellis-vault/src/refs.rs:187:29: replace + with * in mask_fences
+crates/trellis-vault/src/refs.rs:187:25: replace + with * in mask_fences
+crates/trellis-vault/src/refs.rs:189:49: replace - with + in mask_fences
+crates/trellis-vault/src/refs.rs:189:49: replace - with / in mask_fences
+crates/trellis-vault/src/refs.rs:210:5: replace rewrite_links -> (String, usize) with (String::new(), 1)
+crates/trellis-vault/src/refs.rs:210:5: replace rewrite_links -> (String, usize) with (String::new(), 0)
+crates/trellis-vault/src/refs.rs:210:5: replace rewrite_links -> (String, usize) with ("xyzzy".into(), 0)
+crates/trellis-vault/src/refs.rs:210:5: replace rewrite_links -> (String, usize) with ("xyzzy".into(), 1)
+crates/trellis-vault/src/refs.rs:217:30: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:216:19: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:216:19: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:217:30: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:219:28: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:219:28: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:219:39: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:219:39: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:219:35: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:219:35: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:220:16: replace == with != in rewrite_links
+crates/trellis-vault/src/refs.rs:220:30: replace > with < in rewrite_links
+crates/trellis-vault/src/refs.rs:220:39: delete ! in rewrite_links
+crates/trellis-vault/src/refs.rs:224:31: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:224:31: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:224:25: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:224:25: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:224:21: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:224:21: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:227:18: replace && with || in rewrite_links
+crates/trellis-vault/src/refs.rs:227:14: replace > with == in rewrite_links
+crates/trellis-vault/src/refs.rs:227:14: replace > with < in rewrite_links
+crates/trellis-vault/src/refs.rs:227:14: replace > with >= in rewrite_links
+crates/trellis-vault/src/refs.rs:227:44: replace == with != in rewrite_links
+crates/trellis-vault/src/refs.rs:227:39: replace - with + in rewrite_links
+crates/trellis-vault/src/refs.rs:227:39: replace - with / in rewrite_links
+crates/trellis-vault/src/refs.rs:231:29: replace + with - in rewrite_links
+crates/trellis-vault/src/refs.rs:231:29: replace + with * in rewrite_links
+crates/trellis-vault/src/refs.rs:231:38: replace - with + in rewrite_links
+crates/trellis-vault/src/refs.rs:231:38: replace - with / in rewrite_links
+crates/trellis-vault/src/refs.rs:237:24: replace match guard r != original with false in rewrite_links
+crates/trellis-vault/src/refs.rs:237:26: replace != with == in rewrite_links
+crates/trellis-vault/src/refs.rs:241:23: replace += with -= in rewrite_links
+crates/trellis-vault/src/refs.rs:241:23: replace += with *= in rewrite_links
+crates/trellis-vault/src/refs.rs:246:14: replace == with != in rewrite_links
+crates/trellis-vault/src/refs.rs:255:5: replace alias_from_inner -> &str with ""
+crates/trellis-vault/src/refs.rs:255:5: replace alias_from_inner -> &str with "xyzzy"
+crates/trellis-vault/src/refs.rs:260:5: replace link_markup -> String with String::new()
+crates/trellis-vault/src/refs.rs:260:5: replace link_markup -> String with "xyzzy".into()
+crates/trellis-vault/src/search.rs:21:41: replace * with /
+crates/trellis-vault/src/search.rs:21:34: replace * with /
+crates/trellis-vault/src/search.rs:23:40: replace * with /
+crates/trellis-vault/src/search.rs:23:33: replace * with /
+crates/trellis-vault/src/search.rs:44:56: replace >= with < in Mode::for_vault
+crates/trellis-vault/src/search.rs:45:28: delete ! in Mode::for_vault
+crates/trellis-vault/src/search.rs:45:44: replace <= with > in Mode::for_vault
+crates/trellis-vault/src/search.rs:45:72: replace <= with > in Mode::for_vault
+crates/trellis-vault/src/search.rs:48:53: replace <= with > in Mode::for_vault
+crates/trellis-vault/src/search.rs:55:5: replace tokens -> Vec<String> with vec![]
+crates/trellis-vault/src/search.rs:55:5: replace tokens -> Vec<String> with vec![String::new()]
+crates/trellis-vault/src/search.rs:56:26: delete ! in tokens
+crates/trellis-vault/src/search.rs:55:5: replace tokens -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-vault/src/search.rs:56:51: replace || with && in tokens
+crates/trellis-vault/src/search.rs:64:5: replace trigram_source -> String with String::new()
+crates/trellis-vault/src/search.rs:57:29: replace >= with < in tokens
+crates/trellis-vault/src/search.rs:64:5: replace trigram_source -> String with "xyzzy".into()
+crates/trellis-vault/src/search.rs:68:35: replace || with && in trigram_source
+crates/trellis-vault/src/search.rs:71:19: delete ! in trigram_source
+crates/trellis-vault/src/search.rs:81:5: replace trigrams -> Vec<String> with vec![]
+crates/trellis-vault/src/search.rs:81:5: replace trigrams -> Vec<String> with vec![String::new()]
+crates/trellis-vault/src/search.rs:81:5: replace trigrams -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-vault/src/search.rs:84:16: replace < with > in trigrams
+crates/trellis-vault/src/search.rs:87:26: replace - with + in trigrams
+crates/trellis-vault/src/search.rs:87:26: replace - with / in trigrams
+crates/trellis-vault/src/search.rs:89:25: replace + with - in trigrams
+crates/trellis-vault/src/search.rs:89:25: replace + with * in trigrams
+crates/trellis-vault/src/search.rs:90:12: delete ! in trigrams
+crates/trellis-vault/src/search.rs:90:34: replace == with != in trigrams
+crates/trellis-vault/src/search.rs:146:24: replace += with -= in Index::build
+crates/trellis-vault/src/search.rs:146:24: replace += with *= in Index::build
+crates/trellis-vault/src/search.rs:148:62: replace == with != in Index::build
+crates/trellis-vault/src/search.rs:149:44: replace += with -= in Index::build
+crates/trellis-vault/src/search.rs:149:44: replace += with *= in Index::build
+crates/trellis-vault/src/search.rs:175:56: replace / with * in Index::build
+crates/trellis-vault/src/search.rs:175:56: replace / with % in Index::build
+crates/trellis-vault/src/search.rs:197:9: replace Index::bm25 -> Vec<Hit> with vec![]
+crates/trellis-vault/src/search.rs:199:16: delete ! in Index::bm25
+crates/trellis-vault/src/search.rs:213:28: replace + with - in Index::bm25
+crates/trellis-vault/src/search.rs:213:49: replace / with % in Index::bm25
+crates/trellis-vault/src/search.rs:213:28: replace + with * in Index::bm25
+crates/trellis-vault/src/search.rs:213:49: replace / with * in Index::bm25
+crates/trellis-vault/src/search.rs:213:42: replace + with - in Index::bm25
+crates/trellis-vault/src/search.rs:213:42: replace + with * in Index::bm25
+crates/trellis-vault/src/search.rs:213:37: replace - with + in Index::bm25
+crates/trellis-vault/src/search.rs:213:37: replace - with / in Index::bm25
+crates/trellis-vault/src/search.rs:213:55: replace + with - in Index::bm25
+crates/trellis-vault/src/search.rs:213:55: replace + with * in Index::bm25
+crates/trellis-vault/src/search.rs:215:44: replace > with == in Index::bm25
+crates/trellis-vault/src/search.rs:215:44: replace > with < in Index::bm25
+crates/trellis-vault/src/search.rs:216:42: replace / with % in Index::bm25
+crates/trellis-vault/src/search.rs:216:42: replace / with * in Index::bm25
+crates/trellis-vault/src/search.rs:220:29: replace * with + in Index::bm25
+crates/trellis-vault/src/search.rs:220:29: replace * with / in Index::bm25
+crates/trellis-vault/src/search.rs:220:50: replace / with % in Index::bm25
+crates/trellis-vault/src/search.rs:220:50: replace / with * in Index::bm25
+crates/trellis-vault/src/search.rs:220:36: replace * with + in Index::bm25
+crates/trellis-vault/src/search.rs:220:36: replace * with / in Index::bm25
+crates/trellis-vault/src/search.rs:220:42: replace + with - in Index::bm25
+crates/trellis-vault/src/search.rs:220:42: replace + with * in Index::bm25
+crates/trellis-vault/src/search.rs:220:56: replace + with - in Index::bm25
+crates/trellis-vault/src/search.rs:220:56: replace + with * in Index::bm25
+crates/trellis-vault/src/search.rs:220:61: replace * with + in Index::bm25
+crates/trellis-vault/src/search.rs:220:61: replace * with / in Index::bm25
+crates/trellis-vault/src/search.rs:220:72: replace + with - in Index::bm25
+crates/trellis-vault/src/search.rs:220:72: replace + with * in Index::bm25
+crates/trellis-vault/src/search.rs:220:68: replace - with + in Index::bm25
+crates/trellis-vault/src/search.rs:220:68: replace - with / in Index::bm25
+crates/trellis-vault/src/search.rs:220:76: replace * with + in Index::bm25
+crates/trellis-vault/src/search.rs:220:76: replace * with / in Index::bm25
+crates/trellis-vault/src/search.rs:221:58: replace == with != in Index::bm25
+crates/trellis-vault/src/search.rs:235:9: replace Index::trigram -> Vec<Hit> with vec![]
+crates/trellis-vault/src/search.rs:242:59: replace == with != in Index::trigram
+crates/trellis-vault/src/search.rs:243:40: replace += with -= in Index::trigram
+crates/trellis-vault/src/search.rs:243:40: replace += with *= in Index::trigram
+crates/trellis-vault/src/search.rs:251:68: replace - with / in Index::trigram
+crates/trellis-vault/src/search.rs:251:68: replace - with + in Index::trigram
+crates/trellis-vault/src/search.rs:251:37: replace + with - in Index::trigram
+crates/trellis-vault/src/search.rs:251:37: replace + with * in Index::trigram
+crates/trellis-vault/src/search.rs:252:34: replace > with < in Index::trigram
+crates/trellis-vault/src/search.rs:252:34: replace > with == in Index::trigram
+crates/trellis-vault/src/search.rs:253:30: replace / with % in Index::trigram
+crates/trellis-vault/src/search.rs:253:30: replace / with * in Index::trigram
+crates/trellis-vault/src/search.rs:267:9: replace Index::search -> Vec<Hit> with vec![]
+crates/trellis-vault/src/search.rs:269:12: delete ! in Index::search
+crates/trellis-vault/src/search.rs:269:54: replace >= with < in Index::search
+crates/trellis-vault/src/search.rs:277:29: replace += with *= in Index::search
+crates/trellis-vault/src/search.rs:274:53: replace == with != in Index::search
+crates/trellis-vault/src/search.rs:277:29: replace += with -= in Index::search
+crates/trellis-vault/src/search.rs:277:42: replace * with + in Index::search
+crates/trellis-vault/src/search.rs:277:42: replace * with / in Index::search
+crates/trellis-vault/src/search.rs:292:5: replace ranked -> Vec<Hit> with vec![]
+crates/trellis-vault/src/search.rs:292:29: replace >= with < in ranked
+crates/trellis-vault/src/validate.rs:46:9: replace <impl fmt::Display for Stats>::fmt -> fmt::Result with Ok(Default::default())
+crates/trellis-vault/src/validate.rs:71:9: replace Parsed::lookup -> &[usize] with Vec::leak(Vec::new())
+crates/trellis-vault/src/validate.rs:71:9: replace Parsed::lookup -> &[usize] with Vec::leak(vec![0])
+crates/trellis-vault/src/validate.rs:71:9: replace Parsed::lookup -> &[usize] with Vec::leak(vec![1])
+crates/trellis-vault/src/validate.rs:81:5: replace validate -> Result<Stats, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/validate.rs:95:5: replace stem_of -> String with String::new()
+crates/trellis-vault/src/validate.rs:95:5: replace stem_of -> String with "xyzzy".into()
+crates/trellis-vault/src/validate.rs:97:14: replace match guard !s.is_empty() with false in stem_of
+crates/trellis-vault/src/validate.rs:104:5: replace split_field -> Option<(&str, &str)> with None
+crates/trellis-vault/src/validate.rs:97:14: delete ! in stem_of
+crates/trellis-vault/src/validate.rs:104:5: replace split_field -> Option<(&str, &str)> with Some(("", ""))
+crates/trellis-vault/src/validate.rs:104:5: replace split_field -> Option<(&str, &str)> with Some(("", "xyzzy"))
+crates/trellis-vault/src/validate.rs:104:5: replace split_field -> Option<(&str, &str)> with Some(("xyzzy", ""))
+crates/trellis-vault/src/validate.rs:104:5: replace split_field -> Option<(&str, &str)> with Some(("xyzzy", "xyzzy"))
+crates/trellis-vault/src/validate.rs:105:14: replace == with != in split_field
+crates/trellis-vault/src/validate.rs:108:28: replace + with - in split_field
+crates/trellis-vault/src/validate.rs:108:28: replace + with * in split_field
+crates/trellis-vault/src/validate.rs:118:5: replace parent_link -> Option<&str> with None
+crates/trellis-vault/src/validate.rs:118:5: replace parent_link -> Option<&str> with Some("")
+crates/trellis-vault/src/validate.rs:118:5: replace parent_link -> Option<&str> with Some("xyzzy")
+crates/trellis-vault/src/validate.rs:129:5: replace parse_note -> Option<Note> with None
+crates/trellis-vault/src/validate.rs:130:17: replace != with == in parse_note
+crates/trellis-vault/src/validate.rs:137:26: replace == with != in parse_note
+crates/trellis-vault/src/validate.rs:138:20: replace + with - in parse_note
+crates/trellis-vault/src/validate.rs:158:13: delete match arm "title" in parse_note
+crates/trellis-vault/src/validate.rs:138:20: replace + with * in parse_note
+crates/trellis-vault/src/validate.rs:159:13: delete match arm "parent" in parse_note
+crates/trellis-vault/src/validate.rs:179:8: delete ! in parse_note
+crates/trellis-vault/src/validate.rs:185:32: replace >= with < in parse_note
+crates/trellis-vault/src/validate.rs:211:27: replace + with - in parse_note
+crates/trellis-vault/src/validate.rs:217:5: replace has_drive -> bool with true
+crates/trellis-vault/src/validate.rs:211:27: replace + with * in parse_note
+crates/trellis-vault/src/validate.rs:218:48: replace && with || in has_drive
+crates/trellis-vault/src/validate.rs:218:18: replace && with || in has_drive
+crates/trellis-vault/src/validate.rs:218:56: replace == with != in has_drive
+crates/trellis-vault/src/validate.rs:223:8: delete ! in parse
+crates/trellis-vault/src/validate.rs:289:60: replace == with != in parse
+crates/trellis-vault/src/validate.rs:311:52: replace || with && in parse
+crates/trellis-vault/src/validate.rs:345:5: replace check_manifest -> Result<(usize, usize), VaultError> with Ok((0, 0))
+crates/trellis-vault/src/validate.rs:345:5: replace check_manifest -> Result<(usize, usize), VaultError> with Ok((0, 1))
+crates/trellis-vault/src/validate.rs:345:5: replace check_manifest -> Result<(usize, usize), VaultError> with Ok((1, 0))
+crates/trellis-vault/src/validate.rs:345:5: replace check_manifest -> Result<(usize, usize), VaultError> with Ok((1, 1))
+crates/trellis-vault/src/validate.rs:356:8: delete ! in manifest_state
+crates/trellis-vault/src/validate.rs:390:16: replace != with == in manifest_state
+crates/trellis-vault/src/validate.rs:403:12: delete ! in manifest_state
+crates/trellis-vault/src/validate.rs:419:12: delete ! in manifest_state
+crates/trellis-vault/src/validate.rs:409:73: replace == with != in manifest_state
+crates/trellis-vault/src/validate.rs:420:21: replace += with -= in manifest_state
+crates/trellis-vault/src/validate.rs:425:12: delete ! in manifest_state
+crates/trellis-vault/src/validate.rs:425:40: replace == with != in manifest_state
+crates/trellis-vault/src/validate.rs:420:21: replace += with *= in manifest_state
+crates/trellis-vault/src/validate.rs:426:19: replace += with -= in manifest_state
+crates/trellis-vault/src/validate.rs:433:33: replace > with < in manifest_state
+crates/trellis-vault/src/validate.rs:426:19: replace += with *= in manifest_state
+crates/trellis-vault/src/validate.rs:433:33: replace > with == in manifest_state
+crates/trellis-vault/src/validate.rs:433:33: replace > with >= in manifest_state
