@@ -1,0 +1,172 @@
+crates/trellis-vault/src/compile.rs:43:13: replace < with <= in link_stems
+crates/trellis-vault/src/compile.rs:79:23: replace - with / in match_link
+crates/trellis-vault/src/compile.rs:79:36: replace + with - in match_link
+crates/trellis-vault/src/dates.rs:24:38: replace * with +
+crates/trellis-vault/src/dates.rs:24:31: replace * with +
+crates/trellis-vault/src/dates.rs:134:39: replace > with >= in logical_lines
+crates/trellis-vault/src/dates.rs:134:35: replace + with * in logical_lines
+crates/trellis-vault/src/dates.rs:156:9: replace || with && in normalize_day
+crates/trellis-vault/src/dates.rs:155:9: replace || with && in normalize_day
+crates/trellis-vault/src/dates.rs:154:9: replace || with && in normalize_day
+crates/trellis-vault/src/dates.rs:153:9: replace || with && in normalize_day
+crates/trellis-vault/src/dates.rs:152:9: replace || with && in normalize_day
+crates/trellis-vault/src/dates.rs:167:9: delete match arm 2 in normalize_day
+crates/trellis-vault/src/dates.rs:230:26: replace && with || in is_heading
+crates/trellis-vault/src/dates.rs:278:20: replace >= with < in seed
+crates/trellis-vault/src/dates.rs:279:18: replace -= with += in seed
+crates/trellis-vault/src/dates.rs:279:18: replace -= with /= in seed
+crates/trellis-vault/src/dates.rs:349:18: replace < with == in reconcile
+crates/trellis-vault/src/dates.rs:349:18: replace < with > in reconcile
+crates/trellis-vault/src/dates.rs:363:26: replace - with / in reconcile
+crates/trellis-vault/src/dates.rs:369:27: replace > with >= in reconcile
+crates/trellis-vault/src/dates.rs:385:70: replace || with && in valid_note_path
+crates/trellis-vault/src/dates.rs:385:47: replace || with && in valid_note_path
+crates/trellis-vault/src/dates.rs:385:24: replace || with && in valid_note_path
+crates/trellis-vault/src/dates.rs:389:16: replace >= with < in valid_note_path
+crates/trellis-vault/src/dates.rs:395:31: replace || with && in valid_note_path
+crates/trellis-vault/src/dates.rs:404:9: replace && with || in valid_anchor
+crates/trellis-vault/src/dates.rs:414:24: replace > with == in validate
+crates/trellis-vault/src/dates.rs:414:24: replace > with >= in validate
+crates/trellis-vault/src/dates.rs:427:29: replace > with == in validate
+crates/trellis-vault/src/dates.rs:427:29: replace > with >= in validate
+crates/trellis-vault/src/dates.rs:430:15: replace += with *= in validate
+crates/trellis-vault/src/dates.rs:431:18: replace > with == in validate
+crates/trellis-vault/src/dates.rs:431:18: replace > with >= in validate
+crates/trellis-vault/src/dates.rs:443:35: replace > with == in validate
+crates/trellis-vault/src/dates.rs:443:35: replace > with >= in validate
+crates/trellis-vault/src/dates.rs:456:25: replace > with == in parse
+crates/trellis-vault/src/dates.rs:456:25: replace > with >= in parse
+crates/trellis-vault/src/dates.rs:469:5: replace is_symlink -> bool with false
+crates/trellis-vault/src/dates.rs:484:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in read_bounded
+crates/trellis-vault/src/dates.rs:488:24: replace || with && in read_bounded
+crates/trellis-vault/src/dates.rs:488:38: replace > with == in read_bounded
+crates/trellis-vault/src/dates.rs:488:38: replace > with >= in read_bounded
+crates/trellis-vault/src/dates.rs:495:25: replace + with - in read_bounded
+crates/trellis-vault/src/dates.rs:495:25: replace + with * in read_bounded
+crates/trellis-vault/src/dates.rs:496:25: replace > with == in read_bounded
+crates/trellis-vault/src/dates.rs:496:25: replace > with >= in read_bounded
+crates/trellis-vault/src/dates.rs:586:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in atomic_write
+crates/trellis-vault/src/dates.rs:586:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in atomic_write
+crates/trellis-vault/src/dates.rs:586:32: replace == with != in atomic_write
+crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec![])
+crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec![String::new()])
+crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec!["xyzzy".into()])
+crates/trellis-vault/src/dates.rs:643:49: replace == with != in coverage
+crates/trellis-vault/src/dates.rs:657:56: replace != with == in coverage
+crates/trellis-vault/src/dates.rs:690:21: delete field created_day from struct Seed expression in refresh
+crates/trellis-vault/src/dates.rs:691:21: delete field modified_day from struct Seed expression in refresh
+crates/trellis-vault/src/dates.rs:699:32: replace += with -= in refresh
+crates/trellis-vault/src/dates.rs:698:24: replace != with == in refresh
+crates/trellis-vault/src/dates.rs:699:32: replace += with *= in refresh
+crates/trellis-vault/src/dates.rs:736:9: replace Touched::is_empty -> bool with false
+crates/trellis-vault/src/dates.rs:766:49: replace && with || in after_edit
+crates/trellis-vault/src/dates.rs:766:52: delete ! in after_edit
+crates/trellis-vault/src/edit.rs:160:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in prune_layout
+crates/trellis-vault/src/edit.rs:192:9: delete match arm Some(Err(e)) in after_set_change
+crates/trellis-vault/src/edit.rs:189:24: replace match guard n > 0 with true in after_set_change
+crates/trellis-vault/src/edit.rs:189:24: replace match guard n > 0 with false in after_set_change
+crates/trellis-vault/src/edit.rs:189:26: replace > with < in after_set_change
+crates/trellis-vault/src/edit.rs:189:26: replace > with == in after_set_change
+crates/trellis-vault/src/edit.rs:189:26: replace > with >= in after_set_change
+crates/trellis-vault/src/edit.rs:214:16: replace += with -= in available_title
+crates/trellis-vault/src/edit.rs:214:16: replace += with *= in available_title
+crates/trellis-vault/src/edit.rs:223:14: replace match guard b.is_empty() with false in available_path
+crates/trellis-vault/src/edit.rs:364:25: replace != with == in retitle
+crates/trellis-vault/src/edit.rs:389:32: replace && with || in retitle
+crates/trellis-vault/src/edit.rs:389:27: replace != with == in retitle
+crates/trellis-vault/src/edit.rs:406:15: replace += with *= in retitle
+crates/trellis-vault/src/edit.rs:407:17: replace += with *= in retitle
+crates/trellis-vault/src/edit.rs:452:15: replace += with *= in remove
+crates/trellis-vault/src/edit.rs:455:18: replace || with && in remove
+crates/trellis-vault/src/edit.rs:453:17: replace += with *= in remove
+crates/trellis-vault/src/edit.rs:455:14: replace > with == in remove
+crates/trellis-vault/src/edit.rs:455:14: replace > with < in remove
+crates/trellis-vault/src/edit.rs:455:14: replace > with >= in remove
+crates/trellis-vault/src/edit.rs:455:29: replace > with == in remove
+crates/trellis-vault/src/edit.rs:455:29: replace > with < in remove
+crates/trellis-vault/src/edit.rs:455:29: replace > with >= in remove
+crates/trellis-vault/src/edit.rs:489:35: replace * with +
+crates/trellis-vault/src/edit.rs:489:35: replace * with /
+crates/trellis-vault/src/edit.rs:489:28: replace * with +
+crates/trellis-vault/src/edit.rs:490:33: replace * with +
+crates/trellis-vault/src/edit.rs:489:28: replace * with /
+crates/trellis-vault/src/edit.rs:490:26: replace * with +
+crates/trellis-vault/src/edit.rs:490:33: replace * with /
+crates/trellis-vault/src/edit.rs:508:9: replace Report::gate_ok -> bool with true
+crates/trellis-vault/src/edit.rs:490:26: replace * with /
+crates/trellis-vault/src/edit.rs:534:14: replace > with == in fix
+crates/trellis-vault/src/edit.rs:534:14: replace > with < in fix
+crates/trellis-vault/src/edit.rs:534:14: replace > with >= in fix
+crates/trellis-vault/src/edit.rs:562:28: replace >= with < in check
+crates/trellis-vault/src/edit.rs:568:14: replace >= with < in check
+crates/trellis-vault/src/edit.rs:574:20: replace >= with < in check
+crates/trellis-vault/src/edit.rs:598:5: replace root_of -> std::path::PathBuf with Default::default()
+crates/trellis-vault/src/graph.rs:76:69: replace > with == in Resolver::resolve
+crates/trellis-vault/src/graph.rs:76:69: replace > with < in Resolver::resolve
+crates/trellis-vault/src/graph.rs:76:69: replace > with >= in Resolver::resolve
+crates/trellis-vault/src/graph.rs:110:38: replace == with != in Resolver::key_for
+crates/trellis-vault/src/graph.rs:164:20: delete ! in <impl std::fmt::Display for Issue>::fmt
+crates/trellis-vault/src/graph.rs:236:25: delete match arm Resolved::Ambiguous(c) in Graph::build
+crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![1]
+crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![0]
+crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![]
+crates/trellis-vault/src/graph.rs:350:55: delete ! in Graph::counts
+crates/trellis-vault/src/graph.rs:359:5: replace find_cycles -> Vec<Issue> with vec![]
+crates/trellis-vault/src/js.rs:23:5: replace is_line_terminator -> bool with false
+crates/trellis-vault/src/reader.rs:20:18: replace match guard m.is_dir() with true in notes_root
+crates/trellis-vault/src/reader.rs:137:9: replace || with && in key_line
+crates/trellis-vault/src/reader.rs:139:61: replace || with && in key_line
+crates/trellis-vault/src/reader.rs:139:53: replace == with != in key_line
+crates/trellis-vault/src/reader.rs:139:66: replace == with != in key_line
+crates/trellis-vault/src/reader.rs:155:43: replace && with || in unquote
+crates/trellis-vault/src/reader.rs:156:82: replace - with + in unquote
+crates/trellis-vault/src/reader.rs:156:82: replace - with / in unquote
+crates/trellis-vault/src/reader.rs:158:44: replace && with || in unquote
+crates/trellis-vault/src/reader.rs:178:27: replace + with - in first_heading
+crates/trellis-vault/src/reader.rs:178:27: replace + with * in first_heading
+crates/trellis-vault/src/reader.rs:202:48: replace && with || in first_heading
+crates/trellis-vault/src/reader.rs:202:13: delete ! in first_heading
+crates/trellis-vault/src/reader.rs:202:66: replace || with && in first_heading
+crates/trellis-vault/src/reader.rs:202:54: replace == with != in first_heading
+crates/trellis-vault/src/refs.rs:60:39: replace - with / in strip_md
+crates/trellis-vault/src/refs.rs:97:20: replace && with || in next_link
+crates/trellis-vault/src/refs.rs:97:16: replace > with >= in next_link
+crates/trellis-vault/src/refs.rs:98:41: replace + with - in next_link
+crates/trellis-vault/src/refs.rs:98:41: replace + with * in next_link
+crates/trellis-vault/src/refs.rs:98:35: replace + with * in next_link
+crates/trellis-vault/src/refs.rs:122:27: replace match guard !last.is_empty() with true in parse_wiki_target
+crates/trellis-vault/src/refs.rs:187:37: replace + with - in mask_fences
+crates/trellis-vault/src/refs.rs:187:25: replace + with - in mask_fences
+crates/trellis-vault/src/refs.rs:220:36: replace || with && in rewrite_links
+crates/trellis-vault/src/refs.rs:220:21: replace || with && in rewrite_links
+crates/trellis-vault/src/refs.rs:220:30: replace > with == in rewrite_links
+crates/trellis-vault/src/refs.rs:220:30: replace > with >= in rewrite_links
+crates/trellis-vault/src/refs.rs:237:24: replace match guard r != original with true in rewrite_links
+crates/trellis-vault/src/search.rs:21:41: replace * with +
+crates/trellis-vault/src/search.rs:21:34: replace * with +
+crates/trellis-vault/src/search.rs:23:40: replace * with +
+crates/trellis-vault/src/search.rs:23:33: replace * with +
+crates/trellis-vault/src/search.rs:45:63: replace && with || in Mode::for_vault
+crates/trellis-vault/src/search.rs:45:35: replace && with || in Mode::for_vault
+crates/trellis-vault/src/search.rs:48:44: replace && with || in Mode::for_vault
+crates/trellis-vault/src/search.rs:84:16: replace < with == in trigrams
+crates/trellis-vault/src/search.rs:84:16: replace < with <= in trigrams
+crates/trellis-vault/src/search.rs:203:29: replace || with && in Index::bm25
+crates/trellis-vault/src/search.rs:215:44: replace > with >= in Index::bm25
+crates/trellis-vault/src/search.rs:222:40: replace += with -= in Index::bm25
+crates/trellis-vault/src/search.rs:222:40: replace += with *= in Index::bm25
+crates/trellis-vault/src/search.rs:236:25: replace || with && in Index::trigram
+crates/trellis-vault/src/search.rs:252:34: replace > with >= in Index::trigram
+crates/trellis-vault/src/search.rs:269:40: replace || with && in Index::search
+crates/trellis-vault/src/search.rs:280:21: delete field score from struct Hit expression in Index::search
+crates/trellis-vault/src/search.rs:281:21: delete field bm25 from struct Hit expression in Index::search
+crates/trellis-vault/src/search.rs:280:38: replace * with + in Index::search
+crates/trellis-vault/src/search.rs:280:38: replace * with / in Index::search
+crates/trellis-vault/src/validate.rs:97:14: replace match guard !s.is_empty() with true in stem_of
+crates/trellis-vault/src/validate.rs:119:25: replace || with && in parent_link
+crates/trellis-vault/src/validate.rs:185:63: replace && with || in parse_note
+crates/trellis-vault/src/validate.rs:185:37: replace && with || in parse_note
+crates/trellis-vault/src/validate.rs:217:5: replace has_drive -> bool with false
+crates/trellis-vault/src/validate.rs:218:13: replace >= with < in has_drive
+crates/trellis-vault/src/validate.rs:409:47: replace || with && in manifest_state
+crates/trellis-vault/src/validate.rs:409:31: replace || with && in manifest_state
