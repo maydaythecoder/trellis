@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "run_id": "20261003-025435-740-add-a-docstring-to-the-get-real-windows-path-fun",
+  "task": "add a docstring to the get_real_windows_path function in src/poetry/utils/helpers.py saying what it returns",
+  "base_commit": "e176ce8f7f837b028c481315ae39b14f26f686e5",
+  "started_at": "2026-10-03T02:54:35Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 57,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 564,
+      "radius_queries": 1,
+      "summarised": 41
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9799,
+      "peak_prompt_bytes": 11781,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "blast_radius",
+        "target": "get_real_windows_path",
+        "outcome": "57 call sites reach this symbol: 57 resolved, 0 ambiguous.",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/utils/helpers.py",
+        "outcome": "error: edit anchor not found in src/poetry/utils/helpers.py. `old` must be text copied from the file, not reconstructed…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 7799,
+    "prompt_tokens": 23589
+  },
+  "factual_sha256": "2e26824bf8d7c07f0ad6f85fa885fb62c394a5df696afe64bc6c9aff48b2a651",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

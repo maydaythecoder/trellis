@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "run_id": "20261003-024859-746-add-a-docstring-to-the-merge-dicts-function-in-s",
+  "task": "add a docstring to the merge_dicts function in src/poetry/utils/helpers.py saying what it does to its first argument",
+  "base_commit": "e176ce8f7f837b028c481315ae39b14f26f686e5",
+  "started_at": "2026-10-03T02:48:59Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9808,
+      "peak_prompt_bytes": 12294,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "edit",
+        "target": "src/poetry/utils/helpers.py",
+        "outcome": "error: edit anchor not found in src/poetry/utils/helpers.py. `old` must be text copied from the file, not reconstructed…",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/utils/helpers.py",
+        "outcome": "error: edit anchor not found in src/poetry/utils/helpers.py. `old` must be text copied from the file, not reconstructed…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "compaction",
+        "target": "turns 1-1",
+        "outcome": "elided 3104 B of observations; request 12814 B, budget 14336 B",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 5965,
+    "prompt_tokens": 19748
+  },
+  "factual_sha256": "57cd71799ef7eea64ba16c0d453dab7a578dae40ab2ecf2a73d421e7e58b9400",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
