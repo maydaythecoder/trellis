@@ -302,14 +302,14 @@ impl Session {
             "/radius" if rest.is_empty() => {
                 anyhow::bail!("/radius needs a symbol, e.g. `/radius describe`")
             }
-            "/radius" => crate::radius_of(&self.index, rest),
+            "/radius" => crate::index_cmd::radius_of(&self.index, rest),
             "/check" => {
                 let paths = rest.split_whitespace().map(PathBuf::from).collect();
-                crate::cmd_check(&self.root, paths)
+                crate::doctor_cmd::cmd_check(&self.root, paths)
             }
             "/doctor" => {
                 let spec = self.model.as_ref().map(ToString::to_string);
-                crate::cmd_doctor(&self.root, spec.as_deref(), self.model_from_user)
+                crate::doctor_cmd::cmd_doctor(&self.root, spec.as_deref(), self.model_from_user)
             }
             "/resume" => crate::cmd_resume(&self.root, (!rest.is_empty()).then_some(rest)),
             "/diff" => self.show_pending(),
