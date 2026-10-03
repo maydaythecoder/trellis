@@ -4,14 +4,40 @@
 //! that depends on whoever is editing remembering it is not a rule; this makes
 //! the next omission fail on `cargo test`, next to the change that caused it.
 
-/// Every line of `main.rs`, with its 1-based number.
-fn main_rs() -> Vec<(usize, String)> {
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("main.rs is next to its own manifest");
-    text.lines()
-        .enumerate()
-        .map(|(i, l)| (i + 1, l.to_string()))
-        .collect()
+/// Every line of every `.rs` file under `src/`, as (file, 1-based line, text).
+///
+/// It read `main.rs` alone until #122 began splitting that file by command:
+/// `cmd_log` and `cmd_why`, the commands that print trails, were the first to
+/// move, and a guard that kept reading only `main.rs` would have stopped
+/// seeing them while still passing.
+fn src_lines() -> Vec<(String, usize, String)> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut pending = vec![dir.clone()];
+    while let Some(d) = pending.pop() {
+        for entry in std::fs::read_dir(&d).expect("src/ is next to its own manifest") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut out = Vec::new();
+    for path in files {
+        let name = path
+            .strip_prefix(&dir)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        for (i, l) in text.lines().enumerate() {
+            out.push((name.clone(), i + 1, l.to_string()));
+        }
+    }
+    out
 }
 
 /// Expressions that read content out of a trail.
@@ -42,14 +68,19 @@ fn nothing_read_from_a_trail_is_printed_to_a_terminal_unsanitised() {
     // work comes back verified rather than merely written, and a forged
     // terminal defeats the reading of the evidence rather than the evidence.
     let mut bad: Vec<String> = Vec::new();
-    for (n, line) in main_rs() {
+    let lines = src_lines();
+    assert!(
+        lines.iter().any(|(_, _, l)| l.contains("fn cmd_log(")),
+        "the scan no longer reaches `cmd_log`, the command it exists for"
+    );
+    for (file, n, line) in lines {
         let code = line.split("//").next().unwrap_or("");
         if !code.contains("println!") && !code.contains("writeln!") {
             continue;
         }
         for needle in FROM_A_TRAIL {
             if code.contains(needle) && !code.contains("plain(") {
-                bad.push(format!("main.rs:{n}: {}", line.trim()));
+                bad.push(format!("{file}:{n}: {}", line.trim()));
             }
         }
     }
