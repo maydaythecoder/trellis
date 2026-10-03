@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "run_id": "20261003-025030-541-extend-the-docstring-of-the-remove-directory-fun",
+  "task": "extend the docstring of the remove_directory function in src/poetry/utils/helpers.py to describe its force parameter",
+  "base_commit": "e176ce8f7f837b028c481315ae39b14f26f686e5",
+  "started_at": "2026-10-03T02:50:30Z",
+  "provenance": {
+    "trellis_version": "0.0.1",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9808,
+      "peak_prompt_bytes": 9808,
+      "turns_measured": 1
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "read_file",
+        "target": "src/poetry/utils/helpers.py",
+        "outcome": "from __future__ import annotations",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 9881,
+    "prompt_tokens": 14667
+  },
+  "factual_sha256": "aa8676bf3544ba93fcb208e771ddb5fa17b3a07c690aa2d901c6a8d65dcf8a60",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
