@@ -404,3 +404,49 @@ fn a_ticket_that_is_not_ready_and_not_blocked_goes_to_a_person_with_its_failures
     assert_eq!(value(&o).route, Route::NeedsHuman);
     assert_eq!(value(&o).reasons, ["not ready: no verify command"]);
 }
+
+#[test]
+fn rollback_worktree_teardown_and_session_persistence_are_risk_high_196() {
+    // The owner's path table (#196). Each entry would otherwise compute
+    // low or medium, and a change to rollback is the one the clean-tree
+    // guarantee (ADR 0009) rests on.
+    for file in [
+        "crates/trellis-vcs/src/lib.rs",
+        "crates/trellis-trail/src/lib.rs",
+        "crates/trellis-loop/src/integrate.rs",
+        "crates/trellis-loop/src/partition.rs",
+        "crates/trellis-loop/src/supervise.rs",
+        "crates/trellis-cli/src/session.rs",
+        "crates/trellis-cli/src/session_extra.rs",
+    ] {
+        let t = ticket(
+            "Add a thing",
+            &body(&format!("**Files:** {file}")),
+            &["origin:manual"],
+        );
+        assert_eq!(*value(&risk(&t)), Risk::High, "{file}");
+    }
+}
+
+#[test]
+fn a_directory_that_contains_a_persistence_path_is_risk_high_196() {
+    // A directory entry names an unknown set of files; the safe reading is
+    // that it includes the persistence file inside it.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-loop/src/"),
+        &["origin:manual"],
+    );
+    assert_eq!(*value(&risk(&t)), Risk::High);
+}
+
+#[test]
+fn a_loop_file_outside_the_table_is_not_raised_by_it_196() {
+    // The table is a list, not the whole crate: agent.rs is not rollback.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-loop/src/agent.rs"),
+        &["origin:manual"],
+    );
+    assert_ne!(risk(&t).decided().copied(), Some(Risk::High));
+}
