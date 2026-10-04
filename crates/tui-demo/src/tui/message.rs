@@ -68,6 +68,10 @@ pub enum Message {
         nth: usize,
         turn: usize,
     },
+    /// How the run ended, one line, sent just before `RunFinished` (#244).
+    /// Shown where it does not scroll, so a finished run is visible even
+    /// when the transcript's last lines are not.
+    RunOutcome(String),
     RunFinished,
     // internal
     Quit,

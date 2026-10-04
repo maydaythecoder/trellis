@@ -141,12 +141,59 @@ fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
+/// Rows `text` takes when wrapped to `width` columns: greedy word wrap, as
+/// the paragraph does, a word longer than the width breaking across rows.
+/// Close enough to place the end of the transcript in view; it is a count
+/// for scrolling, never a figure shown to anyone.
+fn wrapped_rows(text: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let mut rows: usize = 0;
+    for line in text.split('\n') {
+        let mut col = 0usize;
+        let mut row_count = 1usize;
+        for word in line.split(' ') {
+            let w = Line::from(word).width();
+            let need = if col == 0 { w } else { col + 1 + w };
+            if need <= width {
+                col = need;
+            } else if w <= width {
+                row_count += 1;
+                col = w;
+            } else {
+                // A word wider than the row breaks across rows.
+                let rest = if col == 0 { w } else { w + col + 1 };
+                row_count += rest.div_ceil(width).saturating_sub(1);
+                col = rest % width;
+            }
+        }
+        rows += row_count;
+    }
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
+
 fn render_transcript(state: &AppState, area: Rect, frame: &mut Frame) {
     let body = state.transcript.join("\n");
+    let inner_w = area.width.saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2);
+    // Follow the end unless scrolled back (#244): the offset that puts the
+    // last row at the bottom, less however far the person has scrolled.
+    let total = wrapped_rows(&body, inner_w);
+    let offset = total
+        .saturating_sub(inner_h)
+        .saturating_sub(state.scroll_back);
+    let mut block = Block::default().borders(Borders::ALL).title(" transcript ");
+    if state.scroll_back > 0 {
+        block = block.title(" scrolled back · ↓ to follow ");
+    }
+    // The outcome of the last run, on the border, which does not scroll:
+    // a run that ended is visible however long its transcript is.
+    if let Some(outcome) = &state.outcome {
+        block = block.title_bottom(Line::from(format!(" last run: {outcome} ")));
+    }
     let p = Paragraph::new(body)
-        .block(Block::default().borders(Borders::ALL).title(" transcript "))
+        .block(block)
         .wrap(Wrap { trim: false })
-        .scroll((state.scroll, 0));
+        .scroll((offset, 0));
     frame.render_widget(p, area);
 }
 
@@ -418,6 +465,13 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     } else {
         format!("iteration {}/{}", b.iteration, b.max_iterations)
     };
+    // A finished run does not keep presenting an iteration in progress
+    // (#244): the counts stay, marked as the last run's.
+    let iteration = if !state.running && state.outcome.is_some() {
+        format!("finished · {iteration}")
+    } else {
+        iteration
+    };
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(" budget "))
         .gauge_style(Style::default().fg(Color::Cyan))
@@ -539,6 +593,76 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect()
+    }
+
+    /// A transcript several times taller than any pane, ending in a line
+    /// that says so.
+    fn long_transcript() -> AppState {
+        let mut s = AppState::default().with_running(true);
+        for i in 0..200 {
+            s.update(Message::AgentToken(format!("step {i} of the run\n")));
+        }
+        s.update(Message::AgentToken("THE LAST LINE\n".into()));
+        s
+    }
+
+    #[test]
+    fn transcript_follows_its_end_while_new_lines_arrive() {
+        // #244: a run's ending sat below the visible area, and a QA pass
+        // read the frozen-looking pane as a hang for several minutes.
+        let s = long_transcript();
+        let out = drawn(&s, 100, 30);
+        assert!(out.contains("THE LAST LINE"), "the end is in view");
+        assert!(
+            !out.contains("step 0 of the run"),
+            "the start has scrolled off"
+        );
+    }
+
+    #[test]
+    fn transcript_scrolled_back_stops_following_and_says_so() {
+        let mut s = long_transcript();
+        for _ in 0..40 {
+            s.update(Message::Key(ratatui::crossterm::event::KeyEvent::from(
+                ratatui::crossterm::event::KeyCode::Up,
+            )));
+        }
+        let out = drawn(&s, 100, 30);
+        assert!(!out.contains("THE LAST LINE"), "scrolled back past the end");
+        assert!(
+            out.contains("scrolled back"),
+            "and the border says how to return"
+        );
+    }
+
+    #[test]
+    fn transcript_outcome_of_a_finished_run_is_on_screen_without_scrolling() {
+        let mut s = long_transcript();
+        s.update(Message::BudgetKnown { max_iterations: 6 });
+        s.update(Message::BudgetUpdated {
+            iteration: 3,
+            prompt_bytes: 2435,
+            elapsed_secs: 42,
+        });
+        s.update(Message::RunOutcome(
+            "did not converge; worktree restored: true".into(),
+        ));
+        s.update(Message::RunFinished);
+        // Scrolled back too: the outcome does not depend on where the view is.
+        for _ in 0..40 {
+            s.update(Message::Key(ratatui::crossterm::event::KeyEvent::from(
+                ratatui::crossterm::event::KeyCode::Up,
+            )));
+        }
+        let out = drawn(&s, 120, 30);
+        assert!(
+            out.contains("last run: did not converge; worktree restored: true"),
+            "{out}"
+        );
+        assert!(
+            out.contains("finished · iteration 3/6"),
+            "the budget line is not mid-run"
+        );
     }
 
     #[test]
