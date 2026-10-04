@@ -24,10 +24,12 @@ fn abstain<T>(rule: &'static str, reason: impl Into<String>) -> Outcome<T> {
     }
 }
 
-/// §5's area table, in its order, then the two entries this repository adds
-/// (`docs/TICKETING.md`): the crate and directory whose names are the area's.
-/// Every other path maps to nothing, and a ticket naming one abstains.
-const AREA_PATHS: [(&str, Area); 12] = [
+/// §5's area table, in its order, then the entries this repository adds
+/// (`docs/TICKETING.md`): the crate and directory whose names are the area's,
+/// and the owner's mapping of this repository's other crates onto the same
+/// twelve areas (#194, 2026-10-04: no new area values). Every other path
+/// maps to nothing, and a ticket naming one abstains.
+const AREA_PATHS: [(&str, Area); 21] = [
     ("crates/trellis-context", Area::Context),
     ("crates/trellis-model", Area::Model),
     ("crates/trellis-checks", Area::Checks),
@@ -40,6 +42,15 @@ const AREA_PATHS: [(&str, Area); 12] = [
     ("cmd/trellis-tui", Area::Tui),
     ("crates/trellis-cli", Area::Cli),
     ("docs", Area::Docs),
+    ("crates/trellis-index", Area::Graph),
+    ("crates/trellis-loop", Area::Runtime),
+    ("crates/trellis-vcs", Area::Runtime),
+    ("crates/trellis-vault", Area::Context),
+    ("crates/trellis-queue", Area::Agents),
+    ("crates/trellis-trail", Area::Protocol),
+    ("crates/trellis-core", Area::Build),
+    ("scripts", Area::Build),
+    (".github", Area::Build),
 ];
 
 fn area_of(file: &FileRef) -> Option<Area> {
