@@ -326,6 +326,63 @@ fn dot_trellis_files(root: &Path, cache: &HashCache) -> Result<Vec<(String, Stri
     Ok(w.out.into_iter().collect())
 }
 
+/// The user's packages directory (ADR 0039): `packages/` beside the trust
+/// store, which is where `trellis install` puts it.
+fn user_packages_dir() -> Option<PathBuf> {
+    TrustStore::user()
+        .ok()
+        .and_then(|s| s.path().parent().map(|d| d.join("packages")))
+}
+
+/// Why the hooks and custom tools in `items` cannot be trusted, when any of
+/// their argv names a file under the user's packages directory (#201).
+///
+/// Packages carry no code (ADR 0039 §9), and nothing under the packages
+/// directory is in the trust digest. A trusted hook that ran a package's
+/// file as code would change behaviour whenever the package is updated,
+/// with the digest unchanged. So such a hook is refused, the same rule as
+/// a repository file outside `.trellis/` and with the same fix. Tokens are
+/// made canonical, as in [`outside_code`], so `..`, a link or a drive
+/// letter's case cannot step around it.
+fn package_code(packages: Option<&Path>, root: &Path, items: &[TrustItem]) -> Option<String> {
+    let real_pkgs = std::fs::canonicalize(packages?).ok()?;
+    let mut why: Vec<String> = Vec::new();
+    for item in items {
+        for tok in argv_candidates(&item.argv) {
+            if tok.is_empty() {
+                continue;
+            }
+            let p = Path::new(tok);
+            let Ok(real) = std::fs::canonicalize(if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            }) else {
+                continue;
+            };
+            if real.starts_with(&real_pkgs) {
+                let line = format!(
+                    "{} names `{}`",
+                    plain(&item.label),
+                    plain(&real.display().to_string())
+                );
+                if !why.contains(&line) {
+                    why.push(line);
+                }
+            }
+        }
+    }
+    (!why.is_empty()).then(|| {
+        format!(
+            "{}, under your packages directory. Packages carry no code (ADR 0039 §9) and \
+             nothing there is in the trust digest, so a package update would change what \
+             the hook runs without the digest changing: move the code to .trellis/hooks/ \
+             (or .trellis/tools/) and name it there",
+            why.join(", ")
+        )
+    })
+}
+
 /// Why the hooks and custom tools in `items` cannot be trusted, when any of
 /// their argv (any element, any token of one) names a regular file in the
 /// repository outside `.trellis/`.
@@ -508,7 +565,13 @@ impl Fingerprint {
         }
         // Hooks and custom tools only, taken before `bash` and the extras
         // are added: the rule is about where their code lives.
-        let outside = outside_code(root, &items);
+        let outside = match (
+            outside_code(root, &items),
+            package_code(user_packages_dir().as_deref(), root, &items),
+        ) {
+            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+            (a, b) => a.or(b),
+        };
         if let Some((shell, settings)) = bash {
             items.push(TrustItem::command_cached(
                 root,
@@ -1969,5 +2032,72 @@ mod tests {
         );
         let refused = describe_change(&was, &fp(".trellis/hooks/gate.py", Some(why)));
         inert(&refused);
+    }
+
+    fn hook(argv: &[&str]) -> TrustItem {
+        TrustItem {
+            label: "hook before_run".to_string(),
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            detail: String::new(),
+            files: Vec::new(),
+            receives: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn trust_package_path_named_by_absolute_path_is_refused() {
+        // The risk (#201): a trusted hook runs a package's file as code; a
+        // package update then changes the hook with the digest unchanged.
+        let repo = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let pkgs = cfg.path().join("packages");
+        std::fs::create_dir_all(pkgs.join("somepkg")).unwrap();
+        let file = pkgs.join("somepkg").join("gate.py");
+        std::fs::write(&file, "print('x')").unwrap();
+        let why = package_code(
+            Some(&pkgs),
+            repo.path(),
+            &[hook(&["python", &file.display().to_string()])],
+        )
+        .expect("refused");
+        assert!(why.contains("hook before_run names"), "{why}");
+        assert!(why.contains("packages directory"), "{why}");
+        // One sentence, not a line broken by a run of spaces.
+        assert!(!why.contains("  "), "{why}");
+    }
+
+    #[test]
+    fn trust_package_path_inside_a_longer_argument_is_refused() {
+        // The tokenizer splits `--script=<path>`; a package path hidden in
+        // one argument is refused as one standing alone is.
+        let repo = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let pkgs = cfg.path().join("packages");
+        std::fs::create_dir_all(pkgs.join("p")).unwrap();
+        let file = pkgs.join("p").join("x.sh");
+        std::fs::write(&file, "true").unwrap();
+        let arg = format!("--script={}", file.display());
+        assert!(package_code(Some(&pkgs), repo.path(), &[hook(&["runner", &arg])]).is_some());
+    }
+
+    #[test]
+    fn trust_package_path_rule_leaves_programs_elsewhere_alone() {
+        // A program on PATH or a file outside the packages directory is the
+        // user's system, as before; and with no packages directory there is
+        // nothing to refuse.
+        let repo = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let pkgs = cfg.path().join("packages");
+        std::fs::create_dir_all(&pkgs).unwrap();
+        let other = cfg.path().join("tool.sh");
+        std::fs::write(&other, "true").unwrap();
+        let items = [hook(&[
+            "ruff",
+            "check",
+            "src",
+            &other.display().to_string(),
+        ])];
+        assert!(package_code(Some(&pkgs), repo.path(), &items).is_none());
+        assert!(package_code(None, repo.path(), &items).is_none());
     }
 }
