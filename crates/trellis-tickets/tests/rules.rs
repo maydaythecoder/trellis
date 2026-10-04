@@ -65,13 +65,36 @@ fn abstains_area_when_files_span_three_areas() {
 
 #[test]
 fn abstains_area_when_a_file_is_under_no_path_in_the_table() {
-    // trellis-index has no row in §5's table; mapping it would be a guess.
+    // fuzz/ has no row in the table (trellis-index did until #194 mapped
+    // it); mapping an unlisted path would be a guess.
     let t = ticket(
         "Add a thing",
-        &body("**Files:** crates/trellis-index/src/resolve.rs"),
+        &body("**Files:** fuzz/fuzz_targets/http_response.rs"),
         &[],
     );
-    assert!(reason(&area(&t)).contains("crates/trellis-index/src/resolve.rs"));
+    assert!(reason(&area(&t)).contains("fuzz/fuzz_targets/http_response.rs"));
+}
+
+#[test]
+fn the_owners_mapping_puts_every_crate_under_one_of_the_twelve_areas() {
+    // #194: the repository's other crates and directories map onto the
+    // existing area values, one row each, rather than adding new ones.
+    // A row that went missing would send every ticket touching it back to
+    // a person, silently.
+    for (file, want) in [
+        ("crates/trellis-index/src/resolve.rs", "area:graph"),
+        ("crates/trellis-loop/src/agent.rs", "area:runtime"),
+        ("crates/trellis-vcs/src/lib.rs", "area:runtime"),
+        ("crates/trellis-vault/src/lib.rs", "area:context"),
+        ("crates/trellis-queue/src/lib.rs", "area:agents"),
+        ("crates/trellis-trail/src/lib.rs", "area:protocol"),
+        ("crates/trellis-core/src/lib.rs", "area:build"),
+        ("scripts/gates/run-all.sh", "area:build"),
+        (".github/workflows/ci.yml", "area:build"),
+    ] {
+        let t = ticket("Add a thing", &body(&format!("**Files:** {file}")), &[]);
+        assert_eq!(value(&area(&t)).label(), want, "{file}");
+    }
 }
 
 #[test]
@@ -235,7 +258,7 @@ fn a_checks_file_is_risk_high_even_when_area_abstains() {
     // makes area abstain; that must not hide the checks file.
     let t = ticket(
         "Add a thing",
-        &body("**Files:** crates/trellis-index/src/a.rs; crates/trellis-checks/src/lib.rs"),
+        &body("**Files:** fuzz/fuzz_targets/a.rs; crates/trellis-checks/src/lib.rs"),
         &["origin:manual"],
     );
     assert!(matches!(area(&t), Outcome::Abstained { .. }));

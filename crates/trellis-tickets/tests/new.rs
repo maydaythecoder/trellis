@@ -185,10 +185,18 @@ fn new_applies_exactly_the_labels_triage_computes() {
 
 #[test]
 fn new_reports_each_abstention_and_applies_no_label_for_it() {
-    // crates/trellis-loop is in no area table (#194) and its src/ could be
-    // a public API: area and surface abstain. A label chosen anyway would
-    // be the authoritative-looking guess the standard forbids (§1).
-    let (r, events) = run(TITLE, &body("crates/trellis-loop/src/run.rs", ""), true);
+    // fuzz/ is in no area table, so area abstains; crates/trellis-loop's
+    // src/ could be a public API, so surface abstains. (trellis-loop alone
+    // did both until #194 mapped it to area:runtime.) A label chosen anyway
+    // would be the authoritative-looking guess the standard forbids (§1).
+    let (r, events) = run(
+        TITLE,
+        &body(
+            "crates/trellis-loop/src/run.rs; fuzz/fuzz_targets/http_response.rs",
+            "",
+        ),
+        true,
+    );
     let plan = r.unwrap().plan;
     assert!(
         !plan.labels.iter().any(|l| l.starts_with("area:")),
@@ -203,7 +211,7 @@ fn new_reports_each_abstention_and_applies_no_label_for_it() {
     let text = shown(&events);
     assert!(
         text.lines().any(|l| l.starts_with(
-            "area    abstained: `crates/trellis-loop/src/run.rs` is under no path in the area table"
+            "area    abstained: `fuzz/fuzz_targets/http_response.rs` is under no path in the area table"
         )),
         "{text}"
     );

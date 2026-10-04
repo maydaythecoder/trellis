@@ -264,14 +264,24 @@ fn sweep_apply_changes_only_the_triage_block_lines_and_keeps_every_other_byte() 
 
 #[test]
 fn sweep_leaves_a_dimension_whose_rule_abstained_as_labelled_and_says_abstained() {
-    // #194: crates/trellis-loop maps to no area. Removing `area:loop` or
-    // moving the issue to needs-human on that would be a guess.
+    // A file under no path in the area table (fuzz/; #201's own
+    // crates/trellis-loop was such a path until #194 mapped it) makes area
+    // abstain. Removing `area:loop` or moving the issue to needs-human on
+    // that would be a guess.
     let mut v = recorded(201);
+    let moved = body(&v).replace(
+        "crates/trellis-loop/src/trust.rs",
+        "fuzz/fuzz_targets/trust.rs",
+    );
+    assert_ne!(moved, body(&v), "the recording no longer names trust.rs");
+    v["body"] = Value::String(moved);
     set_labels(&mut v, &["area:loop", "triage:auto", "origin:manual"]);
     let (out, events) = run(true, &[v], BTreeMap::new());
     let text = shown(&events);
     assert!(
-        text.contains("#201: area abstained: `crates/trellis-loop/src/trust.rs` is under no path in the area table"),
+        text.contains(
+            "#201: area abstained: `fuzz/fuzz_targets/trust.rs` is under no path in the area table"
+        ),
         "{text}"
     );
     assert!(text.contains("#201: triage abstained: the route"), "{text}");
