@@ -140,8 +140,7 @@ fn prompt_for(input: &str, files: &[String]) -> String {
         "The file list above is complete for what was indexed. You have NOT been \
          shown the contents of any file. Answer about which files exist from the \
          list; if answering would require reading code, say that you cannot see \
-         it rather than guessing at names or contents. When you decline, \
-         suggest asking for a change rather than asking about another file.\n\n"
+         it rather than guessing at names or contents.\n\n"
     });
     p.push_str("Do NOT describe a change. Do NOT say you will make a change. ");
     p.push_str("If a change is wanted, the marker is the whole reply.\n\n");
@@ -173,9 +172,13 @@ const EXAMPLES: &[(&str, &str)] = &[
         "Hello. Ask me about the code, or tell me what to change.",
     ),
     ("fix the type annotation on describe", TASK_MARKER),
+    // A decline, not an answer: the model is shown no file's contents, and
+    // an example that described one taught it to guess. It also carries the
+    // way forward (#242): a change starts a run that reads the code, where
+    // a sentence in the instructions saying so routed questions to the loop.
     (
         "what does resolve_symbol do?",
-        "It walks the scope chain outward from the call site.",
+        "I cannot see its code; ask for a change and a run will read it.",
     ),
     ("add a test for the parser", TASK_MARKER),
     ("rename helper to assist", TASK_MARKER),
