@@ -13,9 +13,9 @@
         120
       ],
       "area": {
-        "outcome": "abstained",
-        "rule": "§5 area: from file paths",
-        "reason": "`crates/trellis-loop/src/trust.rs` is under no path in the area table"
+        "outcome": "decided",
+        "value": "area:runtime",
+        "rule": "§5 area: from file paths"
       },
       "kind": {
         "outcome": "decided",
@@ -57,7 +57,6 @@
         "value": {
           "route": "triage:needs-human",
           "reasons": [
-            "area abstained: `crates/trellis-loop/src/trust.rs` is under no path in the area table",
             "surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff",
             "risk abstained: surface abstained: `crates/trellis-loop/src/trust.rs` is in a library crate's src/; whether it changes a pub fn or pub struct needs the diff",
             "origin abstained: no `origin:` label is recorded",

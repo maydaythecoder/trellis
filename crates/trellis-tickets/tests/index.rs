@@ -165,10 +165,14 @@ fn index_golden_says_abstained_for_agent_ok_on_every_issue_195() {
 }
 
 #[test]
-fn index_golden_says_abstained_for_an_unmapped_crate_194() {
-    // #201 names only crates/trellis-loop, which §5's table leaves out.
+fn index_golden_maps_a_crate_the_standard_omits_194() {
+    // #201 names only crates/trellis-loop, which §5's table leaves out and
+    // the owner mapped to area:runtime (#194). Before the mapping this
+    // abstained; an index that still did would route the issue to a person
+    // on a question already answered.
     let v: Value = serde_json::from_str(&index_of(&golden_open()).0.unwrap().json()).unwrap();
-    assert_eq!(line(&v, 201, "area")["outcome"], "abstained");
+    assert_eq!(line(&v, 201, "area")["outcome"], "decided");
+    assert_eq!(line(&v, 201, "area")["value"], "area:runtime");
 }
 
 /// #77 with a `**Files:**` line every rule decides on (risk computes
