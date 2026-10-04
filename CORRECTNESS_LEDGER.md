@@ -481,6 +481,22 @@ set grew with the code. The earlier trellis-model result also had more than two
 timeouts, so by the same rule it was never usable as a score, although Tier 6
 — final above quotes it as 82.9%.
 
+trellis-cli after the main.rs split (#126): caught 1,093, missed 408, timeout 13,
+unviable 153 of 1,667, at `2024c36`, by `scripts/mutate-by-crate.sh trellis-cli`
+(crate-local tests, `-p trellis-cli`, `-j 4`, 11 h). The #17 baseline on the
+unsplit file: caught 1,089, missed 407, timeout 18, unviable 153 of 1,667, at
+`989b2a2`, same method. Both runs exceed the script's two-timeout limit, so
+neither has a caught fraction and none is compared here. The comparison is
+made mutant by mutant instead, matching on function and mutation with
+`file:line:col` ignored, because the split moved code between files. **No
+mutant the baseline caught survives after the split.** One mutant is missed now
+and was not missed before, `replace == with != in services_line`
+(`doctor_extra.rs`, not a moved file); in the baseline it was a timeout, not a
+catch. Five baseline timeouts resolved, four to caught and that one to missed.
+No survivor is in a moved function that the baseline killed, so the
+"each survivor in a moved function" triage does not apply, and no test was
+added.
+
 ### Survivors and their dispositions
 
 The ticket asks for every survivor of trellis-vault and trellis-queue, and every

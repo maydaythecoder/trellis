@@ -1,38 +1,3 @@
-crates/trellis-cli/src/main.rs:1014:5: replace resolve -> Result<&'static trellis_model::CatalogEntry> with Ok(Box::leak(Box::new(Default::default())))
-crates/trellis-cli/src/main.rs:1212:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::next_step -> Result<trellis_loop::Step, String> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:1228:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(vec![Default::default()])
-crates/trellis-cli/src/main.rs:1245:9: replace Driver::build -> Result<Self> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:1293:9: replace Driver::compactions -> Vec<trellis_loop::Compacted> with vec![Default::default()]
-crates/trellis-cli/src/main.rs:1303:9: replace Driver::requested_compactions -> Vec<trellis_loop::RequestedCompaction> with vec![Default::default()]
-crates/trellis-cli/src/main.rs:1406:9: replace Human::terminal -> Self with Default::default()
-crates/trellis-cli/src/main.rs:1576:5: replace cmd_run -> Result<RunExit> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:1614:5: replace cmd_run_with -> Result<RunExit> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:1629:5: replace run_body -> Result<RunExit> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:1677:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:1709:9: delete match arm Some(config::VaultSetting{dir, source, focus:Some(stem),}) in run_body
-crates/trellis-cli/src/main.rs:1784:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:1827:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:1859:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:1966:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2088:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2110:9: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2323:13: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2322:13: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2386:13: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2385:13: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2400:13: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2433:17: replace && with || in run_body
-crates/trellis-cli/src/main.rs:2942:41: replace * with +
-crates/trellis-cli/src/main.rs:2942:41: replace * with /
-crates/trellis-cli/src/main.rs:2942:34: replace * with +
-crates/trellis-cli/src/main.rs:2942:34: replace * with /
-crates/trellis-cli/src/main.rs:3006:5: replace interrupted_run -> Result<RunExit> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:2955:5: replace on_run_stack -> Result<T> with Ok(Default::default())
-crates/trellis-cli/src/main.rs:3264:5: replace action_from -> trellis_trail::Action with Default::default()
-crates/trellis-cli/src/main.rs:3409:5: replace steering_entries -> Vec<trellis_trail::Steer> with vec![Default::default()]
-crates/trellis-cli/src/main.rs:3557:41: replace > with < in record_trail
-crates/trellis-cli/src/main.rs:3563:41: replace > with < in record_trail
-crates/trellis-cli/src/main.rs:3714:5: replace resolve_symbol -> Result<trellis_core::SymbolId> with Ok(Default::default())
 crates/trellis-cli/src/ask.rs:211:5: replace classify -> Result<Intent> with Ok(Default::default())
 crates/trellis-cli/src/ask.rs:313:5: replace interpret -> Intent with Default::default()
 crates/trellis-cli/src/config.rs:300:9: replace RepoConfig::control -> Result<Control> with Ok(Default::default())
@@ -45,6 +10,7 @@ crates/trellis-cli/src/hosted.rs:297:5: replace build -> Result<HostedModel> wit
 crates/trellis-cli/src/hosted.rs:393:5: replace compaction_action -> trellis_trail::Action with Default::default()
 crates/trellis-cli/src/hosted.rs:427:5: replace requested_compaction_action -> trellis_trail::Action with Default::default()
 crates/trellis-cli/src/image_input.rs:81:5: replace refused -> anyhow::Error with Default::default()
+crates/trellis-cli/src/index_cmd.rs:83:5: replace resolve_symbol -> Result<trellis_core::SymbolId> with Ok(Default::default())
 crates/trellis-cli/src/install.rs:114:5: replace install -> Result<Entry> with Ok(Default::default())
 crates/trellis-cli/src/install.rs:334:9: replace && with || in split_spec
 crates/trellis-cli/src/install.rs:357:13: replace && with || in unacceptable_source
@@ -55,9 +21,10 @@ crates/trellis-cli/src/install.rs:739:5: replace parse_ls_tree_record -> Result<
 crates/trellis-cli/src/liveness.rs:43:9: replace <impl Liveness for SystemLiveness>::probe -> Probe with Default::default()
 crates/trellis-cli/src/liveness.rs:57:5: replace probe_proc -> Probe with Default::default()
 crates/trellis-cli/src/liveness.rs:66:5: replace parse_proc_stat -> Probe with Default::default()
-crates/trellis-cli/src/liveness.rs:85:5: replace probe_windows -> Probe with Default::default()
 crates/trellis-cli/src/liveness.rs:101:5: replace parse_tagged -> Probe with Default::default()
+crates/trellis-cli/src/liveness.rs:85:5: replace probe_windows -> Probe with Default::default()
 crates/trellis-cli/src/liveness.rs:117:5: replace probe_ps -> Probe with Default::default()
+crates/trellis-cli/src/models_cmd.rs:42:5: replace resolve -> Result<&'static trellis_model::CatalogEntry> with Ok(Box::leak(Box::new(Default::default())))
 crates/trellis-cli/src/orchestrate.rs:47:5: replace load_profiles -> Result<BTreeMap<String, Profile>> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
 crates/trellis-cli/src/orchestrate.rs:47:5: replace load_profiles -> Result<BTreeMap<String, Profile>> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
 crates/trellis-cli/src/orchestrate.rs:65:13: replace && with || in load_profiles
@@ -74,14 +41,47 @@ crates/trellis-cli/src/process_agent.rs:129:9: replace Judge::governance -> (Vec
 crates/trellis-cli/src/process_agent.rs:179:5: replace run -> RunEnd with Default::default()
 crates/trellis-cli/src/process_agent.rs:687:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
 crates/trellis-cli/src/process_agent.rs:709:9: replace Running::take_stdin -> Option<std::fs::File> with Some(Default::default())
+crates/trellis-cli/src/run_cmd.rs:88:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::next_step -> Result<trellis_loop::Step, String> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:104:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(vec![Default::default()])
+crates/trellis-cli/src/run_cmd.rs:121:9: replace Driver::build -> Result<Self> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:169:9: replace Driver::compactions -> Vec<trellis_loop::Compacted> with vec![Default::default()]
+crates/trellis-cli/src/run_cmd.rs:179:9: replace Driver::requested_compactions -> Vec<trellis_loop::RequestedCompaction> with vec![Default::default()]
+crates/trellis-cli/src/run_cmd.rs:282:9: replace Human::terminal -> Self with Default::default()
+crates/trellis-cli/src/run_cmd.rs:452:5: replace cmd_run -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:490:5: replace cmd_run_with -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:505:5: replace run_body -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:553:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:660:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:703:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:585:9: delete match arm Some(config::VaultSetting{dir, source, focus:Some(stem),}) in run_body
+crates/trellis-cli/src/run_cmd.rs:735:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:842:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:964:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:986:9: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1198:13: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1199:13: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1261:13: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1262:13: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1276:13: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1309:17: replace && with || in run_body
+crates/trellis-cli/src/run_cmd.rs:1818:41: replace * with +
+crates/trellis-cli/src/run_cmd.rs:1818:41: replace * with /
+crates/trellis-cli/src/run_cmd.rs:1831:5: replace on_run_stack -> Result<T> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:1882:5: replace interrupted_run -> Result<RunExit> with Ok(Default::default())
+crates/trellis-cli/src/run_cmd.rs:1818:34: replace * with +
+crates/trellis-cli/src/run_cmd.rs:1818:34: replace * with /
+crates/trellis-cli/src/run_cmd.rs:2140:5: replace action_from -> trellis_trail::Action with Default::default()
+crates/trellis-cli/src/run_cmd.rs:2288:5: replace steering_entries -> Vec<trellis_trail::Steer> with vec![Default::default()]
+crates/trellis-cli/src/run_cmd.rs:2436:41: replace > with < in record_trail
+crates/trellis-cli/src/run_cmd.rs:2442:41: replace > with < in record_trail
 crates/trellis-cli/src/services.rs:74:9: replace Services::none -> Self with Default::default()
 crates/trellis-cli/src/services.rs:93:9: replace Services::start -> Result<Self> with Ok(Default::default())
 crates/trellis-cli/src/services.rs:126:9: replace Services::trail_actions -> Vec<trellis_trail::Action> with vec![Default::default()]
 crates/trellis-cli/src/services.rs:153:21: replace && with || in <impl Drop for Services>::drop
 crates/trellis-cli/src/services.rs:187:5: replace start_one -> Result<Service> with Ok(Default::default())
 crates/trellis-cli/src/services.rs:254:5: replace create_fresh -> Result<std::fs::File> with Ok(Default::default())
-crates/trellis-cli/src/services.rs:309:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
 crates/trellis-cli/src/services.rs:309:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 1))
+crates/trellis-cli/src/services.rs:309:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
 crates/trellis-cli/src/services.rs:365:5: replace outliving -> (Vec<Record>, Vec<String>) with (vec![Default::default()], vec![])
 crates/trellis-cli/src/services.rs:365:5: replace outliving -> (Vec<Record>, Vec<String>) with (vec![Default::default()], vec![String::new()])
 crates/trellis-cli/src/services.rs:365:5: replace outliving -> (Vec<Record>, Vec<String>) with (vec![Default::default()], vec!["xyzzy".into()])
@@ -91,8 +91,8 @@ crates/trellis-cli/src/session.rs:116:9: replace Session::open -> Result<Self> w
 crates/trellis-cli/src/session.rs:338:21: replace && with || in Session::dispatch
 crates/trellis-cli/src/tooling.rs:40:5: replace fingerprint -> Fingerprint with Default::default()
 crates/trellis-cli/src/tooling.rs:56:9: replace Inputs::fingerprint -> Fingerprint with Default::default()
-crates/trellis-cli/src/tooling.rs:73:9: replace Inputs::of -> Self with Default::default()
 crates/trellis-cli/src/tooling.rs:62:9: replace Inputs::fingerprint_cached -> Fingerprint with Default::default()
+crates/trellis-cli/src/tooling.rs:73:9: replace Inputs::of -> Self with Default::default()
 crates/trellis-cli/src/tooling.rs:100:5: replace process_agents -> Vec<trellis_loop::TrustItem> with vec![Default::default()]
 crates/trellis-cli/src/tooling.rs:159:5: replace prepare -> Result<Tooling> with Ok(Default::default())
 crates/trellis-cli/src/tooling.rs:350:9: replace Tooling::gates -> Vec<Box<dyn ToolGate>> with vec![Box::new(Default::default())]
@@ -119,16 +119,16 @@ crates/trellis-cli/src/work.rs:1130:9: replace <impl Runner for CliRunner<'_>>::
 crates/trellis-cli/src/work.rs:1267:36: replace + with * in <impl Runner for CliRunner<'_>>::idle
 crates/trellis-cli/src/context_files.rs:145:5: replace input -> trellis_trail::Input with Default::default()
 crates/trellis-cli/src/context_files.rs:212:5: replace in_dir -> Vec<Candidate> with vec![Default::default()]
-crates/trellis-cli/src/output.rs:40:5: replace human -> Box<dyn Write +Send> with Box::new(Default::default())
 crates/trellis-cli/src/output.rs:55:5: replace stdout_sink -> Sink with Default::default()
+crates/trellis-cli/src/output.rs:40:5: replace human -> Box<dyn Write +Send> with Box::new(Default::default())
 crates/trellis-cli/src/output.rs:150:5: replace framed -> Result<RunExit> with Ok(Default::default())
 crates/trellis-cli/src/rpc.rs:120:13: replace && with || in <impl Layer<S> for TurnCapture>::on_event
 crates/trellis-cli/src/rpc.rs:119:13: replace && with || in <impl Layer<S> for TurnCapture>::on_event
 crates/trellis-cli/src/rpc.rs:118:13: replace && with || in <impl Layer<S> for TurnCapture>::on_event
 crates/trellis-cli/src/rpc.rs:201:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::new()
-crates/trellis-cli/src/rpc.rs:201:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::from_iter([Default::default()])
 crates/trellis-cli/src/rpc.rs:201:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::new(Default::default())
 crates/trellis-cli/src/rpc.rs:201:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::from(Default::default())
+crates/trellis-cli/src/rpc.rs:201:9: replace SteeringPort::state -> std::sync::MutexGuard<'_, PortState> with MutexGuard::from_iter([Default::default()])
 crates/trellis-cli/src/rpc.rs:206:9: replace SteeringPort::take_receiver -> Option<trellis_loop::SteeringRx> with Some(Default::default())
 crates/trellis-cli/src/rpc.rs:219:9: replace SteeringPort::send -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> with Ok(Some(Receiver::new()))
 crates/trellis-cli/src/rpc.rs:219:9: replace SteeringPort::send -> Result<Option<tokio::sync::oneshot::Receiver<SteerAnswer>>, String> with Ok(Some(Receiver::from_iter([Default::default()])))
