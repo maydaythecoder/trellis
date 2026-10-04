@@ -364,3 +364,29 @@ is that the new sentence, *suggest asking for a change*, pulls a question
 about a change toward the change path. The full run was repeated after one
 results file was overwritten by mistake: 24 of 27 again, the same three
 misses.
+
+## Classification fix 2026-10-04, on 72ee4af (#242)
+
+The `aa86f76` sentence (*suggest asking for a change*) is removed, and the
+few-shot example for *what does resolve_symbol do?* changes from an answer
+that described the code (which the model is never shown) to a decline that
+carries the way forward: *I cannot see its code; ask for a change and a run
+will read it.*
+
+- run-classify: `python qa/run-classify.py` (9 cases, `--repeat 3`, temperature 0.0, `max_tokens` 2048), qwen3:8b on Ollama 0.34.2
+
+| case | n | got |
+|---|---|---|
+| `greeting`, `question_behaviour`, `question_location`, `question_why`, `question_files` | 3 each | answer ×3 each |
+| `task_fix`, `task_add`, `task_rename`, `task_typo` | 3 each | task ×3 each |
+
+**27 of 27, no empty reply.** `question_why` differs from the previous
+section: answered 3/3, where it was routed to the loop 3/3.
+
+How the wording was chosen, measured: the first replacement example (*Tell
+me what to change and a run will read it.*) fixed the routing but returned
+two empty replies in three on `question_why`, the reasoning-budget failure
+recorded on `prompt_for`. Three shorter wordings, run on `question_why`,
+`question_behaviour` and `task_fix` at n=5 each, all scored 15/15 with no
+empty reply; the one kept is the one that still says what a change does.
+No decline in the full run suggests asking about another file.

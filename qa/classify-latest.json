@@ -66,22 +66,22 @@
     "id": "question_why",
     "run": 1,
     "expect": "answer",
-    "got": "task",
-    "match": false
+    "got": "answer",
+    "match": true
   },
   {
     "id": "question_why",
     "run": 2,
     "expect": "answer",
-    "got": "task",
-    "match": false
+    "got": "answer",
+    "match": true
   },
   {
     "id": "question_why",
     "run": 3,
     "expect": "answer",
-    "got": "task",
-    "match": false
+    "got": "answer",
+    "match": true
   },
   {
     "id": "task_fix",
