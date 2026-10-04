@@ -450,3 +450,15 @@ fn a_loop_file_outside_the_table_is_not_raised_by_it_196() {
     );
     assert_ne!(risk(&t).decided().copied(), Some(Risk::High));
 }
+
+#[test]
+fn the_desktop_workspace_is_an_interface_area() {
+    // #249: every desktop ticket names files under desktop/, and an
+    // unmapped path would route each of them to a person.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** desktop/src/main.rs"),
+        &["origin:manual"],
+    );
+    assert_eq!(value(&area(&t)).label(), "area:tui");
+}
