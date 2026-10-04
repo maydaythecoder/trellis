@@ -1045,6 +1045,76 @@ impl Snapshot {
         Ok(head == self.head && branch_of(&self.root)? == self.branch && status.trim().is_empty())
     }
 
+    /// [`rollback`](Self::rollback), after making git re-read every path in
+    /// `written` (repository-relative, as the run recorded them).
+    ///
+    /// Git decides a worktree file is unchanged from its index entry's stat
+    /// (size, mtime, ctime) when that entry is not racily clean. When the
+    /// clock steps back over an edit, a same-size edit can land in the
+    /// original file's second, and `reset --hard` then leaves it in place
+    /// while `status` reports a clean tree (#239, seen on the WSL runner).
+    /// Setting each written file's mtime to a second no checkout produces
+    /// (one second after the epoch) makes its stat disagree with the index,
+    /// so git reads the contents. The cost scales with this run's own
+    /// writes, not with the repository (ADR 0046). A path that no longer
+    /// exists, or cannot be opened for writing, is left to
+    /// [`written_differ`](Self::written_differ) to report.
+    pub fn rollback_written(&self, written: &[String]) -> Result<(), VcsError> {
+        let stale = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        for p in written {
+            let full = self.root.join(p);
+            if full.is_file()
+                && let Ok(f) = std::fs::File::options().write(true).open(&full)
+            {
+                let _ = f.set_modified(stale);
+            }
+        }
+        self.rollback()
+    }
+
+    /// The paths in `written` whose contents differ from the snapshot
+    /// commit: present when the commit lacks them, missing when it has
+    /// them, or hashing to another blob. Empty means every path this run
+    /// wrote holds exactly the snapshot's bytes.
+    ///
+    /// Read by content, not stat, so it holds under a clock that steps
+    /// back, which `git status` (and so [`is_restored`](Self::is_restored))
+    /// does not. Hashing runs with the repository's filter drivers off
+    /// ([`filters_off`]): a driver is repository code, and trellis does not
+    /// run it. Built-in end-of-line conversion still applies, so a CRLF
+    /// checkout hashes to the committed blob. A repository that depends on
+    /// a filter driver (LFS, say) reads as differing: a false alarm, never
+    /// a false "restored".
+    pub fn written_differ(&self, written: &[String]) -> Result<Vec<String>, VcsError> {
+        let drivers_off = filters_off(&self.root)?;
+        let mut differ = Vec::new();
+        for p in written {
+            let path = p.replace('\\', "/");
+            let committed = command()
+                .args(["rev-parse", "--verify", "--quiet"])
+                .arg(format!("{}:{path}", self.head))
+                .current_dir(&self.root)
+                .output()?;
+            let expected = committed.status.success().then(|| {
+                String::from_utf8_lossy(&committed.stdout)
+                    .trim()
+                    .to_string()
+            });
+            let full = self.root.join(&path);
+            let actual = if full.is_file() {
+                let mut args: Vec<&str> = drivers_off.iter().map(String::as_str).collect();
+                args.extend(["hash-object", "--", &path]);
+                Some(git(&self.root, &args)?.trim().to_string())
+            } else {
+                None
+            };
+            if expected != actual {
+                differ.push(path);
+            }
+        }
+        Ok(differ)
+    }
+
     /// `Some` describing the move when `HEAD` is no longer the recorded
     /// commit on the recorded branch: a commit, a reset, a checkout, a
     /// branch switch. A run may not move it. Committed work is invisible to
@@ -1617,6 +1687,106 @@ mod tests {
             "no folded indentation in the message a stuck user reads: {msg:?}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A same-size edit to `a.py` that git's stat check cannot see, as a
+    /// clock stepping back over the edit leaves it (#239): the file's mtime
+    /// put back to the index entry's, and the index file stamped later so
+    /// the entry is not racily clean. `core.trustctime=false` stands in for
+    /// the step's other half: ctime cannot be set from here, and in the
+    /// incident it landed in the same second too. Returns the edited text.
+    fn hide_a_same_size_edit(dir: &Path) -> &'static str {
+        git(dir, &["config", "core.trustctime", "false"]).unwrap();
+        let file = dir.join("a.py");
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let edited = "def f():\n    return 7\n";
+        assert_eq!(edited.len(), "def f():\n    return 1\n".len());
+        std::fs::write(&file, edited).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let index = dir.join(".git").join("index");
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(mtime + std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(
+            git(dir, &["status", "--porcelain"]).unwrap().trim(),
+            "",
+            "the edit is hidden from git's stat check, as in the incident"
+        );
+        edited
+    }
+
+    #[test]
+    fn rollback_clock_step_plain_rollback_would_report_a_false_restore() {
+        // The hazard itself, pinned so a reader sees why rollback_written
+        // exists: after a plain rollback the edit is still there. Whether
+        // `git status` (so is_restored) then notices differs by platform: on
+        // the WSL runner's git 2.43 it reported a clean tree (#239, the
+        // t238-mech reproduction), Windows git notices after the reset. So
+        // the status answer is not asserted; what must hold everywhere is
+        // that the content check reports the edit.
+        let dir = temp_repo("clock-plain");
+        let snap = snapshot(&dir).unwrap();
+        let edited = hide_a_same_size_edit(&dir);
+        snap.rollback().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.py")).unwrap(), edited);
+        assert_eq!(
+            snap.written_differ(&["a.py".to_string()]).unwrap(),
+            vec!["a.py".to_string()],
+            "the content check is not"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_clock_step_written_paths_are_restored_and_verified() {
+        // The fix (#239, ADR 0046): the written path's stat is made to
+        // disagree with the index, so the reset reads and restores it.
+        let dir = temp_repo("clock-written");
+        let snap = snapshot(&dir).unwrap();
+        hide_a_same_size_edit(&dir);
+        snap.rollback_written(&["a.py".to_string()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 1\n"
+        );
+        assert!(
+            snap.written_differ(&["a.py".to_string()])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(snap.is_restored().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_clock_step_written_differ_sees_created_and_deleted_paths() {
+        // A file the run created that survived, and a tracked file it
+        // deleted that did not come back, both differ from the snapshot.
+        let dir = temp_repo("clock-differ");
+        let snap = snapshot(&dir).unwrap();
+        std::fs::write(dir.join("new.py"), "x = 1\n").unwrap();
+        std::fs::remove_file(dir.join("a.py")).unwrap();
+        let mut d = snap
+            .written_differ(&["new.py".to_string(), "a.py".to_string()])
+            .unwrap();
+        d.sort();
+        assert_eq!(d, vec!["a.py".to_string(), "new.py".to_string()]);
+        snap.rollback_written(&["new.py".to_string(), "a.py".to_string()])
+            .unwrap();
+        assert!(
+            snap.written_differ(&["new.py".to_string(), "a.py".to_string()])
+                .unwrap()
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
