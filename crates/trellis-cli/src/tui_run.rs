@@ -130,6 +130,10 @@ async fn tier_from_probe(spec: &trellis_model::ModelSpec) -> String {
 /// that produced nothing at all. That is the exact failure this interface
 /// was built to end, and without this it happened inside it.
 fn report_outcome(tx: &Sender<Message>, outcome: Result<crate::RunExit>) {
+    // One line for the border that does not scroll (#244), sent before the
+    // detail so a view that draws on every message has it as soon as it
+    // can.
+    let _ = tx.blocking_send(Message::RunOutcome(outcome_line(&outcome)));
     match outcome {
         Err(e) => {
             // `{:#}` so the causes travel with the error; a bare `{}` would
@@ -157,6 +161,32 @@ fn report_outcome(tx: &Sender<Message>, outcome: Result<crate::RunExit>) {
     }
     // Whatever happened, the interface takes input again.
     let _ = tx.blocking_send(Message::RunFinished);
+}
+
+/// How a run ended, in one line for the transcript's border (#244).
+///
+/// Built from the exit the run returned, never from model text: an `Asked`
+/// question is model output and is not repeated here, only that one was
+/// asked. An error shows its first line; the transcript carries the rest.
+fn outcome_line(outcome: &Result<crate::RunExit>) -> String {
+    match outcome {
+        Ok(crate::RunExit::Converged) => "converged".to_string(),
+        Ok(crate::RunExit::NotConverged { restored }) => {
+            format!("did not converge; worktree restored: {restored}")
+        }
+        Ok(crate::RunExit::Interrupted { restored }) => {
+            format!("interrupted; worktree restored: {restored}")
+        }
+        Ok(crate::RunExit::Asked { .. }) => "asked a question; worktree restored".to_string(),
+        Err(e) => {
+            let first = format!("{e:#}")
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("no reason given")
+                .to_string();
+            format!("failed: {}", crate::plain(&first))
+        }
+    }
 }
 
 /// What the interface is told when a run did not fail but *vanished*.
