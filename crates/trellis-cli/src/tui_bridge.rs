@@ -30,6 +30,7 @@ struct TurnFields {
     candidates: Option<u64>,
     unresolved: Option<u64>,
     prompt_bytes: Option<u64>,
+    max_iterations: Option<u64>,
     /// On the loop's "steer delivered" event: turns completed before it.
     after_step: Option<u64>,
     message: Option<String>,
@@ -44,6 +45,7 @@ impl Visit for TurnFields {
             "unresolved" => self.unresolved = Some(v),
             "prompt_bytes" => self.prompt_bytes = Some(v),
             "after_step" => self.after_step = Some(v),
+            "max_iterations" => self.max_iterations = Some(v),
             _ => {}
         }
     }
@@ -90,6 +92,9 @@ impl Visit for TurnFields {
 pub(crate) struct LoopLayer {
     tx: Sender<Message>,
     delivered: SteerDeliveries,
+    /// When this run began: one layer per run, so elapsed is measured from
+    /// here (#243; it was sent as a constant 0).
+    started: std::time::Instant,
 }
 
 /// Every steer delivery this layer has seen, as `(nth, turn)`, in order.
@@ -107,6 +112,7 @@ impl LoopLayer {
         Self {
             tx,
             delivered: Arc::default(),
+            started: std::time::Instant::now(),
         }
     }
 
@@ -148,6 +154,16 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
         let mut f = TurnFields::default();
         event.record(&mut f);
+
+        // The run's ceiling, from the loop's one "run budget" event.
+        if let Some(max) = f.max_iterations
+            && f.message.as_deref() == Some("run budget")
+        {
+            self.emit(Message::BudgetKnown {
+                max_iterations: u32::try_from(max).unwrap_or(u32::MAX),
+            });
+            return;
+        }
 
         // Matched on the message as well as the field, so that no other
         // event which happens to carry an `after_step` can count as one.
@@ -256,8 +272,8 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         if let Some(turn) = f.turn {
             self.emit(Message::BudgetUpdated {
                 iteration: turn as u32,
-                tokens: f.prompt_bytes.unwrap_or(0),
-                elapsed_secs: 0,
+                prompt_bytes: f.prompt_bytes.unwrap_or(0),
+                elapsed_secs: self.started.elapsed().as_secs(),
             });
         }
     }
@@ -280,6 +296,53 @@ mod tests {
             out.push(m);
         }
         out
+    }
+
+    #[test]
+    fn tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time() {
+        // The risk (#243): the budget line drew the mock's "/4", a constant
+        // "0s elapsed" and prompt bytes labelled as tokens, for every real
+        // run. The layer is built two seconds into its run so elapsed is
+        // measurably above zero without sleeping.
+        let (tx, mut rx) = mpsc::channel(256);
+        let layer = LoopLayer {
+            started: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(2))
+                .expect("the clock is more than two seconds past its origin"),
+            ..LoopLayer::new(tx)
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            // As `run_seeded` emits it, then a turn as `agent.rs` emits one.
+            tracing::info!(max_iterations = 40u32, "run budget");
+            tracing::info!(
+                turn = 3u64,
+                call = "read_file app/core.py",
+                prompt_bytes = 9800u64,
+                "turn"
+            );
+        });
+        let mut got = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            got.push(m);
+        }
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::BudgetKnown { max_iterations: 40 })),
+            "{got:?}"
+        );
+        let Some(Message::BudgetUpdated {
+            iteration,
+            prompt_bytes,
+            elapsed_secs,
+        }) = got
+            .iter()
+            .find(|m| matches!(m, Message::BudgetUpdated { .. }))
+        else {
+            panic!("no budget update in {got:?}");
+        };
+        assert_eq!((*iteration, *prompt_bytes), (3, 9800));
+        assert!(*elapsed_secs >= 2, "elapsed from the run's start, not 0");
     }
 
     #[test]

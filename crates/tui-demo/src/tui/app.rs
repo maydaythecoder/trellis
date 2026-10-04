@@ -117,8 +117,10 @@ pub struct Radius {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Budget {
     pub iteration: u32,
-    pub tokens: u64,
+    pub prompt_bytes: u64,
     pub elapsed_secs: u64,
+    /// The run's ceiling, 0 until a `BudgetKnown` says it.
+    pub max_iterations: u32,
 }
 
 /// A steer sent to the run in flight, and the turn it reached.
@@ -173,13 +175,21 @@ impl AppState {
             }
             Message::BudgetUpdated {
                 iteration,
-                tokens,
+                prompt_bytes,
                 elapsed_secs,
             } => {
                 self.budget = Budget {
                     iteration,
-                    tokens,
+                    prompt_bytes,
                     elapsed_secs,
+                    max_iterations: self.budget.max_iterations,
+                }
+            }
+            // A new run: its ceiling, and nothing counted yet.
+            Message::BudgetKnown { max_iterations } => {
+                self.budget = Budget {
+                    max_iterations,
+                    ..Budget::default()
                 }
             }
             Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
@@ -986,7 +996,7 @@ mod tests {
         });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            tokens: 8400,
+            prompt_bytes: 8400,
             elapsed_secs: 18,
         });
         s.update(Message::CheckFinished {
@@ -994,7 +1004,7 @@ mod tests {
             passed: true,
         });
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.tokens, 8400);
+        assert_eq!(s.budget.prompt_bytes, 8400);
         assert!(s.checks[0].passed);
 
         // Ticks, resizes and RunFinished are accepted and change nothing.
@@ -1002,7 +1012,7 @@ mod tests {
         s.update(Message::Resize(10, 10));
         s.update(Message::RunFinished);
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.tokens, 8400);
+        assert_eq!(s.budget.prompt_bytes, 8400);
     }
 }
 
