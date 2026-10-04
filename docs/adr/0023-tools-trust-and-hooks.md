@@ -1320,3 +1320,17 @@ as far as §7 says.
 - **User-level skills are not gated on this store.** ADR 0025, "Integrated",
   gives the reason: the store vouches for a repository, and a user skill is
   in none.
+
+## Amendment 2026-10-04: a hook may not run a file from the user's packages directory (#201)
+
+§4 treated every absolute path outside the repository as the user's system.
+One such place is not: the packages directory beside the trust store, where
+`trellis install` puts skills and templates (ADR 0039). Nothing there is in
+the trust digest, so a trusted hook or custom tool that ran a package's file
+as code would change what it does whenever the package is updated, with the
+digest unchanged. Packages carry no code (ADR 0039 §9), so such a hook is
+refused at trust time, with the same fix as a repository file outside
+`.trellis/`: move the code under `.trellis/`. Tokens are made canonical
+first, as for the repository rule. The owner chose refusal over hashing the
+file (which would support a pattern ADR 0039 says should not exist) and over
+leaving it. Tests: `trust_package_path_*` in `crates/trellis-loop/src/trust.rs`.
