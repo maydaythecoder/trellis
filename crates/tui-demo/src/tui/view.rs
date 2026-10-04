@@ -404,16 +404,27 @@ fn truncate(s: &str, width: usize) -> String {
 
 fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
     let b = state.budget;
-    // The mock runs four iterations; the gauge shows progress through them.
-    const ITERATION_CEILING: u32 = 4;
-    let ratio = f64::from(b.iteration.min(ITERATION_CEILING)) / f64::from(ITERATION_CEILING);
+    // Progress against the ceiling the run reported (#243). Until it has,
+    // no ceiling is drawn rather than a guessed one. The count can pass the
+    // ceiling by one, during the loop's single escalation; the gauge is
+    // full then and the label still says the real number.
+    let ratio = if b.max_iterations == 0 {
+        0.0
+    } else {
+        f64::from(b.iteration.min(b.max_iterations)) / f64::from(b.max_iterations)
+    };
+    let iteration = if b.max_iterations == 0 {
+        format!("iteration {}", b.iteration)
+    } else {
+        format!("iteration {}/{}", b.iteration, b.max_iterations)
+    };
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(" budget "))
         .gauge_style(Style::default().fg(Color::Cyan))
         .ratio(ratio)
         .label(format!(
-            "iteration {}/{ITERATION_CEILING}  ·  {} tokens  ·  {}s elapsed",
-            b.iteration, b.tokens, b.elapsed_secs
+            "{iteration}  ·  {} B prompt  ·  {}s elapsed",
+            b.prompt_bytes, b.elapsed_secs
         ));
     frame.render_widget(gauge, area);
 }
@@ -508,9 +519,10 @@ mod tests {
             candidates: 3,
             unresolved: 2,
         };
+        s.update(Message::BudgetKnown { max_iterations: 40 });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            tokens: 8400,
+            prompt_bytes: 8400,
             elapsed_secs: 18,
         });
         s
@@ -544,7 +556,15 @@ mod tests {
         }
         assert!(out.contains("Reading blast radius"));
         assert!(out.contains("resolved"), "the radius summary is one line");
-        assert!(out.contains("8400"), "the budget shows tokens");
+        assert!(
+            out.contains("8400 B prompt"),
+            "the budget shows prompt bytes, as bytes"
+        );
+        assert!(
+            out.contains("iteration 2/40"),
+            "against the run's own ceiling"
+        );
+        assert!(out.contains("18s elapsed"));
     }
 
     #[test]
