@@ -39,10 +39,17 @@ fn trellis(root: &Path, args: &[&str]) -> Output {
 fn trellis_command(root: &Path, args: &[&str]) -> Command {
     // The trust store is resolved from these (ADR 0023 §4); pointed beside
     // the fixture so `trellis trust` here never writes the developer's own.
+    // The user config is resolved from TRELLIS_CONFIG_DIR first, so an
+    // exported one would bypass them; it is pinned to the same place. The
+    // run markers `queue note` refuses on are removed, so a suite started
+    // from inside a trellis run behaves as one started from a shell.
     let home = root.with_extension("home");
     let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
     c.args(args)
         .current_dir(root)
+        .env_remove("TRELLIS_RUN_ID")
+        .env_remove("TRELLIS_TASK_ID")
+        .env("TRELLIS_CONFIG_DIR", home.join("trellis"))
         .env("APPDATA", &home)
         .env("XDG_CONFIG_HOME", &home)
         .env("NO_COLOR", "1")
@@ -589,7 +596,10 @@ fn a_process_agent_runs_in_trellis_s_own_process_group() {
     );
     ok(&d, &["queue", "add", "pgid", "--assignee", "maker"]);
     let s = ok(&d, &["work"]);
-    assert!(s.contains("CONVERGED"), "{s}");
+    assert!(
+        s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
+        "{s}"
+    );
     let theirs = std::fs::read_to_string(d.join("app/pgid.txt")).unwrap();
     let ours = Command::new("ps")
         .args(["-o", "pgid=", "-p", &std::process::id().to_string()])
@@ -1004,7 +1014,10 @@ fn an_untrusted_process_agent_is_not_run_and_waits_for_trust() {
     let t = ok(&d, &["trust"]);
     assert!(t.contains("process agent maker"), "{t}");
     let s = ok(&d, &["work"]);
-    assert!(s.contains("CONVERGED"), "{s}");
+    assert!(
+        s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
+        "{s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
