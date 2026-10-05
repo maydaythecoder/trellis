@@ -1,0 +1,23 @@
+<!doctype html>
+<!--
+  The TRELLIS desktop page (ADR 0048 section 5).
+
+  Static: Tauri serves this file and main.js from desktop/ui/ with no Node,
+  npm or bundler. It carries no inline script, no style attribute and no
+  inline event handler, so the CSP the shell sets never needs
+  'unsafe-inline'. Every string it shows is written by main.js through
+  textContent, never parsed as HTML (ADR 0007, S10).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>trellis</title>
+    <script type="module" src="main.js"></script>
+  </head>
+  <body>
+    <main>
+      <pre id="state"></pre>
+    </main>
+  </body>
+</html>
