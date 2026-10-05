@@ -1252,4 +1252,37 @@ mod provider_tests {
         assert!(c.thinking().is_err());
         assert_eq!(RepoConfig::default().context_bytes(), None);
     }
+
+    #[test]
+    fn a_metered_regime_is_read_and_an_unknown_one_keeps_the_default() {
+        // The risk (#248): `regime = "metered"` read as the default, so a
+        // run against a paid API budgets wall-clock and not tokens.
+        let regime = |t: &str| toml::from_str::<RepoConfig>(t).unwrap().budget().regime;
+        assert_eq!(
+            regime("[budget]\nregime = \"metered\"\n"),
+            CostRegime::Metered
+        );
+        assert_eq!(regime("[budget]\nregime = \"local\"\n"), CostRegime::Local);
+        assert_eq!(
+            regime("[budget]\nregime = \"cloud\"\n"),
+            Budget::default().regime
+        );
+    }
+
+    #[test]
+    fn an_installed_template_that_cannot_be_read_is_an_error_not_a_skip() {
+        // The risk (#248): an unreadable template in the first package read
+        // as absent, so a later package's template of the same name ran in
+        // its place with nothing said.
+        let d = tempfile::tempdir().unwrap();
+        let (first, second) = (d.path().join("a/prompts"), d.path().join("b/prompts"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("fix.md"), [0xff, 0xfe, b'x']).unwrap();
+        std::fs::write(second.join("fix.md"), "the other package's\n").unwrap();
+        let installed = vec![first, second];
+        let e = RepoConfig::prompt_raw_in(d.path(), "fix", || Ok(installed.clone()))
+            .expect_err("a template that is there but unreadable is not skipped");
+        assert!(format!("{e:#}").contains("could not be loaded from"), "{e:#}");
+    }
 }

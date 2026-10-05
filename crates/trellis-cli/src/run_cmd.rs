@@ -2934,7 +2934,145 @@ mod interrupt_tests {
             String::from_utf8_lossy(&out)
         );
         assert!(snap.is_restored().unwrap());
+        // A warning that the tree still differs, under a restoration that
+        // succeeded, sends the user hunting for damage that is not there.
+        let said = String::from_utf8_lossy(&out);
+        assert!(said.contains("Worktree restored: true"), "{said}");
+        assert!(!said.contains("WARNING"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn a_disarmed_panic_guard_leaves_the_tree_alone_while_unwinding() {
+        // The risk: the guard read `armed || panicking`, so a panic after
+        // the run had already been settled (accepted, or rolled back and
+        // reported) reset the worktree a second time behind the user.
+        let dir = temp_repo("panic-guard-disarmed");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 7\n").unwrap();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = RollbackOnPanic {
+                root: &dir,
+                snapshot: &snap,
+                writers: None,
+                armed: false,
+            };
+            panic!("after the run was settled");
+        }));
+        assert!(caught.is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 7\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The trail's actions for a two-turn run, as `(turn, tool, outcome)`.
+    fn actions_with(
+        name: &str,
+        compactions: &[trellis_loop::Compacted],
+        requested: &[trellis_loop::RequestedCompaction],
+    ) -> Vec<(u32, String, String)> {
+        let dir = temp_repo(name);
+        let read = |p: &str| trellis_loop::Turn {
+            call: trellis_loop::ToolCall::ReadFile { path: p.into() },
+            observation: String::new(),
+            verdict_passed: None,
+            check_kind: None,
+            prompt_bytes: None,
+            radius_counts: None,
+            radius_summarised: None,
+            human: None,
+            may_have_changed_tree: false,
+            changed: Vec::new(),
+        };
+        let t = trellis_loop::Transcript {
+            task: "two reads".to_string(),
+            turns: vec![read("a.py"), read("b.py")],
+            final_notice: false,
+            steering: trellis_loop::SteeringLog::default(),
+            prior: None,
+            repo: trellis_loop::RepoContext::default(),
+        };
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        let mut facts = facts_for(&snap);
+        facts.compactions = compactions;
+        facts.requested = requested;
+        let path = record_trail(&dir, &t.task, &t, &[], facts, &mut std::io::sink()).unwrap();
+        let raw = std::fs::read_to_string(path).unwrap();
+        let back = trellis_trail::UntrustedTrail::from_json(&raw).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        back.factual
+            .actions
+            .iter()
+            .map(|a| (a.turn, a.tool.clone(), a.outcome.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last() {
+        // The risk: a compaction filed under the wrong turn, or one for the
+        // request that produced `done` (turn 3 of a two-turn run) dropped
+        // or doubled. The trail is where a reader learns what the model was
+        // not shown (ADR 0024 §5).
+        let fitted = |turn: u32| trellis_loop::Compacted {
+            turn,
+            elided_turns: turn as usize - 1,
+            elided_bytes: 100 * turn as usize,
+            request_bytes: 4000,
+            budget: 5000,
+            fits: true,
+        };
+        let shape = |a: &[(u32, String, String)]| -> Vec<(u32, bool)> {
+            a.iter().map(|(t, tool, _)| (*t, tool == "compaction")).collect()
+        };
+        let a = actions_with("compaction-placement", &[fitted(2), fitted(3)], &[]);
+        assert_eq!(
+            shape(&a),
+            [(1, false), (2, true), (2, false), (3, true)],
+            "{a:?}"
+        );
+        assert!(a[1].2.starts_with("elided 200 B"), "{a:?}");
+        assert!(a[3].2.starts_with("elided 300 B"), "{a:?}");
+
+        let asked = |turn: u32| trellis_loop::RequestedCompaction {
+            turn,
+            turns_folded: 1,
+            elided_turns: turn as usize - 1,
+            elided_bytes: 10 * turn as usize,
+            bytes_before: 900,
+            bytes_after: 800,
+        };
+        let a = actions_with("requested-placement", &[], &[asked(2), asked(3)]);
+        assert_eq!(
+            shape(&a),
+            [(1, false), (2, true), (2, false), (3, true)],
+            "{a:?}"
+        );
+        assert!(a[1].2.contains("elided 20 B"), "{a:?}");
+        assert!(a[3].2.contains("elided 30 B"), "{a:?}");
+    }
+
+    #[test]
+    fn the_wrappers_a_run_drives_pass_the_driver_s_figures_through() {
+        // The risk: the budget counts tokens and the trail records prompt
+        // bytes through `SeesDone` over `rpc::Watched`, the stack every
+        // run drives; a wrapper answering a default would make a metered
+        // run look free and its context unmeasured.
+        use trellis_loop::Model;
+        let mut inner = crate::testutil::figures();
+        let mut watched = crate::rpc::Watched::new(&mut inner, None);
+        let mut done = None;
+        let m = SeesDone {
+            inner: &mut watched,
+            done: &mut done,
+        };
+        assert_eq!(m.tokens_used(), 7);
+        assert_eq!(m.prompt_bytes(), Some(4321));
+        assert_eq!(m.compactions().len(), 1);
+        assert_eq!(m.compactions()[0].elided_bytes, 50);
     }
 }
 

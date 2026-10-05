@@ -3324,3 +3324,101 @@ fn interface_flag_with_a_subcommand_is_refused_naming_both() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// the user's directory and installed packages (#248)
+// ---------------------------------------------------------------------------
+
+/// `trellis <args>` in `root` with `user` as the whole user level.
+fn run_as(root: &Path, user: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(args)
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user)
+        .output()
+        .unwrap()
+}
+
+/// A user directory with package `kit` installed by hand: one skill,
+/// `tidy`, and one template, `kitfix`.
+fn user_with_kit(name: &str) -> PathBuf {
+    let user = scratch(name);
+    let packages = user.join("packages");
+    std::fs::create_dir_all(packages.join("kit/skills/tidy")).unwrap();
+    std::fs::create_dir_all(packages.join("kit/prompts")).unwrap();
+    std::fs::write(
+        packages.join("packages.toml"),
+        format!(
+            "[[package]]\nname = \"kit\"\nsource = \"/s/kit\"\nref = \"v1\"\ncommit = \"{}\"\n",
+            "a".repeat(40)
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        packages.join("kit/skills/tidy/SKILL.md"),
+        "---\nname: tidy\ndescription: Tidy a module.\n---\n# tidy\n",
+    )
+    .unwrap();
+    std::fs::write(
+        packages.join("kit/prompts/kitfix.md"),
+        "Fix the thing the kit knows about.\n",
+    )
+    .unwrap();
+    user
+}
+
+#[test]
+fn doctor_reports_the_user_s_file_and_an_installed_package_s_skills() {
+    // The risk: doctor, where a person goes to find out what a run will
+    // load, saying a user file is layered when it is absent or absent when
+    // it is layered, or not finding a package's skills that a run loads.
+    let d = repo("doctor-user-level");
+    let user = user_with_kit("doctor-user-level-cfg");
+    let s = stdout(&run_as(&d, &user, &["doctor"]));
+    assert!(
+        s.contains("config.toml — not present; the repository's config alone"),
+        "{s}"
+    );
+    assert!(s.contains("user skills: 1 loaded"), "{s}");
+    std::fs::write(user.join("config.toml"), "").unwrap();
+    let s = stdout(&run_as(&d, &user, &["doctor"]));
+    assert!(
+        s.contains("config.toml — layered under the repository's"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn a_run_finds_a_template_only_an_installed_package_carries() {
+    let d = repo("installed-template");
+    let user = user_with_kit("installed-template-cfg");
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "script"]);
+    let out = run_as(&d, &user, &["run", "--prompt", "kitfix", "--model", &script]);
+    let s = combined(&out);
+    assert!(!s.contains("no prompt"), "{s}");
+    assert!(s.contains("model:"), "the run started: {s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn install_list_prints_what_the_manifest_records() {
+    // The risk: `trellis install` dispatched and then doing nothing,
+    // exiting 0 with no output.
+    let d = scratch("install-list");
+    let user = user_with_kit("install-list-cfg");
+    let out = run_as(&d, &user, &["install", "--list"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        stdout(&out).contains("kit  source /s/kit  ref v1  commit"),
+        "{}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
