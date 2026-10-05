@@ -1070,10 +1070,7 @@ impl Runner for CliRunner<'_> {
 
     fn gate(&mut self, _id: &str, t: &trellis_queue::Task, _out: &mut dyn Write) -> Option<String> {
         let Some(name) = &t.assignee else {
-            return self
-                .model
-                .is_none()
-                .then(|| "no model: pass --model, or set [model] spec".to_string());
+            return self.model.is_none().then(crate::first_run::no_model);
         };
         let Some(p) = self.profiles.get(name) else {
             return Some(format!("no agent profile `{name}` in .trellis/agents/"));
