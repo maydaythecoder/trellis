@@ -45,9 +45,10 @@ expect refuse "dotenv file"           .env      "X=1" "secret-shaped file staged
 expect refuse "pem file"              k/server.pem "x" "secret-shaped file staged"
 expect refuse "gitleaks ignore edit"  .gitleaksignore "abc" "allow/ignore files"
 expect refuse "pull_request_target"   .github/workflows/w.yml "on: pull_request_target" "uses pull_request_target"
-# `- name:` then `run:` on its own line: the hook's awk does not see a
-# list-item `- run: |`, which only actionlint and zizmor refuse (reported on #421).
-expect refuse "event in run block"    .github/workflows/x.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - name: x\n        run: |\n          echo \"${{ github.event.head_commit.message }}\"\n')" "interpolated into a run: block"
+# A step's run: is either a key line under `- name:` or the list item itself
+# (`- run: |`); the hook's scan missed the second until #423.
+expect refuse "event in run block"    .github/workflows/x.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: |\n          echo \"${{ github.event.issue.title }}\"\n')" "interpolated into a run: block"
+expect refuse "event in run key line" .github/workflows/z.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - name: x\n        run: |\n          echo \"${{ github.event.head_commit.message }}\"\n')" "interpolated into a run: block"
 expect pass   "clean change"          src/e.rs  "fn f() -> u32 { 1 }"
 expect pass   "format! built canary"  src/f.rs  'let k = format!("sk-ant-{}", "a".repeat(30));'
 expect pass   "event through env"     .github/workflows/y.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - env:\n          M: ${{ github.event.head_commit.message }}\n        run: echo \"$M\"\n' | sed 's/^on: push$/on: push\npermissions: {}/; s/runs-on: x/runs-on: ubuntu-latest/')"
