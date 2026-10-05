@@ -56,7 +56,7 @@ This is Apex's "date tracking never blocks Markdown" (README.md:69-71). The sign
 
 ### §3, amendment #30 (re-inventory 2026-10-04; pending the owner's answer)
 
-The sentence "vault notes stay human-authored" is enforced nowhere today. The run's write refusals come only from governance rules and `[governance] deny_write`, and `crates/trellis-loop/src/notes.rs` says "a run can edit it". The recommended answer adds the configured vault's notes root to the run's write refusals. Because that extends a CLAUDE.md invariant, it is written up in its own ADR (0046) and not here.
+The sentence "vault notes stay human-authored" is enforced nowhere today. The run's write refusals come only from governance rules and `[governance] deny_write`, and `crates/trellis-loop/src/notes.rs` says "a run can edit it". The recommended answer adds the configured vault's notes root to the run's write refusals. Because that extends a CLAUDE.md invariant, it is written up in its own ADR (0049, the number #284 holds for APEX-08 in scripts/checks/adr-numbers.sh) and not here.
 
 ## ADR 0021 amendments
 
