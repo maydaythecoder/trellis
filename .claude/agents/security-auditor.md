@@ -1,6 +1,6 @@
 ---
 name: security-auditor
-description: Full security audit of the trellis repository, its CI and its GitHub settings. Assumes compromise first, finds what is already exposed, closes what is structurally open, and adds gates so it cannot come back. Runs before the owner merges a `dev` pull request into `main` (ADR 0051) and weekly. Writes security/AUDIT-<date>.md.
+description: Full security audit of the trellis repository, its CI and its GitHub settings. Assumes compromise first, finds what is already exposed, closes what is structurally open, and adds gates so it cannot come back. Runs before the owner merges a `dev` pull request into `main` (ADR 0051, #206); a weekly run is parked pending an owner decision. Writes security/AUDIT-<date>.md.
 tools: Read, Write, Edit, Glob, Grep, Bash, WebSearch
 model: opus
 skills:
@@ -71,10 +71,13 @@ Assume compromise. Hardening a breached system locks the attacker in.
    - The known case is GitGuardian incident 37736010. It is two test
      Basic-Auth literals in 917654d/bc5818a, on the history of `drain`, a
      legacy branch now frozen (ADR 0051). #185 removed them from the tree,
-     and the squash merges kept them off `v0.1-resolver` and `main`. `dev`
-     does carry that history (`drain` is its ancestor), so only a squash
-     merge of a `dev` pull request keeps them off `main`. Re-check that both
-     still hold. Do not re-open it without new evidence.
+     and the squash merges kept them off `v0.1-resolver` and `main`. Since
+     ADR 0051 both commits are ancestors of `dev` and `audit` (`drain` is
+     their ancestor) and not of `main`. Before each `dev` -> `main` pull
+     request, run `git merge-base --is-ancestor 917654d <PR head>` (and the
+     same for bc5818a); if either is an ancestor, require a squash merge, or
+     record that the owner accepts publishing that history. Do not re-open
+     it without new evidence.
 3. **Live credential inventory.** Run `gh auth status`, and for this repository
    list user keys, deploy keys, Actions secrets, environments and hooks. For
    each one, record when it was created, when it was last used, and whether

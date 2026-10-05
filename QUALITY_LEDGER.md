@@ -2,14 +2,15 @@
 
 **Status: Passes 0–7 complete.** One item is deferred and named below: the `main.rs` split, which waits on a `trellis-cli` mutation baseline that four memory kills have prevented. The
 prerequisite was not met when this began; it is now met except for Tier 6,
-which is running. See *Prerequisite* below.
+which measured 7 of 8 crates and is blocked on `trellis-cli` (SESSION_LOG.md,
+2026-09-21). See *Prerequisite* below.
 
 | | |
 |---|---|
 | Repository root | `C:\Users\mayda\Documents\dev\trellis` |
 | Risk profile | **application** — a CLI binary. The eight crates are internal to one workspace; none is published, so `pub` mostly means "visible to a sibling crate" rather than public API. This matters in Pass 5. |
-| Correctness campaign | `94c285c`, see CORRECTNESS_LEDGER.md — Tiers 0–5 and 7–11 done, Tier 6 running |
-| Mutation score baseline | **running** against `94c285c`; the audit's §9 rule is not yet enforceable |
+| Correctness campaign | `94c285c`, see CORRECTNESS_LEDGER.md — Tiers 0–5 and 7–11 done, Tier 6 measured 7 of 8 crates (`trellis-cli` blocked) |
+| Mutation score baseline | **7 of 8 crates** against `94c285c`; `trellis-cli` blocked by memory kills, so the audit's §9 rule is not yet enforceable for it |
 | Coverage baseline | **82.74% lines** against `94c285c` (`docs/bench/coverage-20260921.md`) |
 
 ## Prerequisite: met except for Tier 6
@@ -42,6 +43,9 @@ replacing bool parameters, and visibility narrowing. Neither can make code
 harder to test — narrowing made the compiler find dead code, which is the
 opposite — so the mutation score is not the instrument that would catch a
 mistake in them. They are done.
+
+*Superseded: Pass 6 ran after all; `29fed50` unified six fixtures into
+`testutil.rs`. The paragraph below is the reasoning as it stood before.*
 
 **Pass 6 (duplication) is held**, and it is the one the rule was written for.
 §3 warns that duplication is cheaper than the wrong abstraction, and an
@@ -172,6 +176,9 @@ That is not hypothetical harm. Git on Windows normalises line endings on
 `add` without it, and `a_missing_scripted_model_fails_before_anything_is_touched`
 asserts an empty `git status --porcelain` over files the test wrote itself.
 It passed, but on the strength of nothing.
+
+*Superseded: `29fed50` did the extraction into `testutil.rs`; the next paragraph
+is the state before it.*
 
 **Both fixed.** The extraction is not done: it could unify five of the seven —
 `main.rs` and `session.rs` share a crate — while `tests/cli.rs` is a separate
