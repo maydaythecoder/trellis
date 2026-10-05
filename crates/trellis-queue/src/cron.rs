@@ -731,4 +731,65 @@ mod tests {
         assert_eq!(Tz::parse("+02:00").unwrap(), Tz::Fixed(2 * 3600));
         assert_eq!(Tz::parse("utc").unwrap(), Tz::Utc);
     }
+
+    #[test]
+    fn quartz_l_and_w_are_refused_as_unsupported_not_as_a_bad_value() {
+        // A bad-value error tells a person to fix a typo; `L` and `W` are
+        // forms cron variants do support, and the error has to say this one
+        // does not. A message that only quotes the token passes either way.
+        for (bad, what) in [
+            ("0 0 L * *", 'L'),
+            ("0 0 15W * *", 'W'),
+            ("0 0 * * 5L", 'L'),
+        ] {
+            assert!(
+                matches!(Cron::parse(bad), Err(CronError::Unsupported { what: w, .. }) if w == what),
+                "{bad}: {:?}",
+                Cron::parse(bad)
+            );
+        }
+        assert_eq!(Cron::parse(" 0 9 * * * ").unwrap().as_str(), "0 9 * * *");
+    }
+
+    #[test]
+    fn a_negative_offset_starts_the_search_at_the_local_wall_clock() {
+        // 12:00Z is 07:00 at -05:00, so 09:00 local is two hours away. A
+        // wall clock read as 17:00 skips it to tomorrow.
+        assert_eq!(
+            next("0 9 * * *", "2026-09-27T12:00:00Z", "-05:00"),
+            "2026-09-27T14:00:00Z"
+        );
+    }
+
+    #[test]
+    fn the_search_horizon_counts_from_the_minute_after_t() {
+        // Sunday 29 February comes every 28 years (2004, 2032), so from just
+        // after midnight 2927 days before 2032-02-29 it is the last day the
+        // search looks at. A search that starts a minute early begins on the
+        // previous day and ends a day short of it.
+        let fire = parse_iso("2032-02-29T00:00:00Z").unwrap();
+        let t = fire - 2927 * 86_400 + 30;
+        let c = Cron::parse("0 0 29 2 */7").unwrap();
+        assert_eq!(c.next_after(t, &Tz::Utc), Some(fire));
+    }
+
+    #[test]
+    fn utc_is_spelt_four_ways_and_an_offset_is_bounded_at_fourteen_hours_and_59_minutes() {
+        for utc in ["UTC", "Z", "+00:00", "-00:00"] {
+            assert_eq!(Tz::parse(utc).unwrap(), Tz::Utc, "{utc}");
+        }
+        assert_eq!(Tz::parse("+14:00").unwrap(), Tz::Fixed(14 * 3600));
+        assert_eq!(Tz::parse("+05:59").unwrap(), Tz::Fixed(5 * 3600 + 59 * 60));
+        for bad in ["+15:00", "+05:60"] {
+            assert!(Tz::parse(bad).is_err(), "`{bad}` was accepted");
+        }
+        // A zero offset made by hand reads as positive, as `parse` spells it.
+        assert_eq!(Tz::Fixed(0).to_string(), "+00:00");
+    }
+
+    #[test]
+    fn the_zone_database_is_named_for_doctor() {
+        // Bundled data is as old as the build; `doctor` says which it is.
+        assert!(tz_source().contains("TimeZoneDatabase"), "{}", tz_source());
+    }
 }
