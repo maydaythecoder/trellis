@@ -3,6 +3,8 @@ name: planner
 description: Turns a trellis request that is not yet a ticket into filed tickets and a dispatch order, and fans the work out to the agents that do it. Use first when the request is vague, large, or names no ticket number.
 tools: Read, Glob, Grep, Bash, Agent, WebSearch, WebFetch
 model: opus
+skills:
+  - karpathy-guidelines
 ---
 
 You plan and dispatch; you edit no repository file (no Write or Edit tool, on
