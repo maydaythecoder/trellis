@@ -40,7 +40,11 @@ impl Child {
         })
     }
 
-    fn spawn_with(trellis: &Path, repo: &Path, adjust: impl FnOnce(&mut Command)) -> io::Result<Self> {
+    fn spawn_with(
+        trellis: &Path,
+        repo: &Path,
+        adjust: impl FnOnce(&mut Command),
+    ) -> io::Result<Self> {
         let mut c = Command::new(trellis);
         c.arg("--root")
             .arg(repo)
@@ -51,8 +55,14 @@ impl Child {
             .stderr(Stdio::piped());
         adjust(&mut c);
         let mut process = c.spawn()?;
-        let stdin = process.stdin.take().ok_or_else(|| io::Error::other("no stdin"))?;
-        let stdout = process.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
+        let stdin = process
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("no stdin"))?;
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("no stdout"))?;
         Ok(Self {
             process,
             stdin,
@@ -91,7 +101,9 @@ impl Child {
                 return Ok(v);
             }
         }
-        Err(io::Error::other(format!("trellis rpc ended before answering {id}")))
+        Err(io::Error::other(format!(
+            "trellis rpc ended before answering {id}"
+        )))
     }
 
     /// Asks the child to quit and waits for it. Never a kill (section 9).
@@ -109,7 +121,11 @@ mod tests {
     /// The trellis this test drives: the root workspace's debug build, which
     /// the Verify builds first.
     fn trellis() -> std::path::PathBuf {
-        let name = if cfg!(windows) { "trellis.exe" } else { "trellis" };
+        let name = if cfg!(windows) {
+            "trellis.exe"
+        } else {
+            "trellis"
+        };
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
@@ -135,7 +151,11 @@ mod tests {
         // as the answer; or the child is left running, or writes into the
         // directory it was pointed at.
         let bin = trellis();
-        assert!(bin.is_file(), "build trellis first: cargo build -p trellis-cli ({})", bin.display());
+        assert!(
+            bin.is_file(),
+            "build trellis first: cargo build -p trellis-cli ({})",
+            bin.display()
+        );
         let repo = scratch("repo");
         let config = scratch("config");
         let mut child = Child::spawn_for_test(&bin, &repo, &config).unwrap();
@@ -150,7 +170,10 @@ mod tests {
         let status = child.shutdown().unwrap();
         assert!(status.code().is_some(), "the process exited");
         assert!(is_empty(&repo), "nothing was written to the repository");
-        assert!(is_empty(&config), "nothing was written to the configuration");
+        assert!(
+            is_empty(&config),
+            "nothing was written to the configuration"
+        );
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&config);
     }
