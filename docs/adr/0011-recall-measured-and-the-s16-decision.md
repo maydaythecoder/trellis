@@ -1,7 +1,8 @@
 # ADR 0011 — Measured recall, and the S16 decision it forces
 
 **Status: Proposed.** The evidence is settled; the decision is not, and it is
-not the implementer's to make. See "Decision" below.
+not the implementer's to make. See "Decision" below. Decision taken in
+ADR 0012 (option C; outcome: 72.0% on a fresh sample).
 
 **Date:** 2026-09-19
 

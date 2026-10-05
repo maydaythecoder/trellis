@@ -558,7 +558,8 @@ without a budget against the same replies and compares outcomes.
   they exist. An explicit value always wins over the default, larger or
   smaller. A local
   spec is unchanged: unset still means nothing is elided and its prompt is
-  byte for byte what it was. Config parsing is unchanged; `[model]
+  byte for byte what it was (superseded for local specs by #228 above:
+  `LOCAL_CONTEXT_BYTES` = 14,336). Config parsing is unchanged; `[model]
   context_bytes` still reads as unset when it is absent. The overflow retry
   above still applies, now shrinking from 400,000 bytes or less. Held by
   `hosted_context_default_elides_an_unconfigured_run_below_400000_bytes` and
@@ -737,4 +738,5 @@ pull request.
 - Model overrides beyond `[model] context_bytes`, `thinking` and
   `[[providers]] input_bytes` (row 2.6): cache lifetimes and cost tables
   are not read. Per-model input limits are read since #162 (§5).
-- Stripping the key from child processes' environments (§3).
+- *Built since (wave K):* stripping the key from child processes'
+  environments; see §3, "Closed".
