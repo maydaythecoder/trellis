@@ -139,14 +139,14 @@ override any row.
 | 3.1 context files AGENTS.md / CLAUDE.md | W-D |
 | 3.2–3.3 SYSTEM.md / APPEND_SYSTEM.md, flags | W-D (`.trellis/system.md`, `.trellis/append_system.md`; the grounding clause cannot be removed) |
 | 3.4 sectioned prompt | built (the adapter's fenced sections) |
-| 4 extensions: `tool_call`, `tool_result`, `before_agent_start`, `agent_end`, `turn_end`, `input`, `registerTool`, `registerCommand`, `exec`, `get/setActiveTools` | **W-B as executable hooks behind a trust store** (language-agnostic, JSON on stdin/stdout), plus custom command tools |
+| 4 extensions: `tool_call`, `tool_result`, `before_agent_start`, `agent_end`, `turn_end`, `input`, `registerTool`, `registerCommand`, `exec`, `get/setActiveTools` | **W-B as executable hooks behind a trust store** (language-agnostic, JSON on stdin/stdout), plus custom command tools. **Amended 2026-10-04 (4.20 mode behaviour, unchanged in pi 1.0.2):** pi's extensions load in every mode, and `ctx.mode` (since 0.78.1) and `ctx.hasUI` let one guard terminal-only behaviour. Hooks here load for any run that has them, whichever of `trellis run`, `session`, `tui` or `rpc` started it (`tooling::prepare`), and a hook draws no UI, so its payload carries no mode and `ctx.mode` has no counterpart; an approval reaches the person through the gate, over rpc as `approve` (ADR 0025 §5). The disposition stays W-B. |
 | 4 remaining events (message rendering, provider headers, UI widgets, shortcuts, renderers, themes) | excluded: cosmetic or TypeScript-runtime specific; `before_provider_request` is excluded because a hook could exfiltrate the key |
 | 5.1–5.2 skills format, progressive disclosure | built (ADR 0019) |
 | 5.3 `/skill:name` force-load | W-D (`run --skill <name>` and session `/skill`) |
 | 5.4 extra skill locations | W-D (`~/.agents/skills` read-only, after trust) |
 | 6 prompt-template arguments | W-D |
 | 7 slash commands | built in part (`session`); `/new`, `/name` and `/copy` → W-D; `/login`, `/logout`, `/share` and `/bug` excluded (ADR 0010, networked). **Amended 2026-09-29 (#160):** W-D did not build `/name` or `/copy`; both are landing in `trellis session` (#109), not yet merged. **Amended 2026-10-05 (#416):** `/name` and `/copy` built in `trellis session` (#109; ADR 0025 "Not built", `session.rs`). **Amended 2026-10-04 (#316):** /name and /copy built (#109); this row no longer reads as landing. |
-| 8.1–8.4 session tree, branching, fork | deferred: the trail is the record, and each run is a fresh loop. A branchable session is v2 memory work (v0.3 closed without it) |
+| 8.1–8.4 session tree, branching, fork | deferred: the trail is the record, and each run is a fresh loop. A branchable session is v2 memory work (v0.3 closed without it). **Amended 2026-10-04 (8.4 session flags, unchanged in pi 1.0.2):** pi's `-n`/`--name` (since 0.78.0) sets a session's display name at startup; the pi 0.87.1 inventory did not list it. trellis has no such flag, and one would grow the CLI surface brief 4.12 fixes, so it stays deferred with this row. The nearest trellis behaviour is `/name` in `trellis session`, which records a label in the trail of each run started after it (#109). |
 | 8.5–8.7 compaction | W-C |
 | 8.8 export and share | export → W-D (`trellis log --json`); share excluded (networked). **Amended 2026-09-29 (#143):** HTML export excluded. `trellis log --json` is the export, and an HTML view can be rendered from it outside trellis; a renderer inside trellis would have to escape untrusted trail text (ADR 0007) for a browser, a new injection surface for nothing the JSON lacks. |
 | 9.1 print mode | built (`trellis run`) |
@@ -161,6 +161,14 @@ override any row.
 | 13.4 guard examples | built in effect: `permission-gate` = ADR 0018, `protected-paths` = `deny_write`, `dirty-repo-guard` = ADR 0009, `git-checkpoint` = snapshot and rollback. **Amended 2026-09-29 (#141):** `plan-mode` = an agent profile whose `tools` list is read-only (for example `read_file`, `grep`, `find`, `ls`; ADR 0026 §4), built in effect |
 | 14 telemetry / durability | built (`tracing`, trail, queue) |
 | 15 experimental (chord, pi-protocol, pi-server) | excluded: networked/multi-attach (brief Part 1) |
+
+### pi 1.0.2 re-inventory (2026-10-04)
+
+Rows for items that `docs/inventory/inventory-pi.md` (pi 1.0.2) tags NEW. Dispositions in this section are Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation, and the owner can override any row (Context).
+
+| Items | Disposition |
+|---|---|
+| 16.1-16.7 MCP client | excluded (#73, answered 2026-09-28: "Keep all excluded"; recorded by #323). Accepted (owner-directed): #73's answer holds for pi 1.0.2's client, the session's choice under the owner's 2026-10-04 delegation. pi 0.99.0 made an MCP client part of pi: stdio and streamable HTTP servers from `~/.pi/agent/mcp.json` and, after project trust, `.pi/mcp.json`; OAuth; resources; `/mcp` and `pi mcp`; exposure through codemode by default; and the standalone pi-mcp package. The reasons for keeping MCP out are about trellis's trust model and do not change because pi ships a client: a long-lived connection, remote tool schemas the model sees unreviewed, and credentials per server. 16.2 (OAuth and its credential file, `mcp-auth.json`) is excluded under ADR 0010 and #64, and 16.1's streamable HTTP servers are a networked component (brief Part 1). The supported way to reach one stdio MCP server is a `[[tools.custom]]` command (ADR 0023) declared under `.trellis/`: trusted by digest, gated by `[control]`, run in the throwaway clone with keys scrubbed (ADR 0032), returning text (crates/trellis-loop/src/registry.rs:176-191). The owner reopening #73 reverses this: stdio servers only, or streamable HTTP as well, needs a v2.0 brief line and an ADR amending Paperclip 72–75 and ADR 0023, and amends this row in place. |
 
 ## Apex (`inventory-apex.md`)
 
