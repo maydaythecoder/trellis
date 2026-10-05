@@ -118,7 +118,8 @@ against the ~1,400 lines/ms measured for Pass 1 alone — so resolution roughly
 doubles the cost of parsing, and neither is close to being the constraint at
 this size (S9). Peak working set: **37.9 MB**.
 
-`.trellis/index.bin` (postcard): **589.7 KiB** for 81,700 lines of Python,
+`.trellis/index.bin` (postcard): **589.7 KiB** (recorded in 05a2b35; `01-v0.1-measure.md` §4's
+599.5 KiB was recorded later, in 26d31a3) for 81,700 lines of Python,
 roughly 7 bytes per line. That size is the reason A-24 gitignores it rather
 than committing a blob that changes on nearly every edit. A `trellis radius`
 query against a warm cache returns in **48 ms** total process time, against
@@ -368,14 +369,11 @@ and a rate low enough to go unobserved at 400 sites still leaves dozens across
 edge to the wrong `foo` in a different module satisfies it, and only the audit
 catches that. The two are complementary and neither substitutes for the other.
 
-### Incremental update latency — not implemented
+### Incremental update latency
 
-The brief (4.3) specifies `Tree::edit` plus reparse of only the changed file,
-then re-resolving the invalidated edges. **That is not built.** The honest
-current figure for "latency on single-file save" is therefore the full rebuild
-cost: **~120 ms** on poetry, since nothing smaller exists. Recorded as a
-measurement of the current state rather than left blank, and it is a real cost
-because the agent loop edits files mid-run — this sits in the inner loop.
+See `01-v0.1-measure.md` §4: incremental parse is built (single-file save,
+p50 **39.7 ms**, 30 edits on poetry), and re-resolution is deliberately not
+incremental.
 
 ### Also measured in v0.1
 
@@ -385,7 +383,7 @@ because the agent loop edits files mid-run — this sits in the inner loop.
 | Full index build time | Baseline for S9. |
 | Incremental update latency on single-file save | The loop edits files mid-run; this is in the inner loop. |
 | Peak RSS | S9: no published numbers exist for any Python tool at 1M lines. |
-| `.trellis/index.bin` size, postcard | Derived state committed to the repo; size is a real cost to the user. |
+| `.trellis/index.bin` size, postcard | Derived state, gitignored (A-24); size is the cost of the on-disk cache. |
 
 ### Baseline already measured (Pass 1 only)
 
@@ -530,7 +528,7 @@ before committing to Pyright, and record the result in an ADR.
 
 ## 5. Model floor spike (S7)
 
-**Measured, one configuration, 2026-09-20.** The design below is unchanged;
+**Measured, three configurations, 2026-09-20 to 2026-09-30 (§5.2).** The design below is unchanged;
 what follows it is what was actually run, what it establishes, and what it
 does not.
 
@@ -638,7 +636,7 @@ verdict.
 **It does not locate the floor.** One configuration measured below it gives a
 lower bound: the floor is somewhere above Qwen2.5-0.5B-Instruct Q4_K_M. A floor
 is an interval, and finding it needs a configuration that passes. The second
-(Qwen2.5-Coder-3B Q4_K_M) was still downloading when this was written.
+(Qwen2.5-Coder-3B Q4_K_M) is reported in §5.6.
 
 Three findings do not depend on the remaining configurations.
 
@@ -755,7 +753,7 @@ kept.
 |---|---|---|
 | 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
 | 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 (ADR 0028) |
-| Floor as a configuration | One configuration, below the floor | The second was still downloading. Reported as a lower bound, not a floor |
+| Floor as a configuration | Three configurations (§5.2), all below the floor | Reported as a lower bound, not a floor |
 | Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; the three runs in §5.2 are re-scored below. #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
 | Metric 5, run-to-run variance | **Waived for temperature-0 configurations only** (ADR 0028) | Nothing varies at temperature 0. A configuration sampled above 0 still needs the five repetitions per task designed above |
 | Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. Neither measured configuration repaired a task |
