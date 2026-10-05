@@ -26,7 +26,8 @@ Release build, Windows 11, 16 logical cores, warm page cache, 2026-09-18.
 This is consistent with the ~90 lines/ms figure commonly cited for tree-sitter.
 
 **Parsing is not a cost driver.** Resolution, model inference, and check
-execution are. Resolution is still unmeasured. Inference and check execution
+execution are. Resolution was measured at ~88 ms of a ~120 ms build on poetry
+2.5.0 (01 §4). Inference and check execution
 were measured on poetry on 2026-10-02 at `a6463af`, qwen3:8b on Ollama, in
 [`bench/cost-by-radius.md`](bench/cost-by-radius.md): eight runs at four radius
 sizes (9 to 193 resolved callers), 69-145 s each, every one stopped on the
@@ -40,7 +41,7 @@ change is still not measured.
 ## 2. Cost drivers, in order
 
 1. **Check execution.** A test suite run dominates everything else on a real
-   repo. poetry's suite is 54 test files; a full run is seconds to minutes, and
+   repo. poetry's suite is 129 test files (pinned 2.5.0 sdist, BENCHMARK_AND_EVAL.md §1); a full run is seconds to minutes, and
    the loop may run it many times.
 2. **Model inference.** Tokens on a metered API, wall-clock on local weights.
 3. **Resolution.** Once per run, plus incremental updates per edit.
