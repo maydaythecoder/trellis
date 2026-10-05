@@ -115,8 +115,6 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         timeout: LISTING_TIMEOUT,
         cap,
         head: false,
-        // A list past the cap is refused below, whole; its tail is never
-        // shown, so it is not stored.
         whole: true,
     })
     .await;
@@ -130,9 +128,8 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         }
         Ok(c) => c,
     };
-    // The capture keeps the tail, so past the cap it holds an arbitrary
-    // subset of the list whose first path is cut mid-name. Nothing from it
-    // is shown: a partial list read as the repository is worse than none.
+    // Past the cap the capture kept nothing (`whole`) but still counted the
+    // total, so the list is refused and the size reported.
     if c.stdout.total > cap {
         return ToolResult::Error(format!(
             "find: git lists {} bytes of paths for `{glob}`, more than the {cap} this \
