@@ -22,14 +22,14 @@ failures on one gate, or a ticket that needs a person (G7), and reports.
 
 | Part | Where | Does | Cannot |
 |---|---|---|---|
-| orchestrator | `.claude/agents/orchestrator.md` | picks tickets, dispatches, runs gates, merges into `drain` | write or edit files; push to `v0.1-resolver` |
+| orchestrator | `.claude/agents/orchestrator.md` | picks tickets, dispatches, runs gates, merges into `audit` | write or edit files; push to `main` |
 | architect | `.claude/agents/architect.md` | ADRs, `## Done when` / `## Verify` on tickets | write application code |
 | implementer | `.claude/agents/implementer.md` | one ticket, on its branch, with tests | decide architecture; add deps, `#[allow]`, `unsafe` without an ADR |
 | verifier | `.claude/agents/verifier.md` | runs gates, reports output verbatim | edit anything; give an opinion |
 | security | `.claude/agents/security.md` | read-only review of trust-boundary changes | edit anything |
 | ops | `.claude/agents/ops.md` | CI, `deny.toml`, `scripts/gates`, `scripts/tickets` | touch crate code |
 | unparker | `.claude/agents/unparker.md` | ranks parked / needs-human tickets by what an answer unblocks, drafts one question each for the owner, applies the answers until a ticket needs nobody | decide for the owner; ask directly (the coordinator asks) |
-| queue-runner | `.claude/agents/queue-runner.md` | works the agent-executable queue one ticket at a time: implement, gate, merge into `drain`, close | touch parked work; push to `v0.1-resolver` |
+| queue-runner | `.claude/agents/queue-runner.md` | works the agent-executable queue one ticket at a time: implement, gate, merge into `audit`, close | touch parked work; push to `v0.1-resolver` |
 | queue | GitHub issues + Trellis roadmap project (#2) | the tickets, labelled per the ticketing standard | |
 | gates | `scripts/gates/` | exit 0 or say why not | be skipped |
 
@@ -43,8 +43,8 @@ failure, printing `GATE / COMMAND / EXIT / LOG / OUTPUT`. `--only <id>` runs one
 `$GATE_LOG_DIR` (default `${TMPDIR:-/tmp}/trellis-gates/<HEAD sha>/<gate>.log`,
 and never inside the repository). A G2 failure also prints every
 `---- <test> stdout ----` block and `panicked at` line from the full log (#178).
-"This change" means `$GATE_BASE...HEAD`: `origin/drain` on a ticket branch
-(`t<n>-*`), `origin/v0.1-resolver` otherwise (`drain`'s own PR diff).
+"This change" means `$GATE_BASE...HEAD`: `origin/dev` on a ticket, feature or
+`audit` branch, `origin/main` otherwise (`dev`'s own PR diff); ADR 0051.
 
 | Gate | Script | Proves |
 |---|---|---|
@@ -108,7 +108,7 @@ Two layers (#206):
 - **The `security-auditor` agent** (`.claude/agents/security-auditor.md`)
   runs the full audit: history, live credentials, GitHub settings, Actions,
   code and supply chain. It writes `security/AUDIT-<date>.md`. It runs before
-  every squash-merge of `drain` into `v0.1-resolver`.
+  every merge of `dev` into `main`.
 
 The workflows pass `zizmor` at medium and above since #215: every action is
 pinned to a commit SHA resolved from its tag through the GitHub API (the tag
@@ -125,17 +125,28 @@ SHA by hand.
 1. `scripts/tickets/next.sh` → the next ready ticket (`--why` explains every
    exclusion).
 2. G0. Failing → architect makes it workable → G0 again.
-3. Branch `t<n>-<slug>` off `drain`; dispatch per the routing table.
+3. Branch `t<n>-<slug>` off `dev`; dispatch per the routing table.
 4. `run-all.sh <n>`. A failure becomes a fix ticket quoting the output; three
    failures on one gate stops the run.
-5. Green (and G7 approved) → `git merge --no-ff` into `drain`, push, close the
+5. Green (and G7 approved) → `git merge --no-ff` into `audit`, push, close the
    issue with the gate summary.
 
-`v0.1-resolver` moves only when the owner merges a pull request on GitHub.
-Agent work collects on the integration branch `drain`, which has an open
-draft PR into `v0.1-resolver`. The pre-push hook (`scripts/hooks/pre-push`,
+## Branches (ADR 0051)
+
+| Branch | Role | Moved by |
+| --- | --- | --- |
+| `main` | launch: finished and ready to ship; the default branch; tagged per release | the owner, merging `dev`'s pull request on GitHub |
+| `dev` | development trunk; what every ticket and feature branch is cut from | promotion from `audit` once its gates pass |
+| `audit` | integration: ticket and feature branches meet here, conflicts are resolved, gates and the security audit run | `git merge --no-ff` of a green ticket or feature branch |
+| `t<n>-<slug>`, `feature/<slug>` | one ticket, or a feature spanning several | their author; deleted after merging |
+
+The legacy branches `v0.1-resolver` (the old default, frozen), `drain` (the
+old integration branch, frozen at the commit `dev` and `audit` started from),
+`inherit`, `agents-setup` and `orchestrator-state` are kept, not deleted.
+
+The pre-push hook (`scripts/hooks/pre-push`,
 installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
-shows it firing) refuses every push to `v0.1-resolver` from a clone that has
+shows it firing) refuses every push to `main` and `v0.1-resolver` from a clone that has
 installed it (GitHub branch protection needs Pro on a private repository;
 ADR 0036 records the gap and the ruleset to apply later).
 

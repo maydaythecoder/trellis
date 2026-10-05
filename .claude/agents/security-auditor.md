@@ -104,7 +104,7 @@ under Unverified; that is not a failure you can fix.
     `.github/workflows/` and show that each one is GitHub-owned or verified.
     A selected-actions setting that blocks `dtolnay/*` or `Swatinem/*`
     breaks every CI run.
-- **Branch protection:** v0.1-resolver's protection is the local pre-push
+- **Branch protection:** `main` and `v0.1-resolver` are protected by the local pre-push
   hook (ADR 0036). Check that `.git/hooks/pre-push` still refuses a push to
   it.
 - **Self-hosted runners:** `trellis-win` and `trellis-wsl` exist. On a private
