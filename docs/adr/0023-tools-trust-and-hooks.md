@@ -171,6 +171,14 @@ is a guard at a size a test can build).
 throwaway clone of the repository as its working directory (ADR 0032; its
 edits to tracked files are carried back), a timeout (`[tools] bash_timeout_s`, default
 120), and `TRELLIS_RUN_ID` and `TRELLIS_MODEL` added to the environment.
+*Amended 2026-10-05 (#317):* and `AI_AGENT=trellis`, the generic marker a
+tool outside trellis reads to tell that an agent launched it; custom tools
+and hooks get all three. Grounded checks do not get `AI_AGENT` from trellis:
+a test suite that read it would behave differently under trellis than under
+a person, and the Verdict would describe a run no person can reproduce (one
+the person's own shell sets is passed through as before). It is not one of
+work.rs's run markers (`RUN_MARKERS`), because other agents set it in a
+person's own shell.
 The shell is `[tools] shell` (an argv prefix, the command appended as the
 last argument) or the platform default: `sh -c` on Unix; on Windows, Git's
 `bash.exe` under `%ProgramFiles%\Git\bin` or an `sh.exe` on `PATH`, and
