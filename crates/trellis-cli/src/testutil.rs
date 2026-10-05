@@ -123,3 +123,55 @@ pub(crate) fn trust(dir: &Path) {
         .trust(dir, &crate::tooling::fingerprint(dir, &cfg))
         .unwrap();
 }
+
+/// A driver whose every figure differs from the trait's default, so a
+/// wrapper that answered the default instead of forwarding is seen (#248).
+/// It is never driven.
+pub(crate) struct Figures {
+    compactions: Vec<trellis_loop::Compacted>,
+    requested: Vec<trellis_loop::RequestedCompaction>,
+}
+
+/// [`Figures`]: 7 tokens, 4,321 prompt bytes, one compaction eliding 50 B
+/// and one requested compaction eliding 60 B.
+pub(crate) fn figures() -> Figures {
+    Figures {
+        compactions: vec![trellis_loop::Compacted {
+            turn: 2,
+            elided_turns: 1,
+            elided_bytes: 50,
+            request_bytes: 400,
+            budget: 500,
+            fits: true,
+        }],
+        requested: vec![trellis_loop::RequestedCompaction {
+            turn: 3,
+            turns_folded: 1,
+            elided_turns: 2,
+            elided_bytes: 60,
+            bytes_before: 900,
+            bytes_after: 840,
+        }],
+    }
+}
+
+impl trellis_loop::Model for Figures {
+    async fn next_step(
+        &mut self,
+        _: &trellis_loop::Transcript,
+    ) -> Result<trellis_loop::Step, String> {
+        Err("not driven".into())
+    }
+    fn tokens_used(&self) -> u64 {
+        7
+    }
+    fn prompt_bytes(&self) -> Option<usize> {
+        Some(4321)
+    }
+    fn compactions(&self) -> &[trellis_loop::Compacted] {
+        &self.compactions
+    }
+    fn requested_compactions(&self) -> &[trellis_loop::RequestedCompaction] {
+        &self.requested
+    }
+}
