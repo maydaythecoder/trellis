@@ -64,6 +64,11 @@ const COMMANDS: &[(&str, &str)] = &[
          answers with what was folded",
     ),
     (
+        "get_codebase",
+        "the module graph `trellis index --graph` draws, as data, read-only: {limit?} \
+         (default 40)",
+    ),
+    (
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
@@ -530,6 +535,34 @@ impl Server {
         }));
     }
 
+    /// `get_codebase`: the module graph as data, built in memory as the
+    /// interface's `/codebase` builds it; nothing is written.
+    ///
+    /// Answered from another thread, as `compact` is: indexing a large
+    /// repository takes seconds, and on this thread it would hold up the
+    /// `approve` or `abort` a waiting run needs.
+    fn get_codebase(&mut self, cmd: &Value, id: Option<&str>) {
+        let limit = match cmd.get("limit") {
+            None => 40,
+            Some(v) => match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+                Some(n) => n,
+                None => {
+                    self.respond(
+                        id,
+                        "get_codebase",
+                        Err(format!("`limit` is a count of modules, not {v}")),
+                    );
+                    return;
+                }
+            },
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let data = crate::doctor_cmd::codebase_json(&root, limit);
+            respond_on(&sink, id.as_deref(), "get_codebase", Ok(data));
+        }));
+    }
+
     /// `steer` and `follow_up`: refused with no run in flight; otherwise
     /// sent on the run's steering channel, never the approval channel.
     ///
@@ -713,6 +746,7 @@ impl Server {
                 return false;
             }
             "compact" => self.compact(id),
+            "get_codebase" => self.get_codebase(cmd, id),
             other => self.respond(
                 id,
                 if other.is_empty() { "unknown" } else { other },
