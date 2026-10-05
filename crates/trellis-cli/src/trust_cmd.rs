@@ -28,7 +28,7 @@ pub(crate) fn run_with(
             out,
             "{} ({})",
             if had {
-                "trust revoked: hooks, custom tools and bash will not load"
+                "trust revoked: hooks, custom tools, bash, process agents and services will not load"
             } else {
                 "nothing to revoke: this repository was not trusted"
             },
@@ -81,7 +81,8 @@ pub(crate) fn run_with(
         out,
         "trusted. Any change to the above makes this repository untrusted again."
     )?;
-    // Every item here is a hook, a custom tool, bash or a process agent.
+    // Every item here is a hook, a custom tool, bash, a process agent or a
+    // service.
     // Each runs in a throwaway clone (ADR 0032), but with the user's
     // authority and no OS sandbox: one that reaches the repository by
     // absolute path is still a writer trellis does not control, and

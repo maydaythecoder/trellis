@@ -381,8 +381,6 @@ fn run_for_tui(
     report_outcome(tx, outcome);
 }
 
-/// `model_from_user`: the spec came from `--model`, not `[model] spec`
-/// (ADR 0024 §3).
 /// The paths `@` completion may offer: what git lists as tracked, plus
 /// untracked files that no ignore rule covers.
 ///
@@ -423,12 +421,23 @@ fn at_file_paths(root: &Path) -> Result<Vec<String>> {
     Ok(paths)
 }
 
+/// `model_from_user`: the spec came from `--model`, not `[model] spec`
+/// (ADR 0024 §3).
 pub(crate) fn run(
     root: &Path,
     task: Option<String>,
     model_spec: Option<String>,
     model_from_user: bool,
 ) -> Result<()> {
+    // A spec that does not parse is refused here, before the terminal is
+    // touched, rather than standing in as a scripted model: the status bar
+    // would say "scripted" and the classifier would ask a script, about a
+    // run that then fails in `cmd_run`.
+    let given = match model_spec {
+        Some(s) => Some((s.parse::<trellis_model::ModelSpec>()?, s)),
+        None => None,
+    };
+
     // Refused rather than attempted when there is no terminal to drive.
     // `EventStream` waits on console input, which never arrives from a pipe,
     // so the interface would paint one frame and hang — and a hang that has
@@ -445,15 +454,18 @@ pub(crate) fn run(
     // No model: offer what is running locally rather than refuse (ADR 0050
     // §2). Reached only with a terminal on both ends; a pipe was refused
     // above, so nothing here can wait on input that never comes.
-    let spec = match model_spec {
-        Some(spec) => spec,
+    // Parsed once. `classify` needs the runtime's address and weight, and
+    // re-parsing per turn would be a second place that decides what a spec
+    // means.
+    let (spec_for_ask, spec) = match given {
+        Some(given) => given,
         None => {
             // The callers read the config with `.ok()`, so a file that does
             // not parse arrives here as "no model". Its own error says what
             // is wrong; a picker over it would hide that.
             crate::config::RepoConfig::load(root)?;
             match crate::first_run::offer()? {
-                Some(spec) => spec,
+                Some(spec) => (spec.parse::<trellis_model::ModelSpec>()?, spec),
                 None => return Ok(()),
             }
         }
@@ -513,12 +525,6 @@ pub(crate) fn run(
         // subscriber install and the worker thread so the interface does
         // not have to know a run is a thread at all.
         let root = root.to_path_buf();
-        // Parsed once. `classify` needs the runtime's address and weight,
-        // and re-parsing per turn would be a second place that decides what
-        // a spec means.
-        let spec_for_ask: trellis_model::ModelSpec = spec
-            .parse()
-            .unwrap_or(trellis_model::ModelSpec::Scripted(std::path::PathBuf::new()));
         // Ask the runtime what it actually does with a schema, and label the
         // status bar with the answer.
         //
@@ -707,6 +713,17 @@ pub(crate) fn run(
 mod tests {
     use super::*;
     use tui_demo::tui::app::AppState;
+
+    #[test]
+    fn a_model_spec_that_does_not_parse_is_refused_before_the_terminal() {
+        // The risk: a bad `--model` became an empty scripted spec, so the
+        // status bar said "scripted" and the classifier asked a script
+        // before the run failed. Refused first, so this holds whether or not
+        // the test has a terminal.
+        let d = crate::testutil::scratch("tui-bad-spec");
+        let e = run(&d, None, Some("nonsense".into()), true).expect_err("refused");
+        assert!(format!("{e}").contains("is not a model spec"), "{e}");
+    }
 
     #[test]
     fn at_file_paths_lists_tracked_and_untracked_but_never_ignored() {
