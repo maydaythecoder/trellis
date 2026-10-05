@@ -31,6 +31,8 @@ pub enum ScanError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{}: not a directory or a `.rs` file", path.display())]
+    NotRust { path: PathBuf },
 }
 
 /// One marker found: a proposed `origin:code` ticket.
@@ -117,8 +119,8 @@ pub(crate) fn markers_from(script: &str) -> Result<Vec<String>, ScanError> {
     Ok(out)
 }
 
-/// G4's `(^|/)(tests|examples|benches|fixtures)/|_test\.rs$`, over a path
-/// relative to the scanned root.
+/// G4's `(^|/)(tests|examples|benches|fixtures)/|_test\.rs$`, over a
+/// `/`-separated path.
 fn excluded(rel: &str) -> bool {
     let mut parts: Vec<&str> = rel.split('/').collect();
     let file = parts.pop().unwrap_or("");
@@ -203,10 +205,21 @@ pub fn scan(root: &Path) -> Result<Vec<Proposal>, ScanError> {
             |n| n.to_string_lossy().into_owned(),
         );
         files.push((name, root.to_path_buf()));
+    } else {
+        return Err(ScanError::NotRust {
+            path: root.to_path_buf(),
+        });
     }
     let mut out = Vec::new();
     for (rel, path) in files {
-        if excluded(&rel) {
+        // The whole path as given, not `rel`: a root that is itself under
+        // `tests/` (or is one file in it) is excluded as G4 would exclude it.
+        let given = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        if excluded(&given) {
             continue;
         }
         let bytes = std::fs::read(&path).map_err(|source| ScanError::Io {
@@ -241,5 +254,42 @@ mod tests {
         assert!(excluded("src/parse_test.rs"));
         assert!(!excluded("src/testsuite.rs"));
         assert!(!excluded("src/tests.rs"));
+    }
+
+    fn tree(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "trellis-tickets-scan-unit-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for rel in ["crates/a/tests/it.rs", "crates/a/src/lib.rs"] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "// FIXME later\n").unwrap();
+        }
+        std::fs::write(root.join("notes.txt"), "// FIXME later\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn scan_excludes_a_root_that_is_a_tests_directory_or_a_file_in_one() {
+        // Relative to the root, `tests/it.rs` is just `it.rs`; G4 would
+        // still skip it, so scan must not propose it.
+        let root = tree("rooted");
+        assert!(scan(&root.join("crates/a/tests")).unwrap().is_empty());
+        assert!(scan(&root.join("crates/a/tests/it.rs")).unwrap().is_empty());
+        // The same marker in production source is still found.
+        assert_eq!(scan(&root.join("crates/a/src/lib.rs")).unwrap().len(), 1);
+        assert_eq!(scan(&root.join("crates/a")).unwrap().len(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scan_refuses_a_root_that_is_a_file_but_not_rust() {
+        // `0 proposal(s)` for `scan notes.txt` would read as a clean scan.
+        let root = tree("notrust");
+        let got = scan(&root.join("notes.txt"));
+        assert!(matches!(got, Err(ScanError::NotRust { .. })), "{got:?}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
