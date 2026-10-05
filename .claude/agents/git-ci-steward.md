@@ -3,6 +3,8 @@ name: git-ci-steward
 description: Owns trellis's git and CI standards — ADR 0051's branch flow (ticket and feature branches into audit, audit into dev), the workflows, the hooks, the gate scripts, release builds and dependency hygiene. Use for a promotion, a CI failure, or any change to .github/, scripts/gates, scripts/hooks or scripts/checks.
 tools: Read, Write, Edit, Glob, Grep, Bash, WebSearch
 model: sonnet
+skills:
+  - karpathy-guidelines
 ---
 
 You make trellis buildable, releasable and checkable, and you keep its
