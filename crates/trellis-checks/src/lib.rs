@@ -1,7 +1,8 @@
 //! Executed checks, and the only type in the workspace that may assert
 //! correctness.
 //!
-//! Every public entry point here spawns a real process and reports what it
+//! Every check entry point here either spawns a real process or runs a
+//! mechanical in-process scan (the governance audit), and reports what it
 //! did. Nothing in this crate consults a model.
 
 pub mod coverage;
@@ -197,22 +198,19 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
     let mut out = String::new();
     for v in &failing {
         out.push_str(&format!(
-            "VIOLATION [{}] {}:{}  {}
-",
+            "VIOLATION [{}] {}:{}  {}\n",
             v.rule, v.file, v.line, v.text
         ));
     }
     for v in &advisory {
         out.push_str(&format!(
-            "advisory  [{}] {}:{}  {}
-",
+            "advisory  [{}] {}:{}  {}\n",
             v.rule, v.file, v.line, v.text
         ));
     }
     if !scan.unreadable.is_empty() {
         out.push_str(&format!(
-            "NOT AUDITED: {} file(s) a rule applies to could not be read: {}
-",
+            "NOT AUDITED: {} file(s) a rule applies to could not be read: {}\n",
             scan.unreadable.len(),
             scan.unreadable.join(", ")
         ));
@@ -221,16 +219,14 @@ pub fn governance_audit(root: &Path, rules: &[governance::Rule], files: &[String
         out.push_str(&format!(
             concat!(
                 "this audit establishes nothing: {} file(s) a rule applies to ",
-                "and none could be read
-"
+                "and none could be read\n"
             ),
             scan.unreadable.len()
         ));
     } else if found.is_empty() {
         // Counted from what was read, not from what was requested.
         out.push_str(&format!(
-            "{} rule(s) checked over {} file(s); none broken
-",
+            "{} rule(s) checked over {} file(s); none broken\n",
             rules.len(),
             scan.read.len()
         ));
@@ -820,13 +816,34 @@ mod default_config_tests {
     /// produces verdicts about an invocation the user never wrote.
     /// Q-17 asks whether a harness could ever verify a command is cache-free;
     /// it cannot today, so the honest position is to run what was configured.
-    #[test]
-    fn a_configured_checker_is_run_verbatim_flags_and_all() {
+    ///
+    /// The configured checker is a shell that echoes every argument it was
+    /// given, so a flag appended to the configured argv shows in its output
+    /// as well as in the recorded command.
+    #[tokio::test]
+    async fn a_configured_checker_is_run_verbatim_flags_and_all() {
+        let d = tempfile::tempdir().unwrap();
+        let configured: Vec<String> = if cfg!(windows) {
+            vec!["cmd", "/C", "echo", "pyright", "--strict"]
+        } else {
+            vec!["sh", "-c", "echo \"$0\" \"$@\"", "pyright", "--strict"]
+        }
+        .into_iter()
+        .map(String::from)
+        .collect();
         let cfg = CheckConfig {
-            typecheck: vec!["pyright".into()],
+            typecheck: configured.clone(),
             ..CheckConfig::default()
         };
-        assert_eq!(cfg.typecheck, ["pyright"]);
+        let v = typecheck(d.path(), &cfg, &[]).await;
+        assert_eq!(v.detail().command, configured.join(" "));
+        assert_eq!(
+            v.detail().stdout.trim(),
+            "pyright --strict",
+            "the process must receive exactly the configured argv, with no \
+             `--no-incremental` or other flag appended"
+        );
+        assert!(v.passed(), "{:?}", v.detail());
     }
 }
 
@@ -875,17 +892,16 @@ mod governance_audit_tests {
         // calls run_checks with no paths, so that was the live path, and a
         // non-negotiable rule could not fail in it.
         let d = repo(
-            "name = \"No direct DB\"
-rank = \"non-negotiable\"
-             forbid = { pattern = \"psycopg2.connect\" }
-",
+            "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+             forbid = { pattern = \"psycopg2.connect\" }\n",
         );
         let rules = governance::load(d.path()).unwrap();
 
         let v = governance_audit(d.path(), &rules, &[".".to_string()]);
         assert!(
             !v.passed(),
-            "claiming compliance over a path that could not be read is the              bare `complete` the brief forbids, wearing a rule's clothes"
+            "claiming compliance over a path that could not be read is the \
+             bare `complete` the brief forbids, wearing a rule's clothes"
         );
         assert!(
             v.detail().stdout.contains("establishes nothing"),
@@ -894,7 +910,8 @@ rank = \"non-negotiable\"
         );
         assert!(
             !v.detail().stdout.contains("establishes nothing:  "),
-            "the fifth recurrence of the cargo fmt string-continuation defect              would land here: {:?}",
+            "the fifth recurrence of the cargo fmt string-continuation defect \
+             would land here: {:?}",
             v.detail().stdout
         );
         assert!(
@@ -911,17 +928,13 @@ rank = \"non-negotiable\"
         // audit established nothing" on an empty `read` would fail every run
         // that edited a file outside every scope.
         let d = repo(
-            "name = \"No direct DB\"
-rank = \"non-negotiable\"
-             forbid = { pattern = \"psycopg2.connect\" }
-scope = [\"app/handlers/\"]
-",
+            "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+             forbid = { pattern = \"psycopg2.connect\" }\nscope = [\"app/handlers/\"]\n",
         );
         std::fs::create_dir_all(d.path().join("app/repo")).unwrap();
         std::fs::write(
             d.path().join("app/repo/db.py"),
-            "x = psycopg2.connect('s')
-",
+            "x = psycopg2.connect('s')\n",
         )
         .unwrap();
         let rules = governance::load(d.path()).unwrap();
@@ -929,7 +942,8 @@ scope = [\"app/handlers/\"]
         let v = governance_audit(d.path(), &rules, &["app/repo/db.py".to_string()]);
         assert!(
             v.passed(),
-            "the repository layer is supposed to reach the database; failing              here forbids the architecture the rule exists to protect: {:?}",
+            "the repository layer is supposed to reach the database; failing \
+             here forbids the architecture the rule exists to protect: {:?}",
             v.detail().stdout
         );
     }
@@ -942,17 +956,10 @@ scope = [\"app/handlers/\"]
         // run in the repositories most likely to configure it. The wedge
         // fixture is exactly this shape.
         let d = repo(
-            "name = \"Vendored code is not ours\"
-rank = \"non-negotiable\"
-             deny-write = { paths = [\"vendor/\"] }
-",
+            "name = \"Vendored code is not ours\"\nrank = \"non-negotiable\"\n\
+             deny-write = { paths = [\"vendor/\"] }\n",
         );
-        std::fs::write(
-            d.path().join("app/h.py"),
-            "x = 1
-",
-        )
-        .unwrap();
+        std::fs::write(d.path().join("app/h.py"), "x = 1\n").unwrap();
         let rules = governance::load(d.path()).unwrap();
 
         let v = governance_audit(d.path(), &rules, &["app/h.py".to_string()]);
@@ -962,17 +969,10 @@ rank = \"non-negotiable\"
     #[test]
     fn an_unreadable_file_alongside_readable_ones_is_named_not_skipped() {
         let d = repo(
-            "name = \"No direct DB\"
-rank = \"non-negotiable\"
-             forbid = { pattern = \"psycopg2.connect\" }
-",
+            "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+             forbid = { pattern = \"psycopg2.connect\" }\n",
         );
-        std::fs::write(
-            d.path().join("app/ok.py"),
-            "x = 1
-",
-        )
-        .unwrap();
+        std::fs::write(d.path().join("app/ok.py"), "x = 1\n").unwrap();
         let rules = governance::load(d.path()).unwrap();
 
         let v = governance_audit(
@@ -993,17 +993,10 @@ rank = \"non-negotiable\"
     #[test]
     fn the_file_count_reports_what_was_read_not_what_was_requested() {
         let d = repo(
-            "name = \"No direct DB\"
-rank = \"non-negotiable\"
-             forbid = { pattern = \"psycopg2.connect\" }
-",
+            "name = \"No direct DB\"\nrank = \"non-negotiable\"\n\
+             forbid = { pattern = \"psycopg2.connect\" }\n",
         );
-        std::fs::write(
-            d.path().join("app/ok.py"),
-            "x = 1
-",
-        )
-        .unwrap();
+        std::fs::write(d.path().join("app/ok.py"), "x = 1\n").unwrap();
         let rules = governance::load(d.path()).unwrap();
         let v = governance_audit(
             d.path(),
@@ -1012,7 +1005,8 @@ rank = \"non-negotiable\"
         );
         assert!(
             v.detail().stdout.contains("over 1 file(s)"),
-            "two requested, one readable: the coverage claim comes from the              read, or it is a count of intentions: {:?}",
+            "two requested, one readable: the coverage claim comes from the \
+             read, or it is a count of intentions: {:?}",
             v.detail().stdout
         );
     }

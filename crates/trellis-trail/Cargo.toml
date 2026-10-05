@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 # Internal to this workspace: the deliverable is the `trellis` binary, not
-# eight library crates. Saying so prevents an accidental `cargo publish` and
+# its library crates. Saying so prevents an accidental `cargo publish` and
 # lets `cargo deny` treat the intra-workspace path dependencies as what they
 # are rather than as unversioned registry wildcards.
 publish = false

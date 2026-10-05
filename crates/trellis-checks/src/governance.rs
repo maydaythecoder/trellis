@@ -5,8 +5,8 @@
 //! is what convergence reads, and it reads verdicts. A violation printed into
 //! the model's context but never entering a verdict is one a model can
 //! converge straight past — the rule is a suggestion again. So a governance
-//! audit runs a real process, over real files, and its result is sealed like
-//! any other check.
+//! audit is a mechanical in-process scan over real files, and its result is
+//! sealed like any other check.
 //!
 //! **The enforcement mechanism stays dumb on purpose.** A governance check
 //! that is itself a model judgment reintroduces Constraint 2: the thing
@@ -51,8 +51,8 @@ impl Rank {
 pub enum Mechanism {
     /// A substring that must not appear in the scoped files.
     Forbid { pattern: String },
-    /// Paths no run may edit. Enforced at the write path rather than here;
-    /// the audit reports it so `trellis check` lists every rule in force.
+    /// Paths no run may edit. Enforced at the write path (`deny_write_paths`),
+    /// not by the audit.
     DenyWrite { paths: Vec<String> },
 }
 
@@ -70,9 +70,6 @@ pub struct Rule {
     /// Files the rule applies to, as path prefixes. Empty means everywhere.
     #[serde(default)]
     pub scope: Vec<String>,
-    /// File name the rule was read from, for naming it in a failure.
-    #[serde(skip)]
-    pub source: String,
 }
 
 /// One rule broken, once.
@@ -116,13 +113,8 @@ pub fn load(root: &Path) -> Result<Vec<Rule>, GovernanceError> {
     for p in paths {
         let text = std::fs::read_to_string(&p)
             .map_err(|e| GovernanceError::Unreadable(p.display().to_string(), e.to_string()))?;
-        let mut rule: Rule = toml::from_str(&text)
+        let rule: Rule = toml::from_str(&text)
             .map_err(|e| GovernanceError::Malformed(p.display().to_string(), e.to_string()))?;
-        rule.source = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
         out.push(rule);
     }
     Ok(out)

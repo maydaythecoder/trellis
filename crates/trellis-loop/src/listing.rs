@@ -23,7 +23,10 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
     }
     // With `trellis_vcs::OVERRIDES`: a `core.fsmonitor` or hook that `bash`
     // planted a call earlier is not run by the model's next listing.
-    let mut argv = trellis_vcs::git_argv(&["grep", "-n", "-I", "--no-color", "--untracked", "-e"]);
+    // `-z`: each path as git found it, unquoted and ending at a NUL, so the
+    // check below reads the path and not a guess at where it ends.
+    let mut argv =
+        trellis_vcs::git_argv(&["grep", "-n", "-z", "-I", "--no-color", "--untracked", "-e"]);
     // After `-e`, so a pattern that starts with `-` is a pattern and not an
     // option; the path after `--` for the same reason.
     argv.push(pattern.to_string());
@@ -48,17 +51,7 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         Ok(c) if c.timed_out => ToolResult::Error("grep timed out".into()),
         // git grep: 0 found, 1 found nothing, anything else is a failure.
         Ok(c) if c.code == Some(0) => {
-            // git does not search its own directory, and a line from one
-            // would be a credential's way into the trail; belt and braces
-            // for a nested `.GIT` on a case-insensitive filesystem. The path
-            // ends at the first `:`, which a Windows path cannot contain.
-            let out = c.stdout.render();
-            let kept: Vec<&str> = out
-                .lines()
-                .filter(|l| {
-                    !crate::orchestrator::names_git_dir(l.split_once(':').map_or(*l, |(p, _)| p))
-                })
-                .collect();
+            let kept = own_matches(root, &c.stdout);
             if kept.is_empty() {
                 ToolResult::Output(format!("no match for `{pattern}`"))
             } else {
@@ -70,6 +63,64 @@ pub(crate) async fn grep(root: &Path, pattern: &str, path: Option<&str>) -> Tool
         }
         Ok(c) => ToolResult::Error(format!("grep failed: {}", c.stderr.render().trim())),
     }
+}
+
+/// The lines of `git grep -n -z` output from files that are the
+/// repository's own ([`in_repo`]), as `path:line:text`.
+///
+/// git does not search its own directory, but it descends into a Windows
+/// junction as into any directory, so `g -> .git` put `.git/config`, and a
+/// credential in a remote URL, into an observation and from there into a
+/// hosted request body and the trail (#428); a junction out of the
+/// repository did the same for any file it reached. Every path is checked,
+/// not just the ones a string rule can see.
+fn own_matches(root: &Path, out: &exec::Tail) -> Vec<String> {
+    let text = out.render();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut kept = Vec::new();
+    // `render` closes with a note when the stream outlived git.
+    let unfinished = if out.unfinished { lines.pop() } else { None };
+    let mut lines = lines.into_iter();
+    if out.total > OUTPUT_CAP {
+        // `render`'s note of the cut, then a line that may begin mid-path:
+        // a cut path could name another file and carry a line of the one it
+        // was cut from, so that line is never shown.
+        kept.extend(lines.next().map(str::to_string));
+        lines.next();
+    }
+    // git lists a file's matches together: one check per file.
+    let mut last: Option<(&str, bool)> = None;
+    for l in lines {
+        let mut parts = l.splitn(3, '\0');
+        let (Some(path), Some(n), Some(line)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let own = match last {
+            Some((p, own)) if p == path => own,
+            _ => {
+                let own = in_repo(root, &root.join(path));
+                last = Some((path, own));
+                own
+            }
+        };
+        if own {
+            kept.push(format!("{path}:{n}:{line}"));
+        }
+    }
+    kept.extend(unfinished.map(str::to_string));
+    kept
+}
+
+/// Whether `path`, which a listing found under the root, is the
+/// repository's own by the rule every prompt input obeys
+/// (`trellis_core::paths::resolve_repo_input`): it resolves, through any
+/// link or junction on the way, inside the repository and not into `.git`
+/// by any spelling. A path that cannot be resolved is not shown either.
+fn in_repo(root: &Path, path: &Path) -> bool {
+    matches!(
+        trellis_core::paths::resolve_repo_input(root, path),
+        Ok(Some(_))
+    )
 }
 
 pub(crate) async fn find(root: &Path, glob: &str) -> ToolResult {
@@ -115,8 +166,6 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         timeout: LISTING_TIMEOUT,
         cap,
         head: false,
-        // A list past the cap is refused below, whole; its tail is never
-        // shown, so it is not stored.
         whole: true,
     })
     .await;
@@ -130,9 +179,8 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
         }
         Ok(c) => c,
     };
-    // The capture keeps the tail, so past the cap it holds an arbitrary
-    // subset of the list whose first path is cut mid-name. Nothing from it
-    // is shown: a partial list read as the repository is worse than none.
+    // Past the cap the capture kept nothing (`whole`) but still counted the
+    // total, so the list is refused and the size reported.
     if c.stdout.total > cap {
         return ToolResult::Error(format!(
             "find: git lists {} bytes of paths for `{glob}`, more than the {cap} this \
@@ -147,14 +195,18 @@ async fn find_capped(root: &Path, glob: &str, cap: usize) -> ToolResult {
     let mut hits: Vec<&str> = listed
         .split('\0')
         .filter(|p| !p.is_empty() && glob_match(pat, p) && !crate::orchestrator::names_git_dir(p))
+        // `--others` walks into a Windows junction as into any directory,
+        // so `g -> .git` listed git's own files (#428).
+        .filter(|p| in_repo(root, &root.join(p)))
         .collect();
     hits.sort_unstable();
     hits.dedup();
     ToolResult::Output(name_list(&hits, &format!("no file matches `{glob}`")))
 }
 
-pub(crate) fn ls(full: &Path, rel: &str) -> ToolResult {
-    let rd = match std::fs::read_dir(full) {
+pub(crate) fn ls(root: &Path, rel: &str) -> ToolResult {
+    let full = root.join(rel);
+    let rd = match std::fs::read_dir(&full) {
         Ok(rd) => rd,
         Err(e) => return ToolResult::Error(format!("cannot list {rel}: {e}")),
     };
@@ -162,6 +214,8 @@ pub(crate) fn ls(full: &Path, rel: &str) -> ToolResult {
         .filter_map(Result::ok)
         // By any spelling: `.GIT` on a case-insensitive filesystem is it.
         .filter(|e| !crate::orchestrator::names_git_dir(&e.file_name().to_string_lossy()))
+        // Nor a link or junction into it or out of the repository (#428).
+        .filter(|e| in_repo(root, &e.path()))
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             if e.file_type().is_ok_and(|t| t.is_dir()) {
@@ -475,6 +529,33 @@ mod tests {
         // overrides and not about a hook that could never run here.
         git(&["status", "--porcelain"]);
         assert!(marks.path().join("ran").exists(), "the control did not run");
+    }
+
+    #[tokio::test]
+    async fn a_cut_search_says_so_and_shows_no_line_whose_path_was_cut() {
+        // The risk (#428): past the cap the first kept line can begin
+        // mid-path, and a cut path can name a different file than the one
+        // its line came from, so that line is dropped; the note of the cut
+        // stays, and every other line is a whole `path:line:text`.
+        let d = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .output()
+            .unwrap();
+        let body: String = (0..2000).map(|i| format!("needle {i}\n")).collect();
+        std::fs::write(d.path().join("a.txt"), body).unwrap();
+        let ToolResult::Output(s) = grep(d.path(), "needle", None).await else {
+            panic!("grep failed");
+        };
+        let mut lines = s.lines();
+        assert!(lines.next().unwrap().contains("earlier bytes cut"), "{s}");
+        let rest: Vec<&str> = lines.collect();
+        assert!(!rest.is_empty());
+        for l in &rest {
+            assert!(l.starts_with("a.txt:") && l.contains(":needle "), "{l}");
+        }
+        assert_eq!(rest.last(), Some(&"a.txt:2000:needle 1999"));
     }
 
     #[test]

@@ -644,4 +644,43 @@ warn_at = 0.5
         assert_eq!(o.limit(Some(10), Window::Lifetime, "2026-10"), Some(17));
         assert_eq!(o.limit(None, Window::Monthly, "2026-09"), None);
     }
+
+    #[test]
+    fn a_profile_with_a_command_is_a_process_and_its_instructions_resolve_under_trellis() {
+        let s = set(&[
+            ("p", "command = [\"bin\"]\n"),
+            ("m", "instructions = \"agents/m.md\"\n"),
+        ])
+        .unwrap();
+        assert!(s["p"].is_process() && !s["m"].is_process());
+        let root = Path::new("repo");
+        assert_eq!(
+            s["m"].instructions_path(root),
+            Some(root.join(".trellis").join("agents/m.md"))
+        );
+        assert_eq!(s["p"].instructions_path(root), None);
+    }
+
+    #[test]
+    fn a_blank_command_a_bad_pass_env_entry_or_a_zero_warning_line_is_refused() {
+        assert!(err(&[("p", "command = []")]).contains("names no program"));
+        assert!(err(&[("p", "command = [\" \"]")]).contains("names no program"));
+        for bad in ["\" \"", "\"A=B\"", "\"A\\u0000B\""] {
+            assert!(
+                err(&[("p", &format!("command = [\"bin\"]\npass_env = [{bad}]"))])
+                    .contains("is not a variable name"),
+                "{bad}"
+            );
+        }
+        assert!(err(&[("p", "[budget]\nwarn_at = 0.0")]).contains("outside"));
+    }
+
+    #[test]
+    fn profiles_load_from_their_folder_and_one_that_cannot_be_read_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let not_a_dir = d.path().join("plain-file");
+        std::fs::write(&not_a_dir, "").unwrap();
+        assert!(load_dir(&not_a_dir).is_err());
+        assert!(load_dir(&d.path().join("absent")).unwrap().is_empty());
+    }
 }
