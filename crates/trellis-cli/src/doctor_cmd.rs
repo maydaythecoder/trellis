@@ -1151,4 +1151,105 @@ carried back from the clone: app/util.py",
         let long = "é".repeat(400);
         assert_eq!(summarise(&long).chars().count(), 120);
     }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn a_module_path_too_wide_for_the_column_keeps_its_tail() {
+        // The tail is what tells two siblings apart; a cut that kept the
+        // head, or the wrong number of characters, prints a column of
+        // identical names.
+        assert_eq!(truncate_module("app.cli", 7), "app.cli");
+        assert_eq!(truncate_module("app.commands.add", 6), "…s.add");
+        assert_eq!(truncate_module("app.commands.add", 6).chars().count(), 6);
+    }
+
+    fn node(module: &str, calls: usize) -> trellis_index::ModuleNode {
+        trellis_index::ModuleNode {
+            module: module.into(),
+            path: format!("{module}.py"),
+            defines: 1,
+            calls: (0..calls).map(|i| (format!("{module}.c{i}"), 1)).collect(),
+            ambiguous: 0,
+            unresolved: 0,
+        }
+    }
+
+    #[test]
+    fn only_a_module_s_last_drawn_edge_closes_its_branch() {
+        // The risk: `└` on the wrong row, or "and 0 more" under a module
+        // whose edges were all drawn, so the listing claims a remainder that
+        // does not exist.
+        let g = trellis_index::ModuleGraph {
+            nodes: vec![node("a", 2), node("b", MAX_EDGES_DRAWN)],
+        };
+        let lines = graph_lines(&g, 40);
+        let edges: Vec<&String> = lines.iter().filter(|l| l.contains("─▶")).collect();
+        assert_eq!(edges.len(), 2 + MAX_EDGES_DRAWN, "{lines:#?}");
+        assert!(edges[0].contains("├─▶ a.c0"), "{lines:#?}");
+        assert!(edges[1].contains("└─▶ a.c1"), "{lines:#?}");
+        let last = MAX_EDGES_DRAWN - 1;
+        assert!(
+            edges[2 + last].contains(&format!("└─▶ b.c{last}")),
+            "{lines:#?}"
+        );
+        let closed = edges.iter().filter(|l| l.contains('└')).count();
+        assert_eq!(closed, 2, "{lines:#?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("called from here")),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn modules_past_the_limit_are_counted_and_none_past_it_are_not() {
+        let g = trellis_index::ModuleGraph {
+            nodes: vec![node("a", 0), node("b", 0)],
+        };
+        let more = |limit| {
+            graph_lines(&g, limit)
+                .into_iter()
+                .find(|l| l.contains("not drawn"))
+        };
+        assert_eq!(more(2), None);
+        assert_eq!(
+            more(1).as_deref(),
+            Some("  ... 1 more module(s), not drawn.")
+        );
+    }
+
+    #[test]
+    fn codebase_lines_draws_the_repository_s_own_modules() {
+        let d = repo("codebase-lines");
+        std::fs::create_dir_all(d.join("app")).unwrap();
+        std::fs::write(d.join("app/util.py"), "def helper():\n    return 1\n").unwrap();
+        let lines = codebase_lines(&d, 40);
+        assert_eq!(lines[0], "codebase graph — 1 module(s)", "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("app.util")), "{lines:#?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn doctor_warns_that_approve_mode_needs_a_terminal_and_only_then() {
+        // Approve mode refuses to start without a terminal; doctor is where
+        // a CI author learns that before the job fails (ADR 0018).
+        let line = |mode: &str| {
+            let d = repo(&format!("control-{mode}"));
+            std::fs::create_dir_all(d.join(".trellis")).unwrap();
+            std::fs::write(
+                d.join(".trellis/config.toml"),
+                format!("[control]\nmode = \"{mode}\"\n"),
+            )
+            .unwrap();
+            let cfg = config::RepoConfig::load(&d).unwrap();
+            let got = repo_lines(&d, &cfg)
+                .into_iter()
+                .find(|l| l.starts_with("control:"))
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&d);
+            got
+        };
+        assert!(line("approve").contains("needs a terminal"));
+        assert!(!line("auto").contains("needs a terminal"));
+    }
 }

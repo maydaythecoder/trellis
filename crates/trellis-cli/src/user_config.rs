@@ -946,4 +946,84 @@ stale_claims = \"release\"
         );
         assert_eq!(resolve(&env(&[]), false), None);
     }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn only_a_digit_index_under_tools_custom_turns_the_name_test_off() {
+        // The risk: the exemption for a custom tool's schema keyed on a
+        // table that merely looks like one. A repository could spell
+        // `tools."custom[x]".schema` and hide a key name from the check
+        // (ADR 0010, ADR 0024 §3).
+        let key_at = |t: &str| key_in(&toml::from_str::<toml::Value>(t).unwrap());
+        for at in ["custom[x]", "custom[]"] {
+            assert_eq!(
+                key_at(&format!("[tools.\"{at}\".schema]\ntoken = \"t\"\n")).as_deref(),
+                Some(format!("tools.{at}.schema.token").as_str()),
+                "{at}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_user_s_agents_and_index_sections_survive_a_repository_without_them() {
+        let c = load(
+            "",
+            "[agents]\nfailure_policy = \"stop\"\n[index]\nbackstop = \"pyright\"\n",
+        );
+        assert_eq!(
+            c.agents.as_ref().and_then(|a| a.failure_policy.as_deref()),
+            Some("stop")
+        );
+        assert!(c.pyright_backstop().unwrap());
+    }
+
+    #[test]
+    fn a_user_s_release_does_not_override_the_repository_s_list() {
+        // Only the user's "list" is the restriction that wins; any other
+        // value of theirs yields to the repository's (ADR 0020 §5).
+        let c = load(
+            "[work]\nstale_claims = \"list\"\n",
+            "[work]\nstale_claims = \"release\"\n",
+        );
+        assert_eq!(c.work.and_then(|w| w.stale_claims).as_deref(), Some("list"));
+    }
+
+    #[test]
+    fn a_user_file_that_is_there_but_unreadable_is_an_error_naming_it() {
+        // The risk: a user file that is not UTF-8 read as absent, which
+        // drops every restriction in it without a word.
+        let (d, u) = files("", "");
+        std::fs::write(&u, [0xff, 0xfe, b'x']).unwrap();
+        let e = RepoConfig::load_with_user(d.path(), Some(&u)).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("exists but could not be read"),
+            "{e:#}"
+        );
+    }
+
+    #[test]
+    fn installed_template_directories_are_each_package_s_prompts_in_name_order() {
+        let d = tempfile::tempdir().unwrap();
+        let packages = crate::install::packages_dir(d.path());
+        std::fs::create_dir_all(&packages).unwrap();
+        let entry = |n: &str| {
+            format!(
+                "[[package]]\nname = \"{n}\"\nsource = \"/s/{n}\"\nref = \"v1\"\ncommit = \"{}\"\n",
+                "a".repeat(40)
+            )
+        };
+        std::fs::write(
+            packages.join(crate::install::MANIFEST),
+            entry("zeta") + &entry("alpha"),
+        )
+        .unwrap();
+        assert_eq!(
+            installed_prompt_dirs(d.path()).unwrap(),
+            vec![
+                packages.join("alpha").join("prompts"),
+                packages.join("zeta").join("prompts")
+            ]
+        );
+    }
 }
