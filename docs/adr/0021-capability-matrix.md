@@ -301,6 +301,9 @@ client, owner-directed: the session's choice under the owner's 2026-10-04
 delegation of the upstream plan's open questions. Every write it causes
 still goes through the orchestrator (ADR 0048 section 10), and the TUI stays
 the product interface (Q-19).
+**Amended 2026-10-04 (#369):** ADR 0050 adds a web view, `trellis --web`: the
+desktop's page served on 127.0.0.1 only, behind a per-launch token and a Host
+guard, with every write still through the orchestrator. Owner-directed.
 
 Three rows name work that is approved but was not merged into `drain` when
 this section was written, and say "landing" rather than "built": pi 1.2
