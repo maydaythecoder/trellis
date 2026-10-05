@@ -429,6 +429,30 @@ fn rpc_compact_mid_run_folds_the_older_turns_before_the_next_request() {
         after,
         "the size reported is the size sent"
     );
+    // And the trail records it under the turn it happened at: the trail is
+    // where a reader learns what the model was not shown (ADR 0025 §5;
+    // #248, the run's driver answering no requested compactions).
+    let trails: Vec<Value> = std::fs::read_dir(f.root.join(".trellis/runs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .map(|p| serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap())
+        .collect();
+    assert_eq!(trails.len(), 1);
+    let actions = trails[0]["factual"]["actions"].as_array().unwrap();
+    let folded: Vec<&Value> = actions
+        .iter()
+        .filter(|a| a["tool"] == "compaction")
+        .collect();
+    assert_eq!(folded.len(), 1, "{actions:?}");
+    assert_eq!(folded[0]["turn"], 3, "{actions:?}");
+    assert!(
+        folded[0]["outcome"]
+            .as_str()
+            .unwrap()
+            .starts_with("requested over rpc"),
+        "{actions:?}"
+    );
 }
 
 /// A running `trellis rpc`, its stdin, and its stdout parsed record by

@@ -1283,6 +1283,9 @@ mod provider_tests {
         let installed = vec![first, second];
         let e = RepoConfig::prompt_raw_in(d.path(), "fix", || Ok(installed.clone()))
             .expect_err("a template that is there but unreadable is not skipped");
-        assert!(format!("{e:#}").contains("could not be loaded from"), "{e:#}");
+        assert!(
+            format!("{e:#}").contains("could not be loaded from"),
+            "{e:#}"
+        );
     }
 }

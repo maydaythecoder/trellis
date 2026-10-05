@@ -3026,7 +3026,9 @@ mod interrupt_tests {
             fits: true,
         };
         let shape = |a: &[(u32, String, String)]| -> Vec<(u32, bool)> {
-            a.iter().map(|(t, tool, _)| (*t, tool == "compaction")).collect()
+            a.iter()
+                .map(|(t, tool, _)| (*t, tool == "compaction"))
+                .collect()
         };
         let a = actions_with("compaction-placement", &[fitted(2), fitted(3)], &[]);
         assert_eq!(
@@ -3073,6 +3075,36 @@ mod interrupt_tests {
         assert_eq!(m.prompt_bytes(), Some(4321));
         assert_eq!(m.compactions().len(), 1);
         assert_eq!(m.compactions()[0].elided_bytes, 50);
+    }
+
+    #[test]
+    fn an_unknown_run_id_lists_ten_runs_and_counts_only_the_ones_left_out() {
+        // The risk (#248): "... 0 older" under a list that is complete, or
+        // no count when runs were left out, so `resume` sends a person to
+        // `log --limit` for nothing or hides that there is more to find.
+        let entries = |n: usize| -> Vec<trellis_trail::query::Entry> {
+            (0..n)
+                .map(|i| trellis_trail::query::Entry {
+                    path: PathBuf::from(format!("r{i}.json")),
+                    trail: trellis_trail::UntrustedTrail::from_json(&format!(
+                        r#"{{"run_id": "run-{i}", "task": "t", "factual": {{}}}}"#
+                    ))
+                    .unwrap(),
+                    integrity: trellis_trail::Integrity::Unrecorded,
+                })
+                .collect()
+        };
+        assert!(unknown_run_id("x", &[]).contains("there are no trails"));
+        let ten = unknown_run_id("x", &entries(10));
+        assert!(ten.contains("The 10 most recent"), "{ten}");
+        assert!(ten.contains("run-9"), "{ten}");
+        assert!(!ten.contains("older"), "{ten}");
+        let eleven = unknown_run_id("x", &entries(11));
+        assert!(!eleven.contains("run-10"), "{eleven}");
+        assert!(
+            eleven.ends_with("... 1 older, `trellis log --limit` lists them"),
+            "{eleven}"
+        );
     }
 }
 

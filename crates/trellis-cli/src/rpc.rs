@@ -1750,7 +1750,10 @@ mod tests {
             by("a")["error"],
             "\"args\" needs \"prompt\", the template they fill"
         );
-        assert_eq!(by("b")["error"], "prompt needs \"task\", \"prompt\", or both");
+        assert_eq!(
+            by("b")["error"],
+            "prompt needs \"task\", \"prompt\", or both"
+        );
         assert!(of_type(&rs, "run_start").is_empty(), "{rs:?}");
     }
 

@@ -587,6 +587,83 @@ fn log_with_no_trails_is_not_an_error() {
 }
 
 #[test]
+fn log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are() {
+    // The risk (#248): `--actions` printing nothing, or a blank outcome row
+    // under every action that has none, so the one that wrote is lost
+    // among them.
+    let d = repo("log-actions");
+    let runs = d.join(".trellis/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("r1.json"),
+        r#"{"run_id":"r1","task":"t","factual":{"proposed":[],"actions":[
+            {"turn":1,"tool":"read_file","target":"a.py","outcome":"","wrote":false},
+            {"turn":2,"tool":"edit","target":"a.py","outcome":"applied","wrote":true}]}}"#,
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["log", "--actions"]));
+    assert!(s.contains("actions (2), as recorded:"), "{s}");
+    assert!(
+        s.contains("    *  2. edit a.py\n          applied\n"),
+        "{s}"
+    );
+    assert!(s.contains("       1. read_file a.py\n    *  2."), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_inferred_root_is_named_and_an_explicit_one_is_not() {
+    // The risk (#248): acting on a tree found several levels up without
+    // saying which, so a task runs against the wrong repository.
+    let d = repo("root-named");
+    let inferred = combined(&run(&d.join("app"), &["log"]));
+    assert!(inferred.contains("(repository root)"), "{inferred}");
+    let elsewhere = scratch("root-named-elsewhere");
+    let root = d.to_str().unwrap();
+    let explicit = combined(&run(&elsewhere, &["--root", root, "log"]));
+    assert!(!explicit.contains("(repository root)"), "{explicit}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn run_approve_overrides_a_repository_in_auto_mode() {
+    // The risk (#248): `--approve` dropped, so a person who asked to be
+    // asked before each edit gets a run that asks nothing (ADR 0018).
+    let d = repo("approve-over-auto");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[control]\nmode = \"auto\"\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "auto mode"]);
+    let spec = script_that_stops(&scratch("approve-over-auto-script"));
+    let out = run(&d, &["run", "--approve", "--model", &spec, "t"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("approve mode needs an interactive terminal"),
+        "{}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn run_refuses_a_skill_it_cannot_find_rather_than_running_without_it() {
+    // The risk (#248): `--skill` dropped on the way to the run, so the run
+    // goes ahead without the instructions the person named.
+    let d = repo("skill-missing");
+    let spec = script_that_stops(&scratch("skill-missing-script"));
+    let out = run(&d, &["run", "--skill", "nope", "--model", &spec, "t"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(combined(&out).contains("nope"), "{}", combined(&out));
+    assert!(!d.join(".trellis/runs").exists(), "no trail");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn why_reports_absence_rather_than_inventing_a_reason() {
     // `why` answers from the trail. With no trail there is no answer, and the
     // honest output is that there is none — the alternative is a plausible
@@ -3398,7 +3475,11 @@ fn a_run_finds_a_template_only_an_installed_package_carries() {
     let script = script_that_stops(&d);
     git(&d, &["add", "-A"]);
     git(&d, &["commit", "-qm", "script"]);
-    let out = run_as(&d, &user, &["run", "--prompt", "kitfix", "--model", &script]);
+    let out = run_as(
+        &d,
+        &user,
+        &["run", "--prompt", "kitfix", "--model", &script],
+    );
     let s = combined(&out);
     assert!(!s.contains("no prompt"), "{s}");
     assert!(s.contains("model:"), "the run started: {s}");
