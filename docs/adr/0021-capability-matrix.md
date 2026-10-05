@@ -2,7 +2,7 @@
 
 **Status:** Accepted.
 **Date:** 2026-09-27
-**Inventories:** `docs/inventory/inventory-pi.md` (pi 0.87.1),
+**Inventories:** `docs/inventory/inventory-pi.md` (pi 1.0.2 at upstream commit 200387122ca4, re-inventoried 2026-10-04; the pi rows dated before 2026-10-04 were written against pi 0.87.1),
 `docs/inventory/inventory-apex.md` (apex-notes `f449644a`),
 `docs/inventory/inventory-paperclip.md` (Paperclip v2026.916.1). All three
 are MIT-licensed. Each inventory was read from its project's own source and
