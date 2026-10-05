@@ -251,12 +251,9 @@ pub fn seed(body: &str, opts: &Seed<'_>) -> Result<NoteDates, DatesError> {
         .created_day
         .and_then(normalize_day)
         .or_else(|| opts.modified_day.and_then(normalize_day));
-    let mut created = match created_day {
-        Some(d) => Stamp {
-            day: Some(d),
-            estimated: true,
-        },
-        None => stamp(None, true),
+    let mut created = Stamp {
+        day: created_day,
+        estimated: true,
     };
     let baseline = stamp(opts.modified_day, true);
     let mut dated: Vec<Line> = lines
@@ -627,6 +624,9 @@ pub struct Coverage {
     /// Lines whose anchor at the same position matches the current text.
     pub matching: usize,
     pub has_entry: bool,
+    /// Over [`MAX_LINES_PER_NOTE`]: `lines` and `matching` are 0 because the
+    /// note could not be read as date lines, not because it is empty.
+    pub too_long: bool,
 }
 
 /// What `trellis vault dates` prints: one row per note on disk, plus the
@@ -634,7 +634,9 @@ pub struct Coverage {
 pub fn coverage(vault: &Vault, doc: &Document) -> (Vec<Coverage>, Vec<String>) {
     let mut rows = Vec::new();
     for n in &vault.notes {
-        let lines = logical_lines(&n.body).unwrap_or_default();
+        let parsed = logical_lines(&n.body);
+        let too_long = parsed.is_err();
+        let lines = parsed.unwrap_or_default();
         let entry = doc.notes.get(&n.path);
         let matching = entry.map_or(0, |e| {
             lines
@@ -649,6 +651,7 @@ pub fn coverage(vault: &Vault, doc: &Document) -> (Vec<Coverage>, Vec<String>) {
             lines: lines.len(),
             matching,
             has_entry: entry.is_some(),
+            too_long,
         });
     }
     let stale = doc
@@ -1007,5 +1010,23 @@ mod tests {
         assert_eq!((seeded, failures.len()), (0, 2), "{failures:?}");
         assert!(!doc.notes.contains_key("new.md"));
         assert_eq!(doc.notes.get("big.md"), Some(&before));
+    }
+
+    #[test]
+    fn coverage_marks_an_over_limit_note_rather_than_reporting_it_empty() {
+        // It was `lines=0 matching=0`, the same row as an empty note, while
+        // refresh() reports the same note as a failure.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("big.md"),
+            "x\n".repeat(MAX_LINES_PER_NOTE + 1),
+        )
+        .unwrap();
+        std::fs::write(d.path().join("empty.md"), "").unwrap();
+        let v = crate::reader::Vault::open(d.path()).unwrap();
+        let (rows, _) = coverage(&v, &Document::default());
+        let row = |p: &str| rows.iter().find(|r| r.path == p).unwrap();
+        assert!(row("big.md").too_long, "{rows:?}");
+        assert!(!row("empty.md").too_long, "{rows:?}");
     }
 }
