@@ -155,10 +155,9 @@ pub fn unit_for(index: &Index, target: SymbolId) -> WorkUnit {
 ///
 /// The earlier design merged everything the graph could not vouch for into
 /// one partition *alongside* the others, then absorbed every partition that
-/// collided with it. On poetry that collapsed 95% of tasks to a single group.
-/// Staging inverts it: contended work runs alone and first, and once it has
-/// landed the rest are free, because the thing that made them unsafe was
-/// running *concurrently* with it — not running at all.
+/// collided with it. Staging inverts it: contended work runs alone and
+/// first, and once it has landed the rest are free, because the thing that
+/// made them unsafe was running *concurrently* with it — not running at all.
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
     /// Run first, alone, in one agent: work the graph cannot vouch for, and
@@ -241,8 +240,8 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
             }
             [only] => parallel[*only].absorb(unit),
             _ => {
-                // Merge every partition this unit joins, lowest index first
-                // so the result does not depend on iteration order.
+                // Highest index first, so each remove leaves the remaining
+                // indices valid; ids are made deterministic by the sort below.
                 let mut merged = Partition::parallel();
                 for &i in hits.iter().rev() {
                     merged.merge(parallel.remove(i));
@@ -276,7 +275,7 @@ pub fn plan(index: &Index, units: Vec<WorkUnit>) -> Plan {
 
 /// Debug view behind `trellis partitions`.
 ///
-/// `04-v1.1-multi-agent.md` calls this "a debugging tool you will use
+/// `docs/BRIEF.md` calls this "a debugging tool you will use
 /// constantly", and asks it to show which units grouped, which radii
 /// collided, which symbols forced serialization, and which were
 /// unpartitionable for having unresolved callers. Counts alone answer none of
