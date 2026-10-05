@@ -14,12 +14,6 @@ pub(crate) fn cmd_radius(root: &Path, query: &str) -> Result<()> {
     radius_of(&index, query)
 }
 
-/// The radius report, over an index the caller already holds.
-///
-/// Split out so the interactive session can answer from an index built once
-/// per session rather than once per question. The two paths must not drift:
-/// a session that renders a radius differently from `trellis radius` would be
-/// two products wearing one name.
 /// The partition plan for a set of symbols, without running anything.
 ///
 /// `05-v1.1-multi-agent.md` asks for this early — "a debugging tool you will
@@ -95,7 +89,7 @@ fn resolve_symbol(index: &trellis_index::Index, query: &str) -> Result<trellis_c
 
     match matches.as_slice() {
         [] => anyhow::bail!(
-            "no first-party definition matches `{query}`.              Note that only definitions inside the repository root are indexed."
+            "no first-party definition matches `{query}`. Note that only definitions inside the repository root are indexed."
         ),
         [one] => Ok(*one),
         many => {
@@ -114,6 +108,12 @@ fn resolve_symbol(index: &trellis_index::Index, query: &str) -> Result<trellis_c
     }
 }
 
+/// The radius report, over an index the caller already holds.
+///
+/// Split out so the interactive session can answer from an index built once
+/// per session rather than once per question. The two paths must not drift:
+/// a session that renders a radius differently from `trellis radius` would be
+/// two products wearing one name.
 pub(crate) fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()> {
     let qualified = |s: &trellis_index::SymbolEntry| qualified(index, s);
     let target = resolve_symbol(index, query)?;
@@ -341,6 +341,14 @@ pub(crate) fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// How many outgoing edges one module draws before it says how many it left.
+///
+/// Ten, because past that the row stops being a shape and becomes a list, and
+/// because the point of the picture is which modules a module leans on rather
+/// than an exhaustive inventory — `trellis radius` answers the exhaustive
+/// question.
+pub(crate) const MAX_EDGES_DRAWN: usize = 10;
+
 /// The codebase as a graph of modules.
 ///
 /// Drawn the way the other graphs in this project are drawn — nodes with
@@ -351,14 +359,6 @@ pub(crate) fn cmd_index(root: &Path, graph: bool, limit: usize) -> Result<()> {
 /// nothing was *bound* out of, which is not the same as one that calls
 /// nothing; `?` is how a reader tells those apart (Constraint 1). The three
 /// counts stay three counts and are never divided (ADR 0014).
-/// How many outgoing edges one module draws before it says how many it left.
-///
-/// Ten, because past that the row stops being a shape and becomes a list, and
-/// because the point of the picture is which modules a module leans on rather
-/// than an exhaustive inventory — `trellis radius` answers the exhaustive
-/// question.
-pub(crate) const MAX_EDGES_DRAWN: usize = 10;
-
 pub(crate) fn graph_lines(g: &trellis_index::ModuleGraph, limit: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if g.nodes.is_empty() {
