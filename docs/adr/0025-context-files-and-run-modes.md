@@ -206,8 +206,11 @@ on stderr.
     see "steer and follow_up" below*)
   - `get_codebase {limit?}` (*added 2026-10-05, #292; see "get_codebase"
     below*)
+  - `get_radius {symbol}` (*added 2026-10-05, #293; see "get_radius"
+    below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
-  `follow_up`; `get_codebase`, the 13th, is trellis's own, not pi's)
+  `follow_up`; `get_codebase`, the 13th, and `get_radius`, the 14th, are
+  trellis's own, not pi's)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -363,6 +366,39 @@ on stderr.
     does not exist and the fixture's worktree is clean; it is answered while
     an approve-mode run waits on its question, before that run's `run_end`;
     and its modules and counts equal what `trellis index --graph` prints.
+- *Added 2026-10-05 (#293), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_radius {symbol}`** answers with the blast radius `trellis radius
+  <symbol>` prints, as data, so an rpc client never parses human output (ADR
+  0048 §2). It is read-only.
+  - The index is built in memory with `build_from_sources` over
+    `read_sources`, as `get_codebase` builds it, never with `build_cached`,
+    which writes `.trellis/index.bin` when the cache is stale: nothing is
+    written.
+  - The symbol is matched as `trellis radius` matches it
+    (`index_cmd::resolve_symbol`). An unknown or ambiguous symbol, or a
+    missing `symbol`, answers `success` false with the same message.
+  - `data` is `{symbol, file, reach, doubt}`. `symbol` is the qualified name
+    and `file` its path. `reach` is `{resolved, ambiguous, symbols_reached}`:
+    call sites bound to the symbol by a single edge, call sites naming it
+    as one of several candidates, and the symbols reached transitively.
+    `doubt` is `{unbound_in_touched_files, touched_files, reasons, files}`:
+    call sites in the files the radius touches that bound to nothing, how
+    many files that is, and the same count by reason (most first, each
+    `{reason, call_sites, explain}`) and by file (most first, each `{path,
+    call_sites}`). The lists are whole; the printed report collapses them to
+    three reasons and five files.
+  - Reach and doubt are separate objects because they come from different
+    populations (ADR 0014): no ratio, percentage, fraction or total is
+    given, and the doubt is not a part of the reach (CLAUDE.md rule 3).
+  - It runs on its own thread, as `get_codebase` does, so it is answered
+    while a run is in flight, including one waiting on an approval.
+  - Evidence: `rpc_get_radius_returns_reach_and_doubt_as_separate_counts`
+    in `tests/modes.rs`, through the binary over stdio: no key in `data`
+    names a ratio, percent, fraction or total; afterwards
+    `.trellis/index.bin` does not exist and the fixture's worktree is clean;
+    it is answered while an approve-mode run waits on its question, before
+    that run's `run_end`; and its counts, reasons and files equal what
+    `trellis radius f` prints, run after those checks.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation

@@ -69,6 +69,11 @@ const COMMANDS: &[(&str, &str)] = &[
          (default 40)",
     ),
     (
+        "get_radius",
+        "a symbol's blast radius `trellis radius` prints, as data, read-only: {symbol}; \
+         reach and doubt as separate counts, never a ratio",
+    ),
+    (
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
@@ -563,6 +568,31 @@ impl Server {
         }));
     }
 
+    /// `get_radius`: a symbol's blast radius as data, reach and doubt as
+    /// separate counts (ADR 0014); nothing is written.
+    ///
+    /// Built with `build_from_sources`, never `build_cached`: the cached path
+    /// writes `.trellis/index.bin` when the cache is stale, and a read must
+    /// not. Answered from another thread, as `get_codebase` is, so a waiting
+    /// run's `approve` or `abort` is still read at once.
+    fn get_radius(&mut self, cmd: &Value, id: Option<&str>) {
+        let Some(symbol) = cmd.get("symbol").and_then(Value::as_str) else {
+            self.respond(
+                id,
+                "get_radius",
+                Err("`symbol` is required: the name `trellis radius` takes".into()),
+            );
+            return;
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        let symbol = symbol.to_string();
+        self.waiters.push(std::thread::spawn(move || {
+            let index = trellis_index::build_from_sources(&trellis_index::read_sources(&root));
+            let result = crate::index_cmd::radius_json(&index, &symbol).map_err(|e| e.to_string());
+            respond_on(&sink, id.as_deref(), "get_radius", result);
+        }));
+    }
+
     /// `steer` and `follow_up`: refused with no run in flight; otherwise
     /// sent on the run's steering channel, never the approval channel.
     ///
@@ -747,6 +777,7 @@ impl Server {
             }
             "compact" => self.compact(id),
             "get_codebase" => self.get_codebase(cmd, id),
+            "get_radius" => self.get_radius(cmd, id),
             other => self.respond(
                 id,
                 if other.is_empty() { "unknown" } else { other },
