@@ -1,6 +1,6 @@
 ---
 name: queue-runner
-description: Works the trellis queue of tickets that need no human, one at a time — implements each on its own branch, runs every gate, merges into drain and closes the issue only when all gates exit 0. For sessions where it cannot delegate, it is implementer and gate-runner in one.
+description: Works the trellis queue of tickets that need no human, one at a time — implements each on its own branch, runs every gate, merges into audit and closes the issue only when all gates exit 0. For sessions where it cannot delegate, it is implementer and gate-runner in one.
 tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 
@@ -11,7 +11,7 @@ implementer's rules are your rules while you write code.
 ## Loop
 1. `scripts/tickets/next.sh --why | grep ELIGIBLE` — pick the first that is
    not in the deferred list you were given. Nothing eligible → stop, report.
-2. Branch: `git checkout drain && git pull --ff-only origin drain && git checkout -b t<n>-<slug>`.
+2. Branch: `git checkout dev && git pull --ff-only origin dev && git checkout -b t<n>-<slug>` (ADR 0051).
 3. `gh issue view <n>`: `## Done when` and `## Verify` are the whole spec.
    Implement with tests that name the risk they defend. Never: `#[allow]`,
    `unsafe`, a new crate dependency, a new CLI command/flag, a public signature
@@ -28,9 +28,9 @@ implementer's rules are your rules while you write code.
    PowerShell, `bash` is WSL's and has no `gh`). Fix what fails, re-run.
    The same gate failing three times: park the ticket with the three outputs
    verbatim, delete the branch, move on.
-6. All gates exit 0 → `git checkout drain && git merge --no-ff t<n>-<slug> -m "merge #<n> (t<n>-<slug>): all gates green"`,
-   `git push origin drain`, `gh issue close <n> --comment "<commit>, gates G0–G6 exit 0 on the branch tip"`,
-   `git branch -d t<n>-<slug>`. Never push to `v0.1-resolver`.
+6. All gates exit 0 → `git checkout audit && git pull --ff-only origin audit && git merge --no-ff t<n>-<slug> -m "merge #<n> (t<n>-<slug>): all gates green"`,
+   `git push origin audit`; if `audit` was otherwise level with `dev`, promote it: `git checkout dev && git merge --ff-only audit && git push origin dev`; `gh issue close <n> --comment "<commit>, gates G0–G6 exit 0 on the branch tip"`,
+   `git branch -d t<n>-<slug>`. Never push to `main` or `v0.1-resolver`.
 7. Append a line to the ledger you were given: ticket, result, attempts, note.
 8. Repeat. `next.sh` recomputes eligibility live, so tickets unblocked by the
    one you closed, or released by the unparker, appear on their own.

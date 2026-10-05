@@ -1,0 +1,60 @@
+# ADR 0051 — Branches: main, dev, audit, and ticket branches cut from dev
+
+**Status:** Accepted (owner-directed).
+**Date:** 2026-10-04
+**Decided by:** the owner's request of 2026-10-04 ("a launch main branch for
+the current version, finished and ready to launch; dev for the main
+development branch; feature and ticket branches from there; and an audit
+branch sitting between dev and feature branches where they are brought
+together and merge conflicts are resolved"), carried out by the session under
+the owner's grant of full authority for the repository's git and CI (#378).
+**Amends:** ADR 0036 (the pre-push hook now protects `main` as well as
+`v0.1-resolver`).
+
+## Context
+
+Until now `v0.1-resolver` was the default branch, moved only by the owner's
+pull requests, and agents integrated tickets on `drain`, which reached
+`v0.1-resolver` through a squashed PR. The names said nothing about the roles,
+and there was no branch that meant "ready to launch".
+
+## Decision
+
+| Branch | Role | Created from | Moved by |
+| --- | --- | --- | --- |
+| `main` | launch: finished and ready to ship; the default branch; tagged `v0.1` at creation | `origin/v0.1-resolver` at 747df54, the last state the owner merged | the owner, merging `dev`'s pull request on GitHub |
+| `dev` | development trunk; every ticket and feature branch is cut from it | `origin/drain` once #378 is merged | promotion from `audit` when its gates pass |
+| `audit` | integration: ticket and feature branches meet, conflicts are resolved, gates and the security audit run | the same commit as `dev` | `git merge --no-ff` of a green ticket or feature branch |
+| `t<n>-<slug>`, `feature/<slug>` | one ticket; a feature spanning several tickets | `dev` | their author; deleted after merging |
+
+1. **Flow.** ticket or feature → `audit` → `dev` → `main`. Promotion from
+   `audit` into `dev` is a fast-forward where `dev` has not moved, a
+   `--no-ff` merge otherwise; conflicts are resolved on `audit`, never on
+   `dev`.
+2. **Gate base** (`scripts/gates/lib.sh`). A ticket, feature or `audit`
+   branch is measured against `origin/dev`; any other branch, `dev` included,
+   against `origin/main`. Until these branches exist on the remote the
+   script falls back to `origin/drain` and `origin/v0.1-resolver`, so the
+   change that adds them can be gated before they are pushed.
+3. **Protection.** The pre-push hook refuses every push to `main` and to
+   `v0.1-resolver`; `dev`, `audit` and ticket branches go through. GitHub
+   branch protection still needs Pro on a private repository (ADR 0036).
+4. **CI** runs on pushes to `main`, `dev`, `audit` and `v0.1-resolver`, and
+   on every pull request.
+5. **Legacy.** `v0.1-resolver` (frozen), `drain` (frozen at the commit `dev`
+   and `audit` start from), `inherit`, `agents-setup` and
+   `orchestrator-state` are kept, not deleted: deleting a branch cannot be
+   undone, and their history is cited by issues and ADRs.
+
+## Reversal
+
+Point the default branch back at `v0.1-resolver`, restore `lib.sh`'s
+`INTEGRATION_BRANCH="drain"`, and the old flow resumes; no branch was
+deleted and no history rewritten.
+
+## Consequences
+
+- An agent names three branches instead of two, and the agent definitions,
+  `docs/BUILD_SYSTEM.md` and the hook's self-test say which.
+- ADR 0027's decision log keeps its name; its rows now record merges into
+  `audit`.

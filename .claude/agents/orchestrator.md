@@ -33,7 +33,7 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
    ticket is not workable yet: dispatch **architect** to add a `## Done when`
    and a `## Verify` section (a fenced command), then re-run G0. Do not dispatch
    an implementer against a ticket G0 rejects.
-3. Create a branch `t<n>-<slug>` off `drain`, the integration branch. Dispatch to the specialist (Routing).
+3. Create a branch `t<n>-<slug>` off `dev` (ADR 0051). Dispatch to the specialist (Routing).
 4. When it returns, run every gate: `scripts/gates/run-all.sh <n>`. It stops at
    the first failure and prints GATE / COMMAND / EXIT / OUTPUT. Dispatch the
    **verifier** to run it when you want the raw output kept out of your context.
@@ -45,7 +45,7 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
    `surface:public`. Stop, print the diff summary (`git diff --stat`) and the gate
    outputs, and end your turn. A human approves by telling you to continue.
 7. All gates green (and G7 approved where required): merge the branch into
-   `drain` with `git merge --no-ff`, push, comment the gate summary on the
+   `audit`, the integration branch, with `git merge --no-ff`, push, comment the gate summary on the
    issue, close it (`gh issue close <n> --comment ...`). Then re-run
    `scripts/tickets/next.sh`; tickets it blocked become eligible.
 8. Repeat.
@@ -67,9 +67,11 @@ Each issue body has a generated triage block with its tasks and `blocked_by`.
   the gate in its own ticket.
 - Never accept an agent's claim that something works. Run the command, read the
   output.
-- Never merge to `v0.1-resolver` and never force-push. Merging `drain`'s
-  pull request into it is the owner's decision.
-- Before a `drain` pull request is squash-merged, the `security-auditor`
+- Never push to `main` or `v0.1-resolver` and never force-push. `audit` is
+  promoted into `dev` when its gates pass (`git merge --ff-only` where it can,
+  `--no-ff` otherwise); merging `dev`'s pull request into `main` is the
+  owner's decision.
+- Before a `dev` pull request into `main` is merged, the `security-auditor`
   agent runs over that head. An "Exposed — rotate now" or Critical finding
   stops the merge until the owner acts (#206).
 - If a ticket turns out to need a decision, stop, file an ADR ticket for the
