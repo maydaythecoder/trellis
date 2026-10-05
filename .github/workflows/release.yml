@@ -49,7 +49,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
         with:
-          toolchain: stable
+          toolchain: "1.93.0"
           targets: ${{ matrix.target }}
       # lookup-only: a tag build must not restore a cache that a pull_request
       # run of ci.yml could have written (zizmor cache-poisoning, #215). With
