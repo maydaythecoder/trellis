@@ -21,12 +21,13 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
       "reached_resolved": 47,
       "reached_ambiguous": 3,
       "widest_unbound_in_touched_files": 2,
-      "radius_queries": 1
+      "radius_queries": 1,
+      "summarised": 1
     },
     "checks": [],
     "check_outcomes": [
       {
-        "kind": "TypeCheck",
+        "kind": "Typecheck",
         "passed": true
       },
       {
@@ -67,10 +68,21 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "wrote": true
       },
       {
+        "turn": 2,
+        "tool": "bash",
+        "target": "python scripts/regen.py",
+        "outcome": "exit 0",
+        "wrote": false,
+        "changed": [
+          "src/pkg/installer_gen.py"
+        ],
+        "changed_count": 1
+      },
+      {
         "turn": 3,
         "tool": "run_checks",
         "target": "",
-        "outcome": "TypeCheck: passed; Tests: passed",
+        "outcome": "Typecheck: passed; Tests: passed",
         "wrote": false
       }
     ],
@@ -89,6 +101,12 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "kind": "forced_skill",
         "name": "refactor",
         "bytes": 512
+      },
+      {
+        "kind": "image",
+        "name": "docs/before.png",
+        "bytes": 19,
+        "sha256": "75b08260bd2aefc193805b0b7c484632ae04aa29cc61d75802b21ea2ac1df2e0"
       }
     ],
     "steering": [
@@ -98,9 +116,22 @@ expression: "trail_json(\"rename Installer.run\", factual, judgment)"
         "text": "keep the old name as an alias",
         "len": 29
       }
+    ],
+    "suspected_recall_gaps": [
+      {
+        "partitions": [
+          0,
+          1
+        ],
+        "files": [
+          "src/pkg/installer.py",
+          "src/pkg/cli.py"
+        ],
+        "check": "Typecheck"
+      }
     ]
   },
-  "factual_sha256": "f239dd0e70120332d0455956f62f2471e02ec5bdb6e3555de46b81402d66bdee",
+  "factual_sha256": "8ff1d1338d6c78814f0cf8a503e1bde230b3e4685bb6abbe9a2fd89bcb10dd1d",
   "judgment": {
     "tech_debt_projection": "the alias will need removing",
     "rationale": "kept the old name as an alias"

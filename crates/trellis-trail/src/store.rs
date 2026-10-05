@@ -57,14 +57,7 @@ pub fn slugify(task: &str) -> String {
 /// The civil-from-days conversion is Howard Hinnant's, which is the standard
 /// way to do this without a calendar table.
 pub fn timestamp_now() -> String {
-    let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!(
-        "{}-{:03}",
-        timestamp_from_epoch(d.as_secs()),
-        d.subsec_millis()
-    )
+    now().0
 }
 
 fn timestamp_from_epoch(secs: u64) -> String {
@@ -163,8 +156,9 @@ pub fn latest(root: &Path) -> std::io::Result<Option<(PathBuf, UntrustedTrail)>>
     match UntrustedTrail::from_json(&text) {
         Ok(t) => {
             // The integrity check needs the bytes as they were on disk, not a
-            // re-serialization of what we parsed, so the raw JSON travels with
-            // the trail rather than being re-read by every caller.
+            // re-serialization of what we parsed, so it runs here on the text
+            // as read. Its only effect is the warning below: neither the text
+            // nor the `Integrity` is returned.
             let integrity = t.integrity(&text);
             if integrity == crate::Integrity::Altered {
                 tracing::warn!(
@@ -174,8 +168,10 @@ pub fn latest(root: &Path) -> std::io::Result<Option<(PathBuf, UntrustedTrail)>>
             }
             Ok(Some((path, t)))
         }
-        // A corrupt or hand-edited trail must not abort a resume. Reporting
-        // it and continuing without context is better than refusing to work.
+        // A corrupt newest trail is an error, not an empty history: `run
+        // --resume` fails before the snapshot rather than silently starting
+        // without the context it asked for. (The by-id listing behind
+        // `resume <run_id>` skips unparseable trails instead, ADR 0038.)
         Err(e) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("{}: {e}", path.display()),
