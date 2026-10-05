@@ -215,7 +215,116 @@ while GitHub-hosted jobs were blocked (run 36507327810).
   listener does not bind; the job only needs something listening there.
 - Self-hosted runners run whatever a pushed workflow says, as the owner. That
   is acceptable for a private repository with one owner; GitHub advises
-  against it for public ones.
+  against it for public ones. The owner decided on 2026-10-04 to move both
+  runners to low-privilege accounts (#219); the procedure is below. Until the
+  owner has run it and one CI run is green on each runner, the table above is
+  still the current state.
+
+### Low-privilege runner accounts (#219)
+
+Two scripts, both run by the owner with admin rights. Both print every step,
+have a dry-run mode, refuse to start without admin rights, refuse while their
+runner is running, and are safe to run again. Neither prints `.credentials`
+or a token. Neither needs a new registration token, because each moves the
+existing registration with the runner directory. On Windows that works
+because the runner encrypts `.credentials_rsaparams` with DPAPI at
+`LocalMachine` scope, not per user.
+
+| | `trellis-wsl` | `trellis-win` |
+|---|---|---|
+| Script | `scripts/runners/wsl-runner-account.sh` (as root in the distro) | `scripts/runners/win-runner-account.ps1` (elevated) |
+| Account | `trellis-ci`: own group, not in `sudo`/`adm`/`docker`/`ollama`, password locked, `nologin` shell | `trellis-ci-win`: member of `Users` only, hidden from sign-in, denied local, RDP and network logon, allowed batch logon |
+| Runner dir | moved to `/home/trellis-ci/actions-runner`, owned by `trellis-ci`, mode 700, `.credentials*` 600 | stays at `C:\actions-runner\win`; owner `trellis-ci-win`; ACL is SYSTEM, Administrators and `trellis-ci-win` only (the owner reads it elevated, or rerun with `-OwnerCanRead`) |
+| Started by | systemd unit `trellis-runner-wsl.service` (`User=trellis-ci`). The `trellis-runner-wsl` task becomes a keep-alive (`wsl.exe -d Ubuntu --exec /bin/sleep infinity`) as the owner at logon, because the distro stops when no `wsl.exe` is left | task `trellis-runner-win`, as `trellis-ci-win`, at startup, whether or not anyone is logged on, no time limit |
+| Job PATH | `.path` loses every `/home/mayda` and `/mnt` entry; the runner's `cargo/bin` comes first | the account's own PATH, plus `%~dp0cargo\bin` added in `start-runner.cmd` |
+
+Things the scripts close beyond the account change:
+- **WSL interop.** Any Linux user can read `/mnt/c` (9p, mode 777), and can
+  start a Windows `.exe` through `/init`. That `.exe` then runs with the
+  owner's Windows token. So a non-sudo account alone would not contain a
+  job. The unit makes `/mnt/c`, `/mnt/wslg`, `/run/WSL` and `/init`
+  inaccessible (not all of `/mnt`: `/etc/resolv.conf` links to
+  `/mnt/wsl/resolv.conf`, so hiding it breaks DNS), mounts an
+  empty `/home` with only `/home/trellis-ci` bound in, and sets
+  `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem=full`.
+- **`C:\` lets every signed-in user write to new top-level folders.** Its ACL
+  gives `Authenticated Users` Modify on subfolders, so `C:\w` (the worktrees
+  and their hooks) and `C:\ci-local` are writable by any account. The
+  script adds a Deny ACE for `trellis-ci-win` on each `-DenyPaths` entry
+  (default `C:\w`, `C:\ci-local`). It also lists any other top-level folder
+  with the same ACL and leaves it unchanged.
+- **WSL `.credentials` was world-readable** (mode 644). It is now 600.
+
+Each script keeps the provider-key scrub. `start.sh` and `start-runner.cmd`
+still clear `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY` and
+`GEMINI_API_KEY`, and the Windows script refuses to run if those lines are
+missing. The runner's `.env` (its own `CARGO_HOME`, `RUSTUP_HOME`,
+`GIT_CONFIG_GLOBAL` and a closed `OPENAI_BASE_URL`) is unchanged apart from
+the WSL path. rustup is not copied: `dtolnay/rust-toolchain` installs it into
+the runner's `CARGO_HOME` on the first job, and the PATH change lets later
+jobs find it there. MSVC Build Tools, Git and the system `python3` are
+installed per machine, so the new accounts can use them.
+
+Run, in this order. Run the dry runs first and read their output.
+
+```
+# 1. Stop both runners. Wait for an idle runner, or a running job is cancelled.
+schtasks /end /tn trellis-runner-wsl
+schtasks /end /tn trellis-runner-win
+
+# 2. WSL (from any prompt; -u root needs no password):
+wsl.exe -d Ubuntu -u root -- bash scripts/runners/wsl-runner-account.sh --dry-run
+wsl.exe -d Ubuntu -u root -- bash scripts/runners/wsl-runner-account.sh
+
+# 3. Windows, from an elevated PowerShell in the repository:
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\runners\win-runner-account.ps1 -WhatIf
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\runners\win-runner-account.ps1
+schtasks /run /tn trellis-runner-win
+schtasks /run /tn trellis-runner-wsl
+```
+
+If a runner refuses because it is still running, wait, or add `-StopRunner` /
+`--stop-runner`. Those options also cancel a job in progress.
+
+Verify:
+- `gh api repos/maydaythecoder/trellis/actions/runners --jq '.runners[] | [.name, .status, .busy] | @tsv'`
+  lists `trellis-win` and `trellis-wsl` as `online`.
+- Inside a job, `whoami` prints `muhyadins_pc\trellis-ci-win` on Windows and
+  `trellis-ci` on Linux. For a one-off check, add a step `- run: whoami; id || true`
+  on a scratch branch. The same check works without CI:
+  `Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Invoke-CimMethod -MethodName GetOwner`
+  and `wsl.exe -d Ubuntu -- ps -o user=,args= -C Runner.Listener`.
+- `wsl.exe -d Ubuntu -- systemctl status trellis-runner-wsl` shows the unit
+  as active. `schtasks /query /tn trellis-runner-win /v /fo list` shows
+  `Run As User: trellis-ci-win` and `Logon Mode: Interactive/Background`.
+- Push a commit to a branch with CI. Both runners finish one green run.
+- After a reboot, `trellis-win` comes back without a logon. `trellis-wsl`
+  still waits for the owner's logon, which starts the WSL keep-alive.
+
+Roll back, in this order. Both rollbacks keep the account and lock or
+disable it. Each prints the command that deletes it.
+
+```
+wsl.exe -d Ubuntu -u root -- bash scripts/runners/wsl-runner-account.sh --rollback
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\runners\win-runner-account.ps1 -Rollback   # elevated
+```
+
+The WSL rollback removes the unit, moves the directory back to
+`/home/mayda/actions-runner`, and restores `.env`, `start.sh`, `ci-gitconfig`
+and `.path` from their `*.pre219` copies. The Windows rollback restores the
+ACLs from `C:\actions-runner\win.acl-pre219.txt` and gives ownership back to
+the owner. It removes the Deny ACEs, restores `start-runner.cmd.pre219`, and
+re-registers both tasks as the owner at logon, as they were before #219.
+
+This differs from the ticket's owner steps in two ways. The Windows runner
+runs as a task under `trellis-ci-win`, not as a service, so that
+`start-runner.cmd`, which does the scrub, stays the single launcher. And the
+scripts move the existing registrations instead of creating new ones. If a
+fresh registration is wanted anyway: run `config.cmd remove` / `./config.sh
+remove` with a removal token, then `config --url
+https://github.com/maydaythecoder/trellis --token <token> --name trellis-win
+--labels self-hosted,Windows,X64 --unattended` as the new account, before
+running the scripts.
 
 ## CI without GitHub
 
