@@ -106,8 +106,8 @@ pub fn all(root: &Path) -> Vec<Entry> {
 /// change. Both, labelled, and the caller shows which.
 pub struct Mention {
     pub entry_index: usize,
-    /// True when the run proposed a change to a file whose path contains the
-    /// query — evidence, as opposed to the task string merely naming it.
+    /// The first proposed path containing the query, when there is one —
+    /// evidence, as opposed to the task string merely naming it.
     pub touched_file: Option<String>,
     pub task_mentions: bool,
     /// A person's decisions in approve mode about calls aimed at the query,
@@ -119,7 +119,9 @@ pub struct Mention {
     pub decisions: Vec<(String, String)>,
 }
 
-/// As [`mentions`], but any of several needles counts.
+/// The entries that mention any of `queries`: a proposed path, the task, or
+/// an approval decision's target containing one of them, case-insensitively.
+/// A substring search, so `parser` finds `app/parser.py`.
 ///
 /// `why <symbol>` resolves the symbol to the file that defines it and passes
 /// both, because the factual section records files and the user holds a
@@ -179,7 +181,7 @@ pub struct Touch<'a> {
 
 /// The entries whose `factual.proposed` or action targets name `path`.
 ///
-/// Unlike [`mentions`], this is equality of paths, not a substring search:
+/// This is equality of paths, not a substring search like [`mentions_any`]:
 /// pairing a changed file with the runs that touched it must not pair
 /// `a.py` with a run on `ba.py` or `src/a.py`. Case is kept, because two
 /// paths that differ only in case are two files on most filesystems. What
@@ -236,30 +238,6 @@ fn normalize_path(p: &str) -> String {
     } else {
         rel
     }
-}
-
-pub fn mentions(entries: &[Entry], query: &str) -> Vec<Mention> {
-    let needle = query.to_ascii_lowercase();
-    entries
-        .iter()
-        .enumerate()
-        .filter_map(|(i, e)| {
-            let touched = e
-                .trail
-                .factual
-                .proposed
-                .iter()
-                .find(|p| p.to_ascii_lowercase().contains(&needle))
-                .cloned();
-            let in_task = e.trail.task.to_ascii_lowercase().contains(&needle);
-            (touched.is_some() || in_task).then_some(Mention {
-                entry_index: i,
-                touched_file: touched,
-                task_mentions: in_task,
-                decisions: Vec::new(),
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -361,7 +339,7 @@ mod tests {
             &trail_json("investigate parser slowness", "app/other.py", true),
         );
         let all = all(d.path());
-        let m = mentions(&all, "parser");
+        let m = mentions_any(&all, &["parser".to_string()]);
         assert_eq!(m.len(), 2);
 
         let edited = m.iter().find(|x| x.touched_file.is_some()).unwrap();
@@ -390,7 +368,7 @@ mod tests {
         let all = all(d.path());
 
         assert!(
-            mentions(&all, "boolean_validator").is_empty(),
+            mentions_any(&all, &["boolean_validator".to_string()]).is_empty(),
             "the literal name is not in the path, which is the bug"
         );
         // The caller resolves the symbol to its file and passes both.
@@ -413,7 +391,7 @@ mod tests {
             "20260101-000000-000-a.json",
             &trail_json("a", "a.py", true),
         );
-        assert!(mentions(&all(d.path()), "nosuchsymbol").is_empty());
+        assert!(mentions_any(&all(d.path()), &["nosuchsymbol".to_string()]).is_empty());
     }
 
     /// `run_id` is what `trellis resume <run_id>` names, and it has to name
@@ -588,7 +566,7 @@ mod tests {
     }
 
     /// Pairing a changed file with the runs that touched it is exact. The
-    /// substring match `mentions` uses would pair `a.py` with every run on
+    /// substring match `mentions_any` uses would pair `a.py` with every run on
     /// `ba.py` or `src/a.py`, and the delta would cite history that is not
     /// about the file at all.
     #[test]

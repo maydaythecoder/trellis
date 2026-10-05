@@ -19,7 +19,7 @@
 
 use trellis_trail::{
     Action, Approval, CheckOutcome, ContextFill, Factual, Input, Integrity, Judgment, ModeCounts,
-    Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, Trail, UntrustedTrail,
+    Provenance, RadiusCounts, SCHEMA, Steer, SteerKind, SuspectedRecallGap, Trail, UntrustedTrail,
 };
 
 /// Builds a trail around `factual` with fixed identity fields and the digest
@@ -68,12 +68,12 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             reached_ambiguous: 3,
             widest_unbound_in_touched_files: 2,
             radius_queries: 1,
-            summarised: 0,
+            summarised: 1,
         },
         checks: vec![],
         check_outcomes: vec![
             CheckOutcome {
-                kind: "TypeCheck".into(),
+                kind: "Typecheck".into(),
                 passed: true,
             },
             CheckOutcome {
@@ -120,10 +120,20 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 changed_count: 0,
             },
             Action {
+                turn: 2,
+                tool: "bash".into(),
+                target: "python scripts/regen.py".into(),
+                outcome: "exit 0".into(),
+                wrote: false,
+                changed: Vec::new(),
+                changed_count: 0,
+            }
+            .with_changed(&["src/pkg/installer_gen.py".into()]),
+            Action {
                 turn: 3,
                 tool: "run_checks".into(),
                 target: String::new(),
-                outcome: "TypeCheck: passed; Tests: passed".into(),
+                outcome: "Typecheck: passed; Tests: passed".into(),
                 wrote: false,
                 changed: Vec::new(),
                 changed_count: 0,
@@ -146,6 +156,7 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
                 bytes: 512,
                 sha256: None,
             },
+            Input::hashed("image", "docs/before.png", b"fixture image bytes"),
         ],
         steering: vec![Steer::new(
             2,
@@ -153,7 +164,13 @@ fn trail_snapshot_full_run_with_every_optional_field_present() {
             "keep the old name as an alias",
         )],
         label: Some("installer rename".into()),
-        suspected_recall_gaps: vec![],
+        // Present for its shape, though the final outcomes above passed: a
+        // real run records a gap only for a failing integrated check.
+        suspected_recall_gaps: vec![SuspectedRecallGap {
+            partitions: vec![0, 1],
+            files: vec!["src/pkg/installer.py".into(), "src/pkg/cli.py".into()],
+            check: "Typecheck".into(),
+        }],
     };
     let judgment = Judgment {
         tech_debt_projection: Some("the alias will need removing".into()),
