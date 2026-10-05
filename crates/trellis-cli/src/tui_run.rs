@@ -442,12 +442,21 @@ pub(crate) fn run(
         ));
     }
 
-    let Some(spec) = model_spec else {
-        anyhow::bail!(concat!(
-            "no model configured, and a run would have nothing to drive it.\n",
-            "Set one with `trellis model`, or in .trellis/config.toml, or pass\n",
-            "`--model <spec>` to `trellis run`."
-        ));
+    // No model: offer what is running locally rather than refuse (ADR 0050
+    // §2). Reached only with a terminal on both ends; a pipe was refused
+    // above, so nothing here can wait on input that never comes.
+    let spec = match model_spec {
+        Some(spec) => spec,
+        None => {
+            // The callers read the config with `.ok()`, so a file that does
+            // not parse arrives here as "no model". Its own error says what
+            // is wrong; a picker over it would hide that.
+            crate::config::RepoConfig::load(root)?;
+            match crate::first_run::offer()? {
+                Some(spec) => spec,
+                None => return Ok(()),
+            }
+        }
     };
 
     // What the status bar shows before anything has been asked.
