@@ -648,10 +648,9 @@ fn main() -> Result<()> {
             // "no model": the refusal may be the point (ADR 0024 §3).
             let model = match model {
                 Some(m) => m,
-                None => config::RepoConfig::load(&root)?.model().context(
-                    "no model. Pass --model, or set [model] spec in \
-                     .trellis/config.toml",
-                )?,
+                None => config::RepoConfig::load(&root)?
+                    .model()
+                    .with_context(first_run::no_model)?,
             };
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
