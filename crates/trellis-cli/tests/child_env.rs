@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const MARKER: (&str, &str) = ("TRELLIS_TEST_VISIBLE", "visible-marker-61c0a2");
+/// What trellis sets so a tool can tell an agent launched it (#317).
+const AGENT_MARKER: (&str, &str) = ("AI_AGENT", "trellis");
 /// Built-in names and two user-level providers' `key_env`s: every way a key
 /// reaches trellis's environment. (A repository may no longer name a
 /// `key_env` at all, ADR 0024 §3, so both custom names are the user's.)
@@ -152,6 +154,9 @@ fn trellis(f: &Fixture, args: &[&str]) -> Output {
         .current_dir(&f.repo)
         .env("NO_COLOR", "1")
         .env_remove("RUST_LOG")
+        // So an `AI_AGENT` in a dump was put there by trellis, not inherited
+        // from an agent running this suite (#317).
+        .env_remove(AGENT_MARKER.0)
         .env("TRELLIS_CONFIG_DIR", f.home.join("trellis"))
         .env("APPDATA", &f.home)
         .env("XDG_CONFIG_HOME", &f.home)
@@ -208,12 +213,17 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn checks_bash_custom_tools_and_hooks_inherit_no_key() {
-    let dumps_of = |f: &Path, n: &str| f.join(format!("{n}.txt"));
+fn dumps_of(d: &Path, n: &str) -> PathBuf {
+    d.join(format!("{n}.txt"))
+}
+
+/// A trusted model run whose two checks, `bash`, custom tool and hook each
+/// write their environment to `<kind>.txt` under the fixture's `dumps`.
+/// Returns the fixture and what the run printed.
+fn print_environments(name: &str) -> (Fixture, String) {
     // The dump paths live in the fixture's own directory, so the tool
     // configuration goes in as a second commit once that exists.
-    let f0 = fixture("run", "", &[]);
+    let f0 = fixture(name, "", &[]);
     let d = &f0.dumps;
     let (shell, flag) = shell();
     let config = format!(
@@ -251,6 +261,18 @@ fn checks_bash_custom_tools_and_hooks_inherit_no_key() {
     let spec = format!("scripted:{}", script_path.display());
     let out = trellis(&f0, &["run", "print environments", "--model", &spec]);
     let said = combined(&out);
+    (f0, said)
+}
+
+/// Whether the environment dump at `dump` holds `line` (`NAME=value`).
+fn has_line(dump: &Path, line: &str) -> bool {
+    read(dump).lines().any(|l| l.trim_end() == line)
+}
+
+#[test]
+fn checks_bash_custom_tools_and_hooks_inherit_no_key() {
+    let (f0, said) = print_environments("run");
+    let d = &f0.dumps;
 
     for kind in ["check", "tests", "bash", "custom", "hook"] {
         assert_scrubbed(kind, &dumps_of(d, kind), keys(), &said);
@@ -336,6 +358,85 @@ fn a_process_agent_inherits_no_key_unless_its_profile_passes_that_one() {
     assert!(!show.contains(anthropic.1), "{show}");
 
     for p in [&f.repo, &f.home, &f.dumps, &dumps] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
+fn bash_custom_tools_hooks_and_process_agents_get_the_agent_marker() {
+    // #317. The risk: a tool that adapts its output when an agent launched
+    // it (`AI_AGENT`) cannot tell trellis did, because the only names
+    // trellis set were its own. `trellis()` removes `AI_AGENT`, so a
+    // marker in a dump is one trellis added.
+    let marker = format!("{}={}", AGENT_MARKER.0, AGENT_MARKER.1);
+    let (f0, said) = print_environments("marker-run");
+    for kind in ["bash", "custom", "hook"] {
+        let dump = dumps_of(&f0.dumps, kind);
+        assert_scrubbed(kind, &dump, keys(), &said);
+        assert!(
+            has_line(&dump, &marker),
+            "{kind} has no {marker}:\n{}\noutput: {said}",
+            read(&dump)
+        );
+    }
+
+    let agent = scratch("marker-proc-out").join("agent.txt");
+    let f1 = fixture(
+        "marker-proc",
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n",
+        &[(
+            ".trellis/agents/plain.toml",
+            format!("command = {}\ntimeout_s = 60\n", dump_argv(&agent)),
+        )],
+    );
+    let o = trellis(
+        &f1,
+        &[
+            "queue",
+            "add",
+            "print the environment",
+            "--assignee",
+            "plain",
+        ],
+    );
+    assert!(o.status.success(), "{}", combined(&o));
+    let trust = trellis(&f1, &["trust"]);
+    assert!(trust.status.success(), "trust: {}", combined(&trust));
+    let said = combined(&trellis(&f1, &["work"]));
+    assert_scrubbed("process agent", &agent, keys(), &said);
+    assert!(
+        has_line(&agent, &marker),
+        "the process agent has no {marker}:\n{}\noutput: {said}",
+        read(&agent)
+    );
+
+    for p in [&f0.repo, &f0.home, &f0.dumps, &f1.repo, &f1.home, &f1.dumps] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+    let _ = std::fs::remove_dir_all(agent.parent().unwrap());
+}
+
+#[test]
+fn a_grounded_check_gets_no_agent_marker_from_trellis() {
+    // #317. The risk: a repository's test suite that reads `AI_AGENT`
+    // behaves differently under trellis than under a person, and the
+    // Verdict describes a run no person can reproduce. `trellis()` removes
+    // `AI_AGENT`, so one in a check's dump was added by trellis.
+    let (f0, said) = print_environments("marker-check");
+    for kind in ["check", "tests"] {
+        let dump = dumps_of(&f0.dumps, kind);
+        assert_scrubbed(kind, &dump, keys(), &said);
+        let prefix = format!("{}=", AGENT_MARKER.0);
+        assert!(
+            !read(&dump)
+                .lines()
+                .any(|l| l.to_ascii_uppercase().starts_with(&prefix)),
+            "{kind}: the check was given {}:\n{}",
+            AGENT_MARKER.0,
+            read(&dump)
+        );
+    }
+    for p in [&f0.repo, &f0.home, &f0.dumps] {
         let _ = std::fs::remove_dir_all(p);
     }
 }
