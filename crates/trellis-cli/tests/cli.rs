@@ -3299,3 +3299,54 @@ fn subcommand_case_leaves_a_task_text_alone() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn trellis_out(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn interface_flag_desktop_and_web_say_they_are_not_built() {
+    // ADR 0050 section 1: the flags parse, and until their tickets land each
+    // says so instead of appearing to start something.
+    for (flag, what) in [("--dsk", "desktop"), ("--web", "web view")] {
+        let out = trellis_out(&[flag]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{flag} succeeded");
+        assert!(
+            err.contains(&format!("the {what} is not built yet")),
+            "{flag}: {err}"
+        );
+    }
+}
+
+#[test]
+fn interface_flag_two_together_are_refused_naming_both() {
+    for (a, b) in [("--tui", "--dsk"), ("--tui", "--web"), ("--dsk", "--web")] {
+        let out = trellis_out(&[a, b]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{a} {b} succeeded");
+        assert!(err.contains(a) && err.contains(b), "{a} {b}: {err}");
+    }
+}
+
+#[test]
+fn interface_flag_with_a_subcommand_is_refused_naming_both() {
+    let out = trellis_out(&["--tui", "run", "x"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("`--tui`") && err.contains("`run`"), "{err}");
+    // And the help leads with how to start.
+    let help = String::from_utf8_lossy(&trellis_out(&["--help"]).stdout).into_owned();
+    let start = help.find("Start:").expect("a Start section");
+    let commands = help.find("Commands:").expect("a Commands section");
+    assert!(start < commands, "{help}");
+    for flag in ["--tui", "--dsk", "--web"] {
+        assert!(
+            help[start..commands].contains(flag),
+            "{flag} missing from Start: {help}"
+        );
+    }
+}

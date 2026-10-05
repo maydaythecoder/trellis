@@ -46,7 +46,7 @@ mod user_config;
 mod doctor_extra;
 
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -69,9 +69,30 @@ pub(crate) use run_cmd::{
     name = "trellis",
     about = "An agent harness for Python repositories: blast radius mapped, \
              checks executed, decisions recorded.",
-    version
+    version,
+    // ADR 0050 section 1: how to start comes before the subcommands, so the
+    // first thing `trellis --help` says is that `trellis` alone is enough.
+    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\n\
+                     Start:\n  \
+                     trellis          open the terminal interface\n  \
+                     trellis --tui    the same, said explicitly\n  \
+                     trellis --dsk    open the desktop window\n  \
+                     trellis --web    serve the desktop's page on 127.0.0.1\n\n\
+                     {all-args}{after-help}"
 )]
 struct Cli {
+    /// Open the terminal interface; what bare `trellis` does (ADR 0050).
+    #[arg(long, hide = true, conflicts_with_all = ["dsk", "web"])]
+    tui: bool,
+
+    /// Open the desktop window (ADR 0048, ADR 0050).
+    #[arg(long, hide = true, conflicts_with = "web")]
+    dsk: bool,
+
+    /// Serve the desktop's page on 127.0.0.1 (ADR 0050 section 5).
+    #[arg(long, hide = true)]
+    web: bool,
+
     /// Repository root. Defaults to the current directory.
     #[arg(long, global = true)]
     root: Option<PathBuf>,
@@ -422,7 +443,36 @@ fn main() -> Result<()> {
         Err(_) => default(),
     };
     // Parsed first so `--log-json` is known before the subscriber is built.
-    let cli = Cli::parse_from(subcommand_lowercased(std::env::args_os().collect()));
+    let matches =
+        Cli::command().get_matches_from(subcommand_lowercased(std::env::args_os().collect()));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // ADR 0050 section 1: an interface flag says which interface to open,
+    // and a subcommand is not an interface, so the two together are a
+    // mistake to name rather than one to pick a winner for.
+    let interface = [(cli.tui, "--tui"), (cli.dsk, "--dsk"), (cli.web, "--web")]
+        .into_iter()
+        .find_map(|(on, name)| on.then_some(name));
+    if let (Some(flag), Some(sub)) = (interface, matches.subcommand_name()) {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!("`{flag}` opens an interface and cannot be used with `{sub}`"),
+            )
+            .exit();
+    }
+    // Accepted by the parser so the surface ADR 0050 records is the one
+    // people learn, and refused here until it is built: a flag that
+    // appeared to start something it cannot is worse than one that says so.
+    if cli.dsk {
+        anyhow::bail!(
+            "the desktop is not built yet (ADR 0048, story S19); `trellis` opens the terminal interface"
+        );
+    }
+    if cli.web {
+        anyhow::bail!(
+            "the web view is not built yet (ADR 0050, story S19); `trellis` opens the terminal interface"
+        );
+    }
     let json = match &cli.log_json {
         Some(p) => {
             let f = std::fs::OpenOptions::new()
