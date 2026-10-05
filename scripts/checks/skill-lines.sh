@@ -4,11 +4,10 @@
 #   scripts/checks/skill-lines.sh               check every tracked SKILL.md
 #   scripts/checks/skill-lines.sh --self-test   prove the check bites at 501
 #
-# history/TRELLIS-direction.md keeps a skill at 500 lines or fewer. ADR 0019
-# caps only the disclosed list, so nothing else holds a single SKILL.md to
-# that. This is a check on this repository's own skills, not a run-time
-# rule: a long skill in a user's repository is already bounded in the prompt
-# by the disclosure cap and read_skill's 8,000-character window.
+# ADR 0019 ("The 500-line cap on a SKILL.md") makes this a CI check on this
+# repository's own skills. It is not a run-time rule: a long skill in a
+# user's repository is already bounded in the prompt by the disclosure cap
+# and read_skill's 8,000-character window.
 #
 # Exit 0: every file is within the cap. Exit 1: at least one is over, each
 # printed with its line count, or the self-test failed. Exit 2: wrong
