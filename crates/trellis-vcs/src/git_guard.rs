@@ -362,7 +362,8 @@ fn read_entry(p: &Path) -> Result<Option<Entry>, GuardError> {
 }
 
 /// Every file and link under `dir`, sorted, links not entered. A missing
-/// directory is empty; one that is itself a link is that one entry.
+/// directory is empty; one that is itself a link is that one entry; one
+/// that cannot be listed is an error, as in `read_entry`.
 fn read_tree(dir: &Path) -> Result<Vec<(PathBuf, Entry)>, GuardError> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -370,9 +371,10 @@ fn read_tree(dir: &Path) -> Result<Vec<(PathBuf, Entry)>, GuardError> {
         match read_entry(&d)? {
             None => {}
             Some(Entry::Dir) => {
-                let Ok(entries) = std::fs::read_dir(&d) else {
-                    continue;
-                };
+                let entries = std::fs::read_dir(&d).map_err(|source| GuardError::Unreadable {
+                    path: d.clone(),
+                    source,
+                })?;
                 stack.extend(entries.filter_map(Result::ok).map(|e| e.path()));
             }
             Some(e) => out.push((d, e)),
@@ -795,6 +797,42 @@ mod tests {
         std::fs::write(root.join("hooks-dir/pre-commit"), "x").unwrap();
         assert_eq!(g.restore(), (vec![], vec![]));
         assert!(root.join("hooks-dir/pre-commit").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hooks_subdirectory_that_cannot_be_read_at_capture_is_an_error() {
+        // The risk: an unreadable hooks subdirectory was skipped at capture,
+        // so once it was readable again every file in it looked planted and
+        // restore deleted the user's files. A guard that cannot read a
+        // directory cannot put it back, so capture refuses, as it does for
+        // a file it cannot read.
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q"]);
+        let sub = root.join(".git/hooks/lib");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("helper.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a 000 directory anyway, so there is nothing to test.
+        if std::fs::read_dir(&sub).is_ok() {
+            std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let captured = GitGuard::capture(root);
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        match captured {
+            Err(GuardError::Unreadable { path, .. }) => assert!(path.ends_with("lib"), "{path:?}"),
+            Err(e) => panic!("expected Unreadable for the hooks subdirectory, got {e}"),
+            Ok(g) => {
+                let (differed, failed) = g.restore();
+                assert!(sub.join("helper.sh").exists(), "{differed:?} {failed:?}");
+                panic!("capture skipped a directory it could not read");
+            }
+        }
     }
 
     #[test]

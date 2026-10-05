@@ -791,7 +791,7 @@ impl Orchestrator {
             }
             ToolCall::Ls { path } => match read_refusal(&self.root, path) {
                 Some(e) => ToolResult::Error(format!("ls refused: {e}")),
-                None => crate::listing::ls(&self.root.join(path), path),
+                None => crate::listing::ls(&self.root, path),
             },
             ToolCall::Bash { command } => self.bash(command).await,
             ToolCall::SearchNotes { query, limit } => match self.tools.notes() {
@@ -1182,7 +1182,8 @@ impl Orchestrator {
     fn coverage_report(&self, paths: &[String]) -> ToolResult {
         if paths.is_empty() {
             return ToolResult::Error(
-                "coverage_report needs at least one path; it reports on the files named,                  not on the whole repository"
+                "coverage_report needs at least one path; it reports on the files named, \
+                 not on the whole repository"
                     .into(),
             );
         }
@@ -1410,7 +1411,9 @@ impl Orchestrator {
         // One verdict per call. Asking for several kinds runs the first that
         // fails, because a type error makes the test result uninformative
         // rather than additionally informative.
-        for kind in kinds {
+        // Last by position: the wire layer does not dedupe `kinds`, and a
+        // kind listed twice must not end the call at its first pass.
+        for (i, kind) in kinds.iter().enumerate() {
             let v = match kind {
                 CheckKind::Typecheck => {
                     trellis_checks::typecheck(&self.root, &checks, &paths).await
@@ -1436,7 +1439,7 @@ impl Orchestrator {
             if !v.passed() {
                 return ToolResult::Checks(v);
             }
-            if kind == kinds.last().expect("non-empty") {
+            if i + 1 == kinds.len() {
                 return ToolResult::Checks(v);
             }
         }
@@ -2181,7 +2184,8 @@ scope = [\"{scope}\"]
         );
         assert!(
             h.touched().await.is_empty(),
-            "a refused edit must not enter the rollback set or the trail's              proposed list"
+            "a refused edit must not enter the rollback set or the trail's \
+             proposed list"
         );
     }
 
@@ -2198,6 +2202,53 @@ scope = [\"{scope}\"]
                 assert!(!e.contains("  "), "{e:?}");
             }
             other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn coverage_report_with_no_paths_is_refused_in_one_readable_sentence() {
+        // Written across two source lines, so formatter debris can reach the
+        // model here as it did in the refusals above (#404).
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+            .with_tools(crate::registry::ToolSet::every_builtin())
+            .spawn();
+        let out = h.call(&ToolCall::CoverageReport { paths: vec![] }).await;
+        match out.result {
+            ToolResult::Error(e) => {
+                assert!(e.contains("at least one path"), "{e}");
+                assert!(!e.contains("  "), "{e:?}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kind_listed_twice_does_not_skip_the_kinds_between() {
+        // The wire layer does not dedupe `kinds` (#404). Finding the last
+        // kind by value returned the first `governance` pass and never ran
+        // the typecheck between, reporting a pass for a check never run.
+        let d = repo();
+        let checks = CheckConfig {
+            typecheck: vec!["trellis-404-no-such-checker".into()],
+            ..CheckConfig::default()
+        };
+        let (h, _j) = Orchestrator::new(d.path(), checks).spawn();
+        let kinds = vec![
+            CheckKind::Governance,
+            CheckKind::Typecheck,
+            CheckKind::Governance,
+        ];
+        match h.run_checks(vec![], kinds).await {
+            ToolResult::Checks(v) => {
+                assert!(!v.passed(), "the typecheck cannot run, so it fails");
+                assert!(
+                    v.detail().command.contains("trellis-404-no-such-checker"),
+                    "the typecheck between the two governance kinds must run: {:?}",
+                    v.detail().command
+                );
+            }
+            other => panic!("expected a verdict, got {other:?}"),
         }
     }
 
