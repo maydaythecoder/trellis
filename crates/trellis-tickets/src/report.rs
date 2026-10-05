@@ -305,10 +305,50 @@ impl Report {
         out
     }
 
-    /// One JSON object.
+    /// One JSON object, with DEL and the C1 range escaped as in
+    /// [`escape_json_controls`]: `triage --json` prints it to a terminal.
     pub fn json(&self) -> String {
         // A struct of strings, vectors and unit-tagged enums has no map with
         // non-string keys and no failing `Serialize`, so this cannot fail.
-        serde_json::to_string(self).expect("a Report always serializes")
+        escape_json_controls(&serde_json::to_string(self).expect("a Report always serializes"))
+    }
+}
+
+/// `serde_json` escapes the C0 controls inside strings but not DEL or the
+/// C1 range, and U+009B alone starts a terminal control sequence. Those are
+/// escaped as `\u` sequences here, so the document still parses to the same
+/// strings and cannot drive the terminal it is printed to. A newline is
+/// left as it is: in serialized JSON it can only be layout between tokens.
+pub(crate) fn escape_json_controls(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if c.is_control() && c != '\n' {
+            out.push_str(&format!("\\u{:04x}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triage_json_escapes_del_and_the_c1_controls_in_a_title() {
+        // U+009B is a one-byte CSI: printed raw by `triage --json`, a title
+        // could drive the terminal of whoever reads the report.
+        let t = Ticket {
+            title: "a\u{9b}2Jb\u{7f}c\u{85}".to_string(),
+            body: String::new(),
+            labels: Vec::new(),
+            state: State::Open,
+        };
+        let json = report(1, &t, &BTreeMap::new()).json();
+        assert!(!json.chars().any(char::is_control), "{json:?}");
+        assert!(json.contains("a\\u009b2Jb\\u007fc\\u0085"), "{json}");
+        let back: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(back["title"], t.title);
     }
 }
