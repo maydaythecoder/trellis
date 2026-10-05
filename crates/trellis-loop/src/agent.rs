@@ -779,6 +779,10 @@ pub async fn run_seeded<M: Model>(
     seed: Seed,
 ) -> (Outcome, Transcript) {
     let started = Instant::now();
+    // The ceiling this run enforces, once, for an interface that draws
+    // progress against it (#243): a constant there drew "3/4" for a run
+    // budgeted at 40.
+    tracing::info!(max_iterations = budget.max_iterations, "run budget");
     // Time spent waiting on a person in approve mode. Not charged to the
     // wall-clock budget: a diff read carefully should not be what ends a run.
     let mut waited_on_human = std::time::Duration::ZERO;

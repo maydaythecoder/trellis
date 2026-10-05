@@ -71,7 +71,12 @@ pub struct AppState {
     /// loop, which sends it to whoever asked. The same shape as `submitted`,
     /// for the same reason: `update` records the decision and does no IO.
     pub answered: Option<bool>,
-    pub scroll: u16,
+    /// Lines above the transcript's end that the view is scrolled back.
+    /// 0 is following: new output stays in view (#244). Up moves back, Down
+    /// returns, and reaching 0 follows again.
+    pub scroll_back: u16,
+    /// How the last run ended, until the next one starts.
+    pub outcome: Option<String>,
     pub should_quit: bool,
     /// Repository paths `@` completion may offer, supplied by the driver.
     ///
@@ -117,8 +122,10 @@ pub struct Radius {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Budget {
     pub iteration: u32,
-    pub tokens: u64,
+    pub prompt_bytes: u64,
     pub elapsed_secs: u64,
+    /// The run's ceiling, 0 until a `BudgetKnown` says it.
+    pub max_iterations: u32,
 }
 
 /// A steer sent to the run in flight, and the turn it reached.
@@ -173,18 +180,27 @@ impl AppState {
             }
             Message::BudgetUpdated {
                 iteration,
-                tokens,
+                prompt_bytes,
                 elapsed_secs,
             } => {
                 self.budget = Budget {
                     iteration,
-                    tokens,
+                    prompt_bytes,
                     elapsed_secs,
+                    max_iterations: self.budget.max_iterations,
+                }
+            }
+            // A new run: its ceiling, and nothing counted yet.
+            Message::BudgetKnown { max_iterations } => {
+                self.budget = Budget {
+                    max_iterations,
+                    ..Budget::default()
                 }
             }
             Message::ApprovalRequested { diff } => self.modal = Some(Modal::Approval { diff }),
             Message::Quit => self.should_quit = true,
             Message::SteerDelivered { nth, turn } => self.steer_delivered(nth, turn),
+            Message::RunOutcome(line) => self.outcome = Some(line),
             Message::RunFinished => self.run_finished(),
             Message::Tick | Message::Resize(..) => {}
         }
@@ -399,8 +415,8 @@ impl AppState {
                 self.input.pop();
             }
             KeyCode::Char(c) => self.input.push(c),
-            KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::Up => self.scroll_back = self.scroll_back.saturating_add(1),
+            KeyCode::Down => self.scroll_back = self.scroll_back.saturating_sub(1),
             _ => {}
         }
     }
@@ -457,6 +473,9 @@ impl AppState {
         }
 
         self.running = true;
+        self.outcome = None;
+        // A new run is followed from its start, wherever the view was.
+        self.scroll_back = 0;
         self.push_line(format!("> {task}"));
         self.steered.push(SteerOut::TaskFollows);
         self.submitted = Some(task);
@@ -592,8 +611,8 @@ mod tests {
         s.update(key(KeyCode::Char('q'), KeyEventKind::Release));
         assert!(!s.should_quit, "a key release must not quit");
 
-        s.update(key(KeyCode::Down, KeyEventKind::Repeat));
-        assert_eq!(s.scroll, 0, "a repeat must not scroll");
+        s.update(key(KeyCode::Up, KeyEventKind::Repeat));
+        assert_eq!(s.scroll_back, 0, "a repeat must not scroll");
     }
 
     #[test]
@@ -965,15 +984,37 @@ mod tests {
     }
 
     #[test]
-    fn scrolling_stops_at_the_top() {
+    fn transcript_scrolling_back_stops_at_the_end_and_resumes_following() {
+        // #244: 0 is "following". Down at the end stays at the end,
+        // saturating rather than wrapping to u16::MAX; Up moves back; coming
+        // back down to 0 follows again.
         let mut s = AppState::default();
+        s.update(press(KeyCode::Down));
+        assert_eq!(s.scroll_back, 0, "saturating, not wrapping to u16::MAX");
         s.update(press(KeyCode::Up));
-        assert_eq!(s.scroll, 0, "saturating, not wrapping to u16::MAX");
+        s.update(press(KeyCode::Up));
+        assert_eq!(s.scroll_back, 2);
         s.update(press(KeyCode::Down));
         s.update(press(KeyCode::Down));
-        assert_eq!(s.scroll, 2);
+        assert_eq!(s.scroll_back, 0, "back at the end: following again");
+    }
+
+    #[test]
+    fn transcript_outcome_is_held_until_the_next_run_starts() {
+        let mut s = AppState::default().with_running(true);
+        s.update(Message::RunOutcome(
+            "did not converge; worktree restored: true".into(),
+        ));
+        s.update(Message::RunFinished);
+        assert_eq!(
+            s.outcome.as_deref(),
+            Some("did not converge; worktree restored: true")
+        );
         s.update(press(KeyCode::Up));
-        assert_eq!(s.scroll, 1);
+        s.input = "fix the bug".into();
+        s.update(press(KeyCode::Enter));
+        assert_eq!(s.outcome, None, "a new run clears the last one's outcome");
+        assert_eq!(s.scroll_back, 0, "and is followed from its start");
     }
 
     #[test]
@@ -986,7 +1027,7 @@ mod tests {
         });
         s.update(Message::BudgetUpdated {
             iteration: 2,
-            tokens: 8400,
+            prompt_bytes: 8400,
             elapsed_secs: 18,
         });
         s.update(Message::CheckFinished {
@@ -994,7 +1035,7 @@ mod tests {
             passed: true,
         });
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.tokens, 8400);
+        assert_eq!(s.budget.prompt_bytes, 8400);
         assert!(s.checks[0].passed);
 
         // Ticks, resizes and RunFinished are accepted and change nothing.
@@ -1002,7 +1043,7 @@ mod tests {
         s.update(Message::Resize(10, 10));
         s.update(Message::RunFinished);
         assert_eq!(s.radius.resolved, 47);
-        assert_eq!(s.budget.tokens, 8400);
+        assert_eq!(s.budget.prompt_bytes, 8400);
     }
 }
 

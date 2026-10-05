@@ -43,10 +43,16 @@ pub enum Message {
         candidates: usize,
         unresolved: usize,
     },
+    /// After each turn. `prompt_bytes` is the prompt's size in bytes as
+    /// the loop measured it, not a token count (#243).
     BudgetUpdated {
         iteration: u32,
-        tokens: u64,
+        prompt_bytes: u64,
         elapsed_secs: u64,
+    },
+    /// At the start of a run: the iteration ceiling the loop enforces.
+    BudgetKnown {
+        max_iterations: u32,
     },
     ApprovalRequested {
         diff: String,
@@ -62,6 +68,10 @@ pub enum Message {
         nth: usize,
         turn: usize,
     },
+    /// How the run ended, one line, sent just before `RunFinished` (#244).
+    /// Shown where it does not scroll, so a finished run is visible even
+    /// when the transcript's last lines are not.
+    RunOutcome(String),
     RunFinished,
     // internal
     Quit,
