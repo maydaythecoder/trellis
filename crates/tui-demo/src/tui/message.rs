@@ -12,7 +12,7 @@ pub enum Message {
     Key(KeyEvent),
     Resize(u16, u16),
     Tick,
-    // work events, mocked for now
+    // work events, from the run driver (mock.rs in the demo)
     AgentToken(String),
     EditProposed {
         path: String,

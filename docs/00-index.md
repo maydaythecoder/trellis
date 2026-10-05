@@ -91,7 +91,7 @@ Any language but Python. Repos without a test suite. Cross-repo analysis. Any su
 
 ## Soft spot register
 
-Soft spots are numbered S1–S19 and referenced across all version docs. The full register with severities and patches lives in `docs/RISK_REGISTER.md`, written during v0.1. Each version doc lists the ones it touches.
+Soft spots are numbered S1–S21 and referenced across all version docs. The full register with severities and patches lives in `docs/RISK_REGISTER.md`, written during v0.1. Each version doc lists the ones it touches.
 
 ---
 

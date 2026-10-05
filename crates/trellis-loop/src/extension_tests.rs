@@ -1224,6 +1224,7 @@ async fn a_link_out_of_the_repository_is_neither_read_nor_written() {
     let linked = link_dir(outside.path(), &d.path().join("out"));
     assert!(linked || !cfg!(windows), "a junction needs no privilege");
     if !linked {
+        eprintln!("skipped: this host made no directory link");
         return;
     }
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
@@ -1866,15 +1867,14 @@ async fn changed_paths_a_custom_tool_that_fails_still_records_what_came_back() {
     // `Error` result must not drop them from the record: the repository
     // changed whatever the exit code said.
     let d = git_repo();
-    let mut command = shell_argv(&format!(
-        "{}{}exit 3",
-        append_to(&["app/util.py".to_string()]),
-        if cfg!(windows) { "& " } else { "; " }
-    ));
     let tool = CustomTool {
         name: "mangle".into(),
         description: "Change a file, then fail.".into(),
-        command: std::mem::take(&mut command),
+        command: shell_argv(&format!(
+            "{}{}exit 3",
+            append_to(&["app/util.py".to_string()]),
+            if cfg!(windows) { "& " } else { "; " }
+        )),
         schema: serde_json::json!({ "type": "object", "properties": {} }),
         timeout_s: None,
     };

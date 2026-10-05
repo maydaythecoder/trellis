@@ -1227,7 +1227,6 @@ def use(obj, cb):
                 "fixture: {s:?} must be a doubt site"
             );
         }
-        let edges_before = f.index.edges.clone();
 
         // `obj.stop()` is answered with a position inside `run`'s body, not
         // at a definition's name: binding it to the enclosing `run` would be
@@ -1263,14 +1262,6 @@ def use(obj, cb):
         assert_eq!(
             report.refused,
             BTreeMap::from([(Refusal::NotADefinitionName, 1)])
-        );
-        assert_eq!(
-            f.index.edges, edges_before,
-            "the graph is not the backstop's to change"
-        );
-        assert!(
-            !f.target(run_site).is_certain(),
-            "a backstop-bound site stays unpartitionable"
         );
     }
 

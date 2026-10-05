@@ -394,7 +394,7 @@ Release build, 16 logical cores, warm page cache, three runs:
   **88 lines/ms/core** — consistent with the ~90 lines/ms figure the brief
   cites for tree-sitter.
 
-Parsing is not the problem. Resolution, memory, and storage are unmeasured.
+Parsing is not the problem. Resolution, memory, and storage are measured in `01-v0.1-measure.md` §4.
 
 ---
 

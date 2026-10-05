@@ -132,7 +132,7 @@ Paths in the upstream column are relative to the apex-notes root. Paths in the T
 | APX-52 | Search result ranking layer | NEW | missing | owner-decision | `web/searchResults.ts:1-255` | ADR 0022 §4 "not reproduced" |
 | APX-53 | Rope connect gesture | NEW | excluded | desktop-ui | `web/appShell.ts:3192-3203, 6603-6660, 6803-6930` | ADR 0021 row 15-19 and #70 |
 | APX-54 | Hub and PageRank scoring | NEW | excluded | desktop-ui | `web/labelVisibility.ts:19-234` | ADR 0021 itemised "Label tiers: excluded, [ui]" |
-| APX-55 | Workspace chrome (pane resize, fullscreen, help, launch, status) | NEW | excluded | desktop-ui | `web/appShell.ts:443-637, 770-1056, 8253-8327`; `web/icons.ts:1-63` | ADR 0021 #70 |
+| APX-55 | Workspace chrome (pane resize, fullscreen, help, launch, status) | NEW | excluded | desktop-ui | `web/appShell.ts:443-637, 770-1056, 8253-8327` | ADR 0021 #70 |
 
 ## Row notes for CHANGED and NEW rows
 

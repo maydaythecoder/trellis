@@ -23,8 +23,8 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     }
 
     // The task entry grows by one row per `@` candidate, which it draws
-    // under the typed line. Nothing is offered while a run holds the input,
-    // because nothing typed then can be sent.
+    // under the typed line. Nothing is offered while a run is in flight,
+    // because what is typed then is a steer, not a path request.
     let offered = if state.running {
         Vec::new()
     } else {
@@ -485,10 +485,11 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
 
 fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Frame) {
     let (title, lines, style) = if state.running {
+        // Still typed into: Enter queues the line as a steer (#115).
         (
-            " running — input held until it finishes ",
-            Vec::new(),
-            Style::default().fg(Color::DarkGray),
+            " running — enter queues a steer for its next turn ",
+            vec![Line::from(format!("{}█", state.input))],
+            Style::default(),
         )
     } else {
         // A block cursor, so an empty line still shows where typing goes.
@@ -815,14 +816,21 @@ mod tests {
     }
 
     #[test]
-    fn while_running_the_task_line_says_so_instead_of_taking_input() {
+    fn while_running_the_task_line_shows_the_steer_being_typed() {
+        // Keys still reach `input` during a run and Enter queues a steer,
+        // so hiding the text would have the person type blind.
         let mut s = populated();
         s.running = true;
+        s.input = "use the other module".into();
         let out = drawn(&s, 80, 24);
         assert!(out.contains("running"), "got:\n{out}");
         assert!(
-            out.contains("input held"),
-            "and says why it is not taking any:\n{out}"
+            out.contains("queues a steer"),
+            "and says what enter does now:\n{out}"
+        );
+        assert!(
+            out.contains("use the other module█"),
+            "the typed steer is drawn:\n{out}"
         );
     }
 
@@ -941,9 +949,26 @@ mod tests {
 
     #[test]
     fn the_graph_survives_a_pane_too_narrow_to_draw_it() {
+        // `render` never hands the pane less than MIN_WIDTH allows, so the
+        // narrow guard is reached only by calling the pane directly. Inner
+        // width 23 is under the 24 the graph needs: border only, no panic.
         let s = acted(&[("edit", "a.py", true)]);
-        for w in [80u16, 81, 90, 120] {
-            let _ = drawn(&s, w, 24);
+        let (w, h) = (25u16, 12u16);
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| render_actions(&s, f.area(), f)).unwrap();
+        let buf = t.backend().buffer();
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                assert_eq!(
+                    buf[(x, y)].symbol(),
+                    " ",
+                    "a pane too narrow for the graph drew into it at ({x},{y})"
+                );
+            }
         }
+        assert!(
+            (0..w).any(|x| buf[(x, 0)].symbol() == "a"),
+            "the border and title are still drawn"
+        );
     }
 }

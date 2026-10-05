@@ -216,7 +216,9 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             // it. An unknown word is kept as written from whichever file has
             // it, so `RepoConfig::control` still refuses it by name.
             mode: match (r.mode, u.mode) {
-                (Some(a), Some(b)) if a == "auto" => Some(b),
+                (Some(a), Some(b)) if a == "auto" || !matches!(b.as_str(), "auto" | "approve") => {
+                    Some(b)
+                }
                 (Some(a), _) => Some(a),
                 (None, b) => b,
             },
@@ -294,7 +296,8 @@ fn union(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> 
 ///
 /// A name test and a value test. Names: `api_key`, `apikey`, `key`,
 /// `secret`, `token`, `password`, or anything ending `_key`, `_secret`,
-/// `_token` or `_password`. `max_tokens` ends `_tokens` and is not matched.
+/// `_token` or `_password`, or `-key` / `-token`. `max_tokens` ends `_tokens`
+/// and is not matched.
 /// Values: any string starting `sk-`, which is how the two most common
 /// providers' keys begin, wherever it sits.
 ///
@@ -674,6 +677,19 @@ stale_claims = \"release\"
         let dial = c.control(None).unwrap();
         assert_eq!(dial.mode, ControlMode::Approve);
         assert_eq!(dial.approve, ["edit"]);
+    }
+
+    #[test]
+    fn a_user_s_unknown_mode_word_is_refused_even_under_a_repository_s_approve() {
+        // The risk: repository "approve" beside a user's "aprove" kept the
+        // repository's word, so the typo was dropped without a word instead
+        // of being refused by name.
+        let c = load(
+            "[control]\nmode = \"approve\"\n",
+            "[control]\nmode = \"aprove\"\n",
+        );
+        let e = c.control(None).expect_err("an unknown mode is refused");
+        assert!(format!("{e}").contains("\"aprove\" is not a mode"), "{e}");
     }
 
     #[test]

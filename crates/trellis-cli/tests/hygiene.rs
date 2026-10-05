@@ -13,17 +13,7 @@
 fn src_lines() -> Vec<(String, usize, String)> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    let mut pending = vec![dir.clone()];
-    while let Some(d) = pending.pop() {
-        for entry in std::fs::read_dir(&d).expect("src/ is next to its own manifest") {
-            let path = entry.expect("a readable directory entry").path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                files.push(path);
-            }
-        }
-    }
+    rust_files(&dir, &mut files);
     files.sort();
     let mut out = Vec::new();
     for path in files {

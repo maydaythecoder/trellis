@@ -166,7 +166,7 @@ pub fn parser() -> tree_sitter::Parser {
 
 /// Extracts facts from one file's source.
 ///
-/// `_file` is threaded through for diagnostics; Pass 1 output is otherwise
+/// `_file` is unused and kept for API stability; Pass 1 output is
 /// independent of which file it came from, which is what lets rayon run
 /// this across the whole repository without coordination.
 #[tracing::instrument(skip_all, fields(bytes = src.len()))]

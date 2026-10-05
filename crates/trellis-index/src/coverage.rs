@@ -87,7 +87,8 @@ impl Coverage {
         match self.resolved_fraction() {
             None => "no call sites examined".to_string(),
             Some(f) => format!(
-                "{} of {} first-party call sites resolved ({:.1}%); \
+                "{} first-party call sites resolved of {} non-excluded call sites \
+                 ({:.1}%, a lower bound on recall; A-30); \
                  {} ambiguous, {} unresolved; {} external (excluded)",
                 self.resolved,
                 self.total(),
@@ -125,7 +126,12 @@ mod tests {
         assert_eq!(c.resolved_fraction(), Some(2.0 / 6.0));
         assert_eq!(c.by_reason[&Reason::DecoratorIndirection], 2);
         assert_eq!(c.by_reason[&Reason::StarImport], 1);
-        assert!(c.summary().contains("2 of 6"));
+        assert!(
+            c.summary()
+                .contains("2 first-party call sites resolved of 6 non-excluded"),
+            "{}",
+            c.summary()
+        );
     }
 
     #[test]

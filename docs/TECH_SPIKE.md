@@ -74,7 +74,8 @@ pub struct Edge { pub from: CallSiteId, pub target: Target }
 ```
 
 `Reason` is a closed enum: `MethodDispatchUntyped`, `DecoratorIndirection`,
-`StarImport`, `DynamicAttribute`, `ReexportUnfollowed`, `ShadowedAmbiguous`.
+`StarImport`, `DynamicAttribute`, `ReexportUnfollowed`, `ShadowedAmbiguous`,
+`LocalBinding`, `UnboundName` (`crates/trellis-index/src/graph.rs`).
 Closed so that additions are deliberate.
 
 ### Incremental update
@@ -92,7 +93,7 @@ something a builder must remember. Asserted by a property test over 199 random
 graphs (`crates/trellis-index/tests/bidirectional.rs`).
 
 Persisted as `.trellis/index.bin` (postcard), keyed by a content hash of the
-file set. **Derived state**: committed for other agents to read, never merged.
+file set. **Derived state**: gitignored (A-24; `cache::save` writes `.trellis/.gitignore`), never merged.
 On merge, discard both sides, regenerate, diff against the parent branch, hand
 the delta to the loop as context.
 
@@ -115,7 +116,10 @@ model is constrained to well-formed calls by construction.
 | `blast_radius` | `{ symbol: String }` | `Radius(RadiusReport)` — reach *and* coverage |
 | `read_file` | `{ path: String }` | `FileContent(String)` |
 | `edit` | `{ path, old, new }` | `Edit(EditOutcome)` |
-| `run_checks` | `{ paths: Vec<String>, kinds: Vec<CheckRequest> }` | `Checks(Verdict)` |
+| `run_checks` | `{ paths: Vec<String>, kinds: Vec<CheckKind> }` | `Checks(Verdict)` |
+
+These four are the core. The full set, including `read_skill` (ADR 0019) and
+`grep`, `bash` and the rest (ADR 0023), is in `crates/trellis-loop/src/registry.rs`.
 
 `ToolResult` has **no pass variant**. `Checks(Verdict)` is the only
 claim-bearing variant, and `Verdict` is constructible only inside

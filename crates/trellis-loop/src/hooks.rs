@@ -443,9 +443,11 @@ impl TurnOutcome {
 /// Every line is indented, as prior context is, so no line of the output can
 /// be the fence's closing line; and control characters other than newline
 /// and tab are dropped, so a carriage return cannot start a line the model
-/// reads as unindented. U+2028, U+2029 and U+0085 are line breaks here and
-/// format characters are dropped (`extra_context::fold_breaks`), so a line
-/// begun through one of them is indented like any other. The hook is
+/// reads as unindented. U+2028, U+2029 and U+0085 are line breaks here
+/// (`extra_context::fold_breaks`), so a line begun through one of them is
+/// indented like any other. Format characters are kept, as `fold_breaks`
+/// says; what stops a marker that starts after one is that every line is
+/// indented, not that the character is stripped. The hook is
 /// trusted code, but what it prints may be a commit message or an issue
 /// title somebody else wrote.
 pub fn fence_before_run(output: &str) -> String {
@@ -707,7 +709,7 @@ mod tests {
             assert!(!fenced.contains('\r'));
         }
         let long = "x".repeat(10_000);
-        assert!(cap_head(&long, BEFORE_RUN_CAP).len() < BEFORE_RUN_CAP + 100);
+        assert!(head_of(&long, long.len(), BEFORE_RUN_CAP).len() < BEFORE_RUN_CAP + 100);
     }
 
     #[test]

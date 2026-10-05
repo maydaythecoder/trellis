@@ -302,7 +302,7 @@ pub(crate) fn parse(dir: &Path) -> Result<Parsed, VaultError> {
         }
     }
 
-    let (manifest_missing, manifest_extra) = check_manifest(&root, &rel_paths, &mut violations)?;
+    let m = manifest_state(&root, &rel_paths, &mut violations)?;
 
     let stats = Stats {
         notes: notes.len(),
@@ -310,8 +310,8 @@ pub(crate) fn parse(dir: &Path) -> Result<Parsed, VaultError> {
         connected: (0..notes.len())
             .filter(|&i| notes[i].parent.is_some() || has_child.contains(&i))
             .count(),
-        manifest_missing,
-        manifest_extra,
+        manifest_missing: m.missing,
+        manifest_extra: m.extra,
     };
     Ok(Parsed {
         notes,
@@ -334,18 +334,8 @@ pub(crate) struct ManifestState {
 
 /// The manifest must be the sorted set of `.md` paths on disk.
 ///
-/// Returns `(missing, extra)`. A manifest that is absent counts every note as
-/// missing; one that is not a string array counts nothing, because there is
-/// no set to compare.
-fn check_manifest(
-    root: &Path,
-    rel_paths: &[String],
-    violations: &mut Vec<String>,
-) -> Result<(usize, usize), VaultError> {
-    let s = manifest_state(root, rel_paths, violations)?;
-    Ok((s.missing, s.extra))
-}
-
+/// A manifest that is absent counts every note as missing; one that is not a
+/// string array counts nothing, because there is no set to compare.
 pub(crate) fn manifest_state(
     root: &Path,
     rel_paths: &[String],

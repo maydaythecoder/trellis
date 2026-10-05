@@ -11,8 +11,10 @@ use trellis_core::{CallSiteId, FileId, SymbolId};
 /// This type exists because there was one. `RadiusReport` used to carry the
 /// repository-wide [`Coverage`], whose `resolved_fraction` divides `resolved`
 /// by `resolved + candidates + unresolved`. That is correct for the index,
-/// where all three count the same population: every first-party call site in
-/// the repository.
+/// where all three count the same population: every non-excluded call site in
+/// the repository. That population includes unknown-receiver calls whose
+/// callee is often third-party, so the fraction is a lower bound on recall,
+/// not recall (A-30).
 ///
 /// It is not correct for a radius, where the two halves are filled from
 /// different populations. `reached_*` counts call sites that reach *this
@@ -932,24 +934,29 @@ mod approval_view_tests {
     #[test]
     fn one_call_site_reaching_two_changed_symbols_is_one_caller() {
         // Deduplicated by (file, offset). Counting it twice would inflate the
-        // denominator `Verified` is reported against.
+        // denominator `Verified` is reported against. `x.run()` on a `Base`
+        // receiver is a Candidates edge to both `Base.run` and `Sub.run`, so
+        // the one site reaches two changed symbols.
         let ix = build_from_sources(&[
             (
                 "app/two.py".into(),
-                "def a():\n    return 1\n\ndef b():\n    return 2\n".into(),
+                concat!(
+                    "class Base:\n    def run(self):\n        return 1\n\n",
+                    "class Sub(Base):\n    def run(self):\n        return 2\n",
+                )
+                .into(),
             ),
             (
                 "app/use.py".into(),
-                "from app.two import a, b\n\ndef go():\n    return a() + b()\n".into(),
+                "from app.two import Base\n\ndef use(x: Base):\n    return x.run()\n".into(),
             ),
         ]);
         let callers = callers_of_files(&ix, &["app/two.py".into()]);
-        let mut keys: Vec<(String, usize)> =
-            callers.iter().map(|c| (c.path.clone(), c.offset)).collect();
-        let before = keys.len();
-        keys.sort();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "a call site was reported twice");
+        assert_eq!(
+            callers.len(),
+            1,
+            "a call site was reported twice: {callers:?}"
+        );
     }
 
     #[test]

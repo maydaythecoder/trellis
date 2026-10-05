@@ -9,6 +9,7 @@ run.
 """
 
 import contextlib
+import hashlib
 import os
 import pathlib
 import shutil
@@ -51,6 +52,59 @@ def _git(args, cwd):
         )
 
 
+class FixtureLock:
+    """One harness at a time against one fixture repository.
+
+    Both runners reset the fixture with `git reset --hard` between cases. Run
+    two at once and each silently pulls the ground from under the other: a
+    guard case that sets up a dirty worktree finds it clean, refuses for the
+    wrong reason, and reports a mismatch that says nothing about the harness
+    under test.
+
+    That happened, and it produced a false MISMATCH that looked exactly like a
+    real defect. A baseline whose rows can be corrupted by another process is
+    not a baseline, so this is a lock rather than a note.
+    """
+
+    def __init__(self, repo):
+        # Outside the fixture, deliberately. The first version put the lock in
+        # the repository's own `.trellis/`, where it was an untracked file —
+        # so the worktree was never clean and every run refused to start. The
+        # refusal cases still "passed", because they were being refused
+        # anyway, for the wrong reason. A measurement harness must not be
+        # visible to what it measures.
+        key = hashlib.sha256(str(pathlib.Path(repo).resolve()).encode()).hexdigest()[:16]
+        self.path = pathlib.Path(tempfile.gettempdir()) / f"trellis-qa-{key}.lock"
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Exclusive create: succeeds only if no one else holds it.
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            raise SystemExit(
+                f"another qa run holds {self.path}.\n"
+                "Two harnesses resetting one fixture corrupt each other's rows.\n"
+                "Wait for it, or delete the file if it was left by a killed run."
+            )
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return self
+
+    def __exit__(self, *_):
+        self.path.unlink(missing_ok=True)
+        return False
+
+
+def reset(repo, commit):
+    """Back to the baseline, keeping the trails this suite is about to read."""
+    for args in (["reset", "--hard", commit], ["clean", "-fd", "--", "app", "tests"]):
+        subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, timeout=300,
+            encoding="utf-8", errors="replace",
+        )
+
+
 def _force_remove(func, path, _exc):
     # git writes its object files read-only; on Windows rmtree cannot delete a
     # read-only file until the bit is cleared.
@@ -64,8 +118,9 @@ def fixture_repo(repo_arg, commit):
 
     With `--repo PATH`, that directory, used as it is and never removed.
     Without, a fresh clone of the vendored bundle with `master` checked out at
-    `commit`, deleted on exit — including an exit through SystemExit, which is
-    how the fixture lock reports a concurrent run.
+    `commit`, deleted on exit — including an exit through SystemExit. The
+    fixture lock only matters with a shared `--repo PATH`: a default fresh
+    clone is private to its run, so no other run can reset it.
     """
     if repo_arg is not None:
         yield pathlib.Path(repo_arg)
