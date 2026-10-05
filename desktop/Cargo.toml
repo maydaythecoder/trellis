@@ -1,0 +1,21 @@
+# The TRELLIS desktop interface (ADR 0048).
+#
+# Its own workspace, as fuzz/ is, so the root workspace and the root
+# Cargo.lock the dependency audit measured never see what it depends on
+# (ADR 0048 section 1). It depends on no trellis crate: it reaches trellis
+# only by spawning the binary (section 2), so it cannot become a second path
+# to a verdict. Every cargo command on it takes --locked.
+[package]
+name = "trellis-desktop"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace]
