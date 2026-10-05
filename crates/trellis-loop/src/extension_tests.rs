@@ -1009,8 +1009,12 @@ async fn a_pre_tool_hook_that_writes_marks_the_turn_as_tree_changing() {
 // What judges a run cannot be changed by it (ADR 0023 §5, fifth review).
 // ---------------------------------------------------------------------------
 
-/// A directory link, or `false` where this host will not make one (Windows
-/// without the privilege), so the test skips that case rather than fails.
+/// A directory link, or `false` where this host will not make one, so the
+/// test skips that case rather than fails.
+///
+/// On Windows a junction, not a symlink: it needs no privilege, so CI's
+/// runner makes one, and git treats it as a plain directory and descends
+/// into it where it leaves a symlink alone (#428).
 fn link_dir(target: &Path, link: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -1018,7 +1022,13 @@ fn link_dir(target: &Path, link: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_dir(target, link).is_ok()
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success())
+            && link.is_dir()
     }
 }
 
@@ -1190,15 +1200,30 @@ async fn reads_and_listings_do_not_reach_git_s_own_directory() {
             !out.contains(".git/config") && !out.contains(".git/HEAD"),
             "{call:?}: {out}"
         );
+        // Nor through the link: git descends into a Windows junction as
+        // into any directory (#428).
+        assert!(
+            !out.contains("g/config") && !out.contains("g/HEAD"),
+            "{call:?}: {out}"
+        );
     }
+    assert!(linked || !cfg!(windows), "a junction needs no privilege");
 }
 
 #[tokio::test]
 async fn a_link_out_of_the_repository_is_neither_read_nor_written() {
     let d = git_repo();
     let outside = tempfile::tempdir().unwrap();
-    std::fs::write(outside.path().join("secret.txt"), "outside\n").unwrap();
-    if !link_dir(outside.path(), &d.path().join("out")) {
+    // A canary no refusal message contains, for the search below.
+    let canary = format!("canary-{}", std::process::id());
+    std::fs::write(
+        outside.path().join("secret.txt"),
+        format!("outside\n{canary}\n"),
+    )
+    .unwrap();
+    let linked = link_dir(outside.path(), &d.path().join("out"));
+    assert!(linked || !cfg!(windows), "a junction needs no privilege");
+    if !linked {
         return;
     }
     let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
@@ -1225,6 +1250,18 @@ async fn a_link_out_of_the_repository_is_neither_read_nor_written() {
         }
     }
     assert!(!outside.path().join("new.txt").exists());
+    // Searching and listing the whole repository does not follow the link
+    // out either (#428).
+    for call in [
+        ToolCall::Grep {
+            pattern: canary.clone(),
+            path: None,
+        },
+        ToolCall::Find { glob: "**".into() },
+    ] {
+        let out = format!("{:?}", orch.call(&call).await.result);
+        assert!(!out.contains("secret.txt"), "{call:?}: {out}");
+    }
 }
 
 /// A trust guard over what `hooks` and `bash` would make trusted, as the
