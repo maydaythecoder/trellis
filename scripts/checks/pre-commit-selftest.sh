@@ -49,6 +49,9 @@ expect refuse "pull_request_target"   .github/workflows/w.yml "on: pull_request_
 # (`- run: |`); the hook's scan missed the second until #423.
 expect refuse "event in run block"    .github/workflows/x.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: |\n          echo \"${{ github.event.issue.title }}\"\n')" "interpolated into a run: block"
 expect refuse "event in run key line" .github/workflows/z.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - name: x\n        run: |\n          echo \"${{ github.event.head_commit.message }}\"\n')" "interpolated into a run: block"
+# A chomping indicator (`|-`, `>+`) still opens a block; until #429 the scan
+# read such a line as a one-line run: and never looked at the body.
+expect refuse "event in run |- block" .github/workflows/w.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: |-\n          echo \"${{ github.event.issue.title }}\"\n')" "interpolated into a run: block"
 expect pass   "clean change"          src/e.rs  "fn f() -> u32 { 1 }"
 expect pass   "format! built canary"  src/f.rs  'let k = format!("sk-ant-{}", "a".repeat(30));'
 expect pass   "event through env"     .github/workflows/y.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - env:\n          M: ${{ github.event.head_commit.message }}\n        run: echo \"$M\"\n' | sed 's/^on: push$/on: push\npermissions: {}/; s/runs-on: x/runs-on: ubuntu-latest/')"

@@ -378,4 +378,82 @@ mod tests {
             ])
         );
     }
+
+    fn sized(notes: &[(&str, u64)]) -> Vault {
+        Vault {
+            root: PathBuf::new(),
+            notes: notes
+                .iter()
+                .map(|(p, bytes)| parse_note(p, "x", *bytes))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_body_and_trigram_cutoffs_are_apex_s() {
+        let mib = 1024 * 1024;
+        let on = Mode {
+            include_body: true,
+            include_trigrams: true,
+        };
+        let off = Mode {
+            include_body: false,
+            include_trigrams: false,
+        };
+        // Under every limit: a 1.5 MiB note in a 1.5 MiB vault.
+        assert_eq!(Mode::for_vault(&sized(&[("a.md", 3 * mib / 2)])), on);
+        // One note at 2 MiB is a large note.
+        assert_eq!(Mode::for_vault(&sized(&[("a.md", 2 * mib)])), off);
+        // No large note, but 26 MiB in all.
+        let many: Vec<(String, u64)> = (0..13).map(|i| (format!("n{i}.md"), 2 * mib - 1)).collect();
+        let many: Vec<(&str, u64)> = many.iter().map(|(p, b)| (p.as_str(), *b)).collect();
+        assert_eq!(Mode::for_vault(&sized(&many)), off);
+        // The body is in, but more than 3,000,000 UTF-16 units: no trigrams.
+        let big = "x".repeat(TRIGRAM_CHARS_LIMIT + 1);
+        let v = Vault {
+            root: PathBuf::new(),
+            notes: vec![parse_note("a.md", &big, 1)],
+        };
+        assert_eq!(
+            Mode::for_vault(&v),
+            Mode {
+                include_body: true,
+                include_trigrams: false
+            }
+        );
+    }
+
+    #[test]
+    fn three_characters_make_one_trigram_and_two_make_none() {
+        assert_eq!(trigrams("abc"), ["abc"]);
+        assert!(trigrams("ab").is_empty());
+        assert!(trigrams("a").is_empty());
+    }
+
+    #[test]
+    fn a_note_matching_two_terms_scores_their_sum() {
+        let idx = Index::build(&corpus());
+        let score = |q: &str| {
+            idx.search(q, 12)
+                .into_iter()
+                .find(|h| h.path == "alpha.md")
+                .unwrap()
+                .bm25
+        };
+        assert_eq!(score("alpha plan"), score("alpha") + score("plan"));
+    }
+
+    #[test]
+    fn a_full_bm25_page_gets_no_trigram_bonus_and_a_trigram_only_hit_is_weighted() {
+        let idx = Index::build(&corpus());
+        for h in idx.search("zeta", 1) {
+            assert_eq!(h.score, h.bm25, "{h:?}");
+        }
+        let only: Vec<Hit> = idx.search("z z m", 12);
+        assert!(!only.is_empty());
+        for h in only {
+            assert_eq!(h.bm25, 0.0);
+            assert_eq!(h.score, h.trigram * TRIGRAM_WEIGHT, "{h:?}");
+        }
+    }
 }

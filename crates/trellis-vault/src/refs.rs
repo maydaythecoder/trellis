@@ -25,7 +25,7 @@ pub(crate) fn fold(value: &str) -> String {
 /// NFKD before the mark strip is what makes `Café` slug to `cafe` rather than
 /// `caf`; a slug that differs from Apex's is an alias that resolves in one
 /// tool and not the other.
-pub fn slugify(value: &str) -> String {
+pub(crate) fn slugify(value: &str) -> String {
     let folded = fold(value);
     let mut out = String::with_capacity(folded.len());
     let mut dash = false;
@@ -69,13 +69,13 @@ pub(crate) fn has_md_ext(s: &str) -> bool {
 }
 
 /// `noteRefs.ts#normalizeKey`.
-pub fn normalize_key(value: &str) -> String {
+pub(crate) fn normalize_key(value: &str) -> String {
     js::trim(strip_md(strip_notes_prefix(value))).to_lowercase()
 }
 
 /// A parsed `[[target|label]]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WikiTarget {
+pub(crate) struct WikiTarget {
     /// Cleaned: `notes/` and `.md` removed, trimmed. Empty when there is no
     /// target.
     pub target: String,
@@ -103,7 +103,7 @@ fn next_link(s: &str, from: usize) -> Option<(usize, usize, &str)> {
 }
 
 /// `noteRefs.ts#parseWikiTarget` for a string argument.
-pub fn parse_wiki_target(value: &str) -> WikiTarget {
+pub(crate) fn parse_wiki_target(value: &str) -> WikiTarget {
     // `referenceString`: an empty value or the literal "null" is nothing.
     let raw = if value == "null" { "" } else { value };
     // `unwrapWikiSyntax`: the anchored form and the unanchored form both
@@ -343,5 +343,49 @@ mod tests {
             "{out}"
         );
         assert!(out.ends_with(" [[B]]"), "{out}");
+    }
+
+    #[test]
+    fn md_is_stripped_after_a_multibyte_character() {
+        assert_eq!(strip_md("é.md"), "é");
+        assert_eq!(strip_md("é.MD"), "é");
+    }
+
+    #[test]
+    fn graph_links_resume_exactly_after_each_link() {
+        // Resuming early can land inside a multi-byte character and end the
+        // scan; resuming late skips a link that follows.
+        let t = |s: &str| -> Vec<String> { graph_links(s).into_iter().map(|w| w.target).collect() };
+        // `€` is three bytes, so two short of the `]]` is inside it.
+        assert_eq!(t("[[a€]] [[b]]"), ["a€", "b"]);
+        assert_eq!(t("[[abcde]][[f]]"), ["abcde", "f"]);
+        assert_eq!(t("[[a]] [[b]] [[c]]"), ["a", "b", "c"]);
+        // An unterminated or empty link is not one.
+        assert!(t("[[a]x").is_empty());
+        assert_eq!(parse_wiki_target("[[]]").target, "[[]]");
+    }
+
+    #[test]
+    fn a_target_ending_in_a_slash_is_its_own_label() {
+        assert_eq!(parse_wiki_target("x/").label, "x/");
+    }
+
+    #[test]
+    fn a_fence_masks_exactly_through_its_closing_backticks() {
+        // A mask that stopped short would leave the closing fence to open a
+        // new one, hiding the link between two fences.
+        let (out, n) = rewrite_links("```x``` [[a]] ```y```", |_| Some("B".into()));
+        assert_eq!((out.as_str(), n), ("```x``` B ```y```", 1));
+    }
+
+    #[test]
+    fn a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes() {
+        let body = format!("[[]] [[{}]] [[{}]] [[c]]", "a".repeat(241), "b".repeat(240));
+        let (out, n) = rewrite_links(&body, |l| (l.parsed.target != "c").then(|| "X".to_string()));
+        assert_eq!(n, 1);
+        assert_eq!(out, format!("[[]] [[{}]] X [[c]]", "a".repeat(241)));
+        // A transform that returns the link unchanged rewrote nothing.
+        let (out, n) = rewrite_links("[[a]] [[b]]", |l| Some(format!("[[{}]]", l.inner)));
+        assert_eq!((out.as_str(), n), ("[[a]] [[b]]", 0));
     }
 }

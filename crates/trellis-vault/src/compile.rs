@@ -283,4 +283,17 @@ mod tests {
         assert_eq!(link_stems("[[ spaced ]]"), ["spaced"]);
         assert_eq!(link_stems("é[[ü]]"), ["ü"]);
     }
+
+    #[test]
+    fn a_match_resumes_after_its_closing_brackets() {
+        // A capture may contain `[[`, so resuming anywhere inside a match
+        // would find a second link the regex never sees, or land inside a
+        // multi-byte character.
+        assert_eq!(
+            link_stems("[[a [[b]] and some words after the link"),
+            ["a [[b"]
+        );
+        // `€` is three bytes, so two short of the `]]` is inside it.
+        assert_eq!(link_stems("[[x€]]"), ["x€"]);
+    }
 }
