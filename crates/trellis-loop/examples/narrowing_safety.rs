@@ -44,13 +44,18 @@ fn main() {
         eprintln!("usage: narrowing_safety <repository root> [pairs] [seed]");
         std::process::exit(2);
     }
-    let index = trellis_index::build_cached(std::path::Path::new(&args[1]));
+    let root = std::path::Path::new(&args[1]);
+    let index = trellis_index::build_cached(root);
     let pairs: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2000);
     let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20260921);
 
-    let imports = import_closure(&index);
+    let imports = import_closure(root, &index);
     let dirty = dirty_files(&index);
     let n = index.symbols.len();
+    if n == 0 {
+        eprintln!("no symbols under {}", root.display());
+        std::process::exit(2);
+    }
 
     let mut rng = seed;
     let (mut compatible, mut newly, mut plausible) = (0usize, 0usize, 0usize);
@@ -100,10 +105,10 @@ fn main() {
     println!("  compatible under the narrowed rule:      {compatible}");
     println!("  of those, the broad rule refused:        {newly}");
     println!("  of those, a plausible collision exists:  {plausible}");
-    if compatible > 0 {
+    if newly > 0 {
         println!(
             "\n  newly admitted pairs carrying any plausible collision: {:.2}%",
-            100.0 * plausible as f64 / newly.max(1) as f64
+            100.0 * plausible as f64 / newly as f64
         );
     }
     for e in &examples {
@@ -193,15 +198,20 @@ fn dirty_files(index: &Index) -> HashSet<FileId> {
 /// package's `__init__.py` re-exporting its submodules is the normal shape of
 /// Python, and without the hop this under-counts what a file can see — which
 /// for a safety test is the wrong direction to be wrong in.
-fn import_closure(index: &Index) -> HashMap<FileId, HashSet<FileId>> {
+///
+/// Index paths are relative to `root`, and an unreadable file is fatal: read
+/// as empty it would drop that file's imports and bias the count toward zero.
+fn import_closure(root: &std::path::Path, index: &Index) -> HashMap<FileId, HashSet<FileId>> {
     let sources = index
         .files
         .iter()
         .map(|f| {
-            (
-                f.path.clone(),
-                std::fs::read_to_string(&f.path).unwrap_or_default(),
-            )
+            let p = root.join(&f.path);
+            let src = std::fs::read_to_string(&p).unwrap_or_else(|e| {
+                eprintln!("cannot read {}: {e}", p.display());
+                std::process::exit(1);
+            });
+            (f.path.clone(), src)
         })
         .collect::<Vec<_>>();
 
