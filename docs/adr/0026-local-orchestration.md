@@ -3,7 +3,7 @@
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
 was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
-for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). §12 added for
+for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). §1 amended again: up to 8 questions per `ask_human` call, not built (#331). §12 added for
 services (#60), with a line in §4. Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
@@ -174,6 +174,38 @@ unchanged. The reverse does not hold: a build from before this amendment
 cannot parse a task that uses them, so its `queue list` shows the file as
 unreadable and its `work` moves it to `failed/`, as it does any file that is
 not valid task JSON.
+
+*Amended 2026-10-05 (#331), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**One `ask_human` call may carry up to 8 questions.** A model with three
+questions now asks them over three runs and three rollbacks; Paperclip's
+`ask_user_questions` takes 1 to 64 questions in one interaction. Not built:
+this records the rule a later ticket builds to.
+
+- **The tool.** `ask_human` takes 1 to 8 entries of `{question, options}`.
+  Each question is 1 to 2,000 characters with at most 8 options of 1 to 200
+  characters, as for one question above. A call outside those bounds is
+  refused with the reason, after which the model may ask again.
+- **One note, one reason.** The questions are stored as one `model` note
+  and one `blocked` reason, `question`, holding the list. The note, the
+  `task.question` event, the heartbeat's output and `queue list`'s waiting
+  line Debug-quote each question, as above for one. A task file holding
+  today's single `question` and `options` still loads, as a list of one.
+- **One answer.** One person's `queue note`, then `queue set --status
+  todo`, answers every question in the list. The next run is given the
+  questions quoted as model output, followed by every person's note after
+  them, as input and never a verdict (ADR 0004).
+- **Older binaries.** A binary from before the change cannot parse a task
+  blocked on a list of questions, so its `queue list` shows the file as
+  unreadable and its `work` moves it to `failed/`, as recorded above for the
+  `question` reason itself.
+- **Not taken.** A multi-select form like Paperclip's
+  `request_checkbox_confirmation` (up to 200 options to tick) is not built:
+  no coding task here needs it, and it would be a second interaction kind
+  to quote safely.
+
+Reversed if the build finds that a list of questions cannot be quoted and
+fenced as safely as one question is today: then one question per call
+stays, and this amendment says so.
 
 *Amended 2026-09-29 (#57), by the owner's decision of 2026-09-28:* **a
 person's `@profile` mention wakes that profile's task.** A note added with
@@ -1363,7 +1395,11 @@ runs gets them:
    model loop or the process agent), in the order declared. There is no
    readiness wait: a task that needs the port open must wait for it
    itself. Until #24 gives each task a worktree of its own, "the task's
-   worktree" is the one `work` runs in.
+   worktree" is the one `work` runs in. *Corrected 2026-10-04: #24 was
+   split into #98–#101. #98 gives each partition of a multi-agent run its
+   own worktree (`trellis-loop/src/supervise.rs`); none of the four gives
+   a queue task one, so the task's worktree is still the one `work` runs
+   in.*
 3. **Environment.** The scrubbed environment every child gets (ADR 0024
    §3), plus `TRELLIS_TASK_ID`, `TRELLIS_AGENT` and `TRELLIS_SERVICE`.
    Nothing is put back: a profile's `pass_env` is for its process agent,
@@ -1440,7 +1476,8 @@ run's own. No post-hoc check is added for it; the fix is isolation (ADR
 - ~~**`@profile` mentions in notes do not wake anything.** ADR 0021 defers
   them.~~ Built for #57; see §1's amendment.
 - ~~No prompt-token accounting~~ (built for #108, §5). **No dollar
-  accounting** (§5; deferred to v1.x by #67).
+  accounting** (§5; deferred to v1.x by #67). *Corrected 2026-10-04: dollar
+  accounting alone is not built.*
 - **Routines fire only while `work` is running.** There is no daemon
   (ADR 0020). A schedule with no `work` running accumulates missed fires,
   which the catch-up policy then handles.
@@ -1451,7 +1488,9 @@ run's own. No post-hoc check is added for it; the fix is isolation (ADR
 - **Services (§12): no readiness wait, no per-task worktree until #24, no
   declaration on a single task** (only on a profile), and no services for
   `trellis run`, which runs no profile. On Unix a SIGKILL of trellis leaves
-  a service's group running; `doctor` is what reports it.
+  a service's group running; `doctor` is what reports it. *Corrected
+  2026-10-04: #24 was split into #98–#101, and none of them gives a queue
+  task a worktree of its own (§12 item 2).*
 
 ## Alternatives rejected
 
