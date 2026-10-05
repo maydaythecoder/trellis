@@ -52,7 +52,9 @@ impl Child {
             .current_dir(repo)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            // Inherited, not piped: it is never read (ADR 0048 §2), and an
+            // unread pipe fills and blocks the child's next write.
+            .stderr(Stdio::inherit());
         adjust(&mut c);
         let mut process = c.spawn()?;
         let stdin = process

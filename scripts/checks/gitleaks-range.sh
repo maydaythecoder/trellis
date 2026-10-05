@@ -47,8 +47,14 @@ scan() {
   out=$(gitleaks detect --source . --log-opts="$base..HEAD" --redact --no-banner --no-color 2>&1)
   rc=$?
   printf '%s\n' "$out"
+  # A config or runtime error also exits 1, so only a reported leak count
+  # makes a non-zero exit a finding.
   if [ "$rc" -ne 0 ]; then
-    echo "FAIL: gitleaks found a secret in $base..HEAD (exit $rc; findings above, redacted)"
+    if printf '%s\n' "$out" | grep -qE 'leaks found: [1-9]'; then
+      echo "FAIL: gitleaks found a secret in $base..HEAD (exit $rc; findings above, redacted)"
+    else
+      echo "FAIL: gitleaks failed (exit $rc) scanning $base..HEAD without reporting a finding (output above)"
+    fi
     return 1
   fi
   if printf '%s\n' "$out" | grep -qE '(^| )ERR( |$)'; then

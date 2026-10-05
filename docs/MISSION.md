@@ -118,10 +118,12 @@ the trigger, so the pivot does not execute.
 
 What that leaves is not a clean pass. **The S1 fallback band — at or above 60%,
 below 85% — applies**, which means the blast-radius guarantee survives and a
-further backstop is required before v1.0 can claim it. Both candidate
-backstops have since been measured and neither is worth building; the third
-thing found instead was a denominator error, corrected, which moved no recall
-figure at all.
+further backstop is required before v1.0 can claim it. Fixture typing and
+return-type propagation were measured and rejected; Pyright over LSP was then
+chosen (ADR 0031) and its first slice is built behind `[index] backstop =
+"pyright"`; its recall is pending the human audit. The third thing found
+instead was a denominator error, corrected, which moved no recall figure at
+all.
 
 The positioning above therefore stands, with goal 2 explicitly bounded rather
 than claimed outright. Had the pivot executed, what survived would have been
@@ -141,5 +143,5 @@ Recall on the benchmark repository is **72.0%**, hand-audited, 95% CI
 [63.2%, 80.8%]; precision is 100% on both audits and mechanically over the full
 corpus. Neither figure appears anywhere without its method beside it.
 
-The two things standing between here and v1.0 need no more code: a third
-independent human audit, and a local model that can pass the floor.
+Three things stand between here and v1.0: the 85% recall backstop (ADR 0031,
+code), a human audit (A-34), and a local model that can pass the floor.

@@ -12,7 +12,8 @@ checkout is the clean checkout itself; the Rust toolchain comes from
 rust-toolchain.toml through the installed rustup; rust-cache is skipped (it
 only saves time, and its cleanup deleted the owner's toolchain on a
 self-hosted runner, #158); setup-python becomes a virtualenv whose `python`
-and `python3` come first on PATH. A `uses:` this script does not know fails
+and `python3` come first on PATH on Linux legs; a Windows leg runs the host
+Python. A `uses:` this script does not know fails
 the job rather than being skipped silently.
 
 Jobs get the owner's toolchain but none of the owner's state: a throwaway
