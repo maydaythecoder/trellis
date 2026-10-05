@@ -87,6 +87,40 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
 
+  # desktop/ is its own Cargo workspace with its own lock (ADR 0048), so
+  # nothing in `test` builds, lints or tests it (#384). Linux only: it
+  # depends on no trellis crate and spawns the binary, so the platform split
+  # `test` covers is not what this job is for.
+  desktop:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
+      # Keyed on desktop/'s own target directory and lock.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.environment == 'github-hosted'
+        with:
+          workspaces: desktop
+
+      - name: Format (desktop/)
+        run: cargo fmt --check --manifest-path desktop/Cargo.toml
+
+      - name: Clippy (desktop/)
+        run: cargo clippy --locked --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test (desktop/)
+        run: cargo test --locked --manifest-path desktop/Cargo.toml
+
   # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
   # every other job builds with it on. This one turns it off, so a change
   # that only compiles with TLS present fails here instead of in the hands
@@ -333,6 +367,15 @@ jobs:
 
       - name: RustSec advisories (fuzz/)
         run: cargo audit --file fuzz/Cargo.lock
+
+      # desktop/ is a third workspace with its own lock (ADR 0048), so the
+      # root's audits never read what it depends on (#384). As for fuzz/,
+      # cargo deny finds the root deny.toml by looking upward.
+      - name: Licences, bans, sources, advisories (desktop/)
+        run: cargo deny --locked --manifest-path desktop/Cargo.toml check
+
+      - name: RustSec advisories (desktop/)
+        run: cargo audit --file desktop/Cargo.lock
 
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.
