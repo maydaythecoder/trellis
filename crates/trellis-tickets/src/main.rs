@@ -202,7 +202,7 @@ fn gh_view(n: u64) -> Result<String> {
         bail!(
             "`gh issue view {n}` exited with {}: {}",
             out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
+            trellis_tickets::printable(String::from_utf8_lossy(&out.stderr).trim())
         );
     }
     String::from_utf8(out.stdout).with_context(|| format!("`gh issue view {n}` printed non-UTF-8"))
