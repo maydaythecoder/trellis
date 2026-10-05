@@ -209,7 +209,9 @@ impl Supervisor<'_> {
 
         let mut shared_landed = true;
         if let Some(shared) = &plan.shared {
-            let share = shares.next().unwrap_or_else(|| budget.clone());
+            let share = shares
+                .next()
+                .expect("Budget::shares returns one share per partition in the plan");
             let done = self
                 .stage(vec![(shared, share)], NonZeroUsize::MIN, &work)
                 .await;
