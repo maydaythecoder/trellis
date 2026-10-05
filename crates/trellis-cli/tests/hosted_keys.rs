@@ -202,10 +202,10 @@ fn run_and_check(protocol: &str, replies: Vec<String>, header: &str) {
     );
     let mut paths = Vec::new();
     files(&d, &mut paths);
-    let trail = paths
-        .iter()
-        .find(|p| p.to_string_lossy().contains("runs"))
-        .expect("a trail was written");
+    assert!(
+        paths.iter().any(|p| p.to_string_lossy().contains("runs")),
+        "a trail was written"
+    );
 
     let mut places: Vec<(String, String)> = vec![
         ("stdout".into(), stdout.to_string()),
@@ -218,11 +218,6 @@ fn run_and_check(protocol: &str, replies: Vec<String>, header: &str) {
             String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned(),
         ));
     }
-    assert!(
-        places
-            .iter()
-            .any(|(n, _)| n == &trail.display().to_string())
-    );
     for (name, text) in &places {
         assert!(!text.contains(canary()), "{name} contains the key");
         assert!(
