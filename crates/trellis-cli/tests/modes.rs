@@ -663,3 +663,187 @@ fn rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order() {
     assert_eq!(task("u1"), "second task");
     assert_eq!(task("u2"), "third task");
 }
+
+/// One module as `trellis index --graph` draws it: name, definitions,
+/// ambiguous, unresolved, and its edges as (callee, call sites).
+type DrawnModule = (String, u64, u64, u64, Vec<(String, u64)>);
+
+/// The header counts and modules `trellis index --graph` printed.
+fn drawn_graph(stdout: &str) -> ((u64, u64, u64, u64), Vec<DrawnModule>) {
+    let mut lines = stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("codebase graph — "));
+    let header = lines.next().expect("a graph header");
+    let n = |s: &str| s.trim().parse::<u64>().unwrap();
+    let indexed = n(header
+        .trim_start_matches("codebase graph — ")
+        .trim_end_matches(" module(s)"));
+    let counts: Vec<u64> = lines
+        .next()
+        .unwrap()
+        .split(',')
+        .map(|part| n(part.split_whitespace().next().unwrap()))
+        .collect();
+    let mut modules: Vec<DrawnModule> = Vec::new();
+    for l in lines {
+        if let Some(node) = l.strip_prefix("  ● ").or_else(|| l.strip_prefix("  ○ ")) {
+            // The legend under the graph starts with the same glyphs and
+            // has no ` def`.
+            let Some((left, doubt)) = node.split_once(" def") else {
+                continue;
+            };
+            let (name, defines) = left.trim().rsplit_once(' ').unwrap();
+            let mark = |m: char| {
+                doubt
+                    .split_whitespace()
+                    .find_map(|t| t.strip_prefix(m))
+                    .map_or(0, n)
+            };
+            modules.push((
+                name.trim().to_string(),
+                n(defines),
+                mark('~'),
+                mark('?'),
+                Vec::new(),
+            ));
+        } else if let Some(edge) = l
+            .strip_prefix("    ├─▶ ")
+            .or_else(|| l.strip_prefix("    └─▶ "))
+        {
+            let (callee, count) = edge.rsplit_once("  ×").unwrap();
+            modules
+                .last_mut()
+                .unwrap()
+                .4
+                .push((callee.to_string(), n(count)));
+        }
+    }
+    ((indexed, counts[0], counts[1], counts[2]), modules)
+}
+
+#[test]
+fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
+    // The risks: a client parsing human text because the graph has no data
+    // form (ADR 0048 §2); coverage arriving as a ratio (CLAUDE.md rule 3);
+    // a read that writes the index cache or the worktree; an index build
+    // blocking the reader while a run waits on an approval; and data that
+    // drifts from what `trellis index --graph` draws.
+    let f = fixture("rpc-codebase");
+    std::fs::write(
+        f.root.join("b.py"),
+        "from a import f\n\ndef g():\n    return f() + f()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.root.join("c.py"),
+        "from b import g\n\ndef h():\n    return g() + missing()\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "modules that call each other"]);
+
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "g", "type": "get_codebase"}));
+    let got = rpc.next(|v| v["id"] == "g");
+    rpc.finish();
+    assert_eq!(got["command"], "get_codebase", "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    fn keys(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, v) in m {
+                    out.push(k.clone());
+                    keys(v, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|v| keys(v, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    keys(&data, &mut all);
+    for k in &all {
+        for banned in ["ratio", "percent", "fraction", "total"] {
+            assert!(!k.contains(banned), "key `{k}` in {data}");
+        }
+    }
+    assert!(
+        !f.root.join(".trellis/index.bin").exists(),
+        "get_codebase wrote the index cache"
+    );
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "g2", "type": "get_codebase", "limit": 40}));
+    let mid = rpc.next(|v| v["id"] == "g2" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "g2", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same graph mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // Last: `index` writes the cache, which is its job.
+    let o = run(&f, &["index", "--graph"]);
+    assert!(o.status.success());
+    let (header, drawn) = drawn_graph(&String::from_utf8_lossy(&o.stdout));
+    let u = |v: &Value| v.as_u64().unwrap();
+    assert_eq!(
+        header,
+        (
+            u(&data["modules_indexed"]),
+            u(&data["bound_call_sites"]),
+            u(&data["ambiguous"]),
+            u(&data["unresolved"])
+        ),
+        "{data}"
+    );
+    let answered: Vec<DrawnModule> = data["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            assert_eq!(m["calls_not_drawn"], 0, "{m}");
+            (
+                m["module"].as_str().unwrap().to_string(),
+                u(&m["defines"]),
+                u(&m["ambiguous"]),
+                u(&m["unresolved"]),
+                m["calls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| {
+                        (
+                            c["module"].as_str().unwrap().to_string(),
+                            u(&c["call_sites"]),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(answered, drawn, "{data}");
+    assert_eq!(drawn.len(), 3, "a, b and c: {drawn:?}");
+    assert!(
+        drawn.iter().map(|m| m.4.len()).sum::<usize>() >= 2,
+        "the fixture's calls bound across modules: {drawn:?}"
+    );
+    assert_eq!(data["modules_not_drawn"], 0, "{data}");
+}
