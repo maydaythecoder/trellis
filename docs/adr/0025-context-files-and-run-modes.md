@@ -204,8 +204,10 @@ on stderr.
   - `compact` (*added 2026-09-29, #110; see "compact" below*)
   - `steer {message}` and `follow_up {message}` (*added 2026-09-29, #114;
     see "steer and follow_up" below*)
+  - `get_codebase {limit?}` (*added 2026-10-05, #292; see "get_codebase"
+    below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
-  `follow_up`)
+  `follow_up`; `get_codebase`, the 13th, is trellis's own, not pi's)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -335,6 +337,32 @@ on stderr.
     `tests/modes.rs`, through the binary over stdio (the first checks the
     provider received the steer in the second request and not the first);
     `rpc::tests::rpc_steer_abort_answers_with_the_undelivered_text_in_order`.
+- *Added 2026-10-05 (#292), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_codebase {limit?}`** answers with the module graph `trellis index
+  --graph` draws, as data, so an rpc client never parses human output (ADR
+  0048 §2). It is read-only.
+  - The index is built in memory as the interface's `/codebase` builds it
+    (`doctor_cmd::codebase_lines`, `build_from_sources`): `.trellis/index.bin`
+    is neither read nor written, and nothing else is.
+  - `data` is `{modules_indexed, bound_call_sites, ambiguous, unresolved,
+    modules, modules_not_drawn}`. `modules` is the first `limit` (default
+    40) modules, busiest first, each `{module, defines, calls, calls_not_drawn,
+    ambiguous, unresolved}`, with `calls` the edges the drawing shows
+    (heaviest first, at most ten), each `{module, call_sites}`. What is left
+    out is counted in `modules_not_drawn` and `calls_not_drawn`, as the
+    drawing states it. Module names are whole; the drawing cuts long ones to
+    its column.
+  - Bound, ambiguous and unresolved are separate counts from different
+    populations: no ratio, percentage or total is given (CLAUDE.md rule 3).
+  - It runs on its own thread, as `compact`'s answer does, so it is answered
+    while a run is in flight, including one waiting on an approval.
+  - A `limit` that is not a non-negative integer is refused by name.
+  - Evidence: `rpc_get_codebase_returns_the_graph_codebase_lines_prints` in
+    `tests/modes.rs`, through the binary over stdio: no key in `data` names
+    a ratio, percent, fraction or total; afterwards `.trellis/index.bin`
+    does not exist and the fixture's worktree is clean; it is answered while
+    an approve-mode run waits on its question, before that run's `run_end`;
+    and its modules and counts equal what `trellis index --graph` prints.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
