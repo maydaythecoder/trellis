@@ -247,7 +247,7 @@ pub(crate) fn callees_of(index: &Index, root: &Path, sym: SymbolId) -> ToolResul
 ///
 /// Counts only. It never prints the index-wide `resolved` figure or any
 /// percentage: that figure is a lower bound on recall that reads as recall
-/// (CLAUDE.md, "The number that is easy to misread"), and a fraction of it
+/// (.claude/rules/index-soundness.md, "The number that is easy to misread"), and a fraction of it
 /// would divide two populations (rule 3). Files named and files examined are
 /// both given, so a named file the index never parsed shows as a difference
 /// rather than as a file with nothing in doubt.

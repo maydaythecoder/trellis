@@ -22,43 +22,15 @@ cargo run -p trellis-cli -- index          # full index: parse, resolve, coverag
 cargo run -p trellis-cli -- radius <sym>   # blast radius with confidence breakdown
 cargo run -p trellis-cli -- check          # run the grounded checks
 cargo run -p trellis-cli -- doctor         # probe tier, batching, tooling
-
-# owner-directed growth beyond brief 4.12, each recorded in its ADR
-cargo run -p trellis-cli -- run "<task>" --focus <stem>    # vault note as context (ADR 0017)
-cargo run -p trellis-cli -- run "<task>" --approve|--auto  # the control dial (ADR 0018)
-cargo run -p trellis-cli -- queue add "<task>" [--focus <stem>]   # (ADR 0020)
-cargo run -p trellis-cli -- work [--once | --every <s>] [--max-tasks N]
-cargo run -p trellis-cli -- vault check|search|graph|new|reparent|link|retitle|rm|init|dates   # (ADR 0022)
-cargo run -p trellis-cli -- trust [--show | --revoke]      # hooks, custom tools, bash (ADR 0023)
-cargo run -p trellis-cli -- run "<task>" --model anthropic:https://api.anthropic.com#<model>  # hosted (ADR 0024)
-cargo run -p trellis-cli -- run "<task>" --json            # JSONL on stdout (ADR 0025)
-cargo run -p trellis-cli -- rpc                            # JSONL commands on stdin (ADR 0025)
-cargo run -p trellis-cli -- agents list | routines list    # profiles, routines (ADR 0026)
-cargo run -p trellis-cli -- resume [<run_id>]              # a named run's trail, as data (ADR 0038)
-cargo run -p trellis-cli -- install <source>@<ref> | --list | --remove <name>   # skills and templates only (ADR 0039)
-cargo run -p trellis-cli -- run "<task>" --image <path>    # hosted tier 1 only, repeatable (ADR 0041)
-cargo build -p trellis-cli --no-default-features           # local-only binary, no TLS (ADR 0024)
-cargo test -p trellis-tickets                              # ticket label rules (docs/TICKETING.md, ADR 0040)
-cargo run -p trellis-tickets -- triage <n> [--json]       # one issue's labels, each with its rule; read-only (ADR 0040)
-cargo run -p trellis-tickets -- ready <n>                 # G0's checks + 4 named extras; exit 1 lists each failure or abstention; read-only (ADR 0040)
-cargo run -p trellis-tickets -- new --title <t> --body-file <p> [--dry-run]   # files one issue with triage's labels; refuses a body G0/G6 would; prints the plan first (ADR 0040)
-cargo run -p trellis-tickets -- sweep [--dry-run|--apply]  # label drift on every open issue; writes only with --apply; skips parked/split; never ready, !agent-ok, or a lower risk (ADR 0040)
-cargo run -p trellis-tickets -- scan [<path>]              # G4's markers in Rust source as file:line proposals; files nothing (ADR 0040)
-cargo run -p trellis-tickets -- index [--out <p>]          # open issues' triage as JSON, triage_version 2, by story then number; same issues, same bytes (docs/TICKETING.md, ADR 0040)
-
-# ADR 0021 is the map: every pi, Apex and Paperclip capability, and whether
-# it is built, deferred, or excluded (and by which clause).
-
-# qa/run-guards.py runs whichever `trellis` is on PATH, and dirty_worktree
-# needs the demo's runtime up: put target/debug first and start the runtime,
-# or the guards test an old binary and one refuses for the wrong reason.
-
-# v0.1 measurement tooling (examples, not CLI surface — the surface is fixed
-# by brief 4.12 and does not grow to suit us; growth the owner directs is
-# recorded in an ADR, as 0017, 0018, 0020 and 0021-0026 do)
-cargo run --release -p trellis-index --example audit_sample -- <root> <n> <seed> <dir>
-cargo run --release -p trellis-index --example audit_score  -- <dir>
+cargo run -p trellis-tickets -- new --title <t> --body-file <p> --dry-run   # file a ticket (ADR 0040)
 ```
+
+Every other command, with the ADR that added it, is in `docs/COMMANDS.md`.
+The CLI surface is fixed by brief 4.12 and grows only by an owner-directed
+ADR. `qa/run-guards.py` runs whichever `trellis` is on PATH: put
+`target/debug` first. The resolver's measurement rules (the recall number,
+receiver typing) load from `.claude/rules/index-soundness.md` whenever
+`crates/trellis-index/` is touched.
 
 Agent-driven work goes through the gates in `scripts/gates/`
 (`scripts/gates/run-all.sh [<issue>]`) and the orchestrator
@@ -70,39 +42,27 @@ until the agent loop landed in v0.2, and the rule that kept them stubs still
 holds for anything added next: a command that appears to work without doing
 the work is worse than one that says it is not built yet.
 
-## The number that is easy to misread
+## Branches and host
 
-`trellis index` prints what the resolver *bound*. That is a **lower bound on
-recall, not recall**, and it must never be compared to the thresholds in
-`BENCHMARK_AND_EVAL.md` §3. An `obj.method()` whose receiver type is unknown is
-counted as a miss even when its true callee is third-party, which §2 excludes
-from the denominator outright. Only the hand-audited sample produces a
-comparable figure. See A-30.
+- `main` is the launch branch, `dev` the trunk, `audit` the integration
+  branch (ADR 0051). Cut `t<n>-<slug>` or `feature/<slug>` from `origin/dev`,
+  merge a green branch into `audit`, promote `audit` into `dev`; `dev` reaches
+  `main` only by the owner's pull request, squash-merged. Never push `main`,
+  `v0.1-resolver`, `drain` or a `v*` tag.
+- Run gates from Git Bash, not WSL. One cargo process at a time: the host has
+  15 GB shared with a local model, and parallel builds have been killed for
+  memory. G2b needs the local runtime listening on 127.0.0.1:11434.
 
-That figure moved from 37.6% to 43.7% on poetry when ADR 0015 corrected which
-sites belong in the denominator. **`resolved` did not change**, hand-audited
-recall did not change, and no additional call site became resolvable. Any
-before/after of this number must state both halves or it reads as an
-improvement that did not happen.
+## Context and vague requests
 
-## Receiver typing, and why it is allowed to be wrong in only one direction
-
-`trellis-index` types receivers from annotations and constructor assignments
-(ADR 0012). Every rule there can only *add* resolutions, so every one is a new
-chance to emit an unsound edge. Three invariants hold it in place, and all
-three earned their place by catching a real defect:
-
-- A **declared type is an upper bound, not an identity.** If any first-party
-  subclass overrides the method, the result is `Candidates` over the base and
-  every override. Deliberately not applied to `self.m()`, where the audit
-  protocol resolves to the enclosing class.
-- A type fact is honoured **only when it resolves to a first-party class**, so
-  `x = make_env()` types nothing.
-- **Conflicting statements type nothing**, and `list[Env]` types `list`.
-
-Before changing any of them, run the audit: `examples/check_soundness.rs` over
-the corpus must stay at zero violations, and precision on the audited sample
-must stay at 100%.
+- Search before reading (Grep, Glob), then read by section with an offset and
+  limit. A sweep wider than about five files goes to a subagent that returns
+  conclusions and `file:line`, not file contents.
+- Restate a vague request in one line (goal, area, what done looks like) and
+  resolve it from the repository first: ADRs, open issues, `docs/plans/`,
+  `git log`. Ask only what changes the work or touches a key, a deletion or an
+  owner decision, with a recommended answer; otherwise take the conventional
+  choice and say so in the report.
 
 ## Crate boundaries are load-bearing
 
