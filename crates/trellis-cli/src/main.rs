@@ -46,7 +46,7 @@ mod user_config;
 mod doctor_extra;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -422,7 +422,7 @@ fn main() -> Result<()> {
         Err(_) => default(),
     };
     // Parsed first so `--log-json` is known before the subscriber is built.
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(subcommand_lowercased(std::env::args_os().collect()));
     let json = match &cli.log_json {
         Some(p) => {
             let f = std::fs::OpenOptions::new()
@@ -715,6 +715,40 @@ fn main() -> Result<()> {
 /// `--root` still wins outright. An explicit path is a decision, and a tool
 /// that overrides one because it thinks it knows better is worse than one that
 /// makes the user type more.
+/// `args` with the subcommand's name lowered when its lowercase form is a
+/// subcommand (ADR 0050 section 4): `trellis RUN` is `trellis run`.
+///
+/// Only the first argument that is not a flag, or the value of a global flag
+/// that takes one, is compared, and only a name clap knows is changed, so a
+/// task text, a path or a symbol is never touched.
+fn subcommand_lowercased(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    const TAKES_VALUE: [&str; 2] = ["--root", "--log-json"];
+    let names: Vec<String> = Cli::command()
+        .get_subcommands()
+        .flat_map(|c| {
+            std::iter::once(c.get_name().to_string()).chain(c.get_all_aliases().map(str::to_string))
+        })
+        .collect();
+    let mut i = 1;
+    while i < args.len() {
+        let Some(a) = args[i].to_str() else { break };
+        if TAKES_VALUE.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if a.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        let lower = a.to_lowercase();
+        if lower != a && names.contains(&lower) {
+            args[i] = lower.into();
+        }
+        break;
+    }
+    args
+}
+
 fn discover_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     root_from(&cwd).ok_or_else(|| {
