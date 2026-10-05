@@ -79,9 +79,9 @@ impl LineCoverage {
     ///
     /// Distinct from "no line is covered". A file absent from the report was
     /// never imported by the tests; a file present with the line missing was
-    /// imported and that line did not run. Reporting both as "not verified"
-    /// is correct, and a caller that wants to explain *why* needs the
-    /// difference.
+    /// imported and that line did not run. Test-only until a caller that
+    /// reports the difference exists.
+    #[cfg(test)]
     pub fn knows(&self, path: &str) -> bool {
         self.files.contains_key(&normalise(path))
     }
