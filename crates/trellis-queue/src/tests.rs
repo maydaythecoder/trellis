@@ -1285,7 +1285,10 @@ fn a_raise_that_cannot_be_written_leaves_the_request_pending() {
     crate::files::fail::nth_link(3);
     let e = approval::approve_budget(&q, &req, 50, Actor::Human);
     crate::files::fail::nth_link(0);
-    assert!(e.is_err());
+    // And says so: told it is "recorded as approved with no raise", a
+    // person raises the profile file by hand when approving again would do.
+    let e = e.expect_err("the raise fails").to_string();
+    assert!(e.contains("the request is pending again"), "{e}");
     assert!(profile::overlay(&q, "rev").unwrap().raises.is_empty());
     let open = approval::list(&q, "pending").unwrap();
     assert_eq!(open.len(), 1, "back in pending/");
@@ -2187,4 +2190,462 @@ fn a_note_written_before_note_ids_still_loads_and_is_not_a_mention() {
     let text = std::fs::read_to_string(q.path(State::Pending, &id)).unwrap();
     assert!(text.contains("\"id\": \"n1\""), "{text}");
     assert!(!text.contains("mentions_read"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// Mutation survivors (#247): behaviour no test pinned until a mutant changed
+// it and the suite still passed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_status_priority_and_actor_name_parses_back_and_is_its_spelling_on_disk() {
+    // The CLI parses what `queue list` prints. A name that does not parse
+    // back, or a misspelling that parses as some default, sets a status or
+    // priority nobody chose.
+    for s in [
+        Status::Backlog,
+        Status::Todo,
+        Status::InProgress,
+        Status::InReview,
+        Status::Blocked,
+        Status::Done,
+        Status::Cancelled,
+        Status::Failed,
+    ] {
+        assert_eq!(Status::parse(s.as_str()), Some(s));
+        assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
+    }
+    for p in [
+        Priority::Critical,
+        Priority::High,
+        Priority::Medium,
+        Priority::Low,
+    ] {
+        assert_eq!(Priority::parse(p.as_str()), Some(p));
+        assert_eq!(serde_json::to_value(p).unwrap(), p.as_str());
+    }
+    assert_eq!(Status::parse("finished"), None);
+    assert_eq!(Priority::parse("urgent"), None);
+    for a in [Actor::Human, Actor::Work, Actor::Routine, Actor::Model] {
+        assert_eq!(serde_json::to_value(a).unwrap(), a.as_str());
+    }
+}
+
+#[test]
+fn a_waiting_question_is_shown_whole_when_short_and_cut_with_an_ellipsis_when_long() {
+    // An ellipsis on a whole question says text is missing that is not;
+    // none on a cut one hides that the rest is in the notes.
+    let q = |question: String| {
+        Blocked::Question {
+            question,
+            options: Vec::new(),
+        }
+        .describe()
+    };
+    let short = q("which one?".into());
+    assert!(
+        short.contains("\"which one?\"") && !short.contains('…'),
+        "{short}"
+    );
+    let long = "x".repeat(QUESTION_SHOWN + 1);
+    let cut = q(long.clone());
+    assert!(cut.contains('…') && !cut.contains(&long), "{cut}");
+}
+
+#[test]
+fn a_status_that_does_not_belong_to_its_directory_reads_as_the_directory_default() {
+    // A file in pending/ that says `done` (edited by hand, or copied there)
+    // read as done would release every task blocked on it.
+    let t = Task {
+        status: Some(Status::Done),
+        ..Task::default()
+    };
+    assert_eq!(t.status_in(State::Pending), Status::Todo);
+    assert_eq!(t.status_in(State::Done), Status::Done);
+}
+
+#[test]
+fn add_keeps_the_prompt_args_and_labels_it_was_given() {
+    // A dropped prompt runs the task as plain text, silently.
+    let (_d, q) = queue();
+    let a = q.add("x", None, Some("review")).unwrap();
+    assert_eq!(q.find(&a).unwrap().1.prompt.as_deref(), Some("review"));
+    let b = add(&q, "y", |n| {
+        n.prompt = Some("fix".into());
+        n.args = Some("--fast".into());
+        n.labels = vec!["ui".into()];
+    });
+    let t = q.find(&b).unwrap().1;
+    assert_eq!(
+        (t.prompt.as_deref(), t.args.as_deref(), t.labels),
+        (Some("fix"), Some("--fast"), vec!["ui".to_string()])
+    );
+}
+
+#[test]
+fn a_state_directory_that_cannot_be_listed_is_an_error_not_an_empty_state() {
+    // Read as empty, a broken pending/ looks like a drained queue.
+    let (_d, q) = queue();
+    assert!(q.ids(State::Pending).unwrap().is_empty(), "absent is empty");
+    std::fs::create_dir_all(q.dir()).unwrap();
+    std::fs::write(q.dir().join("pending"), "").unwrap();
+    assert!(q.ids(State::Pending).is_err());
+}
+
+#[test]
+fn claiming_a_gone_task_is_a_lost_race_and_an_unreadable_one_is_an_error() {
+    // `Ok(None)` tells the heartbeat to move on. An I/O failure reported
+    // as a lost race hides a task nobody can claim, every tick; a lost race
+    // reported as a failure stops the heartbeat for nothing.
+    let (_d, q) = queue();
+    assert!(q.claim("20260101-000000-000000000-gone").unwrap().is_none());
+    std::fs::create_dir_all(q.path(State::Pending, "dir")).unwrap();
+    assert!(q.claim("dir").is_err());
+    // On Windows the read is refused with ACCESS_DENIED, which is a lost
+    // race when the winner's claimed name is there; elsewhere a directory
+    // is not a task whoever holds the name.
+    assert!(publish(&q.path(State::Claimed, "dir"), &Task::default()).unwrap());
+    let lost = q.claim("dir").map(|c| c.is_none());
+    if cfg!(windows) {
+        assert!(lost.unwrap());
+    } else {
+        assert!(lost.is_err());
+    }
+}
+
+#[test]
+fn setting_aside_a_file_a_racing_claimer_already_moved_is_not_an_error() {
+    let (_d, q) = queue();
+    q.set_aside("x", &q.path(State::Pending, "x")).unwrap();
+    assert!(q.ids(State::Failed).unwrap().is_empty());
+}
+
+#[test]
+fn setting_aside_reports_a_link_failure_as_itself_not_as_no_free_name() {
+    // `failed/<id>.json` holds other bytes, so the file goes beside it under
+    // a longer name, which here is too long for the filesystem. That error
+    // is the one to report; retried as a name collision it ends in "no free
+    // name", which sends a person looking for files that do not exist.
+    let (_d, q) = queue();
+    let id = "a".repeat(240);
+    let from = q.path(State::Pending, &id);
+    std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+    std::fs::write(&from, "not json").unwrap();
+    std::fs::create_dir_all(q.dir().join("failed")).unwrap();
+    std::fs::write(q.path(State::Failed, &id), "other bytes").unwrap();
+    let e = q.set_aside(&id, &from).unwrap_err().to_string();
+    assert!(!e.contains("no free name"), "{e}");
+    assert!(from.exists(), "left in pending/");
+}
+
+#[test]
+fn a_runner_that_overrides_nothing_has_the_real_clock_no_schedule_and_no_profiles() {
+    // The defaults a runner gets by saying nothing: the real clock for the
+    // stale sweep's age and throttle, nothing that cuts `--every`'s wait
+    // short, and no profiles, so no `@name` is read (and marked read) by a
+    // runner that cannot tell a mention from an unknown name.
+    let f = Fake::default();
+    assert!((f.now() - now_secs()).abs() <= 5, "{}", f.now());
+    assert_eq!(f.next_due(), None);
+    assert!(f.profiles().is_none());
+}
+
+#[test]
+fn every_stop_says_why_work_returned() {
+    assert_eq!(Stop::Empty.to_string(), "queue empty");
+    assert_eq!(
+        Stop::Converged { id: "t".into() }.to_string(),
+        "t converged; its change awaits review"
+    );
+}
+
+#[test]
+fn work_wakes_a_task_whose_blockers_finished_and_runs_it_on_the_same_tick() {
+    // Without the reconcile at the top of each tick a blocked task waits
+    // for something else to wake it, which nothing in `work` would.
+    let (_d, q) = queue();
+    let a = add(&q, "a", |n| n.backlog = true);
+    let b = add(&q, "b", |n| n.blockers = vec![a.clone()]);
+    set_status(&q, &a, Status::Done);
+    let mut f = Fake::default();
+    let (n, _, out) = drain(&q, &mut f, WorkOptions::default());
+    assert_eq!((n, f.ran), (1, vec!["b".to_string()]), "{out}");
+    assert!(out.contains(&format!("work:     {b} -> todo")), "{out}");
+}
+
+#[test]
+fn an_empty_queue_says_only_that_it_is_empty() {
+    let (_d, q) = queue();
+    let (_, stop, out) = drain(&q, &mut Fake::default(), WorkOptions::default());
+    assert_eq!(stop, Stop::Empty);
+    assert_eq!(out, "work:     queue empty\n");
+}
+
+#[test]
+fn the_requeue_hint_under_release_is_printed_only_when_a_claim_was_kept() {
+    let release = WorkOptions {
+        stale_claims: StaleClaims::Release,
+        ..WorkOptions::default()
+    };
+    let probed = || Probed {
+        inner: Fake::default(),
+        live: dead_here(),
+        now: now_secs(),
+    };
+    let (_d, q) = queue();
+    let (_, _, out) = drain(&q, &mut probed(), release);
+    assert!(!out.contains("by hand"), "{out}");
+    crashed_claim(
+        &q,
+        "elsewhere",
+        Some(Claimant {
+            host: "other".into(),
+            ..here()
+        }),
+    );
+    let (_, _, out) = drain(&q, &mut probed(), release);
+    assert!(out.contains("puts one back in pending/ by hand"), "{out}");
+}
+
+#[test]
+fn a_missing_activity_log_is_empty_and_one_that_cannot_be_opened_is_an_error() {
+    // An audit trail that reads as empty when it could not be read looks
+    // like nothing happened.
+    let (_d, q) = queue();
+    assert!(q.activity().tail(10).unwrap().is_empty());
+    assert!(ActivityLog::at("bad\0name").tail(10).is_err());
+}
+
+#[test]
+fn approval_listing_skips_files_that_are_not_requests_and_refuses_a_folder_it_cannot_read() {
+    let (_d, q) = queue();
+    let task = q.add("x", None, None).unwrap();
+    let req = ledger::enforce(&q, &budgeted(100), &spent(100), "2026-09", Actor::Work)
+        .unwrap()
+        .request
+        .unwrap();
+    assert!(approval::is_request_id(&req) && !approval::is_request_id(&task));
+    let pending = q.trellis_dir().join("approvals/pending");
+    std::fs::write(pending.join("README"), "notes").unwrap();
+    std::fs::write(pending.join(".half.json"), "{").unwrap();
+    assert_eq!(approval::list(&q, "pending").unwrap().len(), 1);
+    std::fs::write(q.trellis_dir().join("approvals/rejected"), "").unwrap();
+    assert!(approval::list(&q, "rejected").is_err());
+}
+
+#[test]
+fn spend_counts_the_agents_altered_runs_and_no_others() {
+    // A figure whose trail digest did not match is counted and reported;
+    // a count that says none were altered hides that a limit was judged
+    // against edited numbers.
+    let run = |agent: &str, altered| ledger::SpendRecord {
+        agent: agent.into(),
+        tokens: Some(1),
+        prompt_tokens: None,
+        started_at: "2026-09-01T00:00:00Z".into(),
+        altered,
+    };
+    let s = ledger::spend(
+        &[run("rev", true), run("other", true), run("rev", false)],
+        "rev",
+        "2026-09",
+    );
+    assert_eq!((s.runs, s.altered), (2, 1));
+}
+
+#[test]
+fn stale_claims_policy_names_parse_and_nothing_else_does() {
+    assert_eq!(StaleClaims::parse("list"), Some(StaleClaims::List));
+    assert_eq!(StaleClaims::parse("release"), Some(StaleClaims::Release));
+    assert_eq!(StaleClaims::parse("Release"), None);
+}
+
+#[test]
+fn a_probe_that_does_not_say_its_os_reports_the_one_it_was_built_for() {
+    // The OS is half of "claimed on this machine": WSL and Windows share a
+    // computer name, and a Windows pid probed from Linux is never running.
+    struct Plain;
+    impl Liveness for Plain {
+        fn host(&self) -> Option<String> {
+            None
+        }
+        fn probe(&self, _pid: u32) -> Probe {
+            Probe::Gone
+        }
+    }
+    assert_eq!(Plain.os(), std::env::consts::OS);
+}
+
+/// A probe that changes `claimed/` while the sweep decides, as a racing
+/// heartbeat, `requeue` or a new claim would, then says the pid is gone.
+struct Meddling<F: Fn()>(F);
+
+impl<F: Fn()> Liveness for Meddling<F> {
+    fn host(&self) -> Option<String> {
+        Some("box".into())
+    }
+    fn os(&self) -> String {
+        "testos".into()
+    }
+    fn probe(&self, _pid: u32) -> Probe {
+        (self.0)();
+        Probe::Gone
+    }
+}
+
+#[test]
+fn stale_claim_release_skips_a_claim_gone_since_the_listing_and_keeps_an_unreadable_one() {
+    let (_d, q) = queue();
+    let (first, at) = crashed_claim(&q, "first", Some(here()));
+    let (second, _) = crashed_claim(&q, "second", Some(here()));
+    // Its holder finished it while the first was being probed.
+    let gone = q.path(State::Claimed, &second);
+    let swept = q
+        .release_stale_claims(
+            &Meddling(|| {
+                let _ = std::fs::remove_file(&gone);
+            }),
+            at + 600,
+        )
+        .unwrap();
+    assert!(
+        matches!(&swept[..], [(i, Swept::Released(_))] if *i == first),
+        "{swept:?}"
+    );
+
+    std::fs::create_dir_all(q.path(State::Claimed, "unreadable")).unwrap();
+    let swept = q.release_stale_claims(&dead_here(), at + 600).unwrap();
+    assert!(
+        matches!(&swept[..], [(i, Swept::Kept(why))] if i == "unreadable" && why.starts_with("not readable")),
+        "{swept:?}"
+    );
+}
+
+#[test]
+fn stale_claim_release_reads_the_claim_again_under_the_lock_and_keeps_what_changed() {
+    // Between the probe and the lock the claim can be released by someone
+    // else, claimed again, or become unreadable. Releasing what was seen
+    // rather than what is there runs a task twice or loses one.
+    let (_d, q) = queue();
+    let (id, at) = crashed_claim(&q, "x", Some(here()));
+    let path = q.path(State::Claimed, &id);
+    let swept = q
+        .release_stale_claims(&Meddling(|| std::fs::remove_file(&path).unwrap()), at + 600)
+        .unwrap();
+    assert!(
+        matches!(&swept[..], [(_, Swept::Kept(why))] if why.contains("left claimed/")),
+        "{swept:?}"
+    );
+
+    // Claimed again by a process that was given the same pid.
+    let (id, at) = crashed_claim(&q, "y", Some(here()));
+    let path = q.path(State::Claimed, &id);
+    let reclaim = || {
+        let mut t = read_task(&path).unwrap();
+        t.claimed_at = Some(secs_to_iso(at + 1));
+        std::fs::write(&path, serde_json::to_string(&t).unwrap()).unwrap();
+    };
+    let swept = q
+        .release_stale_claims(&Meddling(reclaim), at + 600)
+        .unwrap();
+    assert!(
+        matches!(&swept[..], [(_, Swept::Kept(why))] if why.contains("claimed again")),
+        "{swept:?}"
+    );
+    assert!(path.exists());
+
+    let unreadable = || {
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+    };
+    assert!(
+        q.release_stale_claims(&Meddling(unreadable), at + 600)
+            .is_err()
+    );
+}
+
+#[test]
+fn mentions_are_profile_names_each_once() {
+    assert_eq!(
+        mention::mentions("@dev, then @dev again; ops@example.com @Bad @"),
+        vec!["dev".to_string()]
+    );
+}
+
+#[test]
+fn mention_wake_marks_read_the_note_that_woke_and_no_other() {
+    // Marking a different note read leaves the waking one unread, and the
+    // next tick wakes the task again for it.
+    let (_d, q) = queue();
+    let id = failed_task(&q);
+    person_note(&q, &id, "looked at this, no idea");
+    person_note(&q, &id, "@reviewer please");
+    let woke = q
+        .wake_mentions(&profiles(&[("reviewer", "")]), Actor::Work)
+        .unwrap();
+    assert_eq!(woke.len(), 1);
+    let (_, t) = q.find(&id).unwrap();
+    assert_eq!(
+        t.notes
+            .iter()
+            .filter(|n| n.id.is_some())
+            .map(|n| n.mentions_read)
+            .collect::<Vec<_>>(),
+        vec![false, true]
+    );
+}
+
+#[test]
+fn a_record_that_exists_but_cannot_be_read_is_an_error_not_its_side_copy() {
+    // The side copy stands in for a record only while the record's name is
+    // absent; read in place of one that is there, it is a version the lock
+    // holder does not see.
+    let (d, _q) = queue();
+    let path = d.path().join("r.json");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(files::side(&path), "{\"task\":\"side\"}").unwrap();
+    assert!(read_json::<serde_json::Value>(&path).is_err());
+    assert!(files::read_json_opt::<serde_json::Value>(&path).is_err());
+    assert!(remove(Path::new("bad\0name")).is_err());
+}
+
+#[test]
+fn a_settle_whose_link_fails_keeps_the_side_copy_that_is_the_record() {
+    // The canonical name is gone, so the side copy is the only copy; a
+    // failed link swallowed and followed by removing it loses the record.
+    let (d, _q) = queue();
+    let path = d.path().join("r.json");
+    let next = files::side(&path);
+    std::fs::write(&next, "{}").unwrap();
+    files::fail::nth_link(1);
+    let r = files::settle(&path);
+    files::fail::nth_link(0);
+    assert!(r.is_err());
+    assert!(next.exists());
+}
+
+#[test]
+fn a_transient_permission_denial_is_retried_and_a_lasting_one_reported() {
+    // On Windows a scanner holding a file just written refuses access for
+    // a moment; given up at once, a claim or a move fails for nothing.
+    // Retried without bound, a real permission problem hangs the heartbeat.
+    fn denied<T>() -> std::io::Result<T> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+    let mut calls = 0;
+    let r = files::patiently(|| {
+        calls += 1;
+        if calls < 3 { denied() } else { Ok(calls) }
+    });
+    assert_eq!(r.unwrap(), 3);
+
+    let start = std::time::Instant::now();
+    let mut calls = 0;
+    let r: std::io::Result<()> = files::patiently(|| {
+        calls += 1;
+        assert!(calls < 100, "retried without bound");
+        denied()
+    });
+    assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(start.elapsed() >= Duration::from_secs(5));
 }
