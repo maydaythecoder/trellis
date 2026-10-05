@@ -11,12 +11,13 @@ on:
   # `audit` and every PR target ran it four times (#381). `audit` is left out
   # because promotion fast-forwards `dev` to the commit `audit` holds, so that
   # commit runs when it reaches `dev`; `v0.1-resolver` is frozen (ADR 0051).
-  # A pull request runs only into `main`: that is `dev`'s promotion, the one
-  # PR whose merge commit has not already run here.
+  # A pull request runs into `dev` and `main`: those are the two promotions on
+  # the way to `main` (`audit` into `dev`, `dev` into `main`), and each is
+  # checked here before it merges (#426).
   push:
     branches: ["main", "dev"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "dev"]
 
 # A newer push to the same ref makes the older run's result moot; cancelling
 # it saves the minutes, which ran out on 2026-09-28 (#156).
@@ -117,6 +118,11 @@ jobs:
 
       - name: Clippy (desktop/)
         run: cargo clippy --locked --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
+
+      # The desktop's tests spawn `target/debug/trellis` (desktop/src/child.rs),
+      # so it is built first; without it the test fails asking for it (#426).
+      - name: Build trellis (the desktop's tests spawn it)
+        run: cargo build --locked -p trellis-cli
 
       - name: Test (desktop/)
         run: cargo test --locked --manifest-path desktop/Cargo.toml
