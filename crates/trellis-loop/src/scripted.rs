@@ -132,7 +132,10 @@ mod tests {
         let e = ScriptedModel::from_json(r#"{"steps":[{"tool":"sudo","path":"x"}]}"#)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("not valid JSON") || e.contains("unknown"), "{e}");
+        assert!(
+            e.contains("step 1") && e.contains("unknown tool `sudo`"),
+            "{e}"
+        );
     }
 
     #[test]
