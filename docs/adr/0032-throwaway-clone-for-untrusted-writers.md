@@ -142,6 +142,10 @@ machine. Stated so they are not assumed closed:
   backgrounded is not killed on Windows after a normal exit (ADR 0023 §3).
   Inside the clone it writes to a directory that is being removed; one
   that writes by absolute path is the previous item.
+  *Amended by ADR 0035:* on Windows the command's Job Object is terminated
+  however it ends, so this holds there only for a process started on its
+  behalf outside the job (a service, WMI, the Task Scheduler); on Unix a
+  process that leaves its group (`setsid`) is not reached.
 - **Clone cost per call.** Each call clones the repository (the whole
   object store, copied rather than hard-linked) and reads every tracked
   file three times to hash it (the repository's copy and the clone's, before
