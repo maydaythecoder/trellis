@@ -616,12 +616,36 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                 n.tasks,
                 dir.display()
             );
+            // First: the one left-behind state that changes what an import
+            // does. The exported file does not say `paused`, so it runs there.
+            for name in &n.paused_by_overlay {
+                println!(
+                    "          agent `{name}` is paused here (`agents pause` or a budget stop), \
+                     not in its file: an import does not carry its pause, and will run it"
+                );
+            }
             if n.claimed_skipped > 0 {
                 println!(
                     "          {} claimed task(s) not exported: they belong to a run in \
                      progress",
                     n.claimed_skipped
                 );
+            }
+            // This checkout's runtime state, not definitions (ADR 0026 §10).
+            for (count, what) in [
+                (n.overlays, "agent overlay(s) (pauses, budget raises)"),
+                (
+                    n.routine_states,
+                    "routine state file(s) (when each last fired)",
+                ),
+                (n.approval_requests, "approval request(s)"),
+                (n.activity_lines, "activity log line(s)"),
+            ] {
+                if count > 0 {
+                    println!(
+                        "          {count} {what} not exported: runtime state of this checkout"
+                    );
+                }
             }
             println!(
                 "          nothing secret to scrub: profiles name a model spec, and keys \
