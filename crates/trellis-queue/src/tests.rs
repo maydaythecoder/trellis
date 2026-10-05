@@ -1287,7 +1287,7 @@ fn a_raise_that_cannot_be_written_leaves_the_request_pending() {
     crate::files::fail::nth_link(0);
     // And says so: told it is "recorded as approved with no raise", a
     // person raises the profile file by hand when approving again would do.
-    let e = e.err().expect("the raise fails").to_string();
+    let e = e.expect_err("the raise fails").to_string();
     assert!(e.contains("the request is pending again"), "{e}");
     assert!(profile::overlay(&q, "rev").unwrap().raises.is_empty());
     let open = approval::list(&q, "pending").unwrap();
