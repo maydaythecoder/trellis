@@ -516,93 +516,99 @@ was killed by a test in this ticket and none was judged equivalent. Calling a
 mutant equivalent is a claim about all inputs, and 847 of those were not
 going to be made carefully in one sitting.
 
+#245 then gave each trellis-model line its disposition: 75 killed by the
+named test in `trellis-model` itself (each shown by applying the mutant by
+hand and watching that test fail), 6 equivalent and 2 unexercisable, each
+with its reason. None had moved out of existence since `989b2a2`. cargo-mutants
+was not re-run for it.
+
 <details>
 <summary>trellis-model: 83 survivors</summary>
 
 ```
 unexercisable by `cargo test`: called only from `fuzz/fuzz_targets/`, which `cargo fuzz` runs on nightly, not by the suite cargo-mutants drives | crates/trellis-model/src/lib.rs:51:5: replace fuzz_parse_response with ()
-#245 | crates/trellis-model/src/hosted.rs:42:9: replace Protocol::parse_config -> Option<Self> with None
-#245 | crates/trellis-model/src/hosted.rs:43:13: delete match arm "openai" | "openai-chat" in Protocol::parse_config
-#245 | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with ""
-#245 | crates/trellis-model/src/hosted.rs:44:13: delete match arm "anthropic" in Protocol::parse_config
-#245 | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with ""
-#245 | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with None
-#245 | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with Some(Default::default())
-#245 | crates/trellis-model/src/hosted.rs:79:13: delete match arm "off" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:80:13: delete match arm "low" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:81:13: delete match arm "medium" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:82:13: delete match arm "high" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:422:25: delete match arm Some("max_tokens") in parse_reply
-#245 | crates/trellis-model/src/hosted.rs:425:25: delete match arm Some("refusal") in parse_reply
-#245 | crates/trellis-model/src/hosted.rs:488:5: replace retryable -> bool with true
-#245 | crates/trellis-model/src/hosted.rs:517:33: replace && with || in retry_delay_at
-#245 | crates/trellis-model/src/hosted.rs:561:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:560:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:558:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:559:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:557:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:39: replace % with / in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:39: replace % with + in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:64: replace == with != in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:58: replace % with + in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:58: replace % with / in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:580:9: delete match arm 4 | 6 | 9 | 11 in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:584:78: replace > with >= in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with ""
-#245 | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with ""
-#245 | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:718:9: replace HostedClient::thinking -> Thinking with Default::default()
-#245 | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with None
-#245 | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("")
-#245 | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("xyzzy")
-#245 | crates/trellis-model/src/hosted.rs:728:9: replace HostedClient::body -> Value with Default::default()
-#245 | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with true in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with false in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:54: replace < with == in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:54: replace < with > in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:54: replace < with <= in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with String::new()
-#245 | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with "xyzzy".into()
-#245 | crates/trellis-model/src/image.rs:16:45: replace * with +
-#245 | crates/trellis-model/src/image.rs:16:38: replace * with +
-#245 | crates/trellis-model/src/image.rs:31:9: replace <impl std::fmt::Debug for Image>::fmt -> std::fmt::Result with Ok(Default::default())
-#245 | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 0
-#245 | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 1
-#245 | crates/trellis-model/src/image.rs:79:9: replace Image::base64 -> &str with "xyzzy"
-#245 | crates/trellis-model/src/image.rs:106:40: replace | with ^ in base64
-#245 | crates/trellis-model/src/pull.rs:74:5: replace partial_name -> String with "xyzzy".into()
-#245 | crates/trellis-model/src/pull.rs:81:5: replace already_here -> Result<Option<PathBuf>, PullError> with Ok(None)
-#245 | crates/trellis-model/src/pull.rs:120:24: delete ! in pull
-#245 | crates/trellis-model/src/pull.rs:175:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in len
-#245 | crates/trellis-model/src/runtime.rs:405:22: replace > with >= in RuntimeClient::request
-#245 | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with String::new()
-#245 | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with "xyzzy".into()
-#245 | crates/trellis-model/src/secret.rs:26:9: replace ApiKey::from_env -> Option<Self> with None
-#245 | crates/trellis-model/src/secret.rs:60:29: replace < with == in ApiKey::scrub
-#245 | crates/trellis-model/src/secret.rs:60:29: replace < with <= in ApiKey::scrub
-#245 | crates/trellis-model/src/transport.rs:313:36: replace * with +
-#245 | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with true in post
-#245 | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with false in post
-#245 | crates/trellis-model/src/transport.rs:471:5: replace tls_exchange -> Result<Response, SendError> with Ok(Default::default())
-#245 | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with true in exchange
-#245 | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with false in exchange
-#245 | crates/trellis-model/src/transport.rs:518:34: replace > with >= in exchange
-#245 | crates/trellis-model/src/transport.rs:518:30: replace + with * in exchange
-#245 | crates/trellis-model/src/transport.rs:527:56: replace > with >= in exchange
-#245 | crates/trellis-model/src/transport.rs:533:32: replace == with != in exchange
-#245 | crates/trellis-model/src/transport.rs:595:27: replace += with *= in Framer::complete
-#245 | crates/trellis-model/src/transport.rs:595:40: replace - with + in Framer::complete
-#245 | crates/trellis-model/src/transport.rs:707:67: replace + with - in chunked
-#245 | crates/trellis-model/src/transport.rs:707:67: replace + with * in chunked
-#245 | crates/trellis-model/src/transport.rs:710:39: replace > with == in chunked
-#245 | crates/trellis-model/src/transport.rs:710:39: replace > with >= in chunked
-#245 | crates/trellis-model/src/transport.rs:726:31: replace < with <= in chunked
-#245 | crates/trellis-model/src/transport.rs:735:31: replace < with <= in chunked
-#245 | crates/trellis-model/src/transport.rs:738:27: replace += with -= in chunked
-#245 | crates/trellis-model/src/transport.rs:802:20: replace < with <= in dechunk
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:42:9: replace Protocol::parse_config -> Option<Self> with None
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:43:13: delete match arm "openai" | "openai-chat" in Protocol::parse_config
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with ""
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:44:13: delete match arm "anthropic" in Protocol::parse_config
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with "xyzzy"
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with ""
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with "xyzzy"
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with None
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with Some(Default::default())
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:79:13: delete match arm "off" in Thinking::parse
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:80:13: delete match arm "low" in Thinking::parse
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:81:13: delete match arm "medium" in Thinking::parse
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:82:13: delete match arm "high" in Thinking::parse
+killed (#245) by hosted::tests::a_reply_is_read_into_one_call_or_a_reason_there_is_not_one | crates/trellis-model/src/hosted.rs:422:25: delete match arm Some("max_tokens") in parse_reply
+killed (#245) by hosted::tests::a_reply_is_read_into_one_call_or_a_reason_there_is_not_one | crates/trellis-model/src/hosted.rs:425:25: delete match arm Some("refusal") in parse_reply
+killed (#245) by hosted::tests::a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed | crates/trellis-model/src/hosted.rs:488:5: replace retryable -> bool with true
+killed (#245) by hosted::tests::retry_after_is_honoured_and_capped | crates/trellis-model/src/hosted.rs:517:33: replace && with || in retry_delay_at
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:561:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:560:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:558:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:559:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:557:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:576:39: replace % with / in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:576:39: replace % with + in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:576:64: replace == with != in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:576:58: replace % with + in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:576:58: replace % with / in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:580:9: delete match arm 4 | 6 | 9 | 11 in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:584:78: replace > with >= in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with ""
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with "xyzzy"
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with ""
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with "xyzzy"
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:718:9: replace HostedClient::thinking -> Thinking with Default::default()
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with None
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("")
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("xyzzy")
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:728:9: replace HostedClient::body -> Value with Default::default()
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with true in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with false in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:54: replace < with == in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:54: replace < with > in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:54: replace < with <= in HostedClient::send_via
+killed (#245) by hosted::tests::a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with String::new()
+killed (#245) by hosted::tests::a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with "xyzzy".into()
+killed (#245) by image::tests::the_bound_is_5_mib_as_anthropic_states_it | crates/trellis-model/src/image.rs:16:45: replace * with +
+killed (#245) by image::tests::the_bound_is_5_mib_as_anthropic_states_it | crates/trellis-model/src/image.rs:16:38: replace * with +
+equivalent (#245): `Debug` text only; the mutant prints less, never the image data, and no code reads the text | crates/trellis-model/src/image.rs:31:9: replace <impl std::fmt::Debug for Image>::fmt -> std::fmt::Result with Ok(Default::default())
+killed (#245) by image::tests::an_image_carries_its_encoding_and_counts_its_length | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 0
+killed (#245) by image::tests::an_image_carries_its_encoding_and_counts_its_length | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 1
+killed (#245) by image::tests::an_image_carries_its_encoding_and_counts_its_length | crates/trellis-model/src/image.rs:79:9: replace Image::base64 -> &str with "xyzzy"
+equivalent (#245): each byte is shifted into its own 8 bits of a word that starts at 0, so `|` and `^` combine disjoint bits identically | crates/trellis-model/src/image.rs:106:40: replace | with ^ in base64
+killed (#245) by pull::tests::the_staging_name_is_the_file_name_plus_part | crates/trellis-model/src/pull.rs:74:5: replace partial_name -> String with "xyzzy".into()
+killed (#245) by pull::tests::a_file_of_the_pinned_length_at_the_final_name_is_not_fetched_or_hashed | crates/trellis-model/src/pull.rs:81:5: replace already_here -> Result<Option<PathBuf>, PullError> with Ok(None)
+killed (#245) by pull::tests::a_short_download_is_kept_to_resume_and_not_moved_into_place | crates/trellis-model/src/pull.rs:120:24: delete ! in pull
+killed (#245) by pull::tests::a_final_path_that_cannot_be_inspected_is_an_error_not_absent | crates/trellis-model/src/pull.rs:175:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in len
+killed (#245) by runtime::tests::a_runtime_reply_exactly_at_the_cap_is_read | crates/trellis-model/src/runtime.rs:405:22: replace > with >= in RuntimeClient::request
+killed (#245) by runtime::tests::a_props_body_that_is_not_json_says_what_it_was_reading | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with String::new()
+killed (#245) by runtime::tests::a_props_body_that_is_not_json_says_what_it_was_reading | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with "xyzzy".into()
+killed (#245) by secret::tests::from_env_reads_a_set_variable_and_names_it_as_the_source | crates/trellis-model/src/secret.rs:26:9: replace ApiKey::from_env -> Option<Self> with None
+killed (#245) by secret::tests::scrub_leaves_text_alone_for_a_key_under_four_characters | crates/trellis-model/src/secret.rs:60:29: replace < with == in ApiKey::scrub
+killed (#245) by secret::tests::scrub_leaves_text_alone_for_a_key_under_four_characters | crates/trellis-model/src/secret.rs:60:29: replace < with <= in ApiKey::scrub
+killed (#245) by transport::tests::a_connect_answer_with_a_few_kib_of_headers_opens_the_tunnel | crates/trellis-model/src/transport.rs:313:36: replace * with +
+killed (#245) by transport::tests::post_sends_https_through_a_proxy_and_never_plain_http | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with true in post
+killed (#245) by transport::tests::post_sends_https_through_a_proxy_and_never_plain_http | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with false in post
+unexercisable (#245): `#[cfg(not(feature = "hosted"))]`, so not compiled in the default build cargo-mutants tests; without the feature the mutant does not compile (`Response` has no `Default`) | crates/trellis-model/src/transport.rs:471:5: replace tls_exchange -> Result<Response, SendError> with Ok(Default::default())
+killed (#245) by transport::tests::a_close_without_close_notify_ends_the_read_and_no_other_error_does | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with true in exchange
+killed (#245) by transport::tests::a_close_without_close_notify_ends_the_read_and_no_other_error_does | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with false in exchange
+killed (#245) by transport::tests::a_response_exactly_at_the_cap_is_read_whole | crates/trellis-model/src/transport.rs:518:34: replace > with >= in exchange
+killed (#245) by transport::tests::a_response_exactly_at_the_cap_is_read_whole | crates/trellis-model/src/transport.rs:518:30: replace + with * in exchange
+killed (#245) by transport::tests::a_response_exactly_at_the_cap_is_read_whole | crates/trellis-model/src/transport.rs:527:56: replace > with >= in exchange
+killed (#245) by transport::tests::a_close_without_close_notify_ends_the_read_and_no_other_error_does | crates/trellis-model/src/transport.rs:533:32: replace == with != in exchange
+equivalent (#245): moves only `examined`, a counter no production code reads; the linearity test still counts a real framer regression | crates/trellis-model/src/transport.rs:595:27: replace += with *= in Framer::complete
+equivalent (#245): moves only `examined`, a counter no production code reads; the linearity test still counts a real framer regression | crates/trellis-model/src/transport.rs:595:40: replace - with + in Framer::complete
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:707:67: replace + with - in chunked
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:707:67: replace + with * in chunked
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:710:39: replace > with == in chunked
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:710:39: replace > with >= in chunked
+equivalent (#245): at `rest.len() == n` the mutant parks in `Data(0)` at the same `pos`, and the next pass reaches `DataEnd` there, as the original does at once; both return false | crates/trellis-model/src/transport.rs:726:31: replace < with <= in chunked
+killed (#245) by transport::tests::bytes_after_a_chunk_that_are_not_crlf_end_the_read_at_once | crates/trellis-model/src/transport.rs:735:31: replace < with <= in chunked
+equivalent (#245): moves only `examined`, a counter no production code reads; it cannot underflow, as every size line adds at least 3 first | crates/trellis-model/src/transport.rs:738:27: replace += with -= in chunked
+killed (#245) by transport::tests::a_chunked_body_whose_data_all_arrived_is_missing_its_next_size_line | crates/trellis-model/src/transport.rs:802:20: replace < with <= in dechunk
 ```
 
 </details>
