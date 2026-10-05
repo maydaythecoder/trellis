@@ -21,7 +21,7 @@ gh issue list --state open --limit 300 --json number,title,labels,body --jq '
   [(.number | tostring), (prio | tostring), ([.labels[].name] | join(" ")),
    ([.body | scan("(?m)^blocked_by: \\[([^\\]]*)\\]") | .[0]] | join(" ")),
    (if (.body | test("(?m)^## Done when")) then "y" else "n" end),
-   (if (.body | test("(?ms)^## Verify\\s*\\n+```")) then "y" else "n" end),
+   (if (.body | test("(?ms)^## Verify.*?^```")) then "y" else "n" end),
    .title] | join("\u001f")' |
 while IFS=$'\x1f' read -r n p labels blocked done_when verify title; do
   reason=""
@@ -52,7 +52,9 @@ while IFS=$'\x1f' read -r n p labels blocked done_when verify title; do
     done
   fi
   if [ "$why" = "--why" ]; then
-    printf 'P%s #%s %s: %s\n' "$p" "$n" "${reason:-ELIGIBLE}" "$title"
+    # A reason can itself hold ': ', so a unit separator before the title
+    # lets sync-ready.py split the two; people still see ': '.
+    printf 'P%s #%s %s\x1f: %s\n' "$p" "$n" "${reason:-ELIGIBLE}" "$title"
   elif [ -z "$reason" ]; then
     printf '%s %s\n' "$n" "$title"
     exit 0
