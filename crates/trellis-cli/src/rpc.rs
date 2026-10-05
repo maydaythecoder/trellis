@@ -74,6 +74,10 @@ const COMMANDS: &[(&str, &str)] = &[
          reach and doubt as separate counts, never a ratio",
     ),
     (
+        "get_queue",
+        "the tasks `trellis queue list` prints, as data, read-only; claims nothing",
+    ),
+    (
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
@@ -593,6 +597,19 @@ impl Server {
         }));
     }
 
+    /// `get_queue`: every queued task as data; nothing is written, claimed
+    /// or moved. The queue's writes are `trellis queue`'s and `trellis
+    /// work`'s (ADR 0020 §5). Answered from another thread, as
+    /// `get_codebase` is, so a waiting run's `approve` or `abort` is still
+    /// read at once.
+    fn get_queue(&mut self, id: Option<&str>) {
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::work::queue_json(&root).map_err(|e| e.to_string());
+            respond_on(&sink, id.as_deref(), "get_queue", result);
+        }));
+    }
+
     /// `steer` and `follow_up`: refused with no run in flight; otherwise
     /// sent on the run's steering channel, never the approval channel.
     ///
@@ -778,6 +795,7 @@ impl Server {
             "compact" => self.compact(id),
             "get_codebase" => self.get_codebase(cmd, id),
             "get_radius" => self.get_radius(cmd, id),
+            "get_queue" => self.get_queue(id),
             other => self.respond(
                 id,
                 if other.is_empty() { "unknown" } else { other },
@@ -1670,6 +1688,22 @@ mod tests {
             COMMANDS.len()
         );
         assert_eq!(by("f")["success"], false, "nothing to abort");
+    }
+
+    #[test]
+    fn get_queue_outside_a_repository_answers_the_queue_s_own_error() {
+        // The risk: a root with no git directory answered as an empty queue,
+        // which a client would show as "nothing queued".
+        let d = tempfile::tempdir().unwrap();
+        let c = Client::start(d.path());
+        c.send(json!({"id": "q", "type": "get_queue"}));
+        let rs = c.finish();
+        let r = rs.iter().find(|r| r["id"] == "q").unwrap();
+        assert_eq!(r["success"], false, "{r}");
+        let want = trellis_queue::Queue::for_repo(d.path())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(r["error"], want.as_str());
     }
 
     #[test]

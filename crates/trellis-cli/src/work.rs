@@ -708,6 +708,44 @@ fn check_focus(root: &Path, stem: &str) -> Result<()> {
     Ok(())
 }
 
+/// `rpc`'s `get_queue`: every task `queue list` prints with no filter, in its
+/// order, as data. Only reads: `Queue::at` creates nothing until a write.
+///
+/// Strings are given as stored; `queue list` escapes control characters for
+/// the terminal, and JSON escapes its own. The approvals block is not a task
+/// and is left out.
+pub(crate) fn queue_json(root: &Path) -> std::result::Result<serde_json::Value, QueueError> {
+    let q = Queue::for_repo(root)?;
+    let entries = q.list()?;
+    let ix = Queue::index_of(&entries);
+    let tasks: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let state = e.state.dir_name();
+            match &e.task {
+                Err(why) => serde_json::json!({"id": e.id, "state": state, "error": why}),
+                Ok(t) => {
+                    // The same condition `list_line` prints `waiting:` under.
+                    let waiting = (e.state == State::Pending)
+                        .then(|| Queue::waiting_reason(t, &ix))
+                        .flatten();
+                    serde_json::json!({
+                        "id": e.id,
+                        "state": state,
+                        "status": t.status_in(e.state).as_str(),
+                        "priority": t.priority.as_str(),
+                        "task": t.task,
+                        "labels": t.labels,
+                        "assignee": t.assignee,
+                        "waiting": waiting,
+                    })
+                }
+            }
+        })
+        .collect();
+    Ok(serde_json::json!({ "tasks": tasks }))
+}
+
 fn list_line(e: &trellis_queue::Entry, ix: &trellis_queue::Index) -> String {
     let age = e.age.map(ago).unwrap_or_else(|| "?".to_string());
     let state = e.state.dir_name();

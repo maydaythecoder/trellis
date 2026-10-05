@@ -208,9 +208,10 @@ on stderr.
     below*)
   - `get_radius {symbol}` (*added 2026-10-05, #293; see "get_radius"
     below*)
+  - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
-  `follow_up`; `get_codebase`, the 13th, and `get_radius`, the 14th, are
-  trellis's own, not pi's)
+  `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th, and
+  `get_queue`, the 15th, are trellis's own, not pi's)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -399,6 +400,43 @@ on stderr.
     it is answered while an approve-mode run waits on its question, before
     that run's `run_end`; and its counts, reasons and files equal what
     `trellis radius f` prints, run after those checks.
+- *Added 2026-10-05 (#294), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_queue`** answers with the tasks `trellis queue list` prints with no
+  filter, as data, so an rpc client never parses human output (ADR 0048
+  §2). It takes no arguments and is read-only.
+  - It reads the queue as `queue list` does (`Queue::for_repo`,
+    `Queue::list`, `Queue::waiting_reason`). `Queue::at` creates nothing
+    until a write, so nothing is written, claimed or moved, and no lease is
+    touched: the queue's writes stay with `trellis queue` and `trellis
+    work` (ADR 0020 §5).
+  - `data` is `{tasks}`, one entry per task in the order `queue list`
+    prints them. A readable task is `{id, state, status, priority, task,
+    labels, assignee, waiting}`: `state` is the queue directory it is in,
+    `assignee` is null when none, and `waiting` is the reason `queue list`
+    prints after `waiting:` for a pending task, else null. A task file that
+    does not parse is `{id, state, error}`, `error` being the text `queue
+    list` prints after `unreadable:`. Strings are given as stored: `queue
+    list` escapes control characters for the terminal, and JSON escapes its
+    own. The "approvals waiting" block is not a task and is not part of the
+    answer.
+  - A root outside any git repository answers `success` false with the
+    message `Queue::for_repo` gives.
+  - It runs on its own thread, through `respond_on`, as `get_codebase`
+    does, so it is answered while a run is in flight, including one waiting
+    on an approval, and `quit` joins it before answering.
+  - Evidence: `rpc_get_queue_lists_what_queue_list_prints` in
+    `tests/modes.rs`, through the binary over stdio, over a queue holding
+    tasks added with `--priority`, `--label`, `--blocked-by` and
+    `--backlog` and one pending file that does not parse: with no run in
+    flight it answers and afterwards `git status --porcelain` prints
+    nothing and every file under the git directory's `trellis/` has the
+    name and bytes it had before; it is answered while an approve-mode run
+    waits on its question, before that run's `run_end`; a `get_queue`
+    followed by `quit` is answered before the `quit` response; and each
+    task's fields equal what `trellis queue list` prints, in its order.
+    The non-repository answer is
+    `get_queue_outside_a_repository_answers_the_queue_s_own_error` in
+    `rpc.rs`.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
