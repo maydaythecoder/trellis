@@ -504,8 +504,8 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
         );
     } else {
         out.push(format!(
-            "index:      {} definitions across {} files · {} of {} first-party call sites \
-             bound\n            ({:.1}% — a lower bound on recall, NOT recall; only the \
+            "index:      {} definitions across {} files · {} first-party call sites bound of \
+             {} non-excluded call sites\n            ({:.1}% — a lower bound on recall, NOT recall; only the \
              hand audit is\n            comparable to the gate. See CLAUDE.md) · {} ms",
             index.symbols.len(),
             index.files.len(),
@@ -716,6 +716,10 @@ mod doctor_tests {
         assert!(
             lines.contains("hand audit"),
             "and it must name what IS comparable: {lines}"
+        );
+        assert!(
+            lines.contains("non-excluded call sites"),
+            "the denominator is named as `trellis index` names it (A-30): {lines}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

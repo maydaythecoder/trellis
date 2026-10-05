@@ -25,7 +25,7 @@ pub(crate) fn fold(value: &str) -> String {
 /// NFKD before the mark strip is what makes `Café` slug to `cafe` rather than
 /// `caf`; a slug that differs from Apex's is an alias that resolves in one
 /// tool and not the other.
-pub fn slugify(value: &str) -> String {
+pub(crate) fn slugify(value: &str) -> String {
     let folded = fold(value);
     let mut out = String::with_capacity(folded.len());
     let mut dash = false;
@@ -69,13 +69,13 @@ pub(crate) fn has_md_ext(s: &str) -> bool {
 }
 
 /// `noteRefs.ts#normalizeKey`.
-pub fn normalize_key(value: &str) -> String {
+pub(crate) fn normalize_key(value: &str) -> String {
     js::trim(strip_md(strip_notes_prefix(value))).to_lowercase()
 }
 
 /// A parsed `[[target|label]]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WikiTarget {
+pub(crate) struct WikiTarget {
     /// Cleaned: `notes/` and `.md` removed, trimmed. Empty when there is no
     /// target.
     pub target: String,
@@ -103,7 +103,7 @@ fn next_link(s: &str, from: usize) -> Option<(usize, usize, &str)> {
 }
 
 /// `noteRefs.ts#parseWikiTarget` for a string argument.
-pub fn parse_wiki_target(value: &str) -> WikiTarget {
+pub(crate) fn parse_wiki_target(value: &str) -> WikiTarget {
     // `referenceString`: an empty value or the literal "null" is nothing.
     let raw = if value == "null" { "" } else { value };
     // `unwrapWikiSyntax`: the anchored form and the unanchored form both

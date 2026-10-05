@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 
 use crate::labels::Flag;
 use crate::open::{Blockers, ListError, open_issues};
-use crate::parse::TRIAGE_START;
+use crate::parse::{TRIAGE_END, TRIAGE_START};
 use crate::report::{Line, Value, printable, report, ticket_from_gh_json};
 use crate::{State, TRIAGE_VERSION, Ticket};
 
@@ -550,8 +550,6 @@ pub(crate) struct Rewrite {
     /// Keys with no line in the block.
     pub(crate) missing: Vec<String>,
 }
-
-const TRIAGE_END: &str = "<!-- triage:end";
 
 /// Replaces the value of each `key:` line inside the one generated triage
 /// block, keeping every other byte of `body`: the text outside the block,

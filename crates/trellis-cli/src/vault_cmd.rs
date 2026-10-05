@@ -179,8 +179,8 @@ fn sync_dates(dir: &Path, touched: &dates::Touched) -> Result<()> {
     if touched.is_empty() {
         return Ok(());
     }
-    if let Some(m) =
-        dates::after_edit(&edit::root_of(dir), touched, &today()).map_err(anyhow::Error::msg)?
+    if let Some(m) = dates::after_edit(&trellis_vault::notes_root(dir), touched, &today())
+        .map_err(anyhow::Error::msg)?
     {
         println!("{m}");
     }
@@ -402,22 +402,34 @@ fn dates_cmd(dir: &Path, seed: bool) -> Result<()> {
     };
     let (rows, stale) = dates::coverage(&v, &f.doc);
     for c in rows {
-        if c.has_entry {
-            println!(
-                "{}  created={}  lines={} matching={}",
-                c.path,
-                c.created.as_deref().unwrap_or("unknown"),
-                c.lines,
-                c.matching
-            );
-        } else {
-            println!("{}  no entry", c.path);
-        }
+        println!("{}", coverage_row(&c));
     }
     for s in stale {
         println!("{s}  entry for a note that does not exist");
     }
     Ok(())
+}
+
+/// One `trellis vault dates` row. A note over the line limit has 0 lines
+/// and 0 matching only because it was not read, so it says why, in the
+/// words `--seed` uses when it skips the same note.
+fn coverage_row(c: &dates::Coverage) -> String {
+    if !c.has_entry {
+        return format!("{}  no entry", c.path);
+    }
+    let created = c.created.as_deref().unwrap_or("unknown");
+    if c.too_long {
+        format!(
+            "{}  created={created}  {}",
+            c.path,
+            dates::DatesError::NoteTooLong
+        )
+    } else {
+        format!(
+            "{}  created={created}  lines={} matching={}",
+            c.path, c.lines, c.matching
+        )
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +442,30 @@ mod tests {
             Some(crate::Command::Vault(a)) => a,
             _ => panic!("not a vault command"),
         }
+    }
+
+    /// The risk: an over-limit note printed `lines=0 matching=0`, the same
+    /// row as an empty one, while `--seed` skipped it as too long.
+    #[test]
+    fn a_dates_row_for_a_note_over_the_line_limit_says_so() {
+        let row = |too_long| dates::Coverage {
+            path: "big.md".to_string(),
+            created: Some("2026-10-05".to_string()),
+            lines: 0,
+            matching: 0,
+            has_entry: true,
+            too_long,
+        };
+        let long = coverage_row(&row(true));
+        assert!(
+            long.contains(&dates::DatesError::NoteTooLong.to_string()),
+            "{long}"
+        );
+        assert!(!long.contains("lines=0"), "{long}");
+        assert_eq!(
+            coverage_row(&row(false)),
+            "big.md  created=2026-10-05  lines=0 matching=0"
+        );
     }
 
     #[test]
