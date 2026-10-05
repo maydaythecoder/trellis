@@ -1029,4 +1029,371 @@ mod tests {
         assert!(row("big.md").too_long, "{rows:?}");
         assert!(!row("empty.md").too_long, "{rows:?}");
     }
+
+    // --- #246: what the mutation survivors showed was untested ---
+
+    #[test]
+    fn normalize_day_refuses_each_malformed_shape_on_its_own() {
+        // Each clause of the shape check is the only one that fails here, so
+        // a clause that stopped counting would let its case through. `+024`
+        // parses as a u32, so only the digit check refuses it.
+        for bad in [
+            "2024-01-011",
+            "2024x01-01",
+            "2024-01x01",
+            "+024-01-01",
+            "2024-+1-01",
+        ] {
+            assert_eq!(normalize_day(bad), None, "{bad}");
+        }
+        assert_eq!(normalize_day("2023-02-28").as_deref(), Some("2023-02-28"));
+        assert_eq!(normalize_day("2023-02-29"), None);
+        assert_eq!(normalize_day("2024-02-29").as_deref(), Some("2024-02-29"));
+    }
+
+    #[test]
+    fn a_heading_is_one_to_six_hashes_then_space_or_end() {
+        assert!(is_heading("## Part"));
+        assert!(is_heading("  #"));
+        assert!(!is_heading("#x"));
+        assert!(!is_heading("####### x"));
+    }
+
+    #[test]
+    fn the_line_limit_counts_lines_not_newlines() {
+        // Exactly the limit is a note Apex reads; one more is refused.
+        assert!(logical_lines(&"\n".repeat(MAX_LINES_PER_NOTE - 1)).is_ok());
+        assert!(logical_lines(&"\n".repeat(MAX_LINES_PER_NOTE)).is_err());
+    }
+
+    #[test]
+    fn a_marker_takes_the_heading_above_it_across_blank_lines() {
+        let n = seed(
+            "# Part\n\n\n*Written: 2024-02-29*\nline\n",
+            &Seed::default(),
+        )
+        .unwrap();
+        let w = (Some("2024-02-29"), false);
+        assert_eq!(days(&n), [w, w, w, w, w, w]);
+    }
+
+    #[test]
+    fn reconcile_keeps_a_common_prefix_of_repeated_lines() {
+        // Neither repeated `a` is unique, so only the prefix rule keeps
+        // their dates.
+        let old = Some("2024-01-01");
+        let new = Some("2024-06-01");
+        let prev = seed(
+            "a\na\nx",
+            &Seed {
+                is_new: true,
+                today: old,
+                ..Seed::default()
+            },
+        )
+        .unwrap();
+        let r = reconcile("a\na\ny", Some(&prev), &stamp(new, false)).unwrap();
+        assert_eq!(days(&r), [(old, false), (old, false), (new, false)]);
+    }
+
+    #[test]
+    fn reconcile_keeps_an_interior_line_that_was_first_in_the_old_text() {
+        // `a` moved from old position 0 (the first interior candidate) to
+        // new position 1: unique on both sides and in order, so it keeps
+        // its date.
+        let old = Some("2024-01-01");
+        let new = Some("2024-06-01");
+        let prev = seed(
+            "a\nb",
+            &Seed {
+                is_new: true,
+                today: old,
+                ..Seed::default()
+            },
+        )
+        .unwrap();
+        let r = reconcile("c\na\nd", Some(&prev), &stamp(new, false)).unwrap();
+        assert_eq!(days(&r), [(new, false), (old, false), (new, false)]);
+    }
+
+    fn one_note(path: &str, lines: usize) -> Document {
+        let mut doc = Document::default();
+        doc.notes.insert(path.to_string(), entry(lines));
+        doc
+    }
+
+    fn entry(lines: usize) -> NoteDates {
+        NoteDates {
+            created: stamp(None, true),
+            lines: vec![
+                Line {
+                    anchor: "0".repeat(32),
+                    day: None,
+                    estimated: true,
+                };
+                lines
+            ],
+        }
+    }
+
+    #[test]
+    fn note_paths_are_refused_for_each_rule_on_its_own() {
+        for bad in [
+            "a\\b.md", "a\0b.md", "C:/a.md", "C:a.md", "a//b.md", "./a.md",
+        ] {
+            assert!(
+                matches!(validate(&one_note(bad, 0)), Err(DatesError::NotePath(_))),
+                "{bad:?}"
+            );
+        }
+        validate(&one_note("sub/a.md", 0)).unwrap();
+    }
+
+    #[test]
+    fn an_anchor_is_32_lowercase_hex_digits() {
+        for bad in ["abc".to_string(), "g".repeat(32)] {
+            let mut doc = one_note("a.md", 1);
+            doc.notes.get_mut("a.md").unwrap().lines[0].anchor = bad.clone();
+            assert!(
+                matches!(validate(&doc), Err(DatesError::Anchor(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_note_count_limit_is_inclusive() {
+        let mut doc = Document::default();
+        for i in 0..MAX_NOTES {
+            doc.notes.insert(format!("n{i}.md"), entry(0));
+        }
+        validate(&doc).unwrap();
+        doc.notes.insert("over.md".into(), entry(0));
+        assert!(matches!(validate(&doc), Err(DatesError::TooManyNotes)));
+    }
+
+    #[test]
+    fn the_line_limits_are_inclusive_per_note_and_in_total() {
+        // Per note: exactly the limit passes, one more is refused.
+        validate(&one_note("a.md", MAX_LINES_PER_NOTE)).unwrap();
+        assert!(matches!(
+            validate(&one_note("a.md", MAX_LINES_PER_NOTE + 1)),
+            Err(DatesError::TooManyLines { .. })
+        ));
+        // In total, across notes each under the per-note limit.
+        let mut doc = one_note("a.md", MAX_TOTAL_LINES / 2);
+        doc.notes.insert("b.md".into(), entry(MAX_TOTAL_LINES / 2));
+        validate(&doc).unwrap();
+        doc.notes.insert("c.md".into(), entry(1));
+        assert!(matches!(validate(&doc), Err(DatesError::TooManyTotalLines)));
+    }
+
+    /// A document whose compact bytes are exactly `size`, padded through one
+    /// long note path.
+    fn doc_of_size(size: usize) -> Document {
+        let base = to_bytes(&one_note("a.md", 0)).len() - "a.md".len();
+        let stem = "a".repeat(size - base - ".md".len());
+        let doc = one_note(&format!("{stem}.md"), 0);
+        assert_eq!(to_bytes(&doc).len(), size);
+        doc
+    }
+
+    #[test]
+    fn the_byte_limit_on_a_document_is_inclusive() {
+        let max = MAX_BYTES as usize;
+        validate(&doc_of_size(max)).unwrap();
+        assert!(matches!(
+            validate(&doc_of_size(max + 1)),
+            Err(DatesError::TooLarge)
+        ));
+    }
+
+    /// Valid `dates.json` bytes of exactly `size`. The padding is inside
+    /// the object, so a read that dropped the last byte would not parse.
+    fn raw_of_size(size: usize) -> Vec<u8> {
+        let (head, tail) = (r#"{"version":1,"notes":{"#, "}}");
+        let mut raw = head.as_bytes().to_vec();
+        raw.resize(size - tail.len(), b' ');
+        raw.extend_from_slice(tail.as_bytes());
+        raw
+    }
+
+    #[test]
+    fn the_byte_limit_on_raw_input_is_16_mib_inclusive() {
+        let max = MAX_BYTES as usize;
+        assert_eq!(MAX_BYTES, 16 * 1024 * 1024);
+        parse(&raw_of_size(max)).unwrap();
+        assert!(matches!(
+            parse(&raw_of_size(max + 1)),
+            Err(DatesError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread() {
+        let max = MAX_BYTES as usize;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(path(d.path()), raw_of_size(max)).unwrap();
+        assert!(matches!(load(d.path()), State::Valid(_)));
+        std::fs::write(path(d.path()), raw_of_size(max + 1)).unwrap();
+        match load(d.path()) {
+            State::Invalid(e) => assert!(
+                e.contains("not a regular file within the byte limit"),
+                "{e}"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dates_json_that_is_a_directory_is_invalid_not_absent() {
+        // Absent means "no dates here"; a directory where the file should be
+        // is something wrong, and reading it as absent would hide that.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(path(d.path())).unwrap();
+        assert!(matches!(load(d.path()), State::Invalid(_)));
+    }
+
+    #[test]
+    fn a_dates_json_symlink_is_refused() {
+        // A link could point the compare-and-replace write anywhere.
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("elsewhere.json");
+        std::fs::write(&target, br#"{"version":1,"notes":{}}"#).unwrap();
+        #[cfg(windows)]
+        let r = std::os::windows::fs::symlink_file(&target, path(d.path()));
+        #[cfg(unix)]
+        let r = std::os::unix::fs::symlink(&target, path(d.path()));
+        if let Err(e) = r {
+            eprintln!("skipped: cannot create a file symlink here: {e}");
+            return;
+        }
+        match load(d.path()) {
+            State::Invalid(e) => assert!(e.contains("symlink"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_write_into_a_missing_folder_reports_that_error() {
+        // Only a name collision is retried; anything else is the answer.
+        let d = tempfile::tempdir().unwrap();
+        let e = atomic_write(&d.path().join("gone/dates.json"), b"{}", None).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+    }
+
+    #[test]
+    fn a_taken_temp_name_is_skipped_not_fatal() {
+        // Plant the first temp name every millisecond of the next 200 would
+        // use; a write that starts inside that window must step past it.
+        let d = tempfile::tempdir().unwrap();
+        let target = path(d.path());
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        loop {
+            let t0 = now();
+            for ms in t0..t0 + 200 {
+                let name = format!(".dates.json.{}.{}.tmp", std::process::id(), ms * 1000);
+                std::fs::write(d.path().join(name), b"").unwrap();
+            }
+            let started = now();
+            atomic_write(&target, b"{}", None).unwrap();
+            if started < t0 + 200 {
+                break;
+            }
+            std::fs::remove_file(&target).unwrap();
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), b"{}");
+    }
+
+    fn two_note_vault() -> (tempfile::TempDir, crate::reader::Vault) {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.md"), "one\ntwo\n").unwrap();
+        std::fs::write(d.path().join("b.md"), "three\n").unwrap();
+        let v = crate::reader::Vault::open(d.path()).unwrap();
+        (d, v)
+    }
+
+    fn file_days(_: &str) -> FileDays {
+        FileDays {
+            created: Some("2024-01-01".into()),
+            modified: Some("2024-02-02".into()),
+        }
+    }
+
+    #[test]
+    fn coverage_counts_matching_lines_and_lists_entries_for_no_note() {
+        let (_d, v) = two_note_vault();
+        let mut doc = Document::default();
+        refresh(&v, &mut doc, &file_days);
+        doc.notes.insert("gone.md".into(), entry(0));
+        let (rows, stale) = coverage(&v, &doc);
+        let a = rows.iter().find(|r| r.path == "a.md").unwrap();
+        assert_eq!((a.lines, a.matching), (3, 3), "{rows:?}");
+        assert_eq!(stale, ["gone.md"]);
+    }
+
+    #[test]
+    fn refresh_seeds_from_both_file_days_and_counts_only_changed_notes() {
+        let (d, v) = two_note_vault();
+        let mut doc = Document::default();
+        refresh(&v, &mut doc, &file_days);
+        let a = &doc.notes["a.md"];
+        // Created from the birth day; lines from the modification day.
+        assert_eq!(a.created.day.as_deref(), Some("2024-01-01"));
+        assert_eq!(a.lines[0].day.as_deref(), Some("2024-02-02"));
+
+        std::fs::write(d.path().join("a.md"), "one\nchanged\n").unwrap();
+        let v = crate::reader::Vault::open(d.path()).unwrap();
+        let (seeded, reconciled, dropped, _) = refresh(&v, &mut doc, &file_days);
+        assert_eq!((seeded, reconciled, dropped), (0, 1, 0));
+        // Nothing changed since: nothing reconciled.
+        let (_, reconciled, _, _) = refresh(&v, &mut doc, &file_days);
+        assert_eq!(reconciled, 0);
+    }
+
+    #[test]
+    fn an_edit_that_touched_nothing_leaves_dates_json_byte_for_byte() {
+        // Not compact, so any save would rewrite it.
+        let d = tempfile::tempdir().unwrap();
+        let pretty = b"{ \"version\": 1, \"notes\": {} }\n";
+        std::fs::write(path(d.path()), pretty).unwrap();
+        assert_eq!(
+            after_edit(d.path(), &Touched::default(), "2024-01-01").unwrap(),
+            None
+        );
+        assert_eq!(std::fs::read(path(d.path())).unwrap(), pretty);
+    }
+
+    #[test]
+    fn a_created_note_that_already_has_an_entry_is_reconciled_not_reseeded() {
+        // A note re-created with the same text keeps the dates its lines had.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.md"), "kept\n").unwrap();
+        let mut doc = Document::default();
+        let old = seed(
+            "kept\n",
+            &Seed {
+                is_new: true,
+                today: Some("2020-01-01"),
+                ..Seed::default()
+            },
+        )
+        .unwrap();
+        doc.notes.insert("a.md".into(), old.clone());
+        std::fs::write(path(d.path()), to_bytes(&doc)).unwrap();
+        let touched = Touched {
+            created: vec!["a.md".into()],
+            ..Touched::default()
+        };
+        after_edit(d.path(), &touched, "2024-05-05").unwrap();
+        let State::Valid(f) = load(d.path()) else {
+            panic!("valid")
+        };
+        assert_eq!(f.doc.notes["a.md"], old);
+    }
 }
