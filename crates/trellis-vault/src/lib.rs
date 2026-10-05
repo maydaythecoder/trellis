@@ -7,8 +7,9 @@
 //! vault. [`validate`] checks all of that; [`compile`] turns one focus note
 //! into a context block (ADR 0017).
 //!
-//! The behaviour is held to a TypeScript twin by shared golden files under
-//! `tests/fixtures/`. Where the two languages differ in a primitive — string
+//! The behaviour is held to shared golden files under `tests/fixtures/`,
+//! produced by the TypeScript prototype (ADR 0017); they are the
+//! specification. Where the two languages differ in a primitive — string
 //! ordering, what counts as whitespace — this crate does what JavaScript
 //! does, because the goldens are the contract and a divergence that only
 //! shows on unusual input is the kind nobody finds until it matters.
