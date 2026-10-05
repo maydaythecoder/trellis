@@ -51,6 +51,18 @@ scripts/checks/gitleaks-range.sh "$GATE_BASE"
 # fail cannot pass.
 scripts/checks/workflows-locked.sh --self-test
 scripts/checks/workflows-locked.sh
+# CI keeps every job its base had, and the hooks and ci-local still do what
+# their self-tests say. Nothing ran these four before #382, and the ci-local
+# self-test sat failing for a branch rename (#378) unnoticed. Each prints
+# only on failure, so a passing G5 stays quiet.
+out=$(bash scripts/checks/ci-jobs-unchanged.sh "$GATE_BASE" 2>&1) \
+  || { printf '%s\n' "$out"; fail "ci-jobs-unchanged.sh failed against $GATE_BASE: a CI job was dropped or the base has no ci.yml (above)"; }
+out=$(bash scripts/checks/pre-push-selftest.sh 2>&1) \
+  || { printf '%s\n' "$out"; fail "pre-push hook self-test failed (pre-push-selftest.sh, above)"; }
+out=$(bash scripts/checks/pre-commit-selftest.sh 2>&1) \
+  || { printf '%s\n' "$out"; fail "pre-commit hook self-test failed (pre-commit-selftest.sh, above)"; }
+out=$(bash scripts/checks/ci-local-selftest.sh 2>&1) \
+  || { printf '%s\n' "$out"; fail "ci-local self-test failed (ci-local-selftest.sh, above)"; }
 # trellis-cli's test fixtures spawn git only through trellis_vcs, with the
 # exit status asserted; tests/hygiene.rs exempts test code, so this is the
 # check that keeps a bare spawn from coming back (#240, #241).
@@ -79,4 +91,4 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
   exit 1
 fi
-echo "OK: fuzz/Cargo.lock current; cargo deny, cargo audit (root and fuzz/ locks); zizmor clean and every workflow cargo command --locked; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"
+echo "OK: fuzz/Cargo.lock current; cargo deny, cargo audit (root and fuzz/ locks); zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"

@@ -429,6 +429,79 @@ impl RepoConfig {
     }
 }
 
+/// Write `[model] spec = "<spec>"` into the user's config file at `file`
+/// (ADR 0050 §2), creating the file and its directory if they are missing.
+///
+/// The path is a parameter rather than [`file`]'s answer because that is
+/// `None` under test, and a writer that cannot be pointed at a temporary
+/// directory is a writer whose only test is a real home directory.
+///
+/// The existing text is edited, not re-serialised: a round trip through a
+/// `toml::Table` would drop every comment the user wrote. The result is
+/// parsed back before anything is written, and nothing is written unless
+/// `[model] spec` reads back as `spec` — a file that already sets one, or
+/// spells its model table in a form the line edit does not recognise, is
+/// refused with the file untouched rather than left half-changed.
+pub(crate) fn set_model_spec(file: &Path, spec: &str) -> Result<()> {
+    let old = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    let line = format!("spec = {}", toml::Value::String(spec.to_string()));
+    let mut out = String::with_capacity(old.len() + line.len() + 16);
+    let mut placed = false;
+    for l in old.split_inclusive('\n') {
+        out.push_str(l);
+        // A header may carry a trailing comment; a `#` cannot appear inside
+        // the bare key `model`, so cutting at the first one is exact here.
+        if !placed && l.split('#').next().unwrap_or("").trim() == "[model]" {
+            if !l.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&line);
+            out.push('\n');
+            placed = true;
+        }
+    }
+    if !placed {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("[model]\n");
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    let back: RepoConfig = toml::from_str(&out).with_context(|| {
+        format!(
+            "adding [model] spec to {} would not leave valid TOML; the file was not changed. \
+             Add `{line}` under [model] by hand",
+            file.display()
+        )
+    })?;
+    if back.model().as_deref() != Some(spec) {
+        anyhow::bail!(
+            "adding [model] spec to {} did not read back as {spec}; the file was not changed",
+            file.display()
+        );
+    }
+
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    // Written beside the file and renamed over it, so an interrupted write
+    // leaves the old config whole rather than a truncated one.
+    let tmp = file.with_extension("toml.tmp");
+    std::fs::write(&tmp, &out).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, file).with_context(|| format!("replacing {}", file.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
