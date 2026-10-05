@@ -10,15 +10,15 @@ convenient.
 | Baseline commit | **`94c285c`** |
 | Toolchain | rustc 1.93.0 (254b59607 2026-01-19), pinned by `rust-toolchain.toml` |
 | Tools | cargo-mutants 27.1.0 · cargo-llvm-cov 0.9.1 · cargo-audit 0.22.2 · cargo-deny 0.20.2 |
-| Tests | **487** passing, 0 failed, 0 ignored (328 at the baseline commit, 415 when the campaign's tiers closed) |
+| Tests | **1,625** passing, 0 failed, at `989b2a2`, under `cargo llvm-cov --workspace --summary-only` (`docs/bench/coverage-20261002.md`). 487 as recorded in `a23d32f`, 328 at the baseline commit, 415 when the campaign's tiers closed |
 | Line coverage | **91.05%** (regions 91.09%, functions 91.35%), at `989b2a2`, `cargo llvm-cov --workspace --summary-only`; see "Tiers 5 and 6 — re-measured" and `docs/bench/coverage-20261002.md`. 82.74% at `94c285c` before it |
 | Mutation score | Self-test scores (`-p` only). `trellis-cli`, `trellis-model`, `trellis-vault` and `trellis-queue` re-measured at `989b2a2`: **unusable, no score**, each with 11-20 timeouts, nearly all mutants that make a loop never end; counts and all 847 survivors' dispositions in "Tiers 5 and 6 — re-measured". The other six crates' figures are older; see Tier 6 — final |
 
 The coverage figure and the four re-measured crates' mutation counts are
 against `989b2a2`; the other crates' mutation figures are against the commits
 in Tier 6. A score quoted without its commit is not a baseline, because
-the next commit moves it — and the test count above is the only figure here
-that tracks `HEAD`, because it is the one that changes every commit.
+the next commit moves it — the test count above included, because it
+changes every commit.
 
 **The 41.5% trellis-cli figure from `4cefe4a` is superseded.** It was
 called stale in a known direction here, with 97 of its 144 survivors since
@@ -1471,7 +1471,14 @@ lint. Miri is therefore not informative here.
 **Run, by audit rather than by tool**, because the result of the audit is that
 there is very little for a tool to find.
 
-**There is no shared mutable state.** A workspace-wide search for `Mutex`,
+**Superseded: this audit is of `94c285c` (written in `bdd792f`) and has not
+been redone.** Since then, shared mutable state has been added (for example
+`static JSON: AtomicBool` and `Arc<Mutex<dyn Write + Send>>` in
+`trellis-cli/src/output.rs`), and `crates/tui-demo/src/bin/tui_demo.rs` has
+a `#[tokio::main]`. The claims below, including the table's, hold at
+`94c285c` only.
+
+**There was no shared mutable state.** A workspace-wide search for `Mutex`,
 `RwLock`, `Atomic`, `Arc<`, `OnceLock`, `LazyLock` and `thread_local` across
 `crates/*/src` returns nothing but two comments saying so. The orchestrator
 owns the `Index` outright; that is the design, and it is what makes this tier
@@ -1560,7 +1567,7 @@ type system as the proof obligation, which is ADR 0004's whole point.
 | C-012 | 6 | ADR 0016's rule — the root's own file exempted from clearing `partitionable` — was asserted in neither direction. `replace != with ==` inverts it into the S19 collision the flag prevents | **Fixed** — two tests, one per direction, both verified against the mutant. One also kills `delete ! in blast_radius`, the line carrying `is_partitionable` into the report |
 | C-019 | 6 | `Orchestrator::resolve_in_repo` — the guard keeping a model's proposed path inside the tree rollback covers — had no test. The surviving `\|\| -> &&` accepts `../../etc/passwd`, which is relative and so not absolute | **Fixed** — both halves tested, mutant verified dead |
 | C-020 | 6 | `Partition::compatible_with` is S19 in one function, and its `&& -> \|\|` survived: two agents handed the same file whenever their call graphs happen to be disjoint. It was only ever tested through `plan`, which cannot produce such a pair | **Fixed** — testing a rule through a caller that cannot violate it proves the caller, not the rule |
-| C-018 | 6 | `trellis-checks`, `trellis-core` and `trellis-model` survivors: the two mutants deciding Verified from Reviewed, a crate whose one test could not reach its own code, and the GiB figure users check their disk against | **Fixed** — 6 tests, all verified dead. `trellis-checks` and `trellis-model` are now at zero survivors |
+| C-018 | 6 | `trellis-checks`, `trellis-core` and `trellis-model` survivors: the two mutants deciding Verified from Reviewed, a crate whose one test could not reach its own code, and the GiB figure users check their disk against | **Fixed** — 6 tests, all verified dead. `trellis-checks` and `trellis-model` were at zero survivors when this was written (`f0e86a9`); `trellis-model` has since grown (83 survivors at `989b2a2`, #245) |
 | C-017 | 6 | `trellis-trail`'s remaining survivors: the calendar behind every trail filename was correct at three dates and unasserted at the rest, `run_id`'s filename fallback was untested, and the integrity verdict users see had no assertion | **Fixed** — 4 tests. Five calendar mutants verified dead, and `mp - 9` vs `mp / 9` is separated by a February date alone |
 | C-016 | 6 | Trail tamper-evidence worked only because `schemars` transitively enables `serde_json/preserve_order`. Declared nowhere, tested by nothing, and dropping that dependency would make every trail read as `Altered` | **Fixed** — both sides now hash through `Value`, so they agree whatever `Map` is. Verified in a build with the feature and one without |
 | C-015 | 6 | `type_head` — what an annotation says the receiver is — had six survivors. The suite tested its effects through fixtures whose annotations are all a bare class name, so unions, quoted forward references, the subscript rule and the character class were unexercised | **Fixed** — five tests, four verified against their mutants |
@@ -1569,7 +1576,7 @@ type system as the proof obligation, which is ADR 0004's whole point.
 | C-011 | 6 | Four guards in the resolver's attribute path could be replaced with `true` and the suite stayed green. Each mutant **emits an unsound edge** — a `Resolved` naming one of several candidates, or an attribute resolved into a function's body | **Fixed** — four tests, each verified against its own mutant. v1.0 gate condition 2 is "zero unsound edges", and the suite did not defend it on this path |
 | C-010 | 6 | `Worktree::create` puts a git worktree at `.trellis/work/<run>/partition-<n>`, inside the repository. A linked worktree there reads as untracked, so a run that partitions dirties the tree and **the next run refuses to start** (ADR 0009) | **Fixed** — `work/` added to the `.trellis/.gitignore` the index cache scaffolds. The same wall `index.bin` built once already, in a different file |
 | C-008 | 6 | `Trail::factual_is_intact` was dead code, and its three surviving mutants said nothing about the tests | **Fixed** — deleted. The integrity check actually wired in is `UntrustedTrail::integrity`, which takes the raw JSON off disk rather than a parsed `Trail`, because a trail is read back as untrusted data (S10) |
-| C-009 | 6 | Per-crate mutation runs test only that crate, so dependents' tests never run and every score understates | **Measured** — `Interner::deserialize -> Default` survives `-p trellis-core` (1 test) and is killed twice by the workspace suite. `--test-workspace true` re-runs in progress for the four affordable crates |
+| C-009 | 6 | Per-crate mutation runs test only that crate, so dependents' tests never run and every score understates | **Measured** — `Interner::deserialize -> Default` survives `-p trellis-core` (1 test) and is killed twice by the workspace suite. `--test-workspace true` re-runs at `bb616ca`, in `docs/bench/mutants-by-crate-ws/README.md`: `trellis-vcs` 59.3% → 92.6%, `trellis-core` 50.0% → 70.0%, `trellis-model` not computable (5 timeouts); `trellis-checks`, the fourth affordable crate, was never reached, because the job was killed for system memory and not restarted |
 | C-004 | — | The C-003 fix changed the cache's serialised shape without bumping `FORMAT_VERSION`; the commit's claim about it was unverified and its stated mechanism wrong | **Fixed**, `ec2463c` — found by review, not by any tier |
 | C-005 | 3 | Three cache fixtures still used fixed temp paths — the last of the collision class from `c526c83` | **Fixed**, `ec2463c` |
 | C-006 | 3 | Two of the new CLI assertions were vacuous: one passed on `"no tests ran"` matching `"no "` while the tools were in fact installed and running; the other checked for two phrases `explain` never emits | **Fixed**, `ec2463c` — both now written against output that was read |
@@ -1582,9 +1589,11 @@ type system as the proof obligation, which is ADR 0004's whole point.
 
 The tiers that ran are the tiers that can run on this machine. Specifically:
 
-- No tier exercised the model transport, because that needs a runtime at or
-  above the capability floor and there isn't one. `adapter.rs` at 61.90%
-  function coverage is that gap, measured.
+- No tier exercised a live model runtime, because that needs one at or
+  above the capability floor and there isn't one. The transport parser is
+  fuzzed (Tier 7) and the hosted client is tested against a stub. `adapter.rs`
+  at 61.90% function coverage at `94c285c` (`docs/bench/coverage-20260921.md`)
+  was that gap, measured.
 - Tier 4 is not an independent review and does not claim to be.
 - A mutation score is a statement about the tests, not about the code. A high
   score on a suite that asserts the wrong thing is worth nothing, and nothing
