@@ -1608,7 +1608,7 @@ fn run_body(
             // in an unknown state — was also the one run that never got a
             // trail written. The failure is reported loudly and the recording
             // continues.
-            let restored = rollback_run(root, &snapshot, writers.as_ref(), &mut *out);
+            let restored = rollback_run(root, &snapshot, &transcript, writers.as_ref(), &mut *out);
 
             // Written *after* the rollback, deliberately. Rollback cleans
             // untracked files, and a trail written before it would be one of
@@ -1776,7 +1776,10 @@ impl Drop for RollbackOnPanic<'_> {
             err,
             "PANICKED mid-run. Rolling back — nothing is accepted from a run that did not finish."
         );
-        rollback_run(self.root, self.snapshot, self.writers, &mut err);
+        // No written list here: the orchestrator that holds it is in the
+        // future that panicked. The plain reset runs, and is_restored still
+        // reports what git can see (#239 covers the paths a run records).
+        rollback_run(self.root, self.snapshot, &[], self.writers, &mut err);
     }
 }
 
@@ -1908,7 +1911,7 @@ fn handle_interrupt(
         let _ = writeln!(out, "files this run had written: {}", touched.join(", "));
     }
 
-    let restored = rollback_run(root, snapshot, writers, &mut *out);
+    let restored = rollback_run(root, snapshot, touched, writers, &mut *out);
 
     // The turn list cannot be recovered: it lives in the loop's future, which
     // was just cancelled. The factual half that matters survives, because the
@@ -1990,6 +1993,7 @@ fn put_git_back(
 fn rollback_run(
     root: &Path,
     snapshot: &trellis_vcs::Snapshot,
+    written: &[String],
     writers: Option<&WriterGuards>,
     out: &mut dyn std::io::Write,
 ) -> bool {
@@ -2022,7 +2026,7 @@ fn rollback_run(
             }
         },
     };
-    rollback_and_report(snapshot, out) && ignored_ok && git_ok
+    rollback_and_report(snapshot, written, out) && ignored_ok && git_ok
 }
 
 /// Rolls back, and if that fails says so at the top of its voice.
@@ -2034,16 +2038,43 @@ fn rollback_run(
 ///
 /// Returns whether the worktree was restored, so the caller can pick an exit
 /// code that says which.
-fn rollback_and_report(snapshot: &trellis_vcs::Snapshot, out: &mut dyn std::io::Write) -> bool {
+///
+/// `written` is what this run wrote, as the orchestrator recorded it. Those
+/// paths are made to be re-read by the reset and then checked by content
+/// against the snapshot (#239, ADR 0046), so a clock that steps back over a
+/// same-size edit cannot produce "restored: true" over a file that was not.
+fn rollback_and_report(
+    snapshot: &trellis_vcs::Snapshot,
+    written: &[String],
+    out: &mut dyn std::io::Write,
+) -> bool {
     // Said before it is undone: the rollback puts HEAD back on the
     // recorded branch, and a user whose branch was switched under them
     // should read that it happened.
     if let Ok(Some(m)) = snapshot.head_moved() {
         let _ = writeln!(out, "git:      {m}; putting it back");
     }
-    match snapshot.rollback() {
+    match snapshot.rollback_written(written) {
         Ok(()) => {
-            let restored = snapshot.is_restored().unwrap_or(false);
+            let differ = snapshot.written_differ(written).unwrap_or_else(|e| {
+                let _ = writeln!(
+                    out,
+                    "could not compare the written files with the snapshot: {e}"
+                );
+                written.to_vec()
+            });
+            if !differ.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "still differs from the snapshot after the reset: {}",
+                    differ
+                        .iter()
+                        .map(|p| crate::plain(p))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            let restored = differ.is_empty() && snapshot.is_restored().unwrap_or(false);
             let _ = writeln!(out);
             let _ = writeln!(
                 out,
@@ -2882,7 +2913,7 @@ mod interrupt_tests {
         snap.head = "0".repeat(40);
 
         assert!(
-            !rollback_and_report(&snap, &mut Vec::new()),
+            !rollback_and_report(&snap, &[], &mut Vec::new()),
             "the recovery path must never report a restoration it did not make"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2898,7 +2929,7 @@ mod interrupt_tests {
         // a discarded buffer, and the log said only that it returned false.
         let mut out = Vec::new();
         assert!(
-            rollback_and_report(&snap, &mut out),
+            rollback_and_report(&snap, &[], &mut out),
             "rollback_and_report said:\n{}",
             String::from_utf8_lossy(&out)
         );
