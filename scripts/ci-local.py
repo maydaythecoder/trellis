@@ -36,7 +36,7 @@ clone a real run reuses.
 Each leg gets RUNNER_TEMP, a directory of its own emptied when the leg
 starts, as GitHub gives each job one. Two workflow expressions are resolved
 the way a pull request into the base branch sees them: `github.base_ref` is
-the base branch's name (CI_LOCAL_BASE, default v0.1-resolver; set it empty to
+the base branch's name (CI_LOCAL_BASE, default main; set it empty to
 see a push instead) and `origin/<base>` in the clone is made to point where
 this repository's copy of that branch does; `github.event.before` is <ref>'s
 first parent, or forty zeros for a root commit, as GitHub sends for a new
@@ -66,7 +66,7 @@ WIN_DIR = Path(os.environ.get("CI_LOCAL_DIR")
 WSL_DIR = "$HOME/ci-local"
 DISTRO = "Ubuntu"
 KEYS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY"]
-BASE = os.environ.get("CI_LOCAL_BASE", "v0.1-resolver")
+BASE = os.environ.get("CI_LOCAL_BASE", "main")
 EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 KNOWN_USES = ("actions/checkout@", "dtolnay/rust-toolchain@", "Swatinem/rust-cache@",
               "actions/setup-python@")

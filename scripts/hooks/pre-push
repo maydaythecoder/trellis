@@ -1,15 +1,17 @@
 #!/bin/sh
-# Local stand-in for branch protection on v0.1-resolver (GitHub refuses
-# protection on a private repository without Pro). v0.1-resolver moves only
-# when the owner merges a pull request on GitHub, so this clone never pushes
-# to it: no update, no force-push, no deletion. Agent work goes to the
-# integration branch `drain` and reaches main through its PR.
+# Local stand-in for branch protection (GitHub refuses protection on a
+# private repository without Pro). `main` is the launch branch and moves only
+# when the owner merges a pull request from `dev` on GitHub; `v0.1-resolver`
+# is the legacy default branch and stays frozen. This clone never pushes to
+# either: no update, no force-push, no deletion. Ticket and feature branches
+# merge into `audit`, which is promoted into `dev` (ADR 0051, amending 0036).
 # Bypass deliberately with --no-verify.
-protected="refs/heads/v0.1-resolver"
 while read local_ref local_sha remote_ref remote_sha; do
-  if [ "$remote_ref" = "$protected" ]; then
-    echo "pre-push: refusing to push to v0.1-resolver; merge through a pull request on GitHub" >&2
-    exit 1
-  fi
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/v0.1-resolver)
+      echo "pre-push: refusing to push to ${remote_ref#refs/heads/}; merge through a pull request on GitHub" >&2
+      exit 1
+      ;;
+  esac
 done
 exit 0

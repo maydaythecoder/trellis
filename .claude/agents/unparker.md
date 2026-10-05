@@ -44,7 +44,7 @@ When the coordinator sends answers:
   and a fenced `## Verify` obeying `scripts/gates/ticket-verify.sh` (allowed
   prefixes only; new tests via `scripts/tickets/verify-tests.sh`). If the
   decision needs an ADR, the Done-when includes writing it. Run the Verify once
-  and record `Pre-check on drain <sha>: exit n` (it should fail before the work).
+  and record `Pre-check on dev <sha>: exit n` (it should fail before the work).
 - **No / exclude / not planned**: close the issue as not planned with the
   answer quoted, and file a one-line docs ticket (triage:auto, with Done
   when/Verify) if an ADR or ADR 0021 row must record the exclusion.

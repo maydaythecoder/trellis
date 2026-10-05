@@ -9,7 +9,7 @@ on:
   # A PR branch runs once per push, through `pull_request`. Pushing on every
   # branch as well ran the whole suite twice for the same commit (#156).
   push:
-    branches: ["v0.1-resolver"]
+    branches: ["main", "dev", "audit", "v0.1-resolver"]
   pull_request:
 
 # A newer push to the same ref makes the older run's result moot; cancelling

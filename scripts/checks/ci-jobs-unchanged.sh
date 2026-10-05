@@ -5,8 +5,8 @@
 #
 # A change meant to make CI cheaper or faster must not get there by dropping
 # a gate. Job ids are the two-space-indented keys under `jobs:`.
-# The gates' base (scripts/gates/lib.sh): origin/drain on a ticket branch,
-# origin/v0.1-resolver otherwise, so jobs added on drain count.
+# The gates' base (scripts/gates/lib.sh): origin/dev on a ticket, feature or
+# audit branch, origin/main otherwise, so jobs added on dev count.
 source "$(dirname "$0")/../gates/lib.sh"
 # Git Bash rewrites a `ref:path` argument into a Windows path without this.
 export MSYS_NO_PATHCONV=1
