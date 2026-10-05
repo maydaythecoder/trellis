@@ -562,6 +562,20 @@ fn run_body(
         // In approve mode every command is put to the person.
         dial.approve.push("bash".to_string());
     }
+    // And with the default list, every other enabled tool that can change
+    // the tree: unlisted, `write_file` and a repository's own tools ran
+    // unasked under the default `["edit"]` (#425, ADR 0018). A list a user
+    // or repository wrote is honoured as written.
+    if dial.mode == config::ControlMode::Approve && !dial.listed {
+        let writers = std::iter::once("write_file")
+            .filter(|t| tooling.tools.enabled(t))
+            .chain(tooling.tools.customs().iter().map(|c| c.name.as_str()));
+        for t in writers {
+            if !dial.approve.iter().any(|a| a == t) {
+                dial.approve.push(t.to_string());
+            }
+        }
+    }
 
     // The vault is compiled here, in memory, before the model is contacted
     // and before the snapshot. Writing the compiled file anywhere in the
@@ -2934,7 +2948,177 @@ mod interrupt_tests {
             String::from_utf8_lossy(&out)
         );
         assert!(snap.is_restored().unwrap());
+        // A warning that the tree still differs, under a restoration that
+        // succeeded, sends the user hunting for damage that is not there.
+        let said = String::from_utf8_lossy(&out);
+        assert!(said.contains("Worktree restored: true"), "{said}");
+        assert!(!said.contains("WARNING"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn a_disarmed_panic_guard_leaves_the_tree_alone_while_unwinding() {
+        // The risk: the guard read `armed || panicking`, so a panic after
+        // the run had already been settled (accepted, or rolled back and
+        // reported) reset the worktree a second time behind the user.
+        let dir = temp_repo("panic-guard-disarmed");
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "def f():\n    return 7\n").unwrap();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = RollbackOnPanic {
+                root: &dir,
+                snapshot: &snap,
+                writers: None,
+                armed: false,
+            };
+            panic!("after the run was settled");
+        }));
+        assert!(caught.is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.py")).unwrap(),
+            "def f():\n    return 7\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The trail's actions for a two-turn run, as `(turn, tool, outcome)`.
+    fn actions_with(
+        name: &str,
+        compactions: &[trellis_loop::Compacted],
+        requested: &[trellis_loop::RequestedCompaction],
+    ) -> Vec<(u32, String, String)> {
+        let dir = temp_repo(name);
+        let read = |p: &str| trellis_loop::Turn {
+            call: trellis_loop::ToolCall::ReadFile { path: p.into() },
+            observation: String::new(),
+            verdict_passed: None,
+            check_kind: None,
+            prompt_bytes: None,
+            radius_counts: None,
+            radius_summarised: None,
+            human: None,
+            may_have_changed_tree: false,
+            changed: Vec::new(),
+        };
+        let t = trellis_loop::Transcript {
+            task: "two reads".to_string(),
+            turns: vec![read("a.py"), read("b.py")],
+            final_notice: false,
+            steering: trellis_loop::SteeringLog::default(),
+            prior: None,
+            repo: trellis_loop::RepoContext::default(),
+        };
+        let snap = trellis_vcs::snapshot(&dir).unwrap();
+        let mut facts = facts_for(&snap);
+        facts.compactions = compactions;
+        facts.requested = requested;
+        let path = record_trail(&dir, &t.task, &t, &[], facts, &mut std::io::sink()).unwrap();
+        let raw = std::fs::read_to_string(path).unwrap();
+        let back = trellis_trail::UntrustedTrail::from_json(&raw).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        back.factual
+            .actions
+            .iter()
+            .map(|a| (a.turn, a.tool.clone(), a.outcome.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last() {
+        // The risk: a compaction filed under the wrong turn, or one for the
+        // request that produced `done` (turn 3 of a two-turn run) dropped
+        // or doubled. The trail is where a reader learns what the model was
+        // not shown (ADR 0024 §5).
+        let fitted = |turn: u32| trellis_loop::Compacted {
+            turn,
+            elided_turns: turn as usize - 1,
+            elided_bytes: 100 * turn as usize,
+            request_bytes: 4000,
+            budget: 5000,
+            fits: true,
+        };
+        let shape = |a: &[(u32, String, String)]| -> Vec<(u32, bool)> {
+            a.iter()
+                .map(|(t, tool, _)| (*t, tool == "compaction"))
+                .collect()
+        };
+        let a = actions_with("compaction-placement", &[fitted(2), fitted(3)], &[]);
+        assert_eq!(
+            shape(&a),
+            [(1, false), (2, true), (2, false), (3, true)],
+            "{a:?}"
+        );
+        assert!(a[1].2.starts_with("elided 200 B"), "{a:?}");
+        assert!(a[3].2.starts_with("elided 300 B"), "{a:?}");
+
+        let asked = |turn: u32| trellis_loop::RequestedCompaction {
+            turn,
+            turns_folded: 1,
+            elided_turns: turn as usize - 1,
+            elided_bytes: 10 * turn as usize,
+            bytes_before: 900,
+            bytes_after: 800,
+        };
+        let a = actions_with("requested-placement", &[], &[asked(2), asked(3)]);
+        assert_eq!(
+            shape(&a),
+            [(1, false), (2, true), (2, false), (3, true)],
+            "{a:?}"
+        );
+        assert!(a[1].2.contains("elided 20 B"), "{a:?}");
+        assert!(a[3].2.contains("elided 30 B"), "{a:?}");
+    }
+
+    #[test]
+    fn the_wrappers_a_run_drives_pass_the_driver_s_figures_through() {
+        // The risk: the budget counts tokens and the trail records prompt
+        // bytes through `SeesDone` over `rpc::Watched`, the stack every
+        // run drives; a wrapper answering a default would make a metered
+        // run look free and its context unmeasured.
+        use trellis_loop::Model;
+        let mut inner = crate::testutil::figures();
+        let mut watched = crate::rpc::Watched::new(&mut inner, None);
+        let mut done = None;
+        let m = SeesDone {
+            inner: &mut watched,
+            done: &mut done,
+        };
+        assert_eq!(m.tokens_used(), 7);
+        assert_eq!(m.prompt_bytes(), Some(4321));
+        assert_eq!(m.compactions().len(), 1);
+        assert_eq!(m.compactions()[0].elided_bytes, 50);
+    }
+
+    #[test]
+    fn an_unknown_run_id_lists_ten_runs_and_counts_only_the_ones_left_out() {
+        // The risk (#248): "... 0 older" under a list that is complete, or
+        // no count when runs were left out, so `resume` sends a person to
+        // `log --limit` for nothing or hides that there is more to find.
+        let entries = |n: usize| -> Vec<trellis_trail::query::Entry> {
+            (0..n)
+                .map(|i| trellis_trail::query::Entry {
+                    path: PathBuf::from(format!("r{i}.json")),
+                    trail: trellis_trail::UntrustedTrail::from_json(&format!(
+                        r#"{{"run_id": "run-{i}", "task": "t", "factual": {{}}}}"#
+                    ))
+                    .unwrap(),
+                    integrity: trellis_trail::Integrity::Unrecorded,
+                })
+                .collect()
+        };
+        assert!(unknown_run_id("x", &[]).contains("there are no trails"));
+        let ten = unknown_run_id("x", &entries(10));
+        assert!(ten.contains("The 10 most recent"), "{ten}");
+        assert!(ten.contains("run-9"), "{ten}");
+        assert!(!ten.contains("older"), "{ten}");
+        let eleven = unknown_run_id("x", &entries(11));
+        assert!(!eleven.contains("run-10"), "{eleven}");
+        assert!(
+            eleven.ends_with("... 1 older, `trellis log --limit` lists them"),
+            "{eleven}"
+        );
     }
 }
 
@@ -3019,6 +3203,131 @@ mod approval_tests {
             .iter()
             .map(|a| (a.tool.clone(), a.target.clone(), a.outcome.clone(), a.wrote))
             .collect()
+    }
+
+    /// `fixture`, with `tools` appended to the approve-mode config and the
+    /// repository trusted, so a `[[tools.custom]]` in it is enabled.
+    fn fixture_with_tools(name: &str, tools: &str, script: &str) -> (PathBuf, String) {
+        let (dir, spec) = fixture(name, script);
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            format!("[control]\nmode = \"approve\"\n{tools}"),
+        )
+        .unwrap();
+        crate::testutil::git_commit_all(&dir, "tools");
+        crate::testutil::trust(&dir);
+        (dir, spec)
+    }
+
+    /// `write_file` enabled, and a repository tool `stamp` that exits 0.
+    fn writers() -> String {
+        let argv = if cfg!(windows) {
+            "['cmd', '/C', 'exit 0']"
+        } else {
+            "['sh', '-c', 'true']"
+        };
+        format!(
+            "[tools]\nenable = ['write_file']\n\
+             [[tools.custom]]\nname = \"stamp\"\ndescription = \"Stamp.\"\n\
+             command = {argv}\nschema = {{ type = \"object\" }}\n"
+        )
+    }
+
+    const WRITE_THEN_STOP: &str = r#"{"steps":[
+        {"tool":"write_file","path":"pkg/new.py","content":"x = 1\n"},
+        {"tool":"done","summary":"made it"}
+    ]}"#;
+
+    const STAMP_THEN_STOP: &str = r#"{"steps":[
+        {"tool":"stamp"},
+        {"tool":"done","summary":"stamped"}
+    ]}"#;
+
+    #[test]
+    fn approve_mode_asks_before_write_file_with_the_default_list() {
+        // The risk (#425): the default list is `["edit"]` and an unlisted
+        // tool runs unasked, so in approve mode `write_file` created files
+        // without the yes the mode promises.
+        let (dir, spec) = fixture_with_tools("asks-write-file", &writers(), WRITE_THEN_STOP);
+        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(
+            said.contains("write_file pkg/new.py (+1 new)? [y/N]"),
+            "asked before the write:\n{said}"
+        );
+        let t = trail(&dir);
+        assert_eq!(
+            t.control.as_deref(),
+            Some("approve (edit, write_file, stamp)")
+        );
+        let a = actions(&t);
+        assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "declined"));
+        assert_eq!(a[1].0, "write_file");
+        assert!(!a[1].3, "a declined write_file wrote nothing: {a:?}");
+    }
+
+    #[test]
+    fn approve_mode_asks_before_a_custom_tool_with_the_default_list() {
+        // The same hole for a repository's own tool: it runs a command that
+        // can change the tree, and ran unasked in approve mode (#425).
+        let (dir, spec) = fixture_with_tools("asks-custom", &writers(), STAMP_THEN_STOP);
+        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(said.contains("stamp"), "{said}");
+        assert!(said.contains("[y/N]"), "asked before the tool:\n{said}");
+        let a = actions(&trail(&dir));
+        assert_eq!(
+            (a[0].0.as_str(), a[0].2.as_str()),
+            ("approval", "declined"),
+            "{a:?}"
+        );
+        assert_eq!(a[1].0, "stamp");
+        assert!(a[1].2.contains(trellis_loop::DECLINED), "{a:?}");
+    }
+
+    #[test]
+    fn approve_mode_asks_nothing_under_the_auto_flag_with_both_enabled() {
+        // The widened default is approve mode's; `--auto` still asks
+        // nothing, and the write lands.
+        let (dir, spec) = fixture_with_tools("asks-auto", &writers(), WRITE_THEN_STOP);
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding::default(),
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+                steering: None,
+            },
+            &mut out,
+        );
+        assert!(r.is_ok(), "{r:?}");
+        let said = String::from_utf8(out).unwrap();
+        assert!(!said.contains("[y/N]"), "auto asks nothing: {said}");
+        let t = trail(&dir);
+        assert_eq!(t.control.as_deref(), Some("auto"));
+        let a = actions(&t);
+        assert_eq!((a[0].0.as_str(), a[0].3), ("write_file", true), "{a:?}");
+    }
+
+    #[test]
+    fn an_approve_list_someone_wrote_is_not_widened() {
+        // #425 widens only the default. A repository that wrote
+        // `approve = ["edit"]` asked for edits only, and gets that.
+        let (dir, spec) = fixture_with_tools(
+            "asks-explicit",
+            &format!("approve = [\"edit\"]\n{}", writers()),
+            WRITE_THEN_STOP,
+        );
+        let (r, said) = run_with(&dir, &spec, answering(&[]));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(!said.contains("[y/N]"), "{said}");
+        let t = trail(&dir);
+        assert_eq!(t.control.as_deref(), Some("approve (edit)"));
+        assert_eq!(actions(&t)[0].0, "write_file");
     }
 
     #[test]

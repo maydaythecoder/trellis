@@ -278,7 +278,7 @@ fn a_profile_task_runs_with_the_profile_model_and_instructions_and_the_trail_nam
     let s = combined(&o);
     assert!(o.status.success(), "{s}");
     assert!(
-        s.contains("agent:    rev") && s.contains("CONVERGED"),
+        s.contains("agent:    rev") && s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
         "{s}"
     );
     let t = task(&d, "done", &id);
