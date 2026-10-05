@@ -162,6 +162,14 @@ override any row.
 | 14 telemetry / durability | built (`tracing`, trail, queue) |
 | 15 experimental (chord, pi-protocol, pi-server) | excluded: networked/multi-attach (brief Part 1) |
 
+### pi 1.0.2 re-inventory (2026-10-04)
+
+Rows for items that `docs/inventory/inventory-pi.md` (pi 1.0.2) tags NEW. Dispositions in this section are Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation, and the owner can override any row (Context).
+
+| Items | Disposition |
+|---|---|
+| 16.1-16.7 MCP client | excluded (#73, answered 2026-09-28: "Keep all excluded"; recorded by #323). Accepted (owner-directed): #73's answer holds for pi 1.0.2's client, the session's choice under the owner's 2026-10-04 delegation. pi 0.99.0 made an MCP client part of pi: stdio and streamable HTTP servers from `~/.pi/agent/mcp.json` and, after project trust, `.pi/mcp.json`; OAuth; resources; `/mcp` and `pi mcp`; exposure through codemode by default; and the standalone pi-mcp package. The reasons for keeping MCP out are about trellis's trust model and do not change because pi ships a client: a long-lived connection, remote tool schemas the model sees unreviewed, and credentials per server. 16.2 (OAuth and its credential file, `mcp-auth.json`) is excluded under ADR 0010 and #64, and 16.1's streamable HTTP servers are a networked component (brief Part 1). The supported way to reach one stdio MCP server is a `[[tools.custom]]` command (ADR 0023) declared under `.trellis/`: trusted by digest, gated by `[control]`, run in the throwaway clone with keys scrubbed (ADR 0032), returning text (crates/trellis-loop/src/registry.rs:176-191). The owner reopening #73 reverses this: stdio servers only, or streamable HTTP as well, needs a v2.0 brief line and an ADR amending Paperclip 72–75 and ADR 0023, and amends this row in place. |
+
 ## Apex (`inventory-apex.md`)
 
 | Items | Disposition |
