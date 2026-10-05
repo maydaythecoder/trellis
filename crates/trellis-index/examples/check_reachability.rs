@@ -7,13 +7,17 @@
 //! satisfies it."* This is the check that reaches that case, mechanically,
 //! over every edge rather than a sample.
 //!
-//! # Three buckets, and only one is a violation
+//! # Four buckets, and only one is a violation
 //!
 //! - **connected** — an import in the calling file resolves to the module
 //!   defining the target, directly or through one re-export hop. The hop is
 //!   not optional: a package's `__init__.py` re-exporting its submodules is
 //!   the normal shape of Python, and without it the check reports a flood of
 //!   false violations.
+//! - **inherited** — a `self.m()` call whose target is a method on a base
+//!   class two or more links up. The calling file imports only its immediate
+//!   base, so the connection is verified by walking the class hierarchy
+//!   rather than an import.
 //! - **ambiguous** — a star import, a relative import naming no file in the
 //!   corpus, or a re-export deeper than one hop. Mechanical verification
 //!   cannot settle these and the tool does not pretend to. Counted, listed,
