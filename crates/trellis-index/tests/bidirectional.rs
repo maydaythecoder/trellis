@@ -62,15 +62,15 @@ fn arbitrary_index(seed: u64, n_symbols: u32, n_edges: u32) -> Index {
     index.interner = interner;
 
     for _ in 0..n_edges {
-        // Every call site is enclosed by some symbol, which is the common
-        // case: a call at module scope has no enclosing symbol and is
-        // covered separately below.
-        let enclosing = SymbolId(rng.below(n_symbols));
+        // Most call sites are enclosed by some symbol, which is the common
+        // case. One in four is at module scope with no enclosing symbol: its
+        // edge must reach `reverse` and appear in no `forward` list at all.
+        let enclosing = (rng.below(4) != 0).then(|| SymbolId(rng.below(n_symbols)));
         index.sites.push(CallSiteEntry {
             kind: trellis_index::CalleeKind::Name,
             file: FileId(0),
             span: (0, 1),
-            enclosing: Some(enclosing),
+            enclosing,
         });
         let site = CallSiteId::from_index(index.sites.len() - 1);
 

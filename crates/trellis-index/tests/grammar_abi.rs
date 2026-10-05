@@ -3,7 +3,7 @@
 //! The library and the grammar share a C ABI. A mismatched pair compiles
 //! cleanly and then fails at runtime on `set_language`, which is a
 //! confusing way to discover a version bump. This test turns that into a
-//! build-time failure, so the workspace manifest's "do not bump these
+//! test failure, so the workspace manifest's "do not bump these
 //! independently" comment has teeth.
 //!
 //! Verified pairing: tree-sitter 0.27.0 / tree-sitter-python 0.25.0.
