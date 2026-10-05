@@ -207,58 +207,17 @@ fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
         "[control]\nmode = \"approve\"\n",
     )
     .unwrap();
-    let mut child = trellis(&f)
-        .arg("rpc")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel::<Value>();
-    let reader = std::thread::spawn(move || {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(stdout).lines() {
-            let line = line.unwrap();
-            let _ = tx.send(serde_json::from_str(&line).expect("stdout is JSONL"));
-        }
-    });
-    let next = |pred: &dyn Fn(&Value) -> bool| -> Value {
-        loop {
-            let v = rx
-                .recv_timeout(std::time::Duration::from_secs(60))
-                .expect("a record within 60 s");
-            if pred(&v) {
-                return v;
-            }
-        }
-    };
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec})
-    )
-    .unwrap();
-    stdin.flush().unwrap();
-    let q = next(&|v| v["type"] == "approval_request");
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
     assert_eq!(q["question"], "edit a.py (+1 -1)");
-    writeln!(
-        stdin,
-        r#"{{"id":"{}","type":"approve","yes":true}}"#,
-        q["id"].as_str().unwrap()
-    )
-    .unwrap();
-    stdin.flush().unwrap();
-    let end = next(&|v| v["type"] == "run_end");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let end = rpc.next(|v| v["type"] == "run_end");
     assert_eq!(end["id"], "p");
-    writeln!(stdin, r#"{{"id":"m","type":"get_messages"}}"#).unwrap();
-    stdin.flush().unwrap();
-    let m = next(&|v| v["id"] == "m");
+    rpc.send(serde_json::json!({"id": "m", "type": "get_messages"}));
+    let m = rpc.next(|v| v["id"] == "m");
     assert_eq!(m["data"]["messages"][0]["call"], "edit a.py", "{m}");
-    drop(stdin);
-    assert!(child.wait().unwrap().success());
-    reader.join().unwrap();
+    rpc.finish();
 }
 
 #[test]
@@ -421,57 +380,20 @@ fn rpc_compact_mid_run_folds_the_older_turns_before_the_next_request() {
         ),
     )
     .unwrap();
-    let mut child = trellis(&f)
-        .arg("rpc")
-        .env_remove(key_env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel::<Value>();
-    let reader = std::thread::spawn(move || {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(stdout).lines() {
-            let line = line.unwrap();
-            let _ = tx.send(serde_json::from_str(&line).expect("stdout is JSONL"));
-        }
-    });
-    let mut seen: Vec<Value> = Vec::new();
-    let mut next = |pred: &dyn Fn(&Value) -> bool| -> Value {
-        loop {
-            let v = rx
-                .recv_timeout(std::time::Duration::from_secs(60))
-                .unwrap_or_else(|_| panic!("a record within 60 s; so far: {seen:?}"));
-            seen.push(v.clone());
-            if pred(&v) {
-                return v;
-            }
-        }
-    };
-    writeln!(
-        stdin,
-        "{}",
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
         serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
-                           "model": "provider:stub#m"})
-    )
-    .unwrap();
-    stdin.flush().unwrap();
+                           "model": "provider:stub#m"}),
+    );
     // The run is paused on the edit's question, one turn behind it.
-    let q = next(&|v| v["type"] == "approval_request");
+    let q = rpc.next(|v| v["type"] == "approval_request");
     // Read in order, so the request is registered before the yes that lets
     // the run reach its next model request.
-    writeln!(stdin, r#"{{"id":"c","type":"compact"}}"#).unwrap();
-    writeln!(
-        stdin,
-        r#"{{"id":"{}","type":"approve","yes":true}}"#,
-        q["id"].as_str().unwrap()
-    )
-    .unwrap();
-    stdin.flush().unwrap();
-    let c = next(&|v| v["type"] == "response" && v["id"] == "c");
+    rpc.send(serde_json::json!({"id": "c", "type": "compact"}));
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
     assert_eq!(c["command"], "compact");
     assert_eq!(c["success"], true, "{c}");
     let d = &c["data"];
@@ -485,11 +407,9 @@ fn rpc_compact_mid_run_folds_the_older_turns_before_the_next_request() {
         d["bytes_after"].as_u64().unwrap(),
     );
     assert!(after < before, "{c}");
-    let end = next(&|v| v["type"] == "run_end");
+    let end = rpc.next(|v| v["type"] == "run_end");
     assert_eq!(end["id"], "p");
-    drop(stdin);
-    assert!(child.wait().unwrap().success());
-    reader.join().unwrap();
+    rpc.finish();
 
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 3, "{requests:?}");
