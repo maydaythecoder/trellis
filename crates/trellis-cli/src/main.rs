@@ -15,6 +15,7 @@
 mod ask;
 mod config;
 mod doctor_cmd;
+mod first_run;
 mod hosted;
 mod image_input;
 mod index_cmd;

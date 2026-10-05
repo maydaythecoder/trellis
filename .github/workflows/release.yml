@@ -10,7 +10,8 @@ name: Release
 #
 # A tag builds artefacts. `workflow_dispatch` builds them without one, so the
 # packaging can be exercised before it is needed rather than discovered
-# broken at the moment someone wants a release.
+# broken at the moment someone wants a release. A tag builds Linux and
+# Windows; `workflow_dispatch` adds macOS (see the matrix, #381).
 on:
   push:
     tags: ["v*"]
@@ -23,25 +24,24 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # A fat-LTO release build with one codegen unit, plus the release test
+    # suite on Linux; without a ceiling a stuck runner waits GitHub's default
+    # 360 minutes (#381).
+    timeout-minutes: 60
     strategy:
       # Every platform is built even when one fails. A matrix that stops at
       # the first failure reports one broken target and hides the others,
       # which turns a release into several rounds of finding out.
       fail-fast: false
+      # Linux and Windows on every trigger. macOS (aarch64-apple-darwin) only
+      # on `workflow_dispatch`: its minutes cost ten times Linux's on a
+      # private repository (#381), and it is built here, never run by a human
+      # on this project; the supported-platform list in the documentation
+      # says so rather than implying parity with the two used daily. The list
+      # is chosen by event because `exclude` and `include` cannot drop a leg
+      # conditionally, and a job-level `if` would skip every leg at once.
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bin: trellis
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bin: trellis.exe
-          # Built and tested here, never run by a human on this project. The
-          # supported-platform list in the documentation says so rather than
-          # implying parity with the two that are used daily.
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            bin: trellis
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","bin":"trellis"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","bin":"trellis.exe"},{"os":"macos-latest","target":"aarch64-apple-darwin","bin":"trellis"}]' || '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","bin":"trellis"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","bin":"trellis.exe"}]') }}
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -67,8 +67,12 @@ jobs:
 
       # The suite runs on the release profile too. `lto = "fat"` and
       # `codegen-units = 1` change what the optimiser may do, and a test suite
-      # that only ever sees the dev profile cannot notice.
+      # that only ever sees the dev profile cannot notice. Linux leg only:
+      # ci.yml already runs the suite on Windows for every commit, and the
+      # release profile's codegen is what this step is for, which one leg
+      # exercises at a tenth of macOS's price (#381).
       - name: Test, on the profile that ships
+        if: runner.os == 'Linux'
         run: cargo test --locked --workspace --release --target ${{ matrix.target }}
 
       - name: Build
