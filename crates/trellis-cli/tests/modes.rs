@@ -1164,3 +1164,202 @@ fn rpc_get_radius_returns_reach_and_doubt_as_separate_counts() {
         "{data}"
     );
 }
+
+/// Every file under `dir`, by path relative to it, with its bytes.
+fn files_under(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let bytes = std::fs::read(&p).unwrap();
+                out.insert(p.strip_prefix(dir).unwrap().to_path_buf(), bytes);
+            }
+        }
+    }
+    out
+}
+
+/// The id `trellis queue add` printed on its `queued:` line.
+fn queued(o: &Output) -> String {
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let line = out.lines().find(|l| l.starts_with("queued:")).unwrap();
+    line.split_whitespace().nth(1).unwrap().to_string()
+}
+
+/// What `trellis queue list` printed, in `get_queue`'s task shape, read off
+/// the text: each entry's head line, its task line and any `waiting:` line,
+/// up to the approvals block, which is not a task.
+fn printed_queue(stdout: &str) -> Vec<Value> {
+    let mut tasks: Vec<Value> = Vec::new();
+    for line in stdout.lines() {
+        if line.is_empty() || line == "approvals waiting:" {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("          ") {
+            let t = tasks.last_mut().unwrap();
+            if let Some(why) = rest.strip_prefix("waiting: ") {
+                t["waiting"] = Value::from(why);
+                continue;
+            }
+            let (text, tags) = rest.split_once(" [").map_or((rest, ""), |(a, b)| (a, b));
+            t["task"] = Value::from(text);
+            let tag = |name: &str| {
+                tags.split(" [")
+                    .find_map(|s| s.strip_prefix(name))
+                    .map(|s| s.trim_end_matches(']').to_string())
+            };
+            t["labels"] = tag("labels ")
+                .map(|l| l.split(',').map(Value::from).collect())
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            t["assignee"] = tag("agent ").map_or(Value::Null, Value::from);
+            continue;
+        }
+        let mut head = line.split_whitespace();
+        let (state, id) = (head.next().unwrap(), head.next().unwrap());
+        let rest = line.split_once(id).unwrap().1.trim_start();
+        if let Some(why) = rest.strip_prefix("unreadable: ") {
+            tasks.push(serde_json::json!({"id": id, "state": state, "error": why}));
+            continue;
+        }
+        let mut words = rest.split_whitespace();
+        tasks.push(serde_json::json!({
+            "id": id,
+            "state": state,
+            "status": words.next().unwrap(),
+            "priority": words.next().unwrap(),
+            "waiting": null,
+        }));
+    }
+    tasks
+}
+
+#[test]
+fn rpc_get_queue_lists_what_queue_list_prints() {
+    // The risks: a client parsing `queue list`'s text because the queue has
+    // no data form (ADR 0048 §2); a read that writes, claims or moves a task
+    // (the queue's writes are `trellis queue`'s and `trellis work`'s, ADR
+    // 0020 §5), which `git status` cannot see, since the queue lives in the
+    // git directory; a read blocking the reader while a run waits on an
+    // approval; a `quit` that exits before the answer is written; and data
+    // that drifts from what `trellis queue list` prints.
+    let f = fixture("rpc-queue");
+    let blocker = queued(&run(
+        &f,
+        &["queue", "add", "fix the parser", "--priority", "high"],
+    ));
+    queued(&run(
+        &f,
+        &[
+            "queue",
+            "add",
+            "then the docs",
+            "--label",
+            "docs",
+            "--label",
+            "later",
+            "--blocked-by",
+            &blocker,
+        ],
+    ));
+    queued(&run(
+        &f,
+        &["queue", "add", "some day", "--backlog", "--priority", "low"],
+    ));
+    let queue_dir = trellis_vcs::git_dir(&f.root).unwrap().join("trellis");
+    std::fs::write(
+        queue_dir.join("queue/pending/20260101-000000-000000000-broken.json"),
+        "{ not a task",
+    )
+    .unwrap();
+    let before = files_under(&queue_dir);
+
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "q", "type": "get_queue"}));
+    let got = rpc.next(|v| v["id"] == "q");
+    rpc.finish();
+    assert_eq!(got["command"], "get_queue", "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+    let after = files_under(&queue_dir);
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>(),
+        "the files under the git directory's trellis/"
+    );
+    for (path, bytes) in &before {
+        assert!(after[path] == *bytes, "{} changed", path.display());
+    }
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "q2", "type": "get_queue"}));
+    let mid = rpc.next(|v| v["id"] == "q2" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "q2", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same queue mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // A `quit` on the next line waits for the answer before its own.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "q3", "type": "get_queue"}));
+    rpc.send(serde_json::json!({"id": "x", "type": "quit"}));
+    let first = rpc.next(|v| v["id"] == "q3" || v["id"] == "x");
+    assert_eq!(first["id"], "q3", "answered before `quit`: {first}");
+    assert_eq!(first["success"], true, "{first}");
+    rpc.next(|v| v["id"] == "x");
+    rpc.finish();
+
+    // Last: what `trellis queue list` prints, task by task in its order.
+    let o = run(&f, &["queue", "list"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let printed = printed_queue(&String::from_utf8_lossy(&o.stdout));
+    let answered = data["tasks"].as_array().unwrap();
+    assert_eq!(answered.len(), printed.len(), "{data}");
+    for (a, p) in answered.iter().zip(&printed) {
+        assert_eq!(a, p, "a task as `queue list` prints it");
+    }
+    // Each kind the fixture set up is in the comparison, so it is not of
+    // empty fields.
+    assert_eq!(printed.len(), 4, "{printed:?}");
+    assert!(
+        printed.iter().any(|t| t["error"].is_string()),
+        "{printed:?}"
+    );
+    assert!(
+        printed
+            .iter()
+            .any(|t| t["labels"].as_array().is_some_and(|l| l.len() == 2))
+    );
+    assert!(
+        printed.iter().any(|t| t["waiting"] == "in backlog"),
+        "{printed:?}"
+    );
+    assert!(
+        printed
+            .iter()
+            .any(|t| t["status"] == "blocked" && t["waiting"].as_str().is_some()),
+        "{printed:?}"
+    );
+}
