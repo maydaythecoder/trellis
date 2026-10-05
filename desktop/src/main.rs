@@ -20,7 +20,9 @@ fn main() {
                 }
             }
             other => {
-                eprintln!("unknown argument: {other}\nusage: trellis-desktop --root <repo> [--trellis <path>]");
+                eprintln!(
+                    "unknown argument: {other}\nusage: trellis-desktop --root <repo> [--trellis <path>]"
+                );
                 std::process::exit(2);
             }
         }
