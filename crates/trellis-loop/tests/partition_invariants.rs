@@ -120,7 +120,7 @@ fn arbitrary_units(rng: &mut Rng, n_symbols: u32, n_files: u32, n_units: u32) ->
 #[test]
 fn a_staged_plan_keeps_concurrent_work_disjoint() {
     for seed in 1..400u64 {
-        let mut rng = Rng(seed | 1);
+        let mut rng = Rng(seed);
         let n_symbols = 2 + rng.below(12);
         let n_files = 1 + rng.below(5);
         let n_units = 1 + rng.below(10);
@@ -152,7 +152,8 @@ fn a_staged_plan_keeps_concurrent_work_disjoint() {
             for b in &p.parallel {
                 assert!(
                     shared.files.is_disjoint(&b.files),
-                    "seed {seed}: shared stage and partition {} share a file,                      which running in sequence does not make safe",
+                    "seed {seed}: shared stage and partition {} share a file, \
+                     which running in sequence does not make safe",
                     b.id.0
                 );
             }
@@ -163,7 +164,8 @@ fn a_staged_plan_keeps_concurrent_work_disjoint() {
             for u in &b.units {
                 assert!(
                     u.partitionable && index.is_partitionable(u.target),
-                    "seed {seed}: partition {} runs a unit the index cannot                      vouch for; it belongs in the shared stage",
+                    "seed {seed}: partition {} runs a unit the index cannot \
+                     vouch for; it belongs in the shared stage",
                     b.id.0
                 );
             }
@@ -179,7 +181,7 @@ fn a_staged_plan_keeps_concurrent_work_disjoint() {
 #[test]
 fn partition_ids_are_dense_and_shared_is_first() {
     for seed in 1..400u64 {
-        let mut rng = Rng(seed | 1);
+        let mut rng = Rng(seed);
         let n_symbols = 2 + rng.below(12);
         let n_files = 1 + rng.below(5);
         let n_units = 1 + rng.below(10);
@@ -203,7 +205,7 @@ fn partition_ids_are_dense_and_shared_is_first() {
 #[test]
 fn planning_never_loses_or_duplicates_a_unit() {
     for seed in 1..400u64 {
-        let mut rng = Rng(seed | 1);
+        let mut rng = Rng(seed);
         let n_symbols = 2 + rng.below(12);
         let n_files = 1 + rng.below(5);
         let n_units = 1 + rng.below(10);

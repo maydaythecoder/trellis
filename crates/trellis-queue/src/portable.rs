@@ -659,4 +659,143 @@ mod tests {
             ""
         );
     }
+
+    #[test]
+    fn conflict_policies_and_item_kinds_have_the_names_the_cli_and_the_log_use() {
+        for (s, on) in [
+            ("skip", OnConflict::Skip),
+            ("replace", OnConflict::Replace),
+            ("rename", OnConflict::Rename),
+        ] {
+            assert_eq!(OnConflict::parse(s), Some(on));
+        }
+        assert_eq!(OnConflict::parse("merge"), None);
+        assert_eq!(
+            [Kind::Agent, Kind::Routine, Kind::Task].map(Kind::as_str),
+            ["agent", "routine", "task"]
+        );
+    }
+
+    fn pending_task(src: &Path, id: &str, text: &str) {
+        let t = Task {
+            task: text.into(),
+            added_at: "2026-09-27T00:00:00Z".into(),
+            ..Task::default()
+        };
+        std::fs::create_dir_all(src.join("tasks/pending")).unwrap();
+        std::fs::write(
+            src.join(format!("tasks/pending/{id}.json")),
+            serde_json::to_string(&t).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn export_counts_the_claimed_tasks_it_leaves_behind() {
+        let (d, root, q) = setup();
+        let id = q.add("held", None, None).unwrap();
+        let claim = q.claim(&id).unwrap().unwrap();
+        let n = export(&root, &q, &d.path().join("out")).unwrap();
+        assert_eq!((n.tasks, n.claimed_skipped), (0, 1));
+        claim.release(false).unwrap();
+    }
+
+    #[test]
+    fn an_import_folder_that_cannot_be_read_or_a_file_that_is_not_a_task_id_is_refused() {
+        let (d, root, q) = setup();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("agents"), "").unwrap();
+        assert!(plan_import(&root, &q, &src, OnConflict::Skip).is_err());
+
+        let src = d.path().join("src2");
+        pending_task(&src, "Not_An_Id", "x");
+        let e = plan_import(&root, &q, &src, OnConflict::Skip).unwrap_err();
+        assert!(e.to_string().contains("is not a task id"), "{e}");
+    }
+
+    #[test]
+    fn a_rename_takes_the_first_name_free_here_and_in_the_import() {
+        // `rev-2` is taken here, so the incoming `rev` is `rev-3`; read as
+        // free, `rev-2` would be written over the local profile.
+        let (d, root, q) = setup();
+        for n in ["rev", "rev-2"] {
+            std::fs::write(root.join(format!(".trellis/agents/{n}.toml")), "").unwrap();
+            std::fs::write(
+                root.join(format!(".trellis/routines/{n}.toml")),
+                "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\n",
+            )
+            .unwrap();
+        }
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("agents")).unwrap();
+        std::fs::create_dir_all(src.join("routines")).unwrap();
+        std::fs::write(src.join("agents/rev.toml"), "").unwrap();
+        std::fs::write(
+            src.join("routines/rev.toml"),
+            "schedule = \"0 4 * * *\"\n[task]\ntext = \"y\"\n",
+        )
+        .unwrap();
+        let id = q.add("local", None, None).unwrap();
+        pending_task(&src, &id, "theirs");
+        let plan = plan_import(&root, &q, &src, OnConflict::Rename).unwrap();
+        let renamed = |kind: Kind| {
+            plan.items
+                .iter()
+                .find(|i| i.kind == kind)
+                .map(|i| i.action.clone())
+        };
+        assert_eq!(renamed(Kind::Agent), Some(Action::Rename("rev-3".into())));
+        assert_eq!(renamed(Kind::Routine), Some(Action::Rename("rev-3".into())));
+        let Some(Action::Rename(fresh)) = renamed(Kind::Task) else {
+            panic!("{:?}", plan.items);
+        };
+        assert!(fresh != id && fresh.ends_with("-theirs"), "{fresh}");
+        assert!(valid_id(&fresh), "{fresh}");
+    }
+
+    #[test]
+    fn a_new_profile_may_not_overwrite_a_different_local_instructions_file() {
+        let (d, root, q) = setup();
+        std::fs::write(root.join(".trellis/agents/a.md"), "mine").unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("agents")).unwrap();
+        std::fs::create_dir_all(src.join("instructions/agents")).unwrap();
+        std::fs::write(
+            src.join("agents/b.toml"),
+            "instructions = \"agents/a.md\"\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("instructions/agents/a.md"), "theirs").unwrap();
+        let e = plan_import(&root, &q, &src, OnConflict::Skip).unwrap_err();
+        assert!(e.to_string().contains("different content"), "{e}");
+        std::fs::write(src.join("instructions/agents/a.md"), "mine").unwrap();
+        plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+    }
+
+    #[test]
+    fn a_task_claimed_here_is_skipped_on_conflict_not_refused() {
+        // Only `replace` would touch the claimed task; `skip` leaves it.
+        let (d, root, q) = setup();
+        let id = q.add("local", None, None).unwrap();
+        let claim = q.claim(&id).unwrap().unwrap();
+        let src = d.path().join("src");
+        pending_task(&src, &id, "theirs");
+        let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+        assert!(plan.items.iter().all(|i| i.action == Action::Skip));
+        claim.release(false).unwrap();
+    }
+
+    #[test]
+    fn a_skipped_profile_does_not_shift_which_task_is_written_under_which_id() {
+        let (d, root, q) = setup();
+        std::fs::write(root.join(".trellis/agents/rev.toml"), "").unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("agents")).unwrap();
+        std::fs::write(src.join("agents/rev.toml"), "").unwrap();
+        pending_task(&src, "20260927-000000-000000001-x", "x");
+        let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+        apply_import(&root, &q, &plan).unwrap();
+        assert_eq!(q.find("20260927-000000-000000001-x").unwrap().1.task, "x");
+    }
 }

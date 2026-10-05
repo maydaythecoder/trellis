@@ -265,14 +265,7 @@ impl Index {
         // Strings, integers, vectors and unit-tagged enums: no map with
         // non-string keys and no failing `Serialize`, so this cannot fail.
         let pretty = serde_json::to_string_pretty(self).expect("an Index always serializes");
-        let mut out = String::with_capacity(pretty.len() + 1);
-        for c in pretty.chars() {
-            if c.is_control() && c != '\n' {
-                out.push_str(&format!("\\u{:04x}", u32::from(c)));
-            } else {
-                out.push(c);
-            }
-        }
+        let mut out = crate::report::escape_json_controls(&pretty);
         out.push('\n');
         out
     }

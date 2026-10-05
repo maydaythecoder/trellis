@@ -335,4 +335,42 @@ mod tests {
         let n = p("---\ntitle: T\nno close\n");
         assert!(!n.has_frontmatter);
     }
+
+    #[test]
+    fn a_file_named_notes_is_not_the_notes_root() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("notes"), "").unwrap();
+        assert_eq!(notes_root(d.path()), d.path());
+        std::fs::remove_file(d.path().join("notes")).unwrap();
+        std::fs::create_dir(d.path().join("notes")).unwrap();
+        assert_eq!(notes_root(d.path()), d.path().join("notes"));
+    }
+
+    #[test]
+    fn a_key_is_letters_digits_underscore_and_dash_only() {
+        assert_eq!(key_line("a_b: x"), Some(("a_b", "x")));
+        assert_eq!(key_line("a-b: x"), Some(("a-b", "x")));
+        for bad in ["a.b: x", "a b: x", ": x"] {
+            assert_eq!(key_line(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn unquote_strips_only_a_matching_pair() {
+        assert_eq!(unquote("x\""), "x\"");
+        assert_eq!(unquote("x'"), "x'");
+        assert_eq!(unquote("'x'"), "x");
+        // Not valid JSON: the inner text is kept as written.
+        assert_eq!(unquote("\"a\\qb\""), "a\\qb");
+    }
+
+    #[test]
+    fn the_first_heading_may_be_on_a_later_line_or_only_whitespace() {
+        assert_eq!(first_heading("x\n# Head").as_deref(), Some("Head"));
+        // `#\s+(.+)$` backtracks so `.+` takes the last space: a heading
+        // whose text is blank, which Apex then treats as none.
+        assert_eq!(first_heading("#  ").as_deref(), Some(""));
+        // A newline cannot be the `.+`.
+        assert_eq!(first_heading("# \n"), None);
+    }
 }

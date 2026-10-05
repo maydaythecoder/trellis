@@ -32,7 +32,6 @@ mod validate;
 pub use compile::{Compiled, DEFAULT_CAP, compile, compile_with_dates};
 pub use graph::{Graph, Issue, Resolved, Resolver};
 pub use reader::{Note, Vault, notes_root};
-pub use refs::{WikiTarget, normalize_key, parse_wiki_target, slugify};
 pub use validate::{Stats, validate};
 
 use std::path::PathBuf;

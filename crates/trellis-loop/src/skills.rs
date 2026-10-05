@@ -233,11 +233,14 @@ pub fn read_body_in(root: &Path, user_dirs: &[PathBuf], name: &str) -> Result<St
             source,
         })?
     } else {
-        let Some(dir) = user_dirs
-            .iter()
-            .map(|base| base.join(name))
-            .find(|d| d.is_dir())
-        else {
+        // The same test `skill_dirs` lists by: a directory, or a link that
+        // resolves to nothing. A dangling link the listing counted as found
+        // is read (and fails) here, never passed over for a shadowed skill.
+        let Some(dir) = user_dirs.iter().map(|base| base.join(name)).find(|d| {
+            d.is_dir()
+                || (std::fs::symlink_metadata(d).is_ok_and(|m| m.file_type().is_symlink())
+                    && std::fs::metadata(d).is_err())
+        }) else {
             return Err(SkillError::NotFound(name.to_string()));
         };
         dir.join("SKILL.md")
@@ -816,6 +819,28 @@ mod tests {
         assert!(c.user.is_empty());
         let body = read_body_in(d.path(), &dirs, "refactor").unwrap();
         assert!(body.contains("BODY-refactor"));
+    }
+
+    #[test]
+    fn a_dangling_user_skill_link_shadows_a_later_user_directory_in_reading_too() {
+        // The risk: the listing counted a dangling link in the first user
+        // directory as found (invalid) and the second's skill as shadowed,
+        // while `read_skill` passed over the link and served the shadowed
+        // body, one the listing never described.
+        let d = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        if !link(&first.path().join("gone"), &first.path().join("foo")) {
+            return;
+        }
+        user_skill(second.path(), "foo", &md("foo", "Second."));
+        let dirs = [first.path().to_path_buf(), second.path().to_path_buf()];
+        let c = SkillCatalog::discover_with(d.path(), &dirs);
+        assert!(c.valid.is_empty(), "{:?}", c.valid);
+        assert_eq!(c.invalid.len(), 1);
+        assert_eq!(c.shadowed, ["foo"]);
+        let e = read_body_in(d.path(), &dirs, "foo").unwrap_err();
+        assert!(matches!(e, SkillError::Unreadable { .. }), "{e}");
     }
 
     #[test]

@@ -423,3 +423,51 @@ pub(crate) fn manifest_state(
         wrong: violations.len() > before,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stem_keeps_md_when_it_is_the_whole_name() {
+        // Node's `path.basename(".md", ".md")` is ".md", not "".
+        assert_eq!(stem_of("a/.md"), ".md");
+        assert_eq!(stem_of("a/b.MD"), "b");
+    }
+
+    #[test]
+    fn a_parent_link_is_one_non_empty_bracket_free_stem() {
+        assert_eq!(parent_link("\"[[a]]\""), Some("a"));
+        assert_eq!(parent_link("\"[[]]\""), None);
+        assert_eq!(parent_link("\"[[a]b]]\""), None);
+    }
+
+    #[test]
+    fn the_gate_decodes_only_a_double_quoted_title() {
+        // ADR 0017's parser reads a double-quoted title as a JSON string and
+        // leaves every other form as written.
+        let title = |t: &str| {
+            let raw = format!("---\ntitle: {t}\nparent: null\n---\nbody");
+            parse_note("a.md", &raw, &mut Vec::new()).unwrap().title
+        };
+        assert_eq!(title("\"A \\\"B\\\"\""), "A \"B\"");
+        assert_eq!(title("'Single'"), "'Single'");
+        assert_eq!(title("x\""), "x\"");
+    }
+
+    #[test]
+    fn a_manifest_entry_outside_the_vault_is_named_for_each_form() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("manifest.json"),
+            r#"["../a.md","/a.md","C:a.md"]"#,
+        )
+        .unwrap();
+        let mut v = Vec::new();
+        manifest_state(d.path(), &[], &mut v).unwrap();
+        for e in ["../a.md", "/a.md", "C:a.md"] {
+            let want = format!("manifest.json: entry is not a relative path inside the vault: {e}");
+            assert!(v.contains(&want), "{e}: {v:?}");
+        }
+    }
+}
