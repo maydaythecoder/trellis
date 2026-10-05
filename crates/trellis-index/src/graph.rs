@@ -18,9 +18,9 @@ use trellis_core::{CallSiteId, FileId, Interner, SymbolId};
 pub enum Reason {
     /// `obj.foo()` where `obj`'s type is unknown.
     MethodDispatchUntyped,
-    /// Callee is wrapped by a decorator. Expected to dominate: the three
-    /// candidate benchmark repos carry 708, 814 and 1812 decorator lines
-    /// respectively (see BENCHMARK_AND_EVAL.md).
+    /// Callee is wrapped by a decorator. Predicted to dominate before
+    /// measurement; ADR 0011 measured 3 of 11,233 unresolved sites on poetry,
+    /// where `MethodDispatchUntyped` dominates.
     DecoratorIndirection,
     /// `from x import *`.
     StarImport,
