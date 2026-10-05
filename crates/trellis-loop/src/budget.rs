@@ -91,36 +91,20 @@ impl Budget {
         }
     }
 
-    /// Splits this budget across `n` partitions.
-    ///
-    /// Budgets **divide, they do not multiply**. N agents each granted the
-    /// full ceiling is an N-times faster way to spend the user's money
-    /// (4.13). Wall-clock is the exception: partitions run concurrently, so
-    /// the run's elapsed time is bounded by the whole ceiling, not a share
-    /// of it.
-    pub fn split(&self, n: u32) -> Budget {
-        let n = n.max(1);
-        Budget {
-            max_iterations: (self.max_iterations / n).max(1),
-            max_wall_clock: self.max_wall_clock,
-            max_tokens: (self.max_tokens / u64::from(n)).max(1),
-            regime: self.regime,
-        }
-    }
-
     /// This budget's iterations and tokens dealt out across `n` partitions,
     /// exactly.
     ///
-    /// [`Budget::split`] floors, so three partitions of a 40-iteration run
-    /// get 13 each and a 40th iteration nobody may spend; and it clamps to
-    /// one, so sixteen partitions of a 2-iteration run get sixteen between
-    /// them. The second is ADR 0008's "multiply" by another route. Here the
-    /// remainder goes to the first partitions in plan order, so the shares
-    /// sum to the run's ceiling, and a plan wider than the ceiling is
-    /// refused rather than granted more than the user set.
+    /// Budgets **divide, they do not multiply**. N agents each granted the
+    /// full ceiling is an N-times faster way to spend the user's money
+    /// (4.13). Flooring each share would leave iterations nobody may spend,
+    /// and clamping each to one would grant a wide plan more than the
+    /// ceiling, ADR 0008's "multiply" by another route. So the remainder
+    /// goes to the first partitions in plan order, the shares sum to the
+    /// run's ceiling, and a plan wider than the ceiling is refused rather
+    /// than granted more than the user set.
     ///
-    /// Wall-clock is copied whole, as in `split`: partitions in one stage
-    /// run concurrently. The supervisor narrows it for a later stage.
+    /// Wall-clock is copied whole: partitions in one stage run
+    /// concurrently. The supervisor narrows it for a later stage.
     pub fn shares(&self, n: u32) -> Result<Vec<Budget>, BudgetTooSmall> {
         if n == 0 {
             return Ok(Vec::new());
@@ -198,6 +182,7 @@ mod tests {
         assert_eq!(recorded[0].trim_end(), shipped);
     }
 
+    /// The risk: N partitions each granted the whole ceiling (ADR 0008).
     #[test]
     fn budgets_divide_across_partitions() {
         let b = Budget {
@@ -206,27 +191,53 @@ mod tests {
             max_tokens: 1_000_000,
             regime: CostRegime::Metered,
         };
-        let split = b.split(4);
-        assert_eq!(split.max_iterations, 10);
-        assert_eq!(split.max_tokens, 250_000);
-        assert_eq!(
-            split.max_wall_clock,
-            Duration::from_secs(600),
-            "partitions run concurrently, so wall-clock is shared not divided"
-        );
+        let shares = b.shares(4).unwrap();
+        assert_eq!(shares.len(), 4);
+        for s in &shares {
+            assert_eq!(s.max_iterations, 10);
+            assert_eq!(s.max_tokens, 250_000);
+            assert_eq!(
+                s.max_wall_clock,
+                Duration::from_secs(600),
+                "partitions run concurrently, so wall-clock is shared not divided"
+            );
+        }
     }
 
+    /// The risk: a floored share leaves iterations nobody may spend.
     #[test]
-    fn splitting_never_yields_a_zero_budget() {
+    fn the_remainder_is_dealt_so_shares_sum_to_the_ceiling() {
+        let b = Budget {
+            max_iterations: 40,
+            max_wall_clock: Duration::from_secs(600),
+            max_tokens: 1_000,
+            regime: CostRegime::Metered,
+        };
+        let shares = b.shares(3).unwrap();
+        let its: Vec<u32> = shares.iter().map(|s| s.max_iterations).collect();
+        let toks: Vec<u64> = shares.iter().map(|s| s.max_tokens).collect();
+        assert_eq!(its, [14, 13, 13], "the first partitions get the remainder");
+        assert_eq!(toks, [334, 333, 333]);
+    }
+
+    /// The risk: a plan wider than the ceiling granted one of each per
+    /// partition, so sixteen partitions of a 2-iteration run spend sixteen.
+    #[test]
+    fn a_plan_wider_than_the_budget_is_refused_not_multiplied() {
         let b = Budget {
             max_iterations: 2,
             max_wall_clock: Duration::from_secs(1),
             max_tokens: 3,
             regime: CostRegime::Local,
         };
-        let s = b.split(16);
-        assert_eq!(s.max_iterations, 1);
-        assert_eq!(s.max_tokens, 1);
+        assert_eq!(
+            b.shares(16).unwrap_err(),
+            BudgetTooSmall {
+                partitions: 16,
+                iterations: 2,
+                tokens: 3,
+            }
+        );
     }
 
     #[test]

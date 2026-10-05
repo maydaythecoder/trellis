@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 # Internal to this workspace: the deliverable is the `trellis` binary, not
-# eight library crates. Saying so prevents an accidental `cargo publish` and
+# a set of library crates. Saying so prevents an accidental `cargo publish` and
 # lets `cargo deny` treat the intra-workspace path dependencies as what they
 # are rather than as unversioned registry wildcards.
 publish = false
@@ -13,7 +13,7 @@ publish = false
 # NOTE: trellis-index must never depend on trellis-model. The call graph has
 # to be testable with no model anywhere near it, and a graph whose output
 # depends on a sampler is not a graph. Enforced by review and by this
-# comment; see docs/adr/0001-resolver-scope.md.
+# comment; see docs/adr/0001-resolver-scope-and-build-not-consume.md.
 [dependencies]
 trellis-core.workspace = true
 tree-sitter.workspace = true
@@ -24,8 +24,8 @@ rayon.workspace = true
 walkdir.workspace = true
 postcard.workspace = true
 tracing.workspace = true
-# The Pyright backstop's LSP messages (ADR 0031). Already a workspace
-# dependency used at run time by seven crates; no crate added to Cargo.lock.
+# The Pyright backstop's LSP messages (ADR 0031). Already a workspace runtime
+# dependency of other crates; no crate added to Cargo.lock.
 serde_json.workspace = true
 
 [dev-dependencies]

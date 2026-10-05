@@ -16,11 +16,11 @@ below, each audited against the code rather than against the milestone prose.
 | 5 | **S14 resolved**: named benchmark repo, threshold with reasoning | **Done** | `BENCHMARK_AND_EVAL.md` §1, §3 |
 | 6 | **S16 resolved**: the recall figure that fires the pivot | **Done** — 60% | ADR 0002, `ROADMAP.md` |
 | 7 | **S7 resolved**: model floor across seven metrics | **Partial.** Two configurations measured, both below the floor — two endpoints, no interval. Four of the seven metrics measured, plus metric 3 as ADR 0028's per-call argument audit (`docs/bench/metric3_audit.py`, §5.4: no edit anchor in any task of either configuration was in its file). Of the other two (ADR 0028): metric 5 waived for temperature-0 configurations only; metric 6 kept, pending until a configuration repairs a task | `BENCHMARK_AND_EVAL.md` §5, §5.4; ADR 0028 |
-| 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Mostly.** Embedded and tested; licence verified MIT 1.8.0; matrix published. **Inference path deliberately open** | ADR 0006, `TECH_SPIKE.md` §3 |
+| 8 | **S17 resolved**: llguidance embedded, inference path in an ADR, licence verified, matrix published | **Done.** Embedded and tested; licence verified MIT 1.8.0; matrix published. Inference path settled by ADR 0013 (accepted 2026-09-19: tier 2 and tier 4 ship, tier 3 descoped with named reopen triggers) | ADR 0006, ADR 0013, `TECH_SPIKE.md` §3 |
 | 9 | Grounding contract structural — `Verdict` unforgeable, `ToolResult` has no pass variant | **Done** | `trellis-checks/src/verdict.rs`, `trellis-loop/src/tools.rs` |
 | 10 | One main loop with tools, not a verification fan-out, ADR says why | **Done.** Both halves demonstrated: a converging run, and a model declaring success while the checks disagree. The loop's *shape* is what this row is about; v0.2's full gate is not met — see the audit below | ADR 0005, `trellis-loop/src/agent.rs` |
-| 11 | Multi-agent parallelizes work only, ADR says why | **Done in design and rules; no concurrent execution yet** | ADR 0005, `trellis-loop/src/partition.rs` |
-| 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and property-tested over 400 seeds, now against a real resolver rather than synthetic graphs. Rule 2 documented; enforced when integration is built** | `partition::plan`, `tests/partition_invariants.rs` |
+| 11 | Multi-agent parallelizes work only, ADR says why | **Done.** Concurrent execution built (ADR 0037, `trellis-loop/src/supervise.rs`) | ADR 0005, `trellis-loop/src/partition.rs` |
+| 12 | Partitioning treats unresolved/candidate edges as unpartitionable; integrated checks never skipped | **Rule 1 implemented and property-tested over 400 seeds, now against a real resolver rather than synthetic graphs. Rule 2 enforced by `Supervisor::run_integrated` (ADR 0042)** | `partition::plan`, `tests/partition_invariants.rs` |
 | 13 | `trellis doctor` reports batching capability and multi-agent tier | **Done.** Probes the runtime rather than reporting a default; verified reporting `RuntimeConstrained` against a live server | `trellis-model/src/tier.rs`, `trellis-model/src/runtime.rs` |
 | 14 | Rollback verified by induced mid-run failure in CI | **Verified in the test suite, run by CI** | `trellis-vcs/src/lib.rs` tests; `.github/workflows/ci.yml` runs `cargo test --workspace` (line 46) and the named `trellis-vcs` rollback tests as their own `rollback-gate` job (line 64) |
 | 15 | Bidirectionality verified by property test | **Done** — 199 random graphs | `trellis-index/tests/bidirectional.rs` |
@@ -2030,6 +2030,8 @@ Cost on this rig: median 209 s per task, 9 turns each. Per-turn time grows
 through a run because the probe re-prefills the whole transcript every call —
 a property of the probe, not of TRELLIS, stated that way wherever the figure
 appears.
+
+## Built earlier
 
 - Incremental update: single-file save **39.7 ms p50**, 3.1× a cold build,
   with a property test asserting an updated session equals a cold one.

@@ -1,6 +1,6 @@
 # colibri engine and serving side: capability inventory (v1.12.1, Apache-2.0)
 
-**Upstream:** `JustVugg/colibri` at commit `ce370e87d7b623d7759b52ec2007d75fc5b0e87e` (2026-09-25, "Merge pull request #1663 from JustVugg/dev"), version 1.12.1 (`c/version.py`). Read from the clone at `C:/Users/mayda/.claude/jobs/366105fd/tmp/upstream/colibri`.
+**Upstream:** `JustVugg/colibri` at commit `ce370e87d7b623d7759b52ec2007d75fc5b0e87e` (2026-09-25, "Merge pull request #1663 from JustVugg/dev"), version 1.12.1 (`c/version.py`). Read from a local clone at that commit.
 **Scope:** the engine and serving side: `c/`, `colibri/`, `docs/`, `docker/`, `Makefile`, `flake.nix`, `pyproject.toml`, `README*`, `CHANGELOG.md`, `GPU_BACKENDS.md`, `.github/workflows/`. `web/`, `desktop/` and `site/` are out of scope. The one exception is the data the Brain and Profiling pages read, which comes from server endpoints and is covered here.
 
 ## Method

@@ -158,14 +158,14 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                     Ok(None) => {
                         // Continuous batching is inherent here, but the concurrency
                         // its scheduler will actually grant is not a number to
-                        // invent, so `--agents auto` stays conservative.
+                        // invent; multi-agent mode is not built yet either.
                         batching = BatchingCapability::ContinuousUnmeasured;
                         notes.push(
                         concat!(
                             "This runtime batches continuously, so multi-agent mode is supported ",
                             "in principle. The concurrency it will grant is its scheduler's ",
-                            "decision and is not reported, so `--agents auto` stays at 1 rather ",
-                            "than guessing. "
+                            "decision and is not reported. Multi-agent mode is not built yet: ",
+                            "`--agents` accepts only 1. "
                         )
                         .into(),
                     );
@@ -596,21 +596,21 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
 /// The milestone document's mockup shows `Floor  above measured minimum ✓`.
 /// **TRELLIS cannot know that**, and saying it would be the exact failure S7
 /// exists to prevent. A floor is an interval located by a configuration that
-/// *passes*; two have been measured and both are below it, so there is no
+/// *passes*; three have been measured and all are below it, so there is no
 /// minimum to be above. The honest line says so and points at the evidence.
 fn floor_line(model_configured: bool) -> String {
     if model_configured {
         concat!(
-            "floor:      unknown for this model. The S7 floor is not located: two ",
-            "configurations\n            have been measured (0.5B, Coder-3B) and both ",
-            "failed every task, so\n            there is no measured minimum to be above. ",
+            "floor:      unknown for this model. The S7 floor is not located: three ",
+            "configurations\n            have been measured (0.5B, Coder-3B, qwen2.5:3b/Ollama) ",
+            "and all failed every task,\n            so there is no measured minimum to be above. ",
             "See BENCHMARK_AND_EVAL.md §5."
         )
         .to_string()
     } else {
         concat!(
             "floor:      not applicable without --model. The S7 floor is not located ",
-            "either:\n            two configurations measured, both below it. See ",
+            "either:\n            three configurations measured, all below it. See ",
             "BENCHMARK_AND_EVAL.md §5."
         )
         .to_string()
@@ -758,8 +758,8 @@ mod doctor_tests {
     }
 
     /// The mockup's `Floor  above measured minimum ✓` is a claim TRELLIS
-    /// cannot make. A floor is located by a configuration that *passes*; two
-    /// have been measured and both failed every task, so there is no minimum
+    /// cannot make. A floor is located by a configuration that *passes*; three
+    /// have been measured and all failed every task, so there is no minimum
     /// to be above. Printing the tick would be the exact failure S7 exists to
     /// prevent.
     #[test]

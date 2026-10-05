@@ -86,7 +86,7 @@ fn user_skills_line(root: &Path, dirs: &[PathBuf]) -> String {
         .filter(|i| present.iter().any(|p| i.dir.starts_with(p.as_str())))
         .count();
     format!(
-        "user skills: {} loaded, {} shadowed by the repository's, {invalid} invalid, from {} \
+        "user skills: {} loaded, {} shadowed by a skill of the same name found first, {invalid} invalid, from {} \
          (the user's own; loaded without repository trust)",
         c.user.len(),
         c.shadowed.len(),
@@ -368,7 +368,9 @@ mod tests {
         let missing = user.path().join("absent");
         let line = user_skills_line(d.path(), &[user.path().to_path_buf(), missing]);
         assert!(
-            line.starts_with("user skills: 1 loaded, 1 shadowed by the repository's, 1 invalid"),
+            line.starts_with(
+                "user skills: 1 loaded, 1 shadowed by a skill of the same name found first, 1 invalid"
+            ),
             "{line}"
         );
         assert!(line.contains("loaded without repository trust"), "{line}");
