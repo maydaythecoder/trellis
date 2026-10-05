@@ -1363,7 +1363,11 @@ runs gets them:
    model loop or the process agent), in the order declared. There is no
    readiness wait: a task that needs the port open must wait for it
    itself. Until #24 gives each task a worktree of its own, "the task's
-   worktree" is the one `work` runs in.
+   worktree" is the one `work` runs in. *Corrected 2026-10-04: #24 was
+   split into #98–#101. #98 gives each partition of a multi-agent run its
+   own worktree (`trellis-loop/src/supervise.rs`); none of the four gives
+   a queue task one, so the task's worktree is still the one `work` runs
+   in.*
 3. **Environment.** The scrubbed environment every child gets (ADR 0024
    §3), plus `TRELLIS_TASK_ID`, `TRELLIS_AGENT` and `TRELLIS_SERVICE`.
    Nothing is put back: a profile's `pass_env` is for its process agent,
@@ -1440,7 +1444,8 @@ run's own. No post-hoc check is added for it; the fix is isolation (ADR
 - ~~**`@profile` mentions in notes do not wake anything.** ADR 0021 defers
   them.~~ Built for #57; see §1's amendment.
 - ~~No prompt-token accounting~~ (built for #108, §5). **No dollar
-  accounting** (§5; deferred to v1.x by #67).
+  accounting** (§5; deferred to v1.x by #67). *Corrected 2026-10-04: dollar
+  accounting alone is not built.*
 - **Routines fire only while `work` is running.** There is no daemon
   (ADR 0020). A schedule with no `work` running accumulates missed fires,
   which the catch-up policy then handles.
@@ -1451,7 +1456,9 @@ run's own. No post-hoc check is added for it; the fix is isolation (ADR
 - **Services (§12): no readiness wait, no per-task worktree until #24, no
   declaration on a single task** (only on a profile), and no services for
   `trellis run`, which runs no profile. On Unix a SIGKILL of trellis leaves
-  a service's group running; `doctor` is what reports it.
+  a service's group running; `doctor` is what reports it. *Corrected
+  2026-10-04: #24 was split into #98–#101, and none of them gives a queue
+  task a worktree of its own (§12 item 2).*
 
 ## Alternatives rejected
 
