@@ -1418,4 +1418,113 @@ mod tests {
             files_under(&cfg)
         );
     }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn a_ref_with_a_space_a_control_character_or_a_leading_dash_is_not_a_ref() {
+        for bad in ["src@v 1", "src@v\u{7}1", "src@-v1"] {
+            let e = split_spec(bad).unwrap_err().to_string();
+            assert!(e.contains("is not a ref name"), "{bad}: {e}");
+        }
+        assert_eq!(split_spec("src@v1").unwrap(), ("src", "v1"));
+    }
+
+    #[test]
+    fn a_source_that_is_an_option_holds_a_control_character_or_a_password_is_refused() {
+        // `-` first would be read by `git clone` as an option, and a
+        // password would be written into packages.toml.
+        assert!(unacceptable_source("--upload-pack=x").is_some());
+        assert!(unacceptable_source("pkg\u{1b}[2J").is_some());
+        assert!(unacceptable_source("https://me:pw@host.example/p.git").is_some());
+        assert_eq!(unacceptable_source("https://me@host.example/p.git"), None);
+    }
+
+    #[test]
+    fn a_path_component_is_one_to_128_characters() {
+        assert!(bad_component("").is_some(), "empty");
+        assert_eq!(bad_component(&"a".repeat(128)), None);
+        assert!(bad_component(&"a".repeat(129)).is_some());
+    }
+
+    #[test]
+    fn a_skill_name_may_hold_lowercase_letters_digits_and_inner_hyphens() {
+        for ok in ["abc", "a1", "9", "a-b"] {
+            assert!(skill_name_ok(ok), "{ok}");
+        }
+        for bad in ["Abc", "a_b", "a.b"] {
+            assert!(!skill_name_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_a_markdown_file_directly_under_prompts_is_a_template() {
+        let entry = |path: &str| TreeEntry {
+            mode: "100644".into(),
+            blob: "b".repeat(40),
+            size: Some(10),
+            path: path.into(),
+        };
+        let plan = select(&[entry("prompts/fix.md"), entry("prompts/notes.txt")]);
+        let copied: Vec<&str> = plan.copy.iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(copied, ["prompts/fix.md"]);
+        assert_eq!(plan.skipped.len(), 1, "{:?}", plan.skipped);
+        assert_eq!(plan.skipped[0].0, "prompts/notes.txt");
+    }
+
+    #[test]
+    fn package_bounds_admit_exactly_the_limit_and_refuse_one_over() {
+        let files = |n: usize, size: u64| -> Vec<Accepted> {
+            (0..n)
+                .map(|i| Accepted {
+                    path: format!("prompts/p{i}.md"),
+                    blob: String::new(),
+                    size,
+                })
+                .collect()
+        };
+        // Count.
+        assert!(check_bounds(&files(MAX_FILES, 1)).is_ok());
+        assert!(check_bounds(&files(MAX_FILES + 1, 1)).is_err());
+        // One file's size.
+        assert!(check_bounds(&files(1, MAX_FILE_BYTES)).is_ok());
+        assert!(check_bounds(&files(1, MAX_FILE_BYTES + 1)).is_err());
+        // The total: 32 files of the per-file limit are exactly the total.
+        let n = (MAX_TOTAL_BYTES / MAX_FILE_BYTES) as usize;
+        let mut at = files(n, MAX_FILE_BYTES);
+        assert!(check_bounds(&at).is_ok());
+        at.push(Accepted {
+            path: "prompts/one-more.md".into(),
+            blob: String::new(),
+            size: 1,
+        });
+        let e = check_bounds(&at).unwrap_err().to_string();
+        assert!(e.contains("total"), "{e}");
+    }
+
+    #[test]
+    fn a_manifest_that_is_there_but_unreadable_is_an_error_not_no_packages() {
+        // The risk: read as empty, the next install's save would write a
+        // manifest with every earlier entry gone.
+        let d = tempfile::tempdir().unwrap();
+        let packages = packages_dir(d.path());
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(packages.join(MANIFEST), [0xff, 0xfe, b'x']).unwrap();
+        let e = installed_dirs(d.path()).unwrap_err();
+        assert!(format!("{e:#}").contains("cannot read"), "{e:#}");
+    }
+
+    #[test]
+    fn remove_tree_removes_a_plain_file_as_well_as_a_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("f");
+        std::fs::write(&f, "x").unwrap();
+        remove_tree(&f).unwrap();
+        assert!(!f.exists());
+        let t = d.path().join("t/u");
+        std::fs::create_dir_all(&t).unwrap();
+        std::fs::write(t.join("g"), "y").unwrap();
+        remove_tree(&d.path().join("t")).unwrap();
+        assert!(!d.path().join("t").exists());
+    }
 }

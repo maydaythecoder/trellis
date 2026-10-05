@@ -1114,4 +1114,100 @@ context_bytes = {set}
         };
         assert_eq!(hosted_context_bytes(&r, &cfg).unwrap(), 100_000);
     }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn an_origin_with_userinfo_or_a_fragment_is_no_origin_at_all() {
+        // The risk: the authority check reading as "a refused character AND
+        // whitespace", so `u@127.0.0.1` parsed to a host the transport and
+        // this check read differently (ADR 0024 §3).
+        for bad in [
+            "http://u@127.0.0.1:8080/v1",
+            "http://localhost#x/v1",
+            "http://a\\b/v1",
+            "http://local host/v1",
+        ] {
+            assert_eq!(origin(bad), None, "{bad}");
+        }
+        assert_eq!(
+            origin("HTTP://LocalHost/v1"),
+            Some(("http://localhost:80".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn a_thinking_setting_the_driver_cannot_carry_is_said_and_off_is_not() {
+        let high: RepoConfig = toml::from_str("[model]\nthinking = \"high\"\n").unwrap();
+        let n = thinking_ignored(&high, "Ollama").expect("a set thinking is reported");
+        assert!(n.contains("thinking = high"), "{n}");
+        assert!(n.contains("Ollama has no thinking parameter"), "{n}");
+        let off: RepoConfig = toml::from_str("[model]\nthinking = \"off\"\n").unwrap();
+        assert_eq!(thinking_ignored(&off, "Ollama"), None);
+        assert_eq!(thinking_ignored(&RepoConfig::default(), "Ollama"), None);
+    }
+
+    #[test]
+    fn doctor_names_the_model_endpoint_provider_and_the_unset_key_variable() {
+        let r = Resolved {
+            protocol: Protocol::OpenAiChat,
+            base: "https://api.example.test/v1".into(),
+            model: "m-1".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: Some("mine".into()),
+        };
+        let (model, runtime, notes) = doctor(&r);
+        assert_eq!(model, "m-1 (named in the spec)");
+        assert_eq!(
+            runtime,
+            format!(
+                "{} at https://api.example.test/v1 ([[providers]] `mine`)",
+                Protocol::OpenAiChat.describe()
+            )
+        );
+        assert!(
+            notes[0].contains("TRELLIS_TEST_KEY_THAT_IS_NEVER_SET is NOT set"),
+            "{notes:?}"
+        );
+        assert!(notes[1].starts_with("No request was sent"), "{notes:?}");
+        // The no-TLS note is for a build that cannot reach https, and only
+        // that build: saying it in a TLS build sends the user looking for a
+        // problem they do not have.
+        let no_tls = notes.iter().any(|n| n.contains("has no TLS"));
+        assert_eq!(no_tls, !cfg!(feature = "hosted"), "{notes:?}");
+        assert_eq!(notes.len(), 2 + usize::from(no_tls));
+    }
+
+    #[test]
+    fn the_context_lines_report_the_last_compaction_and_are_absent_without_one() {
+        assert_eq!(compaction_line(&[]), None);
+        assert_eq!(requested_compaction_line(&[]), None);
+        let c = |turn, fits| Compacted {
+            turn,
+            elided_turns: turn as usize - 1,
+            elided_bytes: 700 * turn as usize,
+            request_bytes: 4000,
+            budget: 5000,
+            fits,
+        };
+        let line = compaction_line(&[c(3, true), c(6, false)]).unwrap();
+        assert_eq!(
+            line,
+            "context:  compacted 2 time(s); from turn 6 on, the observations of turns 1-5 \
+             were elided (4200 B), budget 5000 B; the newest turn alone was still over it"
+        );
+        let r = RequestedCompaction {
+            turn: 4,
+            turns_folded: 2,
+            elided_turns: 3,
+            elided_bytes: 900,
+            bytes_before: 5000,
+            bytes_after: 4100,
+        };
+        assert_eq!(
+            requested_compaction_line(&[r]).unwrap(),
+            "context:  compacted 1 time(s) on request over rpc; from turn 4 on, the \
+             observations of turns 1-3 were elided (900 B)"
+        );
+    }
 }

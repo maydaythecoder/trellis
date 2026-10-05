@@ -599,4 +599,15 @@ mod tests {
             "{shown}"
         );
     }
+
+    #[test]
+    fn doctor_s_trust_line_counts_the_hooks_it_asks_trust_for() {
+        // The risk (#248): the hooks left out of what doctor lists, so a
+        // person consents to "1 custom tool(s)" while two hooks run too
+        // (ADR 0023).
+        let d = repo_with_three_items(30);
+        let home = tempfile::tempdir().unwrap();
+        let line = doctor(d.path(), &TrustStore::at(home.path().join("trust.json")));
+        assert!(line.contains("2 hook(s), 1 custom tool(s)"), "{line}");
+    }
 }
