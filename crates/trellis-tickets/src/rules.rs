@@ -29,7 +29,7 @@ fn abstain<T>(rule: &'static str, reason: impl Into<String>) -> Outcome<T> {
 /// and the owner's mapping of this repository's other crates onto the same
 /// twelve areas (#194, 2026-10-04: no new area values). Every other path
 /// maps to nothing, and a ticket naming one abstains.
-const AREA_PATHS: [(&str, Area); 22] = [
+const AREA_PATHS: [(&str, Area); 25] = [
     ("crates/trellis-context", Area::Context),
     ("crates/trellis-model", Area::Model),
     ("crates/trellis-checks", Area::Checks),
@@ -54,6 +54,11 @@ const AREA_PATHS: [(&str, Area); 22] = [
     // The Tauri desktop interface, its own Cargo workspace (#249): an
     // interface, as the TUI is.
     ("desktop", Area::Tui),
+    // #282: the paths #194 left unmapped. A prefix matches the path itself,
+    // so `CLAUDE.md` is the root file only (`desktop/CLAUDE.md` stays tui).
+    ("CLAUDE.md", Area::Docs),
+    ("crates/tui-demo", Area::Tui),
+    ("crates/trellis-tickets", Area::Build),
 ];
 
 fn area_of(file: &FileRef) -> Option<Area> {
