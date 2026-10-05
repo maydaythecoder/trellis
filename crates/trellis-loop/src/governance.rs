@@ -18,8 +18,6 @@
 //! something the project already knows is wrong — vendored code, generated
 //! output, lockfiles — which is the failure that actually happens.
 
-use serde::{Deserialize, Serialize};
-
 /// One rule, in the three shapes a project actually needs.
 ///
 /// Deliberately not a glob library. A full glob syntax invites rules whose
@@ -27,7 +25,7 @@ use serde::{Deserialize, Serialize};
 /// has to name a rule the user recognises. These three cover vendored trees,
 /// generated files by extension, and single named files; anything else is
 /// better written as several rules than as one clever one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rule {
     /// `vendor/` — the path is inside this directory, at any depth.
     Prefix(String),
