@@ -765,6 +765,29 @@ mod tests {
             format!("{e}").contains("/props is not JSON"),
             "the error must name what it was reading: {e}"
         );
+        assert!(
+            format!("{e}").contains("body: not json at all"),
+            "and quote what came back: {e}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_runtime_reply_exactly_at_the_cap_is_read() {
+        // The cap refuses one byte past it, not a reply that fills it.
+        let head = "HTTP/1.1 200 OK\r\nContent-Length: ";
+        let json = r#"{"total_slots":3}"#;
+        let cap = crate::transport::MAX_RESPONSE;
+        // The length's own eight digits and the blank line count toward it.
+        let body_len = cap - head.len() - 8 - 4;
+        let raw = format!(
+            "{head}{body_len}\r\n\r\n{json}{}",
+            " ".repeat(body_len - json.len())
+        );
+        assert_eq!(raw.len(), cap);
+        let (base, server) = stub_raw(raw).await;
+        let c = RuntimeClient::new(&base, Dialect::LlamaCpp, None).unwrap();
+        assert_eq!(c.probe_slots().await.unwrap(), Some(3));
         server.await.unwrap();
     }
 

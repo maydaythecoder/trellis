@@ -587,6 +587,83 @@ fn log_with_no_trails_is_not_an_error() {
 }
 
 #[test]
+fn log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are() {
+    // The risk (#248): `--actions` printing nothing, or a blank outcome row
+    // under every action that has none, so the one that wrote is lost
+    // among them.
+    let d = repo("log-actions");
+    let runs = d.join(".trellis/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("r1.json"),
+        r#"{"run_id":"r1","task":"t","factual":{"proposed":[],"actions":[
+            {"turn":1,"tool":"read_file","target":"a.py","outcome":"","wrote":false},
+            {"turn":2,"tool":"edit","target":"a.py","outcome":"applied","wrote":true}]}}"#,
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["log", "--actions"]));
+    assert!(s.contains("actions (2), as recorded:"), "{s}");
+    assert!(
+        s.contains("    *  2. edit a.py\n          applied\n"),
+        "{s}"
+    );
+    assert!(s.contains("       1. read_file a.py\n    *  2."), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_inferred_root_is_named_and_an_explicit_one_is_not() {
+    // The risk (#248): acting on a tree found several levels up without
+    // saying which, so a task runs against the wrong repository.
+    let d = repo("root-named");
+    let inferred = combined(&run(&d.join("app"), &["log"]));
+    assert!(inferred.contains("(repository root)"), "{inferred}");
+    let elsewhere = scratch("root-named-elsewhere");
+    let root = d.to_str().unwrap();
+    let explicit = combined(&run(&elsewhere, &["--root", root, "log"]));
+    assert!(!explicit.contains("(repository root)"), "{explicit}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn run_approve_overrides_a_repository_in_auto_mode() {
+    // The risk (#248): `--approve` dropped, so a person who asked to be
+    // asked before each edit gets a run that asks nothing (ADR 0018).
+    let d = repo("approve-over-auto");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[control]\nmode = \"auto\"\n",
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "auto mode"]);
+    let spec = script_that_stops(&scratch("approve-over-auto-script"));
+    let out = run(&d, &["run", "--approve", "--model", &spec, "t"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(
+        combined(&out).contains("approve mode needs an interactive terminal"),
+        "{}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn run_refuses_a_skill_it_cannot_find_rather_than_running_without_it() {
+    // The risk (#248): `--skill` dropped on the way to the run, so the run
+    // goes ahead without the instructions the person named.
+    let d = repo("skill-missing");
+    let spec = script_that_stops(&scratch("skill-missing-script"));
+    let out = run(&d, &["run", "--skill", "nope", "--model", &spec, "t"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(combined(&out).contains("nope"), "{}", combined(&out));
+    assert!(!d.join(".trellis/runs").exists(), "no trail");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn why_reports_absence_rather_than_inventing_a_reason() {
     // `why` answers from the trail. With no trail there is no answer, and the
     // honest output is that there is none — the alternative is a plausible
@@ -1855,6 +1932,14 @@ fn status_reports_the_state_the_session_is_holding() {
     assert!(
         s.contains("tier"),
         "the tier decides whether a run can fail on format alone:\n{s}"
+    );
+    // The banner and `/status` both count the population `trellis index`
+    // calls "non-excluded call sites" (A-30); "first-party" there named a
+    // smaller set than the number printed beside it.
+    assert_eq!(
+        s.matches("non-excluded call sites").count(),
+        2,
+        "banner and status must name the count as the index does:\n{s}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -3323,4 +3408,106 @@ fn interface_flag_with_a_subcommand_is_refused_naming_both() {
             "{flag} missing from Start: {help}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// the user's directory and installed packages (#248)
+// ---------------------------------------------------------------------------
+
+/// `trellis <args>` in `root` with `user` as the whole user level.
+fn run_as(root: &Path, user: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(args)
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user)
+        .output()
+        .unwrap()
+}
+
+/// A user directory with package `kit` installed by hand: one skill,
+/// `tidy`, and one template, `kitfix`.
+fn user_with_kit(name: &str) -> PathBuf {
+    let user = scratch(name);
+    let packages = user.join("packages");
+    std::fs::create_dir_all(packages.join("kit/skills/tidy")).unwrap();
+    std::fs::create_dir_all(packages.join("kit/prompts")).unwrap();
+    std::fs::write(
+        packages.join("packages.toml"),
+        format!(
+            "[[package]]\nname = \"kit\"\nsource = \"/s/kit\"\nref = \"v1\"\ncommit = \"{}\"\n",
+            "a".repeat(40)
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        packages.join("kit/skills/tidy/SKILL.md"),
+        "---\nname: tidy\ndescription: Tidy a module.\n---\n# tidy\n",
+    )
+    .unwrap();
+    std::fs::write(
+        packages.join("kit/prompts/kitfix.md"),
+        "Fix the thing the kit knows about.\n",
+    )
+    .unwrap();
+    user
+}
+
+#[test]
+fn doctor_reports_the_user_s_file_and_an_installed_package_s_skills() {
+    // The risk: doctor, where a person goes to find out what a run will
+    // load, saying a user file is layered when it is absent or absent when
+    // it is layered, or not finding a package's skills that a run loads.
+    let d = repo("doctor-user-level");
+    let user = user_with_kit("doctor-user-level-cfg");
+    let s = stdout(&run_as(&d, &user, &["doctor"]));
+    assert!(
+        s.contains("config.toml — not present; the repository's config alone"),
+        "{s}"
+    );
+    assert!(s.contains("user skills: 1 loaded"), "{s}");
+    std::fs::write(user.join("config.toml"), "").unwrap();
+    let s = stdout(&run_as(&d, &user, &["doctor"]));
+    assert!(
+        s.contains("config.toml — layered under the repository's"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn a_run_finds_a_template_only_an_installed_package_carries() {
+    let d = repo("installed-template");
+    let user = user_with_kit("installed-template-cfg");
+    let script = script_that_stops(&d);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "script"]);
+    let out = run_as(
+        &d,
+        &user,
+        &["run", "--prompt", "kitfix", "--model", &script],
+    );
+    let s = combined(&out);
+    assert!(!s.contains("no prompt"), "{s}");
+    assert!(s.contains("model:"), "the run started: {s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn install_list_prints_what_the_manifest_records() {
+    // The risk: `trellis install` dispatched and then doing nothing,
+    // exiting 0 with no output.
+    let d = scratch("install-list");
+    let user = user_with_kit("install-list-cfg");
+    let out = run_as(&d, &user, &["install", "--list"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        stdout(&out).contains("kit  source /s/kit  ref v1  commit"),
+        "{}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&user);
 }

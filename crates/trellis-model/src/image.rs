@@ -211,6 +211,22 @@ mod tests {
     }
 
     #[test]
+    fn the_bound_is_5_mib_as_anthropic_states_it() {
+        // The test above is relative to the constant, so it holds for any
+        // value of it; this pins the value ADR 0041 names.
+        assert_eq!(MAX_IMAGE_BYTES, 5 << 20);
+    }
+
+    #[test]
+    fn an_image_carries_its_encoding_and_counts_its_length() {
+        // `base64_len` is what `[model] context_bytes` is charged; `base64`
+        // is what the request carries.
+        let img = Image::from_bytes(b"GIF89a").unwrap();
+        assert_eq!(img.base64(), "R0lGODlh");
+        assert_eq!(img.base64_len(), 8);
+    }
+
+    #[test]
     fn debug_and_the_redacted_body_hold_no_image_data() {
         let img = Image::from_bytes(b"GIF89a-secret-pixels-").unwrap();
         let data = img.base64().to_string();

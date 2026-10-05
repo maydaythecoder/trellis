@@ -516,93 +516,99 @@ was killed by a test in this ticket and none was judged equivalent. Calling a
 mutant equivalent is a claim about all inputs, and 847 of those were not
 going to be made carefully in one sitting.
 
+#245 then gave each trellis-model line its disposition: 75 killed by the
+named test in `trellis-model` itself (each shown by applying the mutant by
+hand and watching that test fail), 6 equivalent and 2 unexercisable, each
+with its reason. None had moved out of existence since `989b2a2`. cargo-mutants
+was not re-run for it.
+
 <details>
 <summary>trellis-model: 83 survivors</summary>
 
 ```
 unexercisable by `cargo test`: called only from `fuzz/fuzz_targets/`, which `cargo fuzz` runs on nightly, not by the suite cargo-mutants drives | crates/trellis-model/src/lib.rs:51:5: replace fuzz_parse_response with ()
-#245 | crates/trellis-model/src/hosted.rs:42:9: replace Protocol::parse_config -> Option<Self> with None
-#245 | crates/trellis-model/src/hosted.rs:43:13: delete match arm "openai" | "openai-chat" in Protocol::parse_config
-#245 | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with ""
-#245 | crates/trellis-model/src/hosted.rs:44:13: delete match arm "anthropic" in Protocol::parse_config
-#245 | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with ""
-#245 | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with None
-#245 | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with Some(Default::default())
-#245 | crates/trellis-model/src/hosted.rs:79:13: delete match arm "off" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:80:13: delete match arm "low" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:81:13: delete match arm "medium" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:82:13: delete match arm "high" in Thinking::parse
-#245 | crates/trellis-model/src/hosted.rs:422:25: delete match arm Some("max_tokens") in parse_reply
-#245 | crates/trellis-model/src/hosted.rs:425:25: delete match arm Some("refusal") in parse_reply
-#245 | crates/trellis-model/src/hosted.rs:488:5: replace retryable -> bool with true
-#245 | crates/trellis-model/src/hosted.rs:517:33: replace && with || in retry_delay_at
-#245 | crates/trellis-model/src/hosted.rs:561:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:560:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:558:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:559:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:557:9: replace || with && in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:39: replace % with / in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:39: replace % with + in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:64: replace == with != in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:58: replace % with + in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:576:58: replace % with / in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:580:9: delete match arm 4 | 6 | 9 | 11 in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:584:78: replace > with >= in imf_fixdate_unix_secs
-#245 | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with ""
-#245 | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with ""
-#245 | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with "xyzzy"
-#245 | crates/trellis-model/src/hosted.rs:718:9: replace HostedClient::thinking -> Thinking with Default::default()
-#245 | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with None
-#245 | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("")
-#245 | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("xyzzy")
-#245 | crates/trellis-model/src/hosted.rs:728:9: replace HostedClient::body -> Value with Default::default()
-#245 | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with true in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with false in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:54: replace < with == in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:54: replace < with > in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:821:54: replace < with <= in HostedClient::send_via
-#245 | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with String::new()
-#245 | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with "xyzzy".into()
-#245 | crates/trellis-model/src/image.rs:16:45: replace * with +
-#245 | crates/trellis-model/src/image.rs:16:38: replace * with +
-#245 | crates/trellis-model/src/image.rs:31:9: replace <impl std::fmt::Debug for Image>::fmt -> std::fmt::Result with Ok(Default::default())
-#245 | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 0
-#245 | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 1
-#245 | crates/trellis-model/src/image.rs:79:9: replace Image::base64 -> &str with "xyzzy"
-#245 | crates/trellis-model/src/image.rs:106:40: replace | with ^ in base64
-#245 | crates/trellis-model/src/pull.rs:74:5: replace partial_name -> String with "xyzzy".into()
-#245 | crates/trellis-model/src/pull.rs:81:5: replace already_here -> Result<Option<PathBuf>, PullError> with Ok(None)
-#245 | crates/trellis-model/src/pull.rs:120:24: delete ! in pull
-#245 | crates/trellis-model/src/pull.rs:175:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in len
-#245 | crates/trellis-model/src/runtime.rs:405:22: replace > with >= in RuntimeClient::request
-#245 | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with String::new()
-#245 | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with "xyzzy".into()
-#245 | crates/trellis-model/src/secret.rs:26:9: replace ApiKey::from_env -> Option<Self> with None
-#245 | crates/trellis-model/src/secret.rs:60:29: replace < with == in ApiKey::scrub
-#245 | crates/trellis-model/src/secret.rs:60:29: replace < with <= in ApiKey::scrub
-#245 | crates/trellis-model/src/transport.rs:313:36: replace * with +
-#245 | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with true in post
-#245 | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with false in post
-#245 | crates/trellis-model/src/transport.rs:471:5: replace tls_exchange -> Result<Response, SendError> with Ok(Default::default())
-#245 | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with true in exchange
-#245 | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with false in exchange
-#245 | crates/trellis-model/src/transport.rs:518:34: replace > with >= in exchange
-#245 | crates/trellis-model/src/transport.rs:518:30: replace + with * in exchange
-#245 | crates/trellis-model/src/transport.rs:527:56: replace > with >= in exchange
-#245 | crates/trellis-model/src/transport.rs:533:32: replace == with != in exchange
-#245 | crates/trellis-model/src/transport.rs:595:27: replace += with *= in Framer::complete
-#245 | crates/trellis-model/src/transport.rs:595:40: replace - with + in Framer::complete
-#245 | crates/trellis-model/src/transport.rs:707:67: replace + with - in chunked
-#245 | crates/trellis-model/src/transport.rs:707:67: replace + with * in chunked
-#245 | crates/trellis-model/src/transport.rs:710:39: replace > with == in chunked
-#245 | crates/trellis-model/src/transport.rs:710:39: replace > with >= in chunked
-#245 | crates/trellis-model/src/transport.rs:726:31: replace < with <= in chunked
-#245 | crates/trellis-model/src/transport.rs:735:31: replace < with <= in chunked
-#245 | crates/trellis-model/src/transport.rs:738:27: replace += with -= in chunked
-#245 | crates/trellis-model/src/transport.rs:802:20: replace < with <= in dechunk
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:42:9: replace Protocol::parse_config -> Option<Self> with None
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:43:13: delete match arm "openai" | "openai-chat" in Protocol::parse_config
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with ""
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:44:13: delete match arm "anthropic" in Protocol::parse_config
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:51:9: replace Protocol::default_key_env -> &'static str with "xyzzy"
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with ""
+killed (#245) by hosted::tests::each_protocol_names_its_own_key_variable_and_its_api | crates/trellis-model/src/hosted.rs:59:9: replace Protocol::describe -> &'static str with "xyzzy"
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with None
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:78:9: replace Thinking::parse -> Option<Self> with Some(Default::default())
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:79:13: delete match arm "off" in Thinking::parse
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:80:13: delete match arm "low" in Thinking::parse
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:81:13: delete match arm "medium" in Thinking::parse
+killed (#245) by hosted::tests::config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else | crates/trellis-model/src/hosted.rs:82:13: delete match arm "high" in Thinking::parse
+killed (#245) by hosted::tests::a_reply_is_read_into_one_call_or_a_reason_there_is_not_one | crates/trellis-model/src/hosted.rs:422:25: delete match arm Some("max_tokens") in parse_reply
+killed (#245) by hosted::tests::a_reply_is_read_into_one_call_or_a_reason_there_is_not_one | crates/trellis-model/src/hosted.rs:425:25: delete match arm Some("refusal") in parse_reply
+killed (#245) by hosted::tests::a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed | crates/trellis-model/src/hosted.rs:488:5: replace retryable -> bool with true
+killed (#245) by hosted::tests::retry_after_is_honoured_and_capped | crates/trellis-model/src/hosted.rs:517:33: replace && with || in retry_delay_at
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:561:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:560:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:558:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:559:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:557:9: replace || with && in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:576:39: replace % with / in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:576:39: replace % with + in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:576:64: replace == with != in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:576:58: replace % with + in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:576:58: replace % with / in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_malformed_or_obsolete_http_date_falls_back_to_the_backoff | crates/trellis-model/src/hosted.rs:580:9: delete match arm 4 | 6 | 9 | 11 in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::an_http_date_in_the_future_waits_the_difference | crates/trellis-model/src/hosted.rs:584:78: replace > with >= in imf_fixdate_unix_secs
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with ""
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:710:9: replace HostedClient::base -> &str with "xyzzy"
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with ""
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:714:9: replace HostedClient::model -> &str with "xyzzy"
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:718:9: replace HostedClient::thinking -> Thinking with Default::default()
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with None
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("")
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:723:9: replace HostedClient::key_source -> Option<&str> with Some("xyzzy")
+killed (#245) by hosted::tests::a_client_reports_what_it_was_built_with_and_builds_its_body_from_it | crates/trellis-model/src/hosted.rs:728:9: replace HostedClient::body -> Value with Default::default()
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with true in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:46: replace match guard attempt < MAX_ATTEMPTS with false in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:54: replace < with == in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:54: replace < with > in HostedClient::send_via
+killed (#245) by hosted::tests::a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further | crates/trellis-model/src/hosted.rs:821:54: replace < with <= in HostedClient::send_via
+killed (#245) by hosted::tests::a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with String::new()
+killed (#245) by hosted::tests::a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed | crates/trellis-model/src/hosted.rs:870:9: replace HostedClient::scrub -> String with "xyzzy".into()
+killed (#245) by image::tests::the_bound_is_5_mib_as_anthropic_states_it | crates/trellis-model/src/image.rs:16:45: replace * with +
+killed (#245) by image::tests::the_bound_is_5_mib_as_anthropic_states_it | crates/trellis-model/src/image.rs:16:38: replace * with +
+equivalent (#245): `Debug` text only; the mutant prints less, never the image data, and no code reads the text | crates/trellis-model/src/image.rs:31:9: replace <impl std::fmt::Debug for Image>::fmt -> std::fmt::Result with Ok(Default::default())
+killed (#245) by image::tests::an_image_carries_its_encoding_and_counts_its_length | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 0
+killed (#245) by image::tests::an_image_carries_its_encoding_and_counts_its_length | crates/trellis-model/src/image.rs:75:9: replace Image::base64_len -> usize with 1
+killed (#245) by image::tests::an_image_carries_its_encoding_and_counts_its_length | crates/trellis-model/src/image.rs:79:9: replace Image::base64 -> &str with "xyzzy"
+equivalent (#245): each byte is shifted into its own 8 bits of a word that starts at 0, so `|` and `^` combine disjoint bits identically | crates/trellis-model/src/image.rs:106:40: replace | with ^ in base64
+killed (#245) by pull::tests::the_staging_name_is_the_file_name_plus_part | crates/trellis-model/src/pull.rs:74:5: replace partial_name -> String with "xyzzy".into()
+killed (#245) by pull::tests::a_file_of_the_pinned_length_at_the_final_name_is_not_fetched_or_hashed | crates/trellis-model/src/pull.rs:81:5: replace already_here -> Result<Option<PathBuf>, PullError> with Ok(None)
+killed (#245) by pull::tests::a_short_download_is_kept_to_resume_and_not_moved_into_place | crates/trellis-model/src/pull.rs:120:24: delete ! in pull
+killed (#245) by pull::tests::a_final_path_that_cannot_be_inspected_is_an_error_not_absent | crates/trellis-model/src/pull.rs:175:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in len
+killed (#245) by runtime::tests::a_runtime_reply_exactly_at_the_cap_is_read | crates/trellis-model/src/runtime.rs:405:22: replace > with >= in RuntimeClient::request
+killed (#245) by runtime::tests::a_props_body_that_is_not_json_says_what_it_was_reading | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with String::new()
+killed (#245) by runtime::tests::a_props_body_that_is_not_json_says_what_it_was_reading | crates/trellis-model/src/runtime.rs:428:5: replace head -> String with "xyzzy".into()
+killed (#245) by secret::tests::from_env_reads_a_set_variable_and_names_it_as_the_source | crates/trellis-model/src/secret.rs:26:9: replace ApiKey::from_env -> Option<Self> with None
+killed (#245) by secret::tests::scrub_leaves_text_alone_for_a_key_under_four_characters | crates/trellis-model/src/secret.rs:60:29: replace < with == in ApiKey::scrub
+killed (#245) by secret::tests::scrub_leaves_text_alone_for_a_key_under_four_characters | crates/trellis-model/src/secret.rs:60:29: replace < with <= in ApiKey::scrub
+killed (#245) by transport::tests::a_connect_answer_with_a_few_kib_of_headers_opens_the_tunnel | crates/trellis-model/src/transport.rs:313:36: replace * with +
+killed (#245) by transport::tests::post_sends_https_through_a_proxy_and_never_plain_http | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with true in post
+killed (#245) by transport::tests::post_sends_https_through_a_proxy_and_never_plain_http | crates/trellis-model/src/transport.rs:433:24: replace match guard ep.tls with false in post
+unexercisable (#245): `#[cfg(not(feature = "hosted"))]`, so not compiled in the default build cargo-mutants tests; without the feature the mutant does not compile (`Response` has no `Default`) | crates/trellis-model/src/transport.rs:471:5: replace tls_exchange -> Result<Response, SendError> with Ok(Default::default())
+killed (#245) by transport::tests::a_close_without_close_notify_ends_the_read_and_no_other_error_does | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with true in exchange
+killed (#245) by transport::tests::a_close_without_close_notify_ends_the_read_and_no_other_error_does | crates/trellis-model/src/transport.rs:533:23: replace match guard e.kind() == std::io::ErrorKind::UnexpectedEof with false in exchange
+killed (#245) by transport::tests::a_response_exactly_at_the_cap_is_read_whole | crates/trellis-model/src/transport.rs:518:34: replace > with >= in exchange
+killed (#245) by transport::tests::a_response_exactly_at_the_cap_is_read_whole | crates/trellis-model/src/transport.rs:518:30: replace + with * in exchange
+killed (#245) by transport::tests::a_response_exactly_at_the_cap_is_read_whole | crates/trellis-model/src/transport.rs:527:56: replace > with >= in exchange
+killed (#245) by transport::tests::a_close_without_close_notify_ends_the_read_and_no_other_error_does | crates/trellis-model/src/transport.rs:533:32: replace == with != in exchange
+equivalent (#245): moves only `examined`, a counter no production code reads; the linearity test still counts a real framer regression | crates/trellis-model/src/transport.rs:595:27: replace += with *= in Framer::complete
+equivalent (#245): moves only `examined`, a counter no production code reads; the linearity test still counts a real framer regression | crates/trellis-model/src/transport.rs:595:40: replace - with + in Framer::complete
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:707:67: replace + with - in chunked
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:707:67: replace + with * in chunked
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:710:39: replace > with == in chunked
+killed (#245) by transport::tests::a_chunk_size_line_is_bounded_at_max_size_line_bytes | crates/trellis-model/src/transport.rs:710:39: replace > with >= in chunked
+equivalent (#245): at `rest.len() == n` the mutant parks in `Data(0)` at the same `pos`, and the next pass reaches `DataEnd` there, as the original does at once; both return false | crates/trellis-model/src/transport.rs:726:31: replace < with <= in chunked
+killed (#245) by transport::tests::bytes_after_a_chunk_that_are_not_crlf_end_the_read_at_once | crates/trellis-model/src/transport.rs:735:31: replace < with <= in chunked
+equivalent (#245): moves only `examined`, a counter no production code reads; it cannot underflow, as every size line adds at least 3 first | crates/trellis-model/src/transport.rs:738:27: replace += with -= in chunked
+killed (#245) by transport::tests::a_chunked_body_whose_data_all_arrived_is_missing_its_next_size_line | crates/trellis-model/src/transport.rs:802:20: replace < with <= in dechunk
 ```
 
 </details>
@@ -610,179 +616,191 @@ unexercisable by `cargo test`: called only from `fuzz/fuzz_targets/`, which `car
 <details>
 <summary>trellis-vault: 172 survivors (first measurement)</summary>
 
+Dispositioned by #246. Each mutant was applied by hand to the code at the
+ticket's base (`5ac5bf0`), `cargo test -p trellis-vault` was run, and the
+source restored; neither cargo-mutants nor the workspace suite was run. 158
+are killed by a test #246 added, named on the line (two of those tests never
+finish under their mutant, which cargo-mutants reports as a timeout). Four
+were already killed at the base: three by a test added after `989b2a2`, and
+one by an older test because the code it covers changed. Nine are
+equivalent and one cannot be exercised by a deterministic test, each with
+its reason. None was left unexamined, and none showed a bug. Since
+`989b2a2` retitle's two searches became one `find`, so its three mutants
+map onto one closure and two of them are the same mutation at the base.
+
 ```
-#246 | crates/trellis-vault/src/compile.rs:43:13: replace < with <= in link_stems
-#246 | crates/trellis-vault/src/compile.rs:79:23: replace - with / in match_link
-#246 | crates/trellis-vault/src/compile.rs:79:36: replace + with - in match_link
-#246 | crates/trellis-vault/src/dates.rs:24:38: replace * with +
-#246 | crates/trellis-vault/src/dates.rs:24:31: replace * with +
-#246 | crates/trellis-vault/src/dates.rs:134:39: replace > with >= in logical_lines
-#246 | crates/trellis-vault/src/dates.rs:134:35: replace + with * in logical_lines
-#246 | crates/trellis-vault/src/dates.rs:156:9: replace || with && in normalize_day
-#246 | crates/trellis-vault/src/dates.rs:155:9: replace || with && in normalize_day
-#246 | crates/trellis-vault/src/dates.rs:154:9: replace || with && in normalize_day
-#246 | crates/trellis-vault/src/dates.rs:153:9: replace || with && in normalize_day
-#246 | crates/trellis-vault/src/dates.rs:152:9: replace || with && in normalize_day
-#246 | crates/trellis-vault/src/dates.rs:167:9: delete match arm 2 in normalize_day
-#246 | crates/trellis-vault/src/dates.rs:230:26: replace && with || in is_heading
-#246 | crates/trellis-vault/src/dates.rs:278:20: replace >= with < in seed
-#246 | crates/trellis-vault/src/dates.rs:279:18: replace -= with += in seed
-#246 | crates/trellis-vault/src/dates.rs:279:18: replace -= with /= in seed
-#246 | crates/trellis-vault/src/dates.rs:349:18: replace < with == in reconcile
-#246 | crates/trellis-vault/src/dates.rs:349:18: replace < with > in reconcile
-#246 | crates/trellis-vault/src/dates.rs:363:26: replace - with / in reconcile
-#246 | crates/trellis-vault/src/dates.rs:369:27: replace > with >= in reconcile
-#246 | crates/trellis-vault/src/dates.rs:385:70: replace || with && in valid_note_path
-#246 | crates/trellis-vault/src/dates.rs:385:47: replace || with && in valid_note_path
-#246 | crates/trellis-vault/src/dates.rs:385:24: replace || with && in valid_note_path
-#246 | crates/trellis-vault/src/dates.rs:389:16: replace >= with < in valid_note_path
-#246 | crates/trellis-vault/src/dates.rs:395:31: replace || with && in valid_note_path
-#246 | crates/trellis-vault/src/dates.rs:404:9: replace && with || in valid_anchor
-#246 | crates/trellis-vault/src/dates.rs:414:24: replace > with == in validate
-#246 | crates/trellis-vault/src/dates.rs:414:24: replace > with >= in validate
-#246 | crates/trellis-vault/src/dates.rs:427:29: replace > with == in validate
-#246 | crates/trellis-vault/src/dates.rs:427:29: replace > with >= in validate
-#246 | crates/trellis-vault/src/dates.rs:430:15: replace += with *= in validate
-#246 | crates/trellis-vault/src/dates.rs:431:18: replace > with == in validate
-#246 | crates/trellis-vault/src/dates.rs:431:18: replace > with >= in validate
-#246 | crates/trellis-vault/src/dates.rs:443:35: replace > with == in validate
-#246 | crates/trellis-vault/src/dates.rs:443:35: replace > with >= in validate
-#246 | crates/trellis-vault/src/dates.rs:456:25: replace > with == in parse
-#246 | crates/trellis-vault/src/dates.rs:456:25: replace > with >= in parse
-#246 | crates/trellis-vault/src/dates.rs:469:5: replace is_symlink -> bool with false
-#246 | crates/trellis-vault/src/dates.rs:484:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:488:24: replace || with && in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:488:38: replace > with == in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:488:38: replace > with >= in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:495:25: replace + with - in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:495:25: replace + with * in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:496:25: replace > with == in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:496:25: replace > with >= in read_bounded
-#246 | crates/trellis-vault/src/dates.rs:586:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in atomic_write
-#246 | crates/trellis-vault/src/dates.rs:586:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in atomic_write
-#246 | crates/trellis-vault/src/dates.rs:586:32: replace == with != in atomic_write
-#246 | crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec![])
-#246 | crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec![String::new()])
-#246 | crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec!["xyzzy".into()])
-#246 | crates/trellis-vault/src/dates.rs:643:49: replace == with != in coverage
-#246 | crates/trellis-vault/src/dates.rs:657:56: replace != with == in coverage
-#246 | crates/trellis-vault/src/dates.rs:690:21: delete field created_day from struct Seed expression in refresh
-#246 | crates/trellis-vault/src/dates.rs:691:21: delete field modified_day from struct Seed expression in refresh
-#246 | crates/trellis-vault/src/dates.rs:699:32: replace += with -= in refresh
-#246 | crates/trellis-vault/src/dates.rs:698:24: replace != with == in refresh
-#246 | crates/trellis-vault/src/dates.rs:699:32: replace += with *= in refresh
-#246 | crates/trellis-vault/src/dates.rs:736:9: replace Touched::is_empty -> bool with false
-#246 | crates/trellis-vault/src/dates.rs:766:49: replace && with || in after_edit
-#246 | crates/trellis-vault/src/dates.rs:766:52: delete ! in after_edit
-#246 | crates/trellis-vault/src/edit.rs:160:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in prune_layout
-#246 | crates/trellis-vault/src/edit.rs:192:9: delete match arm Some(Err(e)) in after_set_change
-#246 | crates/trellis-vault/src/edit.rs:189:24: replace match guard n > 0 with true in after_set_change
-#246 | crates/trellis-vault/src/edit.rs:189:24: replace match guard n > 0 with false in after_set_change
-#246 | crates/trellis-vault/src/edit.rs:189:26: replace > with < in after_set_change
-#246 | crates/trellis-vault/src/edit.rs:189:26: replace > with == in after_set_change
-#246 | crates/trellis-vault/src/edit.rs:189:26: replace > with >= in after_set_change
-#246 | crates/trellis-vault/src/edit.rs:214:16: replace += with -= in available_title
-#246 | crates/trellis-vault/src/edit.rs:214:16: replace += with *= in available_title
-#246 | crates/trellis-vault/src/edit.rs:223:14: replace match guard b.is_empty() with false in available_path
-#246 | crates/trellis-vault/src/edit.rs:364:25: replace != with == in retitle
-#246 | crates/trellis-vault/src/edit.rs:389:32: replace && with || in retitle
-#246 | crates/trellis-vault/src/edit.rs:389:27: replace != with == in retitle
-#246 | crates/trellis-vault/src/edit.rs:406:15: replace += with *= in retitle
-#246 | crates/trellis-vault/src/edit.rs:407:17: replace += with *= in retitle
-#246 | crates/trellis-vault/src/edit.rs:452:15: replace += with *= in remove
-#246 | crates/trellis-vault/src/edit.rs:455:18: replace || with && in remove
-#246 | crates/trellis-vault/src/edit.rs:453:17: replace += with *= in remove
-#246 | crates/trellis-vault/src/edit.rs:455:14: replace > with == in remove
-#246 | crates/trellis-vault/src/edit.rs:455:14: replace > with < in remove
-#246 | crates/trellis-vault/src/edit.rs:455:14: replace > with >= in remove
-#246 | crates/trellis-vault/src/edit.rs:455:29: replace > with == in remove
-#246 | crates/trellis-vault/src/edit.rs:455:29: replace > with < in remove
-#246 | crates/trellis-vault/src/edit.rs:455:29: replace > with >= in remove
-#246 | crates/trellis-vault/src/edit.rs:489:35: replace * with +
-#246 | crates/trellis-vault/src/edit.rs:489:35: replace * with /
-#246 | crates/trellis-vault/src/edit.rs:489:28: replace * with +
-#246 | crates/trellis-vault/src/edit.rs:490:33: replace * with +
-#246 | crates/trellis-vault/src/edit.rs:489:28: replace * with /
-#246 | crates/trellis-vault/src/edit.rs:490:26: replace * with +
-#246 | crates/trellis-vault/src/edit.rs:490:33: replace * with /
-#246 | crates/trellis-vault/src/edit.rs:508:9: replace Report::gate_ok -> bool with true
-#246 | crates/trellis-vault/src/edit.rs:490:26: replace * with /
-#246 | crates/trellis-vault/src/edit.rs:534:14: replace > with == in fix
-#246 | crates/trellis-vault/src/edit.rs:534:14: replace > with < in fix
-#246 | crates/trellis-vault/src/edit.rs:534:14: replace > with >= in fix
-#246 | crates/trellis-vault/src/edit.rs:562:28: replace >= with < in check
-#246 | crates/trellis-vault/src/edit.rs:568:14: replace >= with < in check
-#246 | crates/trellis-vault/src/edit.rs:574:20: replace >= with < in check
-#246 | crates/trellis-vault/src/edit.rs:598:5: replace root_of -> std::path::PathBuf with Default::default()
-#246 | crates/trellis-vault/src/graph.rs:76:69: replace > with == in Resolver::resolve
-#246 | crates/trellis-vault/src/graph.rs:76:69: replace > with < in Resolver::resolve
-#246 | crates/trellis-vault/src/graph.rs:76:69: replace > with >= in Resolver::resolve
-#246 | crates/trellis-vault/src/graph.rs:110:38: replace == with != in Resolver::key_for
-#246 | crates/trellis-vault/src/graph.rs:164:20: delete ! in <impl std::fmt::Display for Issue>::fmt
-#246 | crates/trellis-vault/src/graph.rs:236:25: delete match arm Resolved::Ambiguous(c) in Graph::build
-#246 | crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![1]
-#246 | crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![0]
-#246 | crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![]
-#246 | crates/trellis-vault/src/graph.rs:350:55: delete ! in Graph::counts
-#246 | crates/trellis-vault/src/graph.rs:359:5: replace find_cycles -> Vec<Issue> with vec![]
-#246 | crates/trellis-vault/src/js.rs:23:5: replace is_line_terminator -> bool with false
-#246 | crates/trellis-vault/src/reader.rs:20:18: replace match guard m.is_dir() with true in notes_root
-#246 | crates/trellis-vault/src/reader.rs:137:9: replace || with && in key_line
-#246 | crates/trellis-vault/src/reader.rs:139:61: replace || with && in key_line
-#246 | crates/trellis-vault/src/reader.rs:139:53: replace == with != in key_line
-#246 | crates/trellis-vault/src/reader.rs:139:66: replace == with != in key_line
-#246 | crates/trellis-vault/src/reader.rs:155:43: replace && with || in unquote
-#246 | crates/trellis-vault/src/reader.rs:156:82: replace - with + in unquote
-#246 | crates/trellis-vault/src/reader.rs:156:82: replace - with / in unquote
-#246 | crates/trellis-vault/src/reader.rs:158:44: replace && with || in unquote
-#246 | crates/trellis-vault/src/reader.rs:178:27: replace + with - in first_heading
-#246 | crates/trellis-vault/src/reader.rs:178:27: replace + with * in first_heading
-#246 | crates/trellis-vault/src/reader.rs:202:48: replace && with || in first_heading
-#246 | crates/trellis-vault/src/reader.rs:202:13: delete ! in first_heading
-#246 | crates/trellis-vault/src/reader.rs:202:66: replace || with && in first_heading
-#246 | crates/trellis-vault/src/reader.rs:202:54: replace == with != in first_heading
-#246 | crates/trellis-vault/src/refs.rs:60:39: replace - with / in strip_md
-#246 | crates/trellis-vault/src/refs.rs:97:20: replace && with || in next_link
-#246 | crates/trellis-vault/src/refs.rs:97:16: replace > with >= in next_link
-#246 | crates/trellis-vault/src/refs.rs:98:41: replace + with - in next_link
-#246 | crates/trellis-vault/src/refs.rs:98:41: replace + with * in next_link
-#246 | crates/trellis-vault/src/refs.rs:98:35: replace + with * in next_link
-#246 | crates/trellis-vault/src/refs.rs:122:27: replace match guard !last.is_empty() with true in parse_wiki_target
-#246 | crates/trellis-vault/src/refs.rs:187:37: replace + with - in mask_fences
-#246 | crates/trellis-vault/src/refs.rs:187:25: replace + with - in mask_fences
-#246 | crates/trellis-vault/src/refs.rs:220:36: replace || with && in rewrite_links
-#246 | crates/trellis-vault/src/refs.rs:220:21: replace || with && in rewrite_links
-#246 | crates/trellis-vault/src/refs.rs:220:30: replace > with == in rewrite_links
-#246 | crates/trellis-vault/src/refs.rs:220:30: replace > with >= in rewrite_links
-#246 | crates/trellis-vault/src/refs.rs:237:24: replace match guard r != original with true in rewrite_links
-#246 | crates/trellis-vault/src/search.rs:21:41: replace * with +
-#246 | crates/trellis-vault/src/search.rs:21:34: replace * with +
-#246 | crates/trellis-vault/src/search.rs:23:40: replace * with +
-#246 | crates/trellis-vault/src/search.rs:23:33: replace * with +
-#246 | crates/trellis-vault/src/search.rs:45:63: replace && with || in Mode::for_vault
-#246 | crates/trellis-vault/src/search.rs:45:35: replace && with || in Mode::for_vault
-#246 | crates/trellis-vault/src/search.rs:48:44: replace && with || in Mode::for_vault
-#246 | crates/trellis-vault/src/search.rs:84:16: replace < with == in trigrams
-#246 | crates/trellis-vault/src/search.rs:84:16: replace < with <= in trigrams
-#246 | crates/trellis-vault/src/search.rs:203:29: replace || with && in Index::bm25
-#246 | crates/trellis-vault/src/search.rs:215:44: replace > with >= in Index::bm25
-#246 | crates/trellis-vault/src/search.rs:222:40: replace += with -= in Index::bm25
-#246 | crates/trellis-vault/src/search.rs:222:40: replace += with *= in Index::bm25
-#246 | crates/trellis-vault/src/search.rs:236:25: replace || with && in Index::trigram
-#246 | crates/trellis-vault/src/search.rs:252:34: replace > with >= in Index::trigram
-#246 | crates/trellis-vault/src/search.rs:269:40: replace || with && in Index::search
-#246 | crates/trellis-vault/src/search.rs:280:21: delete field score from struct Hit expression in Index::search
-#246 | crates/trellis-vault/src/search.rs:281:21: delete field bm25 from struct Hit expression in Index::search
-#246 | crates/trellis-vault/src/search.rs:280:38: replace * with + in Index::search
-#246 | crates/trellis-vault/src/search.rs:280:38: replace * with / in Index::search
-#246 | crates/trellis-vault/src/validate.rs:97:14: replace match guard !s.is_empty() with true in stem_of
-#246 | crates/trellis-vault/src/validate.rs:119:25: replace || with && in parent_link
-#246 | crates/trellis-vault/src/validate.rs:185:63: replace && with || in parse_note
-#246 | crates/trellis-vault/src/validate.rs:185:37: replace && with || in parse_note
-#246 | crates/trellis-vault/src/validate.rs:217:5: replace has_drive -> bool with false
-#246 | crates/trellis-vault/src/validate.rs:218:13: replace >= with < in has_drive
-#246 | crates/trellis-vault/src/validate.rs:409:47: replace || with && in manifest_state
-#246 | crates/trellis-vault/src/validate.rs:409:31: replace || with && in manifest_state
+equivalent: the one extra pass sees `&body[len..]`, the empty slice, which `match_link` refuses, and steps past the end | crates/trellis-vault/src/compile.rs:43:13: replace < with <= in link_stems
+killed by a_match_resumes_after_its_closing_brackets (#246) | crates/trellis-vault/src/compile.rs:79:23: replace - with / in match_link
+killed by a_match_resumes_after_its_closing_brackets (#246) | crates/trellis-vault/src/compile.rs:79:36: replace + with - in match_link
+killed by the_byte_limit_on_raw_input_is_16_mib_inclusive, the_line_limits_are_inclusive_per_note_and_in_total and more (#246) | crates/trellis-vault/src/dates.rs:24:38: replace * with +
+killed by the_byte_limit_on_raw_input_is_16_mib_inclusive, the_line_limits_are_inclusive_per_note_and_in_total and more (#246) | crates/trellis-vault/src/dates.rs:24:31: replace * with +
+killed by the_line_limit_counts_lines_not_newlines (#246) | crates/trellis-vault/src/dates.rs:134:39: replace > with >= in logical_lines
+killed by the_line_limit_counts_lines_not_newlines (#246) | crates/trellis-vault/src/dates.rs:134:35: replace + with * in logical_lines
+killed by normalize_day_refuses_each_malformed_shape_on_its_own (#246) | crates/trellis-vault/src/dates.rs:156:9: replace || with && in normalize_day
+killed by normalize_day_refuses_each_malformed_shape_on_its_own (#246) | crates/trellis-vault/src/dates.rs:155:9: replace || with && in normalize_day
+killed by normalize_day_refuses_each_malformed_shape_on_its_own (#246) | crates/trellis-vault/src/dates.rs:154:9: replace || with && in normalize_day
+killed by normalize_day_refuses_each_malformed_shape_on_its_own (#246) | crates/trellis-vault/src/dates.rs:153:9: replace || with && in normalize_day
+killed by normalize_day_refuses_each_malformed_shape_on_its_own (#246) | crates/trellis-vault/src/dates.rs:152:9: replace || with && in normalize_day
+killed by normalize_day_refuses_each_malformed_shape_on_its_own (#246) | crates/trellis-vault/src/dates.rs:167:9: delete match arm 2 in normalize_day
+killed by a_heading_is_one_to_six_hashes_then_space_or_end (#246) | crates/trellis-vault/src/dates.rs:230:26: replace && with || in is_heading
+killed by a_marker_takes_the_heading_above_it_across_blank_lines (#246) | crates/trellis-vault/src/dates.rs:278:20: replace >= with < in seed
+killed by a_marker_takes_the_heading_above_it_across_blank_lines (#246) | crates/trellis-vault/src/dates.rs:279:18: replace -= with += in seed
+killed by a_marker_takes_the_heading_above_it_across_blank_lines (#246), which never finishes under it (a timeout to cargo-mutants) | crates/trellis-vault/src/dates.rs:279:18: replace -= with /= in seed
+killed by reconcile_keeps_a_common_prefix_of_repeated_lines (#246) | crates/trellis-vault/src/dates.rs:349:18: replace < with == in reconcile
+killed by reconcile_keeps_a_common_prefix_of_repeated_lines (#246) | crates/trellis-vault/src/dates.rs:349:18: replace < with > in reconcile
+killed by reconcile_keeps_an_interior_line_that_was_first_in_the_old_text (#246) | crates/trellis-vault/src/dates.rs:363:26: replace - with / in reconcile
+equivalent: `o == last_old` cannot happen: each old position belongs to one anchor, a kept anchor is used once, and `p - 1` is a prefix line whose anchor then occurs twice in the new text and is not unique | crates/trellis-vault/src/dates.rs:369:27: replace > with >= in reconcile
+killed by note_paths_are_refused_for_each_rule_on_its_own (#246) | crates/trellis-vault/src/dates.rs:385:70: replace || with && in valid_note_path
+killed by note_paths_are_refused_for_each_rule_on_its_own (#246) | crates/trellis-vault/src/dates.rs:385:47: replace || with && in valid_note_path
+killed by note_paths_are_refused_for_each_rule_on_its_own (#246) | crates/trellis-vault/src/dates.rs:385:24: replace || with && in valid_note_path
+killed by note_paths_are_refused_for_each_rule_on_its_own (#246) | crates/trellis-vault/src/dates.rs:389:16: replace >= with < in valid_note_path
+killed by note_paths_are_refused_for_each_rule_on_its_own (#246) | crates/trellis-vault/src/dates.rs:395:31: replace || with && in valid_note_path
+killed by an_anchor_is_32_lowercase_hex_digits (#246) | crates/trellis-vault/src/dates.rs:404:9: replace && with || in valid_anchor
+killed by the_note_count_limit_is_inclusive (#246) | crates/trellis-vault/src/dates.rs:414:24: replace > with == in validate
+killed by the_note_count_limit_is_inclusive (#246) | crates/trellis-vault/src/dates.rs:414:24: replace > with >= in validate
+killed by the_line_limits_are_inclusive_per_note_and_in_total (#246) | crates/trellis-vault/src/dates.rs:427:29: replace > with == in validate
+killed by the_line_limits_are_inclusive_per_note_and_in_total (#246) | crates/trellis-vault/src/dates.rs:427:29: replace > with >= in validate
+killed by the_line_limits_are_inclusive_per_note_and_in_total (#246) | crates/trellis-vault/src/dates.rs:430:15: replace += with *= in validate
+killed by the_line_limits_are_inclusive_per_note_and_in_total (#246) | crates/trellis-vault/src/dates.rs:431:18: replace > with == in validate
+killed by the_line_limits_are_inclusive_per_note_and_in_total (#246) | crates/trellis-vault/src/dates.rs:431:18: replace > with >= in validate
+killed by the_byte_limit_on_a_document_is_inclusive (#246) | crates/trellis-vault/src/dates.rs:443:35: replace > with == in validate
+killed by the_byte_limit_on_a_document_is_inclusive (#246) | crates/trellis-vault/src/dates.rs:443:35: replace > with >= in validate
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread, the_byte_limit_on_raw_input_is_16_mib_inclusive (#246) | crates/trellis-vault/src/dates.rs:456:25: replace > with == in parse
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread, the_byte_limit_on_raw_input_is_16_mib_inclusive (#246) | crates/trellis-vault/src/dates.rs:456:25: replace > with >= in parse
+killed by a_dates_json_symlink_is_refused (#246); the test skips, saying so, where the platform refuses to create a symlink (Windows without developer mode) | crates/trellis-vault/src/dates.rs:469:5: replace is_symlink -> bool with false
+killed by a_dates_json_that_is_a_directory_is_invalid_not_absent (#246); exercised on Windows, where opening a directory fails; on Linux the open succeeds and the same test checks the `is_file` refusal instead | crates/trellis-vault/src/dates.rs:484:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in read_bounded
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread (#246) | crates/trellis-vault/src/dates.rs:488:24: replace || with && in read_bounded
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread (#246) | crates/trellis-vault/src/dates.rs:488:38: replace > with == in read_bounded
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread (#246) | crates/trellis-vault/src/dates.rs:488:38: replace > with >= in read_bounded
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread (#246) | crates/trellis-vault/src/dates.rs:495:25: replace + with - in read_bounded
+unexercisable: by a deterministic test: `take(MAX_BYTES)` instead of `MAX_BYTES + 1` only differs for a file that grows between the size check and the read, which needs a concurrent writer | crates/trellis-vault/src/dates.rs:495:25: replace + with * in read_bounded
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread (#246) | crates/trellis-vault/src/dates.rs:496:25: replace > with == in read_bounded
+killed by a_file_at_the_byte_limit_is_read_whole_and_one_over_is_refused_unread (#246) | crates/trellis-vault/src/dates.rs:496:25: replace > with >= in read_bounded
+killed by a_write_into_a_missing_folder_reports_that_error (#246) | crates/trellis-vault/src/dates.rs:586:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with true in atomic_write
+killed by a_taken_temp_name_is_skipped_not_fatal (#246) | crates/trellis-vault/src/dates.rs:586:23: replace match guard e.kind() == std::io::ErrorKind::AlreadyExists with false in atomic_write
+killed by a_taken_temp_name_is_skipped_not_fatal, a_write_into_a_missing_folder_reports_that_error (#246) | crates/trellis-vault/src/dates.rs:586:32: replace == with != in atomic_write
+caught at the base by coverage_marks_an_over_limit_note_rather_than_reporting_it_empty (added after 989b2a2) | crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec![])
+caught at the base by coverage_marks_an_over_limit_note_rather_than_reporting_it_empty (added after 989b2a2) | crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec![String::new()])
+caught at the base by coverage_marks_an_over_limit_note_rather_than_reporting_it_empty (added after 989b2a2) | crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![], vec!["xyzzy".into()])
+killed by coverage_counts_matching_lines_and_lists_entries_for_no_note (#246) | crates/trellis-vault/src/dates.rs:643:49: replace == with != in coverage
+killed by coverage_counts_matching_lines_and_lists_entries_for_no_note (#246) | crates/trellis-vault/src/dates.rs:657:56: replace != with == in coverage
+killed by refresh_seeds_from_both_file_days_and_counts_only_changed_notes (#246) | crates/trellis-vault/src/dates.rs:690:21: delete field created_day from struct Seed expression in refresh
+killed by refresh_seeds_from_both_file_days_and_counts_only_changed_notes (#246) | crates/trellis-vault/src/dates.rs:691:21: delete field modified_day from struct Seed expression in refresh
+killed by refresh_seeds_from_both_file_days_and_counts_only_changed_notes (#246) | crates/trellis-vault/src/dates.rs:699:32: replace += with -= in refresh
+killed by refresh_seeds_from_both_file_days_and_counts_only_changed_notes (#246) | crates/trellis-vault/src/dates.rs:698:24: replace != with == in refresh
+killed by refresh_seeds_from_both_file_days_and_counts_only_changed_notes (#246) | crates/trellis-vault/src/dates.rs:699:32: replace += with *= in refresh
+killed by an_edit_that_touched_nothing_leaves_dates_json_byte_for_byte (#246) | crates/trellis-vault/src/dates.rs:736:9: replace Touched::is_empty -> bool with false
+killed by a_created_note_that_already_has_an_entry_is_reconciled_not_reseeded (#246) | crates/trellis-vault/src/dates.rs:766:49: replace && with || in after_edit
+killed by a_created_note_that_already_has_an_entry_is_reconciled_not_reseeded (#246) | crates/trellis-vault/src/dates.rs:766:52: delete ! in after_edit
+killed by a_layout_json_that_cannot_be_read_fails_the_edit_rather_than_reading_as_absent (#246) | crates/trellis-vault/src/edit.rs:160:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in prune_layout
+killed by rm_says_what_it_did_to_the_layout (#246) | crates/trellis-vault/src/edit.rs:192:9: delete match arm Some(Err(e)) in after_set_change
+killed by rm_says_what_it_did_to_the_layout (#246) | crates/trellis-vault/src/edit.rs:189:24: replace match guard n > 0 with true in after_set_change
+killed by rm_says_what_it_did_to_the_layout (#246) | crates/trellis-vault/src/edit.rs:189:24: replace match guard n > 0 with false in after_set_change
+killed by rm_says_what_it_did_to_the_layout (#246) | crates/trellis-vault/src/edit.rs:189:26: replace > with < in after_set_change
+killed by rm_says_what_it_did_to_the_layout (#246) | crates/trellis-vault/src/edit.rs:189:26: replace > with == in after_set_change
+killed by rm_says_what_it_did_to_the_layout (#246) | crates/trellis-vault/src/edit.rs:189:26: replace > with >= in after_set_change
+killed by a_third_note_with_a_taken_title_gets_the_next_suffix (#246) | crates/trellis-vault/src/edit.rs:214:16: replace += with -= in available_title
+killed by a_third_note_with_a_taken_title_gets_the_next_suffix (#246), which never finishes under it (a timeout to cargo-mutants) | crates/trellis-vault/src/edit.rs:214:16: replace += with *= in available_title
+killed by a_title_with_no_slug_gets_the_untitled_path (#246) | crates/trellis-vault/src/edit.rs:223:14: replace match guard b.is_empty() with false in available_path
+killed by retitle_warns_only_when_the_title_is_another_note_s_key (#246); since 989b2a2 retitle's two searches are one `find`, so this and edit.rs:389:27 are the same mutation at HEAD | crates/trellis-vault/src/edit.rs:364:25: replace != with == in retitle
+caught at the base by retitle_keeps_a_child_whose_parent_named_the_old_title, which predates 989b2a2: the code changed, not the test; this `&&` is now in the merged `find`, which also decides `collides` | crates/trellis-vault/src/edit.rs:389:32: replace && with || in retitle
+killed by retitle_warns_only_when_the_title_is_another_note_s_key (#246); the same mutation as edit.rs:364:25 at HEAD (see there) | crates/trellis-vault/src/edit.rs:389:27: replace != with == in retitle
+killed by retitle_counts_the_links_and_parents_it_rewrote (#246) | crates/trellis-vault/src/edit.rs:406:15: replace += with *= in retitle
+killed by retitle_counts_the_links_and_parents_it_rewrote (#246) | crates/trellis-vault/src/edit.rs:407:17: replace += with *= in retitle
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:452:15: replace += with *= in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:18: replace || with && in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:453:17: replace += with *= in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:14: replace > with == in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:14: replace > with < in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:14: replace > with >= in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:29: replace > with == in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:29: replace > with < in remove
+killed by rm_counts_links_and_orphans_and_is_silent_when_there_are_none (#246) | crates/trellis-vault/src/edit.rs:455:29: replace > with >= in remove
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:489:35: replace * with +
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:489:35: replace * with /
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:489:28: replace * with +
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:490:33: replace * with +
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:489:28: replace * with /
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:490:26: replace * with +
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:490:33: replace * with /
+killed by the_gate_answer_is_no_for_an_invalid_vault (#246) | crates/trellis-vault/src/edit.rs:508:9: replace Report::gate_ok -> bool with true
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:490:26: replace * with /
+killed by fix_lists_the_layout_only_when_it_removed_a_key (#246) | crates/trellis-vault/src/edit.rs:534:14: replace > with == in fix
+killed by fix_lists_the_layout_only_when_it_removed_a_key (#246) | crates/trellis-vault/src/edit.rs:534:14: replace > with < in fix
+killed by fix_lists_the_layout_only_when_it_removed_a_key (#246) | crates/trellis-vault/src/edit.rs:534:14: replace > with >= in fix
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:562:28: replace >= with < in check
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:568:14: replace >= with < in check
+killed by check_does_not_warn_below_apex_s_size_thresholds (#246) | crates/trellis-vault/src/edit.rs:574:20: replace >= with < in check
+killed by root_of_follows_the_notes_folder_rule (#246) | crates/trellis-vault/src/edit.rs:598:5: replace root_of -> std::path::PathBuf with Default::default()
+killed by a_missing_parent_names_candidates_only_when_it_is_ambiguous, a_shared_title_resolves_as_ambiguous_naming_both (#246) | crates/trellis-vault/src/graph.rs:76:69: replace > with == in Resolver::resolve
+killed by a_missing_parent_names_candidates_only_when_it_is_ambiguous, a_shared_title_resolves_as_ambiguous_naming_both (#246) | crates/trellis-vault/src/graph.rs:76:69: replace > with < in Resolver::resolve
+equivalent: the first loop has already returned for any one-note bucket, and buckets are never empty, so every bucket reaching this filter has more than one note | crates/trellis-vault/src/graph.rs:76:69: replace > with >= in Resolver::resolve
+killed by key_for_is_the_basename_only_when_it_is_unique (#246) | crates/trellis-vault/src/graph.rs:110:38: replace == with != in Resolver::key_for
+killed by a_missing_parent_names_candidates_only_when_it_is_ambiguous (#246) | crates/trellis-vault/src/graph.rs:164:20: delete ! in <impl std::fmt::Display for Issue>::fmt
+killed by a_missing_parent_names_candidates_only_when_it_is_ambiguous (#246) | crates/trellis-vault/src/graph.rs:236:25: delete match arm Resolved::Ambiguous(c) in Graph::build
+killed by lineage_runs_from_the_root_to_the_note (#246) | crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![1]
+killed by lineage_runs_from_the_root_to_the_note (#246) | crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![0]
+killed by lineage_runs_from_the_root_to_the_note (#246) | crates/trellis-vault/src/graph.rs:313:9: replace Graph::lineage -> Vec<usize> with vec![]
+killed by rm_leaves_the_report_line_counting_a_parent_with_children_as_connected (#246) | crates/trellis-vault/src/graph.rs:350:55: delete ! in Graph::counts
+killed by the_graph_reports_a_parent_cycle (#246) | crates/trellis-vault/src/graph.rs:359:5: replace find_cycles -> Vec<Issue> with vec![]
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace, the_line_terminators_are_javascript_s_four (#246) | crates/trellis-vault/src/js.rs:23:5: replace is_line_terminator -> bool with false
+killed by a_file_named_notes_is_not_the_notes_root (#246) | crates/trellis-vault/src/reader.rs:20:18: replace match guard m.is_dir() with true in notes_root
+killed by a_key_is_letters_digits_underscore_and_dash_only (#246) | crates/trellis-vault/src/reader.rs:137:9: replace || with && in key_line
+killed by a_key_is_letters_digits_underscore_and_dash_only (#246) | crates/trellis-vault/src/reader.rs:139:61: replace || with && in key_line
+killed by a_key_is_letters_digits_underscore_and_dash_only (#246) | crates/trellis-vault/src/reader.rs:139:53: replace == with != in key_line
+killed by a_key_is_letters_digits_underscore_and_dash_only (#246) | crates/trellis-vault/src/reader.rs:139:66: replace == with != in key_line
+killed by unquote_strips_only_a_matching_pair (#246) | crates/trellis-vault/src/reader.rs:155:43: replace && with || in unquote
+killed by unquote_strips_only_a_matching_pair (#246) | crates/trellis-vault/src/reader.rs:156:82: replace - with + in unquote
+killed by unquote_strips_only_a_matching_pair (#246) | crates/trellis-vault/src/reader.rs:156:82: replace - with / in unquote
+killed by unquote_strips_only_a_matching_pair (#246) | crates/trellis-vault/src/reader.rs:158:44: replace && with || in unquote
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace (#246) | crates/trellis-vault/src/reader.rs:178:27: replace + with - in first_heading
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace (#246) | crates/trellis-vault/src/reader.rs:178:27: replace + with * in first_heading
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace (#246) | crates/trellis-vault/src/reader.rs:202:48: replace && with || in first_heading
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace (#246) | crates/trellis-vault/src/reader.rs:202:13: delete ! in first_heading
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace (#246) | crates/trellis-vault/src/reader.rs:202:66: replace || with && in first_heading
+killed by the_first_heading_may_be_on_a_later_line_or_only_whitespace (#246) | crates/trellis-vault/src/reader.rs:202:54: replace == with != in first_heading
+killed by md_is_stripped_after_a_multibyte_character (#246) | crates/trellis-vault/src/refs.rs:60:39: replace - with / in strip_md
+killed by graph_links_resume_exactly_after_each_link (#246) | crates/trellis-vault/src/refs.rs:97:20: replace && with || in next_link
+killed by graph_links_resume_exactly_after_each_link (#246) | crates/trellis-vault/src/refs.rs:97:16: replace > with >= in next_link
+killed by graph_links_resume_exactly_after_each_link (#246) | crates/trellis-vault/src/refs.rs:98:41: replace + with - in next_link
+killed by graph_links_resume_exactly_after_each_link (#246) | crates/trellis-vault/src/refs.rs:98:41: replace + with * in next_link
+killed by graph_links_resume_exactly_after_each_link (#246) | crates/trellis-vault/src/refs.rs:98:35: replace + with * in next_link
+killed by a_target_ending_in_a_slash_is_its_own_label (#246) | crates/trellis-vault/src/refs.rs:122:27: replace match guard !last.is_empty() with true in parse_wiki_target
+killed by a_fence_masks_exactly_through_its_closing_backticks (#246) | crates/trellis-vault/src/refs.rs:187:37: replace + with - in mask_fences
+killed by a_fence_masks_exactly_through_its_closing_backticks (#246) | crates/trellis-vault/src/refs.rs:187:25: replace + with - in mask_fences
+killed by a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes (#246) | crates/trellis-vault/src/refs.rs:220:36: replace || with && in rewrite_links
+killed by a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes (#246) | crates/trellis-vault/src/refs.rs:220:21: replace || with && in rewrite_links
+killed by a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes (#246) | crates/trellis-vault/src/refs.rs:220:30: replace > with == in rewrite_links
+killed by a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes (#246) | crates/trellis-vault/src/refs.rs:220:30: replace > with >= in rewrite_links
+killed by a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes (#246) | crates/trellis-vault/src/refs.rs:237:24: replace match guard r != original with true in rewrite_links
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:21:41: replace * with +
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:21:34: replace * with +
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:23:40: replace * with +
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:23:33: replace * with +
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:45:63: replace && with || in Mode::for_vault
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:45:35: replace && with || in Mode::for_vault
+killed by the_body_and_trigram_cutoffs_are_apex_s (#246) | crates/trellis-vault/src/search.rs:48:44: replace && with || in Mode::for_vault
+killed by three_characters_make_one_trigram_and_two_make_none (#246) | crates/trellis-vault/src/search.rs:84:16: replace < with == in trigrams
+killed by three_characters_make_one_trigram_and_two_make_none (#246) | crates/trellis-vault/src/search.rs:84:16: replace < with <= in trigrams
+equivalent: the early return is a shortcut: with no terms the loop adds nothing, and with no documents there are no postings, so both paths return no hits | crates/trellis-vault/src/search.rs:203:29: replace || with && in Index::bm25
+equivalent: `average` is 0 only for an empty index, which returned earlier; every document's length is at least 1 | crates/trellis-vault/src/search.rs:215:44: replace > with >= in Index::bm25
+killed by a_note_matching_two_terms_scores_their_sum (#246) | crates/trellis-vault/src/search.rs:222:40: replace += with -= in Index::bm25
+killed by a_note_matching_two_terms_scores_their_sum (#246) | crates/trellis-vault/src/search.rs:222:40: replace += with *= in Index::bm25
+equivalent: the early return is a shortcut: no query trigrams or no documents leave `overlap` empty either way | crates/trellis-vault/src/search.rs:236:25: replace || with && in Index::trigram
+equivalent: `union` is at least `q.len()`, which is non-zero past the early return | crates/trellis-vault/src/search.rs:252:34: replace > with >= in Index::trigram
+killed by a_full_bm25_page_gets_no_trigram_bonus_and_a_trigram_only_hit_is_weighted (#246) | crates/trellis-vault/src/search.rs:269:40: replace || with && in Index::search
+killed by a_full_bm25_page_gets_no_trigram_bonus_and_a_trigram_only_hit_is_weighted (#246) | crates/trellis-vault/src/search.rs:280:21: delete field score from struct Hit expression in Index::search
+equivalent: `..t` supplies `bm25`, and a trigram hit's `bm25` is already 0.0 | crates/trellis-vault/src/search.rs:281:21: delete field bm25 from struct Hit expression in Index::search
+killed by a_full_bm25_page_gets_no_trigram_bonus_and_a_trigram_only_hit_is_weighted (#246) | crates/trellis-vault/src/search.rs:280:38: replace * with + in Index::search
+killed by a_full_bm25_page_gets_no_trigram_bonus_and_a_trigram_only_hit_is_weighted (#246) | crates/trellis-vault/src/search.rs:280:38: replace * with / in Index::search
+killed by a_stem_keeps_md_when_it_is_the_whole_name (#246) | crates/trellis-vault/src/validate.rs:97:14: replace match guard !s.is_empty() with true in stem_of
+killed by a_parent_link_is_one_non_empty_bracket_free_stem (#246) | crates/trellis-vault/src/validate.rs:119:25: replace || with && in parent_link
+equivalent: a title that only ends with `"` reaches `unquote`, whose own check needs the opening quote, and comes back unchanged | crates/trellis-vault/src/validate.rs:185:63: replace && with || in parse_note
+killed by the_gate_decodes_only_a_double_quoted_title (#246) | crates/trellis-vault/src/validate.rs:185:37: replace && with || in parse_note
+killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | crates/trellis-vault/src/validate.rs:217:5: replace has_drive -> bool with false
+killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | crates/trellis-vault/src/validate.rs:218:13: replace >= with < in has_drive
+killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | crates/trellis-vault/src/validate.rs:409:47: replace || with && in manifest_state
+killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | crates/trellis-vault/src/validate.rs:409:31: replace || with && in manifest_state
 ```
 
 </details>

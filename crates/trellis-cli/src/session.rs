@@ -152,7 +152,7 @@ impl Session {
         println!();
         println!("TRELLIS  ·  {}", self.root.display());
         println!(
-            "  index    {} files, {} definitions, {} first-party call sites ({:.0} ms)",
+            "  index    {} files, {} definitions, {} non-excluded call sites ({:.0} ms)",
             self.index.files.len(),
             self.index.symbols.len(),
             c.total(),
@@ -409,17 +409,6 @@ impl Session {
         }
     }
 
-    /// Says whether a runtime is actually there, and at which tier.
-    ///
-    /// Parsing a spec proves it is well formed, not that anything is
-    /// listening. Without this the first task is where a user finds out, and
-    /// by then they have typed a task and waited for it to fail — which is
-    /// exactly what happens when a serving process is stopped underneath a
-    /// session that is still holding its address.
-    ///
-    /// A warning, never a refusal. The runtime may not be started yet, and a
-    /// tool that would not let you name a server before launching it is
-    /// wrong about the order people work in.
     /// Says so, in the banner, when the configured runtime is not listening.
     ///
     /// The spec is kept either way — a runtime started a minute later will
@@ -460,6 +449,17 @@ impl Session {
         }
     }
 
+    /// Says whether a runtime is actually there, and at which tier.
+    ///
+    /// Parsing a spec proves it is well formed, not that anything is
+    /// listening. Without this the first task is where a user finds out, and
+    /// by then they have typed a task and waited for it to fail — which is
+    /// exactly what happens when a serving process is stopped underneath a
+    /// session that is still holding its address.
+    ///
+    /// A warning, never a refusal. The runtime may not be started yet, and a
+    /// tool that would not let you name a server before launching it is
+    /// wrong about the order people work in.
     fn probe_model(&self, spec: &trellis_model::ModelSpec) {
         // A scripted model has no runtime to probe, and the type says so —
         // this used to re-split the string and return silently on three
@@ -524,7 +524,7 @@ impl Session {
     }
 
     fn task(&mut self, task: &str) -> Result<()> {
-        let Some(model) = self.model.as_ref().map(ToString::to_string) else {
+        let Some(spec) = self.model.clone() else {
             anyhow::bail!(concat!(
                 "no model set, so there is nothing to drive the loop.\n",
                 "  /model llamacpp:http://127.0.0.1:8080   a serving runtime\n",
@@ -547,33 +547,31 @@ impl Session {
         // A question costs one model call here and nothing else — no
         // snapshot, so nothing to roll back, and `tasks_run` does not count it
         // because it was not one.
-        if let Ok(spec) = model.parse::<trellis_model::ModelSpec>() {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            let inventory = trellis_index::discover_relative(&self.root);
-            // Loaded as the run loads it, because on a hosted spec this call
-            // sends the key as well, under the same rule (ADR 0024 §3).
-            let cfg = crate::config::RepoConfig::load(&self.root)?;
-            match rt.block_on(crate::ask::classify(
-                &spec,
-                task,
-                &inventory,
-                &cfg,
-                self.model_from_user,
-            )) {
-                Ok(crate::ask::Intent::Answer(text)) => {
-                    println!("{}", crate::plain(&text));
-                    println!();
-                    return Ok(());
-                }
-                Ok(crate::ask::Intent::Task) => {}
-                // A runtime that cannot be reached is the run's problem to
-                // report, with its own error and its own guidance. Falling
-                // through means the user gets that rather than a second,
-                // vaguer message about classification.
-                Err(_) => {}
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let inventory = trellis_index::discover_relative(&self.root);
+        // Loaded as the run loads it, because on a hosted spec this call
+        // sends the key as well, under the same rule (ADR 0024 §3).
+        let cfg = crate::config::RepoConfig::load(&self.root)?;
+        match rt.block_on(crate::ask::classify(
+            &spec,
+            task,
+            &inventory,
+            &cfg,
+            self.model_from_user,
+        )) {
+            Ok(crate::ask::Intent::Answer(text)) => {
+                println!("{}", crate::plain(&text));
+                println!();
+                return Ok(());
             }
+            Ok(crate::ask::Intent::Task) => {}
+            // A runtime that cannot be reached is the run's problem to
+            // report, with its own error and its own guidance. Falling
+            // through means the user gets that rather than a second,
+            // vaguer message about classification.
+            Err(_) => {}
         }
 
         self.run_task(task, Vec::new())
@@ -770,7 +768,7 @@ impl Session {
     }
 
     fn accept(&mut self, message: &str) -> Result<()> {
-        self.accept_with(message, &mut Self::ask_stdin)
+        self.accept_with(message, &mut Self::ask_stdin, &mut std::io::stdout())
     }
 
     /// `/accept`, with the approval question supplied.
@@ -778,7 +776,12 @@ impl Session {
     /// Split from [`Self::accept`] so the flow can be tested without a
     /// terminal. The three paths S6 asks for are control flow, not prose, and
     /// a prompt that only exists behind a TTY is one no test ever sees.
-    fn accept_with(&mut self, message: &str, ask: &mut dyn FnMut() -> Option<char>) -> Result<()> {
+    fn accept_with(
+        &mut self,
+        message: &str,
+        ask: &mut dyn FnMut() -> Option<char>,
+        out: &mut dyn std::io::Write,
+    ) -> Result<()> {
         let pending = trellis_vcs::pending(&self.root)?;
         if pending.is_empty() {
             anyhow::bail!("nothing pending to accept");
@@ -799,27 +802,27 @@ impl Session {
         // It was nested inside the doubt block until a live run showed it
         // silent on a repository with nothing unresolved — while the comment
         // above it said "printed unconditionally".
-        self.print_audit_mode(&paths);
+        self.print_audit_mode(&paths, out);
 
         let doubt = trellis_index::doubt_in_files(&self.index, &paths);
         if doubt.unbound > 0 || doubt.unexamined() > 0 {
-            self.print_coverage(&doubt);
+            self.print_coverage(&doubt, out);
             loop {
                 match ask() {
                     Some('a') => break,
                     Some('i') => {
-                        self.inspect_doubt(&doubt);
-                        Self::print_choices();
+                        self.inspect_doubt(&doubt, out);
+                        Self::print_choices(out);
                     }
                     Some('t') => {
-                        self.what_to_test(&doubt);
-                        Self::print_choices();
+                        self.what_to_test(&doubt, out);
+                        Self::print_choices(out);
                     }
                     // Cancelling is the safe default for an unrecognised key,
                     // because the destructive direction here is committing
                     // something the user had not decided on.
                     _ => {
-                        println!("cancelled; nothing committed, nothing discarded");
+                        let _ = writeln!(out, "cancelled; nothing committed, nothing discarded");
                         return Ok(());
                     }
                 }
@@ -846,12 +849,13 @@ impl Session {
             )
         };
         trellis_vcs::commit_paths(&self.root, &refs, &msg)?;
-        println!("committed {} path(s)", refs.len());
+        let _ = writeln!(out, "committed {} path(s)", refs.len());
         for p in &refs {
-            println!("  {p}");
+            let _ = writeln!(out, "  {p}");
         }
-        if doubt.unbound > 0 {
-            println!("gap recorded in the commit message.");
+        // The same condition that put the gap into `msg` above.
+        if doubt.unbound > 0 || doubt.unexamined() > 0 {
+            let _ = writeln!(out, "gap recorded in the commit message.");
         }
         Ok(())
     }
@@ -867,14 +871,15 @@ impl Session {
     /// Scoped to the files being accepted, deliberately. Repository-wide doubt
     /// on the benchmark corpus is 11,233 sites, a figure whose only effect is
     /// to teach a reader to skip the line.
-    fn print_coverage(&self, d: &trellis_index::FileDoubt) {
-        println!();
-        println!("coverage: {}", d.one_line());
+    fn print_coverage(&self, d: &trellis_index::FileDoubt, out: &mut dyn std::io::Write) {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "coverage: {}", d.one_line());
         if d.unexamined() > 0 {
             // Not a rounding error. A changed file the index never parsed
             // contributes zero doubt, which would read as confidence about a
             // file nothing is known about.
-            println!(
+            let _ = writeln!(
+                out,
                 "          {} of them {} not in the index, so nothing is known about {}.",
                 d.unexamined(),
                 if d.unexamined() == 1 { "is" } else { "are" },
@@ -882,7 +887,8 @@ impl Session {
             );
         }
         if d.unbound > 0 {
-            println!(
+            let _ = writeln!(
+                out,
                 "          {}",
                 concat!(
                     "Any of them may call what you changed. The checks ran on ",
@@ -890,7 +896,7 @@ impl Session {
                 )
             );
         }
-        Self::print_choices();
+        Self::print_choices(out);
     }
 
     /// What a passing run does and does not claim.
@@ -904,16 +910,20 @@ impl Session {
     /// Printed unconditionally, including when nothing is unresolved. A clean
     /// coverage line is exactly when someone is most likely to read
     /// "converged" as "tested", which is the reading this prevents.
-    fn print_audit_mode(&self, paths: &[String]) {
-        println!("{}", audit_mode_note(crate::audit_modes(&self.root, paths)));
+    fn print_audit_mode(&self, paths: &[String], out: &mut dyn std::io::Write) {
+        let _ = writeln!(
+            out,
+            "{}",
+            audit_mode_note(crate::audit_modes(&self.root, paths))
+        );
     }
 
-    fn print_choices() {
-        println!();
-        println!("  a  accept, with the gap recorded in the commit");
-        println!("  i  inspect the unresolved sites");
-        println!("  t  what to test to close them");
-        println!("  anything else cancels");
+    fn print_choices(out: &mut dyn std::io::Write) {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  a  accept, with the gap recorded in the commit");
+        let _ = writeln!(out, "  i  inspect the unresolved sites");
+        let _ = writeln!(out, "  t  what to test to close them");
+        let _ = writeln!(out, "  anything else cancels");
     }
 
     fn ask_stdin() -> Option<char> {
@@ -938,24 +948,25 @@ impl Session {
     ///
     /// Line numbers are computed here rather than stored, because the index
     /// does no I/O — and a byte offset is not something a user can act on.
-    fn inspect_doubt(&self, d: &trellis_index::FileDoubt) {
+    fn inspect_doubt(&self, d: &trellis_index::FileDoubt, out: &mut dyn std::io::Write) {
         const SHOWN: usize = 20;
-        println!();
+        let _ = writeln!(out);
         for s in d.sites.iter().take(SHOWN) {
             let line = std::fs::read_to_string(self.root.join(&s.path))
-                .map(|src| src[..s.offset.min(src.len())].matches('\n').count() + 1)
+                .map(|src| crate::run_cmd::line_of(&src, s.offset))
                 .unwrap_or(0);
             let where_ = match &s.enclosing {
                 Some(e) => format!("in {e}"),
                 None => "at module level".to_string(),
             };
-            println!("  {}:{}  {}  {}", s.path, line, s.reason, where_);
+            let _ = writeln!(out, "  {}:{}  {}  {}", s.path, line, s.reason, where_);
         }
         if d.sites.len() > SHOWN {
-            println!("  ... and {} more", d.sites.len() - SHOWN);
+            let _ = writeln!(out, "  ... and {} more", d.sites.len() - SHOWN);
         }
-        println!();
-        println!(
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
             "{}",
             concat!(
                 "These are calls the graph could not follow, not calls that are ",
@@ -971,7 +982,7 @@ impl Session {
     /// are, because a test that executes one turns an edge the graph cannot
     /// follow into behaviour a check can observe — the only kind of evidence
     /// this tool accepts.
-    fn what_to_test(&self, d: &trellis_index::FileDoubt) {
+    fn what_to_test(&self, d: &trellis_index::FileDoubt, out: &mut dyn std::io::Write) {
         let mut by_fn: std::collections::BTreeMap<(&str, &str), u32> =
             std::collections::BTreeMap::new();
         for s in &d.sites {
@@ -979,9 +990,10 @@ impl Session {
                 *by_fn.entry((s.path.as_str(), e.as_str())).or_insert(0) += 1;
             }
         }
-        println!();
+        let _ = writeln!(out);
         if by_fn.is_empty() {
-            println!(
+            let _ = writeln!(
+                out,
                 "{}",
                 concat!(
                     "Every unresolved call here is at module level, so there is ",
@@ -993,12 +1005,16 @@ impl Session {
         let mut ranked: Vec<_> = by_fn.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
-        println!("A test that executes these turns an unfollowable edge into an observed one:");
+        let _ = writeln!(
+            out,
+            "A test that executes these turns an unfollowable edge into an observed one:"
+        );
         for ((path, func), n) in ranked.iter().take(8) {
-            println!("  {func:<32} {n:>3} unresolved call(s)   {path}");
+            let _ = writeln!(out, "  {func:<32} {n:>3} unresolved call(s)   {path}");
         }
-        println!();
-        println!(
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
             "{}",
             concat!(
                 "TRELLIS does not write it: a check it generated and then ran ",
@@ -1035,7 +1051,7 @@ impl Session {
         let c = &self.index.coverage;
         println!("root     {}", self.root.display());
         println!(
-            "index    {} files, {} first-party call sites, {} resolved",
+            "index    {} files, {} non-excluded call sites, {} resolved",
             self.index.files.len(),
             c.total(),
             c.resolved
@@ -1056,9 +1072,6 @@ impl Session {
     }
 }
 
-/// Sentinel for "the user asked to leave", carried as an error so one `?` in
-/// `dispatch` unwinds to the loop. Not a failure, and `run` checks for it
-/// before reporting anything.
 /// Where this repository's prompt history lives — in user state, never in the
 /// repository.
 ///
@@ -1112,15 +1125,18 @@ fn history_path(root: &Path) -> Option<PathBuf> {
 /// what was withheld is printed, so the limit is visible rather than silent.
 const DIFF_LINES: usize = 60;
 
+/// Sentinel for "the user asked to leave", carried as an error so one `?` in
+/// `dispatch` unwinds to the loop. Not a failure, and `run` checks for it
+/// before reporting anything.
 const EXIT: &str = "__trellis_exit__";
 
 /// Shown when input carries an escape sequence, which is what an arrow key is
 /// without raw mode. Names the limit rather than pretending the key did
 /// something.
 const NO_LINE_EDITING: &str = concat!(
-    "that looked like a key this session does not handle (arrow keys, ",
-    "history).
-There is no line editing yet, so nothing was run. Type the ",
+    "that line held a control character, such as an arrow key read ",
+    "without line editing.
+Nothing was run. Type the ",
     "line, or /help."
 );
 
@@ -1600,7 +1616,7 @@ mod tests {
 
         // 'a' — proceed with the gap recorded.
         let mut answers = vec!['a'].into_iter();
-        s.accept_with("test commit", &mut || answers.next())
+        s.accept_with("test commit", &mut || answers.next(), &mut Vec::new())
             .unwrap();
 
         let msg = crate::testutil::git_stdout(d.path(), &["log", "-1", "--format=%B"]);
@@ -1637,11 +1653,51 @@ def other():
         .unwrap();
 
         let mut answers = vec!['a'].into_iter();
-        s.accept_with("m", &mut || answers.next()).unwrap();
-        // The text is printed, not returned, so this asserts the function
-        // exists and runs in the accept path; the wording itself is asserted
-        // below where it can be read directly.
-        assert!(trellis_vcs::pending(d.path()).unwrap().is_empty());
+        let mut out = Vec::new();
+        s.accept_with("m", &mut || answers.next(), &mut out)
+            .unwrap();
+        // No coverage.json, so the note is the unmeasured one; its wording
+        // is asserted below where it can be read directly.
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(NO_COVERAGE_NOTE),
+            "the approval prompt did not state the limit:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_gap_written_into_the_commit_is_also_reported_to_the_user() {
+        // The commit carries the coverage paragraph when a changed file is
+        // unexamined, even with nothing unbound. The line telling the user
+        // so looked only at `unbound`, so this case went into the commit
+        // without a word.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        std::fs::write(
+            d.path().join("app/util.py"),
+            "def helper():\n    return 1\n",
+        )
+        .unwrap();
+        init_git(d.path());
+        let mut s = Session::open(d.path(), None).unwrap();
+        // Created after the index was built: unexamined, not unbound.
+        std::fs::write(
+            d.path().join("app/brand_new.py"),
+            "def fresh():\n    return 2\n",
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        s.accept_with("", &mut || Some('a'), &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            head_message(d.path()).contains("Coverage at approval"),
+            "this test needs a commit that recorded the gap"
+        );
+        assert!(
+            out.contains("gap recorded in the commit message"),
+            "the gap went into the commit without the user being told:\n{out}"
+        );
     }
 
     #[test]
@@ -1717,7 +1773,8 @@ def other():
         .unwrap();
 
         let mut answers = vec!['q'].into_iter();
-        s.accept_with("", &mut || answers.next()).unwrap();
+        s.accept_with("", &mut || answers.next(), &mut Vec::new())
+            .unwrap();
 
         assert!(
             !trellis_vcs::pending(d.path()).unwrap().is_empty(),
@@ -1738,7 +1795,7 @@ def other():
         )
         .unwrap();
 
-        s.accept_with("", &mut || None).unwrap();
+        s.accept_with("", &mut || None, &mut Vec::new()).unwrap();
         assert!(!trellis_vcs::pending(d.path()).unwrap().is_empty());
     }
 
@@ -1756,10 +1813,14 @@ def other():
 
         let mut answers = vec!['i', 't', 'a'].into_iter();
         let mut asked = 0;
-        s.accept_with("", &mut || {
-            asked += 1;
-            answers.next()
-        })
+        s.accept_with(
+            "",
+            &mut || {
+                asked += 1;
+                answers.next()
+            },
+            &mut Vec::new(),
+        )
         .unwrap();
 
         assert_eq!(asked, 3, "i and t must come back and ask again");
@@ -1791,10 +1852,14 @@ def other():
         .unwrap();
 
         let mut asked = false;
-        s.accept_with("", &mut || {
-            asked = true;
-            Some('a')
-        })
+        s.accept_with(
+            "",
+            &mut || {
+                asked = true;
+                Some('a')
+            },
+            &mut Vec::new(),
+        )
         .unwrap();
 
         assert!(!asked, "nothing to report means nothing to ask");
@@ -1972,10 +2037,14 @@ def other():
         assert!(doubt.unexamined() > 0, "the file must be unexamined");
 
         let mut asked = false;
-        s.accept_with("", &mut || {
-            asked = true;
-            Some('a')
-        })
+        s.accept_with(
+            "",
+            &mut || {
+                asked = true;
+                Some('a')
+            },
+            &mut Vec::new(),
+        )
         .unwrap();
         assert!(
             asked,
@@ -2006,7 +2075,8 @@ def other():
             "def helper():\n    return 2\n",
         )
         .unwrap();
-        s.accept_with("a clean change", &mut || Some('a')).unwrap();
+        s.accept_with("a clean change", &mut || Some('a'), &mut Vec::new())
+            .unwrap();
 
         let msg = head_message(d.path());
         assert!(msg.contains("a clean change"), "got:\n{msg}");
@@ -2029,7 +2099,7 @@ def other():
             "def helper(thing):\n    return thing.run()\n\n\ndef other():\n    return 12\n",
         )
         .unwrap();
-        s.accept_with("a change over doubt", &mut || Some('a'))
+        s.accept_with("a change over doubt", &mut || Some('a'), &mut Vec::new())
             .unwrap();
 
         let msg = head_message(d.path());

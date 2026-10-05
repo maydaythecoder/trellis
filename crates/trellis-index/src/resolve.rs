@@ -33,6 +33,14 @@ use trellis_core::{CallSiteId, FileId, SymbolId};
 /// deeper than this report `ReexportUnfollowed` rather than guessing.
 const MAX_REEXPORT_DEPTH: u32 = 4;
 
+/// How many base classes up `lookup_method` searches for a method.
+///
+/// A base further up than this is not searched, so the lookup reports a
+/// non-exhaustive miss. That costs recall and can never produce a `Resolved`
+/// edge. Cycles are already cut by its `visited` set, so this bounds cost on
+/// deep hierarchies, not termination.
+const MAX_INHERITANCE_DEPTH: u32 = 4;
+
 /// Builtin type names, for deciding that an annotated receiver is not
 /// first-party.
 ///
@@ -427,7 +435,6 @@ pub fn build(root: &Path) -> Index {
     build_from_sources(&read_sources(root))
 }
 
-/// Reads every indexable file under `root` as a `(relative path, source)` pair.
 /// Every first-party Python file, as repository-relative paths.
 ///
 /// The same walk the graph is built from, deliberately: a second walker in
@@ -441,6 +448,7 @@ pub fn discover_relative(root: &Path) -> Vec<String> {
     discover(root).iter().map(|p| rel_path(root, p)).collect()
 }
 
+/// Reads every indexable file under `root` as a `(relative path, source)` pair.
 pub fn read_sources(root: &Path) -> Vec<(String, String)> {
     discover(root)
         .iter()
@@ -477,8 +485,8 @@ pub fn build_cached(root: &Path) -> Index {
 /// The resolver proper, over `(relative_path, source)` pairs.
 ///
 /// Taking sources rather than a directory is what lets the whole resolver be
-/// tested from fixtures with no filesystem layout to arrange, and keeps
-/// `trellis-index` free of any dependency beyond `trellis-core`.
+/// tested from fixtures with no filesystem layout to arrange: only `discover`
+/// and `read_sources` touch the disk, and the resolver core never does.
 #[tracing::instrument(skip_all, fields(files = sources.len()))]
 pub fn build_from_sources(sources: &[(String, String)]) -> Index {
     use rayon::prelude::*;
@@ -505,14 +513,7 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
         facts.len(),
         "facts must line up with sources: file ids are positional"
     );
-    let Prepared {
-        mut index,
-        tables,
-        module_map,
-        opaque_decorated,
-        class_info,
-        subclasses,
-    } = prepare(sources, facts);
+    let mut prepared = prepare(sources, facts);
 
     // ---- Call-site arena. ----
     // Recorded before any edge is pushed: `Index::push_edge` reads
@@ -521,8 +522,8 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
     for (i, f) in facts.iter().enumerate() {
         let file = FileId::from_index(i);
         for c in &f.call_sites {
-            let enclosing = enclosing_symbol(&tables[i], &c.scope);
-            index.sites.push(CallSiteEntry {
+            let enclosing = enclosing_symbol(&prepared.tables[i], &c.scope);
+            prepared.index.sites.push(CallSiteEntry {
                 kind: match c.shape {
                     CalleeShape::Name(_) => crate::graph::CalleeKind::Name,
                     CalleeShape::Attribute { .. } => crate::graph::CalleeKind::Attribute,
@@ -542,18 +543,9 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
     // the write phase from overlapping, rather than reaching for interior
     // mutability to paper over the conflict.
     let outcomes: Vec<Outcome> = {
-        let resolver = Resolver {
-            tables: &tables,
-            module_map: &module_map,
-            symbols: &index.symbols,
-            files: &index.files,
-            interner: &index.interner,
-            opaque_decorated: &opaque_decorated,
-            class_info: &class_info,
-            subclasses: &subclasses,
-        };
+        let resolver = prepared.resolver();
         let mut site_id = 0usize;
-        let mut outcomes = Vec::with_capacity(index.sites.len());
+        let mut outcomes = Vec::with_capacity(prepared.index.sites.len());
         for (i, f) in facts.iter().enumerate() {
             for c in &f.call_sites {
                 debug_assert_eq!(site_scopes[site_id].0, i);
@@ -565,6 +557,7 @@ pub fn build_from_facts(sources: &[(String, String)], facts: &[FileFacts]) -> In
         outcomes
     };
 
+    let mut index = prepared.index;
     let mut coverage = Coverage::default();
     let mut by_shape: std::collections::BTreeMap<String, Coverage> =
         std::collections::BTreeMap::new();
@@ -1372,7 +1365,7 @@ impl Resolver<'_> {
                 .type_is_demonstrably_external(file, scope, &ty)
                 .then_some(Outcome::External);
         };
-        let found = self.lookup_method(class, attr, MAX_REEXPORT_DEPTH, &mut HashSet::new());
+        let found = self.lookup_method(class, attr, MAX_INHERITANCE_DEPTH, &mut HashSet::new());
 
         // Search for overrides from the class the definition was FOUND on,
         // not from the declared type. An annotation is evidence, not proof —
@@ -1443,7 +1436,7 @@ impl Resolver<'_> {
                 Some(class) => self.method_outcome(self.lookup_method(
                     class,
                     attr,
-                    MAX_REEXPORT_DEPTH,
+                    MAX_INHERITANCE_DEPTH,
                     &mut HashSet::new(),
                 )),
                 None => Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped)),
@@ -1505,7 +1498,13 @@ impl Resolver<'_> {
                         Some(&s) if self.symbols[s.index()].kind == SymbolKind::Class => {
                             let mut class_path = scope[..i].to_vec();
                             class_path.push(base.to_string());
-                            match t.defs.get(&key(&class_path, attr)) {
+                            let method_key = key(&class_path, attr);
+                            match t.defs.get(&method_key) {
+                                // Q-14, as in `lookup_method`: a class-scope
+                                // assignment may have replaced the `def`.
+                                Some(_) if t.bindings.contains(&method_key) => {
+                                    Outcome::Edge(Target::Unresolved(Reason::ShadowedAmbiguous))
+                                }
                                 Some(m) if m.len() == 1 => self.emit(m[0]),
                                 Some(m) => {
                                     Outcome::Edge(Target::Candidates(m.iter().copied().collect()))
@@ -1590,7 +1589,13 @@ impl Resolver<'_> {
                 let class_name = self.interned_name(*s);
                 // A class imported from elsewhere is defined at module scope
                 // in its own file.
-                match t.defs.get(&key(&[class_name], attr)) {
+                let method_key = key(&[class_name], attr);
+                match t.defs.get(&method_key) {
+                    // Q-14, as in `lookup_method`: a class-scope assignment
+                    // may have replaced the `def`.
+                    Some(_) if t.bindings.contains(&method_key) => {
+                        Outcome::Edge(Target::Unresolved(Reason::ShadowedAmbiguous))
+                    }
                     Some(m) if m.len() == 1 => self.emit(m[0]),
                     Some(m) => Outcome::Edge(Target::Candidates(m.iter().copied().collect())),
                     None => Outcome::Edge(Target::Unresolved(Reason::MethodDispatchUntyped)),

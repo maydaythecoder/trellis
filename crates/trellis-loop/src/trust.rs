@@ -743,8 +743,11 @@ impl std::fmt::Debug for TrustGuard {
 }
 
 impl TrustGuard {
-    /// A guard whose check is `recheck`: `Err` names what changed.
-    pub fn new(recheck: impl Fn() -> Result<(), String> + Send + Sync + 'static) -> Self {
+    /// A guard whose check is `recheck`: `Err` names what changed. Tests
+    /// only: a guard outside them is built by [`over`](Self::over), which
+    /// ties it to a trusted fingerprint.
+    #[cfg(test)]
+    fn new(recheck: impl Fn() -> Result<(), String> + Send + Sync + 'static) -> Self {
         Self::with_cache(Box::new(move |_: &HashCache| recheck()))
     }
 
@@ -1599,14 +1602,10 @@ mod tests {
     /// A directory symlink, or `None` where the platform refuses to make one
     /// (Windows without developer mode), in which case the test says so.
     fn symlink_dir(target: &Path, link: &Path) -> Option<()> {
-        #[cfg(windows)]
-        let r = std::os::windows::fs::symlink_dir(target, link);
-        #[cfg(unix)]
-        let r = std::os::unix::fs::symlink(target, link);
-        match r {
+        match trellis_core::paths::symlink_for_test(target, link) {
             Ok(()) => Some(()),
-            Err(e) => {
-                eprintln!("skipped: cannot create a symlink here: {e}");
+            Err(why) => {
+                eprintln!("{why}");
                 None
             }
         }

@@ -198,16 +198,49 @@ mod tests {
         ));
     }
 
+    /// A Windows probe that missed [`PROBE_BOUND`]: PowerShell had not
+    /// started in time on a loaded host. "Could not answer" is the honest
+    /// result then, not a wrong one (#221, #432). The suffix is built from
+    /// PROBE_BOUND so a changed message or bound is not tolerated silently.
+    fn answered_too_late(p: &Probe) -> bool {
+        matches!(p, Probe::Unknown(why)
+            if cfg!(windows) && why.ends_with(&format!("did not answer in {PROBE_BOUND:?}")))
+    }
+
+    #[test]
+    fn a_late_windows_probe_is_tolerated_and_no_other_unknown_is() {
+        let late = Probe::Unknown(format!("powershell did not answer in {PROBE_BOUND:?}"));
+        assert_eq!(answered_too_late(&late), cfg!(windows));
+        assert!(!answered_too_late(&Probe::Unknown(
+            "Get-Process: denied".into()
+        )));
+        assert!(!answered_too_late(&Probe::Unknown(
+            "powershell did not answer in 1s".into()
+        )));
+        assert!(!answered_too_late(&Probe::Gone));
+    }
+
     #[test]
     fn this_process_is_running_and_answers_the_same_start_time_twice() {
         // What the pid-reuse check rests on: the probe's start time for one
-        // process is stable, so a mismatch means a different process.
+        // process is stable, so a mismatch means a different process. Two
+        // different Running answers still fail, as does any Unknown but a
+        // Windows probe that ran out of time.
         let live = SystemLiveness;
         assert!(live.host().is_some(), "this machine's name is readable");
         let me = std::process::id();
         let a = live.probe(me);
+        if answered_too_late(&a) {
+            eprintln!("probe could not answer in time, not a wrong answer: {a:?}");
+            return;
+        }
         assert!(matches!(a, Probe::Running { .. }), "{a:?}");
-        assert_eq!(a, live.probe(me));
+        let b = live.probe(me);
+        if answered_too_late(&b) {
+            eprintln!("probe could not answer in time, not a wrong answer: {b:?}");
+            return;
+        }
+        assert_eq!(a, b);
     }
 
     #[test]
@@ -225,19 +258,12 @@ mod tests {
         child.wait().unwrap();
         // The risk this guards: a probe that calls an exited child Running,
         // which would let the queue keep a dead claim forever. That still
-        // fails here, as does any Unknown but one. On Windows the probe is
-        // PowerShell, which on a loaded host can miss PROBE_BOUND before it
-        // has started; "could not answer in time" is the honest result
-        // then, not a wrong one, so it does not fail the test (#221, the
-        // owner's option C). The suffix is built from PROBE_BOUND so a
-        // changed message or bound is not tolerated silently.
+        // fails here, as does any Unknown but a Windows probe that ran out
+        // of time (`answered_too_late`; #221, the owner's option C).
         match SystemLiveness.probe(pid) {
             Probe::Gone => {}
-            Probe::Unknown(why)
-                if cfg!(windows)
-                    && why.ends_with(&format!("did not answer in {PROBE_BOUND:?}")) =>
-            {
-                eprintln!("probe could not answer in time, not a wrong answer: {why}");
+            late if answered_too_late(&late) => {
+                eprintln!("probe could not answer in time, not a wrong answer: {late:?}");
             }
             other => panic!("an exited, reaped child must read Gone: {other:?}"),
         }

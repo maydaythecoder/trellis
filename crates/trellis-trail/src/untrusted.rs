@@ -492,7 +492,7 @@ mod tests {
         assert!(checks[1].contains("passed"), "{checks:?}");
         assert!(
             checks.iter().all(|l| l.contains("trail says")),
-            "a recorded outcome is a claim about a file on disk, never about              the code as it stands now: {checks:?}"
+            "a recorded outcome is a claim about a file on disk, never about the code as it stands now: {checks:?}"
         );
     }
 
