@@ -59,6 +59,11 @@ fn trellis(root: &Path, args: &[&str]) -> (bool, String) {
         .arg("--root")
         .arg(root)
         .args(args)
+        // Hermetic: the user-level config and context files of whoever runs
+        // the suite must not change what it sees.
+        .env("TRELLIS_CONFIG_DIR", root.parent().unwrap().join("user"))
+        .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG")
         .output()
         .unwrap();
     (
