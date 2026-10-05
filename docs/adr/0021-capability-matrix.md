@@ -66,9 +66,10 @@ wherever the two disagree. The items those sections name as not built are:
   *Amended 2026-10-04 (#316): /name and /copy merged (#109). A user-level
   `system.md` was declined (#111) by the owner on 2026-09-28: ADR 0025 §2
   stands, and system prompt files are repository-level only.*
-- **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),
-  `@profile` mentions, prompt-token and dollar accounting, and webhook or API
-  triggers. Routines fire only while `work` runs.
+- **W-E (0026):** dollar accounting, and webhook or API triggers. Routines
+  fire only while `work` runs. *Corrected 2026-10-04: this bullet also
+  listed IANA time-zone names, `@profile` mentions and prompt-token
+  accounting; they are built (#47, #57, #108; ADR 0026 §7, §1, §5).*
 
 ## Context
 
@@ -188,8 +189,8 @@ override any row.
 | 1–3 multi-company, company lifecycle, settings | excluded [db][multi-user]: one repository is one trellis "company" |
 | 4 reporting tree | W-E (`reports_to` on agent profiles; no cycles) |
 | 5–6 roles, members | excluded [multi-user] |
-| 7 agent permissions | W-E (per-profile `[control]`, tool enable list, `deny_write`) |
-| 8–9 team catalog, built-in agents | deferred |
+| 7 agent permissions | W-E (per-profile `[control]`, tool enable list, `deny_write`). Corrected 2026-10-04: a profile also has its own write scope, `allow_write`, which only narrows what the repository allows (#182; ADR 0026 §4). |
+| 8–9 team catalog, built-in agents | deferred. Corrected 2026-10-04: a starter catalog is built as copy-in profiles under `examples/agents/` (`implementer`, `test-writer`, `docs-writer`; #55, #183), which a person copies into `.trellis/agents/`; nothing is built in. |
 | 10–11 16 external adapters, ACP | W-E adds one `process` profile: runs any command in the worktree, then trellis's checks decide. The adapters themselves are excluded because each one wraps a third-party agent. |
 | 12, 17–18 external adapters as plugins, sandboxes | excluded [server]; sandbox deferred |
 | 13 lifecycle pause/resume/terminate | W-E (profile `paused`) |
@@ -199,22 +200,22 @@ override any row.
 | 19–20 task fields and statuses | W-E (priority, labels, goal = vault stem, parent task, assignee profile, blockers, status set) |
 | 21–22 atomic checkout, execution lock | built (ADR 0020 hard-link claim) |
 | 23–24 blockers, sub-issues waking parents | W-E |
-| 25 comments | W-E (a notes log per task; `@profile` mentions are deferred) |
+| 25 comments | W-E (a notes log per task; `@profile` mentions are deferred). Corrected 2026-10-04: an `@profile` mention in a person's note wakes that profile's task on the next `work` tick (#57; ADR 0026 §1). |
 | 26–28 documents, attachments, work products | deferred; the trail and the diff are the work product. **Amended 2026-09-29 (#56):** excluded, for the same reason: the trail and the diff are the work product. A task's `focus` note (ADR 0017) and files in the repository cover input documents, and copies stored in the git dir would be lost with a linked worktree (ADR 0020 §1) and not versioned by git. |
 | 29 labels | W-E |
 | 30, 34 interactions, decisions | built in part (ADR 0026 §1, #140): a queued task's run may end on an `ask_human` question with up to 8 options; the task waits `blocked` (reason `question`) and a person answers with `queue note` and `queue set --status todo`. A structured decision record is deferred |
 | 31, 37–38 work modes, cases, feedback training | deferred. **Amended 2026-09-29:** 31 work modes excluded (#141): a proposed breakdown is model text, and the human files tasks with `queue add --parent`; a mode whose output filed tasks would let the model create its own work queue with no human step. 37 cases and pipelines excluded (#58): a case is a parent task with blockers (rows 23–24), and a second hierarchy beside parent tasks would be a second source of truth for the same ordering. 38 feedback votes excluded until something reads them (#142): a vote nothing consumes is a record without a use, and feeding votes into prompts would make human approval read as evidence of correctness (ADR 0004). |
 | 32 execution policy (review stage) | W-E (`needs_approval` on a task: `work` does not claim it until `trellis queue approve`) |
-| 33 watchdogs | built in part (stale claims listed); deferred beyond that |
+| 33 watchdogs | built in part (stale claims listed); deferred beyond that. Corrected 2026-10-04: a heartbeat can also release a stale claim, opt in with `[work] stale_claims = "release"` (#59; ADR 0020). |
 | 35–36 attention feed, inbox policy | excluded [web-ui][multi-user] |
 | 39–40 projects, goals with ancestry | goals: built (vault lineage, ADR 0020 §6); projects excluded (one repository) |
-| 41 wake triggers | W-E: timer (`work --every`), routine, blockers resolved, approval; mention deferred |
+| 41 wake triggers | W-E: timer (`work --every`), routine, blockers resolved, approval; mention deferred. Corrected 2026-10-04: a mention wakes too (#57; ADR 0026 §1). |
 | 42–46 DB queue, scheduler, runs, protocol | built locally (ADR 0020); coalescing → W-E (a routine never enqueues a duplicate while one is pending) |
-| 47–49 routines | W-E (5-field cron with timezone, the coalesce/skip/always and skip/catch-up policies, `{{var}}` templates); webhook and API triggers excluded [server] |
-| 50–54 costs and budgets | W-E, **in tokens** from the trail, with monthly and lifetime windows, an 80% warning and a hard stop that pauses the profile. Dollars are excluded until COST_MODEL.md prices them. **Amended 2026-09-29 (#67):** dollars deferred to v1.x. Runs stay token-only through v1.0. No dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted; when dollars arrive they sit beside tokens and never replace them. |
+| 47–49 routines | W-E (5-field cron with timezone, the coalesce/skip/always and skip/catch-up policies, `{{var}}` templates); webhook and API triggers excluded [server]. Corrected 2026-10-04: the timezone may be an IANA zone name as well as UTC or a fixed offset (#47; ADR 0026 §7). |
+| 50–54 costs and budgets | W-E, **in tokens** from the trail, with monthly and lifetime windows, an 80% warning and a hard stop that pauses the profile. Dollars are excluded until COST_MODEL.md prices them. **Amended 2026-09-29 (#67):** dollars deferred to v1.x. Runs stay token-only through v1.0. No dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted; when dollars arrive they sit beside tokens and never replace them. Corrected 2026-10-04: prompt tokens are counted, in the ledger as a second number beside the completion tokens and never added to them (#108; ADR 0026 §5). Dollars stay deferred. |
 | 55–57 approvals, board | W-E (task approval and budget override via `trellis queue approve`); hire and strategy approvals excluded [multi-user] |
 | 58 trust presets | deferred |
-| 59–63 execution workspaces, dev servers, previews | deferred to v1.1 (parallel worktrees are ADR 0016 territory); previews excluded [server] |
+| 59–63 execution workspaces, dev servers, previews | deferred to v1.1 (parallel worktrees are ADR 0016 territory); previews excluded [server]. Corrected 2026-10-04: a profile's `[[services]]`, such as a dev server, start beside each task it runs (#60; ADR 0026 §12); a per-task worktree is still not built. |
 | 64–67 skills import, catalog, injection modes, policy | built (ADR 0019); per-profile skill allow/deny → W-E |
 | 68 Skill Studio | excluded [web-ui] |
 | 69–71 secrets | excluded: ADR 0010 |
