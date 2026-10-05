@@ -263,6 +263,12 @@ impl AppState {
                 last.push_str(part);
             }
         }
+        self.cap_transcript();
+    }
+
+    /// Drops the oldest lines past `TRANSCRIPT_CAP`. One place, so both
+    /// ways into the transcript keep the same bound.
+    fn cap_transcript(&mut self) {
         if self.transcript.len() > TRANSCRIPT_CAP {
             self.transcript
                 .drain(0..self.transcript.len() - TRANSCRIPT_CAP);
@@ -362,10 +368,7 @@ impl AppState {
     pub fn push_line(&mut self, line: String) {
         self.transcript.push(line);
         self.line_open = false;
-        if self.transcript.len() > TRANSCRIPT_CAP {
-            self.transcript
-                .drain(0..self.transcript.len() - TRANSCRIPT_CAP);
-        }
+        self.cap_transcript();
     }
 
     /// Only `Press`.
@@ -495,7 +498,7 @@ impl AppState {
             return Some(vec![
                 format!("· `{input}` is a shell command, and this is not a shell."),
                 format!(
-                    "  Leave with esc and run it, or use /{sub} if this view has one                      — /help lists what it does."
+                    "  Leave with esc and run it, or use /{sub} if this view has one — /help lists what it does."
                 ),
             ]);
         }
@@ -521,7 +524,7 @@ impl AppState {
                 "  /help     this".into(),
                 "  @<text>   repository paths containing it; tab inserts the first".into(),
                 "  esc       clear the line; again to leave".into(),
-                "  ^c        interrupt a run".into(),
+                "  ^c        leave; a run in flight is stopped".into(),
                 "  enter during a run queues the line as a steer for its next turn".into(),
                 "  ↑ ↓       scroll the transcript".into(),
                 String::new(),
@@ -626,8 +629,10 @@ mod tests {
             TRANSCRIPT_CAP,
             "an unbounded transcript grows for as long as a run lasts"
         );
-        // The oldest were dropped, not the newest.
-        assert!(s.transcript.last().unwrap().is_empty() || s.transcript[0].contains("line 5"));
+        // The oldest were dropped, not the newest. 2500 tokens make 2501
+        // entries (the trailing newline opens an empty one), so 501 go.
+        assert_eq!(s.transcript[0], "line 501");
+        assert_eq!(s.transcript[TRANSCRIPT_CAP - 2], "line 2499");
     }
 
     #[test]
