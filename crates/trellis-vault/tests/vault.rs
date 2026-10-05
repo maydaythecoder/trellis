@@ -269,7 +269,8 @@ fn two_runs_are_byte_identical_and_crlf_input_yields_the_same_lf_output() {
 }
 
 // ---------------------------------------------------------------------------
-// Shared goldens. The TypeScript twin asserts the same three files.
+// Shared goldens, produced by the TypeScript prototype (ADR 0017); they are
+// the specification.
 // ---------------------------------------------------------------------------
 
 fn golden(stem: &str) {

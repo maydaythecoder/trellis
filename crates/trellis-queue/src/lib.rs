@@ -1252,8 +1252,7 @@ impl Claim {
     /// reason `requeue` clears one). The run counts as an attempt.
     pub fn ask(mut self, question: &str, options: &[String]) -> Result<(), QueueError> {
         self.task.attempts += 1;
-        self.task.claimed_at = None;
-        self.task.claimed_by_pid = None;
+        clear_claim(&mut self.task);
         self.task.outcome = None;
         self.task.status = Some(Status::Blocked);
         self.task.blocked = Some(Blocked::Question {

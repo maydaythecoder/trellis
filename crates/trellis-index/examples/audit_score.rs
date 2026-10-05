@@ -57,7 +57,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: audit_score <dir with sample.json and answers.json>              [--min-recall <pct>] [--min-precision <pct>]"
+            "{}",
+            concat!(
+                "usage: audit_score <dir with sample.json and answers.json> ",
+                "[--min-recall <pct>] [--min-precision <pct>]"
+            )
         );
         std::process::exit(2);
     }
@@ -344,9 +348,10 @@ fn matches(resolver: &str, auditor: &str) -> bool {
         return false;
     }
     // Module prefix: everything before the final segment on the resolver
-    // side must be a prefix of the auditor's qualified name.
+    // side must be a prefix of the auditor's qualified name, ending on a
+    // segment boundary: `pkg.mod` must not match `pkg.module.f`.
     let prefix = resolver.rsplit_once('.').map_or("", |(m, _)| m);
-    !prefix.is_empty() && auditor.starts_with(prefix)
+    !prefix.is_empty() && (auditor == prefix || auditor.starts_with(&format!("{prefix}.")))
 }
 
 /// Whether a disagreement is only about how a constructor call is written.

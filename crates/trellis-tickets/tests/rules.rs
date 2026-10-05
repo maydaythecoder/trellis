@@ -76,7 +76,7 @@ fn abstains_area_when_a_file_is_under_no_path_in_the_table() {
 }
 
 #[test]
-fn the_owners_mapping_puts_every_crate_under_one_of_the_twelve_areas() {
+fn the_owners_mapping_rows_map_onto_the_twelve_areas_194() {
     // #194: the repository's other crates and directories map onto the
     // existing area values, one row each, rather than adding new ones.
     // A row that went missing would send every ticket touching it back to

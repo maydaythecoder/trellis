@@ -13,7 +13,8 @@ use trellis_loop::{ContextFile, ExtraContext, ForcedSkill};
 /// Total bytes of context-file content one run may carry (ADR 0025 §1).
 ///
 /// Every turn pays for it. 16 KiB fits this repository's own `CLAUDE.md`
-/// (7,936 bytes) with room for an `AGENTS.md` beside it, and is two thirds of
+/// (13,297 bytes by `git cat-file -s HEAD:CLAUDE.md` at `841b6ac`), which
+/// leaves about 3 KB for an `AGENTS.md` beside it, and is two thirds of
 /// the vault's cap (`trellis_vault::DEFAULT_CAP`, 24,576), which is the
 /// larger, task-specific block.
 pub(crate) const CONTEXT_FILES_CAP: usize = 16_384;

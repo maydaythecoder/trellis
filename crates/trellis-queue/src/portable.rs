@@ -203,20 +203,14 @@ pub fn plan_import(root: &Path, q: &Queue, src: &Path, on: OnConflict) -> Result
     };
     let existing = profile::load_all(root)?;
     let existing_routines = routine::load_all(root)?;
-    let incoming = profile::load_dir(&src.join("agents")).or_else(|e| match e {
-        // A folder of profiles that reports to managers only this
-        // repository has is still importable; the combined set is
-        // validated below.
-        QueueError::Invalid(ref m) if m.contains("not a profile") => {
-            let mut set = BTreeMap::new();
-            for (n, p) in tomls(&src.join("agents"))? {
-                let text = std::fs::read_to_string(&p).map_err(io(&p))?;
-                set.insert(n.clone(), profile::parse(&n, &text)?);
-            }
-            Ok(set)
-        }
-        e => Err(e),
-    })?;
+    // Parsed but not validated on their own: a folder of profiles that
+    // reports to managers only this repository has is still importable.
+    // The combined set is what is validated, below.
+    let mut incoming = BTreeMap::new();
+    for (n, p) in tomls(&src.join("agents"))? {
+        let text = std::fs::read_to_string(&p).map_err(io(&p))?;
+        incoming.insert(n.clone(), profile::parse(&n, &text)?);
+    }
 
     // Agents first: their renames rewrite references everywhere else.
     let mut agent_map: HashMap<String, String> = HashMap::new();
@@ -616,6 +610,38 @@ mod tests {
             "nothing is written when the import is refused"
         );
         claim.release(false).unwrap();
+    }
+
+    #[test]
+    fn profiles_reporting_to_a_manager_only_this_repository_has_import() {
+        // The risk: the incoming folder judged on its own, where `lead` is
+        // missing, refusing an import whose result is a valid set.
+        let (d, root, q) = setup();
+        std::fs::write(root.join(".trellis/agents/lead.toml"), "").unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("agents")).unwrap();
+        std::fs::write(src.join("agents/dev.toml"), "reports_to = \"lead\"\n").unwrap();
+        let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+        assert!(
+            plan.items
+                .iter()
+                .any(|i| i.name == "dev" && i.action == Action::Create)
+        );
+    }
+
+    #[test]
+    fn an_incoming_profile_is_judged_by_the_set_it_would_leave() {
+        // A profile skipped on conflict is not written, so it cannot make
+        // the result invalid; replacing with it does.
+        let (d, root, q) = setup();
+        std::fs::write(root.join(".trellis/agents/a.toml"), "").unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("agents")).unwrap();
+        std::fs::write(src.join("agents/a.toml"), "reports_to = \"a\"\n").unwrap();
+        let plan = plan_import(&root, &q, &src, OnConflict::Skip).unwrap();
+        assert!(plan.items.iter().all(|i| i.action == Action::Skip));
+        let e = plan_import(&root, &q, &src, OnConflict::Replace).unwrap_err();
+        assert!(e.to_string().contains("itself"), "{e}");
     }
 
     #[test]

@@ -212,12 +212,13 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         // a run that tried four times and wrote once is the run the graph
         // exists to show, and one built only from successes would draw it as
         // a run that acted once.
-        // Only an applied edit changed the tree. The observation is the only
-        // place that says so.
-        let wrote = call.starts_with("edit ")
-            && f.observation
-                .as_deref()
-                .is_some_and(|o| o.contains("applied: true"));
+        // Only an applied edit or a file `write_file` created changed the
+        // tree. The observation is the only place that says so: `edit`
+        // reports `applied: true`, and `write_file` begins `created ` on
+        // success and `error: ` on every refusal.
+        let obs = f.observation.as_deref().unwrap_or_default();
+        let wrote = (call.starts_with("edit ") && obs.contains("applied: true"))
+            || (call.starts_with("write_file ") && obs.starts_with("created "));
 
         {
             let mut parts = call.splitn(2, ' ');
@@ -237,10 +238,7 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         // correctly reporting that one write had happened, for a run that
         // changed one line. The pane that counts is the one a user checks
         // before accepting, so it is the one that has to be right.
-        if call.starts_with("edit ")
-            && wrote
-            && let Some(path) = call.split_whitespace().nth(1)
-        {
+        if wrote && let Some(path) = call.split_whitespace().nth(1) {
             self.emit(Message::EditProposed {
                 path: path.to_string(),
             });
@@ -285,8 +283,10 @@ mod tests {
     use tokio::sync::mpsc;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// Drives the layer with the event `agent.rs` actually emits, rather than
-    /// with a hand-built one: if the loop's field names change, this fails.
+    /// Drives the layer through a real subscriber. The events the tests emit
+    /// are written by hand, with field names copied from the turn event in
+    /// `agent.rs`: renaming a field there does not fail these tests, so the
+    /// two have to be kept in step.
     fn capture(emit: impl FnOnce()) -> Vec<Message> {
         let (tx, mut rx) = mpsc::channel(256);
         let subscriber = tracing_subscriber::registry().with(LoopLayer::new(tx));
@@ -419,6 +419,55 @@ mod tests {
             !got.iter()
                 .any(|m| matches!(m, Message::CheckFinished { .. })),
             "an edit is not a check: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_write_file_created_is_a_write_and_a_pending_change() {
+        // The risk: only `edit` counted as a write, so a run that created a
+        // file drew it on the graph as a read and left it out of the edits
+        // pane a user checks before accepting.
+        let created = capture(|| {
+            tracing::info!(
+                turn = 1u64,
+                call = "write_file app/new.py",
+                verdict = ?None::<bool>,
+                observation = %"created app/new.py (12 bytes, 1 lines)",
+                "turn"
+            );
+        });
+        assert!(
+            created
+                .iter()
+                .any(|m| matches!(m, Message::EditProposed { path } if path == "app/new.py")),
+            "{created:?}"
+        );
+        assert!(
+            created
+                .iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if *wrote)),
+            "{created:?}"
+        );
+        let refused = capture(|| {
+            tracing::info!(
+                turn = 1u64,
+                call = "write_file app/new.py",
+                verdict = ?None::<bool>,
+                observation = %"error: write_file refused: app/new.py is ignored by git",
+                "turn"
+            );
+        });
+        assert!(
+            !refused
+                .iter()
+                .any(|m| matches!(m, Message::EditProposed { .. })),
+            "a refused write_file is not pending: {refused:?}"
+        );
+        assert!(
+            refused
+                .iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if !*wrote)),
+            "{refused:?}"
         );
     }
 
@@ -589,9 +638,10 @@ mod tests {
 
     #[test]
     fn a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached() {
-        // The event `SteeringLog::drain` emits, spelled as it spells it: if
-        // the loop renames a field or rewords the message, this fails
-        // instead of the view reporting every steer not delivered.
+        // The event `SteeringLog::drain` emits, copied by hand as it spells
+        // it. A renamed field or reworded message there does not fail this
+        // test, so the two have to be kept in step, or the view reports
+        // every steer not delivered.
         let (tx, mut rx) = mpsc::channel(8);
         let layer = LoopLayer::new(tx);
         let log = layer.deliveries();
