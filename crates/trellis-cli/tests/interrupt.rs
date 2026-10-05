@@ -93,8 +93,8 @@ fn combined(o: &Output) -> String {
     )
 }
 
-/// Reads one HTTP request from `s`, headers and body.
-fn read_request(s: &mut std::net::TcpStream) {
+/// Reads one HTTP request from `s`, headers and body, and returns it.
+fn read_request(s: &mut std::net::TcpStream) -> String {
     s.set_read_timeout(Some(Duration::from_secs(30))).ok();
     let mut raw = Vec::new();
     let mut buf = [0u8; 16384];
@@ -112,25 +112,54 @@ fn read_request(s: &mut std::net::TcpStream) {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(0);
             if body.len() >= len || n == 0 {
-                return;
+                return text;
             }
         } else if n == 0 {
-            return;
+            return text;
         }
+    }
+}
+
+/// Whether `raw` is a `GET` of a path ending in `/models`: the
+/// identification read a run makes of a loopback base (ADR 0047 decision
+/// 3). A stub that answered it with the edit would pass for a runtime and
+/// hold the run's first model request instead of its second.
+fn is_models_get(raw: &str) -> bool {
+    let mut line = raw.lines().next().unwrap_or_default().split_whitespace();
+    line.next() == Some("GET") && line.next().is_some_and(|p| p.ends_with("/models"))
+}
+
+/// Accepts the next connection on `l` whose request is not a `GET` of
+/// `/models`, answering each such `GET` on the way as a server that is not
+/// colibri does: 404, with a JSON error body.
+fn accept_request(l: &std::net::TcpListener) -> Option<std::net::TcpStream> {
+    let body = r#"{"error":{"message":"not found","type":"not_found_error"}}"#;
+    let not_found = format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    loop {
+        let (mut s, _) = l.accept().ok()?;
+        if !is_models_get(&read_request(&mut s)) {
+            return Some(s);
+        }
+        s.write_all(not_found.as_bytes()).ok();
     }
 }
 
 /// An OpenAI-protocol endpoint on a loopback port. The first request is
 /// answered with an edit of `a.py`; the second is held open, unanswered,
 /// and the receiver hears once it has arrived. The run is then inside its
-/// model request, with its edit in the tree.
+/// model request, with its edit in the tree. A `GET` of `/models` is
+/// answered 404 and takes neither.
 fn provider_stub() -> (String, mpsc::Receiver<()>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let Ok((mut s, _)) = l.accept() else { return };
-        read_request(&mut s);
+        let Some(mut s) = accept_request(&l) else {
+            return;
+        };
         let args = serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"});
         let reply = serde_json::json!({"choices":[{"message":{"role":"assistant",
             "content":null,"tool_calls":[{"id":"c1","type":"function","function":{
@@ -143,10 +172,9 @@ fn provider_stub() -> (String, mpsc::Receiver<()>) {
         );
         s.write_all(out.as_bytes()).ok();
         drop(s);
-        let Ok((mut held, _)) = l.accept() else {
+        let Some(mut held) = accept_request(&l) else {
             return;
         };
-        read_request(&mut held);
         let _ = tx.send(());
         // Held until the client goes away: a read then returns 0 or fails.
         held.set_read_timeout(None).ok();
@@ -300,5 +328,46 @@ fn after_run_interrupted_a_second_sigint_stops_the_hook_and_the_rollback_proceed
     assert_eq!(
         std::fs::read_to_string(f.root.join("a.py")).unwrap(),
         "def f():\n    return 1\n"
+    );
+}
+
+#[test]
+fn stub_answers_get_models_with_404() {
+    // The risk: a run's identification read of a loopback base (ADR 0047
+    // decision 3) took the stub's edit, so the stub passed for a runtime,
+    // the run's first request was held, and the interrupt caught a run with
+    // no edit in the tree. It must be answered as a server that is not
+    // colibri answers it, and take neither the edit nor the held connection.
+    fn send(base: &str, request: &str) -> String {
+        let mut s = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        s.write_all(request.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).ok();
+        out
+    }
+    let (base, held) = provider_stub();
+    let got = send(&base, "GET /v1/models HTTP/1.1\r\nHost: stub\r\n\r\n");
+    assert!(got.starts_with("HTTP/1.1 404 "), "{got}");
+    let body = got.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    assert!(
+        serde_json::from_str::<Value>(body).is_ok_and(|v| v["error"].is_object()),
+        "{got}"
+    );
+    let got = send(
+        &base,
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: stub\r\nContent-Length: 2\r\n\r\n{}",
+    );
+    assert!(got.starts_with("HTTP/1.1 200 "), "{got}");
+    let reply: Value = serde_json::from_str(got.split_once("\r\n\r\n").map_or("", |(_, b)| b))
+        .unwrap_or_else(|e| panic!("the edit reply is JSON ({e}): {got}"));
+    assert_eq!(
+        reply["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "edit",
+        "{got}"
+    );
+    assert_eq!(
+        held.try_recv(),
+        Err(mpsc::TryRecvError::Empty),
+        "no connection is held yet: the POST alone was answered"
     );
 }

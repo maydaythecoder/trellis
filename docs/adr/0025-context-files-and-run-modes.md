@@ -183,6 +183,13 @@ The adapter's prompt opens with a role sentence, then a protocol:
   (ADR 0007). It is exported as data and never interpreted. serde already
   escapes C0 controls, and U+007F–U+009F are escaped as well, because a
   terminal can act on C1 controls.
+- *Added 2026-10-05 (#291).* The `log_json` paths listed in
+  `crates/trellis-cli/tests/client_contract.json`, each marked always present
+  or optional, are what a `log --json` client may rely on (ADR 0048 §6);
+  the rest of `trail` stays as unversioned as this section leaves it. Held
+  by `log_json_carries_every_trail_field_the_desktop_reads` in
+  `tests/modes.rs`, through the binary, which names each always-present
+  path the line does not carry.
 
 ### 5. `trellis rpc`
 
@@ -204,8 +211,14 @@ on stderr.
   - `compact` (*added 2026-09-29, #110; see "compact" below*)
   - `steer {message}` and `follow_up {message}` (*added 2026-09-29, #114;
     see "steer and follow_up" below*)
+  - `get_codebase {limit?}` (*added 2026-10-05, #292; see "get_codebase"
+    below*)
+  - `get_radius {symbol}` (*added 2026-10-05, #293; see "get_radius"
+    below*)
+  - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
-  `follow_up`)
+  `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th, and
+  `get_queue`, the 15th, are trellis's own, not pi's)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -335,10 +348,121 @@ on stderr.
     `tests/modes.rs`, through the binary over stdio (the first checks the
     provider received the steer in the second request and not the first);
     `rpc::tests::rpc_steer_abort_answers_with_the_undelivered_text_in_order`.
+- *Added 2026-10-05 (#292), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_codebase {limit?}`** answers with the module graph `trellis index
+  --graph` draws, as data, so an rpc client never parses human output (ADR
+  0048 §2). It is read-only.
+  - The index is built in memory as the interface's `/codebase` builds it
+    (`doctor_cmd::codebase_lines`, `build_from_sources`): `.trellis/index.bin`
+    is neither read nor written, and nothing else is.
+  - `data` is `{modules_indexed, bound_call_sites, ambiguous, unresolved,
+    modules, modules_not_drawn}`. `modules` is the first `limit` (default
+    40) modules, busiest first, each `{module, defines, calls, calls_not_drawn,
+    ambiguous, unresolved}`, with `calls` the edges the drawing shows
+    (heaviest first, at most ten), each `{module, call_sites}`. What is left
+    out is counted in `modules_not_drawn` and `calls_not_drawn`, as the
+    drawing states it. Module names are whole; the drawing cuts long ones to
+    its column.
+  - Bound, ambiguous and unresolved are separate counts from different
+    populations: no ratio, percentage or total is given (CLAUDE.md rule 3).
+  - It runs on its own thread, as `compact`'s answer does, so it is answered
+    while a run is in flight, including one waiting on an approval.
+  - A `limit` that is not a non-negative integer is refused by name.
+  - Evidence: `rpc_get_codebase_returns_the_graph_codebase_lines_prints` in
+    `tests/modes.rs`, through the binary over stdio: no key in `data` names
+    a ratio, percent, fraction or total; afterwards `.trellis/index.bin`
+    does not exist and the fixture's worktree is clean; it is answered while
+    an approve-mode run waits on its question, before that run's `run_end`;
+    and its modules and counts equal what `trellis index --graph` prints.
+- *Added 2026-10-05 (#293), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_radius {symbol}`** answers with the blast radius `trellis radius
+  <symbol>` prints, as data, so an rpc client never parses human output (ADR
+  0048 §2). It is read-only.
+  - The index is built in memory with `build_from_sources` over
+    `read_sources`, as `get_codebase` builds it, never with `build_cached`,
+    which writes `.trellis/index.bin` when the cache is stale: nothing is
+    written.
+  - The symbol is matched as `trellis radius` matches it
+    (`index_cmd::resolve_symbol`). An unknown or ambiguous symbol, or a
+    missing `symbol`, answers `success` false with the same message.
+  - `data` is `{symbol, file, reach, doubt}`. `symbol` is the qualified name
+    and `file` its path. `reach` is `{resolved, ambiguous, symbols_reached}`:
+    call sites bound to the symbol by a single edge, call sites naming it
+    as one of several candidates, and the symbols reached transitively.
+    `doubt` is `{unbound_in_touched_files, touched_files, reasons, files}`:
+    call sites in the files the radius touches that bound to nothing, how
+    many files that is, and the same count by reason (most first, each
+    `{reason, call_sites, explain}`) and by file (most first, each `{path,
+    call_sites}`). The lists are whole; the printed report collapses them to
+    three reasons and five files.
+  - Reach and doubt are separate objects because they come from different
+    populations (ADR 0014): no ratio, percentage, fraction or total is
+    given, and the doubt is not a part of the reach (CLAUDE.md rule 3).
+  - It runs on its own thread, as `get_codebase` does, so it is answered
+    while a run is in flight, including one waiting on an approval.
+  - Evidence: `rpc_get_radius_returns_reach_and_doubt_as_separate_counts`
+    in `tests/modes.rs`, through the binary over stdio: no key in `data`
+    names a ratio, percent, fraction or total; afterwards
+    `.trellis/index.bin` does not exist and the fixture's worktree is clean;
+    it is answered while an approve-mode run waits on its question, before
+    that run's `run_end`; and its counts, reasons and files equal what
+    `trellis radius f` prints, run after those checks.
+- *Added 2026-10-05 (#294), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_queue`** answers with the tasks `trellis queue list` prints with no
+  filter, as data, so an rpc client never parses human output (ADR 0048
+  §2). It takes no arguments and is read-only.
+  - It reads the queue as `queue list` does (`Queue::for_repo`,
+    `Queue::list`, `Queue::waiting_reason`). `Queue::at` creates nothing
+    until a write, so nothing is written, claimed or moved, and no lease is
+    touched: the queue's writes stay with `trellis queue` and `trellis
+    work` (ADR 0020 §5).
+  - `data` is `{tasks}`, one entry per task in the order `queue list`
+    prints them. A readable task is `{id, state, status, priority, task,
+    labels, assignee, waiting}`: `state` is the queue directory it is in,
+    `assignee` is null when none, and `waiting` is the reason `queue list`
+    prints after `waiting:` for a pending task, else null. A task file that
+    does not parse is `{id, state, error}`, `error` being the text `queue
+    list` prints after `unreadable:`. Strings are given as stored: `queue
+    list` escapes control characters for the terminal, and JSON escapes its
+    own. The "approvals waiting" block is not a task and is not part of the
+    answer.
+  - A root outside any git repository answers `success` false with the
+    message `Queue::for_repo` gives.
+  - It runs on its own thread, through `respond_on`, as `get_codebase`
+    does, so it is answered while a run is in flight, including one waiting
+    on an approval, and `quit` joins it before answering.
+  - Evidence: `rpc_get_queue_lists_what_queue_list_prints` in
+    `tests/modes.rs`, through the binary over stdio, over a queue holding
+    tasks added with `--priority`, `--label`, `--blocked-by` and
+    `--backlog` and one pending file that does not parse: with no run in
+    flight it answers and afterwards `git status --porcelain` prints
+    nothing and every file under the git directory's `trellis/` has the
+    name and bytes it had before; it is answered while an approve-mode run
+    waits on its question, before that run's `run_end`; a `get_queue`
+    followed by `quit` is answered before the `quit` response; and each
+    task's fields equal what `trellis queue list` prints, in its order.
+    The non-repository answer is
+    `get_queue_outside_a_repository_answers_the_queue_s_own_error` in
+    `rpc.rs`.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
   tail, not full observations.
+- *Added 2026-10-05 (#291).* The `rpc` fields listed in
+  `crates/trellis-cli/tests/client_contract.json` are what an rpc client may
+  rely on (ADR 0048 §6): per event `message` (`turn`, `run budget`,
+  `steer delivered`) the fields always present, those present only on a
+  `blast_radius` turn or only with a prompt-sending driver, and the three
+  `verdict` values; per framing `type` (`run_start`, `run_end`, `response`,
+  `approval_request`) its fields. The tracing events between the framing
+  records are otherwise still unversioned (§4). Held, through the binary
+  over stdio, by `rpc_stream_carries_every_field_the_desktop_reads` (a run
+  against the provider stub that names each listed `turn`, `run budget`,
+  `run_start`, `run_end` and `response` field the stream did not carry, and
+  any `verdict` outside the three), and by
+  `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`
+  and `rpc_approve_mode_asks_on_the_stream_while_input_stays_open` for
+  `steer delivered` and `approval_request`, all in `tests/modes.rs`.
 
 ### 6. Session additions
 
