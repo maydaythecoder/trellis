@@ -3255,3 +3255,47 @@ fn a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored() 
     assert!(!said.contains("NOT put back"), "{said}");
     assert_eq!(out.status.code(), Some(1), "{said}");
 }
+
+#[test]
+fn subcommand_case_does_not_matter_for_its_name() {
+    // ADR 0050 section 4: "TRELLIS RUN" was refused as an unknown subcommand
+    // on a first run, though nothing about it was ambiguous.
+    let help = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert_eq!(help(&["RUN", "--help"]), help(&["run", "--help"]));
+    assert_eq!(help(&["Doctor", "--help"]), help(&["doctor", "--help"]));
+}
+
+#[test]
+fn subcommand_case_leaves_a_task_text_alone() {
+    // Only the subcommand's name is lowered: a task in capitals is the
+    // user's text. With no model the run stops before doing anything, and
+    // its refusal is about the model, not an unknown command.
+    let dir = std::env::temp_dir().join(format!("trellis-case-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["--root"])
+        .arg(&dir)
+        .args(["RUN", "FIX THE BUG"])
+        .env("TRELLIS_CONFIG_DIR", &dir)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("unrecognized subcommand"), "{err}");
+    assert!(
+        !err.contains("fix the bug"),
+        "the task text was lowered: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
