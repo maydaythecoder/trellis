@@ -1,7 +1,7 @@
 # ADR 0034 — Steering and follow-up text in the trail
 
 **Status:** Accepted. The trail side is built (#117); the loop side that
-fills it is #113.
+fills it is #113. *Amended 2026-10-04 (#316): the loop side that fills it is built (#113), in `SteeringLog::drain`.*
 **Date:** 2026-09-29
 **Decided:** 2026-09-28 by the owner, via the coordinator (issue #117)
 **Builds on:** ADR 0007 (trail format; trails read back as untrusted data),
