@@ -3,7 +3,7 @@
 **Status:** Accepted. Amended in implementation: §1, §4, §5, §7, §8 and
 §10. §1 amended again for `ask_human` (#140). §4 and §11 amended again for `pass_env` when ADR 0024 §3's key gap
 was closed. §7 amended again for IANA zone names (#47). §1 and §9 amended
-for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). §12 added for
+for `@profile` mention wakes (#57). §1 and §9 amended again: `queue note` refuses inside a run (#189). §5 amended again for prompt tokens (#108). §1 amended again: up to 8 questions per `ask_human` call, not built (#331). §12 added for
 services (#60), with a line in §4. Each amendment is marked in place. §4's `tools` list and skill deny
 list were integrated with ADR 0023 and ADR 0019 afterwards; see
 "Integrated" at the end.
@@ -174,6 +174,38 @@ unchanged. The reverse does not hold: a build from before this amendment
 cannot parse a task that uses them, so its `queue list` shows the file as
 unreadable and its `work` moves it to `failed/`, as it does any file that is
 not valid task JSON.
+
+*Amended 2026-10-05 (#331), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**One `ask_human` call may carry up to 8 questions.** A model with three
+questions now asks them over three runs and three rollbacks; Paperclip's
+`ask_user_questions` takes 1 to 64 questions in one interaction. Not built:
+this records the rule a later ticket builds to.
+
+- **The tool.** `ask_human` takes 1 to 8 entries of `{question, options}`.
+  Each question is 1 to 2,000 characters with at most 8 options of 1 to 200
+  characters, as for one question above. A call outside those bounds is
+  refused with the reason, after which the model may ask again.
+- **One note, one reason.** The questions are stored as one `model` note
+  and one `blocked` reason, `question`, holding the list. The note, the
+  `task.question` event, the heartbeat's output and `queue list`'s waiting
+  line Debug-quote each question, as above for one. A task file holding
+  today's single `question` and `options` still loads, as a list of one.
+- **One answer.** One person's `queue note`, then `queue set --status
+  todo`, answers every question in the list. The next run is given the
+  questions quoted as model output, followed by every person's note after
+  them, as input and never a verdict (ADR 0004).
+- **Older binaries.** A binary from before the change cannot parse a task
+  blocked on a list of questions, so its `queue list` shows the file as
+  unreadable and its `work` moves it to `failed/`, as recorded above for the
+  `question` reason itself.
+- **Not taken.** A multi-select form like Paperclip's
+  `request_checkbox_confirmation` (up to 200 options to tick) is not built:
+  no coding task here needs it, and it would be a second interaction kind
+  to quote safely.
+
+Reversed if the build finds that a list of questions cannot be quoted and
+fenced as safely as one question is today: then one question per call
+stays, and this amendment says so.
 
 *Amended 2026-09-29 (#57), by the owner's decision of 2026-09-28:* **a
 person's `@profile` mention wakes that profile's task.** A note added with
