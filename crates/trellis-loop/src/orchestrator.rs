@@ -791,7 +791,7 @@ impl Orchestrator {
             }
             ToolCall::Ls { path } => match read_refusal(&self.root, path) {
                 Some(e) => ToolResult::Error(format!("ls refused: {e}")),
-                None => crate::listing::ls(&self.root.join(path), path),
+                None => crate::listing::ls(&self.root, path),
             },
             ToolCall::Bash { command } => self.bash(command).await,
             ToolCall::SearchNotes { query, limit } => match self.tools.notes() {
