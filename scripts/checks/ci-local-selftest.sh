@@ -26,9 +26,9 @@
 # #237: ci-local set no RUNNER_TEMP and passed `${{ github.base_ref }}` and
 # `${{ github.event.before }}` through as literal text, so the gitleaks step
 # of supply-chain failed locally for a reason CI does not have. The fixture
-# history is A (branch v0.1-resolver) <- B <- C (HEAD), so the base and the
+# history is A (branch main) <- B <- C (HEAD), so the base and the
 # first parent are different commits:
-#   - job `exprs` must see BASE_REF=v0.1-resolver, origin/v0.1-resolver at A,
+#   - job `exprs` must see BASE_REF=main, origin/main at A,
 #     BEFORE=B (through `env:` and, unspaced, in `run:`), and a RUNNER_TEMP
 #     that exists, is empty and is its own; job `temp` must get a different
 #     one. Both leave a file behind, and a second run must find each
@@ -155,12 +155,12 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig"
 g() { git -C "$repo" -c user.name=selftest -c user.email=selftest@invalid -c core.autocrlf=false "$@"; }
 g init -q -b work || exit 1
 g commit -q --allow-empty -m A || exit 1
-g branch v0.1-resolver || exit 1
+g branch main || exit 1
 g commit -q --allow-empty -m B || exit 1
 g add -A || exit 1
 g commit -q -m fixture || exit 1
 sha="$(g rev-parse HEAD)" || exit 1
-base_sha="$(g rev-parse v0.1-resolver)" || exit 1
+base_sha="$(g rev-parse main)" || exit 1
 parent_sha="$(g rev-parse HEAD^)" || exit 1
 # The caller's choice of base would change what `exprs` must see.
 unset CI_LOCAL_BASE
@@ -236,8 +236,8 @@ for n in 1 2; do
   [ "$code" -eq 0 ] || { echo "FAIL: exprs run $n: ci-local exited $code"; fail=1; }
   bad_output "$out" "exprs run $n"
   f="$logs/exprs-$platform-01.log"
-  want_eq "run $n: BASE_REF" "$(val "$f" base_ref)" v0.1-resolver
-  want_eq "run $n: origin/v0.1-resolver" "$(val "$f" origin)" "$base_sha"
+  want_eq "run $n: BASE_REF" "$(val "$f" base_ref)" main
+  want_eq "run $n: origin/main" "$(val "$f" origin)" "$base_sha"
   want_eq "run $n: BEFORE from env" "$(val "$f" before)" "$parent_sha"
   want_eq "run $n: github.event.before in run" "$(val "$f" run_before)" "$parent_sha"
   t1="$(val "$f" runner_temp)" t2="$(val "$logs/temp-$platform-00.log" runner_temp)"
