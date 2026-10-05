@@ -3359,6 +3359,38 @@ fn subcommand_case_leaves_a_task_text_alone() {
     }
 }
 
+#[test]
+fn start_screen_is_for_bare_trellis_only_and_run_still_refuses() {
+    // ADR 0050 §3: the start screen is bare `trellis`'s alone. The risk is
+    // that opening it loosened root discovery for everything, and `trellis
+    // run` in a home directory starts walking it instead of refusing.
+    let d = scratch("start-screen-run");
+    let above: Vec<_> = d.ancestors().filter(|a| a.join(".git").exists()).collect();
+    assert!(
+        above.is_empty(),
+        "the scratch directory is inside a repository, so this proves nothing: {above:?}"
+    );
+    let out = run(&d, &["run", "--model", "scripted:none.json", "x"]);
+    let said = combined(&out);
+    assert!(!out.status.success(), "{said}");
+    assert!(
+        said.contains("cannot determine the repository root"),
+        "{said}"
+    );
+    assert!(said.contains("no git repository found at"), "{said}");
+    // Bare `trellis` with no terminal (output is captured here) has no one
+    // to answer a screen, so it refuses as it did before.
+    let bare = run(&d, &[]);
+    let said = combined(&bare);
+    assert!(!bare.status.success(), "{said}");
+    assert!(
+        said.contains("cannot determine the repository root"),
+        "{said}"
+    );
+    assert!(!d.join(".git").exists(), "{said}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn trellis_out(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
@@ -3510,4 +3542,66 @@ fn install_list_prints_what_the_manifest_records() {
     );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn no_model_message_is_the_same_from_run_and_from_bare_trellis_on_a_pipe() {
+    // #376, ADR 0050 section 2: two commands that refuse for the same reason
+    // used to say it two ways, and neither mentioned the picker. The risk is
+    // drift: one wording updated and the other not. So the text `trellis
+    // run` prints must appear, whole, in what bare `trellis` prints when a
+    // pipe sends it to the line session.
+    let d = repo("no-model-message");
+    let config = std::env::temp_dir()
+        .join("trellis-tests-no-user-config")
+        .join("config.toml");
+
+    let out = run(&d, &["run", "x"]);
+    assert!(!out.status.success(), "a run with no model must refuse");
+    let err = String::from_utf8_lossy(&out.stderr);
+    let said = err
+        .trim()
+        .strip_prefix("Error: ")
+        .unwrap_or_else(|| panic!("an error, not:\n{err}"));
+    // What it has to name: the picker, one complete `--model` form, and the
+    // user's own config file.
+    assert!(said.contains("  trellis "), "names bare trellis:\n{said}");
+    assert!(
+        said.contains("--model llamacpp:http://127.0.0.1:8080"),
+        "a concrete --model:\n{said}"
+    );
+    assert!(
+        said.contains(&config.display().to_string()),
+        "the user config file:\n{said}"
+    );
+
+    let bare = {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .current_dir(&d)
+            .env("NO_COLOR", "1")
+            .env(
+                "TRELLIS_CONFIG_DIR",
+                std::env::temp_dir().join("trellis-tests-no-user-config"),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"x\n/exit\n")
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let shown = combined(&bare);
+    assert!(
+        shown.contains(said),
+        "bare trellis must print the same text as `trellis run`.\nrun:\n{said}\nbare:\n{shown}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
 }

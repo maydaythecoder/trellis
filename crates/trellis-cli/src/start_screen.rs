@@ -1,0 +1,284 @@
+//! The start screen bare `trellis` opens outside a repository (ADR 0050 §3).
+//!
+//! Bare `trellis` in a home directory, or in a directory of repositories,
+//! used to refuse with "cannot determine the repository root", and the
+//! person had to know where to go next. This lists the repositories trellis
+//! last resolved a root in and offers `git init` in the current directory.
+//! Every other command keeps the refusal: nothing here walks a tree that is
+//! not a repository, and the reason `root_from` refuses (a home directory
+//! indexed by accident) stands.
+//!
+//! The list lives in `recent.json` in the user config directory, beside the
+//! trust store: `{"version":1,"repositories":["<absolute path>", ...]}`,
+//! newest first, at most [`MAX`]. ADR 0050 §3 is the record of that file.
+//!
+//! Split like `first_run`: [`record`] and [`listed`] take the file as a
+//! parameter, and [`screen`] reads its answers from whatever reader it is
+//! given, so each is testable without a home directory or a terminal.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+
+use crate::plain;
+
+/// How many repositories the list keeps.
+pub(crate) const MAX: usize = 10;
+
+/// The file's format version; a file with another is ignored, not guessed at.
+const VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct Recent {
+    version: u32,
+    repositories: Vec<String>,
+}
+
+/// `<user config dir>/recent.json`; `None` where there is no user config
+/// directory, and in this crate's unit tests (`user_config::dir`).
+pub(crate) fn file() -> Option<PathBuf> {
+    crate::user_config::dir().map(|d| d.join("recent.json"))
+}
+
+/// What the file holds, in its order. A missing file is an empty list; one
+/// that does not parse, or has another version, is an error naming it.
+fn read(file: &Path) -> Result<Vec<String>> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    let r: Recent = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not a list of recent repositories", file.display()))?;
+    if r.version != VERSION {
+        anyhow::bail!(
+            "{} has version {}, not {VERSION}",
+            file.display(),
+            r.version
+        );
+    }
+    Ok(r.repositories)
+}
+
+/// Put `root` first in the list at `file`: deduplicated, at most [`MAX`].
+///
+/// A root that is not valid UTF-8 is not recorded, since the file is JSON
+/// text. Written beside the file under this process's id and renamed over
+/// it, so two trellis processes recording at once each leave a whole file.
+pub(crate) fn record(file: &Path, root: &Path) -> Result<()> {
+    let root =
+        std::path::absolute(root).with_context(|| format!("making {} absolute", root.display()))?;
+    let Some(root) = root.to_str().map(str::to_string) else {
+        return Ok(());
+    };
+    let mut list = read(file)?;
+    list.retain(|r| *r != root);
+    list.insert(0, root);
+    list.truncate(MAX);
+    let text = serde_json::to_string_pretty(&Recent {
+        version: VERSION,
+        repositories: list,
+    })?;
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let tmp = file.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, file).with_context(|| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("replacing {}", file.display())
+    })
+}
+
+/// The recorded repositories that still are one, newest first. A path whose
+/// `.git` is gone is dropped here; nothing else on disk is read.
+pub(crate) fn listed(file: &Path) -> Result<Vec<PathBuf>> {
+    Ok(read(file)?
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.join(".git").exists())
+        .take(MAX)
+        .collect())
+}
+
+/// The screen: `recent` numbered, then the `git init` offer for `cwd`.
+/// Returns the root to open, or `None` when the person quits (`q` or end of
+/// input). `git init` runs only after an explicit `y`.
+pub(crate) fn screen(
+    recent: &[PathBuf],
+    cwd: &Path,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<Option<PathBuf>> {
+    let here = plain(&cwd.display().to_string());
+    writeln!(out, "{here} is not inside a git repository.")?;
+    if recent.is_empty() {
+        writeln!(out, "No repository has been opened with trellis yet.")?;
+    } else {
+        writeln!(out, "Repositories trellis opened recently:")?;
+        for (i, r) in recent.iter().enumerate() {
+            writeln!(out, "  {}. {}", i + 1, plain(&r.display().to_string()))?;
+        }
+    }
+    writeln!(out, "  i. run `git init` here, in {here}")?;
+    let numbers = match recent.len() {
+        0 => String::new(),
+        1 => "1, ".to_string(),
+        n => format!("1 to {n}, "),
+    };
+    loop {
+        write!(out, "Choose {numbers}i, or q to quit: ")?;
+        out.flush()?;
+        let Some(t) = answer(input)? else {
+            return Ok(None);
+        };
+        if t.eq_ignore_ascii_case("q") {
+            return Ok(None);
+        }
+        if t.eq_ignore_ascii_case("i") {
+            write!(out, "Create a git repository in {here}? [y/N] ")?;
+            out.flush()?;
+            if !matches!(answer(input)?.as_deref(), Some("y" | "Y")) {
+                writeln!(out, "Nothing was created.")?;
+                return Ok(None);
+            }
+            init(cwd)?;
+            writeln!(out, "Initialised a git repository in {here}.")?;
+            return Ok(Some(cwd.to_path_buf()));
+        }
+        match t.parse::<usize>() {
+            Ok(n) if (1..=recent.len()).contains(&n) => return Ok(Some(recent[n - 1].clone())),
+            _ => writeln!(out, "That is not one of the choices.")?,
+        }
+    }
+}
+
+/// One trimmed line, or `None` at end of input.
+fn answer(input: &mut dyn BufRead) -> Result<Option<String>> {
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(line.trim().to_string()))
+}
+
+/// `git init` in `dir`, through `trellis_vcs` like every git trellis starts.
+fn init(dir: &Path) -> Result<()> {
+    let out = trellis_vcs::command()
+        .arg("init")
+        .current_dir(dir)
+        .output()
+        .context("starting git")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "could not create a git repository in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// [`screen`] on the process's stdin and stderr, listing the user's file.
+/// The caller has checked they are terminals. A list that cannot be read is
+/// said once and the screen opens without it: `git init` is still on offer.
+pub(crate) fn offer() -> Result<Option<PathBuf>> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let mut err = std::io::stderr();
+    let recent = match file().map(|f| listed(&f)).transpose() {
+        Ok(r) => r.unwrap_or_default(),
+        Err(e) => {
+            writeln!(err, "recent repositories not shown: {e:#}")?;
+            Vec::new()
+        }
+    };
+    screen(&recent, &cwd, &mut std::io::stdin().lock(), &mut err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory that `listed` counts as a repository: it has a `.git`.
+    fn repo_at(base: &Path, name: &str) -> PathBuf {
+        let p = base.join(name);
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        p
+    }
+
+    #[test]
+    fn start_screen_recent_list_is_newest_first_deduplicated_and_capped() {
+        // The risk: the list grows without bound, repeats a repository, or
+        // shows the oldest first, so the one just used is not the one at 1.
+        let user = tempfile::tempdir().unwrap();
+        let file = user.path().join("recent.json");
+        let base = tempfile::tempdir().unwrap();
+        let repos: Vec<PathBuf> = (0..12)
+            .map(|i| repo_at(base.path(), &format!("r{i}")))
+            .collect();
+        for r in &repos {
+            record(&file, r).unwrap();
+        }
+        // r3 again: it moves to the front rather than appearing twice.
+        record(&file, &repos[3]).unwrap();
+
+        let want: Vec<PathBuf> = [3, 11, 10, 9, 8, 7, 6, 5, 4, 2]
+            .iter()
+            .map(|&i| repos[i].clone())
+            .collect();
+        assert_eq!(listed(&file).unwrap(), want);
+        assert_eq!(read(&file).unwrap().len(), MAX);
+
+        // A repository that no longer exists is dropped when listed.
+        std::fs::remove_dir_all(&repos[11]).unwrap();
+        let mut gone = want.clone();
+        gone.retain(|p| *p != repos[11]);
+        assert_eq!(listed(&file).unwrap(), gone);
+
+        // The screen numbers them in that order, and a number opens one.
+        let mut shown = Vec::new();
+        let chosen = screen(&gone, base.path(), &mut "2\n".as_bytes(), &mut shown).unwrap();
+        assert_eq!(chosen, Some(repos[10].clone()));
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(
+            shown.contains(&format!("  1. {}", repos[3].display())),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn start_screen_git_init_runs_only_after_an_explicit_y() {
+        // The risk: a repository is created in a home directory because the
+        // person pressed Enter, or answered anything but yes.
+        for input in ["i\n\n", "i\nn\n", "i\nyes please\n", "i\n", "q\n", ""] {
+            let cwd = tempfile::tempdir().unwrap();
+            let mut shown = Vec::new();
+            let got = screen(&[], cwd.path(), &mut input.as_bytes(), &mut shown).unwrap();
+            assert_eq!(got, None, "{input:?}");
+            assert!(
+                !cwd.path().join(".git").exists(),
+                "{input:?} created a repository: {}",
+                String::from_utf8_lossy(&shown)
+            );
+        }
+        let cwd = tempfile::tempdir().unwrap();
+        let got = screen(&[], cwd.path(), &mut "i\ny\n".as_bytes(), &mut Vec::new()).unwrap();
+        assert_eq!(got.as_deref(), Some(cwd.path()));
+        assert!(cwd.path().join(".git").exists());
+    }
+
+    #[test]
+    fn start_screen_an_unreadable_list_is_an_error_naming_the_file() {
+        // The risk: a corrupt file silently reads as "no repositories", or
+        // a record over it throws away whatever the person had.
+        let user = tempfile::tempdir().unwrap();
+        let file = user.path().join("recent.json");
+        std::fs::write(&file, "not json").unwrap();
+        let err = listed(&file).unwrap_err();
+        assert!(format!("{err:#}").contains("recent.json"), "{err:#}");
+        assert!(record(&file, user.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
+    }
+}
