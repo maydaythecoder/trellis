@@ -91,4 +91,24 @@ mod tests {
         assert!(!s.contains("sk-abcdef"), "{s}");
         assert!(s.contains("<key from K>"), "{s}");
     }
+
+    #[test]
+    fn scrub_leaves_text_alone_for_a_key_under_four_characters() {
+        // A one-to-three character "key" would rewrite every word holding
+        // it; four is the first length that is replaced.
+        assert_eq!(ApiKey::for_test("abc", "K").scrub("abcdef"), "abcdef");
+        assert_eq!(
+            ApiKey::for_test("abcd", "K").scrub("abcdef"),
+            "<key from K>ef"
+        );
+    }
+
+    #[test]
+    fn from_env_reads_a_set_variable_and_names_it_as_the_source() {
+        // `PATH` is set wherever tests run, and setting a variable needs
+        // `unsafe` in this edition. The value is never printed.
+        let k = ApiKey::from_env("PATH").expect("PATH is set");
+        assert_eq!(k.source(), "PATH");
+        assert!(ApiKey::from_env("TRELLIS_TEST_245_NEVER_SET").is_none());
+    }
 }
