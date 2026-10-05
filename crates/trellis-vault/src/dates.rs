@@ -744,6 +744,12 @@ impl Touched {
 /// as new with `today`; a modified note is reconciled with {today, not
 /// estimated}; a deleted note's entry is removed. Does nothing, and returns
 /// `Ok(None)`, when `dates.json` is absent.
+///
+/// Called after the note write has landed, so nothing here fails the edit
+/// (ADR 0022 §5, re-inventory 2026-10-04): a touched note that cannot be
+/// read, seeded or reconciled keeps its previous entry and is named, the
+/// other notes are still updated, and a save that is refused or fails
+/// leaves `dates.json` as it was and says so. Every outcome is `Ok`.
 pub fn after_edit(
     root: &Path,
     touched: &Touched,
@@ -762,29 +768,50 @@ pub fn after_edit(
         return Ok(None);
     }
     let with = stamp(Some(today), false);
+    let mut report = Vec::new();
     for p in touched.created.iter().chain(&touched.modified) {
-        let full = reader::file_of(root, p);
-        let text = reader::read_text(&full)?;
-        let body = reader::split_markdown(&text).2;
-        let nd = if touched.created.contains(p) && !file.doc.notes.contains_key(p) {
-            seed(
-                body,
-                &Seed {
-                    is_new: true,
-                    today: Some(today),
-                    ..Seed::default()
-                },
-            )
-        } else {
-            reconcile(body, file.doc.notes.get(p), &with)
-        }?;
-        file.doc.notes.insert(p.clone(), nd);
+        let next = (|| {
+            let text = reader::read_text(&reader::file_of(root, p))?;
+            let body = reader::split_markdown(&text).2;
+            if touched.created.contains(p) && !file.doc.notes.contains_key(p) {
+                seed(
+                    body,
+                    &Seed {
+                        is_new: true,
+                        today: Some(today),
+                        ..Seed::default()
+                    },
+                )
+            } else {
+                reconcile(body, file.doc.notes.get(p), &with)
+            }
+        })();
+        match next {
+            Ok(nd) => {
+                file.doc.notes.insert(p.clone(), nd);
+            }
+            // As `refresh` does: the entry is not replaced, since the dates
+            // it holds are not recoverable once lost.
+            Err(e) if file.doc.notes.contains_key(p) => report.push(format!(
+                "dates.json not updated for {p}: {e}; its previous entry is kept"
+            )),
+            Err(e) => report.push(format!("dates.json not updated for {p}: {e}")),
+        }
     }
     for p in &touched.deleted {
         file.doc.notes.remove(p);
     }
-    let wrote = file.save()?;
-    Ok(wrote.then(|| "dates.json updated".to_string()))
+    match file.save() {
+        Ok(true) => report.insert(0, "dates.json updated".to_string()),
+        Ok(false) => {}
+        // `save` refuses before writing, and `atomic_write` leaves the
+        // target as it was on any failure, so the old bytes stand.
+        Err(e) => report.insert(
+            0,
+            format!("dates.json left unchanged ({e}); the note edit is written"),
+        ),
+    }
+    Ok((!report.is_empty()).then(|| report.join("\n")))
 }
 
 #[cfg(test)]
@@ -1395,5 +1422,142 @@ mod tests {
             panic!("valid")
         };
         assert_eq!(f.doc.notes["a.md"], old);
+    }
+
+    /// Seeds `dates.json` for the notes on disk under `root` as of 2020-01-01.
+    fn seeded_dates(root: &Path) {
+        let v = crate::reader::Vault::open(root).unwrap();
+        let mut doc = Document::default();
+        let days = |_: &str| FileDays {
+            created: Some("2020-01-01".into()),
+            modified: Some("2020-01-01".into()),
+        };
+        refresh(&v, &mut doc, &days);
+        std::fs::write(path(root), to_bytes(&doc)).unwrap();
+    }
+
+    #[test]
+    fn after_edit_keeps_a_failing_note_s_entry_and_updates_the_rest() {
+        // The risk: the first touched note past the line limit stopped the
+        // update for every note the edit touched, and failed a vault command
+        // whose note write had already landed.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.md"), "short\n").unwrap();
+        std::fs::write(d.path().join("b.md"), "one\ntwo\n").unwrap();
+        seeded_dates(d.path());
+        let State::Valid(f) = load(d.path()) else {
+            panic!("valid")
+        };
+        let a_before = serde_json::to_vec(&f.doc.notes["a.md"]).unwrap();
+
+        std::fs::write(d.path().join("a.md"), "x\n".repeat(MAX_LINES_PER_NOTE + 1)).unwrap();
+        std::fs::write(d.path().join("b.md"), "one\nchanged\n").unwrap();
+        let touched = Touched {
+            modified: vec!["a.md".into(), "b.md".into()],
+            ..Touched::default()
+        };
+        let m = after_edit(d.path(), &touched, "2024-05-05")
+            .unwrap()
+            .unwrap();
+        assert!(m.contains("a.md"), "{m}");
+
+        let State::Valid(f) = load(d.path()) else {
+            panic!("valid")
+        };
+        assert_eq!(serde_json::to_vec(&f.doc.notes["a.md"]).unwrap(), a_before);
+        let b = &f.doc.notes["b.md"];
+        assert_eq!(b.lines[1].anchor, line_anchor("changed"));
+        assert_eq!(b.lines[1].day.as_deref(), Some("2024-05-05"));
+        assert!(!b.lines[1].estimated);
+    }
+
+    #[test]
+    fn after_edit_past_the_workspace_limits_leaves_dates_json_unchanged() {
+        // The risk: a dates.json at its note limit made every new note fail
+        // the command that wrote it.
+        let d = tempfile::tempdir().unwrap();
+        let mut doc = Document::default();
+        for i in 0..MAX_NOTES {
+            doc.notes.insert(format!("n{i}.md"), entry(0));
+        }
+        let raw = to_bytes(&doc);
+        std::fs::write(path(d.path()), &raw).unwrap();
+        std::fs::write(d.path().join("new.md"), "hello\n").unwrap();
+        let touched = Touched {
+            created: vec!["new.md".into()],
+            ..Touched::default()
+        };
+        let m = after_edit(d.path(), &touched, "2024-05-05")
+            .unwrap()
+            .unwrap();
+        assert!(m.contains("dates.json left unchanged"), "{m}");
+        assert!(m.contains("the note edit is written"), "{m}");
+        assert_eq!(std::fs::read(path(d.path())).unwrap(), raw);
+    }
+
+    #[test]
+    fn after_edit_with_an_unreadable_touched_note_updates_the_others() {
+        // The risk: one touched path gone from disk (moved or removed by
+        // someone else) stopped the update for every other note.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("b.md"), "one\n").unwrap();
+        seeded_dates(d.path());
+        std::fs::write(d.path().join("b.md"), "one\nadded\n").unwrap();
+        let touched = Touched {
+            modified: vec!["gone.md".into(), "b.md".into()],
+            ..Touched::default()
+        };
+        let m = after_edit(d.path(), &touched, "2024-05-05")
+            .unwrap()
+            .unwrap();
+        assert!(m.contains("gone.md"), "{m}");
+
+        let State::Valid(f) = load(d.path()) else {
+            panic!("valid")
+        };
+        assert!(!f.doc.notes.contains_key("gone.md"));
+        let b = &f.doc.notes["b.md"];
+        assert_eq!(b.lines.len(), 3, "{b:?}");
+        assert_eq!(b.lines[1].day.as_deref(), Some("2024-05-05"));
+    }
+
+    #[test]
+    fn after_edit_with_a_failed_write_leaves_dates_json_unchanged() {
+        // The risk: a dates.json that could not be written failed a vault
+        // command whose note write had already landed.
+        #[cfg(windows)]
+        {
+            println!("skipped: Unix permission bits are needed to make the write fail");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let d = tempfile::tempdir().unwrap();
+            std::fs::write(d.path().join("a.md"), "one\n").unwrap();
+            seeded_dates(d.path());
+            std::fs::write(d.path().join("a.md"), "one\nadded\n").unwrap();
+            let raw = std::fs::read(path(d.path())).unwrap();
+            let mode =
+                |m| std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(m)).unwrap();
+            mode(0o555);
+            let probe = d.path().join("probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                std::fs::remove_file(&probe).unwrap();
+                mode(0o755);
+                println!("skipped: running as root, which permission bits do not stop");
+                return;
+            }
+            let touched = Touched {
+                modified: vec!["a.md".into()],
+                ..Touched::default()
+            };
+            let result = after_edit(d.path(), &touched, "2024-05-05");
+            let after = std::fs::read(path(d.path())).unwrap();
+            mode(0o755);
+            let m = result.unwrap().unwrap();
+            assert!(m.contains("dates.json left unchanged"), "{m}");
+            assert!(m.contains("the note edit is written"), "{m}");
+            assert_eq!(after, raw);
+        }
     }
 }
