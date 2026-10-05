@@ -183,6 +183,13 @@ The adapter's prompt opens with a role sentence, then a protocol:
   (ADR 0007). It is exported as data and never interpreted. serde already
   escapes C0 controls, and U+007F–U+009F are escaped as well, because a
   terminal can act on C1 controls.
+- *Added 2026-10-05 (#291).* The `log_json` paths listed in
+  `crates/trellis-cli/tests/client_contract.json`, each marked always present
+  or optional, are what a `log --json` client may rely on (ADR 0048 §6);
+  the rest of `trail` stays as unversioned as this section leaves it. Held
+  by `log_json_carries_every_trail_field_the_desktop_reads` in
+  `tests/modes.rs`, through the binary, which names each always-present
+  path the line does not carry.
 
 ### 5. `trellis rpc`
 
@@ -441,6 +448,21 @@ on stderr.
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
   tail, not full observations.
+- *Added 2026-10-05 (#291).* The `rpc` fields listed in
+  `crates/trellis-cli/tests/client_contract.json` are what an rpc client may
+  rely on (ADR 0048 §6): per event `message` (`turn`, `run budget`,
+  `steer delivered`) the fields always present, those present only on a
+  `blast_radius` turn or only with a prompt-sending driver, and the three
+  `verdict` values; per framing `type` (`run_start`, `run_end`, `response`,
+  `approval_request`) its fields. The tracing events between the framing
+  records are otherwise still unversioned (§4). Held, through the binary
+  over stdio, by `rpc_stream_carries_every_field_the_desktop_reads` (a run
+  against the provider stub that names each listed `turn`, `run budget`,
+  `run_start`, `run_end` and `response` field the stream did not carry, and
+  any `verdict` outside the three), and by
+  `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`
+  and `rpc_approve_mode_asks_on_the_stream_while_input_stays_open` for
+  `steer delivered` and `approval_request`, all in `tests/modes.rs`.
 
 ### 6. Session additions
 
