@@ -221,6 +221,116 @@ fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
 }
 
 #[test]
+fn rpc_run_whose_client_closes_every_pipe_still_rolls_back_and_writes_its_trail() {
+    // The risk: a desktop that crashes, or is ended from the task manager,
+    // closes the child's stdin, stdout and stderr together (ADR 0025 §5, ADR
+    // 0048 §9). End of input must still decline the open question, roll back
+    // the edit already applied, and write the trail, with nobody left to
+    // read a line of it; one write that panics on a closed pipe skips both.
+    // The first edit is approved so the tree holds an applied write when the
+    // client goes: stopping at the first question would pass with rollback
+    // broken, since approve mode asks before it applies.
+    let f = fixture("rpc-vanish");
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let script = scratch("rpc-vanish-two-edits").join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"edit","path":"a.py","old":"return 2","new":"return 3"},
+            {"tool":"done","summary":"changed it twice"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let mut child = trellis(&f)
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let stderr = child.stderr.take().unwrap();
+    let mut seen = Vec::new();
+    let mut next_question = |stdout: &mut std::io::BufReader<std::process::ChildStdout>| loop {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let n = stdout.read_line(&mut line).unwrap();
+        assert!(n > 0, "stdout ended before an approval_request: {seen:?}");
+        let v: Value = serde_json::from_str(&line).expect("stdout is JSONL");
+        seen.push(v.clone());
+        if v["type"] == "approval_request" {
+            return v;
+        }
+    };
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": spec})
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let q = next_question(&mut stdout);
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": q["id"], "type": "approve", "yes": true})
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    next_question(&mut stdout);
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 2\n",
+        "the first edit is applied when the client goes"
+    );
+
+    drop((stdin, stdout, stderr));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("trellis rpc still running 60 s after its client closed every pipe");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 1\n",
+        "rolled back to the committed content (exit {status})"
+    );
+    let trails: Vec<PathBuf> = std::fs::read_dir(f.root.join(".trellis/runs"))
+        .unwrap_or_else(|e| panic!("no trail directory (exit {status}): {e}"))
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    assert_eq!(trails.len(), 1, "one trail (exit {status}): {trails:?}");
+    let trail: Value = serde_json::from_str(&std::fs::read_to_string(&trails[0]).unwrap()).unwrap();
+    // `trellis log` derives the outcome from the last check's verdict; a run
+    // that converged has one that passed.
+    let factual = &trail["factual"];
+    let last = factual["check_outcomes"]
+        .as_array()
+        .and_then(|c| c.last())
+        .or_else(|| factual["checks"].as_array().and_then(|c| c.last()));
+    assert_ne!(
+        last.map(|c| &c["passed"]),
+        Some(&Value::Bool(true)),
+        "the trail records a converged run: {trail}"
+    );
+}
+
+#[test]
 fn a_user_context_file_and_config_reach_a_run_and_are_named() {
     let f = fixture("user-dir");
     std::fs::write(f.user.join("AGENTS.md"), "Prefer small diffs.\n").unwrap();
