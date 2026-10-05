@@ -27,13 +27,16 @@ failures on one gate, or a ticket that needs a person (G7), and reports.
 | implementer | `.claude/agents/implementer.md` | one ticket, on its branch, with tests | decide architecture; add deps, `#[allow]`, `unsafe` without an ADR |
 | verifier | `.claude/agents/verifier.md` | runs gates, reports output verbatim | edit anything; give an opinion |
 | security | `.claude/agents/security.md` | read-only review of trust-boundary changes | edit anything |
-| ops | `.claude/agents/ops.md` | CI, `deny.toml`, `scripts/gates`, `scripts/tickets` | touch crate code |
+| planner | `.claude/agents/planner.md` | turns a request that is not yet a ticket into filed tickets and a dispatch order; fans out at most three agents, at most one running cargo | edit repository files |
+| git-ci-steward | `.claude/agents/git-ci-steward.md` | ADR 0051's branch flow and promotion of `audit` into `dev`; CI, hooks, `deny.toml`, `scripts/gates`, `scripts/checks`, `scripts/tickets` | touch crate code; push to `main` or a `v*` tag |
 | unparker | `.claude/agents/unparker.md` | ranks parked / needs-human tickets by what an answer unblocks, drafts one question each for the owner, applies the answers until a ticket needs nobody | decide for the owner; ask directly (the coordinator asks) |
-| queue-runner | `.claude/agents/queue-runner.md` | works the agent-executable queue one ticket at a time: implement, gate, merge into `audit`, close | touch parked work; push to `v0.1-resolver` |
+| queue-runner | `.claude/agents/queue-runner.md` | works the agent-executable queue one ticket at a time: implement, gate, merge into `audit`, close | touch parked work; push to `main` or `v0.1-resolver` |
 | queue | GitHub issues + Trellis roadmap project (#2) | the tickets, labelled per the ticketing standard | |
 | gates | `scripts/gates/` | exit 0 or say why not | be skipped |
 
-Subagents cannot spawn subagents, so only the orchestrator dispatches.
+The orchestrator and the planner dispatch; an agent without the `Agent` tool
+cannot. `.claude/settings.json` caps concurrent subagents at three, because the
+host has 15 GB shared with a local model; at most one of them runs cargo.
 
 ## Gates
 
