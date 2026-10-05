@@ -154,8 +154,7 @@ pub(crate) fn cmd_why(root: &Path, query: &str) -> Result<()> {
     // the mapping is recomputed rather than recorded.
     let index = trellis_index::build_cached(root);
     let mut targets: Vec<String> = vec![query.to_string()];
-    for (i, sym) in index.symbols.iter().enumerate() {
-        let _ = i;
+    for sym in &index.symbols {
         if index.interner.resolve(sym.name) == query {
             let path = index.files[sym.file.index()].path.clone();
             if !targets.contains(&path) {
