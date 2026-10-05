@@ -1273,6 +1273,10 @@ are not assumed closed:
   the rollback (ADR 0023 §3; ADR 0026 §11 step 2). On Unix a process that leaves
   its group (`setsid`) is not reached, and a process agent runs in
   trellis's own group, so nothing is killed after its normal exit.
+  *Amended by ADR 0035:* on Windows, commands and process agents now run
+  in a Job Object that is terminated however they end, so this route is
+  closed there except for a process started outside the job. The Unix
+  half is unchanged.
 - **`.git/` writes outside the guarded files.** The git guard restores
   `config`, `config.worktree`, include targets under the git directory,
   the hooks, `info/exclude` and `info/attributes`. The rest of `.git/`
@@ -1435,12 +1439,15 @@ run's own. No post-hoc check is added for it; the fix is isolation (ADR
   below.
 - ~~**`@profile` mentions in notes do not wake anything.** ADR 0021 defers
   them.~~ Built for #57; see §1's amendment.
-- **No prompt-token or dollar accounting** (§5).
+- ~~No prompt-token accounting~~ (built for #108, §5). **No dollar
+  accounting** (§5; deferred to v1.x by #67).
 - **Routines fire only while `work` is running.** There is no daemon
   (ADR 0020). A schedule with no `work` running accumulates missed fires,
   which the catch-up policy then handles.
 - **Webhook and API triggers.** ADR 0021 excludes them.
-- **Grandchildren of a timed-out process agent are not reaped** (§11).
+- **On Unix, grandchildren of a process agent are not reaped** (§11; it
+  runs in trellis's own process group). On Windows its Job Object ends them
+  (ADR 0035).
 - **Services (§12): no readiness wait, no per-task worktree until #24, no
   declaration on a single task** (only on a profile), and no services for
   `trellis run`, which runs no profile. On Unix a SIGKILL of trellis leaves
