@@ -94,8 +94,6 @@ pub enum TzError {
     NoColon(String),
     #[error("timezone `{tz}`: bad {what}; write the offset as `+HH:MM`")]
     BadDigits { tz: String, what: &'static str },
-    #[error("timezone `{tz}`: bad {what}")]
-    BadNumber { tz: String, what: &'static str },
     #[error("timezone `{0}`: offset out of range")]
     OutOfRange(String),
 }
@@ -353,10 +351,8 @@ impl Tz {
                     what,
                 });
             }
-            f.parse().map_err(|_| TzError::BadNumber {
-                tz: t.to_string(),
-                what,
-            })
+            let b = f.as_bytes();
+            Ok(i32::from(b[0] - b'0') * 10 + i32::from(b[1] - b'0'))
         };
         let (h, m) = (digits(h, "hours")?, digits(m, "minutes")?);
         if h > 14 || m > 59 {

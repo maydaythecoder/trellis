@@ -1463,6 +1463,28 @@ fn here() -> Claimant {
     }
 }
 
+#[test]
+fn a_question_returns_the_task_to_pending_with_no_claim_left_on_it() {
+    // The risk: a task back in pending/ still naming the host, OS and
+    // process start of the run that asked, which an export carries along
+    // and a reader takes for a live claim.
+    let (_d, q) = queue();
+    let id = q.add("x", None, None).unwrap();
+    let claim = q.clone().with_claimant(here()).claim(&id).unwrap().unwrap();
+    claim.ask("which one?", &[]).unwrap();
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!((t.attempts, t.status), (1, Some(Status::Blocked)));
+    assert_eq!(
+        (t.claimed_at, t.claimed_by_pid),
+        (None, None),
+        "claimed_at and claimed_by_pid"
+    );
+    assert_eq!(
+        (t.claimed_host, t.claimed_os, t.claimed_pid_started),
+        (None, None, None)
+    );
+}
+
 /// A claim left behind by a process that recorded `c` (or nothing, for
 /// `None`), as a crash leaves it. Returns the id and the claim's instant.
 fn crashed_claim(q: &Queue, task: &str, c: Option<Claimant>) -> (String, i64) {
