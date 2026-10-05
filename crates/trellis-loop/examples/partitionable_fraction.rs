@@ -5,6 +5,10 @@
 //! `add_touched_file_misses` as the difference. This says which of that
 //! function's three sources of "touched" is doing it, because a narrowing
 //! has to target the right one.
+//!
+//! That narrowing has landed (ADR 0016): the root's own file no longer
+//! disqualifies a unit, so its row is shown for comparison only. The
+//! breakdown counts unpartitionable units alone.
 use std::collections::HashSet;
 use trellis_core::{FileId, SymbolId};
 use trellis_index::Target;
@@ -40,9 +44,11 @@ fn main() {
         let r = trellis_index::radius::blast_radius(&index, id);
         if r.partitionable {
             unit_ok += 1;
+            continue;
         }
 
-        // Which source of `touched` contributes a dirty file.
+        // Which source of `touched` contributes a dirty file to a unit that
+        // is unpartitionable.
         if dirty.contains(&index.symbols[id.index()].file) {
             by_root += 1;
         }
@@ -72,9 +78,13 @@ fn main() {
         pct(unit_ok)
     );
     println!();
-    println!("Which source of `touched` supplies a file with an unbound call:");
     println!(
-        "  the root's own file:            {by_root:>4} ({:.1}%)",
+        "Which source of `touched` supplies a file with an unbound call, over the {} \
+         unpartitionable units (% of all sampled):",
+        sampled - unit_ok
+    );
+    println!(
+        "  the root's own file:            {by_root:>4} ({:.1}%)  not disqualifying since ADR 0016",
         pct(by_root)
     );
     println!(
