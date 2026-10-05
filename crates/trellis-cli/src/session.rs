@@ -525,12 +525,17 @@ impl Session {
 
     fn task(&mut self, task: &str) -> Result<()> {
         let Some(spec) = self.model.clone() else {
-            anyhow::bail!(concat!(
-                "no model set, so there is nothing to drive the loop.\n",
-                "  /model llamacpp:http://127.0.0.1:8080   a serving runtime\n",
-                "  /model scripted:fix.json                a fixed list of tool calls\n",
-                "Everything else — /index, /radius, /check, /doctor — works without one."
-            ));
+            // The shared advice first (#376), then what only a session has.
+            anyhow::bail!(
+                "{}\n{}",
+                crate::first_run::no_model(),
+                concat!(
+                    "Or, in this session:\n",
+                    "  /model llamacpp:http://127.0.0.1:8080   a serving runtime\n",
+                    "  /model scripted:fix.json                a fixed list of tool calls\n",
+                    "Everything else — /index, /radius, /check, /doctor — works without one."
+                )
+            );
         };
 
         // Not everything typed here is work, and this surface had no way to
@@ -672,7 +677,10 @@ impl Session {
         out: &mut (dyn std::io::Write + Send),
     ) -> Result<()> {
         let Some(model) = self.model.as_ref().map(ToString::to_string) else {
-            anyhow::bail!("no model set. /model <spec> first; /models lists what is configured");
+            anyhow::bail!(
+                "{}\nOr /model <spec> in this session; /models lists what is configured.",
+                crate::first_run::no_model()
+            );
         };
         self.tasks_run += 1;
         let done = crate::output::DoneSlot::default();
@@ -1349,7 +1357,7 @@ mod tests {
         let mut s = session(d.path());
         let e = s.dispatch("rename helper to assist").expect_err("no model");
         let msg = e.to_string();
-        assert!(msg.contains("no model set"), "{msg}");
+        assert!(msg.contains(crate::first_run::NO_MODEL), "{msg}");
         // The two spellings, because "set a model" is not actionable to
         // someone who has not read the --model docs.
         assert!(msg.contains("/model llamacpp:"), "{msg}");
