@@ -24,6 +24,26 @@ use trellis_model::ModelSpec;
 /// and the person is waiting at a blank terminal for the list.
 pub(crate) const BOUND: Duration = Duration::from_millis(1500);
 
+/// The one thing every command says when it needs a model and has none
+/// (#376). `trellis run`, the line session bare `trellis` opens on a pipe,
+/// and the picker that found nothing each used to word this their own way,
+/// and none mentioned the picker. Completed by [`no_model`] with the user
+/// config file's path, which depends on the environment.
+pub(crate) const NO_MODEL: &str = concat!(
+    "no model configured. Any one of these sets one:\n",
+    "  trellis      in a terminal, lists the models running on this machine and saves the one you pick\n",
+    "  trellis run --model llamacpp:http://127.0.0.1:8080 \"<task>\"\n",
+    "  [model] spec in your user config file, ",
+);
+
+/// [`NO_MODEL`], ending with where the user config file is.
+pub(crate) fn no_model() -> String {
+    match crate::user_config::file() {
+        Some(f) => format!("{NO_MODEL}{}", f.display()),
+        None => format!("{NO_MODEL}which needs TRELLIS_CONFIG_DIR set to say where"),
+    }
+}
+
 /// More than any model list a local runtime returns; a response past it is
 /// not a model list.
 const MAX_RESPONSE: usize = 1 << 20;
@@ -157,9 +177,9 @@ fn usable(id: &str) -> bool {
 }
 
 /// What to say when nothing was found: every address tried, what each
-/// answered, and the `--model` form that skips the probe.
+/// answered, then [`no_model`] for what to do about it.
 pub(crate) fn nothing_found(probed: &[Probed]) -> String {
-    let mut msg = String::from("no model configured, and no local runtime answered with one:\n");
+    let mut msg = String::from("no local runtime answered with a model:\n");
     for p in probed {
         let why = match &p.answer {
             Ok(_) => "answered, but listed no usable model".to_string(),
@@ -172,11 +192,7 @@ pub(crate) fn nothing_found(probed: &[Probed]) -> String {
             p.runtime.api.path()
         ));
     }
-    msg.push_str(concat!(
-        "Start one and run trellis again, or name a model:\n",
-        "  trellis tui --model vllm:http://127.0.0.1:11434#<model>\n",
-        "or set [model] spec in your user config or .trellis/config.toml."
-    ));
+    msg.push_str(&no_model());
     msg
 }
 
@@ -439,10 +455,7 @@ mod tests {
         ] {
             assert!(msg.contains(addr), "names {addr}: {msg}");
         }
-        assert!(
-            msg.contains("--model vllm:http://127.0.0.1:11434#"),
-            "{msg}"
-        );
+        assert!(msg.contains(NO_MODEL), "the shared advice:\n{msg}");
 
         // And `choose` refuses with that message, writing nothing.
         let dir = tempfile::tempdir().unwrap();
