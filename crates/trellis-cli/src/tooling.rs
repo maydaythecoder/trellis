@@ -226,6 +226,10 @@ pub(crate) fn prepare(root: &Path, cfg: &RepoConfig, run_id: &str, model: &str) 
     let env = vec![
         ("TRELLIS_RUN_ID".to_string(), run_id.to_string()),
         ("TRELLIS_MODEL".to_string(), model.to_string()),
+        // The name tools outside trellis read to tell an agent launched
+        // them (#317). Not given to grounded checks: a test suite that read
+        // it would pass or fail differently than under a person.
+        ("AI_AGENT".to_string(), "trellis".to_string()),
     ];
     // Trust was decided above, once; what it covers can be rewritten
     // during the run by `bash`, a custom tool or a hook, so it is checked
