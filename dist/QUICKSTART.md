@@ -184,13 +184,14 @@ project's own conventions. Nothing in it can authorise skipping a check.
 - **It does not find every caller.** Roughly three call edges in ten are
   statically invisible in Python. Every blast radius ships with a count of what
   could not be resolved, and there is no API that returns reach without it.
-- **It does not run agents concurrently.** `trellis partitions` exits non-zero
-  and says so. The planner is built and property-tested; running partitions in
+- **It does not run agents concurrently.** `trellis run --agents N` refuses
+  any N other than 1 and says so; `trellis partitions <symbols>` prints the
+  plan without running it. The planner is built and property-tested; running partitions in
   parallel is not.
-- **It has no model floor yet.** One configuration has been measured
-  (Qwen2.5-0.5B-Instruct Q4_K_M) and it is *below* the floor — it produces
-  schema-valid tool calls whose contents are nonsense. That bounds the floor
-  from below without locating it. See `docs/BENCHMARK_AND_EVAL.md` §5.
+- **It has no model floor yet.** Two configurations have been measured
+  (Qwen2.5-0.5B-Instruct Q4_K_M, 0/20 repaired; Qwen2.5-Coder-3B-Instruct
+  Q4_K_M, 0/17) and both are *below* the floor. That bounds the floor from
+  below without locating it. See `docs/BENCHMARK_AND_EVAL.md` §5.7.
 
 Recall on the benchmark corpus is **72.0%** on a hand-audited sample
 (n=100 first-party sites), precision 100%. The v1.0 gate wants 85% and a larger
@@ -208,9 +209,8 @@ claim follows (S9). Compiling is not evidence that anything works.
 | `x86_64-unknown-linux-gnu` | **Tested.** Full suite green, and the SIGINT rollback test runs here specifically because Windows cannot deliver a real console Ctrl-C to a native binary from a shell |
 | `aarch64-apple-darwin` | **Built and tested in CI only.** No human has run it. Nothing about it is claimed beyond a green matrix job |
 
-Two toolchains are exercised in practice — rustc 1.93 on Windows, 1.95 on
-Linux — which is how the `Verdict` compile-fail proof was found to be pinned
-to one of them.
+`rust-toolchain.toml` pins rustc 1.93.0 on every platform, because the
+`Verdict` compile-fail proof differed between 1.93 and 1.95.
 
 Everything else is unbuilt and unclaimed. A binary that happens to compile for
 a target nobody has run is not a supported platform.

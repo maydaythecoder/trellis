@@ -10,7 +10,7 @@ parameters:
    - `cargo clippy --all-targets -- -D warnings`
    - `cargo test --workspace`
 3. For each error: generate a fix, re-verify with local tests
-4. Append the cycle's error set to `/mnt/c/Users/mayda/Documents/dev/trellis/.harness/loops/test-loop.json` before starting the next
+4. Append the cycle's error set to `.harness/loops/test-loop.json` (relative to the repository root) before starting the next
 5. Halt at zero errors, at 5 cycles, or when two cycles produce an
    identical error set
 6. Stop at the human gate and report; nothing lands without it
