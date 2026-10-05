@@ -59,37 +59,30 @@ fn git(root: &Path, args: &[&str]) -> String {
 /// `mystery()` takes an untyped parameter so there is a real unbound call for
 /// the coverage report to be honest about.
 fn repo(name: &str) -> PathBuf {
+    repo_with_doubt(name, CALLER_ONE_REASON, None)
+}
+
+/// `repo()`'s `caller.py`: one cross-file call and one unbound call.
+const CALLER_ONE_REASON: &str = concat!(
+    "from app.core import greet\n\n",
+    "def welcome(who):\n",
+    "    return greet(who)\n\n",
+    "def mystery(thing):\n",
+    "    return thing.run()\n",
+);
+
+/// An empty git repository with the identity and line endings every fixture
+/// here needs, so no fixture can drift from the others.
+fn empty_repo(name: &str) -> PathBuf {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
     git(&d, &["config", "user.name", "t"]);
-    // Every other git fixture in this workspace pins this and these two did
-    // not — found by the Pass 6 duplication survey, which is the argument
-    // for that pass in one line. Without it git normalises line endings on
-    // `add`, and `a_missing_scripted_model_fails_before_anything_is_touched`
-    // asserts an empty `status --porcelain` on files it wrote itself.
+    // Two fixtures once lacked this, found by the Pass 6 duplication survey.
+    // Without it git normalises line endings on `add`, and
+    // `a_missing_scripted_model_fails_before_anything_is_touched` asserts an
+    // empty `status --porcelain` on files it wrote itself.
     git(&d, &["config", "core.autocrlf", "false"]);
-
-    std::fs::create_dir_all(d.join("app")).unwrap();
-    std::fs::write(d.join("app/__init__.py"), "").unwrap();
-    std::fs::write(
-        d.join("app/core.py"),
-        "def greet(name):\n    return f\"hello {name}\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        d.join("app/caller.py"),
-        concat!(
-            "from app.core import greet\n\n",
-            "def welcome(who):\n",
-            "    return greet(who)\n\n",
-            "def mystery(thing):\n",
-            "    return thing.run()\n",
-        ),
-    )
-    .unwrap();
-    git(&d, &["add", "-A"]);
-    git(&d, &["commit", "-qm", "fixture"]);
     d
 }
 
@@ -260,6 +253,9 @@ fn radius_ships_reach_and_doubt_as_two_facts() {
         s.contains("call site") || s.contains("caller"),
         "it must report reach: {s}"
     );
+    // `repo()`'s `thing.run()` is the doubt.
+    assert!(s.contains("bound to nothing"), "it must report doubt: {s}");
+    assert!(!s.contains('%'), "and never a ratio of the two: {s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -598,8 +594,9 @@ fn why_reports_absence_rather_than_inventing_a_reason() {
     let d = repo("why-empty");
     let out = run(&d, &["why", "app.core.greet"]);
     let s = combined(&out);
+    assert!(out.status.success(), "{s}");
     assert!(
-        s.contains("no ") || s.contains("No ") || s.contains("nothing") || s.contains("Nothing"),
+        s.contains("no run in the trail mentions `app.core.greet`"),
         "it must report having nothing to say: {s}"
     );
     let _ = std::fs::remove_dir_all(&d);
@@ -632,11 +629,13 @@ fn doctor_reports_a_missing_test_suite_as_the_grounding_problem_it_is() {
     // The fixture has no test suite. Without one there is nothing for a
     // verdict to be grounded on, which makes it a finding rather than a
     // detail — `doctor` exists so that lands before a run does.
-    let d = repo("doctor-notests");
+    // A runner configured by name and certainly absent, so the missing
+    // branch is the one taken whether or not this machine has pytest.
+    let d = repo_with_checks("doctor-notests", "git", "trellis-no-such-test-runner");
     let s = stdout(&run(&d, &["doctor"]));
     assert!(
-        s.contains("tests:"),
-        "doctor must report on the test suite: {s}"
+        s.contains("tests:      NOT FOUND — the grounding contract has nothing to ground on"),
+        "doctor must report the missing suite as a grounding problem: {s}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -882,11 +881,7 @@ fn a_failed_check_says_why_it_failed() {
 /// the caller body being an argument rather than three near-identical
 /// fixtures differing by two lines.
 fn repo_with_doubt(name: &str, caller: &str, other: Option<&str>) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -945,11 +940,7 @@ fn repo_with_doubt_spread(name: &str) -> PathBuf {
 /// deliberately: this fixture is about the file list, and a second reason
 /// would move the table above it as well.
 fn repo_with_doubt_in_n_files(name: &str, n: usize) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -982,11 +973,7 @@ fn repo_with_doubt_in_n_files(name: &str, n: usize) -> PathBuf {
 /// names an unbound name, or passes a callable, so there is nothing for the
 /// resolver to miss.
 fn repo_without_doubt(name: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -1293,11 +1280,7 @@ fn radius_reason_table_lines_up() {
 /// something different on every machine. That mistake is already recorded
 /// against an earlier version of the check tests.
 fn repo_with_checks(name: &str, typecheck: &str, tests: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     std::fs::write(
         d.join(".trellis/config.toml"),
@@ -1429,11 +1412,7 @@ fn init_calls_a_committed_worktree_clean() {
 /// receiver resolves to `Candidates` over both (ADR 0012: a declared type is
 /// an upper bound, not an identity).
 fn repo_with_resolved_and_ambiguous_reach(name: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -1566,11 +1545,7 @@ fn the_trail_sums_reach_across_queries_and_takes_the_widest_doubt() {
 /// and that is fine here: the trail is written after the rollback and
 /// survives it, which is the property `why` depends on.
 fn repo_with_an_edit_script(name: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -1912,8 +1887,8 @@ fn an_unknown_command_is_refused_rather_than_run_as_a_task() {
 ///
 /// Mirrored rather than imported — `tests/cli.rs` is a separate crate and
 /// `DIFF_LINES` is private — and asserted against the shipped behaviour by
-/// the two tests below sitting either side of it. If it moves, the boundary
-/// test fails rather than silently testing nothing.
+/// the boundary test, which checks both `DIFF_LINES` and `DIFF_LINES + 1`. If
+/// it moves either way, that test fails rather than silently testing nothing.
 const DIFF_LINES: usize = 60;
 
 #[test]
@@ -2091,6 +2066,16 @@ fn diff_offers_no_remainder_at_exactly_the_number_of_lines_it_shows() {
     assert!(
         !s.contains("more lines"),
         "the diff was exactly the length shown, so there is no remainder:\n{s}"
+    );
+
+    // One line past it must offer a remainder, or a raised limit would leave
+    // the assertion above passing at a length that is no longer the boundary.
+    write_body(target as usize + 1);
+    assert_eq!(diff_lines(), DIFF_LINES + 1);
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(
+        s.contains("more lines"),
+        "one line past the limit leaves one unshown:\n{s}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -2414,11 +2399,7 @@ fn a_failing_check_prints_what_the_checker_wrote_on_both_streams() {
 /// post-run reporting to exist at all, and a fixture depending on the
 /// developer's toolchain would decide that per machine.
 fn repo_that_converges(name: &str, core: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
@@ -2879,12 +2860,8 @@ fn ignored_model_fixture_with(
     typecheck: &str,
     tests: &str,
 ) -> (PathBuf, impl Fn(&[&str]) -> Output) {
-    let d = scratch(name);
+    let d = empty_repo(name);
     let home = scratch(&format!("{name}-home"));
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
     let (shell, flag) = if cfg!(windows) {
         ("cmd", "/C")
     } else {
@@ -3287,25 +3264,22 @@ fn subcommand_case_does_not_matter_for_its_name() {
 #[test]
 fn subcommand_case_leaves_a_task_text_alone() {
     // Only the subcommand's name is lowered: a task in capitals is the
-    // user's text. With no model the run stops before doing anything, and
-    // its refusal is about the model, not an unknown command.
-    let dir = std::env::temp_dir().join(format!("trellis-case-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
-        .args(["--root"])
-        .arg(&dir)
-        .args(["RUN", "FIX THE BUG"])
-        .env("TRELLIS_CONFIG_DIR", &dir)
-        .output()
-        .unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains("unrecognized subcommand"), "{err}");
-    assert!(
-        !err.contains("fix the bug"),
-        "the task text was lowered: {err}"
+    // user's text. The run writes a trail, and the trail's task is read
+    // back, because no refusal message echoes the task to compare against.
+    let d = repo("case-task");
+    let script = scratch("case-task-script");
+    let out = run(
+        &d,
+        &["RUN", "--model", &script_that_stops(&script), "FIX THE BUG"],
     );
-    let _ = std::fs::remove_dir_all(&dir);
+    let said = combined(&out);
+    assert!(!said.contains("unrecognized subcommand"), "{said}");
+    let trail: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(newest_trail(&d)).unwrap()).unwrap();
+    assert_eq!(trail["task"], "FIX THE BUG", "{said}");
+    for p in [&d, &script] {
+        let _ = std::fs::remove_dir_all(p);
+    }
 }
 
 fn trellis_out(args: &[&str]) -> std::process::Output {

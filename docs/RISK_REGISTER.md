@@ -255,7 +255,7 @@ output into the context.
 
 ## S6 — Degradation UX is undesigned
 
-**Severity: high · Likelihood: certain**
+**Severity: critical · Likelihood: certain**
 
 Partial coverage will be routine, not exceptional. Whether that reads as honest
 or as useless is a UI question, and it is currently unanswered.
@@ -394,7 +394,7 @@ injection string. Absent counts default to zero, never to an optimistic value.
 factual section (a18442e), checked on read by `UntrustedTrail::integrity`.
 → `OPEN_QUESTIONS.md` Q-5.
 
-**Cost.** Done for containment. Hashing 2–3 days.
+**Cost.** Done for containment. Hashing 2–3 days — built (a18442e).
 
 ---
 

@@ -477,9 +477,7 @@ fn cut(s: &str) -> String {
 pub fn is_context_overflow(status: u16, body: &str) -> bool {
     status == 413
         || (status == 400
-            && (body.contains("context_length_exceeded")
-                || body.contains("prompt is too long")
-                || body.contains("maximum context length")))
+            && (body.contains("context_length_exceeded") || body.contains("prompt is too long")))
 }
 
 /// Statuses worth retrying: rate limits and the provider's own failures.
@@ -1033,6 +1031,81 @@ mod tests {
     }
 
     #[test]
+    fn config_words_parse_to_their_protocol_and_thinking_level_and_nothing_else() {
+        // The risk: a `[[providers]] protocol` or `[model] thinking` word
+        // read as another, or an unknown one accepted instead of refused.
+        for (w, p) in [
+            ("openai", Protocol::OpenAiChat),
+            ("OpenAI-Chat", Protocol::OpenAiChat),
+            ("Anthropic", Protocol::Anthropic),
+        ] {
+            assert_eq!(Protocol::parse_config(w), Some(p), "{w}");
+        }
+        assert_eq!(Protocol::parse_config("gemini"), None);
+        for (w, t) in [
+            ("off", Thinking::Off),
+            ("low", Thinking::Low),
+            ("Medium", Thinking::Medium),
+            ("HIGH", Thinking::High),
+        ] {
+            assert_eq!(Thinking::parse(w), Some(t), "{w}");
+        }
+        assert_eq!(Thinking::parse("max"), None);
+    }
+
+    #[test]
+    fn each_protocol_names_its_own_key_variable_and_its_api() {
+        // The variable is where the key is read from (ADR 0010, ADR 0024
+        // §3); the wrong one reads another provider's key.
+        assert_eq!(Protocol::OpenAiChat.default_key_env(), "OPENAI_API_KEY");
+        assert_eq!(Protocol::Anthropic.default_key_env(), "ANTHROPIC_API_KEY");
+        assert_eq!(
+            Protocol::OpenAiChat.describe(),
+            "OpenAI-compatible chat completions"
+        );
+        assert_eq!(Protocol::Anthropic.describe(), "Anthropic Messages");
+    }
+
+    #[test]
+    fn a_client_reports_what_it_was_built_with_and_builds_its_body_from_it() {
+        // `doctor` and the run banner print these; the key's source, never
+        // the key.
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "gpt-x",
+            "OPENAI_API_KEY",
+            Some(ApiKey::for_test("sk-test-key-1", "OPENAI_API_KEY")),
+        )
+        .unwrap()
+        .with_thinking(Thinking::Medium);
+        assert_eq!(c.base(), "http://127.0.0.1:9/v1");
+        assert_eq!(c.model(), "gpt-x");
+        assert_eq!(c.thinking(), Thinking::Medium);
+        assert_eq!(c.key_source(), Some("OPENAI_API_KEY"));
+        assert_eq!(
+            c.body(&conv(), &tools(), 100),
+            request_body(
+                Protocol::OpenAiChat,
+                "gpt-x",
+                &conv(),
+                &tools(),
+                100,
+                Thinking::Medium
+            )
+        );
+        let keyless = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "m",
+            "K",
+            None,
+        )
+        .unwrap();
+        assert_eq!(keyless.key_source(), None);
+    }
+
+    #[test]
     fn a_replayed_assistant_message_goes_back_unchanged() {
         // Anthropic thinking blocks carry signatures and must be returned as
         // they came; rebuilding the message would drop them.
@@ -1076,6 +1149,20 @@ mod tests {
             .call
             .unwrap_err();
         assert!(e.contains("called no tool") && e.contains("Sure!"), "{e}");
+
+        // Why there is no call, when the provider says: a reply cut at the
+        // token limit and a refusal each need a different fix from the user.
+        for (stop, says) in [
+            ("max_tokens", "stopped at max_tokens"),
+            ("refusal", "provider refused"),
+        ] {
+            let v = json!({"content":[{"type":"text","text":"Sure!"}],"stop_reason":stop});
+            let e = parse_reply(Protocol::Anthropic, &v)
+                .unwrap()
+                .call
+                .unwrap_err();
+            assert!(e.contains(says) && e.contains("Sure!"), "{stop}: {e}");
+        }
     }
 
     #[test]
@@ -1115,6 +1202,11 @@ mod tests {
             ),
             Duration::from_secs(30)
         );
+        // Negative or infinite seconds: the backoff, not a panic in
+        // `Duration::from_secs_f64` and not the cap.
+        for v in ["-1", "inf"] {
+            assert_eq!(retry_delay(Some(v), 2), Duration::from_secs(2), "{v}");
+        }
     }
 
     /// A fixed clock: the date tests must not depend on when they run.
@@ -1134,6 +1226,16 @@ mod tests {
         assert_eq!(
             imf_fixdate_unix_secs("Thu, 29 Feb 2024 00:00:00 GMT"),
             Some(1_709_164_800)
+        );
+        // 2000 is a leap year by the 400 rule, and second 60 is a leap
+        // second RFC 9110 allows.
+        assert_eq!(
+            imf_fixdate_unix_secs("Tue, 29 Feb 2000 00:00:00 GMT"),
+            Some(951_782_400)
+        );
+        assert_eq!(
+            imf_fixdate_unix_secs("Sun, 06 Nov 1994 08:49:60 GMT"),
+            Some(784_111_800)
         );
     }
 
@@ -1175,6 +1277,9 @@ mod tests {
             "Tue, 31 Feb 2026 00:00:00 GMT",
             "Sat, 29 Feb 2025 00:00:00 GMT",
             "Mon, 00 Jan 2026 00:00:00 GMT",
+            "Fri, 31 Apr 2026 00:00:00 GMT",
+            // 1900 is not a leap year: divisible by 100 and not by 400.
+            "Thu, 29 Feb 1900 00:00:00 GMT",
             // A zone other than GMT.
             "Sun, 06 Nov 1994 08:49:37 UTC",
             "Sun, 06 Nov 1994 08:49:37 +0000",
@@ -1188,6 +1293,12 @@ mod tests {
             "Sun, +6 Nov 1994 08:49:37 GMT",
             "Sun, 06 Nov 1994 08:49:37 GMTX",
             "Sun, 06 Nov 1994 08:49:37 gmt",
+            // One separator wrong at a time, the rest a valid date.
+            "Sun, 06-Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov-1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994T08:49:37 GMT",
+            "Sun, 06 Nov 1994 08.49:37 GMT",
+            "Sun, 06 Nov 1994 08:49.37 GMT",
             "soon",
             "",
         ] {
@@ -1303,6 +1414,12 @@ mod tests {
             r#"{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#
         ));
         assert!(is_context_overflow(413, ""));
+        // OpenAI sends this text beside the `context_length_exceeded` code,
+        // which is the documented marker; the text alone is not one.
+        assert!(!is_context_overflow(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#
+        ));
         assert!(!is_context_overflow(
             400,
             r#"{"error":"roles must alternate"}"#
@@ -1458,6 +1575,33 @@ mod tests {
         assert_eq!(h.await.unwrap().len(), MAX_ATTEMPTS as usize);
     }
 
+    #[tokio::test]
+    async fn a_status_not_worth_retrying_is_reported_at_once_with_the_key_scrubbed() {
+        // The risk: a 404 retried as if the provider were overloaded, and a
+        // body that echoes the key quoted in the error (ADR 0010).
+        let (base, h) = stub(vec![(
+            "404 Not Found",
+            "",
+            "no model `m` for key sk-test-key-1, sorry",
+        )])
+        .await;
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            &base,
+            "m",
+            "K",
+            Some(ApiKey::for_test("sk-test-key-1", "K")),
+        )
+        .unwrap();
+        match c.send(&json!({})).await {
+            Err(RuntimeError::Http { status: 404, body }) => {
+                assert_eq!(body, "no model `m` for key <key from K>, sorry");
+            }
+            other => panic!("expected the 404, got {other:?}"),
+        }
+        assert_eq!(h.await.unwrap().len(), 1);
+    }
+
     /// `c.send_via` where attempt `n` (from 1) fails with `fail(n)` when that
     /// returns one, and otherwise makes the real request `send` makes.
     /// Returns the result and how many attempts were made.
@@ -1549,6 +1693,33 @@ mod tests {
                 assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
                 let m = source.to_string();
                 assert!(m.contains("10060") && m.contains("after 4 attempts"), "{m}");
+            }
+            other => panic!("expected a connect error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_broken_mid_flight_is_retried_up_to_the_cap_and_no_further() {
+        // The risk: a dropped connection either ending the run on its first
+        // occurrence or retried without bound. Attempts past the cap would
+        // make a real request to a closed port, so a fifth shows in the
+        // count rather than as a hang. Real waits: 7 s, as above.
+        let c = HostedClient::with_key(
+            Protocol::OpenAiChat,
+            "http://127.0.0.1:9/v1",
+            "m",
+            "K",
+            None,
+        )
+        .unwrap();
+        let (r, attempts) = send_failing(&c, |n| {
+            (n <= MAX_ATTEMPTS).then(|| SendError::Broken("connection reset".into()))
+        })
+        .await;
+        assert_eq!(attempts, MAX_ATTEMPTS);
+        match r {
+            Err(RuntimeError::Connect { source, .. }) => {
+                assert!(source.to_string().contains("connection reset"), "{source}");
             }
             other => panic!("expected a connect error, got {other:?}"),
         }

@@ -587,3 +587,274 @@ fn nothing_date_related_happens_without_dates_json() {
         None
     );
 }
+
+// ---------------------------------------------------------------------------
+// What the mutation survivors of #246 showed was unasserted
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_layout_json_that_cannot_be_read_fails_the_edit_rather_than_reading_as_absent() {
+    let d = copy_vault();
+    std::fs::create_dir(d.path().join("layout.json")).unwrap();
+    match edit::remove(d.path(), "glossary") {
+        Err(VaultError::Io { .. }) => {}
+        other => panic!("expected an io error, got {other:?}"),
+    }
+}
+
+#[test]
+fn rm_says_what_it_did_to_the_layout() {
+    // Not an object: left alone, and said so.
+    let d = copy_vault();
+    write(d.path(), "layout.json", "[]");
+    let out = edit::remove(d.path(), "glossary").unwrap();
+    assert!(
+        out.messages
+            .contains(&"layout.json is not a JSON object; left untouched".to_string()),
+        "{:?}",
+        out.messages
+    );
+    assert_eq!(read(d.path(), "layout.json"), "[]");
+
+    // A stale key: removed and counted.
+    let d = copy_vault();
+    write(
+        d.path(),
+        "layout.json",
+        "{\"project.md\":{},\"root.md\":{}}",
+    );
+    let out = edit::remove(d.path(), "project").unwrap();
+    assert!(
+        out.messages
+            .contains(&"layout.json: 1 stale key(s) removed".to_string()),
+        "{:?}",
+        out.messages
+    );
+
+    // Nothing stale: nothing said about the layout.
+    let d = copy_vault();
+    write(d.path(), "layout.json", "{\"root.md\":{}}");
+    let out = edit::remove(d.path(), "glossary").unwrap();
+    assert!(
+        !out.messages.iter().any(|m| m.starts_with("layout.json")),
+        "{:?}",
+        out.messages
+    );
+}
+
+#[test]
+fn rm_counts_links_and_orphans_and_is_silent_when_there_are_none() {
+    let summary = |stem: &str| {
+        let d = copy_vault();
+        let out = edit::remove(d.path(), stem).unwrap();
+        out.messages
+            .into_iter()
+            .find(|m| m.contains("turned to text"))
+    };
+    assert_eq!(
+        summary("glossary").as_deref(),
+        Some("1 link(s) turned to text; 0 child note(s) now have parent null")
+    );
+    assert_eq!(
+        summary("root").as_deref(),
+        Some("0 link(s) turned to text; 1 child note(s) now have parent null")
+    );
+    assert_eq!(summary("task-b"), None);
+}
+
+#[test]
+fn rm_leaves_the_report_line_counting_a_parent_with_children_as_connected() {
+    // Without glossary every note left is in the hierarchy, root because it
+    // has a child.
+    let d = copy_vault();
+    edit::remove(d.path(), "glossary").unwrap();
+    let r = edit::check(d.path(), false).unwrap();
+    assert!(r.line.contains(" connected=4 "), "{}", r.line);
+}
+
+#[test]
+fn a_third_note_with_a_taken_title_gets_the_next_suffix() {
+    let d = copy_vault();
+    let (_, out) = edit::create(d.path(), "Task A", None).unwrap();
+    assert!(
+        out.messages[0].contains("\"Task A 2\""),
+        "{:?}",
+        out.messages
+    );
+    let (_, out) = edit::create(d.path(), "Task A", None).unwrap();
+    assert!(
+        out.messages[0].contains("\"Task A 3\""),
+        "{:?}",
+        out.messages
+    );
+}
+
+#[test]
+fn a_title_with_no_slug_gets_the_untitled_path() {
+    let d = copy_vault();
+    let (p, _) = edit::create(d.path(), "!!!", None).unwrap();
+    assert_eq!(p, "untitled.md");
+}
+
+#[test]
+fn retitle_warns_only_when_the_title_is_another_note_s_key() {
+    let warned = |title: &str| {
+        let d = copy_vault();
+        let out = edit::retitle(d.path(), "glossary", title).unwrap();
+        out.messages.into_iter().find(|m| m.starts_with("warning:"))
+    };
+    let w = warned("Root").unwrap();
+    assert!(w.contains("is also a key of root.md"), "{w}");
+    assert_eq!(warned("Terms"), None);
+}
+
+#[test]
+fn retitle_counts_the_links_and_parents_it_rewrote() {
+    let d = copy_vault();
+    write(
+        d.path(),
+        "project.md",
+        "---\ntitle: \"Big Plan\"\nparent: \"[[root]]\"\n---\nThe fixture project.\n",
+    );
+    write(
+        d.path(),
+        "task-b.md",
+        "---\ntitle: \"Task B\"\nparent: \"[[Big Plan]]\"\n---\nSee [[Big Plan]] and [[project]].\n",
+    );
+    let out = edit::retitle(d.path(), "project", "Delivery").unwrap();
+    let last = out.messages.last().unwrap();
+    assert!(
+        last.ends_with("2 link(s) and 1 parent reference(s) rewritten"),
+        "{last}"
+    );
+}
+
+#[test]
+fn check_does_not_warn_below_apex_s_size_thresholds() {
+    // 1.5 MiB in one note: under the 2 MiB note warning and far under the
+    // 50 MiB vault warning, in a vault of far fewer than 1000 notes.
+    let d = copy_vault();
+    let body = "x".repeat(3 * 1024 * 1024 / 2);
+    write(
+        d.path(),
+        "glossary.md",
+        &format!("---\ntitle: \"Glossary\"\nparent: null\n---\n{body}"),
+    );
+    let r = edit::check(d.path(), false).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+}
+
+#[test]
+fn the_gate_answer_is_no_for_an_invalid_vault() {
+    let d = copy_vault();
+    manifest(d.path(), &["root.md"]);
+    assert!(!edit::check(d.path(), false).unwrap().gate_ok());
+}
+
+#[test]
+fn fix_lists_the_layout_only_when_it_removed_a_key() {
+    let d = copy_vault();
+    write(d.path(), "layout.json", "{\"root.md\":{}}");
+    assert_eq!(edit::check(d.path(), true).unwrap().line, FIXTURE_LINE);
+    write(d.path(), "layout.json", "{\"gone.md\":{},\"root.md\":{}}");
+    let r = edit::check(d.path(), true).unwrap();
+    assert!(r.line.ends_with("fixes=[layout.json]"), "{}", r.line);
+}
+
+#[test]
+fn notes_root_follows_the_notes_folder_rule() {
+    let d = tempfile::tempdir().unwrap();
+    assert_eq!(trellis_vault::notes_root(d.path()), d.path());
+    std::fs::create_dir(d.path().join("notes")).unwrap();
+    assert_eq!(trellis_vault::notes_root(d.path()), d.path().join("notes"));
+}
+
+#[test]
+fn a_shared_title_resolves_as_ambiguous_naming_both() {
+    let r = trellis_vault::Resolver::new([("a/x.md", "Same"), ("b/y.md", "Same")]);
+    assert_eq!(
+        r.resolve("Same"),
+        trellis_vault::Resolved::Ambiguous(vec![0, 1])
+    );
+}
+
+#[test]
+fn key_for_is_the_basename_only_when_it_is_unique() {
+    let d = tempfile::tempdir().unwrap();
+    for f in ["a/x.md", "b/x.md", "c.md"] {
+        write(d.path(), f, "body");
+    }
+    let v = Vault::open(d.path()).unwrap();
+    let g = Graph::build(&v);
+    assert_eq!(g.resolver.key_for(&v, idx(&v, "a/x.md")), "a/x");
+    assert_eq!(g.resolver.key_for(&v, idx(&v, "c.md")), "c");
+}
+
+#[test]
+fn a_missing_parent_names_candidates_only_when_it_is_ambiguous() {
+    let d = copy_vault();
+    write(
+        d.path(),
+        "glossary.md",
+        "---\ntitle: \"Twin\"\nparent: null\n---\n",
+    );
+    write(
+        d.path(),
+        "root.md",
+        "---\ntitle: \"Twin\"\nparent: null\n---\n",
+    );
+    write(
+        d.path(),
+        "task-a.md",
+        "---\ntitle: \"Task A\"\nparent: \"[[Twin]]\"\n---\n",
+    );
+    write(
+        d.path(),
+        "task-b.md",
+        "---\ntitle: \"Task B\"\nparent: \"[[nowhere]]\"\n---\n",
+    );
+    let v = Vault::open(d.path()).unwrap();
+    let g = Graph::build(&v);
+    let shown = |path: &str| {
+        g.issues
+            .iter()
+            .find(|i| matches!(i, Issue::MissingParent { path: p, .. } if p == path))
+            .map(|i| i.to_string())
+            .unwrap()
+    };
+    let a = shown("task-a.md");
+    assert!(a.ends_with(" (ambiguous: glossary.md, root.md)"), "{a}");
+    let b = shown("task-b.md");
+    assert!(!b.contains("ambiguous"), "{b}");
+}
+
+#[test]
+fn lineage_runs_from_the_root_to_the_note() {
+    let v = Vault::open(&fixture()).unwrap();
+    let g = Graph::build(&v);
+    assert_eq!(
+        g.lineage(idx(&v, "task-a.md")),
+        [
+            idx(&v, "root.md"),
+            idx(&v, "project.md"),
+            idx(&v, "task-a.md")
+        ]
+    );
+}
+
+#[test]
+fn the_graph_reports_a_parent_cycle() {
+    let d = copy_vault();
+    write(
+        d.path(),
+        "root.md",
+        "---\ntitle: \"Root\"\nparent: \"[[task-a]]\"\n---\n",
+    );
+    let v = Vault::open(d.path()).unwrap();
+    let g = Graph::build(&v);
+    assert!(
+        g.issues.iter().any(|i| matches!(i, Issue::Cycle { .. })),
+        "{:?}",
+        g.issues
+    );
+}

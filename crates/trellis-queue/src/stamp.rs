@@ -25,20 +25,9 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn parts(secs: u64) -> (i64, u32, u32, u64, u64, u64) {
-    let (y, mo, d) = civil((secs / 86_400) as i64);
-    let rem = secs % 86_400;
-    (y, mo, d, rem / 3600, rem % 3600 / 60, rem % 60)
-}
-
 /// `2026-09-27T10:15:00Z`.
 pub fn iso_now() -> String {
-    iso(since_epoch().as_secs())
-}
-
-fn iso(secs: u64) -> String {
-    let (y, mo, d, h, mi, s) = parts(secs);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+    secs_to_iso(now_secs())
 }
 
 /// `20260927-101500-123456789`: fixed width, so sorting names sorts by age.
@@ -48,7 +37,7 @@ pub(crate) fn sortable_now() -> String {
 }
 
 fn sortable(secs: u64, nanos: u32) -> String {
-    let (y, mo, d, h, mi, s) = parts(secs);
+    let (y, mo, d, h, mi, s) = civil_from_secs(secs as i64);
     format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{nanos:09}")
 }
 
@@ -131,10 +120,10 @@ mod tests {
 
     #[test]
     fn known_instants_format_as_the_calendar_says() {
-        assert_eq!(iso(0), "1970-01-01T00:00:00Z");
+        assert_eq!(secs_to_iso(0), "1970-01-01T00:00:00Z");
         // 2000-02-29 exercises the leap day a naive formula gets wrong.
-        assert_eq!(iso(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(iso(1_790_417_700), "2026-09-26T10:15:00Z"); // per `date -u -d @…`
+        assert_eq!(secs_to_iso(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(secs_to_iso(1_790_417_700), "2026-09-26T10:15:00Z"); // per `date -u -d @…`
         assert_eq!(sortable(0, 5), "19700101-000000-000000005");
     }
 

@@ -391,7 +391,7 @@ fn request_head(ep: &Endpoint, path: &str, body_len: usize) -> String {
 /// Sends one POST and reads the whole response.
 ///
 /// The key is written into the request buffer here and nowhere else, and
-/// the buffer is dropped when the write completes. With a `proxy` it is
+/// the buffer is dropped when `post` returns. With a `proxy` it is
 /// written inside the TLS session the tunnel carries, never to the proxy.
 pub(crate) async fn post(
     ep: &Endpoint,
@@ -1078,6 +1078,163 @@ mod tests {
         assert!(e.contains("cut short"), "{e}");
     }
 
+    #[test]
+    fn a_chunked_body_whose_data_all_arrived_is_missing_its_next_size_line() {
+        // Not "cut short inside a chunk": every byte of that chunk is here,
+        // and #170 showed which of the two a user is told matters.
+        let e = parse_response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello")
+            .unwrap_err();
+        assert!(e.contains("size line is unterminated"), "{e}");
+    }
+
+    #[test]
+    fn a_chunk_size_line_is_bounded_at_max_size_line_bytes() {
+        // The risk: a size line that never ends held the read open, or a
+        // legitimate one at the limit was refused.
+        let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        let line = |len: usize| {
+            let mut l = b"5;".to_vec();
+            l.resize(len, b'a');
+            l
+        };
+        let with = |parts: &[&[u8]]| {
+            let mut raw = head.clone();
+            parts.iter().for_each(|p| raw.extend_from_slice(p));
+            raw
+        };
+        // At the limit and still unterminated: it may yet end.
+        assert!(!complete(&with(&[&line(MAX_SIZE_LINE)])));
+        // At the limit and terminated: a size line, and the chunk is awaited.
+        assert!(!complete(&with(&[&line(MAX_SIZE_LINE), b"\r\nhel"])));
+        // Past the limit: not a size line, whatever follows it.
+        assert!(complete(&with(&[&line(MAX_SIZE_LINE + 904), b"\r\nhel"])));
+    }
+
+    #[test]
+    fn bytes_after_a_chunk_that_are_not_crlf_end_the_read_at_once() {
+        // Broken framing is handed to the parser now, not after the server
+        // closes the connection or the request times out.
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhelloXY";
+        assert!(complete(raw));
+    }
+
+    /// A stream that accepts any write and answers reads from `reads` in
+    /// order, then end of stream. Stands in for a TLS session, whose read
+    /// errors a loopback socket cannot be made to produce.
+    struct Scripted(std::collections::VecDeque<std::io::Result<Vec<u8>>>);
+
+    impl AsyncRead for Scripted {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.0.pop_front() {
+                Some(Ok(b)) => {
+                    buf.put_slice(&b);
+                    Ok(())
+                }
+                Some(Err(e)) => Err(e),
+                None => Ok(()),
+            })
+        }
+    }
+
+    impl AsyncWrite for Scripted {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_close_without_close_notify_ends_the_read_and_no_other_error_does() {
+        // A TLS peer that closes without close_notify reads as
+        // UnexpectedEof: what arrived is judged by its framing. Any other
+        // read error is a broken request, even after a body that parses.
+        let reply = || Ok(b"HTTP/1.1 200 OK\r\n\r\n{}".to_vec());
+        let s = Scripted([reply(), Err(std::io::ErrorKind::UnexpectedEof.into())].into());
+        assert_eq!(exchange(s, b"x").await.unwrap().body, "{}");
+
+        let s = Scripted([reply(), Err(std::io::ErrorKind::ConnectionReset.into())].into());
+        match exchange(s, b"x").await {
+            Err(SendError::Broken(e)) => assert!(e.contains("reading the response"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_response_exactly_at_the_cap_is_read_whole() {
+        // The cap refuses one byte past it, on the header or on the bytes,
+        // not a response that fills it.
+        let head = "HTTP/1.1 200 OK\r\nContent-Length: ";
+        // The length's own eight digits and the blank line count toward it.
+        let body_len = MAX_RESPONSE - head.len() - 8 - 4;
+        let mut raw = format!("{head}{body_len}\r\n\r\n").into_bytes();
+        raw.resize(MAX_RESPONSE, b'x');
+        let reads = raw.chunks(16 * 1024).map(|c| Ok(c.to_vec())).collect();
+        let r = exchange(Scripted(reads), b"x").await.unwrap();
+        assert_eq!(r.body.len(), body_len);
+    }
+
+    #[tokio::test]
+    async fn post_sends_https_through_a_proxy_and_never_plain_http() {
+        // The risk: plain http, key header included, sent to a proxy in the
+        // clear; or https sent around the proxy the user configured.
+        let remote = Endpoint::parse("https://api.openai.com/v1").unwrap();
+        let (p, h) = connect_stub("403 Forbidden").await;
+        match post(
+            &remote,
+            Some(&p),
+            "/x",
+            &[],
+            None,
+            "{}",
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            Err(SendError::Connect(e)) => assert!(e.contains("403"), "{e}"),
+            other => panic!("the tunnel was not asked for: {other:?}"),
+        }
+        assert!(h.await.unwrap().starts_with("CONNECT api.openai.com:443"));
+
+        let local = Endpoint::parse("http://127.0.0.1:9/v1").unwrap();
+        let p = Proxy {
+            host: "127.0.0.1".into(),
+            port: 1,
+        };
+        match post(
+            &local,
+            Some(&p),
+            "/x",
+            &[],
+            None,
+            "{}",
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            Err(SendError::Config(e)) => assert!(e.contains("never sent through a proxy"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// A process environment with only `vars` set.
     fn env(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
         let vars = vars.to_vec();
@@ -1283,6 +1440,17 @@ mod tests {
             !head.to_ascii_lowercase().contains("proxy-authorization"),
             "{head}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_connect_answer_with_a_few_kib_of_headers_opens_the_tunnel() {
+        // The head bound is 16 KiB: a proxy that adds `Via` and diagnostic
+        // headers is not refused for it.
+        let status: &'static str =
+            format!("200 Connection established\r\nX-Diag: {}", "d".repeat(2048)).leak();
+        let (p, _h) = connect_stub(status).await;
+        let target = Endpoint::parse("https://api.openai.com/v1").unwrap();
+        connect_tunnel(&p, &target).await.expect("tunnel");
     }
 
     #[tokio::test]

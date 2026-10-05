@@ -81,6 +81,10 @@ pub(crate) enum ControlMode {
 pub(crate) struct Control {
     pub mode: ControlMode,
     pub approve: Vec<String>,
+    /// Whether a user or repository file wrote `approve`. Only the default
+    /// list is widened to every enabled tool that can change the tree
+    /// (#425); a list someone wrote is honoured as written.
+    pub listed: bool,
 }
 
 impl Control {
@@ -305,6 +309,7 @@ impl RepoConfig {
                 "[control] mode = \"{other}\" is not a mode; use \"auto\" or \"approve\""
             ),
         };
+        let listed = section.is_some_and(|c| c.approve.is_some());
         let approve = section
             .and_then(|c| c.approve.clone())
             .unwrap_or_else(|| vec!["edit".to_string()]);
@@ -315,6 +320,7 @@ impl RepoConfig {
         Ok(Control {
             mode: flag.unwrap_or(configured),
             approve,
+            listed,
         })
     }
 

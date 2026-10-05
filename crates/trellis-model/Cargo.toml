@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 # Internal to this workspace: the deliverable is the `trellis` binary, not
-# eight library crates. Saying so prevents an accidental `cargo publish` and
+# the library crates. Saying so prevents an accidental `cargo publish` and
 # lets `cargo deny` treat the intra-workspace path dependencies as what they
 # are rather than as unversioned registry wildcards.
 publish = false
@@ -36,11 +36,10 @@ webpki-roots = { version = "1.0.9", optional = true }
 
 [dev-dependencies]
 # This crate, on itself, to turn its own `grammar` feature on for its own
-# tests. Without it `cargo test -p trellis-model` compiles 43 tests and
-# `--features grammar` compiles 45: the two that exercise the schemars ->
-# JSON Schema -> llguidance path are `#[cfg]`-ed out and the run still
-# reports green. Coverage that depends on which other crate happens to be in
-# the same cargo invocation is not coverage. `hosted` for the same reason:
+# tests. Without it `cargo test -p trellis-model` compiles out the two tests
+# that exercise the schemars -> JSON Schema -> llguidance path, and the run
+# still reports green. Coverage that depends on which other crate happens to
+# be in the same cargo invocation is not coverage. `hosted` for the same reason:
 # its TLS configuration test is otherwise compiled only when another crate
 # in the invocation happens to turn it on.
 trellis-model = { path = ".", features = ["grammar", "hosted"] }

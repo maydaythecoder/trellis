@@ -92,6 +92,19 @@ the config for that run.
   approve mode when enabled (`run_cmd.rs`). So `write_file` and custom tools
   run unasked in approve mode unless listed. Whether the default should
   name them is not decided here.
+  *Amended 2026-10-05 (#425), decided under the owner's 2026-10-04
+  delegation:* approve mode asks before every tool that can change the
+  tree. When no user or repository file writes `approve`, the default
+  `["edit"]` gains `write_file` when it is enabled and each enabled custom
+  tool, where `bash` already joined it. A list someone wrote, even
+  `["edit"]`, is honoured as written and not widened; an agent profile's
+  list adds to the layered one as before and does not count as written
+  (so it does not stop the widening). `bash` still joins any list when
+  enabled, as before. Reverses if the owner wants approve mode to mean
+  "edits only". Evidence: `approve_mode_asks_before_write_file_with_the_default_list`
+  and `approve_mode_asks_before_a_custom_tool_with_the_default_list`
+  failed before the change; `approve_mode_asks_nothing_under_the_auto_flag_with_both_enabled`
+  and `an_approve_list_someone_wrote_is_not_widened` hold the bounds.
 - **The channel is not `tracing`.** An approval is a request that needs an
   answer, not telemetry, and ADR 0008 keeps `tracing` observe-only.
 - **With no human to ask, a run in approve mode refuses to start.** A plain

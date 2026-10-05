@@ -81,4 +81,13 @@ mod tests {
         assert_eq!(trim("\u{FEFF} x \u{2028}"), "x");
         assert_eq!(trim("\u{85}x"), "\u{85}x");
     }
+
+    #[test]
+    fn the_line_terminators_are_javascript_s_four() {
+        for c in ['\n', '\r', '\u{2028}', '\u{2029}'] {
+            assert!(is_line_terminator(c), "{c:?}");
+        }
+        assert!(!is_line_terminator('\u{85}'));
+        assert!(!is_line_terminator(' '));
+    }
 }

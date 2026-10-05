@@ -344,4 +344,48 @@ mod tests {
         );
         assert!(out.ends_with(" [[B]]"), "{out}");
     }
+
+    #[test]
+    fn md_is_stripped_after_a_multibyte_character() {
+        assert_eq!(strip_md("é.md"), "é");
+        assert_eq!(strip_md("é.MD"), "é");
+    }
+
+    #[test]
+    fn graph_links_resume_exactly_after_each_link() {
+        // Resuming early can land inside a multi-byte character and end the
+        // scan; resuming late skips a link that follows.
+        let t = |s: &str| -> Vec<String> { graph_links(s).into_iter().map(|w| w.target).collect() };
+        // `€` is three bytes, so two short of the `]]` is inside it.
+        assert_eq!(t("[[a€]] [[b]]"), ["a€", "b"]);
+        assert_eq!(t("[[abcde]][[f]]"), ["abcde", "f"]);
+        assert_eq!(t("[[a]] [[b]] [[c]]"), ["a", "b", "c"]);
+        // An unterminated or empty link is not one.
+        assert!(t("[[a]x").is_empty());
+        assert_eq!(parse_wiki_target("[[]]").target, "[[]]");
+    }
+
+    #[test]
+    fn a_target_ending_in_a_slash_is_its_own_label() {
+        assert_eq!(parse_wiki_target("x/").label, "x/");
+    }
+
+    #[test]
+    fn a_fence_masks_exactly_through_its_closing_backticks() {
+        // A mask that stopped short would leave the closing fence to open a
+        // new one, hiding the link between two fences.
+        let (out, n) = rewrite_links("```x``` [[a]] ```y```", |_| Some("B".into()));
+        assert_eq!((out.as_str(), n), ("```x``` B ```y```", 1));
+    }
+
+    #[test]
+    fn a_rewrite_skips_empty_and_overlong_links_and_counts_only_real_changes() {
+        let body = format!("[[]] [[{}]] [[{}]] [[c]]", "a".repeat(241), "b".repeat(240));
+        let (out, n) = rewrite_links(&body, |l| (l.parsed.target != "c").then(|| "X".to_string()));
+        assert_eq!(n, 1);
+        assert_eq!(out, format!("[[]] [[{}]] X [[c]]", "a".repeat(241)));
+        // A transform that returns the link unchanged rewrote nothing.
+        let (out, n) = rewrite_links("[[a]] [[b]]", |l| Some(format!("[[{}]]", l.inner)));
+        assert_eq!((out.as_str(), n), ("[[a]] [[b]]", 0));
+    }
 }
