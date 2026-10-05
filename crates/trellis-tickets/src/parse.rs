@@ -167,7 +167,7 @@ pub(crate) fn new_tests(commands: &[String]) -> u32 {
 }
 
 pub(crate) const TRIAGE_START: &str = "<!-- triage:start";
-const TRIAGE_END: &str = "<!-- triage:end";
+pub(crate) const TRIAGE_END: &str = "<!-- triage:end";
 
 /// Every `blocked_by:` entry, as issue numbers.
 ///

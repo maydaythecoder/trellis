@@ -18,7 +18,7 @@ use crate::VaultError;
 use crate::dates::Touched;
 use crate::graph::{Graph, Issue, Resolved};
 use crate::js;
-use crate::reader::{Vault, file_of, io, note_paths, notes_root};
+use crate::reader::{Vault, file_of, io, note_paths};
 use crate::refs::{self, alias_from_inner, link_markup, normalize_key, rewrite_links, slugify};
 use crate::validate::{self, Stats};
 use std::path::Path;
@@ -586,9 +586,4 @@ pub fn check(dir: &Path, apply_fixes: bool) -> Result<Report, VaultError> {
         gate,
         touched,
     })
-}
-
-/// The root a vault directory's notes live in (after the `notes/` rule).
-pub fn root_of(dir: &Path) -> std::path::PathBuf {
-    notes_root(dir)
 }

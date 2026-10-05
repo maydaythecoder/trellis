@@ -1881,6 +1881,14 @@ fn status_reports_the_state_the_session_is_holding() {
         s.contains("tier"),
         "the tier decides whether a run can fail on format alone:\n{s}"
     );
+    // The banner and `/status` both count the population `trellis index`
+    // calls "non-excluded call sites" (A-30); "first-party" there named a
+    // smaller set than the number printed beside it.
+    assert_eq!(
+        s.matches("non-excluded call sites").count(),
+        2,
+        "banner and status must name the count as the index does:\n{s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
