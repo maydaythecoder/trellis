@@ -211,7 +211,15 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             // would replace that default instead of adding to it, and a
             // user's `approve = ["run_checks"]` would stop edits needing a
             // yes in a repository that asked for one.
-            approve: union(effective(&r), effective(&u)),
+            // Neither file writing a list stays `None`, which
+            // `RepoConfig::control` reads as the same `["edit"]`; kept so
+            // a run can tell the default from a list someone wrote, which
+            // approve mode widens only the default of (#425).
+            approve: if r.approve.is_none() && u.approve.is_none() {
+                None
+            } else {
+                union(effective(&r), effective(&u))
+            },
             // Approve is the restriction, so either file asking for it gets
             // it. An unknown word is kept as written from whichever file has
             // it, so `RepoConfig::control` still refuses it by name.
@@ -705,6 +713,25 @@ stale_claims = \"release\"
         let dial = c.control(None).unwrap();
         assert_eq!(dial.mode, ControlMode::Approve);
         assert_eq!(dial.approve, ["edit", "run_checks"]);
+    }
+
+    #[test]
+    fn two_control_sections_with_no_list_between_them_are_still_the_default() {
+        // The risk (#425): layering made `["edit"]` concrete whenever both
+        // files had `[control]`, so a run read the default as a list someone
+        // wrote and did not widen it to `write_file` and custom tools.
+        let c = load(
+            "[control]\nmode = \"approve\"\n",
+            "[control]\nmode = \"auto\"\n",
+        );
+        let dial = c.control(None).unwrap();
+        assert_eq!(dial.approve, ["edit"]);
+        assert!(!dial.listed);
+        let c = load(
+            "[control]\nmode = \"approve\"\n",
+            "[control]\napprove = [\"edit\"]\n",
+        );
+        assert!(c.control(None).unwrap().listed);
     }
 
     #[test]
