@@ -1,16 +1,14 @@
 //! The CLI. Thin: parses, dispatches, formats.
 //!
-//! Status: `index`, `radius`, `check`, `doctor`, `run` and `resume` are wired
-//! to real implementations.
+//! Status: `index`, `radius`, `check`, `doctor`, `run`, `resume` and
+//! `partitions` (a dry-run planner) are wired to real implementations.
 //!
-//! `run` drives the loop with either a scripted model or a real serving
-//! runtime (`llamacpp:`, `vllm:`, `sglang:`). The scripted driver is not a
+//! `run` drives the loop with either a scripted model, a real serving
+//! runtime (`llamacpp:`, `vllm:`, `sglang:`) or a hosted API (`anthropic:`,
+//! `openai-chat:`; ADR 0024). The scripted driver is not a
 //! placeholder — it exercises real files, real checks and real rollback with
 //! only judgement stubbed, which is what makes the loop's control flow
 //! testable without inference. Results from it are never a model floor (S7).
-//!
-//! `partitions` needs concurrent multi-agent execution (v1.1) and exits
-//! non-zero with a message naming what is missing, rather than pretending.
 
 mod ask;
 mod config;
@@ -154,6 +152,8 @@ enum Command {
         ///   `llamacpp:http://host:port`  llama.cpp server
         ///   `vllm:http://host:port`      vLLM OpenAI-compatible server
         ///   `sglang:http://host:port`    SGLang server
+        ///   `anthropic:https://api.anthropic.com#<model>`  hosted (ADR 0024)
+        ///   `openai-chat:<base url>#<model>`               hosted (ADR 0024)
         ///
         /// A scripted run exercises the real loop, real files, real checks and
         /// real rollback — everything except judgement. Results from it are
@@ -172,8 +172,10 @@ enum Command {
         /// rather than a silent fallback.
         #[arg(long)]
         unconstrained: bool,
-        /// Cap concurrent agents, or `auto` to derive from measured backend
-        /// batching capacity. Never derived from CPU count (S18).
+        /// Cap concurrent agents. Only `1` is accepted until multi-agent
+        /// mode is built (v1.1); `auto`, deriving the cap from measured
+        /// backend batching capacity, is refused with it. Never derived from
+        /// CPU count (S18).
         #[arg(long, default_value = "1")]
         agents: String,
         /// Start from the last trail in `.trellis/runs/`, so the model is not
@@ -572,7 +574,7 @@ fn main() -> Result<()> {
     // Both directions are surprises worth naming. Acting on a directory
     // several levels up ends with someone running a task against the wrong
     // tree. Falling back to the working directory is worse if it happens to
-    // be a home folder — `trellis index` there walked 1,295 files before
+    // be a home folder — `trellis index` there walked 25,147 files before
     // anyone could tell it had not found a repository.
     if !explicit && root != std::env::current_dir().unwrap_or_default() {
         // To the human stream: under `--json` stdout is JSONL only.
@@ -753,19 +755,6 @@ fn main() -> Result<()> {
     }
 }
 
-/// The repository root, walking up from the working directory.
-///
-/// Typing `trellis index` three directories deep used to index whatever
-/// happened to be under the cwd — which for most subdirectories is nothing at
-/// all, reported as "indexed 0 files" with no hint that the user was standing
-/// in the wrong place. Every other tool in this space walks up to find its
-/// project marker, and `.git` is the right marker here: a run already requires
-/// a git repository with a clean worktree (ADR 0009), so a TRELLIS root that
-/// is not a git root is a root half the commands cannot work with.
-///
-/// `--root` still wins outright. An explicit path is a decision, and a tool
-/// that overrides one because it thinks it knows better is worse than one that
-/// makes the user type more.
 /// `args` with the subcommand's name lowered when its lowercase form is a
 /// subcommand (ADR 0050 section 4): `trellis RUN` is `trellis run`.
 ///
@@ -800,6 +789,19 @@ fn subcommand_lowercased(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
     args
 }
 
+/// The repository root, walking up from the working directory.
+///
+/// Typing `trellis index` three directories deep used to index whatever
+/// happened to be under the cwd — which for most subdirectories is nothing at
+/// all, reported as "indexed 0 files" with no hint that the user was standing
+/// in the wrong place. Every other tool in this space walks up to find its
+/// project marker, and `.git` is the right marker here: a run already requires
+/// a git repository with a clean worktree (ADR 0009), so a TRELLIS root that
+/// is not a git root is a root half the commands cannot work with.
+///
+/// `--root` still wins outright. An explicit path is a decision, and a tool
+/// that overrides one because it thinks it knows better is worse than one that
+/// makes the user type more.
 fn discover_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     root_from(&cwd).ok_or_else(|| {

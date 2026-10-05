@@ -221,7 +221,12 @@ pub(crate) fn install(config: &Path, spec: &str, out: &mut dyn Write) -> Result<
     let skills = plan
         .copy
         .iter()
-        .filter(|f| f.path.ends_with("/SKILL.md") && f.path.starts_with("skills/"))
+        .filter(|f| {
+            f.path
+                .strip_prefix("skills/")
+                .and_then(|r| r.strip_suffix("/SKILL.md"))
+                .is_some_and(|n| !n.contains('/'))
+        })
         .count();
     let prompts = plan
         .copy
@@ -1017,6 +1022,32 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, vec!["packages.toml", "pkg-src"]);
+    }
+
+    #[test]
+    fn install_counts_a_nested_skill_md_as_a_file_not_a_skill() {
+        // The risk: a reference file named SKILL.md inside a skill is copied
+        // (it is a .md under a valid skill) and the summary counted it as a
+        // second skill, so the user is told of a skill that does not exist.
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("nested");
+        std::fs::create_dir_all(&src).unwrap();
+        git_in(&src, &["init", "-q"]);
+        write(&src, "skills/alpha/SKILL.md", "---\nname: alpha\n---\nA\n");
+        write(&src, "skills/alpha/references/SKILL.md", "reference\n");
+        git_in(&src, &["add", "-A"]);
+        git_in(&src, &["commit", "-q", "-m", "package"]);
+        git_in(&src, &["tag", "v1"]);
+        let cfg = d.path().join("cfg");
+        let mut out = Vec::new();
+        install(&cfg, &spec(&src, "v1"), &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        assert!(
+            files_under(&cfg.join("packages").join("nested"))
+                .contains(&"skills/alpha/references/SKILL.md".to_string()),
+            "{said}"
+        );
+        assert!(said.contains(": 1 skill(s),"), "{said}");
     }
 
     /// A package source whose code outnumbers any cap on how many skipped
