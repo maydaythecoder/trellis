@@ -915,6 +915,79 @@ fn a_symlinked_dates_json_is_refused_and_left_unchanged() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), doc);
 }
 
+/// `edit::init` on `vault` refused naming `name`, with neither metadata file
+/// written: the refusal comes before the first write, not between the two.
+fn assert_init_refused(vault: &Path, name: &str) {
+    let err = edit::init(vault).unwrap_err().to_string();
+    assert!(
+        err.contains(name) && err.contains("cannot be a symlink"),
+        "{err}"
+    );
+    for f in ["manifest.json", "layout.json"] {
+        let p = vault.join(f);
+        assert!(
+            std::fs::symlink_metadata(&p).is_err() || f == name,
+            "{f} was written"
+        );
+    }
+}
+
+/// A broken link: `exists()` follows it and reads it as absent, which is
+/// how `init` came to write a new vault's metadata through it, outside the
+/// vault, to a file the link's target named.
+fn assert_init_refuses_broken_link(name: &str) {
+    let d = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join(name);
+    if let Err(why) = symlink(&target, &d.path().join(name)) {
+        println!("{why}");
+        return;
+    }
+    assert_init_refused(d.path(), name);
+    assert!(
+        !target.exists(),
+        "init wrote through the link to {target:?}"
+    );
+}
+
+#[test]
+fn init_refuses_a_linked_manifest_json() {
+    assert_init_refuses_broken_link("manifest.json");
+}
+
+#[test]
+fn init_refuses_a_linked_layout_json() {
+    // Checked before `manifest.json` is written, so the refusal leaves no
+    // half-initialised vault behind.
+    assert_init_refuses_broken_link("layout.json");
+}
+
+#[test]
+fn init_refuses_a_linked_notes_folder() {
+    // Every later read refuses a linked `notes/`, so a vault `init` accepted
+    // over one could never be opened.
+    let outside = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    {
+        // A junction needs no privilege, so this runs on every Windows host.
+        let d = tempfile::tempdir().unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(d.path().join("notes"))
+            .arg(outside.path())
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(made, "mklink /J needs no privilege");
+        assert_init_refused(d.path(), "notes");
+    }
+    let d = tempfile::tempdir().unwrap();
+    if let Err(why) = symlink(&outside.path().join("gone"), &d.path().join("notes")) {
+        println!("{why}");
+        return;
+    }
+    assert_init_refused(d.path(), "notes");
+}
+
 #[test]
 fn a_shared_title_resolves_as_ambiguous_naming_both() {
     let r = trellis_vault::Resolver::new([("a/x.md", "Same"), ("b/y.md", "Same")]);
