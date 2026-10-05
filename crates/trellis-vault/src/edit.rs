@@ -18,7 +18,7 @@ use crate::VaultError;
 use crate::dates::Touched;
 use crate::graph::{Graph, Issue, Resolved};
 use crate::js;
-use crate::reader::{Vault, file_of, io, note_paths};
+use crate::reader::{Vault, file_of, io, note_paths, refuse_link};
 use crate::refs::{self, alias_from_inner, link_markup, normalize_key, rewrite_links, slugify};
 use crate::validate::{self, Stats};
 use std::path::Path;
@@ -72,6 +72,11 @@ pub struct Session {
 impl Session {
     pub fn open(dir: &Path) -> Result<Session, VaultError> {
         let vault = Vault::open(dir)?;
+        // Here, before any operation writes: `create` and `rm` touch a note
+        // before the manifest and layout are reached.
+        for f in ["manifest.json", "layout.json"] {
+            refuse_link(&vault.root.join(f), "workspace metadata")?;
+        }
         let graph = Graph::build(&vault);
         Ok(Session { vault, graph })
     }
