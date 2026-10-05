@@ -509,7 +509,7 @@ to hint. `ROADMAP.md` carries this as a named gate.
 
 **Severity: high · Likelihood: certain**
 
-Three parts, two now closed.
+Three parts, all now closed.
 
 **Logit access (closed 2026-09-19 by ADR 0013: `candle` for tier 3, and tier 3
 deferred).** As first written: tier 3 needs in-process inference —
