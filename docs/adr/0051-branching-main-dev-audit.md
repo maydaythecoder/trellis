@@ -39,6 +39,9 @@ and there was no branch that meant "ready to launch".
 3. **Protection.** The pre-push hook refuses every push to `main` and to
    `v0.1-resolver`; `dev`, `audit` and ticket branches go through. GitHub
    branch protection still needs Pro on a private repository (ADR 0036).
+   *2026-10-04 (#380):* it also refuses `drain` (frozen, item 5) and every
+   `v*` tag (`refs/tags/v*`), whose push starts `release.yml` and is the
+   owner's act; other tags go through.
 4. **CI** runs on pushes to `main`, `dev`, `audit` and `v0.1-resolver`, and
    on every pull request.
 5. **Legacy.** `v0.1-resolver` (frozen), `drain` (frozen at the commit `dev`
