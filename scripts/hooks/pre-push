@@ -9,18 +9,18 @@
 # `audit`, which is promoted into `dev` (ADR 0051, amending 0036).
 # Bypass deliberately with --no-verify.
 while read local_ref local_sha remote_ref remote_sha; do
+  name=${remote_ref#refs/heads/}
+  name=${name#refs/tags/}
   case "$remote_ref" in
-    refs/heads/main|refs/heads/v0.1-resolver)
+    refs/heads/main)
       reason="merge through a pull request on GitHub" ;;
-    refs/heads/drain)
-      reason="drain is frozen; cut ticket branches from dev (ADR 0051)" ;;
+    refs/heads/drain|refs/heads/v0.1-resolver)
+      reason="$name is frozen; cut ticket branches from dev (ADR 0051)" ;;
     refs/tags/v*)
       reason="a release tag is the owner's act; it starts release.yml" ;;
     *)
       continue ;;
   esac
-  name=${remote_ref#refs/heads/}
-  name=${name#refs/tags/}
   echo "pre-push: refusing to push to $name; $reason" >&2
   exit 1
 done

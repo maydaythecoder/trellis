@@ -47,7 +47,7 @@ fn main() {
     println!("seed {seed}\n");
     println!(
         "{:>4}  {:>10}  {:>10}  {:>12}  {:>10}",
-        "size", "decomposed", "ratio", "all-serial", "mean groups"
+        "size", "decomposed", "ratio", "all-serial", "mean width"
     );
 
     let mut rng = seed;
@@ -91,8 +91,8 @@ fn main() {
     println!(
         "\n{}",
         concat!(
-            "`decomposed` counts trials yielding more than one group, so more ",
-            "than one agent\ncould run. `all-serial` counts trials where every ",
+            "`decomposed` counts trials whose widest stage runs more than one ",
+            "agent. `all-serial` counts trials where every ",
             "group was the conservative\none — the graph could not prove any ",
             "unit disjoint from the others (S19).\n\n",
             "These symbol sets are drawn at random. Real changes are ",

@@ -16,13 +16,19 @@ fresh() {
   (cd "$tmp/r" && git init -q && git config core.autocrlf false && git config user.email t@t && git config user.name t \
     && git add -A && git commit -qm base --no-verify)
 }
-# expect <refuse|pass> <label> <path> <content>
+# expect <refuse|pass> <label> <path> <content> [<message>]
+# A refusal counts only with the hook's own <message>: actionlint, zizmor and
+# gitleaks run here too, and would refuse some cases even if the hook's own
+# check for them were gone.
 expect() {
   fresh
   mkdir -p "$(dirname "$tmp/r/$3")"
   printf '%s\n' "$4" > "$tmp/r/$3"
   (cd "$tmp/r" && git add -A)
-  if (cd "$tmp/r" && PATH="$PATH" bash scripts/hooks/pre-commit >/dev/null 2>&1); then got=pass; else got=refuse; fi
+  if err=$(cd "$tmp/r" && bash scripts/hooks/pre-commit 2>&1 >/dev/null); then got=pass; else got=refuse; fi
+  if [ "$got" = refuse ] && [ "$1" = refuse ] && ! printf '%s\n' "$err" | grep '^pre-commit: ' | grep -qF "${5:?refuse needs a message}"; then
+    bad=$((bad+1)); echo "FAIL: $2: refused, but no 'pre-commit:' line says '$5'"; return
+  fi
   if [ "$got" = "$1" ]; then pass=$((pass+1)); else bad=$((bad+1)); echo "FAIL: $2: expected $1, got $got"; fi
 }
 
@@ -31,15 +37,17 @@ aws="AKIA$(printf 'A%.0s' $(seq 1 16))"
 pem="-----BEGIN RSA PRIVATE $(echo KEY)-----"
 pw=hunter2
 url="https://user:${pw}@example.invalid/x"
-expect refuse "provider key literal"  src/a.rs  "let k = \"$ant\";"
-expect refuse "aws key literal"       src/b.rs  "const K: &str = \"$aws\";"
-expect refuse "private key header"    src/c.rs  "$pem"
-expect refuse "basic-auth url"        src/d.rs  "let u = \"$url\";"
-expect refuse "dotenv file"           .env      "X=1"
-expect refuse "pem file"              k/server.pem "x"
-expect refuse "gitleaks ignore edit"  .gitleaksignore "abc"
-expect refuse "pull_request_target"   .github/workflows/w.yml "on: pull_request_target"
-expect refuse "event in run block"    .github/workflows/x.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: |\n          echo \"${{ github.event.head_commit.message }}\"\n')"
+expect refuse "provider key literal"  src/a.rs  "let k = \"$ant\";" "key-shaped literal staged"
+expect refuse "aws key literal"       src/b.rs  "const K: &str = \"$aws\";" "key-shaped literal staged"
+expect refuse "private key header"    src/c.rs  "$pem" "key-shaped literal staged"
+expect refuse "basic-auth url"        src/d.rs  "let u = \"$url\";" "basic-auth URL staged"
+expect refuse "dotenv file"           .env      "X=1" "secret-shaped file staged"
+expect refuse "pem file"              k/server.pem "x" "secret-shaped file staged"
+expect refuse "gitleaks ignore edit"  .gitleaksignore "abc" "allow/ignore files"
+expect refuse "pull_request_target"   .github/workflows/w.yml "on: pull_request_target" "uses pull_request_target"
+# `- name:` then `run:` on its own line: the hook's awk does not see a
+# list-item `- run: |`, which only actionlint and zizmor refuse (reported on #421).
+expect refuse "event in run block"    .github/workflows/x.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - name: x\n        run: |\n          echo \"${{ github.event.head_commit.message }}\"\n')" "interpolated into a run: block"
 expect pass   "clean change"          src/e.rs  "fn f() -> u32 { 1 }"
 expect pass   "format! built canary"  src/f.rs  'let k = format!("sk-ant-{}", "a".repeat(30));'
 expect pass   "event through env"     .github/workflows/y.yml "$(printf 'on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - env:\n          M: ${{ github.event.head_commit.message }}\n        run: echo \"$M\"\n' | sed 's/^on: push$/on: push\npermissions: {}/; s/runs-on: x/runs-on: ubuntu-latest/')"

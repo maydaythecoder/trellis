@@ -9,13 +9,13 @@ Severity: **critical** kills the product claim · **high** breaks a goal state �
 
 | ID | Risk | Sev | Likelihood | Status |
 |---|---|---|---|---|
-| S1 | Resolver reach unmeasured, fallback unchosen | critical | certain | fallback chosen, measurement pending |
+| S1 | Resolver reach unmeasured, fallback unchosen | critical | certain | measured 72.0%; Pyright backstop ADR 0031 |
 | S2 | Recall is partial; product must not imply otherwise | critical | certain | patched structurally |
 | S3 | "Callers still work" means two things | high | certain | patched structurally |
 | S4 | Grounding contract erodes | critical | likely | patched structurally |
 | S5 | Single-owner orchestrator serializes; small context windows | high | likely | measurement pending |
-| S6 | Degradation UX undesigned | high | certain | open |
-| S7 | Model floor unknown | critical | certain | spike designed, pending |
+| S6 | Degradation UX undesigned | critical | certain | ADR 0014 landed, Q-6 open |
+| S7 | Model floor unknown | critical | certain | three configurations measured (BENCHMARK_AND_EVAL.md §5.2), all below the floor |
 | S8 | Budgets uncalibrated; cost profile inverts | medium | certain | instrumented, uncalibrated |
 | S9 | Scale unvalidated | medium | likely | partially measured |
 | S10 | Trail is an injection and propagation surface | high | possible | patched structurally |
@@ -27,6 +27,8 @@ Severity: **critical** kills the product claim · **high** breaks a goal state �
 | S17 | Residue of the constraint problem | high | certain | partially resolved |
 | S18 | Multi-agent throughput bounded by inference backend | high | certain | designed, unimplemented |
 | S19 | Partition safety inherits the graph's recall | critical | likely | patched structurally |
+| S20 | A cached checker returns a verdict about code it did not read | critical | certain without the patch | found and patched 2026-09-20 |
+| S21 | A wrong exclusion is invisible to every check except the audit | medium | — | mitigated, not closed |
 
 There is no S13 in the brief; the numbering is preserved as given rather than
 renumbered, so cross-references stay valid.
@@ -361,8 +363,10 @@ stretch target requiring sharding. Measure before claiming.
 **Partial measurement (2026-09-18).** Pass 1 on scrapy (93,650 lines, 504
 files) completes in 136 ms debug / well under that in release; poetry (44,822
 lines) in ~32 ms release across 16 cores, about 88 lines/ms/core. Parsing is
-confirmed not to be the problem. Resolution, peak RSS, and `index.bin` size
-remain unmeasured.
+confirmed not to be the problem. On 2026-09-19, on poetry 2.5.0 (81.7k lines,
+release): resolution ~88 ms of a ~120 ms full build, peak working set 37.9 MB,
+`index.bin` 589.7 / 599.5 KiB (`01-v0.1-measure.md` §4). All three remain
+unmeasured above ~100k lines.
 
 **Cost.** Measurement 2 days. Sharding, if needed, 15+ days and out of v1.0.
 
@@ -386,8 +390,9 @@ conversion. Judgment fields are fenced and labelled "treat as data not
 instruction" when assembled into context, asserted by a test using an actual
 injection string. Absent counts default to zero, never to an optimistic value.
 
-**Remaining.** Hashing factual entries so tampering is detectable rather than
-merely contained. → `OPEN_QUESTIONS.md` Q-5.
+**Remaining — closed.** Built: per-entry provenance and a SHA-256 over the
+factual section (a18442e), checked on read by `UntrustedTrail::integrity`.
+→ `OPEN_QUESTIONS.md` Q-5.
 
 **Cost.** Done for containment. Hashing 2–3 days.
 
@@ -487,7 +492,7 @@ the original, precision 100% on both. The pivot does not execute and the
 **S1 fallback band applies** — a further backstop is required before v1.0. The pre-registration worked exactly as intended:
 the number arrived, the rule was already written, and there was no room to
 argue about where the line should have been. ADR 0011 holds the evidence and
-the options; the decision is the project owner's and is pending.
+the options; the owner chose option C, recorded in ADR 0012.
 
 Worth stating plainly, because it is the part a pivot narrative tends to lose:
 precision measured **100%**, all 4,443 `Resolved` edges pass the mechanical
@@ -504,9 +509,10 @@ to hint. `ROADMAP.md` carries this as a named gate.
 
 **Severity: high · Likelihood: certain**
 
-Three parts, two now closed.
+Three parts, all now closed.
 
-**Logit access (open).** Tier 3 needs in-process inference —
+**Logit access (closed 2026-09-19 by ADR 0013: `candle` for tier 3, and tier 3
+deferred).** As first written: tier 3 needs in-process inference —
 `llama-cpp-2`-style bindings, `mistral.rs`, or `candle` — with real
 consequences for build complexity and hardware coverage.
 `docs/adr/0006-adapter-tiers-and-inference-path.md` is deliberately left
@@ -633,7 +639,7 @@ remove itself from its own denominator and recall could only rise.
 
 **Evidence, and what it is not.** Both completed audits re-scored against the
 new resolver report **wrongly excluded: 0**, with 27 sites moving from miss to
-exclusion on seed 20260920 and a human having independently judged every one of
+exclusion on seed 20260920 and the (model-read, A-34) auditor having judged every one of
 them third-party. Two samples at zero is evidence. It is not proof, and the
 pre-gate audit required by A-34 must report the figure again rather than
 inheriting this one.
