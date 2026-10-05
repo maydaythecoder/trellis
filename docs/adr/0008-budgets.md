@@ -62,7 +62,7 @@ They are not measurements and must not be cited as any. Calibration comes from
 real usage after v0.2, per configuration, per `COST_MODEL.md`.
 
 **Amended 2026-10-05 (#402, #429):** `Budget::split`, which floored each
-share and clamped it to one, is removed; `Budget::shares` (ADR 0037 §5) is the
+share and clamped it to one, is removed; `Budget::shares` (ADR 0037 decision 5) is the
 only way a budget is divided, and the rule above names it.
 
 ## Amendment 2026-10-02: the calibration rule, and why the defaults did not move
