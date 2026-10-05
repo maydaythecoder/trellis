@@ -50,6 +50,16 @@ three golden files are the specification of the selection rule.
 
 - **Root.** If the vault directory has a `notes/` subdirectory, that is the
   root; otherwise the directory itself is.
+
+  *Amended (re-inventory 2026-10-04, #353):* a `notes` that is a symbolic
+  link, or on Windows a junction, is refused with
+  `notes folder cannot be a symlink`, by the reader (`Vault::open`) and by
+  the run gate alike. Before
+  this, trellis did not follow the link and fell back to the vault
+  directory itself, so it read different files from Apex, which refuses
+  the folder (`read_workspace_blocking`). A `manifest.json` that is a link
+  is refused at the gate with `workspace metadata cannot be a symlink`, as
+  an error rather than a violation, because it is never read through.
 - **Files.** `.md` files are read recursively. The extension is matched
   case-insensitively. Names starting with `.` are skipped, and so are
   symlinks, both files and directories.
@@ -216,6 +226,14 @@ path, title or slug.
 - writes notes with exactly two frontmatter keys, in `composeRaw`'s form.
 
 A note file is written only when its bytes change.
+
+*Amended (re-inventory 2026-10-04, #353):* every command that edits refuses,
+before writing anything, a vault whose `manifest.json` or `layout.json` is a
+symbolic link (or a Windows junction), with `workspace metadata cannot be a
+symlink`, as Apex does (`ensure_workspace_metadata`, `write_if_changed`).
+Before this, `new`, `rm` and `check --fix` read and rewrote whatever file
+the link named, including one outside the vault. `dates.json` was already
+refused this way (§5); `annotations.json` is still never opened.
 
 *Amended in implementation:*
 
