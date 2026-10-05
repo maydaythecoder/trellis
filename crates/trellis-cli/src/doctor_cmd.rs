@@ -36,9 +36,56 @@ pub(crate) fn schema_report(probed: &Result<bool, String>) -> (bool, String) {
 /// while a repository is being edited, and a cached graph would describe the
 /// tree as it stood before the run the user has just watched.
 pub(crate) fn codebase_lines(root: &Path, limit: usize) -> Vec<String> {
+    graph_lines(&codebase_graph(root), limit)
+}
+
+/// The module graph `codebase_lines` draws, built the same way: in memory,
+/// never reading or writing `.trellis/index.bin`.
+fn codebase_graph(root: &Path) -> trellis_index::ModuleGraph {
     let sources = trellis_index::read_sources(root);
     let index = trellis_index::build_from_sources(&sources);
-    graph_lines(&trellis_index::module_graph(&index), limit)
+    trellis_index::module_graph(&index)
+}
+
+/// The codebase graph for `root` as data, for rpc's `get_codebase`.
+///
+/// What `codebase_lines` draws for the same `limit`, field for field: the
+/// same modules, busiest first, and the same edges per module, with what was
+/// left out counted rather than dropped. Bound, ambiguous and unresolved stay
+/// separate counts with no denominator beside them (CLAUDE.md rule 3).
+/// Module names are whole: cutting them to a column is the drawing's.
+pub(crate) fn codebase_json(root: &Path, limit: usize) -> serde_json::Value {
+    use crate::index_cmd::MAX_EDGES_DRAWN;
+    let g = codebase_graph(root);
+    let modules: Vec<serde_json::Value> = g
+        .nodes
+        .iter()
+        .take(limit)
+        .map(|n| {
+            let calls: Vec<serde_json::Value> = n
+                .calls
+                .iter()
+                .take(MAX_EDGES_DRAWN)
+                .map(|(m, c)| serde_json::json!({"module": m, "call_sites": c}))
+                .collect();
+            serde_json::json!({
+                "module": n.module,
+                "defines": n.defines,
+                "calls": calls,
+                "calls_not_drawn": n.calls.len().saturating_sub(MAX_EDGES_DRAWN),
+                "ambiguous": n.ambiguous,
+                "unresolved": n.unresolved,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "modules_indexed": g.nodes.len(),
+        "bound_call_sites": g.bound_edges(),
+        "ambiguous": g.ambiguous(),
+        "unresolved": g.unresolved(),
+        "modules": modules,
+        "modules_not_drawn": g.nodes.len().saturating_sub(limit),
+    })
 }
 
 /// Cuts a module path to the column, keeping the end.
