@@ -391,7 +391,7 @@ fn request_head(ep: &Endpoint, path: &str, body_len: usize) -> String {
 /// Sends one POST and reads the whole response.
 ///
 /// The key is written into the request buffer here and nowhere else, and
-/// the buffer is dropped when the write completes. With a `proxy` it is
+/// the buffer is dropped when `post` returns. With a `proxy` it is
 /// written inside the TLS session the tunnel carries, never to the proxy.
 pub(crate) async fn post(
     ep: &Endpoint,

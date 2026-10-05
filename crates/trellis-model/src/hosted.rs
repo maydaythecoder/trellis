@@ -477,9 +477,7 @@ fn cut(s: &str) -> String {
 pub fn is_context_overflow(status: u16, body: &str) -> bool {
     status == 413
         || (status == 400
-            && (body.contains("context_length_exceeded")
-                || body.contains("prompt is too long")
-                || body.contains("maximum context length")))
+            && (body.contains("context_length_exceeded") || body.contains("prompt is too long")))
 }
 
 /// Statuses worth retrying: rate limits and the provider's own failures.
@@ -1303,6 +1301,12 @@ mod tests {
             r#"{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#
         ));
         assert!(is_context_overflow(413, ""));
+        // OpenAI sends this text beside the `context_length_exceeded` code,
+        // which is the documented marker; the text alone is not one.
+        assert!(!is_context_overflow(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#
+        ));
         assert!(!is_context_overflow(
             400,
             r#"{"error":"roles must alternate"}"#
