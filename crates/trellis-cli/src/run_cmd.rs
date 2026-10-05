@@ -303,7 +303,8 @@ pub(crate) struct RunControl {
     /// between turns. Beside `human` because both are a person reaching into
     /// a running task, and on its own channel so a steer can never be read
     /// as an approval answer. `None` for every caller but `trellis tui`
-    /// (#115) and `session` at a terminal (#116).
+    /// (#115), `session` at a terminal (#116) and `rpc`'s `steer` (#114,
+    /// ADR 0025 §5).
     pub(crate) steering: Option<trellis_loop::SteeringRx>,
 }
 
@@ -476,8 +477,9 @@ pub(crate) struct ModelChoice<'a> {
 
 /// `cmd_run` with what ADR 0025 adds: forced skills and JSON framing.
 ///
-/// A second entry point rather than a new parameter, so every existing
-/// caller (`work`, `session`, `tui`) keeps calling `cmd_run` unchanged.
+/// A second entry point rather than a new parameter, so a caller with no
+/// extras (`work`, `tui`, tests) keeps calling `cmd_run`, which is this
+/// with default extras.
 pub(crate) fn cmd_run_with(
     root: &Path,
     task: &str,
@@ -877,8 +879,9 @@ fn run_body(
     };
 
     let notes = config::RepoConfig::notes(root)?;
-    // Skills (ADR 0019): names and descriptions to the prompt, capped. Read
-    // before the snapshot like everything else the run is seeded with.
+    // Skills (ADR 0019): names and descriptions to the prompt, capped. Read,
+    // with the notes above, after the snapshot and the armed guard; both only
+    // read, so an error here returns before anything is written.
     let mut skills = trellis_loop::SkillCatalog::discover_with(root, &skill_dirs);
     // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4),
     // and the same policy goes to the orchestrator, which refuses `read_skill`
@@ -1737,17 +1740,6 @@ fn unknown_run_id(id: &str, entries: &[trellis_trail::query::Entry]) -> String {
     msg
 }
 
-/// Ctrl-C during a run.
-///
-/// v1.0 gate condition 4 lists SIGINT as an injection point, and
-/// `04-v1.0-harness.md` calls it one of the two usually missed: "Ctrl-C is how
-/// users will actually abort." An unhandled SIGINT kills the process with the
-/// run's edits still in the tree, which is the one state TRELLIS promises
-/// never to leave behind — and the next run would then refuse to start on a
-/// dirty worktree, so the user's escape hatch becomes a wall.
-///
-/// Exits 130, the shell convention for a process terminated by SIGINT, so a
-/// script wrapping TRELLIS can tell an abort from a failed run.
 /// Rolls the worktree back when a run unwinds past it.
 ///
 /// A panic inside the run's `block_on` (a provider value that overflows, a
@@ -1786,8 +1778,8 @@ impl Drop for RollbackOnPanic<'_> {
 #[cfg(test)]
 thread_local! {
     /// Set by a test to panic inside the run's `block_on`, after the loop
-    /// has written. Per thread, because `cmd_run` drives the loop on the
-    /// calling thread and tests run in parallel.
+    /// has written. Per thread, because it is read on the caller's thread
+    /// before the run moves to [`RUN_THREAD`], and tests run in parallel.
     pub(crate) static PANIC_IN_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -1873,6 +1865,17 @@ fn next_interrupt() -> impl std::future::Future<Output = ()> {
     }
 }
 
+/// Ctrl-C during a run.
+///
+/// v1.0 gate condition 4 lists SIGINT as an injection point, and
+/// `04-v1.0-harness.md` calls it one of the two usually missed: "Ctrl-C is how
+/// users will actually abort." An unhandled SIGINT kills the process with the
+/// run's edits still in the tree, which is the one state TRELLIS promises
+/// never to leave behind — and the next run would then refuse to start on a
+/// dirty worktree, so the user's escape hatch becomes a wall.
+///
+/// Exits 130, the shell convention for a process terminated by SIGINT, so a
+/// script wrapping TRELLIS can tell an abort from a failed run.
 fn interrupted_run(
     root: &Path,
     task: &str,
@@ -2104,11 +2107,6 @@ fn rollback_and_report(
     }
 }
 
-/// Records what happened, factual and judgment kept apart.
-///
-/// Everything in `factual` comes from a tool result the run actually received.
-/// Nothing is defaulted into it: a figure nobody measured has no business in
-/// the section whose promise is that it is machine-checkable.
 /// Splits the callers of what changed into verified and reviewed.
 ///
 /// **S3, finally populated from evidence.** "The callers still work" means two
@@ -2146,7 +2144,7 @@ pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::Mod
         let src = sources
             .entry(c.path.clone())
             .or_insert_with(|| std::fs::read_to_string(root.join(&c.path)).unwrap_or_default());
-        let line = src[..c.offset.min(src.len())].lines().count() as u32;
+        let line = line_of(src, c.offset) as u32;
         counts.record(if coverage.covers(&c.path, line) {
             trellis_checks::AuditMode::Verified
         } else {
@@ -2154,6 +2152,18 @@ pub(crate) fn audit_modes(root: &Path, touched: &[String]) -> trellis_trail::Mod
         });
     }
     counts
+}
+
+/// The 1-based line a byte offset falls on: the newlines before it, plus one.
+///
+/// Not `lines().count()`, which gives the line above when the offset starts
+/// a line and 0 at offset 0.
+pub(crate) fn line_of(src: &str, offset: usize) -> usize {
+    src.as_bytes()[..offset.min(src.len())]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        + 1
 }
 
 /// One turn, as a line in the action log.
@@ -2330,6 +2340,11 @@ pub(crate) fn steering_entries(
     delivered.chain(undelivered).collect()
 }
 
+/// Records what happened, factual and judgment kept apart.
+///
+/// Everything in `factual` comes from a tool result the run actually received.
+/// Nothing is defaulted into it: a figure nobody measured has no business in
+/// the section whose promise is that it is machine-checkable.
 fn record_trail(
     root: &Path,
     task: &str,
@@ -3273,5 +3288,40 @@ mod loop_stack_tests {
             caught.downcast_ref::<&str>(),
             Some(&"injected on the run thread")
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_mode_tests {
+    use super::audit_modes;
+
+    #[test]
+    fn a_covered_call_at_column_zero_is_verified_not_reviewed() {
+        // S3 looks a caller up by line. Counting `lines()` of the source
+        // before the call gives the line above it when the call starts a
+        // line, so a covered module-level `greet()` was read on line 1,
+        // found unexecuted, and counted as Reviewed.
+        let dir = crate::testutil::scratch("audit-mode-column-zero");
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/core.py"), "def greet():\n    return 1\n").unwrap();
+        std::fs::write(
+            dir.join("app/edge.py"),
+            "from app.core import greet\ngreet()\n",
+        )
+        .unwrap();
+        // Only the call's own line ran, so any other line reads as Reviewed.
+        std::fs::write(
+            dir.join("coverage.json"),
+            r#"{"files": {"app/edge.py": {"executed_lines": [2]}}}"#,
+        )
+        .unwrap();
+
+        let counts = audit_modes(&dir, &["app/core.py".to_string()]);
+        assert_eq!(
+            (counts.verified, counts.reviewed),
+            (1, 0),
+            "the covered call on line 2 was looked up on another line"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
