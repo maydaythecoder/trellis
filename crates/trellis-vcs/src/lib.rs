@@ -49,7 +49,7 @@ pub enum VcsError {
     // The text is built in `rollback_failure_message` rather than written
     // into this attribute. A multi-line literal here picks up the source
     // indentation of every continuation line, which is the `cargo fmt`
-    // string-folding defect this repository has now hit six times — and the
+    // string-folding defect this repository has hit before — and the
     // last place it should appear is the one message a user reads while
     // being told their worktree is in an unknown state.
     #[error("{}", rollback_failure_message(.root, .head, .detail))]
@@ -108,8 +108,8 @@ const DIRTY_HEAD: &str = "the worktree has uncommitted changes, and a run needs 
 /// A raw string, so what a user reads is what is written here.
 ///
 /// Continuation-escaped literals fold their source indentation into the
-/// content, which this project has shipped eight times — and a message about
-/// a wall the user has just hit is a poor place for the ninth.
+/// content, which this project has shipped before — and a message about a
+/// wall the user has just hit is a poor place for it.
 const DIRTY_TAIL: &str = r#"
 Rollback is `git reset --hard` to a commit recorded before the run, and that
 cannot tell this run's edits from work that was already there. The requirement
@@ -165,14 +165,11 @@ pub struct Snapshot {
     pub branch: Option<String>,
 }
 
-/// Shelling out to `git` rather than using `git2` for v0.1.
+/// Shelling out to `git` rather than using `git2`.
 ///
-/// The brief blesses this as an acceptable v0.2 shortcut. It is chosen here
-/// deliberately: `reset --hard` and `clean -fd` have exact, well-understood
-/// semantics as commands, and the one path that must never lose a user's
-/// work is a poor place to be learning a binding's edge cases. `git2` stays
-/// in the workspace manifest for the worktree management that multi-agent
-/// mode needs (4.13), where the library genuinely helps.
+/// Chosen deliberately: `reset --hard` and `clean -fd` have exact,
+/// well-understood semantics as commands, and the one path that must never
+/// lose a user's work is a poor place to be learning a binding's edge cases.
 fn git(root: &Path, args: &[&str]) -> Result<String, VcsError> {
     output(command().args(args).current_dir(root), args)
 }
@@ -792,7 +789,6 @@ pub fn commit_paths(root: &Path, paths: &[&str], message: &str) -> Result<(), Vc
     Ok(())
 }
 
-/// Records `HEAD`, refusing if the worktree is dirty.
 /// Uncommitted changes, as `git status --porcelain` lines.
 ///
 /// Empty means clean. Exposed because the interactive session has to show a
@@ -894,6 +890,7 @@ fn recovery_steps(
     })
 }
 
+/// Records `HEAD`, refusing if the worktree is dirty.
 pub fn snapshot(root: &Path) -> Result<Snapshot, VcsError> {
     if !root.join(".git").exists() {
         return Err(VcsError::NotARepo(root.to_path_buf()));
@@ -1035,8 +1032,8 @@ impl Snapshot {
 
     /// Whether the worktree currently matches the snapshot exactly.
     ///
-    /// Used by the rollback test to assert the gate condition rather than
-    /// assume it.
+    /// Read after a rollback by `run` and the process-agent path to decide
+    /// whether the tree may be called restored.
     pub fn is_restored(&self) -> Result<bool, VcsError> {
         let head = head_commit(&self.root)?.unwrap_or_default();
         let status = git(&self.root, &["status", "--porcelain"])?;
@@ -1679,11 +1676,10 @@ mod tests {
             msg.contains("git stash") && msg.contains("git commit"),
             "and it must give the ways out — this is the first wall users hit: {msg}"
         );
+        // A folded literal puts source indentation after the newline. The
+        // message's own indent is two spaces; four or more is the defect.
         assert!(
-            !msg.contains(
-                "  
-"
-            ),
+            !msg.contains("\n    "),
             "no folded indentation in the message a stuck user reads: {msg:?}"
         );
 
@@ -2202,8 +2198,10 @@ mod tests {
             msg.contains("index.lock"),
             "it must name the likely cause when the manual path also fails: {msg}"
         );
+        // Source indentation lands after the newline, not before it; the
+        // message's own indent is two spaces.
         assert!(
-            !msg.contains("  \n"),
+            !msg.contains("\n    "),
             "no folded indentation in text a user reads under pressure: {msg:?}"
         );
 
@@ -2216,17 +2214,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// C-002: `Worktree` is written ahead of need for brief 4.13's
-    /// per-partition isolation and nothing calls it yet, so both its mutants
-    /// survive every run — the mutation evidence for a finding first made by
-    /// reading.
-    ///
-    /// Tested rather than deleted. It has no replacement, unlike
-    /// `tools::args` which `ToolCallWire` superseded and
-    /// `Trail::factual_is_intact` which duplicated a better check; and it
-    /// sits in the per-partition rollback path, so when v1.1 wires it up it
-    /// needs to already work. Dead-and-verified is the right state for code
-    /// deliberately written early. Dead-and-unverified is not.
+    /// Covers the partition worktree `trellis-loop`'s supervisor creates (ADR 0037).
     #[test]
     fn a_partition_worktree_is_created_on_its_own_branch() {
         let dir = temp_repo("worktree-create");
@@ -2322,7 +2310,7 @@ mod tests {
 
     #[test]
     fn two_partitions_get_separate_worktrees() {
-        // The property v1.1 depends on. Two agents editing the same file in
+        // The property partition worktrees depend on. Two agents editing the same file in
         // different partitions must not see each other, which is what makes
         // "filesystem isolation for free" true rather than hopeful.
         let dir = temp_repo("worktree-two");
