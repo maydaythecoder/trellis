@@ -210,6 +210,13 @@ fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
     let mut rpc = Rpc::start(trellis(&f));
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
+    // What the desktop shows a question by (ADR 0048 §6).
+    let gaps = missing(
+        &q,
+        &contract()["rpc"]["framing"]["approval_request"]["always"],
+        "approval_request",
+    );
+    assert!(gaps.is_empty(), "{gaps:?}: {q}");
     assert_eq!(q["question"], "edit a.py (+1 -1)");
     rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
     let end = rpc.next(|v| v["type"] == "run_end");
@@ -704,7 +711,19 @@ fn rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run() {
     // The model called `done` on the steer's word, with no check run: not
     // converged, and rolled back.
     assert_eq!(end["outcome"], "not_converged", "{end}");
-    rpc.finish();
+    let records = rpc.finish();
+    // The event the desktop marks a delivered steer by carries what
+    // tests/client_contract.json lists (ADR 0048 §6).
+    let delivered = records
+        .iter()
+        .find(|r| r["fields"]["message"] == "steer delivered")
+        .unwrap_or_else(|| panic!("no steer delivered event: {records:?}"));
+    let gaps = missing(
+        &delivered["fields"],
+        &contract()["rpc"]["events"]["steer delivered"]["always"],
+        "steer delivered",
+    );
+    assert!(gaps.is_empty(), "{gaps:?}: {delivered}");
     assert_eq!(
         std::fs::read_to_string(f.root.join("a.py")).unwrap(),
         "def f():\n    return 1\n"
@@ -1361,5 +1380,222 @@ fn rpc_get_queue_lists_what_queue_list_prints() {
             .iter()
             .any(|t| t["status"] == "blocked" && t["waiting"].as_str().is_some()),
         "{printed:?}"
+    );
+}
+
+/// The rpc and `log --json` fields a client may rely on (ADR 0048 §6), as
+/// data the tests below hold the binary to.
+fn contract() -> Value {
+    serde_json::from_str(include_str!("client_contract.json"))
+        .expect("client_contract.json is JSON")
+}
+
+/// The field names in one of the contract's lists.
+fn names(list: &Value) -> Vec<&str> {
+    list.as_array()
+        .expect("a contract list")
+        .iter()
+        .map(|n| n.as_str().expect("a field name"))
+        .collect()
+}
+
+/// Each field of `fields` that `record` does not carry, as `<what>.<field>`.
+/// A field present with `null` is carried.
+fn missing(record: &Value, fields: &Value, what: &str) -> Vec<String> {
+    names(fields)
+        .into_iter()
+        .filter(|f| record.get(f).is_none())
+        .map(|f| format!("{what}.{f}"))
+        .collect()
+}
+
+/// Whether `record` carries `path`: dotted keys, with `[]` meaning every
+/// element of a non-empty array. A key present with `null` is carried.
+fn carries(record: &Value, path: &str) -> bool {
+    let (head, rest) = match path.split_once('.') {
+        Some((h, r)) => (h, Some(r)),
+        None => (path, None),
+    };
+    let (key, each) = match head.strip_suffix("[]") {
+        Some(k) => (k, true),
+        None => (head, false),
+    };
+    let Some(v) = record.get(key) else {
+        return false;
+    };
+    match (each, rest) {
+        (false, None) => true,
+        (false, Some(r)) => carries(v, r),
+        (true, r) => v
+            .as_array()
+            .is_some_and(|a| !a.is_empty() && a.iter().all(|e| r.is_none_or(|r| carries(e, r)))),
+    }
+}
+
+/// Commits a `.trellis/config.toml` whose checks pass on Windows and Linux,
+/// as `cli.rs`'s fixtures do, so a run that calls `run_checks` converges
+/// without depending on the machine's toolchain.
+fn commit_passing_checks(f: &Fixture) {
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "checks"]);
+}
+
+#[test]
+fn rpc_stream_carries_every_field_the_desktop_reads() {
+    // The risk: a field the desktop's run panes read is renamed or dropped
+    // in trellis-loop or the framing. The TUI reads the same events in
+    // process, so its tests would pass and the desktop would go blank with
+    // nothing failing (ADR 0048 §6). The model is the provider stub, not a
+    // script: the scripted driver sends no prompt, so its turns never carry
+    // `prompt_bytes`.
+    let c = contract();
+    let rpc_c = &c["rpc"];
+    let f = fixture("rpc-contract");
+    commit_passing_checks(&f);
+    let (base, server) = provider_stub(vec![
+        openai_call("c1", "blast_radius", serde_json::json!({"symbol": "f"})),
+        openai_call(
+            "c2",
+            "edit",
+            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+        ),
+        openai_call(
+            "c3",
+            "run_checks",
+            serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+        ),
+        openai_call("c4", "done", serde_json::json!({"summary": "changed it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_CONTRACT_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 4, "{records:?}");
+
+    let events = &rpc_c["events"];
+    let of = |message: &str| -> Vec<&Value> {
+        records
+            .iter()
+            .filter(|r| r["fields"]["message"] == message)
+            .map(|r| &r["fields"])
+            .collect()
+    };
+    let mut gaps: Vec<String> = Vec::new();
+    let turns = of("turn");
+    let turn = &events["turn"];
+    if turns.is_empty() {
+        gaps.push("no turn event".into());
+    }
+    let verdicts = names(&turn["verdict_values"]);
+    for t in &turns {
+        gaps.extend(missing(
+            t,
+            &turn["always"],
+            &format!("turn {} ({})", t["turn"], t["call"]),
+        ));
+        if let Some(v) = t.get("verdict")
+            && !v.as_str().is_some_and(|v| verdicts.contains(&v))
+        {
+            gaps.push(format!(
+                "turn {} verdict {v}, not one of {verdicts:?}",
+                t["turn"]
+            ));
+        }
+    }
+    match turns.iter().find(|t| {
+        t["call"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("blast_radius "))
+    }) {
+        Some(t) => {
+            gaps.extend(missing(t, &turn["blast_radius_only"], "blast_radius turn"));
+            // A turn the provider's reply made: the driver sent a prompt.
+            gaps.extend(missing(t, &turn["prompt_driver_only"], "blast_radius turn"));
+            if t["check_kind"] != "" {
+                gaps.push(format!(
+                    "blast_radius turn check_kind {}, not \"\" on a turn that ran no check",
+                    t["check_kind"]
+                ));
+            }
+        }
+        None => gaps.push("no blast_radius turn".into()),
+    }
+    match of("run budget").first() {
+        Some(b) => gaps.extend(missing(b, &events["run budget"]["always"], "run budget")),
+        None => gaps.push("no run budget event".into()),
+    }
+    for ty in ["run_start", "run_end", "response"] {
+        let found: Vec<&Value> = records.iter().filter(|r| r["type"] == ty).collect();
+        if found.is_empty() {
+            gaps.push(format!("no {ty} record"));
+        }
+        for r in found {
+            gaps.extend(missing(r, &rpc_c["framing"][ty]["always"], ty));
+        }
+    }
+    assert!(
+        gaps.is_empty(),
+        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+    // The run took the path the fixture is built for, so the turns above
+    // are the ones meant.
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}");
+}
+
+#[test]
+fn log_json_carries_every_trail_field_the_desktop_reads() {
+    // The risk: a path the desktop's trails view reads is renamed or moved
+    // in the record or the trail, and the view goes blank with nothing
+    // failing (ADR 0048 §6). The run calls `run_checks`, so the trail has a
+    // check outcome to read through.
+    let c = contract();
+    let f = fixture("log-json-contract");
+    commit_passing_checks(&f);
+    let script = scratch("log-json-contract-checks").join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":["a.py"],"kinds":["typecheck","tests"]},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let o = run(&f, &["run", "change f", "--model", &spec]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = run(&f, &["--json", "log"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lines = jsonl(&o);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let gaps: Vec<&str> = names(&c["log_json"]["always"])
+        .into_iter()
+        .filter(|p| !carries(&lines[0], p))
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "the log --json line lacks what tests/client_contract.json lists: {gaps:?}\n{}",
+        lines[0]
     );
 }
