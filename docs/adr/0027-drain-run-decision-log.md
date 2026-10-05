@@ -50,3 +50,26 @@ issue that holds the full reasoning.
 | — | Parked tickets carry `parked` and `triage:needs-human`, and no Done when / Verify | keeps them out of G0 and `next.sh` on two counts | — |
 | — | Gates take `--base <ref>`; `verify-tests.sh` fails on zero matched tests; `next.sh` and G0 read eligibility from the issue body, release `triage:blocked` when every `blocked_by` closes, and refuse `parked` | the label-driven queue disagreed with G0; a zero-test filter passes vacuously | — |
 | #168 | trellis-index takes serde_json as a normal dependency for the LSP client | already a workspace dependency used at run time by seven crates; no crate added to Cargo.lock | the transport moves to trellis-cli |
+
+### Queue run, 2026-10-02 to 2026-10-04
+
+| Issue | Decision | Why | Reverses if |
+|---|---|---|---|
+| #6 | Regenerated the classify fixture from `ask.rs`'s test at C before running; the classification rows are n=3 (runner default), previous section n=2 | the fixture must be the prompt that ships; the ticket says runner defaults | the owner wants n matched to the previous section |
+| #147 | Poetry runs in a fresh git-initialised copy (`.bench/cost`, `core.autocrlf=false`) with `.bench/floor`'s `[checks]` and no `[budget]` | the default budget is what the ticket asks for; autocrlf=true would change bytes on rollback | a committed poetry fixture replaces ad-hoc copies |
+| #147 | Every task is a docstring edit in the same file, so the radius is the only variable; ran two rounds for n=2 | holds the work constant across radius sizes | the owner wants tasks that scale with the radius (renames) |
+| #147 | Scoped check timed on the file every task targeted, since no run touched a file | the ticket's "files the run touched" was empty | — |
+| #15 | Stopped the Windows Ollama daemon for the pass and ran WSL's; panic induced by a one-line F12 probe in a throwaway clone and separate target dir only | WSL cannot reach the Windows daemon in NAT mode, and two daemons contend for the GPU; the binary under test stays at C | — |
+| #17 | Rule's "re-run" branch not taken for the four crates over the timeout limit; counts, no score | the timeouts are non-terminating-loop mutants, which a re-run reproduces | a per-test time limit makes them scoreable |
+| #17 | One issue per crate (#245-#248) as the disposition for every survivor except one shown unexercisable; none judged equivalent | 847 equivalence claims could not be made carefully in one sitting | — |
+| #122 | Widened the hygiene `plain()` guard to scan all of `src/`, in its own commit before the move | the guard read `main.rs` by path and would have stopped seeing `cmd_log`/`cmd_why` | — |
+| #124 | Moved the unlisted run-path types and helpers with the listed functions; re-exported names other modules reach as `crate::X` instead of editing their paths | the ticket's intent is "leaving main.rs with argument parsing, dispatch and root discovery"; re-exports keep the move commit to mod/use/visibility lines | the owner wants callers updated by path |
+| #126 | Compared mutant by mutant (function + mutation, `file:line:col` ignored) instead of by caught fraction | both runs exceed the timeout limit, so neither has a fraction; the split moved files | — |
+| #194/#195/#196/#201/#211/#221/#239 | Recorded each owner answer as a `## Decision` section and moved the issue from parked/needs-human to triage:auto (unparker procedure); #219 relabelled owner-task with steps, #220 blocked on #219 | the answers came from the owner in the session; the issue body is where G0 reads them | — |
+| #239 | Not merged by the session: risk:high under #196's new path table, so it waits for the owner's approval even though its labels did not trigger G7 | the label predates the table; the table is the rule | the owner says merge |
+| #242 | Of three example wordings scoring 15/15, kept the one that still says what a change does | the point of the change was the way forward, not brevity | a later measurement shows it costs empty replies |
+| #243 | The loop emits one `run budget` event per run; the TUI reads the ceiling from it rather than from config | the hosted path can differ from the config, and the loop's figure is the one enforced | — |
+| #244 | Scroll state counts lines back from the end, with the outcome on the transcript's non-scrolling border | following is the default and needs no layout in the state | — |
+| #245 | A nextest `mutants` profile (60 s x 3, four threads) used only when NEXTEST_PROFILE=mutants; a starved run (over 40% unviable) is not recorded, and two starved results were discarded | turns hung mutants into failures without touching cargo test or CI | the owner prefers a different tool |
+| #249 | `desktop/**` maps to area:tui | the desktop is an interface; #194 keeps the area set fixed | the owner adds a desktop area |
+| plan | 49 owner questions in the 2026-10-04 upstream plan answered with each ticket's recommended option, recorded in the ticket's `## Decision`; 32 tickets routed from needs-human to triage:auto where a rule abstained on an input an issue does not carry | the owner delegated every open decision ("ready for completion without decisions") | the owner edits any one ticket's Decision |
