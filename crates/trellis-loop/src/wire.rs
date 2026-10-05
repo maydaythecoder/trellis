@@ -219,19 +219,54 @@ mod tests {
     fn the_schema_names_every_tool() {
         // This schema is what constrains a real model, so a tool missing here
         // is a tool the model can never call.
-        let s = ToolCallWire::schema().to_string();
-        for tool in [
-            "blast_radius",
-            "read_file",
-            "edit",
-            "run_checks",
-            "read_skill",
-            "callers_of",
-            "callees_of",
-            "done",
-        ] {
-            assert!(s.contains(tool), "schema omits `{tool}`: {s}");
-        }
+        // Read from each branch's `tool` const, as `ToolSet::schema` reads
+        // it, so a name elsewhere in the schema cannot stand in for one.
+        let s = ToolCallWire::schema();
+        let tools: Vec<&str> = s["oneOf"]
+            .as_array()
+            .expect("the schema is a oneOf over the tools")
+            .iter()
+            .map(|b| b["properties"]["tool"]["const"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            tools,
+            [
+                "blast_radius",
+                "read_file",
+                "edit",
+                "run_checks",
+                "read_skill",
+                "write_file",
+                "grep",
+                "find",
+                "ls",
+                "bash",
+                "search_notes",
+                "read_note",
+                "ask_human",
+                "callers_of",
+                "callees_of",
+                "coverage_report",
+                "done",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_schema_caps_ask_human_options_at_the_validators_limit() {
+        // The grammar's cap is a literal in the derive attribute and the
+        // validator's is `MAX_QUESTION_OPTIONS`; this ties the two copies.
+        let s = ToolCallWire::schema();
+        let branch = s["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["properties"]["tool"]["const"] == "ask_human")
+            .expect("the schema has an ask_human branch");
+        assert_eq!(
+            branch["properties"]["options"]["maxItems"].as_u64(),
+            Some(crate::agent::MAX_QUESTION_OPTIONS as u64)
+        );
     }
 
     #[test]
