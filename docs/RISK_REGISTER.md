@@ -338,8 +338,8 @@ free.
 `trellis-loop/src/budget.rs`, so the budget code knows which regime it is in.
 The token ceiling applies in **both**, tested: the user's key means a runaway
 loop spends the user's money regardless of how cheap tokens notionally are.
-`Budget::split` divides across partitions rather than granting each the full
-ceiling, with wall-clock shared rather than divided since partitions run
+`Budget::shares` divides across partitions rather than granting each the full
+ceiling, the shares summing to it exactly, with wall-clock shared rather than divided since partitions run
 concurrently. Current default values are placeholders (`ASSUMPTIONS.md` A-7) and
 are marked as such in the source.
 

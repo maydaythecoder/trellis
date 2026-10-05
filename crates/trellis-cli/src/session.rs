@@ -152,7 +152,7 @@ impl Session {
         println!();
         println!("TRELLIS  ·  {}", self.root.display());
         println!(
-            "  index    {} files, {} definitions, {} first-party call sites ({:.0} ms)",
+            "  index    {} files, {} definitions, {} non-excluded call sites ({:.0} ms)",
             self.index.files.len(),
             self.index.symbols.len(),
             c.total(),
@@ -1035,7 +1035,7 @@ impl Session {
         let c = &self.index.coverage;
         println!("root     {}", self.root.display());
         println!(
-            "index    {} files, {} first-party call sites, {} resolved",
+            "index    {} files, {} non-excluded call sites, {} resolved",
             self.index.files.len(),
             c.total(),
             c.resolved

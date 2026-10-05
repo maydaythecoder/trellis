@@ -49,7 +49,6 @@ fn describe(index: &Index, t: &Target) -> String {
     }
 }
 
-/// Looks up the binding for the call site whose source text is `call`.
 /// The whole index, for assertions about coverage rather than edges.
 ///
 /// An excluded call site produces **no edge**, so `bindings` cannot see one:
@@ -63,6 +62,7 @@ fn index_of(sources: &[(&str, &str)]) -> Index {
     build_from_sources(&owned)
 }
 
+/// Looks up the binding for the call site whose source text is `call`.
 fn target_of(b: &[(String, String)], call: &str) -> String {
     b.iter().find(|(text, _)| text == call).map_or_else(
         || format!("<no edge for `{call}`; edges: {b:?}>"),
@@ -822,7 +822,8 @@ fn every_call_site_lands_in_exactly_one_bucket() {
     // And the buckets are the ones we expect, so a balanced-but-wrong split
     // cannot pass.
     assert_eq!(c.resolved, 1, "e.run() only; helper() is not imported here");
-    assert!(c.external >= 2, "val.lower() and os.getcwd()");
+    assert_eq!(c.external, 2, "val.lower() and os.getcwd()");
+    assert_eq!(c.unresolved, 3, "cb(), x.run(), helper()");
 }
 
 // ---------------------------------------------------------------------------
@@ -909,6 +910,36 @@ fn shadowing_on_a_base_class_propagates_to_the_subclass() {
         ),
     ]);
     assert_eq!(target_of(&b, "self.helper()"), "!! ShadowedAmbiguous");
+}
+
+#[test]
+fn a_class_qualified_call_to_a_shadowed_method_is_ambiguous() {
+    // The same unsound edge on the class-qualified path, which looks the
+    // method up in `defs` itself rather than through `lookup_method`. Fixing
+    // only the instance path left `C.run()` resolving to the `def` whatever
+    // the assignment had done to it.
+    let b = bindings(&[(
+        "app/m.py",
+        "class C:\n    run = None\n\n    def run(self):\n        return 1\n\ndef go():\n    return C.run()\n",
+    )]);
+    assert_eq!(target_of(&b, "C.run()"), "!! ShadowedAmbiguous");
+}
+
+#[test]
+fn an_imported_class_qualified_call_to_a_shadowed_method_is_ambiguous() {
+    // The imported counterpart, reached through `attr_of_bound`: a separate
+    // code path, so a separate test.
+    let b = bindings(&[
+        (
+            "app/model.py",
+            "class Factory:\n    create = None\n\n    @classmethod\n    def create(cls):\n        return 1\n",
+        ),
+        (
+            "app/main.py",
+            "from app.model import Factory\n\ndef go():\n    return Factory.create()\n",
+        ),
+    ]);
+    assert_eq!(target_of(&b, "Factory.create()"), "!! ShadowedAmbiguous");
 }
 
 // ---------------------------------------------------------------------------

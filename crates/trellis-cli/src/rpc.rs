@@ -1704,4 +1704,86 @@ mod tests {
         assert_eq!(got[0]["call"], "edit a.py");
         assert_eq!(got[0]["turn"], 1);
     }
+
+    // ---- #248: survivors of the trellis-cli mutation run ----
+
+    #[test]
+    fn a_turn_s_signed_and_boolean_fields_reach_get_messages() {
+        // The risk: a field of a type the visitor dropped is missing from
+        // `get_messages` with nothing to say it was there.
+        use tracing_subscriber::layer::SubscriberExt;
+        let store: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let sub = tracing_subscriber::registry().with(TurnCapture {
+            store: store.clone(),
+        });
+        tracing::subscriber::with_default(sub, || {
+            tracing::info!(turn = 2u64, call = "x", delta = -3i64, wrote = true, "turn");
+        });
+        let got = store.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["delta"], -3);
+        assert_eq!(got[0]["wrote"], true);
+    }
+
+    #[test]
+    fn watched_passes_the_driver_s_figures_through() {
+        use trellis_loop::Model;
+        let mut inner = crate::testutil::figures();
+        let w = Watched::new(&mut inner, None);
+        assert_eq!(w.tokens_used(), 7);
+        assert_eq!(w.prompt_bytes(), Some(4321));
+        assert_eq!(w.compactions().len(), 1);
+        assert_eq!(w.compactions()[0].elided_bytes, 50);
+        assert_eq!(w.requested_compactions().len(), 1);
+        assert_eq!(w.requested_compactions()[0].elided_bytes, 60);
+    }
+
+    #[test]
+    fn a_prompt_without_a_task_or_with_args_and_no_template_says_which() {
+        let (dir, spec) = fixture("prompt-shape", "");
+        let c = Client::start(&dir);
+        c.send(json!({"id": "a", "type": "prompt", "task": "t", "args": "x", "model": spec}));
+        c.send(json!({"id": "b", "type": "prompt", "task": "  ", "model": spec}));
+        let rs = c.finish();
+        let by = |id: &str| rs.iter().find(|r| r["id"] == id).unwrap().clone();
+        assert_eq!(
+            by("a")["error"],
+            "\"args\" needs \"prompt\", the template they fill"
+        );
+        assert_eq!(
+            by("b")["error"],
+            "prompt needs \"task\", \"prompt\", or both"
+        );
+        assert!(of_type(&rs, "run_start").is_empty(), "{rs:?}");
+    }
+
+    #[test]
+    fn get_state_after_a_run_says_it_is_over_and_how_it_ended() {
+        // The risk: `last_run` empty, or the finished run still reported
+        // as running, so a client waits on a run that will never end.
+        let (dir, spec) = fixture("state", "");
+        let c = Client::start(&dir);
+        c.send(json!({"id": "p", "type": "prompt", "task": "change f", "model": spec}));
+        c.wait_for(|r| r["type"] == "run_end");
+        let until = Instant::now() + Duration::from_secs(60);
+        let state = (0..)
+            .map(|i| {
+                let id = format!("s{i}");
+                c.send(json!({"id": id, "type": "get_state"}));
+                c.wait_for(|r| r["id"] == id.as_str())
+            })
+            .find(|s| {
+                assert!(Instant::now() < until, "still running: {s}");
+                s["data"]["running"] == false || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    false
+                }
+            })
+            .unwrap();
+        let last = &state["data"]["last_run"];
+        assert_eq!(last["outcome"], "not_converged", "{state}");
+        assert_eq!(last["id"], "p", "{state}");
+        assert!(last.get("type").is_none(), "{state}");
+        c.finish();
+    }
 }
