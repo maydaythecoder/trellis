@@ -15,7 +15,8 @@
 #
 # Usage:  scripts/mutate-by-crate.sh [crate ...]
 #         WORKSPACE_TESTS=1 scripts/mutate-by-crate.sh [crate ...]
-# With no arguments, runs every crate that has never been measured.
+# With no arguments, runs trellis-model, -trail, -vcs, -core and -checks,
+# skipping any already recorded.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
