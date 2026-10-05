@@ -105,5 +105,5 @@ apart in time, and file-disjointness keeps the merge clean.
 High. The supervisor is one module (`crates/trellis-loop/src/supervise.rs`)
 with no caller outside its tests, and `Budget::shares` is additive.
 
-**Amended 2026-10-05 (#402, #429):** `Budget::split` is removed, so §5 names
+**Amended 2026-10-05 (#402, #429):** `Budget::split` is removed, so decision 5 names
 `Budget::shares` as the only way a budget is divided.
