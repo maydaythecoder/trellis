@@ -4,7 +4,8 @@
 `rm` writes only what changes; the search limit), §5 (`dates --seed` may
 create the file; a BOM changes anchors), §7 (added: `[context] dates` and
 auto-created linked notes are not built), and "Evidence" (how the vectors were produced). Each amendment is
-marked in place. Integrated afterwards: `[context] dates` (§7) and `vault
+marked in place. Amended by the re-inventory of 2026-10-04: §5 (a vault
+edit never fails because of `dates.json`). Integrated afterwards: `[context] dates` (§7) and `vault
 init` outside a repository (Consequences).
 **Date:** 2026-09-27
 **Reference design:** Apex Notes (`boriemannetje/apex-notes`, MIT), commit
@@ -358,6 +359,22 @@ is never overwritten**, `--seed` included.
   BOM before parsing (ADR 0017). Apex does not strip it, so in Apex that note
   has no frontmatter and its whole text is the body. So the two tools anchor
   different lines for such a note. No other input is known to diverge.
+
+*Amended (re-inventory 2026-10-04):*
+A vault edit never fails because of dates.json.
+`dates::after_edit` runs after the note write has landed, and every outcome it
+has is `Ok`:
+
+- A touched note that cannot be read, seeded or reconciled keeps its previous
+  entry, or gets none, and the message names it.
+- Every other touched note is still updated.
+- A document that would exceed the limits above, or a save that fails, leaves
+  the file's bytes unchanged. The message says `dates.json left unchanged` and
+  that the note edit is written.
+
+This is Apex's rule that date tracking never blocks Markdown (README.md:67).
+The signature of `after_edit` is unchanged, so the `trellis vault` commands
+exit 0 after a landed edit instead of 1.
 
 **Writes are atomic, mirroring `atomic_write_file`:**
 
