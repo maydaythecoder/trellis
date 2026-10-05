@@ -31,7 +31,7 @@
   - As a result, APEX-01 and APEX-02 need no `trellis-cli` edit, and the Node-generated Apex vectors (`ranking_matches_apex_vectors`, `graph_matches_apex_vectors`) stay valid.
 - **The run gate changes in one direction.** A vault with a symlinked `notes/` used to be read from the parent directory and is now refused. This is the one new way a vault the gate accepted can be refused. It is recorded in ADR 0022 §1. The three goldens are unaffected, because the fixture has no link.
 - **Search ranking is a separate function in `trellis-vault`.** Under the recommended option B, `search_notes` keeps ADR 0024 §6's index ranking. What the model is shown stays byte-identical, and only the human's CLI moves to Apex's search-box order.
-- **APEX-08 option A extends the CLAUDE.md invariant** "Model writes never land in `.trellis/` or `.git/`", so it carries its own ADR (0046, renumbered if taken). Option B is documentation only.
+- **APEX-08 option A extends the CLAUDE.md invariant** "Model writes never land in `.trellis/` or `.git/`", so it carries its own ADR (0049, held for it by #284). Option B is documentation only.
 - **The grounding contract is untouched.** No ticket creates a `Verdict`, skips a check, multiplies a budget, or reads a trail as trusted.
 
 ## Senior Full-Stack Engineer
@@ -73,5 +73,5 @@
 1. File APEX-01 and APEX-02 now. Both are ready: no blockers, Verify is executable, and each has one code area plus its ADR 0022 line.
 2. File APEX-03 now. Its rows 43 and 51 say "landing, under the ADR 0022 §1/§5 amendment", and are flipped to built after APEX-01 and APEX-02 merge, as ADR 0021's "landing" convention requires.
 3. File APEX-04, APEX-07 and APEX-08 with the `parked` label and their `## Question for the owner`. File APEX-05 as `triage:blocked` on APEX-04, and drop it if the owner answers C.
-4. After the owner answers: for APEX-08 option A, write ADR 0048 first, since it changes a CLAUDE.md invariant. APEX-07 option A is one test and one row amendment.
+4. After the owner answers: for APEX-08 option A, write ADR 0049 first, since it changes a CLAUDE.md invariant. APEX-07 option A is one test and one row amendment.
 5. Hand the desktop-ui rows (15-19, 21, 27-29, 38-42, 44-50, 53-55) to the desktop track as input. Building any of them needs an ADR amending ADR 0021 (#70).
