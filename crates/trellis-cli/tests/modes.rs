@@ -891,6 +891,20 @@ fn drawn_graph(stdout: &str) -> ((u64, u64, u64, u64), Vec<DrawnModule>) {
     ((indexed, counts[0], counts[1], counts[2]), modules)
 }
 
+/// Every key in `v`, at any depth, for the no-ratio checks (CLAUDE.md rule 3).
+fn keys(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, v) in m {
+                out.push(k.clone());
+                keys(v, out);
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|v| keys(v, out)),
+        _ => {}
+    }
+}
+
 #[test]
 fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
     // The risks: a client parsing human text because the graph has no data
@@ -920,18 +934,6 @@ fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
     assert_eq!(got["command"], "get_codebase", "{got}");
     assert_eq!(got["success"], true, "{got}");
     let data = got["data"].clone();
-    fn keys(v: &Value, out: &mut Vec<String>) {
-        match v {
-            Value::Object(m) => {
-                for (k, v) in m {
-                    out.push(k.clone());
-                    keys(v, out);
-                }
-            }
-            Value::Array(a) => a.iter().for_each(|v| keys(v, out)),
-            _ => {}
-        }
-    }
     let mut all = Vec::new();
     keys(&data, &mut all);
     for k in &all {
@@ -1016,4 +1018,149 @@ fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
         "the fixture's calls bound across modules: {drawn:?}"
     );
     assert_eq!(data["modules_not_drawn"], 0, "{data}");
+}
+
+/// What `trellis radius <symbol>` printed, in `get_radius`'s `data` shape,
+/// read off the text: the reach block, then the doubt block with its reason
+/// rows and the files it is concentrated in.
+fn printed_radius(stdout: &str) -> Value {
+    let mut lines = stdout.lines();
+    let (symbol, file) = lines.next().unwrap().split_once("  (").unwrap();
+    let n = |s: &str| s.trim().parse::<u64>().unwrap();
+    let first = |l: &str| n(l.split_whitespace().next().unwrap());
+    let mut lines = lines.skip_while(|l| !l.starts_with("reach — "));
+    lines.next();
+    let reach: Vec<u64> = lines.by_ref().take(3).map(first).collect();
+    let mut lines = lines.skip_while(|l| !l.starts_with("doubt — "));
+    lines.next();
+    let head = lines.next().unwrap();
+    let touched = n(head
+        .split_once(" the ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .next()
+        .unwrap());
+    let (mut reasons, mut files) = (Vec::new(), Vec::new());
+    let mut in_files = false;
+    for l in lines.take_while(|l| !l.starts_with("  partitionable:")) {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with("Any of them") {
+            continue;
+        }
+        assert!(!t.contains("further"), "the fixture fits uncollapsed: {l}");
+        if t == "concentrated in:" {
+            in_files = true;
+        } else if in_files {
+            let (count, path) = t.split_once("  ").unwrap();
+            files.push(serde_json::json!({"path": path.trim(), "call_sites": n(count)}));
+        } else {
+            let (reason, rest) = t.split_once(' ').unwrap();
+            let (count, explain) = rest.trim_start().split_once(' ').unwrap();
+            reasons.push(serde_json::json!({
+                "reason": reason,
+                "call_sites": n(count),
+                "explain": explain.trim(),
+            }));
+        }
+    }
+    serde_json::json!({
+        "symbol": symbol,
+        "file": file.trim_end_matches(')'),
+        "reach": {
+            "resolved": reach[0],
+            "ambiguous": reach[1],
+            "symbols_reached": reach[2],
+        },
+        "doubt": {
+            "unbound_in_touched_files": first(head),
+            "touched_files": touched,
+            "reasons": reasons,
+            "files": files,
+        },
+    })
+}
+
+#[test]
+fn rpc_get_radius_returns_reach_and_doubt_as_separate_counts() {
+    // The risks: a client parsing human text because a radius has no data
+    // form (ADR 0048 §2); reach and doubt arriving as one ratio, which once
+    // read as a resolver twenty times worse than audited (ADR 0014,
+    // CLAUDE.md rule 3); a read that writes the index cache or the worktree;
+    // an index build blocking the reader while a run waits on an approval;
+    // and data that drifts from what `trellis radius` prints.
+    let f = fixture("rpc-radius");
+    std::fs::write(
+        f.root.join("b.py"),
+        "from a import f\n\ndef g(x):\n    return f() + f() + x.go()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.root.join("c.py"),
+        "from b import g\n\ndef h(y):\n    return g(y) + missing() + y.run()\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "callers, some unbindable"]);
+
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "r", "type": "get_radius", "symbol": "f"}));
+    let got = rpc.next(|v| v["id"] == "r");
+    rpc.finish();
+    assert_eq!(got["command"], "get_radius", "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    let mut all = Vec::new();
+    keys(&data, &mut all);
+    for k in &all {
+        for banned in ["ratio", "percent", "fraction", "total"] {
+            assert!(!k.contains(banned), "key `{k}` in {data}");
+        }
+    }
+    assert!(
+        !f.root.join(".trellis/index.bin").exists(),
+        "get_radius wrote the index cache"
+    );
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "r2", "type": "get_radius", "symbol": "a.f"}));
+    let mid = rpc.next(|v| v["id"] == "r2" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "r2", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same radius mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // Last: `radius` builds through the cache, which writes it.
+    let o = run(&f, &["radius", "f"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        printed_radius(&String::from_utf8_lossy(&o.stdout)),
+        data,
+        "the counts `trellis radius f` prints"
+    );
+    // Both blocks carry something, so the comparison is not of zeros.
+    assert_eq!(data["reach"]["resolved"], 3, "{data}");
+    assert_eq!(
+        data["doubt"]["files"].as_array().unwrap().len(),
+        2,
+        "{data}"
+    );
 }

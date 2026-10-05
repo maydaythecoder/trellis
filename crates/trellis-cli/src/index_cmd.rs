@@ -235,6 +235,51 @@ pub(crate) fn radius_of(index: &trellis_index::Index, query: &str) -> Result<()>
     Ok(())
 }
 
+/// The radius `radius_of` prints for `query`, as data, for rpc's `get_radius`.
+///
+/// The same symbol matching and the same report, so the two cannot drift.
+/// Reach and doubt are separate objects because they count different
+/// populations: no ratio, fraction or total sits beside them (ADR 0014,
+/// CLAUDE.md rule 3). The reasons and files are whole, by frequency; cutting
+/// them to a screen is the printed report's.
+pub(crate) fn radius_json(index: &trellis_index::Index, query: &str) -> Result<serde_json::Value> {
+    let target = resolve_symbol(index, query)?;
+    let report = trellis_index::radius::blast_radius(index, target);
+    let s = &index.symbols[target.index()];
+    let c = &report.coverage;
+    let reasons: Vec<serde_json::Value> = c
+        .reasons_by_frequency()
+        .into_iter()
+        .map(|(reason, n)| {
+            serde_json::json!({
+                "reason": reason.to_string(),
+                "call_sites": n,
+                "explain": reason.explain(),
+            })
+        })
+        .collect();
+    let files: Vec<serde_json::Value> = c
+        .files_by_doubt()
+        .into_iter()
+        .map(|(path, n)| serde_json::json!({"path": path, "call_sites": n}))
+        .collect();
+    Ok(serde_json::json!({
+        "symbol": qualified(index, s),
+        "file": index.files[s.file.index()].path,
+        "reach": {
+            "resolved": c.reached_resolved,
+            "ambiguous": c.reached_ambiguous,
+            "symbols_reached": report.symbols.len(),
+        },
+        "doubt": {
+            "unbound_in_touched_files": c.unbound_in_touched_files,
+            "touched_files": c.touched_files,
+            "reasons": reasons,
+            "files": files,
+        },
+    }))
+}
+
 /// Builds the whole index and reports coverage.
 ///
 /// The coverage line is the product's honesty mechanism, so it is printed
