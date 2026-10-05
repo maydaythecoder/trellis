@@ -270,6 +270,9 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
         .env("TRELLIS_TASK", text)
         .env("TRELLIS_TASK_ID", task_id)
         .env("TRELLIS_AGENT", &profile.name)
+        // As for `bash`, custom tools and hooks (#317): a fixed variable,
+        // set before the scrub, which removes only key names.
+        .env("AI_AGENT", "trellis")
         // As for hooks and tools (`exec::run`): bytecode it wrote under
         // `.trellis/` would untrust the repository it was trusted in.
         .env("PYTHONDONTWRITEBYTECODE", "1");

@@ -977,7 +977,9 @@ This is Paperclip's `process` adapter. A profile with
    Its stdin is the task text,
    with the instructions file prepended, and its environment has
    `TRELLIS_TASK`, `TRELLIS_TASK_ID` and `TRELLIS_AGENT` set. Its stdout and
-   stderr go to `work`'s terminal.
+   stderr go to `work`'s terminal. *Amended 2026-10-05 (#317):* and
+   `AI_AGENT=trellis`, as for `bash`, custom tools and hooks (ADR 0023 §3),
+   a fixed variable beside `TRELLIS_TASK_ID`; services are unchanged.
    - It runs under `timeout_s` (default 1800). On timeout the process is
      killed.
    - `Child::kill` terminates the direct child only. On Windows, and on Unix
