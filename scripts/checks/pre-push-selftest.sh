@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Shows the tracked pre-push guard, as scripts/hooks/install.sh installs it,
-# refuses every push to main and to v0.1-resolver, and lets a push to dev,
-# audit or a ticket branch through (#217, ADR 0036, ADR 0051).
+# refuses every push to main, v0.1-resolver and drain and of a v* release tag,
+# and lets a push to dev, audit or a ticket branch through (#217, #380,
+# ADR 0036, ADR 0051).
 #
 # Every push goes to a bare repository created under a temp dir, added as the
 # remote `throwaway`. The work repository has no other remote, so nothing
@@ -66,7 +67,8 @@ allow() {
 # no remote ref moves.
 refuse() {
   label=$1; shift
-  refusal="pre-push: refusing to push to ${protected#refs/heads/}; merge through a pull request on GitHub"
+  pname=${protected#refs/heads/}; pname=${pname#refs/tags/}
+  refusal="pre-push: refusing to push to $pname; "
   before_p=$(remote_ref "$protected"); before_d=$(remote_ref refs/heads/dev)
   if out=$(w push -q throwaway "$@" 2>&1); then
     fail "$label: push went through"
@@ -88,7 +90,7 @@ second=$(w rev-parse HEAD)
 w checkout -q -b other "$base" || die "checkout other"
 w commit -q --allow-empty -m diverged || die "diverged commit"
 
-for protected in refs/heads/main refs/heads/v0.1-resolver; do
+for protected in refs/heads/main refs/heads/v0.1-resolver refs/heads/drain; do
   name=${protected#refs/heads/}
   refuse "create $name" "$base:$protected"
   [ "$(remote_ref "$protected")" = absent ] || fail "$name exists on the remote after a refused create"
@@ -103,6 +105,23 @@ for protected in refs/heads/main refs/heads/v0.1-resolver; do
   refuse "dev alongside $name" "$second:refs/heads/dev" "$second:$protected"
   [ "$(remote_ref refs/heads/dev)" = "$base" ] || fail "dev moved in a push the guard refused"
 done
+# A v* tag is a release: pushing one starts release.yml (#380). Creating,
+# moving and deleting one are all refused.
+protected=refs/tags/v9.9
+refuse "create tag v9.9" "$base:$protected"
+[ "$(remote_ref "$protected")" = absent ] || fail "v9.9 exists on the remote after a refused create"
+w tag v9.9 "$base" || die "local tag v9.9"
+refuse "push tag v9.9 by name" v9.9
+refuse "push tags with --tags" --tags
+[ "$(remote_ref "$protected")" = absent ] || fail "v9.9 exists on the remote after a refused --tags push"
+git --git-dir="$bare" update-ref "$protected" "$base" || die "seed $protected"
+refuse "force-move tag v9.9" --force "$second:$protected"
+refuse "delete tag v9.9" ":$protected"
+refuse "dev alongside tag v9.9" "$second:refs/heads/dev" "$second:$protected"
+[ "$(remote_ref refs/heads/dev)" = "$base" ] || fail "dev moved in a push the guard refused"
+w tag -d v9.9 >/dev/null || die "delete local tag v9.9"
+# Only v* tags are releases; any other tag goes through.
+allow  "push a non-release tag" refs/tags/note-1 "$base" "$base:refs/tags/note-1"
 # The check is on the remote ref alone: a local branch named main may still
 # update dev.
 w branch -q main "$second" || die "local main branch"
