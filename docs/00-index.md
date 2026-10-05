@@ -107,7 +107,11 @@ does not have to reconstruct the state from git history.
 | v1.0 | Two of five gate conditions have evidence. See `04-v1.0-harness.md`. |
 | v1.1 | Partition planner and its invariant property test exist, N=1 only. |
 
-Everything is on branch `v0.1-resolver`, not `master`.
+Branches follow ADR 0051: `main` is the launch branch, moved only when the
+owner merges a pull request from `dev`; `dev` is the trunk that ticket and
+feature branches are cut from; `audit` is the integration branch they merge
+into before it is promoted into `dev`. The legacy branches `v0.1-resolver` and
+`drain` are frozen.
 
 The one thing a reader should carry into every other document: **recall was
 measured at 47.8%, which fired the pre-registered S16 pivot trigger; a bounded
