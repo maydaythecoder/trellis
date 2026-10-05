@@ -323,40 +323,33 @@ mod tests {
     use std::collections::HashSet;
     use std::num::NonZeroUsize;
 
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let out = trellis_vcs::command()
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git must be on PATH to run these tests");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
+    use crate::testutil::{Template, git};
+    use std::sync::OnceLock;
 
     const A: &str = "def a():\n    return 1\n";
     const B: &str = "def b():\n    return 1\n";
 
-    /// A committed repository with `a.py` and `b.py`, and its HEAD.
+    /// A committed repository with `a.py` and `b.py`, and its HEAD: a copy
+    /// of one built once per process (`testutil`).
     fn repo() -> (tempfile::TempDir, String) {
-        let d = tempfile::tempdir().unwrap();
-        for args in [
-            ["init", "-q"].as_slice(),
-            &["config", "core.autocrlf", "false"],
-            &["config", "user.email", "t@example.invalid"],
-            &["config", "user.name", "t"],
-        ] {
-            git(d.path(), args);
-        }
-        std::fs::write(d.path().join("a.py"), A).unwrap();
-        std::fs::write(d.path().join("b.py"), B).unwrap();
-        git(d.path(), &["add", "-A"]);
-        git(d.path(), &["commit", "-qm", "base"]);
-        let base = git(d.path(), &["rev-parse", "HEAD"]).trim().to_string();
-        (d, base)
+        static T: OnceLock<Template> = OnceLock::new();
+        let t = T.get_or_init(|| {
+            Template::build(|root| {
+                for args in [
+                    ["init", "-q"].as_slice(),
+                    &["config", "core.autocrlf", "false"],
+                    &["config", "user.email", "t@example.invalid"],
+                    &["config", "user.name", "t"],
+                ] {
+                    git(root, args);
+                }
+                std::fs::write(root.join("a.py"), A).unwrap();
+                std::fs::write(root.join("b.py"), B).unwrap();
+                git(root, &["add", "-A"]);
+                git(root, &["commit", "-qm", "base"]);
+            })
+        });
+        (t.instance(), t.head().to_string())
     }
 
     /// Two parallel partitions: 0 owns `a.py`, 1 owns `b.py`, as the graph

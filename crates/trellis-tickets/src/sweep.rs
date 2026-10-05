@@ -341,6 +341,10 @@ fn plan_issue(
     let mut changes = Vec::new();
     let mut abstained = Vec::new();
 
+    // Set when a lower computed risk is held over a recorded `risk:high`:
+    // the `!needs-adr` the rules derive turns on that risk, so it is held
+    // too, as `index` holds it.
+    let mut hold_flags: Option<String> = None;
     let lines = r.lines();
     for (name, prefix) in LABEL_DIMENSIONS {
         let Some((_, line)) = lines.iter().find(|(n, _)| *n == name) else {
@@ -368,6 +372,11 @@ fn plan_issue(
                                 "the rules compute {want}, below the recorded label; sweep never lowers risk, because the rules cannot see rollback, worktree teardown or session persistence (#196)"
                             ),
                         });
+                        if Some(have) == risk_rank("risk:high") {
+                            hold_flags = Some(format!(
+                                "read risk, which was held: the rules compute {want}, below the recorded label (#196)"
+                            ));
+                        }
                         continue;
                     }
                 }
@@ -382,6 +391,11 @@ fn plan_issue(
             dimension: "flags",
             rule,
             reason: reason.clone(),
+        }),
+        Line::Decided { rule, .. } if hold_flags.is_some() => abstained.push(Held {
+            dimension: "flags",
+            rule,
+            reason: hold_flags.unwrap_or_default(),
         }),
         Line::Decided {
             value: Value::Flags(f),
@@ -759,5 +773,34 @@ mod tests {
         assert_eq!(rw.missing, ["flags"]);
         assert!(rewrite_block("no block", &[]).is_err());
         assert!(rewrite_block("<!-- triage:start -->\nlabels: []", &[]).is_err());
+    }
+
+    #[test]
+    fn sweep_holds_needs_adr_when_it_holds_a_lower_risk_under_a_recorded_high() {
+        // The rules compute medium, below the recorded high (#196's blind
+        // spot), and so derive no `!needs-adr`; removing the flag on that
+        // risk would undo the label sweep refused to lower, and disagree
+        // with `index`, which holds `flags` here.
+        let t = Ticket {
+            title: "Add a thing".to_string(),
+            body: "**Files:** crates/trellis-cli/src/main.rs\n\n## Done when\n- it holds\n\n## Verify\n```\nscripts/tickets/verify-tests.sh trellis-cli thing_ 1\n```\n".to_string(),
+            labels: ["risk:high", "!needs-adr"].map(String::from).to_vec(),
+            state: State::Open,
+        };
+        let plan = plan_issue(1, &t, &BTreeMap::new(), Vec::new(), "now");
+        assert!(
+            plan.abstained
+                .iter()
+                .any(|h| h.dimension == "risk" && h.reason.contains("risk:medium")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.changes.iter().all(|c| c.dimension != "flags"),
+            "{plan:?}"
+        );
+        assert!(
+            plan.abstained.iter().any(|h| h.dimension == "flags"),
+            "{plan:?}"
+        );
     }
 }

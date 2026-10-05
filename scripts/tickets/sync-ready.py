@@ -30,7 +30,9 @@ def main():
         sys.exit("no input: pipe `scripts/tickets/next.sh --why` into this")
     verdict = {}
     for line in why.splitlines():
-        m = re.match(r"P\d #(\d+) (.*?): ", line)
+        # next.sh puts \x1f between the reason and the title, because a
+        # reason ("parked: waits on ...") can hold ': ' itself.
+        m = re.match(r"P\d #(\d+) ([^\x1f]*)\x1f", line)
         if m:
             verdict[int(m.group(1))] = m.group(2)
     issues = json.loads(gh("issue", "list", "--state", "open", "--limit", "300",

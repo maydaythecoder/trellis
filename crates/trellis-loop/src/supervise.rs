@@ -574,37 +574,30 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let out = trellis_vcs::command()
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git must be on PATH to run these tests");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
+    use crate::testutil::{Template, git};
+    use std::sync::OnceLock;
 
-    /// A committed repository with `a.py` and `b.py`, and its HEAD.
+    /// A committed repository with `a.py` and `b.py`, and its HEAD: a copy
+    /// of one built once per process (`testutil`).
     fn repo() -> (tempfile::TempDir, String) {
-        let d = tempfile::tempdir().unwrap();
-        for args in [
-            ["init", "-q"].as_slice(),
-            &["config", "core.autocrlf", "false"],
-            &["config", "user.email", "t@example.invalid"],
-            &["config", "user.name", "t"],
-        ] {
-            git(d.path(), args);
-        }
-        std::fs::write(d.path().join("a.py"), "def a():\n    return 1\n").unwrap();
-        std::fs::write(d.path().join("b.py"), "def b():\n    return 1\n").unwrap();
-        git(d.path(), &["add", "-A"]);
-        git(d.path(), &["commit", "-qm", "base"]);
-        let base = git(d.path(), &["rev-parse", "HEAD"]).trim().to_string();
-        (d, base)
+        static T: OnceLock<Template> = OnceLock::new();
+        let t = T.get_or_init(|| {
+            Template::build(|root| {
+                for args in [
+                    ["init", "-q"].as_slice(),
+                    &["config", "core.autocrlf", "false"],
+                    &["config", "user.email", "t@example.invalid"],
+                    &["config", "user.name", "t"],
+                ] {
+                    git(root, args);
+                }
+                std::fs::write(root.join("a.py"), "def a():\n    return 1\n").unwrap();
+                std::fs::write(root.join("b.py"), "def b():\n    return 1\n").unwrap();
+                git(root, &["add", "-A"]);
+                git(root, &["commit", "-qm", "base"]);
+            })
+        });
+        (t.instance(), t.head().to_string())
     }
 
     fn partition(id: u32, conservative: bool) -> Partition {

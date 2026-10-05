@@ -1,0 +1,83 @@
+crates/trellis-queue/src/lib.rs:115:9: replace State::default_status -> Status with Default::default()
+crates/trellis-queue/src/lib.rs:154:9: replace Status::parse -> Option<Status> with Some(Default::default())
+crates/trellis-queue/src/lib.rs:169:9: replace Status::home -> State with Default::default()
+crates/trellis-queue/src/lib.rs:396:9: replace Task::status_in -> Status with Default::default()
+crates/trellis-queue/src/lib.rs:546:9: replace Index::status -> Option<Status> with Some(Default::default())
+crates/trellis-queue/src/lib.rs:587:9: replace Queue::for_repo -> Result<Self, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:594:9: replace Queue::at -> Self with Default::default()
+crates/trellis-queue/src/lib.rs:601:9: replace Queue::dir -> &Path with Box::leak(Box::new(Default::default()))
+crates/trellis-queue/src/lib.rs:618:9: replace Queue::activity -> ActivityLog with Default::default()
+crates/trellis-queue/src/lib.rs:725:9: replace Queue::list -> Result<Vec<Entry>, QueueError> with Ok(vec![Default::default()])
+crates/trellis-queue/src/lib.rs:763:9: replace Queue::find -> Result<(State, Task), QueueError> with Ok((Default::default(), Default::default()))
+crates/trellis-queue/src/lib.rs:788:9: replace Queue::lock_task -> Result<files::Lock, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:828:9: replace Queue::claim -> Result<Option<Claim>, QueueError> with Ok(Some(Default::default()))
+crates/trellis-queue/src/lib.rs:941:9: replace Queue::claim_next -> Result<Option<Claim>, QueueError> with Ok(Some(Default::default()))
+crates/trellis-queue/src/lib.rs:1056:9: replace Queue::edit_pending -> Result<(State, State), QueueError> with Ok((Default::default(), Default::default()))
+crates/trellis-queue/src/lib.rs:1028:9: replace Queue::edit -> Result<(State, State), QueueError> with Ok((Default::default(), Default::default()))
+crates/trellis-queue/src/lib.rs:1092:9: replace Queue::edit_finished -> Result<(State, State), QueueError> with Ok((Default::default(), Default::default()))
+crates/trellis-queue/src/lib.rs:1167:9: replace Queue::requeue -> Result<State, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/lib.rs:1391:9: replace Runner::liveness -> Option<&dyn Liveness> with Some(Box::leak(Box::new(Default::default())))
+crates/trellis-queue/src/lib.rs:1401:9: replace Runner::profiles -> Option<&BTreeMap<String, profile::Profile>> with Some(Box::leak(Box::new(BTreeMap::from_iter([(String::new(), Default::default())]))))
+crates/trellis-queue/src/lib.rs:1401:9: replace Runner::profiles -> Option<&BTreeMap<String, profile::Profile>> with Some(Box::leak(Box::new(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))))
+crates/trellis-queue/src/lib.rs:1546:5: replace work -> Result<(u32, Stop), QueueError> with Ok((0, Default::default()))
+crates/trellis-queue/src/lib.rs:1546:5: replace work -> Result<(u32, Stop), QueueError> with Ok((1, Default::default()))
+crates/trellis-queue/src/activity.rs:70:9: replace Event::detail -> Self with Default::default()
+crates/trellis-queue/src/activity.rs:75:9: replace Event::run -> Self with Default::default()
+crates/trellis-queue/src/activity.rs:87:9: replace ActivityLog::at -> Self with Default::default()
+crates/trellis-queue/src/activity.rs:91:9: replace ActivityLog::path -> &Path with Box::leak(Box::new(Default::default()))
+crates/trellis-queue/src/activity.rs:117:9: replace ActivityLog::tail -> Result<Vec<Event>, QueueError> with Ok(vec![Default::default()])
+crates/trellis-queue/src/approval.rs:48:5: replace list -> Result<Vec<BudgetRequest>, QueueError> with Ok(vec![Default::default()])
+crates/trellis-queue/src/approval.rs:80:5: replace lock -> Result<Lock, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/approval.rs:192:5: replace approve_budget -> Result<BudgetRequest, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/approval.rs:270:5: replace reject_budget -> Result<BudgetRequest, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/cron.rs:105:9: replace && with || in value
+crates/trellis-queue/src/cron.rs:177:9: replace Cron::parse -> Result<Cron, CronError> with Ok(Default::default())
+crates/trellis-queue/src/cron.rs:333:9: replace Tz::parse -> Result<Tz, TzError> with Ok(Default::default())
+crates/trellis-queue/src/cron.rs:369:9: replace Tz::named -> Result<Tz, TzError> with Ok(Default::default())
+crates/trellis-queue/src/files.rs:49:5: replace read_settled -> Result<T, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/files.rs:29:5: replace read_json -> Result<T, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/files.rs:81:5: replace read_json_opt -> Result<Option<T>, QueueError> with Ok(Some(Default::default()))
+crates/trellis-queue/src/files.rs:254:5: replace patiently -> std::io::Result<T> with Ok(Default::default())
+crates/trellis-queue/src/files.rs:263:24: replace += with *= in patiently
+crates/trellis-queue/src/files.rs:264:30: replace * with + in patiently
+crates/trellis-queue/src/files.rs:290:9: replace Lock::take -> Result<Lock, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/files.rs:325:5: replace replace_locked -> Result<R, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/ledger.rs:112:5: replace assess -> Assessment with Default::default()
+crates/trellis-queue/src/ledger.rs:194:9: replace && with || in enforce
+crates/trellis-queue/src/mention.rs:84:9: replace Queue::wake_mentions -> Result<Vec<Mention>, QueueError> with Ok(vec![Default::default()])
+crates/trellis-queue/src/mention.rs:111:9: replace Queue::decide -> Result<Vec<(String, MentionOutcome)>, QueueError> with Ok(vec![(String::new(), Default::default())])
+crates/trellis-queue/src/mention.rs:111:9: replace Queue::decide -> Result<Vec<(String, MentionOutcome)>, QueueError> with Ok(vec![("xyzzy".into(), Default::default())])
+crates/trellis-queue/src/mention.rs:144:9: replace Queue::apply -> Result<Vec<Mention>, QueueError> with Ok(vec![Default::default()])
+crates/trellis-queue/src/portable.rs:34:9: replace OnConflict::parse -> Option<Self> with Some(Default::default())
+crates/trellis-queue/src/portable.rs:410:13: replace && with || in plan_import
+crates/trellis-queue/src/profile.rs:150:5: replace parse -> Result<Profile, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/profile.rs:178:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:260:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:270:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:269:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:268:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:279:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:278:13: replace && with || in validate
+crates/trellis-queue/src/profile.rs:314:5: replace load_all -> Result<BTreeMap<String, Profile>, QueueError> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
+crates/trellis-queue/src/profile.rs:314:5: replace load_all -> Result<BTreeMap<String, Profile>, QueueError> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
+crates/trellis-queue/src/profile.rs:318:5: replace load_dir -> Result<BTreeMap<String, Profile>, QueueError> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
+crates/trellis-queue/src/profile.rs:318:5: replace load_dir -> Result<BTreeMap<String, Profile>, QueueError> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
+crates/trellis-queue/src/profile.rs:430:5: replace update_overlay -> Result<R, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/routine.rs:96:5: replace parse -> Result<Routine, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/routine.rs:178:5: replace load_all -> Result<BTreeMap<String, Routine>, QueueError> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
+crates/trellis-queue/src/routine.rs:178:5: replace load_all -> Result<BTreeMap<String, Routine>, QueueError> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
+crates/trellis-queue/src/routine.rs:182:5: replace load_dir -> Result<BTreeMap<String, Routine>, QueueError> with Ok(BTreeMap::from_iter([(String::new(), Default::default())]))
+crates/trellis-queue/src/routine.rs:182:5: replace load_dir -> Result<BTreeMap<String, Routine>, QueueError> with Ok(BTreeMap::from_iter([("xyzzy".into(), Default::default())]))
+crates/trellis-queue/src/routine.rs:299:17: replace && with || in active
+crates/trellis-queue/src/routine.rs:334:5: replace seen -> Result<Seen, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/routine.rs:369:5: replace fire -> Result<Fired, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/routine.rs:411:9: replace && with || in fire
+crates/trellis-queue/src/routine.rs:507:5: replace run_now -> Result<Fired, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/stale.rs:98:9: replace Queue::with_claimant -> Queue with Default::default()
+crates/trellis-queue/src/stale.rs:103:9: replace Queue::claimant -> Option<&Claimant> with Some(Box::leak(Box::new(Default::default())))
+crates/trellis-queue/src/stale.rs:113:9: replace Queue::release_stale_claims -> Result<Vec<(String, Swept)>, QueueError> with Ok(vec![(String::new(), Default::default())])
+crates/trellis-queue/src/stale.rs:113:9: replace Queue::release_stale_claims -> Result<Vec<(String, Swept)>, QueueError> with Ok(vec![("xyzzy".into(), Default::default())])
+crates/trellis-queue/src/stale.rs:137:9: replace Queue::sweep_one -> Result<Swept, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/stale.rs:188:13: replace && with || in Queue::sweep_one
+crates/trellis-queue/src/stale.rs:209:9: replace Queue::release_dead -> Result<Swept, QueueError> with Ok(Default::default())
+crates/trellis-queue/src/stamp.rs:22:30: replace + with - in civil

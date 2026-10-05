@@ -353,6 +353,9 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             if reason.is_some() && status != Some(Status::Blocked) {
                 anyhow::bail!("--reason goes with --status blocked");
             }
+            if detail.is_some() && reason.as_deref() != Some("manual") {
+                anyhow::bail!("--detail goes with --reason manual");
+            }
             let blocked = match (status, reason.as_deref()) {
                 (Some(Status::Blocked), None) => anyhow::bail!(
                     "--status blocked needs --reason blockers|children|manual: a block \
@@ -1277,6 +1280,34 @@ impl Runner for CliRunner<'_> {
     }
 }
 
+/// One `CliRunner` for every test module, so a new field is one edit.
+#[cfg(test)]
+fn test_runner(
+    root: &Path,
+    queue: Queue,
+    trust_check: fn(&Path) -> std::result::Result<(), String>,
+) -> CliRunner<'_> {
+    CliRunner {
+        root,
+        model: None,
+        model_from_user: false,
+        unconstrained: false,
+        stop: Arc::new(AtomicBool::new(false)),
+        profiles: BTreeMap::new(),
+        queue,
+        routines: BTreeMap::new(),
+        current: None,
+        said: BTreeSet::new(),
+        trust_check,
+        trust: None,
+    }
+}
+
+#[cfg(test)]
+fn trusted(_: &Path) -> std::result::Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod resumed_tests {
     use super::*;
@@ -1374,20 +1405,8 @@ mod trust_per_tick_tests {
         )
         .unwrap();
         let q = Queue::at(root.join("queue"));
-        let mut r = CliRunner {
-            root,
-            model: None,
-            model_from_user: false,
-            unconstrained: false,
-            stop: Arc::new(AtomicBool::new(false)),
-            profiles: load_profiles(root).unwrap(),
-            queue: q.clone(),
-            routines: BTreeMap::new(),
-            current: None,
-            said: BTreeSet::new(),
-            trust_check: counted,
-            trust: None,
-        };
+        let mut r = test_runner(root, q.clone(), counted);
+        r.profiles = load_profiles(root).unwrap();
         let task = trellis_queue::Task {
             task: "t".into(),
             assignee: Some("p".into()),
@@ -1416,27 +1435,6 @@ mod trust_per_tick_tests {
 #[cfg(test)]
 mod queue_add_args_tests {
     use super::*;
-
-    fn trusted(_: &Path) -> std::result::Result<(), String> {
-        Ok(())
-    }
-
-    fn runner(root: &Path, queue: Queue) -> CliRunner<'_> {
-        CliRunner {
-            root,
-            model: None,
-            model_from_user: false,
-            unconstrained: false,
-            stop: Arc::new(AtomicBool::new(false)),
-            profiles: BTreeMap::new(),
-            queue,
-            routines: BTreeMap::new(),
-            current: None,
-            said: BTreeSet::new(),
-            trust_check: trusted,
-            trust: None,
-        }
-    }
 
     fn add(root: &Path, task: &str, prompt: &str, args: &str) -> Result<()> {
         queue(
@@ -1502,7 +1500,7 @@ mod queue_add_args_tests {
                 .filter_map(|e| e.task.ok())
                 .find(|t| t.prompt.as_deref() == Some(prompt) && t.args.as_deref() == Some(args))
                 .expect("the task is queued with its arguments unsplit");
-            let r = runner(&root, q.clone());
+            let r = test_runner(&root, q.clone(), trusted);
             let queued = r.text(&t, None).unwrap();
             assert_eq!(queued, expected, "{prompt} {args}");
             // What `trellis run --prompt <p> --args <a> <task>` sends.
@@ -1542,7 +1540,7 @@ mod queue_add_args_tests {
         assert_eq!(t.args, None);
         assert_eq!(t.prompt.as_deref(), Some("old"));
         assert_eq!(serde_json::to_string(&t).unwrap(), old);
-        let r = runner(root, q.clone());
+        let r = test_runner(root, q.clone(), trusted);
         assert_eq!(
             r.text(&t, None).unwrap(),
             "Check $1 by hand.\n\nand the docs"
@@ -1561,20 +1559,7 @@ mod question_tests {
         // never asked had its prompt changed.
         let d = tempfile::tempdir().unwrap();
         let q = Queue::at(d.path().join("queue"));
-        let r = CliRunner {
-            root: d.path(),
-            model: None,
-            model_from_user: false,
-            unconstrained: false,
-            stop: Arc::new(AtomicBool::new(false)),
-            profiles: BTreeMap::new(),
-            queue: q,
-            routines: BTreeMap::new(),
-            current: None,
-            said: BTreeSet::new(),
-            trust_check: |_| Ok(()),
-            trust: None,
-        };
+        let r = test_runner(d.path(), q, trusted);
         let mut t = trellis_queue::Task {
             task: "retire the v1 endpoint".into(),
             ..Default::default()
@@ -1597,10 +1582,6 @@ mod question_tests {
 #[cfg(test)]
 mod mention_wake_cli_tests {
     use super::*;
-
-    fn trusted(_: &Path) -> std::result::Result<(), String> {
-        Ok(())
-    }
 
     #[test]
     fn a_person_note_wakes_its_profile_through_the_real_heartbeat() {
@@ -1630,20 +1611,7 @@ mod mention_wake_cli_tests {
         )
         .unwrap();
 
-        let mut r = CliRunner {
-            root: &root,
-            model: None,
-            model_from_user: false,
-            unconstrained: false,
-            stop: Arc::new(AtomicBool::new(false)),
-            profiles: BTreeMap::new(),
-            queue: q.clone(),
-            routines: BTreeMap::new(),
-            current: None,
-            said: BTreeSet::new(),
-            trust_check: trusted,
-            trust: None,
-        };
+        let mut r = test_runner(&root, q.clone(), trusted);
         let mut out = Vec::new();
         // No model anywhere, so the woken task waits at the gate rather
         // than starting a run: what is under test is the wake, not a run.

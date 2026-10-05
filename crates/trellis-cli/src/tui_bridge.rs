@@ -30,6 +30,7 @@ struct TurnFields {
     candidates: Option<u64>,
     unresolved: Option<u64>,
     prompt_bytes: Option<u64>,
+    max_iterations: Option<u64>,
     /// On the loop's "steer delivered" event: turns completed before it.
     after_step: Option<u64>,
     message: Option<String>,
@@ -44,6 +45,7 @@ impl Visit for TurnFields {
             "unresolved" => self.unresolved = Some(v),
             "prompt_bytes" => self.prompt_bytes = Some(v),
             "after_step" => self.after_step = Some(v),
+            "max_iterations" => self.max_iterations = Some(v),
             _ => {}
         }
     }
@@ -90,6 +92,9 @@ impl Visit for TurnFields {
 pub(crate) struct LoopLayer {
     tx: Sender<Message>,
     delivered: SteerDeliveries,
+    /// When this run began: one layer per run, so elapsed is measured from
+    /// here (#243; it was sent as a constant 0).
+    started: std::time::Instant,
 }
 
 /// Every steer delivery this layer has seen, as `(nth, turn)`, in order.
@@ -107,6 +112,7 @@ impl LoopLayer {
         Self {
             tx,
             delivered: Arc::default(),
+            started: std::time::Instant::now(),
         }
     }
 
@@ -148,6 +154,16 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
         let mut f = TurnFields::default();
         event.record(&mut f);
+
+        // The run's ceiling, from the loop's one "run budget" event.
+        if let Some(max) = f.max_iterations
+            && f.message.as_deref() == Some("run budget")
+        {
+            self.emit(Message::BudgetKnown {
+                max_iterations: u32::try_from(max).unwrap_or(u32::MAX),
+            });
+            return;
+        }
 
         // Matched on the message as well as the field, so that no other
         // event which happens to carry an `after_step` can count as one.
@@ -196,12 +212,13 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         // a run that tried four times and wrote once is the run the graph
         // exists to show, and one built only from successes would draw it as
         // a run that acted once.
-        // Only an applied edit changed the tree. The observation is the only
-        // place that says so.
-        let wrote = call.starts_with("edit ")
-            && f.observation
-                .as_deref()
-                .is_some_and(|o| o.contains("applied: true"));
+        // Only an applied edit or a file `write_file` created changed the
+        // tree. The observation is the only place that says so: `edit`
+        // reports `applied: true`, and `write_file` begins `created ` on
+        // success and `error: ` on every refusal.
+        let obs = f.observation.as_deref().unwrap_or_default();
+        let wrote = (call.starts_with("edit ") && obs.contains("applied: true"))
+            || (call.starts_with("write_file ") && obs.starts_with("created "));
 
         {
             let mut parts = call.splitn(2, ' ');
@@ -221,10 +238,7 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         // correctly reporting that one write had happened, for a run that
         // changed one line. The pane that counts is the one a user checks
         // before accepting, so it is the one that has to be right.
-        if call.starts_with("edit ")
-            && wrote
-            && let Some(path) = call.split_whitespace().nth(1)
-        {
+        if wrote && let Some(path) = call.split_whitespace().nth(1) {
             self.emit(Message::EditProposed {
                 path: path.to_string(),
             });
@@ -256,8 +270,8 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
         if let Some(turn) = f.turn {
             self.emit(Message::BudgetUpdated {
                 iteration: turn as u32,
-                tokens: f.prompt_bytes.unwrap_or(0),
-                elapsed_secs: 0,
+                prompt_bytes: f.prompt_bytes.unwrap_or(0),
+                elapsed_secs: self.started.elapsed().as_secs(),
             });
         }
     }
@@ -269,8 +283,10 @@ mod tests {
     use tokio::sync::mpsc;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// Drives the layer with the event `agent.rs` actually emits, rather than
-    /// with a hand-built one: if the loop's field names change, this fails.
+    /// Drives the layer through a real subscriber. The events the tests emit
+    /// are written by hand, with field names copied from the turn event in
+    /// `agent.rs`: renaming a field there does not fail these tests, so the
+    /// two have to be kept in step.
     fn capture(emit: impl FnOnce()) -> Vec<Message> {
         let (tx, mut rx) = mpsc::channel(256);
         let subscriber = tracing_subscriber::registry().with(LoopLayer::new(tx));
@@ -280,6 +296,53 @@ mod tests {
             out.push(m);
         }
         out
+    }
+
+    #[test]
+    fn tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time() {
+        // The risk (#243): the budget line drew the mock's "/4", a constant
+        // "0s elapsed" and prompt bytes labelled as tokens, for every real
+        // run. The layer is built two seconds into its run so elapsed is
+        // measurably above zero without sleeping.
+        let (tx, mut rx) = mpsc::channel(256);
+        let layer = LoopLayer {
+            started: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(2))
+                .expect("the clock is more than two seconds past its origin"),
+            ..LoopLayer::new(tx)
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            // As `run_seeded` emits it, then a turn as `agent.rs` emits one.
+            tracing::info!(max_iterations = 40u32, "run budget");
+            tracing::info!(
+                turn = 3u64,
+                call = "read_file app/core.py",
+                prompt_bytes = 9800u64,
+                "turn"
+            );
+        });
+        let mut got = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            got.push(m);
+        }
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::BudgetKnown { max_iterations: 40 })),
+            "{got:?}"
+        );
+        let Some(Message::BudgetUpdated {
+            iteration,
+            prompt_bytes,
+            elapsed_secs,
+        }) = got
+            .iter()
+            .find(|m| matches!(m, Message::BudgetUpdated { .. }))
+        else {
+            panic!("no budget update in {got:?}");
+        };
+        assert_eq!((*iteration, *prompt_bytes), (3, 9800));
+        assert!(*elapsed_secs >= 2, "elapsed from the run's start, not 0");
     }
 
     #[test]
@@ -356,6 +419,55 @@ mod tests {
             !got.iter()
                 .any(|m| matches!(m, Message::CheckFinished { .. })),
             "an edit is not a check: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_write_file_created_is_a_write_and_a_pending_change() {
+        // The risk: only `edit` counted as a write, so a run that created a
+        // file drew it on the graph as a read and left it out of the edits
+        // pane a user checks before accepting.
+        let created = capture(|| {
+            tracing::info!(
+                turn = 1u64,
+                call = "write_file app/new.py",
+                verdict = ?None::<bool>,
+                observation = %"created app/new.py (12 bytes, 1 lines)",
+                "turn"
+            );
+        });
+        assert!(
+            created
+                .iter()
+                .any(|m| matches!(m, Message::EditProposed { path } if path == "app/new.py")),
+            "{created:?}"
+        );
+        assert!(
+            created
+                .iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if *wrote)),
+            "{created:?}"
+        );
+        let refused = capture(|| {
+            tracing::info!(
+                turn = 1u64,
+                call = "write_file app/new.py",
+                verdict = ?None::<bool>,
+                observation = %"error: write_file refused: app/new.py is ignored by git",
+                "turn"
+            );
+        });
+        assert!(
+            !refused
+                .iter()
+                .any(|m| matches!(m, Message::EditProposed { .. })),
+            "a refused write_file is not pending: {refused:?}"
+        );
+        assert!(
+            refused
+                .iter()
+                .any(|m| matches!(m, Message::ActionTaken { wrote, .. } if !*wrote)),
+            "{refused:?}"
         );
     }
 
@@ -526,9 +638,10 @@ mod tests {
 
     #[test]
     fn a_steer_delivery_is_numbered_in_order_and_names_the_turn_it_reached() {
-        // The event `SteeringLog::drain` emits, spelled as it spells it: if
-        // the loop renames a field or rewords the message, this fails
-        // instead of the view reporting every steer not delivered.
+        // The event `SteeringLog::drain` emits, copied by hand as it spells
+        // it. A renamed field or reworded message there does not fail this
+        // test, so the two have to be kept in step, or the view reports
+        // every steer not delivered.
         let (tx, mut rx) = mpsc::channel(8);
         let layer = LoopLayer::new(tx);
         let log = layer.deliveries();

@@ -256,9 +256,6 @@ mod tests {
         ]));
         assert_eq!(g.bound_edges(), 1);
         assert!(g.unresolved() >= 1);
-        // Distinct accessors that a caller has to read separately. If this
-        // ever becomes one number, the constraint has been lost.
-        assert_ne!(g.bound_edges(), g.unresolved() + g.bound_edges());
     }
 
     #[test]

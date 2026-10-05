@@ -434,7 +434,7 @@ pub struct RepoContext {
     /// One focus note compiled from the repository's note vault (ADR 0017).
     ///
     /// On the *informs* side with `notes`, and for the same reason: it is
-    /// project prose, and nothing in it is enforced. A plain string here
+    /// project prose, and nothing in it is enforced. A loop-owned `VaultContext` here
     /// rather than a `trellis-vault` type, so the loop does not depend on how
     /// a vault is parsed — only on what reached the prompt.
     pub vault: Option<VaultContext>,
@@ -779,6 +779,10 @@ pub async fn run_seeded<M: Model>(
     seed: Seed,
 ) -> (Outcome, Transcript) {
     let started = Instant::now();
+    // The ceiling this run enforces, once, for an interface that draws
+    // progress against it (#243): a constant there drew "3/4" for a run
+    // budgeted at 40.
+    tracing::info!(max_iterations = budget.max_iterations, "run budget");
     // Time spent waiting on a person in approve mode. Not charged to the
     // wall-clock budget: a diff read carefully should not be what ends a run.
     let mut waited_on_human = std::time::Duration::ZERO;
@@ -847,10 +851,23 @@ pub async fn run_seeded<M: Model>(
                     // Through the ungated door: this audit is the harness's
                     // check on the model, and a tool gate that could refuse it
                     // would decide convergence (ADR 0018).
+                    //
+                    // A dead actor answers `has_governance_rules` with `false`
+                    // and the audit with an error (its only one), and either
+                    // would fall through to `Converged` with no rule
+                    // enforced. Asked after both answers, so an actor that
+                    // died before or between them is caught.
                     let gate = match orch.has_governance_rules().await {
                         true => Some(orch.audit_governance().await),
                         false => None,
                     };
+                    if !orch.is_alive() || matches!(gate, Some(ToolResult::Error(_))) {
+                        tracing::error!("the orchestrator task is gone; stopping");
+                        break 'run Outcome::NotConverged {
+                            reason: NotConverged::OrchestratorGone,
+                            iterations,
+                        };
+                    }
                     if let Some(ToolResult::Checks(v)) = &gate {
                         let detail = v.detail();
                         // The gate's audit is a turn like any other and has to
@@ -1548,18 +1565,6 @@ fn render(call: &ToolCall, r: &ToolResult, sites: &[RadiusSite]) -> (String, Opt
     (text, None)
 }
 
-/// Names the check kinds that were requested but never ran.
-///
-/// `run_checks` stops at the first failure, so a model that asked for several
-/// kinds must be told which ones were skipped. Otherwise a failing type check
-/// reads as a complete account, and a *passing* one reads as a clean bill of
-/// health for a test suite that was never invoked.
-///
-/// Extracted as a pure function rather than tested through `render` because
-/// constructing a `Verdict` outside `trellis-checks` is impossible by design
-/// (ADR 0004). Adding a test-only constructor there would widen the seal that
-/// makes Constraint 2 structural — so the logic comes out to meet the test
-/// instead of the seal opening to meet the logic.
 /// Says what a pathless check actually checked.
 ///
 /// `paths` defaults to empty in the wire schema, and an empty argv means the
@@ -1587,6 +1592,18 @@ SCOPE: no paths were given, so this checked whatever the ",
     }
 }
 
+/// Names the check kinds that were requested but never ran.
+///
+/// `run_checks` stops at the first failure, so a model that asked for several
+/// kinds must be told which ones were skipped. Otherwise a failing type check
+/// reads as a complete account, and a *passing* one reads as a clean bill of
+/// health for a test suite that was never invoked.
+///
+/// Extracted as a pure function rather than tested through `render` because
+/// constructing a `Verdict` outside `trellis-checks` is impossible by design
+/// (ADR 0004). Adding a test-only constructor there would widen the seal that
+/// makes Constraint 2 structural — so the logic comes out to meet the test
+/// instead of the seal opening to meet the logic.
 fn unrun_note(call: &ToolCall, ran: trellis_checks::CheckKind) -> String {
     let ToolCall::RunChecks { kinds, .. } = call else {
         return String::new();
@@ -1922,7 +1939,71 @@ rank = \"non-negotiable\"
         assert_eq!(
             t.turns.last().map(|x| x.verdict_passed),
             Some(Some(false)),
-            "the audit is recorded as a turn, so the trail shows the rule was              consulted rather than leaving a run that merely stopped"
+            "the audit is recorded as a turn, so the trail shows the rule was \
+             consulted rather than leaving a run that merely stopped"
+        );
+    }
+
+    /// A [`Scripted`] model that ends the orchestrator just before it says
+    /// it is done: the actor dies between the last check and the audit.
+    struct KillsBeforeDone {
+        inner: Scripted,
+        join: Option<tokio::task::JoinHandle<Orchestrator>>,
+    }
+
+    impl Model for KillsBeforeDone {
+        async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
+            let s = self.inner.next_step(t).await?;
+            if matches!(s, Step::Done { .. })
+                && let Some(j) = self.join.take()
+            {
+                j.abort();
+                let _ = j.await;
+            }
+            Ok(s)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_gone_at_done_does_not_converge_without_the_audit() {
+        // The risk: a dead actor answers `has_governance_rules` with its
+        // `on_dead` value, `false`, so the audit is skipped and a run that
+        // broke a non-negotiable rule converges exactly when nothing is left
+        // to enforce it.
+        let d = repo();
+        forbid_rule(d.path(), "psycopg2.connect");
+        let rules = trellis_checks::governance::load(d.path()).unwrap();
+        let (h, join) = Orchestrator::new(d.path(), checker(0))
+            .with_rules(rules)
+            .spawn();
+        let mut m = KillsBeforeDone {
+            inner: Scripted::new(vec![
+                Step::Call(ToolCall::Edit {
+                    path: "app/util.py".into(),
+                    old: "return 1".into(),
+                    new: "return psycopg2.connect('s')".into(),
+                }),
+                Step::Call(ToolCall::RunChecks {
+                    paths: vec!["app/util.py".into()],
+                    kinds: vec![CheckKind::Typecheck],
+                }),
+                Step::Done {
+                    summary: "fixed it".into(),
+                },
+            ]),
+            join: Some(join),
+        };
+
+        let (outcome, _) = run("fix it", &mut m, &h, &budget()).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::NotConverged {
+                    reason: NotConverged::OrchestratorGone,
+                    ..
+                }
+            ),
+            "a run whose rules were never audited must not converge: {outcome:?}"
         );
     }
 
@@ -2301,7 +2382,8 @@ rank = \"non-negotiable\"
         assert!(p.contains("vendor/") && p.contains("*.lock"), "{p}");
         assert!(
             p.contains("refused, not warned about"),
-            "a rule the model thinks is advisory costs an iteration to              discover: {p}"
+            "a rule the model thinks is advisory costs an iteration to \
+             discover: {p}"
         );
         // The repository frames the task, so it comes first.
         assert!(p.find("what this repository says") < p.find("Task:"), "{p}");

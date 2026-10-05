@@ -24,10 +24,12 @@ fn abstain<T>(rule: &'static str, reason: impl Into<String>) -> Outcome<T> {
     }
 }
 
-/// §5's area table, in its order, then the two entries this repository adds
-/// (`docs/TICKETING.md`): the crate and directory whose names are the area's.
-/// Every other path maps to nothing, and a ticket naming one abstains.
-const AREA_PATHS: [(&str, Area); 12] = [
+/// §5's area table, in its order, then the entries this repository adds
+/// (`docs/TICKETING.md`): the crate and directory whose names are the area's,
+/// and the owner's mapping of this repository's other crates onto the same
+/// twelve areas (#194, 2026-10-04: no new area values). Every other path
+/// maps to nothing, and a ticket naming one abstains.
+const AREA_PATHS: [(&str, Area); 22] = [
     ("crates/trellis-context", Area::Context),
     ("crates/trellis-model", Area::Model),
     ("crates/trellis-checks", Area::Checks),
@@ -40,6 +42,18 @@ const AREA_PATHS: [(&str, Area); 12] = [
     ("cmd/trellis-tui", Area::Tui),
     ("crates/trellis-cli", Area::Cli),
     ("docs", Area::Docs),
+    ("crates/trellis-index", Area::Graph),
+    ("crates/trellis-loop", Area::Runtime),
+    ("crates/trellis-vcs", Area::Runtime),
+    ("crates/trellis-vault", Area::Context),
+    ("crates/trellis-queue", Area::Agents),
+    ("crates/trellis-trail", Area::Protocol),
+    ("crates/trellis-core", Area::Build),
+    ("scripts", Area::Build),
+    (".github", Area::Build),
+    // The Tauri desktop interface, its own Cargo workspace (#249): an
+    // interface, as the TUI is.
+    ("desktop", Area::Tui),
 ];
 
 fn area_of(file: &FileRef) -> Option<Area> {
@@ -264,13 +278,35 @@ pub fn surface(t: &Ticket) -> Outcome<Surface> {
     decide(Surface::Internal, "§5 surface: otherwise")
 }
 
+/// Where rollback, worktree teardown and session persistence live, by the
+/// owner's table (#196, 2026-10-04): a directory or a file. `session*.rs`
+/// under `crates/trellis-cli/src` is matched by name in [`touches_persistence`].
+const PERSISTENCE_PATHS: [&str; 5] = [
+    "crates/trellis-vcs",
+    "crates/trellis-trail",
+    "crates/trellis-loop/src/integrate.rs",
+    "crates/trellis-loop/src/partition.rs",
+    "crates/trellis-loop/src/supervise.rs",
+];
+
+/// Whether `f` is in [`PERSISTENCE_PATHS`] or is a `session*.rs` in the CLI.
+/// A directory entry counts when it contains one of them: it names an
+/// unknown set of files, and the safe reading is that the set includes it.
+fn touches_persistence(f: &FileRef) -> bool {
+    let contains = |p: &str| {
+        f.under(p) || (f.is_dir && p.starts_with(&format!("{}/", f.path.trim_end_matches('/'))))
+    };
+    PERSISTENCE_PATHS.iter().any(|p| contains(p))
+        || (f.path.starts_with("crates/trellis-cli/src/session") && f.path.ends_with(".rs"))
+        || contains("crates/trellis-cli/src/session.rs")
+}
+
 /// `risk:` — the important one (§5).
 ///
 /// High triggers are checked on the files themselves, so a checks file
-/// makes the ticket high even when `area` abstained on another file. Of the
-/// high triggers, "touches rollback, worktree teardown, or session
-/// persistence" has no path table in this repository and is not detected;
-/// the low rule's string says so. `unsafe` cannot enter this workspace
+/// makes the ticket high even when `area` abstained on another file.
+/// "Touches rollback, worktree teardown, or session persistence" is read
+/// from the owner's path table, [`PERSISTENCE_PATHS`]. `unsafe` cannot enter this workspace
 /// without a `Cargo.toml` edit (`unsafe_code = "forbid"`), so a manifest in
 /// the files abstains instead. An on-disk format change is expected to carry
 /// `!breaking`.
@@ -291,6 +327,12 @@ pub fn risk(t: &Ticket) -> Outcome<Risk> {
         .any(|f| f.under("protocol") || f.under("crates/trellis-protocol"))
     {
         return decide(Risk::High, "§5 risk:high: area:protocol");
+    }
+    if files.iter().any(touches_persistence) {
+        return decide(
+            Risk::High,
+            "§5 risk:high: touches rollback, worktree teardown or session persistence (#196's path table)",
+        );
     }
     if let Some(manifest) = files.iter().find(|f| f.file_name() == "Cargo.toml") {
         return abstain(
@@ -329,7 +371,7 @@ pub fn risk(t: &Ticket) -> Outcome<Risk> {
     }
     decide(
         Risk::Low,
-        "§5 risk:low: no trigger in files, labels or surface (rollback, worktree teardown and session persistence have no path table here; docs/TICKETING.md)",
+        "§5 risk:low: no trigger in files, labels or surface",
     )
 }
 

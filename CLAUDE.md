@@ -107,7 +107,7 @@ must stay at 100%.
 ## Crate boundaries are load-bearing
 
 ```
-trellis-core     shared ids, interner, errors      (depends on nothing)
+trellis-core     shared ids, interner              (depends on nothing)
 trellis-index    tree-sitter -> call graph         (must NEVER depend on trellis-model)
 trellis-checks   typecheck/tests/imports           (owns Verdict; the only crate that may assert correctness)
 trellis-model    adapter tiers, llguidance
@@ -118,6 +118,7 @@ trellis-vault    Apex vault -> one note's context  (must NEVER depend on trellis
 trellis-queue    local task queue + heartbeat loop (file-backed, in the git dir; no trellis-loop/model)
 trellis-tickets  ticketing standard's label rules    (pure functions + a separate binary; depends only on trellis-core; ADR 0040)
 trellis-cli      the binary
+tui-demo         the TUI against a mock event source (depends on no trellis crate; trellis-cli takes it with default-features = false)
 ```
 
 Two of these are not stylistic:

@@ -1,0 +1,18 @@
+crates/trellis-queue/src/lib.rs:900:9: replace Queue::set_aside -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/cron.rs:140:23: replace == with != in field
+crates/trellis-queue/src/cron.rs:268:9: replace Cron::next_after -> Option<i64> with Some(0)
+crates/trellis-queue/src/cron.rs:268:9: replace Cron::next_after -> Option<i64> with Some(1)
+crates/trellis-queue/src/cron.rs:268:9: replace Cron::next_after -> Option<i64> with Some(-1)
+crates/trellis-queue/src/files.rs:102:5: replace publish -> Result<bool, QueueError> with Ok(false)
+crates/trellis-queue/src/files.rs:159:5: replace remove -> Result<(), QueueError> with Ok(())
+crates/trellis-queue/src/files.rs:260:21: replace && with || in patiently
+crates/trellis-queue/src/files.rs:259:20: replace match guard e.kind() == std::io::ErrorKind::PermissionDenied && waited < Duration::from_secs(5) with true in patiently
+crates/trellis-queue/src/files.rs:259:29: replace == with != in patiently
+crates/trellis-queue/src/portable.rs:190:19: delete ! in free_name
+crates/trellis-queue/src/routine.rs:459:17: replace > with == in evaluate
+crates/trellis-queue/src/routine.rs:459:17: replace > with < in evaluate
+crates/trellis-queue/src/stamp.rs:9:5: replace since_epoch -> std::time::Duration with Default::default()
+crates/trellis-queue/src/stamp.rs:46:5: replace sortable_now -> String with String::new()
+crates/trellis-queue/src/stamp.rs:46:5: replace sortable_now -> String with "xyzzy".into()
+crates/trellis-queue/src/stamp.rs:51:5: replace sortable -> String with String::new()
+crates/trellis-queue/src/stamp.rs:51:5: replace sortable -> String with "xyzzy".into()

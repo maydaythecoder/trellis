@@ -55,11 +55,13 @@ wherever the two disagree. The items those sections name as not built are:
   `ask` classifier on hosted models was built by #41.) Hosted runs have
   been exercised only against loopback stubs, never a real provider.
   Amended 2026-09-29 (#160): `HTTPS_PROXY` is landing (#150), not yet
-  merged; row 2.13 below says so.
+  merged; row 2.13 below says so. *Amended 2026-10-05 (#416): built
+  (#150, ADR 0024 §1).*
 - **W-D (0025):** `/new`, `/name`, `/copy`, RPC `compact`, and a user-level
   `system.md`. Amended 2026-09-29 (#160): `/name` and `/copy` are landing
   (#109), not yet merged. *RPC `compact` built 2026-09-29 (#110; ADR 0025
-  §5).*
+  §5).* *Amended 2026-10-05 (#416): `/name` and `/copy` built (#109; ADR
+  0025 "Not built", `session.rs`).*
 - **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),
   `@profile` mentions, prompt-token and dollar accounting, and webhook or API
   triggers. Routines fire only while `work` runs.
@@ -104,7 +106,7 @@ override any row.
 | Items | Disposition |
 |---|---|
 | 1.1 turn loop | built (`trellis-loop`, ADR 0005) |
-| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. `steer` and `follow_up` over `trellis rpc` are built (#114, ADR 0025 §5). Still to come: queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). |
+| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. `steer` and `follow_up` over `trellis rpc` are built (#114, ADR 0025 §5). Still to come: queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). **Amended 2026-10-05 (#416):** built: #113 (delivery between loop turns), #114 (ADR 0025 §5), #115 (`tui`), #116 (`session`) and #117 (the trail) are all merged. |
 | 1.3 built-in tools read/edit | built; **write, grep, find, ls, bash → W-B** (bash is opt-in, see ADR 0023) |
 | 1.4 tool selection flags | W-B (`[tools]` enable/disable) |
 | 1.5 output truncation | built (2,000-character tail, and a separate skill window, ADR 0019) |
@@ -127,7 +129,7 @@ override any row.
 | 2.10 llama.cpp router | built in part (`trellis model pull`); router deferred. **Amended 2026-09-29 (#45):** the owner kept the router deferred on 2026-09-28. Listing, loading and unloading models on a running llama.cpp router is not built; `trellis model pull` is the download half. **Amended 2026-09-30 (#216):** `pull` fetches at a pinned commit and verifies SHA-256 before the file is moved into place (ADR 0044). |
 | 2.11 Radius gateway | excluded: networked service we would control (ADR 0010) |
 | 2.12 custom providers | W-C (a `[[providers]]` table naming a protocol and base URL) |
-| 2.13 transports / proxy | W-C (HTTPS; proxy from the environment); websocket excluded. **Amended 2026-09-29 (#160):** W-C did not build the proxy (see "Where this stands"). `HTTPS_PROXY` and `NO_PROXY` are landing (#150, an ADR 0024 §1 amendment), not yet merged. |
+| 2.13 transports / proxy | W-C (HTTPS; proxy from the environment); websocket excluded. **Amended 2026-09-29 (#160):** W-C did not build the proxy (see "Where this stands"). `HTTPS_PROXY` and `NO_PROXY` are landing (#150, an ADR 0024 §1 amendment), not yet merged. **Amended 2026-10-05 (#416):** built (#150, ADR 0024 §1; `crates/trellis-model/src/transport.rs`, held by `a_proxy_is_used_only_for_https_to_a_remote_host` and `hosted.rs`'s `a_refused_proxy_fails_at_construction_before_any_request`). |
 | 2.14 pi-ai extras | constrained sampling built (llguidance, tier 2); image generation and classification excluded (not a coding-loop concern) |
 | 3.1 context files AGENTS.md / CLAUDE.md | W-D |
 | 3.2–3.3 SYSTEM.md / APPEND_SYSTEM.md, flags | W-D (`.trellis/system.md`, `.trellis/append_system.md`; the grounding clause cannot be removed) |
@@ -138,7 +140,7 @@ override any row.
 | 5.3 `/skill:name` force-load | W-D (`run --skill <name>` and session `/skill`) |
 | 5.4 extra skill locations | W-D (`~/.agents/skills` read-only, after trust) |
 | 6 prompt-template arguments | W-D |
-| 7 slash commands | built in part (`session`); `/new`, `/name` and `/copy` → W-D; `/login`, `/logout`, `/share` and `/bug` excluded (ADR 0010, networked). **Amended 2026-09-29 (#160):** W-D did not build `/name` or `/copy`; both are landing in `trellis session` (#109), not yet merged. |
+| 7 slash commands | built in part (`session`); `/new`, `/name` and `/copy` → W-D; `/login`, `/logout`, `/share` and `/bug` excluded (ADR 0010, networked). **Amended 2026-09-29 (#160):** W-D did not build `/name` or `/copy`; both are landing in `trellis session` (#109), not yet merged. **Amended 2026-10-05 (#416):** `/name` and `/copy` built in `trellis session` (#109; ADR 0025 "Not built", `session.rs`). |
 | 8.1–8.4 session tree, branching, fork | deferred: the trail is the record, and each run is a fresh loop. A branchable session is v2 memory work (v0.3 closed without it) |
 | 8.5–8.7 compaction | W-C |
 | 8.8 export and share | export → W-D (`trellis log --json`); share excluded (networked). **Amended 2026-09-29 (#143):** HTML export excluded. `trellis log --json` is the export, and an HTML view can be rendered from it outside trellis; a renderer inside trellis would have to escape untrusted trail text (ADR 0007) for a browser, a new injection surface for nothing the JSON lacks. |
@@ -295,11 +297,22 @@ for an external front end to drive trellis. An editor or web UI can be
 built outside this repository without trellis owning it, and every write
 it causes still goes through the orchestrator or a `trellis vault`
 command. No row changes for this.
+**Amended 2026-10-04 (#285):** ADR 0048 places a Tauri desktop interface in
+this repository as `desktop/`, its own Cargo workspace and a `trellis rpc`
+client, owner-directed: the session's choice under the owner's 2026-10-04
+delegation of the upstream plan's open questions. Every write it causes
+still goes through the orchestrator (ADR 0048 section 10), and the TUI stays
+the product interface (Q-19).
+**Amended 2026-10-04 (#369):** ADR 0050 adds a web view, `trellis --web`: the
+desktop's page served on 127.0.0.1 only, behind a per-launch token and a Host
+guard, with every write still through the orchestrator. Owner-directed.
 
 Three rows name work that is approved but was not merged into `drain` when
 this section was written, and say "landing" rather than "built": pi 1.2
 (#113, with #114–#117 to follow), pi 2.13 (#150) and pi 7 (#109). A row
 moves to built only once its work is merged.
+*Amended 2026-10-05 (#416):* all three are now merged (#113–#117, #150,
+#109, on `dev`) and their rows say built.
 
 ## Rules every wave follows
 

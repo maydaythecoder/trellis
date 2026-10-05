@@ -14,6 +14,13 @@
     "match": true
   },
   {
+    "id": "greeting",
+    "run": 3,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
+  },
+  {
     "id": "question_behaviour",
     "run": 1,
     "expect": "answer",
@@ -23,6 +30,13 @@
   {
     "id": "question_behaviour",
     "run": 2,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
+  },
+  {
+    "id": "question_behaviour",
+    "run": 3,
     "expect": "answer",
     "got": "answer",
     "match": true
@@ -42,6 +56,13 @@
     "match": true
   },
   {
+    "id": "question_location",
+    "run": 3,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
+  },
+  {
     "id": "question_why",
     "run": 1,
     "expect": "answer",
@@ -51,6 +72,13 @@
   {
     "id": "question_why",
     "run": 2,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
+  },
+  {
+    "id": "question_why",
+    "run": 3,
     "expect": "answer",
     "got": "answer",
     "match": true
@@ -70,6 +98,13 @@
     "match": true
   },
   {
+    "id": "task_fix",
+    "run": 3,
+    "expect": "task",
+    "got": "task",
+    "match": true
+  },
+  {
     "id": "task_add",
     "run": 1,
     "expect": "task",
@@ -79,6 +114,13 @@
   {
     "id": "task_add",
     "run": 2,
+    "expect": "task",
+    "got": "task",
+    "match": true
+  },
+  {
+    "id": "task_add",
+    "run": 3,
     "expect": "task",
     "got": "task",
     "match": true
@@ -98,6 +140,13 @@
     "match": true
   },
   {
+    "id": "task_rename",
+    "run": 3,
+    "expect": "task",
+    "got": "task",
+    "match": true
+  },
+  {
     "id": "task_typo",
     "run": 1,
     "expect": "task",
@@ -107,6 +156,13 @@
   {
     "id": "task_typo",
     "run": 2,
+    "expect": "task",
+    "got": "task",
+    "match": true
+  },
+  {
+    "id": "task_typo",
+    "run": 3,
     "expect": "task",
     "got": "task",
     "match": true
@@ -121,6 +177,13 @@
   {
     "id": "question_files",
     "run": 2,
+    "expect": "answer",
+    "got": "answer",
+    "match": true
+  },
+  {
+    "id": "question_files",
+    "run": 3,
     "expect": "answer",
     "got": "answer",
     "match": true

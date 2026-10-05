@@ -42,23 +42,51 @@ pub(crate) fn git_init(dir: &Path) {
         &["config", "user.name", "t"],
         &["config", "core.autocrlf", "false"],
     ] {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git must be on PATH to run these tests");
+        git_ok(dir, args);
     }
 }
 
-/// Stages everything and commits it.
+/// `git <args>` in `dir` through `trellis_vcs::command()`, panicking with
+/// git's stderr unless it exits 0.
+///
+/// A fixture step that failed used to be discarded with its exit status
+/// (#238), so a repository missing its commit failed later, at whatever
+/// the test asserted, and read as a fault in the code under test. Through
+/// `trellis_vcs` so a fixture runs git as trellis does, with no hook or
+/// fsmonitor from the environment's configuration.
+pub(crate) fn git_ok(dir: &Path, args: &[&str]) {
+    git_stdout(dir, args);
+}
+
+/// [`git_ok`], returning what git printed: for a test that reads the
+/// repository back (`log`, `status`, `rev-parse`). A read that failed would
+/// otherwise come back as empty output, which reads as "clean" or "no
+/// commit" and lets the assertion on it pass or fail for the wrong reason.
+pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = trellis_vcs::command()
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git must be on PATH to run these tests");
+    assert!(
+        out.status.success(),
+        "fixture step `git {}` in {} failed ({}): {}",
+        args.join(" "),
+        dir.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Stages everything and commits it, through [`git_ok`].
+///
+/// It used to spawn bare `git` and drop both exit statuses (#240), so a
+/// fixture whose commit failed (nothing staged, no identity) went on with
+/// no commit and failed later at an unrelated assertion.
 pub(crate) fn git_commit_all(dir: &Path, message: &str) {
-    for args in [["add", "-A"].as_slice(), &["commit", "-qm", message]] {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git");
-    }
+    git_ok(dir, &["add", "-A"]);
+    git_ok(dir, &["commit", "-qm", message]);
 }
 
 /// The trust store every test in this process uses, never the user's.

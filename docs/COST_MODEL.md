@@ -26,14 +26,22 @@ Release build, Windows 11, 16 logical cores, warm page cache, 2026-09-18.
 This is consistent with the ~90 lines/ms figure commonly cited for tree-sitter.
 
 **Parsing is not a cost driver.** Resolution, model inference, and check
-execution are. None of the three is measured yet.
+execution are. Resolution was measured at ~88 ms of a ~120 ms build on poetry
+2.5.0 (01 §4). Inference and check execution
+were measured on poetry on 2026-10-02 at `a6463af`, qwen3:8b on Ollama, in
+[`bench/cost-by-radius.md`](bench/cost-by-radius.md): eight runs at four radius
+sizes (9 to 193 resolved callers), 69-145 s each, every one stopped on the
+model's tool-call format before it edited anything; and the scoped typecheck of
+one file, about 0.8 s warm (median 1.09 s for the whole `trellis check`, three
+repetitions). None of those runs converged, so the cost of a *converging*
+change is still not measured.
 
 ---
 
 ## 2. Cost drivers, in order
 
 1. **Check execution.** A test suite run dominates everything else on a real
-   repo. poetry's suite is 54 test files; a full run is seconds to minutes, and
+   repo. poetry's suite is 129 test files (pinned 2.5.0 sdist, BENCHMARK_AND_EVAL.md §1); a full run is seconds to minutes, and
    the loop may run it many times.
 2. **Model inference.** Tokens on a metered API, wall-clock on local weights.
 3. **Resolution.** Once per run, plus incremental updates per edit.
@@ -49,9 +57,9 @@ the covering set is worth far more than any parser tuning.
 | # | Assumption | Basis |
 |---|---|---|
 | C-1 | An iteration is one model turn plus one tool call | Design |
-| C-2 | A converging change takes 6–12 iterations | **Guess.** S7 spike measures it |
-| C-3 | Context per iteration: 4k–16k tokens depending on radius size | **Guess** |
-| C-4 | Scoped test run: 5–30 s; full suite: 60–180 s | Typical for a repo of poetry's size; unverified |
+| C-2 | A converging change takes 6–12 iterations | **Guess.** Still: 8 runs on poetry at `a6463af` (qwen3:8b, [cost-by-radius](bench/cost-by-radius.md)) and none converged, so they say nothing about iterations to converge. S7 spike measures it |
+| C-3 | Context per iteration: 4k–16k tokens depending on radius size | **Measured (8 runs, n=2 per radius):** first prompt 9,787–9,808 B whatever the radius (9 to 193 resolved callers); peak 9,808–13,409 B over 1–3 turns. The radius does not set the context; the task, the file inventory and the conversation do. In bytes, as the trail records; see [cost-by-radius](bench/cost-by-radius.md) |
+| C-4 | Scoped test run: 5–30 s; full suite: 60–180 s | **Measured (3 repetitions) for the typecheck only:** scoped `trellis check` on one poetry file, median 1.09 s, of which mypy 0.78–1.14 s. Tests could not run in that environment (missing `pytest-xdist` and `findpython`), so test cost is still unverified; see [cost-by-radius](bench/cost-by-radius.md) |
 | C-5 | Checks run on roughly half of iterations | **Guess** |
 | C-6 | Local 14B quantized generation: 20–40 tok/s single stream | Typical consumer GPU; unverified |
 | C-7 | Frontier API: ~1–2 s latency per turn, generation-bound | Typical; unverified |

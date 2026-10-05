@@ -2,7 +2,7 @@
 
 Non-obvious choices, one line each: date, decision, why, what would reverse
 it. Lighter than an ADR — an ADR is for a decision that is expensive to undo,
-and the ten in `docs/adr/` are those. This file is for the rest.
+and those are in `docs/adr/`. This file is for the rest.
 
 **This file was created late.** The session prompt's §5 has required it
 throughout, and the entries below the line marked *backfilled* were

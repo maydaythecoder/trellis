@@ -5,7 +5,7 @@
     "converged": true,
     "expected": true,
     "match": true,
-    "iterations": 4,
+    "iterations": 3,
     "writes": [
       "app/calc.py"
     ],
@@ -14,23 +14,28 @@
       "Governance+"
     ],
     "checks_pass": true,
-    "actions": 5,
-    "refused": 2,
-    "secs": 56.0
+    "actions": 4,
+    "refused": 1,
+    "secs": 36.5
   },
   {
     "id": "docstring",
     "run": 1,
     "converged": false,
     "expected": false,
-    "match": false,
-    "iterations": null,
-    "writes": [],
-    "checks": [],
+    "match": true,
+    "iterations": 5,
+    "writes": [
+      "app/calc.py"
+    ],
+    "checks": [
+      "Typecheck-",
+      "Typecheck-"
+    ],
     "checks_pass": false,
-    "actions": 0,
-    "refused": 0,
-    "secs": 600.2
+    "actions": 5,
+    "refused": 1,
+    "secs": 491.7
   },
   {
     "id": "rename",
@@ -40,25 +45,6 @@
     "match": true,
     "iterations": 6,
     "writes": [
-      "app/calc.py",
-      "app/report.py"
-    ],
-    "checks": [
-      "Typecheck-"
-    ],
-    "checks_pass": false,
-    "actions": 6,
-    "refused": 2,
-    "secs": 144.1
-  },
-  {
-    "id": "camel",
-    "run": 1,
-    "converged": false,
-    "expected": false,
-    "match": true,
-    "iterations": 6,
-    "writes": [
       "app/calc.py"
     ],
     "checks": [
@@ -66,46 +52,16 @@
     ],
     "checks_pass": false,
     "actions": 6,
-    "refused": 2,
-    "secs": 92.5
+    "refused": 3,
+    "secs": 321.8
   },
   {
-    "id": "governance",
+    "id": "camel",
     "run": 1,
     "converged": false,
     "expected": false,
     "match": true,
-    "iterations": 5,
-    "writes": [],
-    "checks": [],
-    "checks_pass": false,
-    "actions": 5,
-    "refused": 5,
-    "secs": 37.4
-  },
-  {
-    "id": "noop",
-    "run": 1,
-    "converged": false,
-    "expected": true,
-    "match": false,
-    "iterations": 2,
-    "writes": [],
-    "checks": [
-      "Typecheck-"
-    ],
-    "checks_pass": false,
-    "actions": 2,
-    "refused": 0,
-    "secs": 441.5
-  },
-  {
-    "id": "vague",
-    "run": 1,
-    "converged": false,
-    "expected": false,
-    "match": true,
-    "iterations": 6,
+    "iterations": 7,
     "writes": [
       "app/calc.py",
       "app/report.py"
@@ -115,12 +71,44 @@
       "Typecheck-"
     ],
     "checks_pass": false,
-    "actions": 6,
+    "actions": 7,
     "refused": 2,
-    "secs": 162.0
+    "secs": 176.2
   },
   {
-    "id": "unreachable",
+    "id": "governance",
+    "run": 1,
+    "converged": false,
+    "expected": false,
+    "match": true,
+    "iterations": null,
+    "writes": [],
+    "checks": [],
+    "checks_pass": false,
+    "actions": 0,
+    "refused": 0,
+    "secs": 600.1
+  },
+  {
+    "id": "noop",
+    "run": 1,
+    "converged": false,
+    "expected": true,
+    "match": false,
+    "iterations": 4,
+    "writes": [],
+    "checks": [
+      "Typecheck-",
+      "Typecheck-",
+      "Typecheck-"
+    ],
+    "checks_pass": false,
+    "actions": 4,
+    "refused": 1,
+    "secs": 105.9
+  },
+  {
+    "id": "vague",
     "run": 1,
     "converged": true,
     "expected": false,
@@ -130,6 +118,7 @@
       "app/calc.py"
     ],
     "checks": [
+      "Tests+",
       "Typecheck-",
       "Typecheck+",
       "Governance+"
@@ -137,6 +126,26 @@
     "checks_pass": false,
     "actions": 6,
     "refused": 1,
-    "secs": 64.6
+    "secs": 44.2
+  },
+  {
+    "id": "unreachable",
+    "run": 1,
+    "converged": true,
+    "expected": false,
+    "match": false,
+    "iterations": 4,
+    "writes": [
+      "app/calc.py"
+    ],
+    "checks": [
+      "Typecheck-",
+      "Typecheck+",
+      "Governance+"
+    ],
+    "checks_pass": false,
+    "actions": 5,
+    "refused": 1,
+    "secs": 112.6
   }
 ]

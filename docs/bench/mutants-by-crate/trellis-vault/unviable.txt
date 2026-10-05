@@ -1,0 +1,38 @@
+crates/trellis-vault/src/compile.rs:119:5: replace compile -> Result<Compiled, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/compile.rs:135:5: replace compile_with_dates -> Result<Compiled, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/dates.rs:174:5: replace stamp -> Stamp with Default::default()
+crates/trellis-vault/src/dates.rs:235:5: replace seed -> Result<NoteDates, DatesError> with Ok(Default::default())
+crates/trellis-vault/src/dates.rs:330:5: replace reconcile -> Result<NoteDates, DatesError> with Ok(Default::default())
+crates/trellis-vault/src/dates.rs:369:13: replace && with || in reconcile
+crates/trellis-vault/src/dates.rs:368:13: replace && with || in reconcile
+crates/trellis-vault/src/dates.rs:369:27: replace > with < in reconcile
+crates/trellis-vault/src/dates.rs:443:35: replace > with < in validate
+crates/trellis-vault/src/dates.rs:456:25: replace > with < in parse
+crates/trellis-vault/src/dates.rs:496:25: replace > with < in read_bounded
+crates/trellis-vault/src/dates.rs:526:5: replace load -> State with Default::default()
+crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![Default::default()], vec![])
+crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![Default::default()], vec![String::new()])
+crates/trellis-vault/src/dates.rs:635:5: replace coverage -> (Vec<Coverage>, Vec<String>) with (vec![Default::default()], vec!["xyzzy".into()])
+crates/trellis-vault/src/edit.rs:74:9: replace Session::open -> Result<Session, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/edit.rs:112:9: replace Session::root -> &Path with Box::leak(Box::new(Default::default()))
+crates/trellis-vault/src/edit.rs:117:5: replace refused -> VaultError with Default::default()
+crates/trellis-vault/src/edit.rs:534:9: replace && with || in fix
+crates/trellis-vault/src/edit.rs:543:5: replace check -> Result<Report, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/graph.rs:57:9: replace Resolver::resolve -> Resolved with Default::default()
+crates/trellis-vault/src/graph.rs:215:9: replace Graph::build -> Graph with Default::default()
+crates/trellis-vault/src/graph.rs:359:5: replace find_cycles -> Vec<Issue> with vec![Default::default()]
+crates/trellis-vault/src/js.rs:37:5: replace cmp -> Ordering with Default::default()
+crates/trellis-vault/src/reader.rs:213:5: replace parse_note -> Note with Default::default()
+crates/trellis-vault/src/reader.rs:273:9: replace Vault::open -> Result<Vault, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/refs.rs:108:5: replace parse_wiki_target -> WikiTarget with Default::default()
+crates/trellis-vault/src/refs.rs:160:5: replace graph_links -> Vec<WikiTarget> with vec![Default::default()]
+crates/trellis-vault/src/search.rs:37:9: replace Mode::for_vault -> Mode with Default::default()
+crates/trellis-vault/src/search.rs:131:9: replace Index::build -> Index with Default::default()
+crates/trellis-vault/src/search.rs:187:9: replace Index::hit -> Hit with Default::default()
+crates/trellis-vault/src/search.rs:197:9: replace Index::bm25 -> Vec<Hit> with vec![Default::default()]
+crates/trellis-vault/src/search.rs:235:9: replace Index::trigram -> Vec<Hit> with vec![Default::default()]
+crates/trellis-vault/src/search.rs:267:9: replace Index::search -> Vec<Hit> with vec![Default::default()]
+crates/trellis-vault/src/search.rs:292:5: replace ranked -> Vec<Hit> with vec![Default::default()]
+crates/trellis-vault/src/validate.rs:129:5: replace parse_note -> Option<Note> with Some(Default::default())
+crates/trellis-vault/src/validate.rs:222:5: replace parse -> Result<Parsed, VaultError> with Ok(Default::default())
+crates/trellis-vault/src/validate.rs:354:5: replace manifest_state -> Result<ManifestState, VaultError> with Ok(Default::default())

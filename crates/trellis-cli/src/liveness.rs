@@ -223,6 +223,23 @@ mod tests {
         let mut child = c.spawn().unwrap();
         let pid = child.id();
         child.wait().unwrap();
-        assert_eq!(SystemLiveness.probe(pid), Probe::Gone);
+        // The risk this guards: a probe that calls an exited child Running,
+        // which would let the queue keep a dead claim forever. That still
+        // fails here, as does any Unknown but one. On Windows the probe is
+        // PowerShell, which on a loaded host can miss PROBE_BOUND before it
+        // has started; "could not answer in time" is the honest result
+        // then, not a wrong one, so it does not fail the test (#221, the
+        // owner's option C). The suffix is built from PROBE_BOUND so a
+        // changed message or bound is not tolerated silently.
+        match SystemLiveness.probe(pid) {
+            Probe::Gone => {}
+            Probe::Unknown(why)
+                if cfg!(windows)
+                    && why.ends_with(&format!("did not answer in {PROBE_BOUND:?}")) =>
+            {
+                eprintln!("probe could not answer in time, not a wrong answer: {why}");
+            }
+            other => panic!("an exited, reaped child must read Gone: {other:?}"),
+        }
     }
 }

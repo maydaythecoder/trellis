@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the tracked hooks into this clone's shared git dir, so the main
 # checkout and every worktree run them (#206). pre-push is the local guard
-# that refuses any push to v0.1-resolver (ADR 0036); it is tracked so a fresh
+# that refuses any push to main, v0.1-resolver, drain or a v* tag (ADR 0036, 0051); it is tracked so a fresh
 # clone gets it from here rather than from a copy kept by hand (#217).
 #
 # The pattern scripts the pre-commit hook reads are installed beside it too,

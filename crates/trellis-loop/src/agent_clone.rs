@@ -153,7 +153,15 @@ impl AgentClone {
                 refuse(&mut out, &rel, instruction_file(&rel));
                 continue;
             }
+            // `changes` builds `deleted` from the copied-in list, so this
+            // always finds one; if it ever did not, the deletion is reported
+            // rather than dropped.
             let Some(&before) = copied.get(rel.as_str()) else {
+                refuse(
+                    &mut out,
+                    &rel,
+                    format!("`{rel}` was not copied in, so its deletion cannot be checked"),
+                );
                 continue;
             };
             if !admitted(root, governance, &rel, &mut out)

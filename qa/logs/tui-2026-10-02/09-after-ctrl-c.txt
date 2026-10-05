@@ -1,0 +1,41 @@
+# 120x40 at 03:19:37Z
+/home/mayda/trellis-qa15/target/debug/trellis tui --model 'vllm:http://127.0.0.1:11434#qwen2.5:3b' 2>/tmp/tui.err; echo
+RC=$?
+mayda@MuhyadinsPC:~/qa15-demo$ /home/mayda/trellis-qa15/target/debug/trellis tui --model 'vllm:http://127.0.0.1:11434#qw
+en2.5:3b' 2>/tmp/tui.err; echo RC=$?
+RC=0
+mayda@MuhyadinsPC:~/qa15-demo$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

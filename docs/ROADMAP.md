@@ -93,8 +93,8 @@ behind `[index] backstop = "pyright"` (#168), and #177 ran it on poetry:
 of the graph. That count is not recall; the method is in
 [`bench/pyright-backstop-poetry-20260929.md`](bench/pyright-backstop-poetry-20260929.md).
 
-**The measurement did not land in that band, and the decorator-first ordering
-above is falsified in any case:** `DecoratorIndirection` accounts for 3 of
+**The final measurement (72.0%) landed in that band; the decorator-first
+ordering above is falsified in any case:** `DecoratorIndirection` accounts for 3 of
 11,233 unresolved sites, against 10,646 for `MethodDispatchUntyped`. See S1 and
 ADR 0011.
 
