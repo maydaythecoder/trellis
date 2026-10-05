@@ -133,4 +133,42 @@ mod tests {
         assert!(sortable(9, 0) < sortable(10, 0));
         assert!(sortable(10, 999_999_999) < sortable(11, 0));
     }
+
+    #[test]
+    fn every_day_for_two_thousand_years_round_trips_through_the_calendar() {
+        // Hinnant's formulas have century and 400-year corrections that a
+        // handful of dates never reach; a wrong one moves a routine's fire
+        // or a budget month by a day.
+        for days in -365_250..365_250 {
+            let (y, m, d) = civil(days);
+            assert_eq!(days_from_civil(y, m, d), days, "{y}-{m}-{d}");
+        }
+        assert_eq!(secs_to_iso(951_868_800), "2000-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn the_clock_reads_now() {
+        // After this crate was written, so not a constant.
+        assert!(now_secs() > 1_790_000_000, "{}", now_secs());
+    }
+
+    #[test]
+    fn a_stamp_wrong_in_any_one_place_is_refused_and_a_leap_second_is_read() {
+        assert!(parse_iso("2026-09-27T23:59:59Z").is_some());
+        assert!(parse_iso("2026-12-31T23:59:60Z").is_some(), "a leap second");
+        for bad in [
+            "2026-09-27T10:15:00Z0",
+            "2026x09-27T10:15:00Z",
+            "2026-09x27T10:15:00Z",
+            "2026-09-27x10:15:00Z",
+            "2026-09-27T10:15:00x",
+            "2026-13-27T10:15:00Z",
+            "2026-09-32T10:15:00Z",
+            "2026-09-27T24:15:00Z",
+            "2026-09-27T10:60:00Z",
+            "2026-09-27T10:15:61Z",
+        ] {
+            assert_eq!(parse_iso(bad), None, "{bad}");
+        }
+    }
 }

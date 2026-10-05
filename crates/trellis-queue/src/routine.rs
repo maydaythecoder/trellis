@@ -752,4 +752,154 @@ mod tests {
             .contains("fixed offsets")
         );
     }
+
+    fn file(schedule: &str, extra: &str, text: &str) -> Routine {
+        parse(
+            "r",
+            &format!("schedule = \"{schedule}\"\n{extra}\n[task]\ntext = \"{text}\"\n"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_one_letter_placeholder_is_read_like_any_other() {
+        file("* * * * *", "", "{{x}}{{y}}\"\n[vars]\nx = \"1\"\ny = \"2");
+        let e = parse(
+            "r",
+            "schedule = \"* * * * *\"\n[task]\ntext = \"{{x}}{{z}}\"\n[vars]\nx = \"1\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("{{z}}"), "{e}");
+    }
+
+    #[test]
+    fn catch_up_max_is_bounded_at_both_ends() {
+        let max = |n: u32| {
+            parse(
+                "r",
+                &format!(
+                    "schedule = \"* * * * *\"\ncatch_up = \"enqueue\"\ncatch_up_max = {n}\n\
+                     [task]\ntext = \"x\"\n"
+                ),
+            )
+        };
+        assert!(max(0).is_err());
+        assert!(max(1).is_ok() && max(MAX_CATCH_UP).is_ok());
+        assert!(max(MAX_CATCH_UP + 1).is_err());
+    }
+
+    #[test]
+    fn routines_load_from_their_folder_and_one_that_cannot_be_read_is_an_error() {
+        // Read as "no routines", a broken folder stops every schedule
+        // without a word.
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join(".trellis").join(DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("nightly.toml"),
+            "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\n",
+        )
+        .unwrap();
+        let set = load_all(d.path()).unwrap();
+        assert_eq!(set.keys().collect::<Vec<_>>(), ["nightly"]);
+        let not_a_dir = d.path().join("plain-file");
+        std::fs::write(&not_a_dir, "").unwrap();
+        assert!(load_dir(&not_a_dir).is_err());
+    }
+
+    #[test]
+    fn state_is_none_until_the_routine_is_armed_and_then_says_when() {
+        let (_d, q) = queue();
+        let r = routine("");
+        assert_eq!(state(&q, "nightly").unwrap(), None);
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        assert_eq!(t.name, "nightly");
+        assert_eq!(
+            state(&q, "nightly").unwrap().map(|s| s.armed_at),
+            Some(at("2026-09-27T12:00:00Z"))
+        );
+    }
+
+    fn missed_logged(q: &Queue) -> usize {
+        q.activity()
+            .tail(1000)
+            .unwrap()
+            .iter()
+            .filter(|e| e.action == "routine.missed")
+            .count()
+    }
+
+    #[test]
+    fn only_a_tick_that_dropped_fires_logs_them_as_missed() {
+        let (_d, q) = queue();
+        let r = routine("concurrency = \"always\"");
+        evaluate(&q, &r, at("2026-09-26T12:00:00Z")).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        assert_eq!((t.fired.len(), t.missed), (1, 0));
+        assert_eq!(missed_logged(&q), 0);
+        let t = evaluate(&q, &r, at("2026-09-30T12:00:00Z")).unwrap();
+        assert_eq!((t.fired.len(), t.missed), (1, 2));
+        assert_eq!(missed_logged(&q), 1);
+    }
+
+    fn of_routine(q: &Queue, name: &str, text: &str) -> String {
+        q.add_task(
+            crate::NewTask {
+                task: text.into(),
+                routine: Some(name.into()),
+                ..Default::default()
+            },
+            Actor::Human,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_manual_run_coalesces_into_this_routines_open_task_and_not_another_routines() {
+        let (_d, q) = queue();
+        let r = routine("concurrency = \"coalesce\"");
+        of_routine(&q, "weekly", "another routine's");
+        let now = at("2026-09-27T12:00:00Z");
+        let Fired::Enqueued(first) = run_now(&q, &r, now).unwrap() else {
+            panic!("the first manual run enqueues");
+        };
+        assert_eq!(run_now(&q, &r, now).unwrap(), Fired::Coalesced(first));
+    }
+
+    #[test]
+    fn a_fire_coalesces_into_the_first_claimed_task_else_the_first_pending_one() {
+        // The task `active` would name, so a scheduled fire and a manual one
+        // note the same task.
+        for claimed in [true, false] {
+            let (_d, q) = queue();
+            let r = routine("concurrency = \"coalesce\"");
+            let ids: Vec<String> = (0..4)
+                .map(|i| of_routine(&q, "nightly", &format!("t{i}")))
+                .collect();
+            if claimed {
+                for id in &ids[..2] {
+                    std::mem::forget(q.claim(id).unwrap().unwrap());
+                }
+            }
+            evaluate(&q, &r, at("2026-09-26T12:00:00Z")).unwrap();
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+            // ids[0] is the first claimed one, or with none claimed the
+            // first pending one.
+            assert_eq!(t.fired[0].1, Fired::Coalesced(ids[0].clone()), "{claimed}");
+        }
+    }
+
+    #[test]
+    fn the_next_due_instant_is_the_earliest_of_the_unpaused_routines() {
+        let set: BTreeMap<String, Routine> = [
+            ("nightly".to_string(), routine("")),
+            ("noon".to_string(), file("0 13 * * *", "paused = true", "x")),
+        ]
+        .into();
+        assert_eq!(
+            next_due(&set, at("2026-09-27T12:00:00Z")),
+            Some(at("2026-09-28T03:00:00Z"))
+        );
+    }
 }
