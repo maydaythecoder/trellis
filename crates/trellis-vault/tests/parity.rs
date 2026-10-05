@@ -762,11 +762,11 @@ fn fix_lists_the_layout_only_when_it_removed_a_key() {
 }
 
 #[test]
-fn root_of_follows_the_notes_folder_rule() {
+fn notes_root_follows_the_notes_folder_rule() {
     let d = tempfile::tempdir().unwrap();
-    assert_eq!(edit::root_of(d.path()), d.path());
+    assert_eq!(trellis_vault::notes_root(d.path()), d.path());
     std::fs::create_dir(d.path().join("notes")).unwrap();
-    assert_eq!(edit::root_of(d.path()), d.path().join("notes"));
+    assert_eq!(trellis_vault::notes_root(d.path()), d.path().join("notes"));
 }
 
 #[test]
