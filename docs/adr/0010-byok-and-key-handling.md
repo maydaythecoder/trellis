@@ -24,6 +24,9 @@ Concretely:
 1. Keys are read from the environment or from `.trellis/config.toml` in the
    user's repository, and used to make requests **directly** from the user's
    machine to the provider.
+   **Amended 2026-10-05 (#416):** narrowed by ADR 0024 §3 and ADR 0025 §7:
+   keys are read from environment variables only; a config file naming a key
+   is refused at load.
 2. No proxy, relay, or gateway operated by us sits in that path. Ever.
 3. No key value is written to a trail, a log line, or a `tracing` span. Where a
    key must be referenced, reference the *source* ("from `ANTHROPIC_API_KEY`"),
@@ -31,6 +34,9 @@ Concretely:
 4. `.trellis/config.toml` is in the repository, so the documentation must warn
    that a key placed there is a key committed to version control. Prefer the
    environment.
+   **Amended 2026-10-05 (#416):** narrowed by ADR 0024 §3 and ADR 0025 §7:
+   keys are read from environment variables only; a config file naming a key
+   is refused at load.
 
 This rule is carried forward into any future cloud tier without exception. If a
 cloud tier cannot be built without proxying keys, the cloud tier does not get

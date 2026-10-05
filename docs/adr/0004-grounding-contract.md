@@ -79,10 +79,16 @@ under a bound:
   check's process tree was killed", .. }`, so the failing `Verdict` comes
   from the existing `pub(crate)` constructors. `passed`, the `Seal`, the
   constructors and the absent `Deserialize` are unchanged.
+  *Amended by ADR 0035 (#172):* on Windows the checker runs in a Job
+  Object, terminated however the check ends (on a timeout it replaces
+  `taskkill /T`); on Unix the timeout path is unchanged.
 - A check that exits but whose output is still held open at the bound (by
   something it left running) also yields `exit_code: None`: a verdict
   resting on cut output is not a pass. That case kills nothing, because the
   checker has been reaped and its group id may no longer be its own.
+  *Amended by ADR 0035 (#172):* after any exit, the Windows job is
+  terminated and the Unix group (held by a group holder) is killed, and a
+  passing check whose tree changed after its exit was observed fails.
 - A check whose run is dropped (interrupted, cancelled) has its checker process
   killed with it (the process only, not its tree) rather than left running
   unowned.
