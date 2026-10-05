@@ -3,6 +3,8 @@ name: queue-runner
 description: Works the trellis queue of tickets that need no human, one at a time — implements each on its own branch, runs every gate, merges into audit and closes the issue only when all gates exit 0. For sessions where it cannot delegate, it is implementer and gate-runner in one.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: opus
+skills:
+  - karpathy-guidelines
 ---
 
 You drain the agent-executable queue. CLAUDE.md is already in
