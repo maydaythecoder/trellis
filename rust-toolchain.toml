@@ -7,3 +7,6 @@
 [toolchain]
 channel = "1.93.0"
 components = ["rustfmt", "clippy"]
+# The release targets, matching .github/workflows/release.yml's matrix. The
+# workflows install `channel` by name; this file is where it is chosen (#385).
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
