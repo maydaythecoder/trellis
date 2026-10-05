@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the guard cases: the behaviour that must not depend on a model.
 
-Two refusals and one scripted loop. These rows are deterministic, so unlike the
+Eleven guards: refusals, scripted loops and trail checks (see
+qa/fixtures/behaviour.json). These rows are deterministic, so unlike the
 model cases they can be quoted from a single run — and if one of them ever
 changes, something structural has moved rather than a weight having a bad day.
 
@@ -16,64 +17,17 @@ Usage:
 
 import argparse
 import json
-import hashlib
-import os
 import pathlib
 import subprocess
 import sys
-import tempfile
 
 # qa/demo_fixture.py is imported from qa/; a __pycache__ left beside it would
 # be an untracked directory in this repository after every run.
 sys.dont_write_bytecode = True
 
-from demo_fixture import fixture_repo, resolve_model
+from demo_fixture import FixtureLock, fixture_repo, reset, resolve_model
 
 HERE = pathlib.Path(__file__).resolve().parent
-
-
-class FixtureLock:
-    """One harness at a time against one fixture repository.
-
-    Both runners reset the fixture with `git reset --hard` between cases. Run
-    two at once and each silently pulls the ground from under the other: a
-    guard case that sets up a dirty worktree finds it clean, refuses for the
-    wrong reason, and reports a mismatch that says nothing about the harness
-    under test.
-
-    That happened, and it produced a false MISMATCH that looked exactly like a
-    real defect. A baseline whose rows can be corrupted by another process is
-    not a baseline, so this is a lock rather than a note.
-    """
-
-    def __init__(self, repo):
-        # Outside the fixture, deliberately. The first version put the lock in
-        # the repository's own `.trellis/`, where it was an untracked file —
-        # so the worktree was never clean and every run refused to start. The
-        # refusal cases still "passed", because they were being refused
-        # anyway, for the wrong reason. A measurement harness must not be
-        # visible to what it measures.
-        key = hashlib.sha256(str(pathlib.Path(repo).resolve()).encode()).hexdigest()[:16]
-        self.path = pathlib.Path(tempfile.gettempdir()) / f"trellis-qa-{key}.lock"
-
-    def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            # Exclusive create: succeeds only if no one else holds it.
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            raise SystemExit(
-                f"another qa run holds {self.path}.\n"
-                "Two harnesses resetting one fixture corrupt each other's rows.\n"
-                "Wait for it, or delete the file if it was left by a killed run."
-            )
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return self
-
-    def __exit__(self, *_):
-        self.path.unlink(missing_ok=True)
-        return False
 
 
 def sh(args, cwd, timeout=300):
@@ -86,11 +40,6 @@ def sh(args, cwd, timeout=300):
 def trails(repo):
     d = pathlib.Path(repo) / ".trellis" / "runs"
     return {p.name for p in d.glob("*.json")} if d.is_dir() else set()
-
-
-def reset(repo, commit):
-    sh(["git", "reset", "--hard", commit], repo)
-    sh(["git", "clean", "-fd", "--", "app", "tests"], repo)
 
 
 def main():
