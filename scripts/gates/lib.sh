@@ -32,14 +32,13 @@ if [ -z "${GATE_BASE:-}" ]; then
     t[0-9]*-*|feature/*|"$INTEGRATION_BRANCH") GATE_BASE="origin/$DEV_BRANCH" ;;
     *) GATE_BASE="origin/main" ;;
   esac
-  # Until ADR 0051's branches exist on the remote (the change that adds
-  # them is gated before they are pushed), fall back to the legacy pair.
-  if ! git rev-parse -q --verify "$GATE_BASE^{commit}" >/dev/null 2>&1; then
-    case "$GATE_BASE" in
-      "origin/$DEV_BRANCH") GATE_BASE="origin/drain" ;;
-      origin/main) GATE_BASE="origin/v0.1-resolver" ;;
-    esac
-  fi
+fi
+# A base this clone has not fetched is a failure, not a reason to measure
+# against some other branch: the legacy branches are frozen (ADR 0051), and a
+# diff against them would pass or fail a change on work it did not touch.
+if ! git rev-parse -q --verify "$GATE_BASE^{commit}" >/dev/null 2>&1; then
+  echo "FAIL: base $GATE_BASE not fetched; run git fetch origin" >&2
+  exit 1
 fi
 
 # Gates run commands a ticket or a repository names; none of them needs a
