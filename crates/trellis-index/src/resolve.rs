@@ -35,10 +35,10 @@ const MAX_REEXPORT_DEPTH: u32 = 4;
 
 /// How many base classes up `lookup_method` searches for a method.
 ///
-/// Cycles are already cut by its `visited` set, so this bounds cost on deep
-/// hierarchies, not termination. A method defined further up than this is
-/// reported `MethodDispatchUntyped` (an unsearched base is a non-exhaustive
-/// miss), which costs recall and never emits an edge.
+/// A base further up than this is not searched, so the lookup reports a
+/// non-exhaustive miss. That costs recall and can never produce a `Resolved`
+/// edge. Cycles are already cut by its `visited` set, so this bounds cost on
+/// deep hierarchies, not termination.
 const MAX_INHERITANCE_DEPTH: u32 = 4;
 
 /// Builtin type names, for deciding that an annotated receiver is not
