@@ -11,14 +11,17 @@ decision, or a person.
 **Q-1 — What is the resolver's actual recall on poetry?**
 The number the whole gate depends on. Thresholds are already recorded (85% gate,
 60% pivot) so the measurement cannot be argued against after the fact.
-→ `BENCHMARK_AND_EVAL.md` §2. Owner: v0.1.
+→ `BENCHMARK_AND_EVAL.md` §2. Owner: v0.1. — CLOSED: 47.8% on 2026-09-19,
+then 72.0% after receiver typing on 2026-09-20 (`01-v0.1-measure.md` §5, §7).
 
 **Q-2 — Does `DecoratorIndirection` dominate the `Reason` distribution?**
 Predicted, and the benchmark repos support it: 20–41% of definitions are
 decorated. If confirmed, the S1 fallback is a decorator-unwrapping pass, which
 is far cheaper than adopting Pyright. If the dominant reason is instead
 `MethodDispatchUntyped`, only type inference helps and Pyright becomes hard to
-avoid. → Owner: v0.1.
+avoid. → Owner: v0.1. — CLOSED 2026-09-19: no. `DecoratorIndirection` is 3
+of 11,233 unresolved sites against 10,646 for `MethodDispatchUntyped`
+(`01-v0.1-measure.md` §6).
 
 **Q-4 — How stale can a coverage-derived test map be before it misleads?**
 Covering tests are derived by inverting a coverage report. That report ages the
@@ -42,7 +45,10 @@ last upstream push 2024-08-19, roughly two years stale. A forty-line hand-rolled
 interner is in place. Revisit only if profiling shows interning is hot, or a
 maintained crate offers a measurably better layout at scale. Low stakes.
 
-**Q-5 — Should factual trail entries be hashed?**
+**Q-5 — Should factual trail entries be hashed? — CLOSED: yes.** Built in
+a18442e: per-entry provenance and a SHA-256 over the factual section, checked
+on read by `UntrustedTrail::integrity`; a mismatch is reported (`trellis log`
+prints ALTERED), not refused.
 S10 is contained: trails read back as inert data and judgment is fenced. Hashing
 would make tampering *detectable* rather than merely contained. Cost 2–3 days.
 Open question is what the hash covers and what happens on mismatch — refuse to
@@ -65,7 +71,8 @@ says alongside. Untested at volume.
 could change the input-token column substantially on a metered API. Needs
 measurement before the cost model is quoted to anyone.
 
-**Q-10 — Which in-process inference path for tier 3?**
+**Q-10 — Which in-process inference path for tier 3? — CLOSED 2026-09-19 by
+ADR 0013:** `candle` for tier 3, and tier 3 deferred. The original question:
 `llama-cpp-2`-style bindings, `mistral.rs`, or `candle`. Real consequences for
 build complexity and hardware coverage. ADR 0006 is deliberately left
 **Proposed** on this point. Contained: tiers 1, 2 and 4 need no logit access, so

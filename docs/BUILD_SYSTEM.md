@@ -149,7 +149,7 @@ old integration branch, frozen at the commit `dev` and `audit` started from),
 
 The pre-push hook (`scripts/hooks/pre-push`,
 installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
-shows it firing) refuses every push to `main` and `v0.1-resolver` from a clone that has
+shows it firing) refuses every push to `main`, `v0.1-resolver` and the frozen `drain`, and of any `v*` tag (ADR 0051 item 3), from a clone that has
 installed it (GitHub branch protection needs Pro on a private repository;
 ADR 0036 records the gap and the ruleset to apply later).
 
