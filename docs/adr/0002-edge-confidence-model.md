@@ -63,6 +63,8 @@ it, and it only works if every consumer is forced to see coverage — hence
 `RadiusReport` owning `Coverage` by value with no constructor that omits it,
 and `Coverage::resolved_fraction()` returning `Option` so an empty sample can
 never render as 100%.
+*Amended by ADR 0014:* a radius carries `RadiusCoverage` (two facts, no
+ratio); `Coverage::resolved_fraction` remains for the index only.
 
 ## What changes our mind
 

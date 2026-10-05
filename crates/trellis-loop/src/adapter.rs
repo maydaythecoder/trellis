@@ -1786,16 +1786,31 @@ mod tests {
     /// The discriminator is purely local and needs nothing from the server:
     /// an object that opened and did not close was truncated; no brace at all
     /// is what an ignored schema produces.
-    #[test]
-    fn truncation_and_an_ignored_schema_are_told_apart() {
-        let truncated = r#"{"tool":"edit","path":"a.py","old":"<error>Error: <error>"#;
-        let ignored = "Sure! I'll use the repo.edit tool for that.";
+    #[tokio::test]
+    async fn truncation_and_an_ignored_schema_are_told_apart() {
+        // Driven through `next_step`, because the two messages are built
+        // there: checking the literals alone would pass with the branch
+        // inverted.
+        let truncated = r#"{"choices":[{"text":"{\"tool\":\"edit\",\"path\":\"a.py\",\"old\":\"<error>Error: <error>"}],"usage":{"completion_tokens":2048}}"#;
+        let ignored = r#"{"choices":[{"text":"Sure! I'll use the repo.edit tool for that."}],"usage":{"completion_tokens":12}}"#;
 
-        assert!(extract_json(truncated).is_none());
-        assert!(extract_json(ignored).is_none());
-        // The branch under test keys on exactly this, so the test does too.
-        assert!(truncated.contains('{'), "an object was opened");
-        assert!(!ignored.contains('{'), "no object was ever opened");
+        let (base, _h) = replaying_stub(vec![truncated; 4]).await;
+        let client = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let err = RuntimeModel::unconstrained(client)
+            .next_step(&one_turn("t"))
+            .await
+            .expect_err("all truncated");
+        assert!(err.contains("cut off mid-object"), "{err}");
+        assert!(!err.contains("ignored schema"), "{err}");
+
+        let (base, _h) = replaying_stub(vec![ignored; 4]).await;
+        let client = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let err = RuntimeModel::unconstrained(client)
+            .next_step(&one_turn("t"))
+            .await
+            .expect_err("all prose");
+        assert!(err.contains("ignored schema"), "{err}");
+        assert!(!err.contains("cut off mid-object"), "{err}");
     }
 
     #[test]

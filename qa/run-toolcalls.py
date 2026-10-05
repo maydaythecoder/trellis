@@ -8,7 +8,8 @@ intent are different failures with different fixes:
   valid       a populated `tool_calls` array came back
   correct     the tool named is the one the case requires
   args        the arguments match what the case expects
-  prose       the reply was text, or JSON embedded in the content field
+  prose       the reply was JSON embedded in the content field (plain text
+              is counted on its own, as `text`)
 
 `prose` is counted separately and is *not* the complement of `valid`: a
 reply can be neither a tool call nor recognisable JSON, and lumping those
@@ -95,7 +96,7 @@ def main():
     print(f"max_tokens {args.max_tokens}")
     print()
 
-    valid = correct = args_ok = prose = errors = 0
+    valid = correct = args_ok = prose = text = errors = 0
     rows = []
     t0 = time.monotonic()
 
@@ -146,6 +147,7 @@ def main():
                 prose += 1
                 rows.append((case["id"], "PROSE-JSON", content[:56].replace("\n", " "), "", ""))
             else:
+                text += 1
                 rows.append((case["id"], "TEXT", content[:56].replace("\n", " "), "", ""))
 
     elapsed = time.monotonic() - t0
@@ -158,7 +160,8 @@ def main():
     print(f"valid tool_calls   {pct(valid)}")
     print(f"correct tool       {pct(correct)}")
     print(f"correct arguments  {pct(args_ok)}")
-    print(f"text / JSON-in-prose {pct(prose)}")
+    print(f"text               {pct(text)}")
+    print(f"JSON-in-prose      {pct(prose)}")
     if errors:
         print(f"transport errors   {errors}/{n}")
     print(f"wall clock         {elapsed:.1f}s for {n} requests")

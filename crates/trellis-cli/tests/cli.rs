@@ -34,8 +34,12 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
+/// `git <args>` in `root` through `trellis_vcs::command()`, as trellis runs
+/// it, panicking unless it exits 0; returns what git printed. A fixture or
+/// read-back that failed silently left a test asserting on a repository
+/// that was not the one it built (#240).
+fn git(root: &Path, args: &[&str]) -> String {
+    let out = trellis_vcs::command()
         .args(args)
         .current_dir(root)
         .output()
@@ -45,6 +49,7 @@ fn git(root: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// A git repository holding a two-module Python package.
@@ -54,37 +59,30 @@ fn git(root: &Path, args: &[&str]) {
 /// `mystery()` takes an untyped parameter so there is a real unbound call for
 /// the coverage report to be honest about.
 fn repo(name: &str) -> PathBuf {
+    repo_with_doubt(name, CALLER_ONE_REASON, None)
+}
+
+/// `repo()`'s `caller.py`: one cross-file call and one unbound call.
+const CALLER_ONE_REASON: &str = concat!(
+    "from app.core import greet\n\n",
+    "def welcome(who):\n",
+    "    return greet(who)\n\n",
+    "def mystery(thing):\n",
+    "    return thing.run()\n",
+);
+
+/// An empty git repository with the identity and line endings every fixture
+/// here needs, so no fixture can drift from the others.
+fn empty_repo(name: &str) -> PathBuf {
     let d = scratch(name);
     git(&d, &["init", "-q"]);
     git(&d, &["config", "user.email", "t@example.invalid"]);
     git(&d, &["config", "user.name", "t"]);
-    // Every other git fixture in this workspace pins this and these two did
-    // not — found by the Pass 6 duplication survey, which is the argument
-    // for that pass in one line. Without it git normalises line endings on
-    // `add`, and `a_missing_scripted_model_fails_before_anything_is_touched`
-    // asserts an empty `status --porcelain` on files it wrote itself.
+    // Two fixtures once lacked this, found by the Pass 6 duplication survey.
+    // Without it git normalises line endings on `add`, and
+    // `a_missing_scripted_model_fails_before_anything_is_touched` asserts an
+    // empty `status --porcelain` on files it wrote itself.
     git(&d, &["config", "core.autocrlf", "false"]);
-
-    std::fs::create_dir_all(d.join("app")).unwrap();
-    std::fs::write(d.join("app/__init__.py"), "").unwrap();
-    std::fs::write(
-        d.join("app/core.py"),
-        "def greet(name):\n    return f\"hello {name}\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        d.join("app/caller.py"),
-        concat!(
-            "from app.core import greet\n\n",
-            "def welcome(who):\n",
-            "    return greet(who)\n\n",
-            "def mystery(thing):\n",
-            "    return thing.run()\n",
-        ),
-    )
-    .unwrap();
-    git(&d, &["add", "-A"]);
-    git(&d, &["commit", "-qm", "fixture"]);
     d
 }
 
@@ -255,6 +253,9 @@ fn radius_ships_reach_and_doubt_as_two_facts() {
         s.contains("call site") || s.contains("caller"),
         "it must report reach: {s}"
     );
+    // `repo()`'s `thing.run()` is the doubt.
+    assert!(s.contains("bound to nothing"), "it must report doubt: {s}");
+    assert!(!s.contains('%'), "and never a ratio of the two: {s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -401,13 +402,7 @@ fn a_missing_scripted_model_fails_before_anything_is_touched() {
     );
     assert!(!out.status.success(), "{}", combined(&out));
     assert!(
-        std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&d)
-            .output()
-            .unwrap()
-            .stdout
-            .is_empty(),
+        porcelain(&d).is_empty(),
         "a failed start must leave the tree exactly as it was"
     );
     let _ = std::fs::remove_dir_all(&d);
@@ -599,8 +594,9 @@ fn why_reports_absence_rather_than_inventing_a_reason() {
     let d = repo("why-empty");
     let out = run(&d, &["why", "app.core.greet"]);
     let s = combined(&out);
+    assert!(out.status.success(), "{s}");
     assert!(
-        s.contains("no ") || s.contains("No ") || s.contains("nothing") || s.contains("Nothing"),
+        s.contains("no run in the trail mentions `app.core.greet`"),
         "it must report having nothing to say: {s}"
     );
     let _ = std::fs::remove_dir_all(&d);
@@ -633,11 +629,13 @@ fn doctor_reports_a_missing_test_suite_as_the_grounding_problem_it_is() {
     // The fixture has no test suite. Without one there is nothing for a
     // verdict to be grounded on, which makes it a finding rather than a
     // detail — `doctor` exists so that lands before a run does.
-    let d = repo("doctor-notests");
+    // A runner configured by name and certainly absent, so the missing
+    // branch is the one taken whether or not this machine has pytest.
+    let d = repo_with_checks("doctor-notests", "git", "trellis-no-such-test-runner");
     let s = stdout(&run(&d, &["doctor"]));
     assert!(
-        s.contains("tests:"),
-        "doctor must report on the test suite: {s}"
+        s.contains("tests:      NOT FOUND — the grounding contract has nothing to ground on"),
+        "doctor must report the missing suite as a grounding problem: {s}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -803,13 +801,8 @@ fn an_unreachable_runtime_costs_nothing() {
                 .unwrap_or(true),
         "a run that never started must not write a trail"
     );
-    let status = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&d)
-        .output()
-        .unwrap();
     assert!(
-        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        porcelain(&d).trim().is_empty(),
         "the worktree must be untouched"
     );
 
@@ -888,11 +881,7 @@ fn a_failed_check_says_why_it_failed() {
 /// the caller body being an argument rather than three near-identical
 /// fixtures differing by two lines.
 fn repo_with_doubt(name: &str, caller: &str, other: Option<&str>) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -951,11 +940,7 @@ fn repo_with_doubt_spread(name: &str) -> PathBuf {
 /// deliberately: this fixture is about the file list, and a second reason
 /// would move the table above it as well.
 fn repo_with_doubt_in_n_files(name: &str, n: usize) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -988,11 +973,7 @@ fn repo_with_doubt_in_n_files(name: &str, n: usize) -> PathBuf {
 /// names an unbound name, or passes a callable, so there is nothing for the
 /// resolver to miss.
 fn repo_without_doubt(name: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -1299,11 +1280,7 @@ fn radius_reason_table_lines_up() {
 /// something different on every machine. That mistake is already recorded
 /// against an earlier version of the check tests.
 fn repo_with_checks(name: &str, typecheck: &str, tests: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
     std::fs::write(
         d.join(".trellis/config.toml"),
@@ -1435,11 +1412,7 @@ fn init_calls_a_committed_worktree_clean() {
 /// receiver resolves to `Candidates` over both (ADR 0012: a declared type is
 /// an upper bound, not an identity).
 fn repo_with_resolved_and_ambiguous_reach(name: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -1572,11 +1545,7 @@ fn the_trail_sums_reach_across_queries_and_takes_the_widest_doubt() {
 /// and that is fine here: the trail is written after the rollback and
 /// survives it, which is the property `why` depends on.
 fn repo_with_an_edit_script(name: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::write(d.join("app/__init__.py"), "").unwrap();
@@ -1910,8 +1879,8 @@ fn an_unknown_command_is_refused_rather_than_run_as_a_task() {
 ///
 /// Mirrored rather than imported — `tests/cli.rs` is a separate crate and
 /// `DIFF_LINES` is private — and asserted against the shipped behaviour by
-/// the two tests below sitting either side of it. If it moves, the boundary
-/// test fails rather than silently testing nothing.
+/// the boundary test, which checks both `DIFF_LINES` and `DIFF_LINES + 1`. If
+/// it moves either way, that test fails rather than silently testing nothing.
 const DIFF_LINES: usize = 60;
 
 #[test]
@@ -2090,6 +2059,16 @@ fn diff_offers_no_remainder_at_exactly_the_number_of_lines_it_shows() {
         !s.contains("more lines"),
         "the diff was exactly the length shown, so there is no remainder:\n{s}"
     );
+
+    // One line past it must offer a remainder, or a raised limit would leave
+    // the assertion above passing at a length that is no longer the boundary.
+    write_body(target as usize + 1);
+    assert_eq!(diff_lines(), DIFF_LINES + 1);
+    let s = stdout(&session_with(&d, "/diff\n/exit\n"));
+    assert!(
+        s.contains("more lines"),
+        "one line past the limit leaves one unshown:\n{s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -2260,12 +2239,7 @@ fn repo_with_vault(name: &str, config: &str) -> (PathBuf, String) {
 }
 
 fn porcelain(d: &Path) -> String {
-    let out = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(d)
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout).to_string()
+    git(d, &["status", "--porcelain"])
 }
 
 #[test]
@@ -2417,11 +2391,7 @@ fn a_failing_check_prints_what_the_checker_wrote_on_both_streams() {
 /// post-run reporting to exist at all, and a fixture depending on the
 /// developer's toolchain would decide that per machine.
 fn repo_that_converges(name: &str, core: &str) -> PathBuf {
-    let d = scratch(name);
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
+    let d = empty_repo(name);
 
     std::fs::create_dir_all(d.join("app")).unwrap();
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
@@ -2736,16 +2706,8 @@ fn approve_mode_without_a_terminal_refuses_before_anything_is_touched() {
         !d.join(".trellis/runs").exists(),
         "no trail for a run that never began"
     );
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&d)
-        .output()
-        .unwrap();
-    assert!(
-        status.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&status.stdout)
-    );
+    let status = porcelain(&d);
+    assert!(status.is_empty(), "{status}");
 
     // And `--auto` is the way out it names.
     let out = run(&d, &["run", "--auto", "--model", &spec, "change greet"]);
@@ -2890,12 +2852,8 @@ fn ignored_model_fixture_with(
     typecheck: &str,
     tests: &str,
 ) -> (PathBuf, impl Fn(&[&str]) -> Output) {
-    let d = scratch(name);
+    let d = empty_repo(name);
     let home = scratch(&format!("{name}-home"));
-    git(&d, &["init", "-q"]);
-    git(&d, &["config", "user.email", "t@example.invalid"]);
-    git(&d, &["config", "user.name", "t"]);
-    git(&d, &["config", "core.autocrlf", "false"]);
     let (shell, flag) = if cfg!(windows) {
         ("cmd", "/C")
     } else {
@@ -3001,16 +2959,7 @@ fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
     // the run converged with nothing to review and the commit stayed on
     // the user's branch, past any rollback.
     let (d, run) = ignored_model_fixture("model-commit");
-    let head = String::from_utf8_lossy(
-        &Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&d)
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .trim()
-    .to_string();
+    let head = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
     // By absolute path: `bash` runs in a throwaway clone (ADR 0032), and a
     // command that names the repository is the writer this guard is still for.
     let p = d.display();
@@ -3041,13 +2990,9 @@ fn a_model_run_whose_bash_commits_does_not_converge_and_the_commit_is_undone() {
     assert!(said.contains("NOT CONVERGED"), "{said}");
     assert!(said.contains("HEAD moved"), "{said}");
     assert!(!d.join("b.py").exists(), "{said}");
-    let parent = Command::new("git")
-        .args(["rev-parse", "HEAD~1"])
-        .current_dir(&d)
-        .output()
-        .unwrap();
+    let parent = git(&d, &["rev-parse", "HEAD~1"]);
     assert_eq!(
-        String::from_utf8_lossy(&parent.stdout).trim(),
+        parent.trim(),
         head,
         "only the trail's commit sits on the snapshot:\n{said}"
     );
@@ -3103,15 +3048,26 @@ fn script_beside(d: &Path, name: &str, steps: serde_json::Value) -> String {
 }
 
 /// `core.fsmonitor` as the repository's config has it, if set.
+///
+/// `--local`, because `trellis_vcs::command()` passes `-c core.fsmonitor=`
+/// and `config --get` without a scope reports that command-line value, so
+/// every call would read `Some("")` and the `None` assertions could not
+/// pass. Exit 1 is git's "not set"; any other failure is the fixture's.
 fn fsmonitor(d: &Path) -> Option<String> {
-    let o = Command::new("git")
-        .args(["config", "--get", "core.fsmonitor"])
+    let o = trellis_vcs::command()
+        .args(["config", "--local", "--get", "core.fsmonitor"])
         .current_dir(d)
         .output()
         .unwrap();
-    o.status
-        .success()
-        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    match o.status.code() {
+        Some(0) => Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Some(1) => None,
+        _ => panic!(
+            "git config --local --get core.fsmonitor failed ({}): {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr)
+        ),
+    }
 }
 
 #[test]
@@ -3210,6 +3166,10 @@ fn a_core_fsmonitor_bash_sets_is_never_run_by_trellis_during_or_after_the_run() 
     // back in place runs it, so the assertion above is about trellis.
     git(&d, &["config", "core.fsmonitor", &slash(&fsm)]);
     std::fs::write(d.join("a.py"), "x = 3\n").unwrap();
+    // Bare `git` on purpose, the one fixture spawn that is: the control
+    // needs git without trellis_vcs's overrides, which would switch the
+    // fsmonitor off. scripts/checks/no-bare-git-in-cli-tests.sh allows
+    // exactly this one.
     let _ = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(&d)
@@ -3271,4 +3231,96 @@ fn a_check_s_own_write_to_an_ignored_file_does_not_make_a_rollback_unrestored() 
     assert!(said.contains("NOT CONVERGED"), "{said}");
     assert!(!said.contains("NOT put back"), "{said}");
     assert_eq!(out.status.code(), Some(1), "{said}");
+}
+
+#[test]
+fn subcommand_case_does_not_matter_for_its_name() {
+    // ADR 0050 section 4: "TRELLIS RUN" was refused as an unknown subcommand
+    // on a first run, though nothing about it was ambiguous.
+    let help = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert_eq!(help(&["RUN", "--help"]), help(&["run", "--help"]));
+    assert_eq!(help(&["Doctor", "--help"]), help(&["doctor", "--help"]));
+}
+
+#[test]
+fn subcommand_case_leaves_a_task_text_alone() {
+    // Only the subcommand's name is lowered: a task in capitals is the
+    // user's text. The run writes a trail, and the trail's task is read
+    // back, because no refusal message echoes the task to compare against.
+    let d = repo("case-task");
+    let script = scratch("case-task-script");
+    let out = run(
+        &d,
+        &["RUN", "--model", &script_that_stops(&script), "FIX THE BUG"],
+    );
+    let said = combined(&out);
+    assert!(!said.contains("unrecognized subcommand"), "{said}");
+    let trail: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(newest_trail(&d)).unwrap()).unwrap();
+    assert_eq!(trail["task"], "FIX THE BUG", "{said}");
+    for p in [&d, &script] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+fn trellis_out(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn interface_flag_desktop_and_web_say_they_are_not_built() {
+    // ADR 0050 section 1: the flags parse, and until their tickets land each
+    // says so instead of appearing to start something.
+    for (flag, what) in [("--dsk", "desktop"), ("--web", "web view")] {
+        let out = trellis_out(&[flag]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{flag} succeeded");
+        assert!(
+            err.contains(&format!("the {what} is not built yet")),
+            "{flag}: {err}"
+        );
+    }
+}
+
+#[test]
+fn interface_flag_two_together_are_refused_naming_both() {
+    for (a, b) in [("--tui", "--dsk"), ("--tui", "--web"), ("--dsk", "--web")] {
+        let out = trellis_out(&[a, b]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{a} {b} succeeded");
+        assert!(err.contains(a) && err.contains(b), "{a} {b}: {err}");
+    }
+}
+
+#[test]
+fn interface_flag_with_a_subcommand_is_refused_naming_both() {
+    let out = trellis_out(&["--tui", "run", "x"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("`--tui`") && err.contains("`run`"), "{err}");
+    // And the help leads with how to start.
+    let help = String::from_utf8_lossy(&trellis_out(&["--help"]).stdout).into_owned();
+    let start = help.find("Start:").expect("a Start section");
+    let commands = help.find("Commands:").expect("a Commands section");
+    assert!(start < commands, "{help}");
+    for flag in ["--tui", "--dsk", "--web"] {
+        assert!(
+            help[start..commands].contains(flag),
+            "{flag} missing from Start: {help}"
+        );
+    }
 }

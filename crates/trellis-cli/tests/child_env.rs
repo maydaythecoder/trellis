@@ -35,7 +35,7 @@ fn keys() -> &'static [(&'static str, &'static str)] {
         [
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
-            "TRELLIS_TEST_REPO_KEY",
+            "TRELLIS_TEST_SECOND_USER_KEY",
             "TRELLIS_TEST_USER_KEY",
         ]
         .into_iter()
@@ -59,7 +59,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = trellis_vcs::command()
         .args(args)
         .current_dir(root)
         .output()
@@ -101,7 +101,8 @@ fn dump_line(dump: &Path) -> String {
 
 /// A committed repository with `config` as `.trellis/config.toml` and
 /// `extra` files alongside. Its user configuration directory is `home`,
-/// holding a provider whose `key_env` is `TRELLIS_TEST_USER_KEY`.
+/// holding two providers whose `key_env`s are `TRELLIS_TEST_USER_KEY` and
+/// `TRELLIS_TEST_SECOND_USER_KEY`.
 struct Fixture {
     repo: PathBuf,
     home: PathBuf,
@@ -135,7 +136,7 @@ fn fixture(name: &str, config: &str, extra: &[(&str, String)]) -> Fixture {
         "[[providers]]\nname = \"user\"\nprotocol = \"anthropic\"\n\
          base_url = \"https://user.invalid\"\nkey_env = \"TRELLIS_TEST_USER_KEY\"\n\
          [[providers]]\nname = \"second\"\nprotocol = \"openai\"\n\
-         base_url = \"https://second.invalid\"\nkey_env = \"TRELLIS_TEST_REPO_KEY\"\n",
+         base_url = \"https://second.invalid\"\nkey_env = \"TRELLIS_TEST_SECOND_USER_KEY\"\n",
     )
     .unwrap();
     Fixture { repo, home, dumps }
@@ -281,7 +282,7 @@ fn checks_bash_custom_tools_and_hooks_inherit_no_key() {
 
 #[test]
 fn a_process_agent_inherits_no_key_unless_its_profile_passes_that_one() {
-    let dumps = scratch("proc-dumps");
+    let dumps = scratch("proc-out");
     let plain = dumps.join("plain.txt");
     let keyed = dumps.join("keyed.txt");
     let f = fixture(
@@ -346,7 +347,7 @@ fn service_gets_the_scrubbed_environment_and_not_its_profile_s_pass_env() {
     // was handed the one `pass_env` gives its profile's process agent, would
     // put it in that log. The process agent waits a few seconds so the
     // service has written its dump before the task ends and it is killed.
-    let dumps = scratch("svc-dumps");
+    let dumps = scratch("svc-out");
     let svc = dumps.join("service.txt");
     let wait = if cfg!(windows) {
         "['cmd', '/C', 'ping -n 4 127.0.0.1 >NUL']"

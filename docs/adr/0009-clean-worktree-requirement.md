@@ -116,7 +116,9 @@ rollback. The brief blesses this as an acceptable shortcut; it is chosen
 deliberately here. `reset --hard` and `clean -fd` have exact, well-understood
 semantics as commands, and this is a poor place to be learning a binding's edge
 cases. `git2` remains for worktree management in multi-agent mode, where the
-library genuinely helps.
+library genuinely helps. *Amended 2026-10-05 (#416):* `git2` was removed
+from the build (6b5db2a, ADR 0020 §1); partition worktrees also shell out,
+to `git worktree add` through `trellis_vcs` (ADR 0037).
 
 ## What changes our mind
 

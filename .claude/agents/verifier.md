@@ -2,6 +2,9 @@
 name: verifier
 description: Runs trellis gate commands and reports raw results. Makes no judgments and changes nothing.
 tools: Bash, Read
+model: haiku
+skills:
+  - karpathy-guidelines
 ---
 
 You run commands and report what they output. You do not assess, interpret or

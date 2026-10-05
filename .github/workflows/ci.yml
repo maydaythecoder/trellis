@@ -6,11 +6,18 @@ name: CI
 # is the part that makes it evidence.
 
 on:
-  # A PR branch runs once per push, through `pull_request`. Pushing on every
-  # branch as well ran the whole suite twice for the same commit (#156).
+  # Each commit runs once. Pushing on every branch as well as on every pull
+  # request ran the whole suite twice for the same commit (#156); listing
+  # `audit` and every PR target ran it four times (#381). `audit` is left out
+  # because promotion fast-forwards `dev` to the commit `audit` holds, so that
+  # commit runs when it reaches `dev`; `v0.1-resolver` is frozen (ADR 0051).
+  # A pull request runs into `dev` and `main`: those are the two promotions on
+  # the way to `main` (`audit` into `dev`, `dev` into `main`), and each is
+  # checked here before it merges (#426).
   push:
-    branches: ["v0.1-resolver"]
+    branches: ["main", "dev"]
   pull_request:
+    branches: ["main", "dev"]
 
 # A newer push to the same ref makes the older run's result moot; cancelling
 # it saves the minutes, which ran out on 2026-09-28 (#156).
@@ -45,6 +52,12 @@ jobs:
     # Self-hosted when the repository variables name runners (JSON label
     # lists, e.g. ["self-hosted","Windows"]); GitHub-hosted when unset (#157).
     runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    # Every job names a ceiling. Without one a job on an offline or stuck
+    # runner waits GitHub's default 360 minutes, on a plan whose minutes ran
+    # out once already (#156, #381). Test jobs get 45, the supply-chain job
+    # 30 (it compiles two pinned tools on a cold cache), and
+    # scripts/checks/ci-timeouts.sh fails on a job that names none.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -75,6 +88,45 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
 
+  # desktop/ is its own Cargo workspace with its own lock (ADR 0048), so
+  # nothing in `test` builds, lints or tests it (#384). Linux only: it
+  # depends on no trellis crate and spawns the binary, so the platform split
+  # `test` covers is not what this job is for.
+  desktop:
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      # GitHub-hosted only: on a self-hosted runner its cache is remote and its
+      # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
+      # Keyed on desktop/'s own target directory and lock.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.environment == 'github-hosted'
+        with:
+          workspaces: desktop
+
+      - name: Format (desktop/)
+        run: cargo fmt --check --manifest-path desktop/Cargo.toml
+
+      - name: Clippy (desktop/)
+        run: cargo clippy --locked --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
+
+      # The desktop's tests spawn `target/debug/trellis` (desktop/src/child.rs),
+      # so it is built first; without it the test fails asking for it (#426).
+      - name: Build trellis (the desktop's tests spawn it)
+        run: cargo build --locked -p trellis-cli
+
+      - name: Test (desktop/)
+        run: cargo test --locked --manifest-path desktop/Cargo.toml
+
   # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
   # every other job builds with it on. This one turns it off, so a change
   # that only compiles with TLS present fails here instead of in the hands
@@ -85,6 +137,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -113,6 +166,7 @@ jobs:
   # than appearing as one line in a list of 100 passing tests.
   rollback-gate:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -157,6 +211,7 @@ jobs:
   # scripted model or is refused before one is called.
   guards:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -222,10 +277,14 @@ jobs:
   # advisory reads as a supply-chain failure, not as a broken build.
   supply-chain:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     steps:
+      # Full history: gitleaks scans every commit between the base and HEAD,
+      # and a depth-1 clone has neither the base nor the commits in between.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
         with:
           toolchain: stable
@@ -276,6 +335,36 @@ jobs:
           scripts/checks/workflows-locked.sh --self-test
           scripts/checks/workflows-locked.sh
 
+      # The scan G5 runs (#236): gitleaks over every commit this change adds,
+      # which the pre-commit hook reaches only on commits made through it.
+      # The release is pinned by version and by the SHA-256 recorded in its
+      # published gitleaks_8.21.2_checksums.txt, checked before the binary
+      # runs; a different file fails here. It is unpacked under RUNNER_TEMP
+      # and put first on PATH for this step only: the runners are
+      # self-hosted, so nothing is left in the host's own directories and a
+      # gitleaks the host already has does not stand in for the pinned one.
+      # The self-test plants a token built at run time on a branch of a
+      # throwaway repository and shows the scan refuses it. The base is the
+      # PR's target branch, or for a push the commit the branch was at
+      # before; an unresolvable base (an all-zero or unfetched `before`)
+      # fails the step rather than scanning nothing.
+      - name: gitleaks over the change's commits (pinned, checksum-verified)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$dir"
+          tgz="$dir/gitleaks_8.21.2_linux_x64.tar.gz"
+          curl -sSfL -o "$tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" -C "$dir" gitleaks
+          export PATH="$dir:$PATH"
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="$BEFORE"; fi
+          scripts/checks/gitleaks-range.sh --self-test
+          scripts/checks/gitleaks-range.sh "$base"
+
       # Its dependency set differs from the root's (libfuzzer-sys and what it
       # pulls in), so both audits run over it too. deny.toml at the root
       # applies: cargo deny looks upward from the manifest for its policy.
@@ -285,10 +374,20 @@ jobs:
       - name: RustSec advisories (fuzz/)
         run: cargo audit --file fuzz/Cargo.lock
 
+      # desktop/ is a third workspace with its own lock (ADR 0048), so the
+      # root's audits never read what it depends on (#384). As for fuzz/,
+      # cargo deny finds the root deny.toml by looking upward.
+      - name: Licences, bans, sources, advisories (desktop/)
+        run: cargo deny --locked --manifest-path desktop/Cargo.toml check
+
+      - name: RustSec advisories (desktop/)
+        run: cargo audit --file desktop/Cargo.lock
+
   # The graph's two structural guarantees, likewise named so a regression is
   # legible without reading the log.
   index-invariants:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -326,6 +425,7 @@ jobs:
   # the documents.
   precision-gate:
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

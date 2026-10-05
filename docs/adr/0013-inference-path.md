@@ -170,6 +170,11 @@ guided decoding.
 
 ## Note on the model floor (S7)
 
+*Superseded (#416, 2026-10-05):* the weights landed (the 2026-09-20
+revisit above), and floor runs are committed under
+`docs/bench/floor-qwen2.5-*` (cited by ADR 0033 §1 and ADR 0043). The note
+below is as written on 2026-09-19.
+
 This ADR unblocks the *decision*; it does not by itself produce the
 *measurement*.
 

@@ -242,7 +242,8 @@ fn ready_fails_needs_adr() {
 
 #[test]
 fn ready_reports_an_abstention_by_name_and_is_not_ready() {
-    // `scripts/` is under no path in the area table (#194), so risk cannot
+    // `fuzz/` is under no path in the area table (`scripts/` was, until
+    // #194 mapped it to area:build), so risk cannot
     // be told and `needs ADR` is undecidable. Treating
     // that as a pass would call the ticket ready on a guess; treating it as
     // a failure would name a failure nobody found. It is neither.
@@ -250,7 +251,7 @@ fn ready_reports_an_abstention_by_name_and_is_not_ready() {
         set_body(v, |b| {
             b.replace(
                 "**Files:** crates/trellis-cli/src/tui_run.rs",
-                "**Files:** scripts/tickets/next.sh",
+                "**Files:** fuzz/fuzz_targets/http_response.rs",
             )
         })
     });
@@ -259,7 +260,7 @@ fn ready_reports_an_abstention_by_name_and_is_not_ready() {
     let Abstention { check, reason } = &r.abstained[0];
     assert_eq!(*check, "needs ADR");
     assert!(
-        reason.contains("`scripts/tickets/next.sh` is under no path in the area table"),
+        reason.contains("`fuzz/fuzz_targets/http_response.rs` is under no path in the area table"),
         "{reason}"
     );
     assert!(!r.is_ready());

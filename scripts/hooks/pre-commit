@@ -88,10 +88,12 @@ if [ -n "$wf" ]; then
       say "$f uses pull_request_target (runs with secrets and a write token)"; fail=1
     fi
     # ${{ github.event.* }} inside a run: block is shell injection; it must
-    # reach the shell through env: instead.
+    # reach the shell through env: instead. run: is either a key line or the
+    # step's list item (`- run: |`); the block is what sits deeper than `run`
+    # itself, so a sibling key of a list-item step ends it (#423).
     inj=$(awk '
-      /^[[:space:]]*run:[[:space:]]*[|>]?[[:space:]]*$/ { inrun=1; ind=match($0,/[^ ]/); next }
-      /^[[:space:]]*run:/ { if ($0 ~ /\$\{\{[^}]*github\.event/) print FILENAME":"NR; next }
+      /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*[|>]?[[:space:]]*$/ { inrun=1; ind=match($0,/run:/); next }
+      /^[[:space:]]*(-[[:space:]]+)?run:/ { if ($0 ~ /\$\{\{[^}]*github\.event/) print FILENAME":"NR; next }
       inrun { cur=match($0,/[^ ]/); if (cur>0 && cur<=ind) inrun=0; else if ($0 ~ /\$\{\{[^}]*github\.event/) print FILENAME":"NR }
     ' "$f")
     if [ -n "$inj" ]; then

@@ -20,8 +20,8 @@
 //! resolution ~88 ms. Skipping 450 reparses to redo an 88 ms resolve is a
 //! real saving on a cheap operation. When resolution stops being cheap — S9
 //! puts that somewhere above 300k lines — the stable-id design is the next
-//! thing to build, and `BENCHMARK_AND_EVAL.md` records the number that should
-//! trigger it.
+//! thing to build, and `docs/01-v0.1-measure.md` records the number that
+//! should trigger it.
 
 use crate::graph::Index;
 use crate::parse::FileFacts;

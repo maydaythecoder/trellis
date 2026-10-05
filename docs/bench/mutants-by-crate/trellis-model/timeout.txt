@@ -1,7 +1,11 @@
-crates/trellis-model/src/runtime.rs:249:9: replace RuntimeClient::probe_constraint -> Result<bool, RuntimeError> with Ok(true)
-crates/trellis-model/src/runtime.rs:249:9: replace RuntimeClient::probe_constraint -> Result<bool, RuntimeError> with Ok(false)
-crates/trellis-model/src/runtime.rs:283:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(None)
-crates/trellis-model/src/runtime.rs:300:9: replace RuntimeClient::get -> Result<String, RuntimeError> with Ok(String::new())
-crates/trellis-model/src/runtime.rs:300:9: replace RuntimeClient::get -> Result<String, RuntimeError> with Ok("xyzzy".into())
-crates/trellis-model/src/runtime.rs:323:9: replace RuntimeClient::request -> Result<String, RuntimeError> with Ok(String::new())
-crates/trellis-model/src/runtime.rs:323:9: replace RuntimeClient::request -> Result<String, RuntimeError> with Ok("xyzzy".into())
+crates/trellis-model/src/hosted.rs:836:55: replace match guard attempt < MAX_ATTEMPTS with true in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:865:21: replace += with *= in HostedClient::send_via
+crates/trellis-model/src/pull.rs:81:5: replace already_here -> Result<Option<PathBuf>, PullError> with Ok(Some(Default::default()))
+crates/trellis-model/src/pull.rs:82:21: replace == with != in already_here
+crates/trellis-model/src/pull.rs:119:33: replace < with == in pull
+crates/trellis-model/src/pull.rs:119:33: replace < with > in pull
+crates/trellis-model/src/pull.rs:173:5: replace len -> Result<Option<u64>, PullError> with Ok(Some(0))
+crates/trellis-model/src/pull.rs:173:5: replace len -> Result<Option<u64>, PullError> with Ok(Some(1))
+crates/trellis-model/src/pull.rs:175:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in len
+crates/trellis-model/src/pull.rs:175:28: replace == with != in len
+crates/trellis-model/src/transport.rs:731:22: replace += with -= in chunked

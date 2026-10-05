@@ -56,21 +56,37 @@ fn triage_prints_one_line_per_dimension_with_the_rule_or_the_abstention() {
 }
 
 #[test]
-fn triage_abstains_on_a_crate_the_area_table_does_not_name() {
-    // #201 names only crates/trellis-loop, which §5's table leaves out
-    // (the owner's open question #194). A guessed `area:` there would be
-    // the "wrong label that looks authoritative" §1 forbids, in both forms.
+fn triage_maps_a_crate_the_standard_omits_onto_its_owners_area() {
+    // #201 names only crates/trellis-loop, which §5's table leaves out and
+    // the owner mapped to area:runtime (#194).
     let (r, _) = triage_recorded(201);
+    let json: serde_json::Value = serde_json::from_str(&r.json()).unwrap();
+    assert_eq!(json["area"]["outcome"], "decided", "{}", r.text());
+    assert_eq!(json["area"]["value"], "area:runtime");
+}
+
+#[test]
+fn triage_abstains_on_a_path_the_area_table_does_not_name() {
+    // A path in no row (fuzz/) must abstain rather than take a guessed
+    // `area:`, the "wrong label that looks authoritative" §1 forbids, and
+    // say so in both forms. #201's recording with its one file moved there.
+    let r = triage_with(201, |m| {
+        recorded(m).map(|b| {
+            b.replace(
+                "crates/trellis-loop/src/trust.rs",
+                "fuzz/fuzz_targets/trust.rs",
+            )
+        })
+    })
+    .unwrap_or_else(|e| panic!("triage #201: {e}"));
     let Line::Abstained { reason, .. } = &r.area else {
-        panic!("area decided on an unmapped crate: {:?}", r.area);
+        panic!("area decided on an unmapped path: {:?}", r.area);
     };
-    assert!(
-        reason.contains("`crates/trellis-loop/src/trust.rs` is under no path in the area table")
-    );
+    assert!(reason.contains("`fuzz/fuzz_targets/trust.rs` is under no path in the area table"));
     assert!(
         r.text()
             .lines()
-            .any(|l| l.starts_with("area    abstained: `crates/trellis-loop"))
+            .any(|l| l.starts_with("area    abstained: `fuzz/"))
     );
     let json: serde_json::Value = serde_json::from_str(&r.json()).unwrap();
     assert_eq!(json["area"]["outcome"], "abstained");

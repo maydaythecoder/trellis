@@ -84,7 +84,10 @@ for g in "${gates[@]}"; do
 done
 
 if [ -n "$n" ] && [ -z "$only" ]; then
-  labels=$(gh issue view "$n" --json labels -q '[.labels[].name] | join(" ")')
+  # Without set -e an unreadable label list is empty, matches nothing, and
+  # would let a risk:high ticket pass as ALL GATES PASSED; fail closed instead.
+  labels=$(gh issue view "$n" --json labels -q '[.labels[].name] | join(" ")') \
+    || { echo "GATE: G7"; echo "FAIL: cannot read #$n's labels; whether G7 applies is unknown"; echo "STOPPED at G7"; exit 1; }
   case " $labels " in *" risk:high "*|*" surface:public "*)
     echo "GATE: G7"; echo "HUMAN APPROVAL REQUIRED: #$n is risk:high or surface:public"; exit 3 ;;
   esac

@@ -70,6 +70,7 @@ trellis/
     ├── trellis-vcs/           # git snapshot and rollback
     ├── trellis-vault/         # Apex vault → one note's context; must not depend on trellis-model
     ├── trellis-queue/         # local task queue + heartbeat loop, file-backed in the git dir
+    ├── trellis-tickets/       # ticketing label rules + separate binary; depends only on trellis-core (ADR 0040)
     ├── trellis-cli/           # binary
     └── tui-demo/              # what `trellis tui` runs; the one TUI (Q-19)
 ```
@@ -90,24 +91,24 @@ Any language but Python. Repos without a test suite. Cross-repo analysis. Any su
 
 ## Soft spot register
 
-Soft spots are numbered S1–S19 and referenced across all version docs. The full register with severities and patches lives in `docs/RISK_REGISTER.md`, written during v0.1. Each version doc lists the ones it touches.
+Soft spots are numbered S1–S21 and referenced across all version docs. The full register with severities and patches lives in `docs/RISK_REGISTER.md`, written during v0.1. Each version doc lists the ones it touches.
 
 ---
 
-## Where this build actually is (2026-09-19)
+## Where this build actually is
 
 This section is not part of the specification above. It exists so a reader
 does not have to reconstruct the state from git history.
 
-| Milestone | State |
-|---|---|
-| v0.1 | **Substantially complete.** Index built, benchmark pinned, recall measured twice. Model floor **not** measured — it needs inference, which is v0.2 work. |
-| v0.2 | Not started. Crate skeletons, structural contracts and the partitioning rules exist; the loop does not. |
-| v0.3 | Trail format and the untrusted read-back type exist. Context import and resume do not. |
-| v1.0 | Two of five gate conditions have evidence. See `04-v1.0-harness.md`. |
-| v1.1 | Partition planner and its invariant property test exist, N=1 only. |
+`docs/STATUS.md` holds the current state, audited gate line by gate line
+against the code; its summary: v0.1 is complete, v0.2 is six met, one
+descoped by ADR 0013 and three partial or unmet, and v0.3 is eight of nine.
 
-Everything is on branch `v0.1-resolver`, not `master`.
+Branches follow ADR 0051: `main` is the launch branch, moved only when the
+owner merges a pull request from `dev`; `dev` is the trunk that ticket and
+feature branches are cut from; `audit` is the integration branch they merge
+into before it is promoted into `dev`. The legacy branches `v0.1-resolver` and
+`drain` are frozen.
 
 The one thing a reader should carry into every other document: **recall was
 measured at 47.8%, which fired the pre-registered S16 pivot trigger; a bounded

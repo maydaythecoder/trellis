@@ -1,29 +1,390 @@
-crates/trellis-model/src/catalog.rs:109:5: replace find -> Option<&'static CatalogEntry> with None
-crates/trellis-model/src/catalog.rs:109:36: replace == with != in find
-crates/trellis-model/src/catalog.rs:121:9: replace CatalogEntry::url -> String with String::new()
-crates/trellis-model/src/catalog.rs:121:9: replace CatalogEntry::url -> String with "xyzzy".into()
-crates/trellis-model/src/runtime.rs:61:9: replace Dialect::parse -> Option<Self> with None
-crates/trellis-model/src/runtime.rs:62:13: delete match arm "llamacpp" | "llama.cpp" | "llama_cpp" in Dialect::parse
-crates/trellis-model/src/runtime.rs:63:13: delete match arm "vllm" | "openai" in Dialect::parse
-crates/trellis-model/src/runtime.rs:64:13: delete match arm "sglang" in Dialect::parse
-crates/trellis-model/src/runtime.rs:72:9: replace Dialect::name -> &'static str with ""
-crates/trellis-model/src/runtime.rs:72:9: replace Dialect::name -> &'static str with "xyzzy"
-crates/trellis-model/src/runtime.rs:80:9: replace Dialect::path -> &'static str with ""
-crates/trellis-model/src/runtime.rs:80:9: replace Dialect::path -> &'static str with "xyzzy"
-crates/trellis-model/src/runtime.rs:154:9: replace RuntimeClient::body -> Value with Default::default()
-crates/trellis-model/src/runtime.rs:283:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(Some(0))
-crates/trellis-model/src/runtime.rs:283:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(Some(1))
-crates/trellis-model/src/runtime.rs:309:9: replace RuntimeClient::post -> Result<String, RuntimeError> with Ok(String::new())
-crates/trellis-model/src/runtime.rs:309:9: replace RuntimeClient::post -> Result<String, RuntimeError> with Ok("xyzzy".into())
-crates/trellis-model/src/runtime.rs:355:12: delete ! in RuntimeClient::request
-crates/trellis-model/src/spec.rs:83:9: replace <impl std::fmt::Display for ModelSpec>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-model/src/catalog.rs:125:5: replace find -> Option<&'static CatalogEntry> with None
+crates/trellis-model/src/catalog.rs:125:36: replace == with != in find
+crates/trellis-model/src/catalog.rs:137:9: replace CatalogEntry::url -> String with String::new()
+crates/trellis-model/src/catalog.rs:137:9: replace CatalogEntry::url -> String with "xyzzy".into()
+crates/trellis-model/src/catalog.rs:144:27: replace / with % in CatalogEntry::gib
+crates/trellis-model/src/catalog.rs:144:9: replace CatalogEntry::gib -> f64 with -1.0
+crates/trellis-model/src/catalog.rs:144:9: replace CatalogEntry::gib -> f64 with 1.0
+crates/trellis-model/src/catalog.rs:144:9: replace CatalogEntry::gib -> f64 with 0.0
+crates/trellis-model/src/catalog.rs:144:27: replace / with * in CatalogEntry::gib
+crates/trellis-model/src/hosted.rs:34:9: replace Protocol::scheme -> &'static str with ""
+crates/trellis-model/src/hosted.rs:34:9: replace Protocol::scheme -> &'static str with "xyzzy"
+crates/trellis-model/src/hosted.rs:88:9: replace Thinking::effort -> Option<&'static str> with None
+crates/trellis-model/src/hosted.rs:88:9: replace Thinking::effort -> Option<&'static str> with Some("")
+crates/trellis-model/src/hosted.rs:88:9: replace Thinking::effort -> Option<&'static str> with Some("xyzzy")
+crates/trellis-model/src/hosted.rs:180:5: replace thinking_sent -> Thinking with Default::default()
+crates/trellis-model/src/hosted.rs:181:32: replace match guard !every_turn_replayed with true in thinking_sent
+crates/trellis-model/src/hosted.rs:181:32: replace match guard !every_turn_replayed with false in thinking_sent
+crates/trellis-model/src/hosted.rs:181:32: delete ! in thinking_sent
+crates/trellis-model/src/hosted.rs:190:5: replace every_turn_replayed -> bool with false
+crates/trellis-model/src/hosted.rs:190:5: replace every_turn_replayed -> bool with true
+crates/trellis-model/src/hosted.rs:202:5: replace request_body -> Value with Default::default()
+crates/trellis-model/src/hosted.rs:218:5: replace openai_body -> Value with Default::default()
+crates/trellis-model/src/hosted.rs:287:5: replace anthropic_body -> Value with Default::default()
+crates/trellis-model/src/hosted.rs:407:73: replace == with != in parse_reply
+crates/trellis-model/src/hosted.rs:417:47: replace == with != in parse_reply
+crates/trellis-model/src/hosted.rs:454:5: replace anthropic_prompt_tokens -> Option<u64> with None
+crates/trellis-model/src/hosted.rs:454:5: replace anthropic_prompt_tokens -> Option<u64> with Some(0)
+crates/trellis-model/src/hosted.rs:454:5: replace anthropic_prompt_tokens -> Option<u64> with Some(1)
+crates/trellis-model/src/hosted.rs:464:5: replace no_call -> String with String::new()
+crates/trellis-model/src/hosted.rs:464:5: replace no_call -> String with "xyzzy".into()
+crates/trellis-model/src/hosted.rs:471:5: replace cut -> String with String::new()
+crates/trellis-model/src/hosted.rs:471:5: replace cut -> String with "xyzzy".into()
+crates/trellis-model/src/hosted.rs:478:5: replace is_context_overflow -> bool with true
+crates/trellis-model/src/hosted.rs:478:5: replace is_context_overflow -> bool with false
+crates/trellis-model/src/hosted.rs:479:9: replace || with && in is_context_overflow
+crates/trellis-model/src/hosted.rs:478:12: replace == with != in is_context_overflow
+crates/trellis-model/src/hosted.rs:480:13: replace && with || in is_context_overflow
+crates/trellis-model/src/hosted.rs:479:20: replace == with != in is_context_overflow
+crates/trellis-model/src/hosted.rs:482:17: replace || with && in is_context_overflow
+crates/trellis-model/src/hosted.rs:481:17: replace || with && in is_context_overflow
+crates/trellis-model/src/hosted.rs:506:5: replace retry_delay -> Duration with Default::default()
+crates/trellis-model/src/hosted.rs:512:5: replace retry_delay_at -> Duration with Default::default()
+crates/trellis-model/src/hosted.rs:488:5: replace retryable -> bool with false
+crates/trellis-model/src/hosted.rs:512:44: replace << with >> in retry_delay_at
+crates/trellis-model/src/hosted.rs:517:38: replace >= with < in retry_delay_at
+crates/trellis-model/src/hosted.rs:547:5: replace imf_fixdate_unix_secs -> Option<i64> with None
+crates/trellis-model/src/hosted.rs:547:5: replace imf_fixdate_unix_secs -> Option<i64> with Some(0)
+crates/trellis-model/src/hosted.rs:547:5: replace imf_fixdate_unix_secs -> Option<i64> with Some(1)
+crates/trellis-model/src/hosted.rs:547:5: replace imf_fixdate_unix_secs -> Option<i64> with Some(-1)
+crates/trellis-model/src/hosted.rs:562:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:556:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:555:9: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:554:16: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:555:12: delete ! in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:555:46: replace == with != in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:557:17: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:556:21: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:558:18: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:559:18: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:561:18: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:560:18: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:562:23: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:570:56: replace + with - in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:570:51: replace * with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:570:56: replace + with * in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:570:51: replace * with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:570:70: replace - with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:573:79: replace + with - in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:570:70: replace - with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:573:79: replace + with * in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:573:57: replace == with != in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:25: replace == with != in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:30: replace && with || in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:21: replace % with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:21: replace % with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:50: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:576:45: replace != with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:579:9: delete match arm 2 in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:578:14: replace match guard leap with true in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:578:14: replace match guard leap with false in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:68: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:40: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:53: replace || with && in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:8: delete ! in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:48: replace > with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:48: replace > with >= in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:48: replace > with < in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:63: replace > with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:63: replace > with < in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:78: replace > with == in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:63: replace > with >= in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:584:78: replace > with < in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:82: replace + with * in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:82: replace + with - in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:68: replace + with - in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:68: replace + with * in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:53: replace + with - in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:53: replace + with * in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:44: replace * with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:44: replace * with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:60: replace * with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:77: replace * with + in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:60: replace * with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:587:77: replace * with / in imf_fixdate_unix_secs
+crates/trellis-model/src/hosted.rs:593:5: replace days_from_civil -> i64 with 0
+crates/trellis-model/src/hosted.rs:593:5: replace days_from_civil -> i64 with 1
+crates/trellis-model/src/hosted.rs:593:5: replace days_from_civil -> i64 with -1
+crates/trellis-model/src/hosted.rs:593:22: replace <= with > in days_from_civil
+crates/trellis-model/src/hosted.rs:593:34: replace - with + in days_from_civil
+crates/trellis-model/src/hosted.rs:593:34: replace - with / in days_from_civil
+crates/trellis-model/src/hosted.rs:595:17: replace - with + in days_from_civil
+crates/trellis-model/src/hosted.rs:595:17: replace - with / in days_from_civil
+crates/trellis-model/src/hosted.rs:595:23: replace * with + in days_from_civil
+crates/trellis-model/src/hosted.rs:595:23: replace * with / in days_from_civil
+crates/trellis-model/src/hosted.rs:596:26: replace % with / in days_from_civil
+crates/trellis-model/src/hosted.rs:596:26: replace % with + in days_from_civil
+crates/trellis-model/src/hosted.rs:596:21: replace + with - in days_from_civil
+crates/trellis-model/src/hosted.rs:596:21: replace + with * in days_from_civil
+crates/trellis-model/src/hosted.rs:597:40: replace - with + in days_from_civil
+crates/trellis-model/src/hosted.rs:597:40: replace - with / in days_from_civil
+crates/trellis-model/src/hosted.rs:597:34: replace + with - in days_from_civil
+crates/trellis-model/src/hosted.rs:597:34: replace + with * in days_from_civil
+crates/trellis-model/src/hosted.rs:597:30: replace / with % in days_from_civil
+crates/trellis-model/src/hosted.rs:597:30: replace / with * in days_from_civil
+crates/trellis-model/src/hosted.rs:597:25: replace + with - in days_from_civil
+crates/trellis-model/src/hosted.rs:597:25: replace + with * in days_from_civil
+crates/trellis-model/src/hosted.rs:597:20: replace * with + in days_from_civil
+crates/trellis-model/src/hosted.rs:597:20: replace * with / in days_from_civil
+crates/trellis-model/src/hosted.rs:598:47: replace + with - in days_from_civil
+crates/trellis-model/src/hosted.rs:598:47: replace + with * in days_from_civil
+crates/trellis-model/src/hosted.rs:598:35: replace - with + in days_from_civil
+crates/trellis-model/src/hosted.rs:598:35: replace - with / in days_from_civil
+crates/trellis-model/src/hosted.rs:598:25: replace + with - in days_from_civil
+crates/trellis-model/src/hosted.rs:598:25: replace + with * in days_from_civil
+crates/trellis-model/src/hosted.rs:598:19: replace * with + in days_from_civil
+crates/trellis-model/src/hosted.rs:598:19: replace * with / in days_from_civil
+crates/trellis-model/src/hosted.rs:598:31: replace / with % in days_from_civil
+crates/trellis-model/src/hosted.rs:598:31: replace / with * in days_from_civil
+crates/trellis-model/src/hosted.rs:598:41: replace / with % in days_from_civil
+crates/trellis-model/src/hosted.rs:598:41: replace / with * in days_from_civil
+crates/trellis-model/src/hosted.rs:599:25: replace - with + in days_from_civil
+crates/trellis-model/src/hosted.rs:599:25: replace - with / in days_from_civil
+crates/trellis-model/src/hosted.rs:599:19: replace + with - in days_from_civil
+crates/trellis-model/src/hosted.rs:599:19: replace + with * in days_from_civil
+crates/trellis-model/src/hosted.rs:599:9: replace * with + in days_from_civil
+crates/trellis-model/src/hosted.rs:599:9: replace * with / in days_from_civil
+crates/trellis-model/src/hosted.rs:620:9: replace <impl std::fmt::Debug for HostedClient>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-model/src/hosted.rs:669:25: replace && with || in HostedClient::with_key_and_env
+crates/trellis-model/src/hosted.rs:672:25: replace && with || in HostedClient::with_key_and_env
+crates/trellis-model/src/hosted.rs:669:28: delete ! in HostedClient::with_key_and_env
+crates/trellis-model/src/hosted.rs:783:26: replace match guard (200..300).contains(&r.status) with true in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:783:26: replace match guard (200..300).contains(&r.status) with false in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:792:26: replace match guard matches!(r.status, 401 | 403) with true in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:792:26: replace match guard matches!(r.status, 401 | 403) with false in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:802:26: replace match guard is_context_overflow(r.status, &r.body) with true in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:802:26: replace match guard is_context_overflow(r.status, &r.body) with false in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:805:26: replace match guard retryable(r.status) && attempt < MAX_ATTEMPTS with true in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:805:26: replace match guard retryable(r.status) && attempt < MAX_ATTEMPTS with false in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:836:55: replace match guard attempt < MAX_ATTEMPTS with false in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:805:46: replace && with || in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:805:57: replace < with == in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:805:57: replace < with > in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:805:57: replace < with <= in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:836:63: replace < with == in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:836:63: replace < with > in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:865:21: replace += with -= in HostedClient::send_via
+crates/trellis-model/src/hosted.rs:836:63: replace < with <= in HostedClient::send_via
+crates/trellis-model/src/image.rs:16:45: replace * with /
+crates/trellis-model/src/image.rs:16:38: replace * with /
+crates/trellis-model/src/image.rs:55:24: replace > with == in Image::from_bytes
+crates/trellis-model/src/image.rs:55:24: replace > with < in Image::from_bytes
+crates/trellis-model/src/image.rs:55:24: replace > with >= in Image::from_bytes
+crates/trellis-model/src/image.rs:69:9: replace Image::media_type -> &'static str with ""
+crates/trellis-model/src/image.rs:69:9: replace Image::media_type -> &'static str with "xyzzy"
+crates/trellis-model/src/image.rs:79:9: replace Image::base64 -> &str with ""
+crates/trellis-model/src/image.rs:84:5: replace sniff -> Option<&'static str> with None
+crates/trellis-model/src/image.rs:84:5: replace sniff -> Option<&'static str> with Some("")
+crates/trellis-model/src/image.rs:88:40: replace || with && in sniff
+crates/trellis-model/src/image.rs:90:52: replace && with || in sniff
+crates/trellis-model/src/image.rs:90:29: replace && with || in sniff
+crates/trellis-model/src/image.rs:90:23: replace >= with < in sniff
+crates/trellis-model/src/image.rs:90:41: replace == with != in sniff
+crates/trellis-model/src/image.rs:90:65: replace == with != in sniff
+crates/trellis-model/src/image.rs:100:5: replace base64 -> String with String::new()
+crates/trellis-model/src/image.rs:100:5: replace base64 -> String with "xyzzy".into()
+crates/trellis-model/src/image.rs:106:40: replace | with & in base64
+crates/trellis-model/src/image.rs:106:56: replace << with >> in base64
+crates/trellis-model/src/image.rs:106:63: replace - with + in base64
+crates/trellis-model/src/image.rs:106:63: replace - with / in base64
+crates/trellis-model/src/image.rs:106:67: replace * with + in base64
+crates/trellis-model/src/image.rs:106:67: replace * with / in base64
+crates/trellis-model/src/image.rs:108:18: replace <= with > in base64
+crates/trellis-model/src/image.rs:109:49: replace & with | in base64
+crates/trellis-model/src/image.rs:109:49: replace & with ^ in base64
+crates/trellis-model/src/image.rs:109:32: replace >> with << in base64
+crates/trellis-model/src/image.rs:109:39: replace - with + in base64
+crates/trellis-model/src/image.rs:109:39: replace - with / in base64
+crates/trellis-model/src/image.rs:109:43: replace * with + in base64
+crates/trellis-model/src/image.rs:109:43: replace * with / in base64
+crates/trellis-model/src/image.rs:122:5: replace redact_images -> Value with Default::default()
+crates/trellis-model/src/image.rs:128:5: replace redact with ()
+crates/trellis-model/src/image.rs:129:9: delete match arm Value::Object(m) in redact
+crates/trellis-model/src/image.rs:147:9: delete match arm Value::Array(a) in redact
+crates/trellis-model/src/image.rs:131:54: replace == with != in redact
+crates/trellis-model/src/image.rs:138:54: replace == with != in redact
+crates/trellis-model/src/pull.rs:74:5: replace partial_name -> String with String::new()
+crates/trellis-model/src/pull.rs:119:33: replace < with <= in pull
+crates/trellis-model/src/pull.rs:124:13: replace < with == in pull
+crates/trellis-model/src/pull.rs:124:13: replace < with > in pull
+crates/trellis-model/src/pull.rs:124:13: replace < with <= in pull
+crates/trellis-model/src/pull.rs:131:13: replace > with == in pull
+crates/trellis-model/src/pull.rs:131:13: replace > with < in pull
+crates/trellis-model/src/pull.rs:131:13: replace > with >= in pull
+crates/trellis-model/src/pull.rs:141:8: delete ! in pull
+crates/trellis-model/src/pull.rs:159:5: replace sha256_file -> Result<String, PullError> with Ok(String::new())
+crates/trellis-model/src/pull.rs:159:5: replace sha256_file -> Result<String, PullError> with Ok("xyzzy".into())
+crates/trellis-model/src/pull.rs:164:14: replace == with != in sha256_file
+crates/trellis-model/src/pull.rs:173:5: replace len -> Result<Option<u64>, PullError> with Ok(None)
+crates/trellis-model/src/pull.rs:185:5: replace remove -> Result<(), PullError> with Ok(())
+crates/trellis-model/src/runtime.rs:71:9: replace Dialect::parse -> Option<Self> with None
+crates/trellis-model/src/runtime.rs:72:13: delete match arm "llamacpp" | "llama.cpp" | "llama_cpp" in Dialect::parse
+crates/trellis-model/src/runtime.rs:73:13: delete match arm "vllm" | "openai" in Dialect::parse
+crates/trellis-model/src/runtime.rs:74:13: delete match arm "sglang" in Dialect::parse
+crates/trellis-model/src/runtime.rs:82:9: replace Dialect::name -> &'static str with ""
+crates/trellis-model/src/runtime.rs:82:9: replace Dialect::name -> &'static str with "xyzzy"
+crates/trellis-model/src/runtime.rs:90:9: replace Dialect::path -> &'static str with ""
+crates/trellis-model/src/runtime.rs:90:9: replace Dialect::path -> &'static str with "xyzzy"
+crates/trellis-model/src/runtime.rs:161:9: replace RuntimeClient::reachable -> Result<(), RuntimeError> with Ok(())
+crates/trellis-model/src/runtime.rs:184:9: replace RuntimeClient::body -> Value with Default::default()
+crates/trellis-model/src/runtime.rs:289:9: replace RuntimeClient::probe_constraint -> Result<bool, RuntimeError> with Ok(true)
+crates/trellis-model/src/runtime.rs:289:9: replace RuntimeClient::probe_constraint -> Result<bool, RuntimeError> with Ok(false)
+crates/trellis-model/src/runtime.rs:323:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(None)
+crates/trellis-model/src/runtime.rs:323:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(Some(0))
+crates/trellis-model/src/runtime.rs:323:9: replace RuntimeClient::probe_slots -> Result<Option<u32>, RuntimeError> with Ok(Some(1))
+crates/trellis-model/src/runtime.rs:340:9: replace RuntimeClient::get -> Result<String, RuntimeError> with Ok(String::new())
+crates/trellis-model/src/runtime.rs:340:9: replace RuntimeClient::get -> Result<String, RuntimeError> with Ok("xyzzy".into())
+crates/trellis-model/src/runtime.rs:349:9: replace RuntimeClient::post -> Result<String, RuntimeError> with Ok(String::new())
+crates/trellis-model/src/runtime.rs:349:9: replace RuntimeClient::post -> Result<String, RuntimeError> with Ok("xyzzy".into())
+crates/trellis-model/src/runtime.rs:359:9: replace RuntimeClient::host_header -> String with String::new()
+crates/trellis-model/src/runtime.rs:359:9: replace RuntimeClient::host_header -> String with "xyzzy".into()
+crates/trellis-model/src/runtime.rs:378:9: replace RuntimeClient::request -> Result<String, RuntimeError> with Ok(String::new())
+crates/trellis-model/src/runtime.rs:378:9: replace RuntimeClient::request -> Result<String, RuntimeError> with Ok("xyzzy".into())
+crates/trellis-model/src/runtime.rs:401:30: replace + with - in RuntimeClient::request
+crates/trellis-model/src/runtime.rs:401:30: replace + with * in RuntimeClient::request
+crates/trellis-model/src/runtime.rs:405:22: replace > with == in RuntimeClient::request
+crates/trellis-model/src/runtime.rs:405:22: replace > with < in RuntimeClient::request
+crates/trellis-model/src/runtime.rs:414:12: delete ! in RuntimeClient::request
+crates/trellis-model/src/secret.rs:48:9: replace ApiKey::source -> &str with ""
+crates/trellis-model/src/secret.rs:48:9: replace ApiKey::source -> &str with "xyzzy"
+crates/trellis-model/src/secret.rs:53:9: replace ApiKey::expose -> &str with ""
+crates/trellis-model/src/secret.rs:53:9: replace ApiKey::expose -> &str with "xyzzy"
+crates/trellis-model/src/secret.rs:60:9: replace ApiKey::scrub -> String with String::new()
+crates/trellis-model/src/secret.rs:60:9: replace ApiKey::scrub -> String with "xyzzy".into()
+crates/trellis-model/src/secret.rs:60:29: replace < with > in ApiKey::scrub
+crates/trellis-model/src/secret.rs:69:9: replace <impl std::fmt::Debug for ApiKey>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-model/src/spec.rs:100:13: delete match arm "openai-chat" in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:101:13: delete match arm "anthropic" in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:104:29: replace || with && in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:106:33: replace match guard !m.trim().is_empty() with true in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:106:33: replace match guard !m.trim().is_empty() with false in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:106:33: delete ! in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:132:29: replace match guard m.trim().is_empty() with true in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:132:29: replace match guard m.trim().is_empty() with false in <impl FromStr for ModelSpec>::from_str
+crates/trellis-model/src/spec.rs:155:9: replace <impl std::fmt::Display for ModelSpec>::fmt -> std::fmt::Result with Ok(Default::default())
 crates/trellis-model/src/tier.rs:36:9: replace AdapterTier::degradation -> &'static str with ""
 crates/trellis-model/src/tier.rs:36:9: replace AdapterTier::degradation -> &'static str with "xyzzy"
 crates/trellis-model/src/tier.rs:59:9: replace AdapterTier::is_constrained -> bool with true
 crates/trellis-model/src/tier.rs:59:9: replace AdapterTier::is_constrained -> bool with false
-crates/trellis-model/src/tier.rs:95:9: replace BatchingCapability::auto_agents -> u32 with 1
-crates/trellis-model/src/tier.rs:95:9: replace BatchingCapability::auto_agents -> u32 with 0
-crates/trellis-model/src/tier.rs:104:9: replace BatchingCapability::supports_multi_agent -> bool with true
-crates/trellis-model/src/tier.rs:145:9: replace Probe::report -> Vec<String> with vec![]
-crates/trellis-model/src/tier.rs:145:9: replace Probe::report -> Vec<String> with vec![String::new()]
-crates/trellis-model/src/tier.rs:145:9: replace Probe::report -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-model/src/tier.rs:108:9: replace BatchingCapability::auto_agents -> u32 with 0
+crates/trellis-model/src/tier.rs:108:9: replace BatchingCapability::auto_agents -> u32 with 1
+crates/trellis-model/src/tier.rs:119:9: replace BatchingCapability::supports_multi_agent -> bool with true
+crates/trellis-model/src/tier.rs:119:9: replace BatchingCapability::supports_multi_agent -> bool with false
+crates/trellis-model/src/tier.rs:160:9: replace Probe::report -> Vec<String> with vec![]
+crates/trellis-model/src/tier.rs:160:9: replace Probe::report -> Vec<String> with vec![String::new()]
+crates/trellis-model/src/transport.rs:45:17: replace && with || in Endpoint::parse
+crates/trellis-model/src/tier.rs:160:9: replace Probe::report -> Vec<String> with vec!["xyzzy".into()]
+crates/trellis-model/src/transport.rs:45:20: delete ! in Endpoint::parse
+crates/trellis-model/src/transport.rs:45:12: delete ! in Endpoint::parse
+crates/trellis-model/src/transport.rs:76:5: replace split_authority -> Result<(String, u16), RuntimeError> with Ok((String::new(), 0))
+crates/trellis-model/src/transport.rs:61:9: replace Endpoint::authority -> String with String::new()
+crates/trellis-model/src/transport.rs:61:9: replace Endpoint::authority -> String with "xyzzy".into()
+crates/trellis-model/src/transport.rs:76:5: replace split_authority -> Result<(String, u16), RuntimeError> with Ok(("xyzzy".into(), 0))
+crates/trellis-model/src/transport.rs:76:5: replace split_authority -> Result<(String, u16), RuntimeError> with Ok(("xyzzy".into(), 1))
+crates/trellis-model/src/transport.rs:86:13: delete match arm "" in split_authority
+crates/trellis-model/src/transport.rs:108:5: replace host_header -> String with String::new()
+crates/trellis-model/src/transport.rs:108:5: replace host_header -> String with "xyzzy".into()
+crates/trellis-model/src/transport.rs:76:5: replace split_authority -> Result<(String, u16), RuntimeError> with Ok((String::new(), 1))
+crates/trellis-model/src/transport.rs:113:13: replace == with != in host_header
+crates/trellis-model/src/transport.rs:122:5: replace socket_addr -> String with String::new()
+crates/trellis-model/src/transport.rs:132:5: replace is_loopback -> bool with false
+crates/trellis-model/src/transport.rs:122:5: replace socket_addr -> String with "xyzzy".into()
+crates/trellis-model/src/transport.rs:134:9: replace || with && in is_loopback
+crates/trellis-model/src/transport.rs:132:5: replace is_loopback -> bool with true
+crates/trellis-model/src/transport.rs:161:5: replace first_set -> Option<String> with None
+crates/trellis-model/src/transport.rs:154:9: replace <impl std::fmt::Display for Proxy>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/trellis-model/src/transport.rs:161:5: replace first_set -> Option<String> with Some(String::new())
+crates/trellis-model/src/transport.rs:161:5: replace first_set -> Option<String> with Some("xyzzy".into())
+crates/trellis-model/src/transport.rs:165:19: delete ! in first_set
+crates/trellis-model/src/transport.rs:180:5: replace proxy_for -> Result<Option<Proxy>, RuntimeError> with Ok(None)
+crates/trellis-model/src/transport.rs:180:16: replace || with && in proxy_for
+crates/trellis-model/src/transport.rs:180:8: delete ! in proxy_for
+crates/trellis-model/src/transport.rs:210:18: replace == with != in no_proxy_matches
+crates/trellis-model/src/transport.rs:208:21: delete ! in no_proxy_matches
+crates/trellis-model/src/transport.rs:201:5: replace no_proxy_matches -> bool with true
+crates/trellis-model/src/transport.rs:201:5: replace no_proxy_matches -> bool with false
+crates/trellis-model/src/transport.rs:218:17: replace && with || in no_proxy_matches
+crates/trellis-model/src/transport.rs:217:13: delete ! in no_proxy_matches
+crates/trellis-model/src/transport.rs:219:21: replace || with && in no_proxy_matches
+crates/trellis-model/src/transport.rs:218:26: replace == with != in no_proxy_matches
+crates/trellis-model/src/transport.rs:231:33: replace match guard scheme.eq_ignore_ascii_case("http") with true in parse_proxy
+crates/trellis-model/src/transport.rs:231:33: replace match guard scheme.eq_ignore_ascii_case("http") with false in parse_proxy
+crates/trellis-model/src/transport.rs:278:23: replace >= with < in connect_tunnel
+crates/trellis-model/src/transport.rs:277:11: delete ! in connect_tunnel
+crates/trellis-model/src/transport.rs:297:48: replace - with + in connect_tunnel
+crates/trellis-model/src/transport.rs:297:48: replace - with / in connect_tunnel
+crates/trellis-model/src/transport.rs:313:36: replace * with /
+crates/trellis-model/src/transport.rs:335:9: replace Response::header -> Option<&str> with None
+crates/trellis-model/src/transport.rs:335:9: replace Response::header -> Option<&str> with Some("")
+crates/trellis-model/src/transport.rs:337:30: replace == with != in Response::header
+crates/trellis-model/src/transport.rs:335:9: replace Response::header -> Option<&str> with Some("xyzzy")
+crates/trellis-model/src/transport.rs:374:17: replace == with != in connect_error
+crates/trellis-model/src/transport.rs:383:5: replace request_head -> String with String::new()
+crates/trellis-model/src/transport.rs:383:5: replace request_head -> String with "xyzzy".into()
+crates/trellis-model/src/transport.rs:518:34: replace > with < in exchange
+crates/trellis-model/src/transport.rs:518:30: replace + with - in exchange
+crates/trellis-model/src/transport.rs:518:34: replace > with == in exchange
+crates/trellis-model/src/transport.rs:527:56: replace > with == in exchange
+crates/trellis-model/src/transport.rs:527:56: replace > with < in exchange
+crates/trellis-model/src/transport.rs:593:9: replace Framer::complete -> bool with true
+crates/trellis-model/src/transport.rs:586:43: replace << with >>
+crates/trellis-model/src/transport.rs:595:27: replace += with -= in Framer::complete
+crates/trellis-model/src/transport.rs:593:9: replace Framer::complete -> bool with false
+crates/trellis-model/src/transport.rs:595:40: replace - with / in Framer::complete
+crates/trellis-model/src/transport.rs:600:32: replace + with - in Framer::complete
+crates/trellis-model/src/transport.rs:600:32: replace + with * in Framer::complete
+crates/trellis-model/src/transport.rs:600:28: replace + with - in Framer::complete
+crates/trellis-model/src/transport.rs:600:28: replace + with * in Framer::complete
+crates/trellis-model/src/transport.rs:603:50: replace - with + in Framer::complete
+crates/trellis-model/src/transport.rs:617:48: replace >= with < in Framer::complete
+crates/trellis-model/src/transport.rs:603:50: replace - with / in Framer::complete
+crates/trellis-model/src/transport.rs:625:9: replace Framer::declared -> Option<usize> with None
+crates/trellis-model/src/transport.rs:625:9: replace Framer::declared -> Option<usize> with Some(0)
+crates/trellis-model/src/transport.rs:625:9: replace Framer::declared -> Option<usize> with Some(1)
+crates/trellis-model/src/transport.rs:626:13: delete match arm Some(Body::Length(n)) in Framer::declared
+crates/trellis-model/src/transport.rs:671:28: replace == with != in parse_head
+crates/trellis-model/src/transport.rs:674:21: delete ! in parse_head
+crates/trellis-model/src/transport.rs:677:17: replace == with != in parse_head
+crates/trellis-model/src/transport.rs:685:30: replace == with != in parse_head
+crates/trellis-model/src/transport.rs:703:5: replace chunked -> bool with true
+crates/trellis-model/src/transport.rs:703:5: replace chunked -> bool with false
+crates/trellis-model/src/transport.rs:708:27: replace += with -= in chunked
+crates/trellis-model/src/transport.rs:708:27: replace += with *= in chunked
+crates/trellis-model/src/transport.rs:710:39: replace > with < in chunked
+crates/trellis-model/src/transport.rs:712:22: replace += with -= in chunked
+crates/trellis-model/src/transport.rs:712:22: replace += with *= in chunked
+crates/trellis-model/src/transport.rs:712:29: replace + with - in chunked
+crates/trellis-model/src/transport.rs:712:29: replace + with * in chunked
+crates/trellis-model/src/transport.rs:714:28: replace == with != in chunked
+crates/trellis-model/src/transport.rs:726:31: replace < with == in chunked
+crates/trellis-model/src/transport.rs:726:31: replace < with > in chunked
+crates/trellis-model/src/transport.rs:727:26: replace += with -= in chunked
+crates/trellis-model/src/transport.rs:727:26: replace += with *= in chunked
+crates/trellis-model/src/transport.rs:728:41: replace - with + in chunked
+crates/trellis-model/src/transport.rs:728:41: replace - with / in chunked
+crates/trellis-model/src/transport.rs:731:22: replace += with *= in chunked
+crates/trellis-model/src/transport.rs:735:31: replace < with == in chunked
+crates/trellis-model/src/transport.rs:735:31: replace < with > in chunked
+crates/trellis-model/src/transport.rs:738:27: replace += with *= in chunked
+crates/trellis-model/src/transport.rs:739:31: replace != with == in chunked
+crates/trellis-model/src/transport.rs:742:22: replace += with -= in chunked
+crates/trellis-model/src/transport.rs:742:22: replace += with *= in chunked
+crates/trellis-model/src/transport.rs:751:5: replace chunk_size -> Result<usize, String> with Ok(0)
+crates/trellis-model/src/transport.rs:751:5: replace chunk_size -> Result<usize, String> with Ok(1)
+crates/trellis-model/src/transport.rs:764:5: replace find -> Option<usize> with None
+crates/trellis-model/src/transport.rs:764:5: replace find -> Option<usize> with Some(0)
+crates/trellis-model/src/transport.rs:764:5: replace find -> Option<usize> with Some(1)
+crates/trellis-model/src/transport.rs:764:46: replace == with != in find
+crates/trellis-model/src/transport.rs:774:29: replace + with - in parse_response
+crates/trellis-model/src/transport.rs:774:29: replace + with * in parse_response
+crates/trellis-model/src/transport.rs:777:31: replace match guard body_raw.len() >= n with true in parse_response
+crates/trellis-model/src/transport.rs:777:31: replace match guard body_raw.len() >= n with false in parse_response
+crates/trellis-model/src/transport.rs:777:46: replace >= with < in parse_response
+crates/trellis-model/src/transport.rs:794:5: replace dechunk -> Result<Vec<u8>, String> with Ok(vec![])
+crates/trellis-model/src/transport.rs:794:5: replace dechunk -> Result<Vec<u8>, String> with Ok(vec![0])
+crates/trellis-model/src/transport.rs:794:5: replace dechunk -> Result<Vec<u8>, String> with Ok(vec![1])
+crates/trellis-model/src/transport.rs:798:25: replace + with - in dechunk
+crates/trellis-model/src/transport.rs:798:25: replace + with * in dechunk
+crates/trellis-model/src/transport.rs:799:17: replace == with != in dechunk
+crates/trellis-model/src/transport.rs:802:20: replace < with == in dechunk
+crates/trellis-model/src/transport.rs:802:20: replace < with > in dechunk

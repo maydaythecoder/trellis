@@ -1,15 +1,27 @@
 #!/bin/sh
-# Local stand-in for branch protection on v0.1-resolver (GitHub refuses
-# protection on a private repository without Pro). v0.1-resolver moves only
-# when the owner merges a pull request on GitHub, so this clone never pushes
-# to it: no update, no force-push, no deletion. Agent work goes to the
-# integration branch `drain` and reaches main through its PR.
+# Local stand-in for branch protection (GitHub refuses protection on a
+# private repository without Pro). `main` is the launch branch and moves only
+# when the owner merges a pull request from `dev` on GitHub; `v0.1-resolver`
+# is the legacy default branch and `drain` the legacy integration branch, both
+# frozen. A `v*` tag is a release: pushing one starts release.yml, and that is
+# the owner's act. This clone never pushes to any of them: no create, no
+# update, no force-push, no deletion. Ticket and feature branches merge into
+# `audit`, which is promoted into `dev` (ADR 0051, amending 0036).
 # Bypass deliberately with --no-verify.
-protected="refs/heads/v0.1-resolver"
 while read local_ref local_sha remote_ref remote_sha; do
-  if [ "$remote_ref" = "$protected" ]; then
-    echo "pre-push: refusing to push to v0.1-resolver; merge through a pull request on GitHub" >&2
-    exit 1
-  fi
+  name=${remote_ref#refs/heads/}
+  name=${name#refs/tags/}
+  case "$remote_ref" in
+    refs/heads/main)
+      reason="merge through a pull request on GitHub" ;;
+    refs/heads/drain|refs/heads/v0.1-resolver)
+      reason="$name is frozen; cut ticket branches from dev (ADR 0051)" ;;
+    refs/tags/v*)
+      reason="a release tag is the owner's act; it starts release.yml" ;;
+    *)
+      continue ;;
+  esac
+  echo "pre-push: refusing to push to $name; $reason" >&2
+  exit 1
 done
 exit 0

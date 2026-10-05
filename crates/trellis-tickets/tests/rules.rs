@@ -65,13 +65,36 @@ fn abstains_area_when_files_span_three_areas() {
 
 #[test]
 fn abstains_area_when_a_file_is_under_no_path_in_the_table() {
-    // trellis-index has no row in §5's table; mapping it would be a guess.
+    // fuzz/ has no row in the table (trellis-index did until #194 mapped
+    // it); mapping an unlisted path would be a guess.
     let t = ticket(
         "Add a thing",
-        &body("**Files:** crates/trellis-index/src/resolve.rs"),
+        &body("**Files:** fuzz/fuzz_targets/http_response.rs"),
         &[],
     );
-    assert!(reason(&area(&t)).contains("crates/trellis-index/src/resolve.rs"));
+    assert!(reason(&area(&t)).contains("fuzz/fuzz_targets/http_response.rs"));
+}
+
+#[test]
+fn the_owners_mapping_rows_map_onto_the_twelve_areas_194() {
+    // #194: the repository's other crates and directories map onto the
+    // existing area values, one row each, rather than adding new ones.
+    // A row that went missing would send every ticket touching it back to
+    // a person, silently.
+    for (file, want) in [
+        ("crates/trellis-index/src/resolve.rs", "area:graph"),
+        ("crates/trellis-loop/src/agent.rs", "area:runtime"),
+        ("crates/trellis-vcs/src/lib.rs", "area:runtime"),
+        ("crates/trellis-vault/src/lib.rs", "area:context"),
+        ("crates/trellis-queue/src/lib.rs", "area:agents"),
+        ("crates/trellis-trail/src/lib.rs", "area:protocol"),
+        ("crates/trellis-core/src/lib.rs", "area:build"),
+        ("scripts/gates/run-all.sh", "area:build"),
+        (".github/workflows/ci.yml", "area:build"),
+    ] {
+        let t = ticket("Add a thing", &body(&format!("**Files:** {file}")), &[]);
+        assert_eq!(value(&area(&t)).label(), want, "{file}");
+    }
 }
 
 #[test]
@@ -235,7 +258,7 @@ fn a_checks_file_is_risk_high_even_when_area_abstains() {
     // makes area abstain; that must not hide the checks file.
     let t = ticket(
         "Add a thing",
-        &body("**Files:** crates/trellis-index/src/a.rs; crates/trellis-checks/src/lib.rs"),
+        &body("**Files:** fuzz/fuzz_targets/a.rs; crates/trellis-checks/src/lib.rs"),
         &["origin:manual"],
     );
     assert!(matches!(area(&t), Outcome::Abstained { .. }));
@@ -380,4 +403,62 @@ fn a_ticket_that_is_not_ready_and_not_blocked_goes_to_a_person_with_its_failures
     let o = triage(&t, &no_blockers());
     assert_eq!(value(&o).route, Route::NeedsHuman);
     assert_eq!(value(&o).reasons, ["not ready: no verify command"]);
+}
+
+#[test]
+fn rollback_worktree_teardown_and_session_persistence_are_risk_high_196() {
+    // The owner's path table (#196). Each entry would otherwise compute
+    // low or medium, and a change to rollback is the one the clean-tree
+    // guarantee (ADR 0009) rests on.
+    for file in [
+        "crates/trellis-vcs/src/lib.rs",
+        "crates/trellis-trail/src/lib.rs",
+        "crates/trellis-loop/src/integrate.rs",
+        "crates/trellis-loop/src/partition.rs",
+        "crates/trellis-loop/src/supervise.rs",
+        "crates/trellis-cli/src/session.rs",
+        "crates/trellis-cli/src/session_extra.rs",
+    ] {
+        let t = ticket(
+            "Add a thing",
+            &body(&format!("**Files:** {file}")),
+            &["origin:manual"],
+        );
+        assert_eq!(*value(&risk(&t)), Risk::High, "{file}");
+    }
+}
+
+#[test]
+fn a_directory_that_contains_a_persistence_path_is_risk_high_196() {
+    // A directory entry names an unknown set of files; the safe reading is
+    // that it includes the persistence file inside it.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-loop/src/"),
+        &["origin:manual"],
+    );
+    assert_eq!(*value(&risk(&t)), Risk::High);
+}
+
+#[test]
+fn a_loop_file_outside_the_table_is_not_raised_by_it_196() {
+    // The table is a list, not the whole crate: agent.rs is not rollback.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** crates/trellis-loop/src/agent.rs"),
+        &["origin:manual"],
+    );
+    assert_ne!(risk(&t).decided().copied(), Some(Risk::High));
+}
+
+#[test]
+fn the_desktop_workspace_is_an_interface_area() {
+    // #249: every desktop ticket names files under desktop/, and an
+    // unmapped path would route each of them to a person.
+    let t = ticket(
+        "Add a thing",
+        &body("**Files:** desktop/src/main.rs"),
+        &["origin:manual"],
+    );
+    assert_eq!(value(&area(&t)).label(), "area:tui");
 }

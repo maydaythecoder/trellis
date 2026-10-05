@@ -132,17 +132,31 @@ fn prompt_for(input: &str, files: &[String]) -> String {
     // prompt that hands over a file list and says nothing else invites exactly
     // the same inference one step further in: a model that can see the names
     // will happily describe the contents.
-    p.push_str(if shown.is_empty() {
-        "You have NOT been shown this repository's files or code. If answering \
-         would require reading them, say that you cannot see them rather than \
-         guessing at names or contents.\n\n"
+    //
+    // A truncated list is called partial: calling it complete would invite an
+    // answer about which files exist from a list that is missing some.
+    if shown.is_empty() {
+        p.push_str(
+            "You have NOT been shown this repository's files or code. If answering \
+             would require reading them, say that you cannot see them rather than \
+             guessing at names or contents.\n\n",
+        );
+    } else if hidden > 0 {
+        p.push_str(&format!(
+            "The file list above is partial ({hidden} more were indexed but not \
+             listed). You have NOT been shown the contents of any file. Answer about \
+             which files exist from the list; if answering would require reading \
+             code, say that you cannot see it rather than guessing at names or \
+             contents.\n\n"
+        ));
     } else {
-        "The file list above is complete for what was indexed. You have NOT been \
-         shown the contents of any file. Answer about which files exist from the \
-         list; if answering would require reading code, say that you cannot see \
-         it rather than guessing at names or contents. When you decline, \
-         suggest asking for a change rather than asking about another file.\n\n"
-    });
+        p.push_str(
+            "The file list above is complete for what was indexed. You have NOT been \
+             shown the contents of any file. Answer about which files exist from the \
+             list; if answering would require reading code, say that you cannot see \
+             it rather than guessing at names or contents.\n\n",
+        );
+    }
     p.push_str("Do NOT describe a change. Do NOT say you will make a change. ");
     p.push_str("If a change is wanted, the marker is the whole reply.\n\n");
 
@@ -173,9 +187,13 @@ const EXAMPLES: &[(&str, &str)] = &[
         "Hello. Ask me about the code, or tell me what to change.",
     ),
     ("fix the type annotation on describe", TASK_MARKER),
+    // A decline, not an answer: the model is shown no file's contents, and
+    // an example that described one taught it to guess. It also carries the
+    // way forward (#242): a change starts a run that reads the code, where
+    // a sentence in the instructions saying so routed questions to the loop.
     (
         "what does resolve_symbol do?",
-        "It walks the scope chain outward from the call site.",
+        "I cannot see its code; ask for a change and a run will read it.",
     ),
     ("add a test for the parser", TASK_MARKER),
     ("rename helper to assist", TASK_MARKER),
@@ -625,11 +643,8 @@ mod tests {
         );
         // The list alone invites the inference one step further in: a model
         // that can see the names will happily describe the contents.
-        assert!(
-            p.contains("NOT been\n shown the contents")
-                || p.contains("NOT been shown the contents"),
-            "{p}"
-        );
+        assert!(p.contains("NOT been shown the contents"), "{p}");
+        assert!(p.contains("is complete for what was indexed"), "{p}");
     }
 
     #[test]
@@ -670,6 +685,13 @@ mod tests {
         assert!(
             p.contains("and 440 more, not listed"),
             "the rest is counted"
+        );
+        // A truncated list called complete invites answering "which files
+        // exist" from the part that was shown.
+        assert!(!p.contains("is complete"), "{p}");
+        assert!(
+            p.contains("partial (440 more were indexed but not listed)"),
+            "{p}"
         );
         for (message, _) in EXAMPLES {
             assert!(p.contains(message), "example `{message}` survived");

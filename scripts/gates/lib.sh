@@ -9,26 +9,36 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# What "this change" is measured against. Agent work lands on the
-# integration branch `drain`, which reaches `v0.1-resolver` only through a PR
-# the owner merges. A ticket branch is cut from `drain` and answers only for
-# what it adds to it; `drain` itself answers to `v0.1-resolver` (its PR's
-# diff). Measuring a ticket against main would fail it on work it did not add.
+# What "this change" is measured against (ADR 0051). Ticket (`t<n>-<slug>`)
+# and `feature/<slug>` branches are cut from `dev` and merge into the
+# integration branch `audit`, where they meet and conflicts are resolved;
+# `audit` is promoted into `dev`, and `dev` reaches the launch branch `main`
+# only through a PR the owner merges. A ticket branch and `audit` answer only
+# for what they add to `dev`; `dev` answers to `main` (its PR's diff).
+# Measuring a ticket against main would fail it on work it did not add.
 #
 # `--base <ref>` as a gate's first argument sets it for that run, so a ticket
 # whose work is cleaning up an older change (issue #13) can have a Verify line
 # that measures against that change's base; G6 allows no `VAR=` prefix.
 # Sourcing shares the caller's arguments, so the shift here is the caller's.
-INTEGRATION_BRANCH="drain"
+INTEGRATION_BRANCH="audit"
+DEV_BRANCH="dev"
 if [ "${1:-}" = "--base" ]; then
   GATE_BASE="${2:?--base needs a ref}"
   shift 2
 fi
 if [ -z "${GATE_BASE:-}" ]; then
   case "$(git rev-parse --abbrev-ref HEAD)" in
-    t[0-9]*-*) GATE_BASE="origin/$INTEGRATION_BRANCH" ;;
-    *) GATE_BASE="origin/v0.1-resolver" ;;
+    t[0-9]*-*|feature/*|"$INTEGRATION_BRANCH") GATE_BASE="origin/$DEV_BRANCH" ;;
+    *) GATE_BASE="origin/main" ;;
   esac
+fi
+# A base this clone has not fetched is a failure, not a reason to measure
+# against some other branch: the legacy branches are frozen (ADR 0051), and a
+# diff against them would pass or fail a change on work it did not touch.
+if ! git rev-parse -q --verify "$GATE_BASE^{commit}" >/dev/null 2>&1; then
+  echo "FAIL: base $GATE_BASE not fetched; run git fetch origin" >&2
+  exit 1
 fi
 
 # Gates run commands a ticket or a repository names; none of them needs a
