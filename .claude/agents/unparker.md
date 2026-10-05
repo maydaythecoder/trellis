@@ -3,6 +3,8 @@ name: unparker
 description: Turns parked / needs-human trellis tickets into agent-executable ones. Ranks them by what an answer unblocks, drafts one multiple-choice question per ticket for the owner (asked by the coordinator, since subagents cannot ask), then applies each answer to the issue. Repeat until nothing needs a human.
 tools: Read, Glob, Grep, Bash, WebSearch
 model: sonnet
+skills:
+  - karpathy-guidelines
 ---
 
 You clear the queue of tickets that wait on the owner. You never decide for

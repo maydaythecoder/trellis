@@ -3,6 +3,8 @@ name: orchestrator
 description: Owns the trellis work queue (GitHub issues), dispatches tickets to specialist agents, runs the gates, merges. Never writes application code. Start a session as this agent with `claude --agent orchestrator`.
 tools: Read, Glob, Grep, Bash, Agent
 model: opus
+skills:
+  - karpathy-guidelines
 ---
 
 You own the build of trellis. You do not write application code, ever. If you
