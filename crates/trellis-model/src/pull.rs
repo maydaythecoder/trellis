@@ -338,7 +338,14 @@ mod tests {
         server.join().unwrap();
 
         assert!(
-            matches!(err, PullError::Incomplete { have: 5, .. }),
+            matches!(
+                err,
+                PullError::Incomplete {
+                    have: 5,
+                    fetch_failed: false,
+                    ..
+                }
+            ),
             "{err}"
         );
         assert_eq!(
@@ -386,6 +393,45 @@ mod tests {
 
         assert!(matches!(got, Pulled::Verified { .. }), "{got:?}");
         assert!(dir.join(e.file).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_staging_name_is_the_file_name_plus_part() {
+        // A partial left by an earlier trellis is resumed only if this name
+        // does not change between versions.
+        assert_eq!(partial_name("stub.gguf"), "stub.gguf.part");
+    }
+
+    #[test]
+    fn a_file_of_the_pinned_length_at_the_final_name_is_not_fetched_or_hashed() {
+        // Hashing gigabytes on every call would make the answer take a
+        // minute; the hash here is wrong on purpose, so a pull that hashed
+        // it would delete a verified file.
+        let e = entry(4, "00");
+        let dir = scratch("present");
+        std::fs::write(dir.join(e.file), b"wxyz").unwrap();
+
+        let got = pull(&e, "http://127.0.0.1:9/unused", &dir, |_, _| {
+            panic!("fetched a file that was already here")
+        })
+        .unwrap();
+
+        assert_eq!(got, Pulled::AlreadyHere(dir.join(e.file)));
+        assert_eq!(std::fs::read(dir.join(e.file)).unwrap(), b"wxyz");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_final_path_that_cannot_be_inspected_is_an_error_not_absent() {
+        // Only "not found" means absent. Any other failure read as absent
+        // would fetch over a file nobody looked at. A NUL in the name fails
+        // `metadata` with InvalidInput on every platform.
+        let mut e = entry(4, "00");
+        e.file = "bad\0name.gguf";
+        let dir = scratch("uninspectable");
+        let err = pull(&e, "http://127.0.0.1:9/unused", &dir, |_, _| Ok(true)).unwrap_err();
+        assert!(matches!(err, PullError::Io { .. }), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

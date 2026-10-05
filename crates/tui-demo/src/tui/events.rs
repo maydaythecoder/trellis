@@ -267,6 +267,13 @@ mod tests {
         let line = state.transcript.join("");
         assert!(line.contains("tok0"), "the first token survived: {line}");
         assert!(line.contains("tok19"), "and so did the last: {line}");
+        // The initial draw only: the whole batch, Quit included, is applied
+        // before the next one. A draw per message would count 21 or more.
+        assert_eq!(
+            terminal.get_frame().count(),
+            1,
+            "the pending batch was drawn more than once"
+        );
     }
 
     /// The answer to the approval modal leaves the loop for whoever asked.

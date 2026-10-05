@@ -562,6 +562,20 @@ fn run_body(
         // In approve mode every command is put to the person.
         dial.approve.push("bash".to_string());
     }
+    // And with the default list, every other enabled tool that can change
+    // the tree: unlisted, `write_file` and a repository's own tools ran
+    // unasked under the default `["edit"]` (#425, ADR 0018). A list a user
+    // or repository wrote is honoured as written.
+    if dial.mode == config::ControlMode::Approve && !dial.listed {
+        let writers = std::iter::once("write_file")
+            .filter(|t| tooling.tools.enabled(t))
+            .chain(tooling.tools.customs().iter().map(|c| c.name.as_str()));
+        for t in writers {
+            if !dial.approve.iter().any(|a| a == t) {
+                dial.approve.push(t.to_string());
+            }
+        }
+    }
 
     // The vault is compiled here, in memory, before the model is contacted
     // and before the snapshot. Writing the compiled file anywhere in the
@@ -3019,6 +3033,131 @@ mod approval_tests {
             .iter()
             .map(|a| (a.tool.clone(), a.target.clone(), a.outcome.clone(), a.wrote))
             .collect()
+    }
+
+    /// `fixture`, with `tools` appended to the approve-mode config and the
+    /// repository trusted, so a `[[tools.custom]]` in it is enabled.
+    fn fixture_with_tools(name: &str, tools: &str, script: &str) -> (PathBuf, String) {
+        let (dir, spec) = fixture(name, script);
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            format!("[control]\nmode = \"approve\"\n{tools}"),
+        )
+        .unwrap();
+        crate::testutil::git_commit_all(&dir, "tools");
+        crate::testutil::trust(&dir);
+        (dir, spec)
+    }
+
+    /// `write_file` enabled, and a repository tool `stamp` that exits 0.
+    fn writers() -> String {
+        let argv = if cfg!(windows) {
+            "['cmd', '/C', 'exit 0']"
+        } else {
+            "['sh', '-c', 'true']"
+        };
+        format!(
+            "[tools]\nenable = ['write_file']\n\
+             [[tools.custom]]\nname = \"stamp\"\ndescription = \"Stamp.\"\n\
+             command = {argv}\nschema = {{ type = \"object\" }}\n"
+        )
+    }
+
+    const WRITE_THEN_STOP: &str = r#"{"steps":[
+        {"tool":"write_file","path":"pkg/new.py","content":"x = 1\n"},
+        {"tool":"done","summary":"made it"}
+    ]}"#;
+
+    const STAMP_THEN_STOP: &str = r#"{"steps":[
+        {"tool":"stamp"},
+        {"tool":"done","summary":"stamped"}
+    ]}"#;
+
+    #[test]
+    fn approve_mode_asks_before_write_file_with_the_default_list() {
+        // The risk (#425): the default list is `["edit"]` and an unlisted
+        // tool runs unasked, so in approve mode `write_file` created files
+        // without the yes the mode promises.
+        let (dir, spec) = fixture_with_tools("asks-write-file", &writers(), WRITE_THEN_STOP);
+        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(
+            said.contains("write_file pkg/new.py (+1 new)? [y/N]"),
+            "asked before the write:\n{said}"
+        );
+        let t = trail(&dir);
+        assert_eq!(
+            t.control.as_deref(),
+            Some("approve (edit, write_file, stamp)")
+        );
+        let a = actions(&t);
+        assert_eq!((a[0].0.as_str(), a[0].2.as_str()), ("approval", "declined"));
+        assert_eq!(a[1].0, "write_file");
+        assert!(!a[1].3, "a declined write_file wrote nothing: {a:?}");
+    }
+
+    #[test]
+    fn approve_mode_asks_before_a_custom_tool_with_the_default_list() {
+        // The same hole for a repository's own tool: it runs a command that
+        // can change the tree, and ran unasked in approve mode (#425).
+        let (dir, spec) = fixture_with_tools("asks-custom", &writers(), STAMP_THEN_STOP);
+        let (r, said) = run_with(&dir, &spec, answering(&["n"]));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(said.contains("stamp"), "{said}");
+        assert!(said.contains("[y/N]"), "asked before the tool:\n{said}");
+        let a = actions(&trail(&dir));
+        assert_eq!(
+            (a[0].0.as_str(), a[0].2.as_str()),
+            ("approval", "declined"),
+            "{a:?}"
+        );
+        assert_eq!(a[1].0, "stamp");
+        assert!(a[1].2.contains(trellis_loop::DECLINED), "{a:?}");
+    }
+
+    #[test]
+    fn approve_mode_asks_nothing_under_the_auto_flag_with_both_enabled() {
+        // The widened default is approve mode's; `--auto` still asks
+        // nothing, and the write lands.
+        let (dir, spec) = fixture_with_tools("asks-auto", &writers(), WRITE_THEN_STOP);
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding::default(),
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+                steering: None,
+            },
+            &mut out,
+        );
+        assert!(r.is_ok(), "{r:?}");
+        let said = String::from_utf8(out).unwrap();
+        assert!(!said.contains("[y/N]"), "auto asks nothing: {said}");
+        let t = trail(&dir);
+        assert_eq!(t.control.as_deref(), Some("auto"));
+        let a = actions(&t);
+        assert_eq!((a[0].0.as_str(), a[0].3), ("write_file", true), "{a:?}");
+    }
+
+    #[test]
+    fn an_approve_list_someone_wrote_is_not_widened() {
+        // #425 widens only the default. A repository that wrote
+        // `approve = ["edit"]` asked for edits only, and gets that.
+        let (dir, spec) = fixture_with_tools(
+            "asks-explicit",
+            &format!("approve = [\"edit\"]\n{}", writers()),
+            WRITE_THEN_STOP,
+        );
+        let (r, said) = run_with(&dir, &spec, answering(&[]));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(!said.contains("[y/N]"), "{said}");
+        let t = trail(&dir);
+        assert_eq!(t.control.as_deref(), Some("approve (edit)"));
+        assert_eq!(actions(&t)[0].0, "write_file");
     }
 
     #[test]

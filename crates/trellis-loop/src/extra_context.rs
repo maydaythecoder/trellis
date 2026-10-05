@@ -64,11 +64,16 @@ impl ExtraContext {
 
     /// The prompt's first paragraph.
     pub(crate) fn opening(&self) -> String {
-        let role = match &self.system {
+        format!("{}Reply with exactly one JSON tool call.\n\n", self.role())
+    }
+
+    /// The role sentence both openings start with: `system.md` in place of
+    /// [`DEFAULT_ROLE`] when there is one.
+    fn role(&self) -> String {
+        match &self.system {
             Some(s) => format!("{}\n\n", s.trim()),
             None => format!("{DEFAULT_ROLE} "),
-        };
-        format!("{role}Reply with exactly one JSON tool call.\n\n")
+        }
     }
 
     /// The hosted system message's first paragraph (ADR 0024): the same role
@@ -76,11 +81,10 @@ impl ExtraContext {
     /// tool-calling API needs in place of the JSON-reply one. Absent a
     /// `system.md`, these are the bytes the hosted message always began with.
     pub(crate) fn hosted_opening(&self) -> String {
-        let role = match &self.system {
-            Some(s) => format!("{}\n\n", s.trim()),
-            None => format!("{DEFAULT_ROLE} "),
-        };
-        format!("{role}Call exactly one of the provided tools on every reply.\n\n")
+        format!(
+            "{}Call exactly one of the provided tools on every reply.\n\n",
+            self.role()
+        )
     }
 
     /// After the protocol: the appended text, then the grounding paragraph
@@ -515,5 +519,21 @@ mod tests {
         });
         assert!(p.contains("truncated at 8000 characters"), "{p}");
         assert!(p.contains("--- end skill `big` ---"), "{p}");
+    }
+
+    #[test]
+    fn a_forced_skill_is_cut_at_the_window_read_skill_uses() {
+        // The risk: the two windows are separate constants, so changing one
+        // would show a forced skill and a read one cut at different places
+        // while FORCED_SKILL_HEAD's doc still says they match.
+        let call = crate::ToolCall::ReadSkill { name: "s".into() };
+        let whole = "x".repeat(FORCED_SKILL_HEAD);
+        assert_eq!(crate::adapter::shown_observation(&call, &whole), whole);
+        let over = "x".repeat(FORCED_SKILL_HEAD + 1);
+        let shown = crate::adapter::shown_observation(&call, &over);
+        assert!(
+            shown.contains(&format!("truncated at {FORCED_SKILL_HEAD} characters")),
+            "{shown}"
+        );
     }
 }
