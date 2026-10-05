@@ -45,10 +45,10 @@ pub fn kill_tree(pid: u32) {
 /// the caller keeps in it): a group with no members could have had its id
 /// reused, and the signal would reach whoever took it.
 ///
-/// Nothing on Windows. `taskkill /T` walks the tree from a live process,
-/// and after a normal exit the child is gone, so it would reach nothing
-/// (a Job Object would hold the tree, which needs `unsafe` Win32 calls or a
-/// dependency). ADR 0023 §3 states it.
+/// Nothing on Windows: there the tree is held by the Job Object that exec
+/// children and process agents are spawned into through `process-wrap`
+/// (ADR 0035, amending ADR 0023 §3), so there is nothing for this function
+/// to do.
 pub fn kill_group(pgid: u32) {
     if cfg!(windows) {
         return;
