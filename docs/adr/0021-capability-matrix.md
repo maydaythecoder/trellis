@@ -295,6 +295,12 @@ for an external front end to drive trellis. An editor or web UI can be
 built outside this repository without trellis owning it, and every write
 it causes still goes through the orchestrator or a `trellis vault`
 command. No row changes for this.
+**Amended 2026-10-04 (#285):** ADR 0048 places a Tauri desktop interface in
+this repository as `desktop/`, its own Cargo workspace and a `trellis rpc`
+client, owner-directed: the session's choice under the owner's 2026-10-04
+delegation of the upstream plan's open questions. Every write it causes
+still goes through the orchestrator (ADR 0048 section 10), and the TUI stays
+the product interface (Q-19).
 
 Three rows name work that is approved but was not merged into `drain` when
 this section was written, and say "landing" rather than "built": pi 1.2
