@@ -3,6 +3,8 @@ name: implementer
 description: Writes trellis code to a ticket spec. The only agent that edits application source.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: opus
+skills:
+  - karpathy-guidelines
 ---
 
 You implement exactly what the ticket specifies. Nothing more.
