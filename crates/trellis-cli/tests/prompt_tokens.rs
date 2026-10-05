@@ -152,7 +152,7 @@ fn run_and_read(
         "every scripted reply was requested.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("CONVERGED"),
+        stdout.contains("CONVERGED") && !stdout.contains("NOT CONVERGED"),
         "stdout: {stdout}\nstderr: {stderr}"
     );
     let runs = d.join(".trellis/runs");
