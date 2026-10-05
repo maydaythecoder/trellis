@@ -156,7 +156,10 @@ pub(crate) fn figures() -> Figures {
 }
 
 impl trellis_loop::Model for Figures {
-    async fn next_step(&mut self, _: &trellis_loop::Transcript) -> Result<trellis_loop::Step, String> {
+    async fn next_step(
+        &mut self,
+        _: &trellis_loop::Transcript,
+    ) -> Result<trellis_loop::Step, String> {
         Err("not driven".into())
     }
     fn tokens_used(&self) -> u64 {

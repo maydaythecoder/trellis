@@ -959,10 +959,7 @@ stale_claims = \"release\"
             "[work]\nstale_claims = \"list\"\n",
             "[work]\nstale_claims = \"release\"\n",
         );
-        assert_eq!(
-            c.work.and_then(|w| w.stale_claims).as_deref(),
-            Some("list")
-        );
+        assert_eq!(c.work.and_then(|w| w.stale_claims).as_deref(), Some("list"));
     }
 
     #[test]
@@ -972,7 +969,10 @@ stale_claims = \"release\"
         let (d, u) = files("", "");
         std::fs::write(&u, [0xff, 0xfe, b'x']).unwrap();
         let e = RepoConfig::load_with_user(d.path(), Some(&u)).unwrap_err();
-        assert!(format!("{e:#}").contains("exists but could not be read"), "{e:#}");
+        assert!(
+            format!("{e:#}").contains("exists but could not be read"),
+            "{e:#}"
+        );
     }
 
     #[test]

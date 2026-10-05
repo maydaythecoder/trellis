@@ -610,4 +610,22 @@ mod tests {
         let line = doctor(d.path(), &TrustStore::at(home.path().join("trust.json")));
         assert!(line.contains("2 hook(s), 1 custom tool(s)"), "{line}");
     }
+
+    #[test]
+    fn doctor_s_trust_line_counts_the_services_it_asks_trust_for() {
+        // The same risk for a profile's services (#248): a command that runs
+        // beside every task of the profile, left out of what is listed.
+        let d = repo_with("[control]\nmode = \"auto\"\n");
+        let agents = d.path().join(".trellis/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("ext.toml"),
+            "command = [\"python\", \".trellis/agents/agent.py\"]\n\
+             [[services]]\nname = \"db\"\ncommand = [\"python\", \".trellis/agents/db.py\"]\n",
+        )
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let line = doctor(d.path(), &TrustStore::at(home.path().join("trust.json")));
+        assert!(line.contains("1 service(s)"), "{line}");
+    }
 }
