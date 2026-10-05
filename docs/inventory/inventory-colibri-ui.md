@@ -50,7 +50,7 @@
 
 - **already-built:** nothing to do. TRELLIS has it.
 - **drive-via-runtime:** the capability lives in colibri's engine or gateway. TRELLIS reaches it in one of two ways, and needs no GUI either way:
-  - pointing a model spec at the server (`openai-chat:http://127.0.0.1:8000#<model-id>` works without a key on plain http, per `hosted.rs` `with_key_and_env`);
+  - pointing a model spec at the server (`openai-chat:http://127.0.0.1:8000/v1#<model-id>` works without a key on plain http, per `hosted.rs` `with_key_and_env`);
   - reading one of its JSON endpoints.
 - **port:** reimplement natively in TRELLIS's own surfaces (CLI, `session`, `tui`, `rpc`).
 - **desktop-ui:** only meaningful in a graphical shell. Every such row is excluded today (X-70). The disposition applies only if an ADR amends ADR 0021's decision #70. The orchestrator's planning list mentions "Tauri desktop tickets", but that is not owner approval and changes no status here.
@@ -336,7 +336,7 @@ None of these were run or verified. They come from reading the code.
    - If yes, colibri's zero-IPC, zero-plugin shell is a poor template: a TRELLIS front end must drive the orchestrator, through `trellis rpc` as a sidecar or the crates linked in.
    - colibri deliberately does neither: it has no process management and no IPC.
 2. **Should colibri be a documented TRELLIS runtime?**
-   - The likely recipe is `--model openai-chat:http://127.0.0.1:8000#<model-id>` (tier 1, native tools on GLM, Kimi K3, DeepSeek V4; docs/api.md says Qwen3.8 and OLMoE return 400 on tools).
+   - The likely recipe is `--model openai-chat:http://127.0.0.1:8000/v1#<model-id>` (tier 1, native tools on GLM-5.2/5.3, GLM-5.3-Flash, Kimi K3, Qwen3.8, DeepSeek V4 and V4.1; Inkling, OLMoE and Qwen3.6 answer 400 on tools, per the registry in inventory-colibri.md).
    - Tier 2 through `vllm:` probably runs unconstrained: colibri's `/v1/completions` takes `response_format` (openai_server.py:3097-3108), not `guided_json`. Unverified.
    - No run has been measured.
 3. **KV slot pinning.** Should partition agents (ADR 0016, ADR 0037) send colibri's `cache_slot` so each keeps its prefix? docs/brio.md warns that with one slot, interleaved clients evict each other.

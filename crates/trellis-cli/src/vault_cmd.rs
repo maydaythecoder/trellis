@@ -143,8 +143,8 @@ fn vault_dir(root: &Path, flag: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 /// Today, in the system time zone, as JavaScript's `localDay()` gives it.
-fn today() -> Option<String> {
-    Some(jiff::Zoned::now().date().to_string())
+fn today() -> String {
+    jiff::Zoned::now().date().to_string()
 }
 
 /// `dayFromTimestamp`: a file time as a local day, `None` outside years
@@ -171,12 +171,16 @@ fn print_outcome(dir: &Path, out: &Outcome) -> Result<()> {
     for m in &out.messages {
         println!("{m}");
     }
-    if out.touched.is_empty() {
+    sync_dates(dir, &out.touched)
+}
+
+/// Keeps `dates.json` in step with what an edit touched, when it exists.
+fn sync_dates(dir: &Path, touched: &dates::Touched) -> Result<()> {
+    if touched.is_empty() {
         return Ok(());
     }
-    let day = today().context("the local date is outside what dates.json can record")?;
     if let Some(m) =
-        dates::after_edit(&edit::root_of(dir), &out.touched, &day).map_err(anyhow::Error::msg)?
+        dates::after_edit(&edit::root_of(dir), touched, &today()).map_err(anyhow::Error::msg)?
     {
         println!("{m}");
     }
@@ -186,14 +190,7 @@ fn print_outcome(dir: &Path, out: &Outcome) -> Result<()> {
 fn check(dir: &Path, fix: bool) -> Result<()> {
     let r = edit::check(dir, fix)?;
     println!("{}", r.line);
-    if !r.touched.is_empty() {
-        let day = today().context("the local date is outside what dates.json can record")?;
-        if let Some(m) =
-            dates::after_edit(&edit::root_of(dir), &r.touched, &day).map_err(anyhow::Error::msg)?
-        {
-            println!("{m}");
-        }
-    }
+    sync_dates(dir, &r.touched)?;
     if !r.issues.is_empty() {
         println!("issues:");
         for i in &r.issues {
@@ -528,6 +525,6 @@ mod tests {
     fn a_local_day_is_a_calendar_day() {
         let d = local_day(Ok(std::time::SystemTime::now())).unwrap();
         assert!(trellis_vault::dates::normalize_day(&d).is_some(), "{d}");
-        assert_eq!(today().as_deref().map(str::len), Some(10));
+        assert_eq!(today().len(), 10);
     }
 }

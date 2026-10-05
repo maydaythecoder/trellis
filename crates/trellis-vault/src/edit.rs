@@ -356,12 +356,13 @@ pub fn retitle(dir: &Path, note: &str, title: &str) -> Result<Outcome, VaultErro
     }
     let key = normalize_key(title);
     let new_keys = refs::alias_keys(&s.vault.notes[i].path, title);
-    let collides = s
+    let other = s
         .vault
         .notes
         .iter()
         .enumerate()
-        .any(|(j, n)| j != i && refs::alias_keys(&n.path, &n.title).contains(&key));
+        .find(|(j, n)| *j != i && refs::alias_keys(&n.path, &n.title).contains(&key));
+    let collides = other.is_some();
     // A child whose `parent` reached this note only through the old title
     // (or its slug) would be orphaned by the new one. Rewritten as
     // `[[New Title]]`, as body links are, unless that title is also another
@@ -381,13 +382,7 @@ pub fn retitle(dir: &Path, note: &str, title: &str) -> Result<Outcome, VaultErro
             format!("[[{title}]]")
         })
     };
-    if let Some(other) = s
-        .vault
-        .notes
-        .iter()
-        .enumerate()
-        .find(|(j, n)| *j != i && refs::alias_keys(&n.path, &n.title).contains(&key))
-    {
+    if let Some(other) = other {
         out.messages.push(format!(
             "warning: \"{title}\" is also a key of {}; [[{title}]] will resolve to neither",
             other.1.path

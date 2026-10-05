@@ -1463,6 +1463,28 @@ fn here() -> Claimant {
     }
 }
 
+#[test]
+fn a_question_returns_the_task_to_pending_with_no_claim_left_on_it() {
+    // The risk: a task back in pending/ still naming the host, OS and
+    // process start of the run that asked, which an export carries along
+    // and a reader takes for a live claim.
+    let (_d, q) = queue();
+    let id = q.add("x", None, None).unwrap();
+    let claim = q.clone().with_claimant(here()).claim(&id).unwrap().unwrap();
+    claim.ask("which one?", &[]).unwrap();
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!((t.attempts, t.status), (1, Some(Status::Blocked)));
+    assert_eq!(
+        (t.claimed_at, t.claimed_by_pid),
+        (None, None),
+        "claimed_at and claimed_by_pid"
+    );
+    assert_eq!(
+        (t.claimed_host, t.claimed_os, t.claimed_pid_started),
+        (None, None, None)
+    );
+}
+
 /// A claim left behind by a process that recorded `c` (or nothing, for
 /// `None`), as a crash leaves it. Returns the id and the claim's instant.
 fn crashed_claim(q: &Queue, task: &str, c: Option<Claimant>) -> (String, i64) {
@@ -1682,7 +1704,7 @@ fn stale_claim_release_happens_at_most_once_an_hour_per_task() {
 fn stale_claim_release_is_off_under_the_default_list_policy() {
     // `"list"` must behave exactly as before #59: a probe that would
     // release the claim is not consulted, the claim is named with the
-    // requeue hint, and claims record no host.
+    // requeue hint.
     let (_d, q) = queue();
     let (stale, _) = crashed_claim(&q, "stale", Some(here()));
     let before = read_task(&q.path(State::Claimed, &stale)).unwrap();
@@ -1706,9 +1728,6 @@ fn stale_claim_release_is_off_under_the_default_list_policy() {
         "untouched"
     );
     assert!(events(&q, "stale_claim_released").is_empty());
-    let (id, _) = crashed_claim(&q, "plain", None);
-    let t = read_task(&q.path(State::Claimed, &id)).unwrap();
-    assert_eq!((t.claimed_host, t.claimed_os), (None, None));
 }
 
 #[test]
@@ -2115,16 +2134,16 @@ fn mention_wake_ignores_an_unknown_name_and_does_not_read_an_address_as_one() {
 fn mention_wake_ignores_notes_a_run_the_heartbeat_or_the_queue_wrote() {
     // The owner's condition on #57: agent output never wakes an agent, or
     // two profiles that mention each other run forever (ADR 0005). Only a
-    // note from `trellis queue note` counts. On this branch no run writes
-    // notes (#140 adds a model actor); what is here is the heartbeat, a
-    // routine, and the `Human` notes the queue writes on a person's behalf
-    // — a cancel reason, an approval — none of which carry a note id.
+    // note from `trellis queue note` counts. A run writes Actor::Model notes
+    // (a question); the heartbeat and routines write their own; the queue
+    // writes Human notes on a person's behalf; none carry a note id.
     let (_d, q) = queue();
     let id = failed_task(&q);
     q.edit(&id, |t, _| {
         t.note(Actor::Work, "woken: @reviewer");
         t.note(Actor::Routine, "routine fired; @reviewer");
         t.note(Actor::Human, "cancelled: hand to @reviewer");
+        t.note(Actor::Model, question_note("ask @reviewer?", &[]));
         // An id is not enough on its own: a note with one but a
         // non-person actor, as a later writer that numbered its notes
         // would produce, wakes nothing either.
@@ -2133,6 +2152,13 @@ fn mention_wake_ignores_notes_a_run_the_heartbeat_or_the_queue_wrote() {
             actor: Actor::Work,
             text: "@reviewer".into(),
             id: Some("n4".into()),
+            mentions_read: false,
+        });
+        t.notes.push(Note {
+            at: iso_now(),
+            actor: Actor::Model,
+            text: "@reviewer".into(),
+            id: Some("n5".into()),
             mentions_read: false,
         });
         Ok(None)

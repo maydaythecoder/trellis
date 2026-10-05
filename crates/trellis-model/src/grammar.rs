@@ -11,10 +11,9 @@
 //! accept, so it is the wire format for tier 2.
 //!
 //! llguidance's role here is therefore **validation, not delivery**: a schema
-//! it cannot compile is one no runtime should be asked to compile either, and
-//! finding that out at startup beats finding out mid-run. It becomes a
-//! delivery mechanism only for tier 4 (validating returned text) and for
-//! tier 3, which ADR 0013 defers.
+//! it cannot compile is one no runtime should be asked to compile either.
+//! It is used on no shipped path: tier 4 validates by deserializing the
+//! reply, and tier 3 is descoped (ADR 0013).
 
 use llguidance::api::ParserLimits;
 use llguidance::{GrammarBuilder, JsonCompileOptions};
@@ -25,16 +24,14 @@ pub enum GrammarError {
     Schema(String),
 }
 
-/// A compiled grammar for one tool's arguments.
+/// A check that llguidance can compile one tool's argument schema.
 ///
-/// Holds the serialized grammar rather than a live parser: the same bytes
-/// go to a local sampler or to a runtime parameter, and neither needs the
-/// builder that produced them.
+/// Keeps the input schema, not llguidance's output, and is used only from
+/// tests.
 #[derive(Debug, Clone)]
 pub struct ToolGrammar {
     pub tool_name: String,
-    /// The JSON Schema the grammar was compiled from. Kept so `trellis
-    /// doctor` and the trail can show what the model was constrained to.
+    /// The JSON Schema that compiled.
     pub schema: serde_json::Value,
 }
 
@@ -42,8 +39,7 @@ impl ToolGrammar {
     /// Compiles `schema` and returns it on success.
     ///
     /// Compilation is the validation: a schema llguidance cannot compile is
-    /// a schema we must not ship to a runtime either, and finding that out
-    /// at startup beats finding out mid-run.
+    /// a schema we must not ship to a runtime either.
     pub fn compile(tool_name: &str, schema: serde_json::Value) -> Result<Self, GrammarError> {
         let builder = GrammarBuilder::new(None, ParserLimits::default());
         JsonCompileOptions::default()
