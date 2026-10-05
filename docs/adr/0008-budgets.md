@@ -25,8 +25,9 @@ so warnings are relevant rather than noise.
 tokens cheap, not free, and the global ceiling is the backstop against a
 runaway loop regardless of tier.
 
-**Budgets divide across partitions; they do not multiply.** `Budget::split(n)`
-divides iterations and tokens by `n`. Wall-clock is the exception — partitions
+**Budgets divide across partitions; they do not multiply.** `Budget::shares(n)`
+deals iterations and tokens out across `n` partitions, the remainder to the
+first, so the shares sum to the ceiling. Wall-clock is the exception — partitions
 run concurrently, so elapsed time is bounded by the whole ceiling rather than a
 share of it. Per-partition spend is tracked in `tracing` spans nested under the
 run span.
@@ -59,6 +60,10 @@ Current defaults (40 iterations, 20 minutes, 2M tokens) are **placeholders**,
 marked as such in `trellis-loop/src/budget.rs` and in `ASSUMPTIONS.md` A-7.
 They are not measurements and must not be cited as any. Calibration comes from
 real usage after v0.2, per configuration, per `COST_MODEL.md`.
+
+**Amended 2026-10-05 (#402, #429):** `Budget::split`, which floored each
+share and clamped it to one, is removed; `Budget::shares` (ADR 0037 §5) is the
+only way a budget is divided, and the rule above names it.
 
 ## Amendment 2026-10-02: the calibration rule, and why the defaults did not move
 

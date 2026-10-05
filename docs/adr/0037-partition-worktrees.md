@@ -51,9 +51,9 @@ caller, and the crate had no `JoinSet`, no semaphore and no drop guard.
    of iterations and tokens to the first partitions in plan order, so the
    shares sum to the run budget exactly. A plan with more partitions than the
    run has iterations or tokens is refused before any worktree exists.
-   `Budget::split`, which floors and clamps each share to at least one, is
-   left as it was and is not used here: the clamp grants a wide plan more
-   than the ceiling.
+   `Budget::shares` is the only division: `Budget::split`, which floored
+   and clamped each share to at least one, granting a wide plan more than
+   the ceiling, is removed (amendment below).
 
 ## What this does not do
 
@@ -104,3 +104,6 @@ apart in time, and file-disjointness keeps the merge clean.
 
 High. The supervisor is one module (`crates/trellis-loop/src/supervise.rs`)
 with no caller outside its tests, and `Budget::shares` is additive.
+
+**Amended 2026-10-05 (#402, #429):** `Budget::split` is removed, so §5 names
+`Budget::shares` as the only way a budget is divided.
