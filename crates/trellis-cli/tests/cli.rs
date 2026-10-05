@@ -3359,6 +3359,38 @@ fn subcommand_case_leaves_a_task_text_alone() {
     }
 }
 
+#[test]
+fn start_screen_is_for_bare_trellis_only_and_run_still_refuses() {
+    // ADR 0050 §3: the start screen is bare `trellis`'s alone. The risk is
+    // that opening it loosened root discovery for everything, and `trellis
+    // run` in a home directory starts walking it instead of refusing.
+    let d = scratch("start-screen-run");
+    let above: Vec<_> = d.ancestors().filter(|a| a.join(".git").exists()).collect();
+    assert!(
+        above.is_empty(),
+        "the scratch directory is inside a repository, so this proves nothing: {above:?}"
+    );
+    let out = run(&d, &["run", "--model", "scripted:none.json", "x"]);
+    let said = combined(&out);
+    assert!(!out.status.success(), "{said}");
+    assert!(
+        said.contains("cannot determine the repository root"),
+        "{said}"
+    );
+    assert!(said.contains("no git repository found at"), "{said}");
+    // Bare `trellis` with no terminal (output is captured here) has no one
+    // to answer a screen, so it refuses as it did before.
+    let bare = run(&d, &[]);
+    let said = combined(&bare);
+    assert!(!bare.status.success(), "{said}");
+    assert!(
+        said.contains("cannot determine the repository root"),
+        "{said}"
+    );
+    assert!(!d.join(".git").exists(), "{said}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn trellis_out(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
