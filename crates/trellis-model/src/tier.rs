@@ -14,18 +14,16 @@ use serde::{Deserialize, Serialize};
 pub enum AdapterTier {
     /// The model's own function-calling API. Used when present.
     Native,
-    /// The compiled grammar is handed to the runtime's guided-decoding
-    /// parameter (llama.cpp, vLLM, SGLang). Their embedded llguidance does
-    /// the masking — the same engine, so the grammar artifact is identical
-    /// to the one tier 3 would use locally.
+    /// The tool's JSON Schema goes in the runtime's guided-decoding field
+    /// (llama.cpp, vLLM, SGLang), and the runtime compiles and enforces it.
     RuntimeConstrained,
     /// TRELLIS owns the sampling loop and applies the mask itself. The tier
-    /// that makes any model work regardless of what it was trained for, and
-    /// the default for local open weights. Needs logit access, hence
-    /// in-process inference (S17).
+    /// that makes any model work regardless of what it was trained for; not
+    /// built, descoped by ADR 0013. Needs logit access, hence in-process
+    /// inference (S17).
     HarnessConstrained,
-    /// Opaque API with neither native tools nor guided decoding: llguidance
-    /// validates returned text and we retry on failure. Lossy and slow;
+    /// Opaque API with neither native tools nor guided decoding: the reply
+    /// is validated by deserializing it and we retry on failure. Lossy and slow;
     /// the user is warned loudly.
     ValidateAndRetry,
 }
@@ -177,7 +175,7 @@ impl Probe {
                  agents sequentially"
                 .to_string(),
             BatchingCapability::ContinuousUnmeasured => {
-                "batching:   continuous, concurrency not reported; `--agents auto` stays at 1"
+                "batching:   continuous, concurrency not reported; multi-agent mode is not built, so `--agents` accepts only 1"
                     .to_string()
             }
             BatchingCapability::Unknown => "batching:   unknown; treated as single-stream, \
@@ -387,7 +385,7 @@ mod tests {
         );
         assert!(
             text.matches(".trellis/config.toml").count() >= 2,
-            "both the checker and the test runner need the remedy, not just              whichever is listed first: {text}"
+            "both the checker and the test runner need the remedy, not just whichever is listed first: {text}"
         );
     }
 
@@ -457,6 +455,10 @@ mod batching_report_tests {
         assert!(
             l.contains("not reported"),
             "the unknown half still has to be said: {l}"
+        );
+        assert!(
+            !l.contains("--agents auto"),
+            "`trellis run` accepts only `--agents 1`; doctor must not offer `auto`: {l}"
         );
     }
 
