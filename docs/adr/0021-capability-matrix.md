@@ -57,14 +57,19 @@ wherever the two disagree. The items those sections name as not built are:
   Amended 2026-09-29 (#160): `HTTPS_PROXY` is landing (#150), not yet
   merged; row 2.13 below says so. *Amended 2026-10-05 (#416): built
   (#150, ADR 0024 §1).*
+  *Amended 2026-10-04 (#316): HTTPS_PROXY built (#150).*
 - **W-D (0025):** `/new`, `/name`, `/copy`, RPC `compact`, and a user-level
   `system.md`. Amended 2026-09-29 (#160): `/name` and `/copy` are landing
   (#109), not yet merged. *RPC `compact` built 2026-09-29 (#110; ADR 0025
   §5).* *Amended 2026-10-05 (#416): `/name` and `/copy` built (#109; ADR
   0025 "Not built", `session.rs`).*
-- **W-E (0026):** IANA time-zone names (UTC and fixed offsets only),
-  `@profile` mentions, prompt-token and dollar accounting, and webhook or API
-  triggers. Routines fire only while `work` runs.
+  *Amended 2026-10-04 (#316): /name and /copy merged (#109). A user-level
+  `system.md` was declined (#111) by the owner on 2026-09-28: ADR 0025 §2
+  stands, and system prompt files are repository-level only.*
+- **W-E (0026):** dollar accounting, and webhook or API triggers. Routines
+  fire only while `work` runs. *Corrected 2026-10-04: this bullet also
+  listed IANA time-zone names, `@profile` mentions and prompt-token
+  accounting; they are built (#47, #57, #108; ADR 0026 §7, §1, §5).*
 
 ## Context
 
@@ -106,7 +111,7 @@ override any row.
 | Items | Disposition |
 |---|---|
 | 1.1 turn loop | built (`trellis-loop`, ADR 0005) |
-| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. `steer` and `follow_up` over `trellis rpc` are built (#114, ADR 0025 §5). Still to come: queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). **Amended 2026-10-05 (#416):** built: #113 (delivery between loop turns), #114 (ADR 0025 §5), #115 (`tui`), #116 (`session`) and #117 (the trail) are all merged. |
+| 1.2 steering / follow-up queues | deferred: `session`/`tui` can accept input mid-run only after a reverse channel exists for more than approvals; ADR 0018's channel is the base. **Amended 2026-09-29 (#160):** owner-approved 2026-09-28 to build in parts. Delivery of queued input between loop turns in `trellis-loop` is landing (#113), not yet merged. `steer` and `follow_up` over `trellis rpc` are built (#114, ADR 0025 §5). Still to come: queued input in `tui` (#115) and in `session` (#116), and recording it as user input in the trail (#117). **Amended 2026-10-05 (#416):** built: #113 (delivery between loop turns), #114 (ADR 0025 §5), #115 (`tui`), #116 (`session`) and #117 (the trail) are all merged. **Amended 2026-10-04 (#316):** built in every part named above: delivery between loop turns (#113, `SteeringLog::drain` in `trellis-loop`), `steer` and `follow_up` over `trellis rpc` (#114), queued input in `tui` (#115) and in `session` (#116), and the trail record (#117, #176; ADR 0034). `clear_queue` is excluded (ADR 0025 §5). pi's one-at-a-time queue modes are not built, because every steer waiting at a model request is delivered in it. |
 | 1.3 built-in tools read/edit | built; **write, grep, find, ls, bash → W-B** (bash is opt-in, see ADR 0023) |
 | 1.4 tool selection flags | W-B (`[tools]` enable/disable) |
 | 1.5 output truncation | built (2,000-character tail, and a separate skill window, ADR 0019) |
@@ -129,7 +134,7 @@ override any row.
 | 2.10 llama.cpp router | built in part (`trellis model pull`); router deferred. **Amended 2026-09-29 (#45):** the owner kept the router deferred on 2026-09-28. Listing, loading and unloading models on a running llama.cpp router is not built; `trellis model pull` is the download half. **Amended 2026-09-30 (#216):** `pull` fetches at a pinned commit and verifies SHA-256 before the file is moved into place (ADR 0044). |
 | 2.11 Radius gateway | excluded: networked service we would control (ADR 0010) |
 | 2.12 custom providers | W-C (a `[[providers]]` table naming a protocol and base URL) |
-| 2.13 transports / proxy | W-C (HTTPS; proxy from the environment); websocket excluded. **Amended 2026-09-29 (#160):** W-C did not build the proxy (see "Where this stands"). `HTTPS_PROXY` and `NO_PROXY` are landing (#150, an ADR 0024 §1 amendment), not yet merged. **Amended 2026-10-05 (#416):** built (#150, ADR 0024 §1; `crates/trellis-model/src/transport.rs`, held by `a_proxy_is_used_only_for_https_to_a_remote_host` and `hosted.rs`'s `a_refused_proxy_fails_at_construction_before_any_request`). |
+| 2.13 transports / proxy | W-C (HTTPS; proxy from the environment); websocket excluded. **Amended 2026-09-29 (#160):** W-C did not build the proxy (see "Where this stands"). `HTTPS_PROXY` and `NO_PROXY` are landing (#150, an ADR 0024 §1 amendment), not yet merged. **Amended 2026-10-05 (#416):** built (#150, ADR 0024 §1; `crates/trellis-model/src/transport.rs`, held by `a_proxy_is_used_only_for_https_to_a_remote_host` and `hosted.rs`'s `a_refused_proxy_fails_at_construction_before_any_request`). **Amended 2026-10-04 (#316):** proxy built (#150); this row no longer reads as landing. |
 | 2.14 pi-ai extras | constrained sampling built (llguidance, tier 2); image generation and classification excluded (not a coding-loop concern) |
 | 3.1 context files AGENTS.md / CLAUDE.md | W-D |
 | 3.2–3.3 SYSTEM.md / APPEND_SYSTEM.md, flags | W-D (`.trellis/system.md`, `.trellis/append_system.md`; the grounding clause cannot be removed) |
@@ -140,7 +145,7 @@ override any row.
 | 5.3 `/skill:name` force-load | W-D (`run --skill <name>` and session `/skill`) |
 | 5.4 extra skill locations | W-D (`~/.agents/skills` read-only, after trust) |
 | 6 prompt-template arguments | W-D |
-| 7 slash commands | built in part (`session`); `/new`, `/name` and `/copy` → W-D; `/login`, `/logout`, `/share` and `/bug` excluded (ADR 0010, networked). **Amended 2026-09-29 (#160):** W-D did not build `/name` or `/copy`; both are landing in `trellis session` (#109), not yet merged. **Amended 2026-10-05 (#416):** `/name` and `/copy` built in `trellis session` (#109; ADR 0025 "Not built", `session.rs`). |
+| 7 slash commands | built in part (`session`); `/new`, `/name` and `/copy` → W-D; `/login`, `/logout`, `/share` and `/bug` excluded (ADR 0010, networked). **Amended 2026-09-29 (#160):** W-D did not build `/name` or `/copy`; both are landing in `trellis session` (#109), not yet merged. **Amended 2026-10-05 (#416):** `/name` and `/copy` built in `trellis session` (#109; ADR 0025 "Not built", `session.rs`). **Amended 2026-10-04 (#316):** /name and /copy built (#109); this row no longer reads as landing. |
 | 8.1–8.4 session tree, branching, fork | deferred: the trail is the record, and each run is a fresh loop. A branchable session is v2 memory work (v0.3 closed without it) |
 | 8.5–8.7 compaction | W-C |
 | 8.8 export and share | export → W-D (`trellis log --json`); share excluded (networked). **Amended 2026-09-29 (#143):** HTML export excluded. `trellis log --json` is the export, and an HTML view can be rendered from it outside trellis; a renderer inside trellis would have to escape untrusted trail text (ADR 0007) for a browser, a new injection surface for nothing the JSON lacks. |
@@ -184,8 +189,8 @@ override any row.
 | 1–3 multi-company, company lifecycle, settings | excluded [db][multi-user]: one repository is one trellis "company" |
 | 4 reporting tree | W-E (`reports_to` on agent profiles; no cycles) |
 | 5–6 roles, members | excluded [multi-user] |
-| 7 agent permissions | W-E (per-profile `[control]`, tool enable list, `deny_write`) |
-| 8–9 team catalog, built-in agents | deferred |
+| 7 agent permissions | W-E (per-profile `[control]`, tool enable list, `deny_write`). Corrected 2026-10-04: a profile also has its own write scope, `allow_write`, which only narrows what the repository allows (#182; ADR 0026 §4). |
+| 8–9 team catalog, built-in agents | deferred. Corrected 2026-10-04: a starter catalog is built as copy-in profiles under `examples/agents/` (`implementer`, `test-writer`, `docs-writer`; #55, #183), which a person copies into `.trellis/agents/`; nothing is built in. |
 | 10–11 16 external adapters, ACP | W-E adds one `process` profile: runs any command in the worktree, then trellis's checks decide. The adapters themselves are excluded because each one wraps a third-party agent. |
 | 12, 17–18 external adapters as plugins, sandboxes | excluded [server]; sandbox deferred |
 | 13 lifecycle pause/resume/terminate | W-E (profile `paused`) |
@@ -195,26 +200,26 @@ override any row.
 | 19–20 task fields and statuses | W-E (priority, labels, goal = vault stem, parent task, assignee profile, blockers, status set) |
 | 21–22 atomic checkout, execution lock | built (ADR 0020 hard-link claim) |
 | 23–24 blockers, sub-issues waking parents | W-E |
-| 25 comments | W-E (a notes log per task; `@profile` mentions are deferred) |
+| 25 comments | W-E (a notes log per task; `@profile` mentions are deferred). Corrected 2026-10-04: an `@profile` mention in a person's note wakes that profile's task on the next `work` tick (#57; ADR 0026 §1). |
 | 26–28 documents, attachments, work products | deferred; the trail and the diff are the work product. **Amended 2026-09-29 (#56):** excluded, for the same reason: the trail and the diff are the work product. A task's `focus` note (ADR 0017) and files in the repository cover input documents, and copies stored in the git dir would be lost with a linked worktree (ADR 0020 §1) and not versioned by git. |
 | 29 labels | W-E |
 | 30, 34 interactions, decisions | built in part (ADR 0026 §1, #140): a queued task's run may end on an `ask_human` question with up to 8 options; the task waits `blocked` (reason `question`) and a person answers with `queue note` and `queue set --status todo`. A structured decision record is deferred |
 | 31, 37–38 work modes, cases, feedback training | deferred. **Amended 2026-09-29:** 31 work modes excluded (#141): a proposed breakdown is model text, and the human files tasks with `queue add --parent`; a mode whose output filed tasks would let the model create its own work queue with no human step. 37 cases and pipelines excluded (#58): a case is a parent task with blockers (rows 23–24), and a second hierarchy beside parent tasks would be a second source of truth for the same ordering. 38 feedback votes excluded until something reads them (#142): a vote nothing consumes is a record without a use, and feeding votes into prompts would make human approval read as evidence of correctness (ADR 0004). |
 | 32 execution policy (review stage) | W-E (`needs_approval` on a task: `work` does not claim it until `trellis queue approve`) |
-| 33 watchdogs | built in part (stale claims listed); deferred beyond that |
+| 33 watchdogs | built in part (stale claims listed); deferred beyond that. Corrected 2026-10-04: a heartbeat can also release a stale claim, opt in with `[work] stale_claims = "release"` (#59; ADR 0020). |
 | 35–36 attention feed, inbox policy | excluded [web-ui][multi-user] |
 | 39–40 projects, goals with ancestry | goals: built (vault lineage, ADR 0020 §6); projects excluded (one repository) |
-| 41 wake triggers | W-E: timer (`work --every`), routine, blockers resolved, approval; mention deferred |
+| 41 wake triggers | W-E: timer (`work --every`), routine, blockers resolved, approval; mention deferred. Corrected 2026-10-04: a mention wakes too (#57; ADR 0026 §1). |
 | 42–46 DB queue, scheduler, runs, protocol | built locally (ADR 0020); coalescing → W-E (a routine never enqueues a duplicate while one is pending) |
-| 47–49 routines | W-E (5-field cron with timezone, the coalesce/skip/always and skip/catch-up policies, `{{var}}` templates); webhook and API triggers excluded [server] |
-| 50–54 costs and budgets | W-E, **in tokens** from the trail, with monthly and lifetime windows, an 80% warning and a hard stop that pauses the profile. Dollars are excluded until COST_MODEL.md prices them. **Amended 2026-09-29 (#67):** dollars deferred to v1.x. Runs stay token-only through v1.0. No dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted; when dollars arrive they sit beside tokens and never replace them. |
+| 47–49 routines | W-E (5-field cron with timezone, the coalesce/skip/always and skip/catch-up policies, `{{var}}` templates); webhook and API triggers excluded [server]. Corrected 2026-10-04: the timezone may be an IANA zone name as well as UTC or a fixed offset (#47; ADR 0026 §7). |
+| 50–54 costs and budgets | W-E, **in tokens** from the trail, with monthly and lifetime windows, an 80% warning and a hard stop that pauses the profile. Dollars are excluded until COST_MODEL.md prices them. **Amended 2026-09-29 (#67):** dollars deferred to v1.x. Runs stay token-only through v1.0. No dollar figure is shown until COST_MODEL.md has a sourced per-model price table and prompt tokens are counted; when dollars arrive they sit beside tokens and never replace them. Corrected 2026-10-04: prompt tokens are counted, in the ledger as a second number beside the completion tokens and never added to them (#108; ADR 0026 §5). Dollars stay deferred. |
 | 55–57 approvals, board | W-E (task approval and budget override via `trellis queue approve`); hire and strategy approvals excluded [multi-user] |
 | 58 trust presets | deferred |
-| 59–63 execution workspaces, dev servers, previews | deferred to v1.1 (parallel worktrees are ADR 0016 territory); previews excluded [server] |
+| 59–63 execution workspaces, dev servers, previews | deferred to v1.1 (parallel worktrees are ADR 0016 territory); previews excluded [server]. Corrected 2026-10-04: a profile's `[[services]]`, such as a dev server, start beside each task it runs (#60; ADR 0026 §12); a per-task worktree is still not built. |
 | 64–67 skills import, catalog, injection modes, policy | built (ADR 0019); per-profile skill allow/deny → W-E |
 | 68 Skill Studio | excluded [web-ui] |
 | 69–71 secrets | excluded: ADR 0010 |
-| 72–75 connectors, tool gateway, MCP | excluded: brief v2.0 ("MCP exposure") and [server] |
+| 72–75 connectors, tool gateway, MCP | excluded: brief v2.0 ("MCP exposure") and [server]. **Amended 2026-10-04 (#316):** the owner's answer of 2026-09-28 keeps this excluded for consuming MCP as well as exposing it (#73), until a v2.0 brief; trusted custom command tools (W-B) give the model external tools. |
 | 76–82 plugins | excluded [server][web-ui]; the executable hooks of W-B are the local extension point |
 | 83–84 activity log, export | W-E (JSONL activity log in the git dir; `trellis queue log`) |
 | 85–87 portability | W-E (`trellis queue export/import` of profiles, routines and tasks to a folder; nothing secret exists to scrub) |
@@ -307,12 +312,10 @@ the product interface (Q-19).
 desktop's page served on 127.0.0.1 only, behind a per-launch token and a Host
 guard, with every write still through the orchestrator. Owner-directed.
 
-Three rows name work that is approved but was not merged into `drain` when
-this section was written, and say "landing" rather than "built": pi 1.2
-(#113, with #114–#117 to follow), pi 2.13 (#150) and pi 7 (#109). A row
-moves to built only once its work is merged.
-*Amended 2026-10-05 (#416):* all three are now merged (#113–#117, #150,
-#109, on `dev`) and their rows say built.
+Three rows named work that was approved but not merged into `drain` when
+this section was written: pi 1.2 (#113–#117), pi 2.13 (#150) and pi 7
+(#109). All three are merged and read built (corrected 2026-10-04, #316;
+also recorded by #416). A row moves to built only once its work is merged.
 
 ## Rules every wave follows
 
