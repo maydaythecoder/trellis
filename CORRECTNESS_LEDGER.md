@@ -1371,14 +1371,14 @@ killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_
 killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1268:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
 equivalent (#248): at `now == until` the mutant runs one more pass that sleeps `min(100ms, 0)` and checks the flag again; the wait, the flag and the answer are the same | crates/trellis-cli/src/work.rs:1268:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
 killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1276:9: delete ! in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/context_files.rs:86:52: replace == with != in user_skills_note
-#248 | crates/trellis-cli/src/context_files.rs:96:26: replace && with || in user_skills_note
-#248 | crates/trellis-cli/src/context_files.rs:103:18: replace > with >= in user_skills_note
-#248 | crates/trellis-cli/src/context_files.rs:325:30: replace > with >= in context_files
-#248 | crates/trellis-cli/src/context_files.rs:378:19: replace > with >= in system_file
-#248 | crates/trellis-cli/src/context_files.rs:405:40: replace + with - in load
-#248 | crates/trellis-cli/src/context_files.rs:406:16: replace > with >= in load
-#248 | crates/trellis-cli/src/context_files.rs:432:59: replace == with != in load
+killed (#248) by context_files::installed_tests::a_user_s_own_skill_alone_is_reported_with_no_installed_count | crates/trellis-cli/src/context_files.rs:86:52: replace == with != in user_skills_note
+killed (#248) by context_files::installed_tests::a_user_s_own_skill_alone_is_reported_with_no_installed_count | crates/trellis-cli/src/context_files.rs:96:26: replace && with || in user_skills_note
+killed (#248) by context_files::installed_tests::a_user_s_own_skill_alone_is_reported_with_no_installed_count | crates/trellis-cli/src/context_files.rs:103:18: replace > with >= in user_skills_note
+killed (#248) by context_files::tests::a_context_file_exactly_at_the_cap_loads_and_so_does_a_system_file | crates/trellis-cli/src/context_files.rs:325:30: replace > with >= in context_files
+killed (#248) by context_files::tests::a_context_file_exactly_at_the_cap_loads_and_so_does_a_system_file | crates/trellis-cli/src/context_files.rs:378:19: replace > with >= in system_file
+killed (#248) by context_files::tests::files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none | crates/trellis-cli/src/context_files.rs:405:40: replace + with - in load
+killed (#248) by context_files::tests::files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none | crates/trellis-cli/src/context_files.rs:406:16: replace > with >= in load
+killed (#248) by context_files::tests::a_skill_forced_twice_loads_once_and_each_named_skill_loads | crates/trellis-cli/src/context_files.rs:432:59: replace == with != in load
 #248 | crates/trellis-cli/src/rpc.rs:104:9: replace <impl Visit for Fields>::record_i64 with ()
 #248 | crates/trellis-cli/src/rpc.rs:107:9: replace <impl Visit for Fields>::record_bool with ()
 #248 | crates/trellis-cli/src/rpc.rs:330:9: replace <impl trellis_loop::Model for Watched<'_, M>>::tokens_used -> u64 with 0
