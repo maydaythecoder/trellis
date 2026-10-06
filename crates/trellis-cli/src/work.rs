@@ -1219,17 +1219,21 @@ fn instructions(root: &Path, p: &Profile) -> Result<Option<String>> {
     }
 }
 
-/// The newest trail's run id: its file stem, which `record_trail` makes
+/// Every trail's run id: its file stem, which `record_trail` makes
 /// `<timestamp>-<slug>`. Read by name only — the contents are untrusted, and
-/// the name is all that is needed.
-fn newest_run_id(root: &Path) -> Option<String> {
-    let rd = std::fs::read_dir(root.join(".trellis").join("runs")).ok()?;
+/// the name is all that is needed. A run's id is the stem that was not here
+/// before it, not the greatest one: the stamp is wall-clock time, and after
+/// the clock steps back a new trail sorts below an older one (#472).
+fn run_ids(root: &Path) -> BTreeSet<String> {
+    let Ok(rd) = std::fs::read_dir(root.join(".trellis").join("runs")) else {
+        return BTreeSet::new();
+    };
     rd.filter_map(Result::ok)
         .filter_map(|e| {
             let n = e.file_name().to_str()?.to_string();
             n.strip_suffix(".json").map(str::to_string)
         })
-        .max()
+        .collect()
 }
 
 /// The line for a budget pause `enforce` lifted, with its reason: a
@@ -1495,7 +1499,7 @@ impl Runner for CliRunner<'_> {
                 steering: None,
             },
         };
-        let before = newest_run_id(self.root);
+        let before = run_ids(self.root);
         let exit = cmd_run(
             self.root,
             &text,
@@ -1513,8 +1517,7 @@ impl Runner for CliRunner<'_> {
             control,
             &mut crate::output::human(),
         );
-        let after = newest_run_id(self.root);
-        let run_id = if after != before { after } else { None };
+        let run_id = run_ids(self.root).difference(&before).max().cloned();
         match exit {
             Ok(RunExit::Converged) => RunEnd::Converged { run_id },
             Ok(RunExit::NotConverged { restored: true }) => RunEnd::RolledBack { run_id },
