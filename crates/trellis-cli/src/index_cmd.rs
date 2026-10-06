@@ -73,7 +73,10 @@ fn qualified(index: &trellis_index::Index, s: &trellis_index::SymbolEntry) -> St
 /// Ambiguity is an error rather than a first match: choosing silently between
 /// two definitions with the same name would put a blast radius — or a
 /// partition boundary — on a symbol the user did not mean.
-fn resolve_symbol(index: &trellis_index::Index, query: &str) -> Result<trellis_core::SymbolId> {
+pub(crate) fn resolve_symbol(
+    index: &trellis_index::Index,
+    query: &str,
+) -> Result<trellis_core::SymbolId> {
     let matches: Vec<trellis_core::SymbolId> = index
         .symbols
         .iter()
