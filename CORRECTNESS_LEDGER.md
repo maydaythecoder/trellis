@@ -1153,17 +1153,17 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/install.rs:636:41: replace || with && in resolve
 #248 | crates/trellis-cli/src/install.rs:773:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load
 #248 | crates/trellis-cli/src/install.rs:801:38: replace || with && in remove_tree
-#248 | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in probe_proc
-#248 | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in probe_proc
-#248 | crates/trellis-cli/src/liveness.rs:59:28: replace == with != in probe_proc
-#248 | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with true in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with false in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with false in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with true in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:123:28: delete ! in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with false in bounded
+killed (#248) by liveness::tests::the_host_is_the_name_the_platform_records_for_this_machine | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some(String::new())
+killed (#248) by liveness::tests::the_host_is_the_name_the_platform_records_for_this_machine | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some("xyzzy".into())
+unexercisable (#248): needs a /proc/<pid>/stat read that fails other than NotFound (a holder exiting between open and read); none happens on demand, and `/proc` stat files are world-readable | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in probe_proc
+killed (#248) by liveness::tests::a_pid_with_no_proc_entry_is_gone | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in probe_proc
+killed (#248) by liveness::tests::a_pid_with_no_proc_entry_is_gone | crates/trellis-cli/src/liveness.rs:59:28: replace == with != in probe_proc
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with true in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with false in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with false in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with true in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:123:28: delete ! in probe_ps
+unexercisable (#248): needs a probe child that runs past PROBE_BOUND, a 20 s const; a test would block for it | crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with false in bounded
 killed (#248) by tests/orchestration.rs a_routine_may_assign_its_task_to_a_profile_and_not_to_a_missing_one | crates/trellis-cli/src/orchestrate.rs:97:16: delete ! in load_routines
 killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with String::new()
 killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with "xyzzy".into()
