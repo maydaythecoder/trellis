@@ -3,6 +3,8 @@ use crate::plain;
 use crate::{config, doctor_extra, hosted};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use trellis_model::colibri::{self, Health, Identity};
+use trellis_model::{ApiKey, RuntimeError};
 
 /// What a constraint probe means for the run about to start.
 ///
@@ -112,6 +114,10 @@ pub(crate) fn truncate_module(m: &str, width: usize) -> String {
 /// at all, so its capability is unknown. An `Err` is a slot count that could
 /// not be read, which says nothing about the runtime, so callers treat it as
 /// `Unknown` and say why.
+///
+/// A hosted spec on this machine may be colibri (ADR 0047 decision 3), whose
+/// `/health` reports its KV slots; that count is the capability here, as in
+/// `doctor`, through [`hosted_batching`].
 pub(crate) fn probe_batching(
     spec: &trellis_model::ModelSpec,
     cfg: &config::RepoConfig,
@@ -119,8 +125,11 @@ pub(crate) fn probe_batching(
 ) -> Result<trellis_model::BatchingCapability> {
     use trellis_model::BatchingCapability;
 
-    if hosted::resolve(spec, cfg, from_user)?.is_some() {
-        return Ok(BatchingCapability::ContinuousUnmeasured);
+    if let Some(r) = hosted::resolve(spec, cfg, from_user)? {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        return hosted_batching(&rt.block_on(read_colibri(&r))).map_err(anyhow::Error::msg);
     }
     let trellis_model::ModelSpec::Runtime {
         dialect,
@@ -144,6 +153,135 @@ pub(crate) fn probe_batching(
         // scheduler will actually grant is not a number to invent.
         None => BatchingCapability::ContinuousUnmeasured,
     })
+}
+
+/// What a hosted endpoint said when asked whether it is colibri (ADR 0047
+/// decision 3), and colibri's `/health` when it is.
+struct ColibriSeen {
+    identity: Identity,
+    health: Option<Result<Health, RuntimeError>>,
+}
+
+/// Reads `r`'s `/v1/models`, then `/health` when the server is colibri,
+/// through `trellis_model::colibri` (each bounded by its `READ_TIMEOUT`).
+///
+/// Both carry the key `hosted::resolve` gave `r`, read the way the tier-1
+/// client reads it, and so none when its variable is unset: identifying
+/// colibri never changes where a key goes (ADR 0024 §3). A base that is not
+/// loopback is answered `NotLoopback` without a connection.
+async fn read_colibri(r: &hosted::Resolved) -> Result<ColibriSeen, RuntimeError> {
+    let key = ApiKey::from_env(&r.key_env);
+    let identity = colibri::identify(&r.base, key.as_ref()).await?;
+    let health = match identity {
+        Identity::Identified { .. } => Some(colibri::health(&r.base, key.as_ref()).await),
+        _ => None,
+    };
+    Ok(ColibriSeen { identity, health })
+}
+
+/// A hosted endpoint's batching from [`read_colibri`], for `doctor` and for
+/// `probe_batching` alike, so the line `doctor` prints and the width `trellis
+/// run --agents` takes agree. A provider that is not colibri batches by
+/// design and reports no number. An `Err` is a read that failed, already
+/// passed through [`plain`]: the text is the server's or about it.
+fn hosted_batching(
+    seen: &Result<ColibriSeen, RuntimeError>,
+) -> Result<trellis_model::BatchingCapability, String> {
+    use trellis_model::BatchingCapability;
+    match seen {
+        Ok(ColibriSeen {
+            health: Some(Ok(h)),
+            ..
+        }) => Ok(colibri_batching(h)),
+        Ok(ColibriSeen { health: None, .. }) => Ok(BatchingCapability::ContinuousUnmeasured),
+        Ok(ColibriSeen {
+            health: Some(Err(e)),
+            ..
+        })
+        | Err(e) => Err(plain(&e.to_string())),
+    }
+}
+
+/// colibri's batching from its `kv_slots` (ADR 0047 decision 7): continuous
+/// with that count above one, single-stream at one. The count is colibri's
+/// configured slots, not a measurement of what they sustain; `doctor` says
+/// so. No `kv_slots` (a liveness-only body) is not knowledge of one slot.
+fn colibri_batching(h: &Health) -> trellis_model::BatchingCapability {
+    use trellis_model::BatchingCapability;
+    match h.kv_slots {
+        Some(n) if n > 1 => BatchingCapability::Continuous {
+            measured_concurrency: n,
+        },
+        Some(_) => BatchingCapability::SingleStream,
+        None => BatchingCapability::Unknown,
+    }
+}
+
+/// `doctor`'s runtime line for an identified colibri: the served id, and
+/// whether the spec names it. colibri answers 404 `model_not_found` to any
+/// request naming another id (ADR 0047 finding 3).
+fn colibri_runtime(base: &str, spec_model: &str, served: &str) -> String {
+    let (served, spec_model) = (plain(served), plain(spec_model));
+    if served == spec_model {
+        format!("colibri at {base}, serving `{served}`; the spec's model matches it")
+    } else {
+        format!(
+            "colibri at {base}, serving `{served}`; the spec's `{spec_model}` does NOT match \
+             it, and colibri answers 404 to a request naming any other id"
+        )
+    }
+}
+
+/// `doctor`'s lines for what colibri's `/health` reported, each marked as
+/// colibri's own report (ADR 0047 decision 7). Every string is the
+/// server's, so each goes through [`plain`].
+fn colibri_health_lines(h: &Health) -> Vec<String> {
+    if h.liveness_only() {
+        return vec![
+            "health:     liveness only. colibri shows its KV slots, memory tiers and host \
+             only to an authenticated request."
+                .to_string(),
+        ];
+    }
+    let mut out = Vec::new();
+    out.push(match &h.tiers {
+        Some(t) => format!(
+            "experts:    {} in VRAM ({:.1} GB resident), {} in RAM ({:.1} GB resident), {} on \
+             disk; as reported by colibri",
+            t.vram, t.vram_gb, t.ram, t.ram_gb, t.disk
+        ),
+        None => "experts:    colibri has not reported its memory tiers yet".to_string(),
+    });
+    out.push(match &h.hwinfo {
+        Some(hw) => format!(
+            "host:       {} cores, {:.1} GB RAM ({:.1} GB available), CPU {}; {} GPU(s), {}, \
+             {:.1} GB VRAM; as reported by colibri",
+            hw.cores,
+            hw.ram_total_gb,
+            hw.ram_avail_gb,
+            plain(&hw.cpu),
+            hw.gpus,
+            plain(&hw.gpu),
+            hw.vram_total_gb
+        ),
+        None => "host:       colibri has not reported its host yet".to_string(),
+    });
+    out
+}
+
+/// The note for a `vllm:` spec on a server identified as colibri.
+fn colibri_vllm_note(base: &str, served: &str) -> String {
+    format!(
+        concat!(
+            "This server is colibri, serving `{served}`. colibri's grammar never constrains ",
+            "sampling, so the schema is not enforced and the tier is ValidateAndRetry without ",
+            "a probe (ADR 0047). Its `/v1/completions`, which this spec uses, receives the ",
+            "prompt without a chat template. The tier-1 spec for this server is ",
+            "`openai-chat:{base}/v1#{served}`."
+        ),
+        served = plain(served),
+        base = base.trim_end_matches('/')
+    )
 }
 
 /// What `doctor` adds about a serving runtime's batching capability.
@@ -179,18 +317,92 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     let mut tier: Option<AdapterTier> = None;
     let mut batching = BatchingCapability::Unknown;
     let mut notes: Vec<String> = Vec::new();
+    // What colibri reported, printed after the probe's own lines.
+    let mut colibri_lines: Vec<String> = Vec::new();
+    // A hosted endpoint's batching, from the same read as its colibri lines.
+    let mut hosted_seen: Option<Result<BatchingCapability, String>> = None;
 
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
         // Tier 1 is the protocol, not a probe finding (ADR 0024 §2).
         let resolved = hosted::resolve(&spec, &repo_cfg, from_user)?;
-        let is_hosted = resolved.is_some();
         if let Some(h) = resolved {
-            let (m, r, n) = hosted::doctor(&h);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let seen = rt.block_on(read_colibri(&h));
+            let read = !matches!(
+                seen,
+                Ok(ColibriSeen {
+                    identity: Identity::NotLoopback,
+                    ..
+                })
+            );
+            let (m, r, n) = hosted::doctor(&h, read);
             model_id = m;
             runtime = r;
             notes.extend(n);
             tier = Some(AdapterTier::Native);
+            match &seen {
+                Ok(ColibriSeen {
+                    identity: Identity::Identified { id },
+                    health,
+                }) => {
+                    runtime = colibri_runtime(&h.base, &h.model, id);
+                    colibri_lines.push("version:    not reported over HTTP".to_string());
+                    match health {
+                        Some(Ok(hl)) => {
+                            colibri_lines.extend(colibri_health_lines(hl));
+                            if let Some(n) = hl.kv_slots.filter(|&n| n > 1) {
+                                notes.push(format!(
+                                    "batching: the {n} above is colibri's configured KV slot \
+                                     count (`kv_slots` on its /health), as colibri reports it; \
+                                     it was not measured under load."
+                                ));
+                            }
+                        }
+                        Some(Err(e)) => notes.push(format!(
+                            "colibri's /health could not be read: {}",
+                            plain(&e.to_string())
+                        )),
+                        None => {}
+                    }
+                }
+                Ok(ColibriSeen {
+                    identity: Identity::NotColibri { owned_by },
+                    ..
+                }) => notes.push(format!(
+                    "This endpoint's /v1/models is owned by `{}`, so it is not colibri.",
+                    plain(owned_by)
+                )),
+                Ok(ColibriSeen {
+                    identity: Identity::Unauthorized { status },
+                    ..
+                }) => notes.push(format!(
+                    "This endpoint's /v1/models answered {status} to {}, so whether it is \
+                     colibri is not known.",
+                    if ApiKey::from_env(&h.key_env).is_some() {
+                        "the key it was sent"
+                    } else {
+                        "a request without a key"
+                    }
+                )),
+                Ok(ColibriSeen {
+                    identity: Identity::Absent { status },
+                    ..
+                }) => notes.push(format!(
+                    "This endpoint has no /v1/models ({status}), so it is not colibri."
+                )),
+                Ok(ColibriSeen {
+                    identity: Identity::NotLoopback,
+                    ..
+                }) => {}
+                Err(e) => notes.push(format!(
+                    "Could not ask this endpoint whether it is colibri: {}",
+                    plain(&e.to_string())
+                )),
+            }
+            hosted_seen = Some(hosted_batching(&seen));
         } else {
             let trellis_model::ModelSpec::Runtime {
                 dialect,
@@ -223,6 +435,18 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 .enable_all()
                 .build()?;
             rt.block_on(async {
+                // colibri ignores the schema by construction (ADR 0047
+                // finding 1), so a probe that a capable model passed
+                // unprompted would claim a tier it does not have. A `vllm:`
+                // spec carries no key (it is not hosted), and so neither
+                // does this read.
+                if *dialect == trellis_model::Dialect::VllmOpenAi
+                    && let Ok(Identity::Identified { id }) = colibri::identify(base, None).await
+                {
+                    tier = Some(AdapterTier::ValidateAndRetry);
+                    notes.push(colibri_vllm_note(base, &id));
+                    return;
+                }
                 match client.probe_constraint().await {
                     Ok(true) => {
                         tier = Some(AdapterTier::RuntimeConstrained);
@@ -254,15 +478,18 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         // After the constraint probe, so its note still reads first. A hosted
         // provider batches by design and says nothing more, so its
         // `ContinuousUnmeasured` carries no note: there is no runtime to
-        // restart differently.
-        match probe_batching(&spec, &repo_cfg, from_user) {
-            Ok(b) => {
-                batching = b;
-                if !is_hosted {
+        // restart differently. A hosted endpoint's batching comes from the
+        // read above, through the mapping `probe_batching` uses too, so the
+        // endpoint is not read twice; a failed read is already a note.
+        match hosted_seen {
+            Some(b) => batching = b.unwrap_or(BatchingCapability::Unknown),
+            None => match probe_batching(&spec, &repo_cfg, from_user) {
+                Ok(b) => {
+                    batching = b;
                     notes.extend(batching_note(b).map(str::to_string));
                 }
-            }
-            Err(e) => notes.push(format!("Could not read slot count: {e}")),
+                Err(e) => notes.push(format!("Could not read slot count: {e}")),
+            },
         }
     }
 
@@ -276,7 +503,14 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         coverage_available: coverage_available(&cfg.tests),
     };
 
-    for line in probe.report() {
+    // colibri's lines go under the model's, before the checkers'.
+    let mut lines = probe.report();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("batching:"))
+        .map_or(lines.len(), |i| i + 1);
+    lines.splice(at..at, colibri_lines);
+    for line in lines {
         println!("{line}");
     }
     println!("{}", floor_line(model_spec.is_some()));
