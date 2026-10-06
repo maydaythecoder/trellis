@@ -1859,20 +1859,32 @@ fn rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart() {
     assert_eq!(server.join().unwrap().len(), 4);
     assert_eq!(got["success"], true, "{got}");
 
-    // What the trails record, per model, in the order each was first used.
-    let mut runs = trails(&f);
-    runs.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
+    // What the trails record, per model. The three runs land in the same
+    // second, so `started_at` cannot order them (and a wall clock can step
+    // back); the stub's model is the one two trails name, the script's the
+    // one a single trail names.
+    let runs = trails(&f);
     assert_eq!(runs.len(), 3);
-    let stub_model = runs[0]["provenance"]["model"].clone();
-    let script_model = runs[1]["provenance"]["model"].clone();
-    assert!(
-        stub_model.is_string() && script_model.is_string(),
-        "{runs:?}"
-    );
+    let model = |r: &serde_json::Value| r["provenance"]["model"].clone();
+    assert!(runs.iter().all(|r| model(r).is_string()), "{runs:?}");
+    let named = |m: &serde_json::Value| runs.iter().filter(|r| &model(r) == m).count();
+    let stub_model = runs
+        .iter()
+        .map(model)
+        .find(|m| named(m) == 2)
+        .expect("two stub runs");
+    let script_model = runs
+        .iter()
+        .map(model)
+        .find(|m| named(m) == 1)
+        .expect("one scripted run");
     assert_ne!(stub_model, script_model);
-    assert_eq!(runs[2]["provenance"]["model"], stub_model);
-    let sum = |field: &str| {
-        runs[0]["factual"][field].as_u64().unwrap() + runs[2]["factual"][field].as_u64().unwrap()
+    let stub_runs: Vec<_> = runs.iter().filter(|r| model(r) == stub_model).collect();
+    let sum = |field: &str| -> u64 {
+        stub_runs
+            .iter()
+            .map(|r| r["factual"][field].as_u64().unwrap())
+            .sum()
     };
     assert_eq!(
         (sum("prompt_tokens"), sum("tokens")),
