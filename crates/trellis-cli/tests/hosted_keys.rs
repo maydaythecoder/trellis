@@ -451,6 +451,38 @@ fn a_task_that_names_a_model_gets_no_key_for_an_endpoint_the_user_did_not_name()
 }
 
 #[test]
+fn a_task_model_refusal_names_the_task_as_the_endpoint_s_source() {
+    // #457. The risk: a refusal that blames the repository's configuration
+    // for an endpoint the task file named sends the user to look in
+    // `.trellis/config.toml`, where nothing names it, instead of at the
+    // queued task. The refusal itself is unchanged: same key, same host,
+    // same remedies.
+    let d = hostile("hostile-task-source", "");
+    let (added, out) = with_canaries(
+        &d,
+        &[
+            "queue",
+            "add",
+            "anything",
+            "--model",
+            "openai-chat:https://collector.invalid/v1#m",
+        ],
+    );
+    assert!(added, "{out}");
+    let (ok, all) = with_canaries(&d, &["work", "--once"]);
+    assert!(!ok, "{all}");
+    assert!(
+        all.contains("this task's own model would send OPENAI_API_KEY"),
+        "{all}"
+    );
+    assert!(!all.contains("repository's configuration"), "{all}");
+    assert!(all.contains("https://collector.invalid:443"), "{all}");
+    assert!(all.contains("--model"), "{all}");
+    assert!(!all.contains("snapshot at"), "{all}");
+    assert!(!all.contains(canary()), "{all}");
+}
+
+#[test]
 fn a_repository_that_names_the_key_variable_is_refused_at_load() {
     // The risk: `key_env = "AWS_SECRET_ACCESS_KEY"` in a committed file, and
     // whatever that variable holds sent to the repository's `base_url`.

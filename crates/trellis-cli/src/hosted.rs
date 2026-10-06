@@ -23,6 +23,32 @@ pub(crate) struct Resolved {
     pub provider: Option<String>,
 }
 
+/// Where a spec the user did not choose came from, for the refusal's
+/// wording only (#457). Every one of these is the repository's choice for
+/// keys (ADR 0024 §3); this says where to look, not what is allowed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpecSource {
+    /// `[model] spec`, a `[[providers]]` entry, or anything else read from
+    /// the repository's configuration.
+    #[default]
+    Repository,
+    /// The `model` of the agent profile a queued task runs as.
+    Profile,
+    /// The queued task's own `model` (`queue add --model`, #346).
+    Task,
+}
+
+impl SpecSource {
+    /// The refusal's subject, and who it says chose the host.
+    fn wording(self) -> (&'static str, &'static str) {
+        match self {
+            SpecSource::Repository => ("the repository's configuration", "the repository"),
+            SpecSource::Profile => ("this task's agent profile", "the profile"),
+            SpecSource::Task => ("this task's own model", "the task"),
+        }
+    }
+}
+
 /// `Some` for a hosted or provider spec, `None` for everything else.
 ///
 /// `from_user` is whether a person chose `spec` for this run: `--model`, or
@@ -42,20 +68,32 @@ pub(crate) fn resolve(
     cfg: &RepoConfig,
     from_user: bool,
 ) -> Result<Option<Resolved>> {
+    resolve_from(spec, cfg, from_user, SpecSource::Repository)
+}
+
+/// [`resolve`], with a refusal that names `source` as where the spec came
+/// from. Which endpoints get a key does not depend on `source`.
+pub(crate) fn resolve_from(
+    spec: &ModelSpec,
+    cfg: &RepoConfig,
+    from_user: bool,
+    source: SpecSource,
+) -> Result<Option<Resolved>> {
     // The same test `HostedClient::new` applies when it reads the key: set
     // and not blank. What decides whether a key would be sent.
-    resolve_with(spec, cfg, from_user, &|var| {
+    resolve_with(spec, cfg, from_user, source, &|var| {
         std::env::var(var).is_ok_and(|v| !v.trim().is_empty())
     })
 }
 
-/// [`resolve`] with the environment's answer to "is this key variable
+/// [`resolve_from`] with the environment's answer to "is this key variable
 /// set" passed in, so the rule is tested without touching the process
 /// environment.
 pub(crate) fn resolve_with(
     spec: &ModelSpec,
     cfg: &RepoConfig,
     from_user: bool,
+    source: SpecSource,
     key_set: &dyn Fn(&str) -> bool,
 ) -> Result<Option<Resolved>> {
     let (r, repository_chose) = match spec {
@@ -111,7 +149,7 @@ pub(crate) fn resolve_with(
         _ => return Ok(None),
     };
     if repository_chose {
-        allowed(&r, cfg, key_set)?;
+        allowed(&r, cfg, source, key_set)?;
     }
     Ok(Some(r))
 }
@@ -131,10 +169,18 @@ const OFFICIAL: [(&str, &str); 2] = [
 /// machine" is not the user's choice: a port the repository's own test
 /// suite or dev server left listening is this machine too, and it would
 /// receive the key.
-fn allowed(r: &Resolved, cfg: &RepoConfig, key_set: &dyn Fn(&str) -> bool) -> Result<()> {
+///
+/// `source` changes the wording only: where to look for the endpoint.
+fn allowed(
+    r: &Resolved,
+    cfg: &RepoConfig,
+    source: SpecSource,
+    key_set: &dyn Fn(&str) -> bool,
+) -> Result<()> {
+    let (subject, chooser) = source.wording();
     let Some((origin, loopback)) = origin(&r.base) else {
         anyhow::bail!(
-            "refused before any request: the repository's configuration names the \
+            "refused before any request: {subject} names the \
              endpoint `{}`, which is not an http(s) URL trellis can check against the \
              hosts you send {} to (ADR 0024 §3)",
             r.base,
@@ -163,8 +209,8 @@ fn allowed(r: &Resolved, cfg: &RepoConfig, key_set: &dyn Fn(&str) -> bool) -> Re
         return Ok(());
     }
     anyhow::bail!(
-        "refused before any request: the repository's configuration would send {key} \
-         to {origin}, a host the repository chose. A key goes only to an endpoint you \
+        "refused before any request: {subject} would send {key} \
+         to {origin}, a host {chooser} chose. A key goes only to an endpoint you \
          chose (ADR 0024 §3): the official host for its protocol \
          (https://api.openai.com with OPENAI_API_KEY, https://api.anthropic.com with \
          ANTHROPIC_API_KEY), an entry in your own [[providers]]{file}, or a spec you \
@@ -569,6 +615,52 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_names_where_the_spec_came_from_and_refuses_the_same() {
+        // #457. The risk: a refusal that blames the repository's
+        // configuration for an endpoint a task or profile named, so the user
+        // looks in the wrong file; or a source label that changes what is
+        // refused.
+        let cfg = layered("", "");
+        let s = spec("openai-chat:https://collector.invalid/v1#m");
+        let set = |_: &str| true;
+        let refusal = |source| {
+            format!(
+                "{:#}",
+                resolve_with(&s, &cfg, false, source, &set).expect_err("refused")
+            )
+        };
+        let e = refusal(SpecSource::Repository);
+        assert!(
+            e.contains(
+                "the repository's configuration would send OPENAI_API_KEY to \
+                 https://collector.invalid:443, a host the repository chose"
+            ),
+            "{e}"
+        );
+        let e = refusal(SpecSource::Profile);
+        assert!(
+            e.contains("this task's agent profile would send OPENAI_API_KEY"),
+            "{e}"
+        );
+        assert!(e.contains("a host the profile chose"), "{e}");
+        let e = refusal(SpecSource::Task);
+        assert!(
+            e.contains("this task's own model would send OPENAI_API_KEY"),
+            "{e}"
+        );
+        assert!(e.contains("a host the task chose"), "{e}");
+        assert!(!e.contains("repository's configuration"), "{e}");
+        // Wording only: what the user chose is allowed whatever the label.
+        for source in [
+            SpecSource::Repository,
+            SpecSource::Profile,
+            SpecSource::Task,
+        ] {
+            assert!(resolve_with(&s, &cfg, true, source, &set).is_ok());
+        }
+    }
+
+    #[test]
     fn a_repository_loopback_endpoint_gets_no_key_unless_the_user_chose_it() {
         // The risk: the repository names `http://127.0.0.1:8123` — a
         // listener its own test suite left running — and the user's
@@ -580,26 +672,33 @@ mod tests {
 
         // Keyless: a local server that needs no key is still allowed.
         let cfg = layered(repo_spec, "");
-        assert!(resolve_with(&s, &cfg, false, &unset).is_ok());
+        assert!(resolve_with(&s, &cfg, false, SpecSource::Repository, &unset).is_ok());
 
         // Keyed and repository-chosen: refused, naming the variable.
         let e = format!(
             "{:#}",
-            resolve_with(&s, &cfg, false, &set).expect_err("the key would go to the repo's port")
+            resolve_with(&s, &cfg, false, SpecSource::Repository, &set)
+                .expect_err("the key would go to the repo's port")
         );
         assert!(e.contains("OPENAI_API_KEY"), "{e}");
         assert!(e.contains("http://127.0.0.1:8123"), "{e}");
 
         // Keyed and chosen by the user: --model, the user's own [model]
         // spec, or an entry in the user's [[providers]].
-        assert!(resolve_with(&s, &cfg, true, &set).is_ok(), "--model");
+        assert!(
+            resolve_with(&s, &cfg, true, SpecSource::Repository, &set).is_ok(),
+            "--model"
+        );
         let cfg = layered("", repo_spec);
-        assert!(resolve_with(&s, &cfg, false, &set).is_ok(), "user's spec");
+        assert!(
+            resolve_with(&s, &cfg, false, SpecSource::Repository, &set).is_ok(),
+            "user's spec"
+        );
         let user = "[[providers]]\nname = \"lm\"\nprotocol = \"openai\"\n\
                     base_url = \"http://127.0.0.1:8123/v1\"\n";
         let cfg = layered(repo_spec, user);
         assert!(
-            resolve_with(&s, &cfg, false, &set).is_ok(),
+            resolve_with(&s, &cfg, false, SpecSource::Repository, &set).is_ok(),
             "the user's own [[providers]] names this origin with this variable"
         );
 
@@ -612,10 +711,26 @@ mod tests {
         );
         let e = format!(
             "{:#}",
-            resolve_with(&spec("provider:loc#m"), &cfg, true, &set).unwrap_err()
+            resolve_with(
+                &spec("provider:loc#m"),
+                &cfg,
+                true,
+                SpecSource::Repository,
+                &set
+            )
+            .unwrap_err()
         );
         assert!(e.contains("ANTHROPIC_API_KEY"), "{e}");
-        assert!(resolve_with(&spec("provider:loc#m"), &cfg, false, &unset).is_ok());
+        assert!(
+            resolve_with(
+                &spec("provider:loc#m"),
+                &cfg,
+                false,
+                SpecSource::Repository,
+                &unset
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -626,7 +741,10 @@ mod tests {
             "openai-chat:http://127.0.0.1:8080/v1#m",
             "anthropic:http://localhost:9#m",
         ] {
-            assert!(resolve_with(&spec(ok), &cfg, false, &unset).is_ok(), "{ok}");
+            assert!(
+                resolve_with(&spec(ok), &cfg, false, SpecSource::Repository, &unset).is_ok(),
+                "{ok}"
+            );
         }
         // A parser that read userinfo differently from the transport could
         // approve one host and connect to another.
@@ -650,7 +768,7 @@ mod tests {
             "openai-chat:http://[::1]:8080/v1#m",
         ] {
             assert!(
-                resolve_with(&spec(ok), &cfg, false, &|_| false).is_ok(),
+                resolve_with(&spec(ok), &cfg, false, SpecSource::Repository, &|_| false).is_ok(),
                 "{ok}"
             );
         }

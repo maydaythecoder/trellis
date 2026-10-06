@@ -1438,6 +1438,15 @@ impl Runner for CliRunner<'_> {
                 error: "no model for this task".into(),
             };
         };
+        // Where that model came from, in the same order, for a key
+        // refusal's wording only (#457).
+        let model_source = if t.model.is_some() {
+            crate::hosted::SpecSource::Task
+        } else if profile.as_ref().is_some_and(|p| p.file.model.is_some()) {
+            crate::hosted::SpecSource::Profile
+        } else {
+            crate::hosted::SpecSource::Repository
+        };
         if let Some(p) = &profile {
             let _ = writeln!(crate::output::human(), "agent:    {}", p.name);
         }
@@ -1468,6 +1477,7 @@ impl Runner for CliRunner<'_> {
                 focus: t.focus.as_deref(),
                 profile: profile.as_ref(),
                 model_from_user,
+                model_source,
                 queued: true,
                 services: &service_actions,
             },
