@@ -524,7 +524,9 @@ trellis starts has; see §4), and a timeout
   a `ToolGate`, consulted after governance and the bash policy and before
   the approval gate, so a person is never asked about a call a hook refused.
   (*Amended 2026-10-04, #328*: for a built-in tool the object also carries
-  `"read_only": true` or `false`, see the amendment at the end.)
+  `"read_only": true` or `false`, from the table `READ_ONLY_TOOLS` in
+  gate.rs; a custom tool's object has no such key; and the key is added to
+  the hook payload only, not to `call_json`. See the amendment at the end.)
 - **`post_tool`**: the call and the tool's result as JSON on stdin. Observe
   only: its output is discarded and it cannot alter the observation.
   (*Amended 2026-10-04, #328*: the `call` object carries `read_only` as
