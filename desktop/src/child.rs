@@ -80,24 +80,25 @@ impl Child {
         self.stdin.flush()
     }
 
-    /// The next line of stdout as JSON, `None` at end of output. A line that
-    /// is not JSON is an error: stdout is the protocol, and trellis's human
-    /// text goes to stderr, which is never read as data.
-    pub fn next_line(&mut self) -> io::Result<Option<Value>> {
+    /// The next line of stdout, as text, `None` at end of output. It is
+    /// not parsed here: a line that is not JSON is still the child's
+    /// output, and `frames.rs` keeps it as text rather than failing on it.
+    pub fn next_line(&mut self) -> io::Result<Option<String>> {
         let mut line = String::new();
         if self.stdout.read_line(&mut line)? == 0 {
             return Ok(None);
         }
-        serde_json::from_str(line.trim_end())
-            .map(Some)
-            .map_err(|e| io::Error::other(format!("not a JSON line from trellis rpc: {e}")))
+        Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
     }
 
-    /// Reads lines until the `response` carrying `id`, skipping the events
-    /// that may come before it.
-    pub fn response_to(&mut self, id: &str) -> io::Result<Value> {
-        while let Some(v) = self.next_line()? {
-            if v.get("type").and_then(Value::as_str) == Some("response")
+    /// Reads lines until the `response` carrying `id`, handing every line,
+    /// the response included, to `each` on the way, so the events that come
+    /// before it are seen and not dropped.
+    pub fn response_to(&mut self, id: &str, mut each: impl FnMut(&str)) -> io::Result<Value> {
+        while let Some(line) = self.next_line()? {
+            each(&line);
+            if let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v.get("type").and_then(Value::as_str) == Some("response")
                 && v.get("id").and_then(Value::as_str) == Some(id)
             {
                 return Ok(v);
@@ -164,7 +165,7 @@ mod tests {
         child
             .send(&serde_json::json!({"id": "desktop-1", "type": "get_state"}))
             .unwrap();
-        let reply = child.response_to("desktop-1").unwrap();
+        let reply = child.response_to("desktop-1", |_| {}).unwrap();
         assert_eq!(reply["type"], "response", "{reply}");
         assert_eq!(reply["command"], "get_state", "{reply}");
         assert_eq!(reply["success"], true, "{reply}");
