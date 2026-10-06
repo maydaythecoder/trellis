@@ -305,7 +305,10 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                 .iter()
                 .filter(|e| {
                     let Ok(t) = &e.task else {
-                        return status.is_none() && label.is_none() && assignee.is_none();
+                        return status.is_none()
+                            && label.is_none()
+                            && assignee.is_none()
+                            && priority.is_none();
                     };
                     status
                         .as_deref()
