@@ -263,8 +263,8 @@ assignee or the board set a one-shot re-check (ADR 0021, PC-114). Here the
 `blocked` reasons are `blockers`, `children`, `manual` and `question`,
 `reconcile` wakes only the first two, and nothing wakes a task at a time;
 routines and `work --every` (§7) create new tasks rather than re-run a
-waiting one. Not built: this amendment is the ADR for the flag #342 builds,
-and it builds nothing itself.
+waiting one. ~~Not built: this amendment is the ADR for the flag #342 builds,
+and it builds nothing itself.~~ Built for #342.
 
 - **The reason and the flags.** A new `blocked` reason, `until`, holds an
   RFC 3339 instant in UTC. A person sets it with
@@ -298,9 +298,15 @@ unbuilt.
 the model per message and keeps it as a per-issue override (ADR 0021,
 PC-138). Here the model is chosen per run (`run --model`, the session's
 `/model`), per profile (`model`, §4) or for a whole heartbeat (`work
---model`, else `[model] spec`), and `Task` has no model field. Not built:
-this amendment is the ADR for `queue add --model`, which #346 builds, and it
-builds nothing itself.
+--model`, else `[model] spec`), and `Task` has no model field. This
+amendment is the ADR for `queue add --model` and built nothing itself.
+*Built 2026-10-06 (#346):* `Task::model` in `trellis-queue`, the flag and
+the precedence in `crates/trellis-cli/src/work.rs`, held by
+`queue_add_model_refuses_a_spec_that_does_not_parse` and
+`a_task_that_names_a_model_runs_on_it_over_its_profile_and_work_model`
+(`tests/orchestration.rs`) and
+`a_task_that_names_a_model_gets_no_key_for_an_endpoint_the_user_did_not_name`
+(`tests/hosted_keys.rs`).
 
 - **The field and the flag.** A task gains an optional `model` field, set
   by `trellis queue add --model <spec>` and parsed as `run --model` parses

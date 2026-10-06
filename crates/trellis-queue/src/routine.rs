@@ -236,6 +236,9 @@ impl Routine {
             prompt: t.prompt.clone(),
             // A routine's `[task]` names no template arguments (ADR 0026 §7).
             args: None,
+            // Nor a model: `[task]` refuses unknown fields, so a routine
+            // cannot set one (ADR 0026 §1).
+            model: None,
             priority: self.priority,
             labels: t.labels.clone(),
             parent: t.parent.clone(),
