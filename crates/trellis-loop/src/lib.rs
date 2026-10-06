@@ -37,7 +37,8 @@ pub use adapter::{
 };
 pub use agent::{
     Model, NotConverged, Outcome, PriorContext, RadiusSite, RepoContext, Seed, Steer, Steering,
-    SteeringLog, SteeringRx, Step, ToolCall, Transcript, Turn, VaultContext, run, run_seeded,
+    SteeringLog, SteeringRx, Step, StepUsage, ToolCall, Transcript, Turn, VaultContext, run,
+    run_seeded,
 };
 pub use agent_clone::{AgentClone, AgentCloneError, CarriedBack, NEW_FILE_WALK_CAP, NotCarried};
 pub use budget::{Budget, BudgetTooSmall, CostRegime, Exhaustion, Spend};

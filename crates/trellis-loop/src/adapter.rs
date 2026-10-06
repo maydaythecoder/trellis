@@ -530,15 +530,16 @@ const MAX_FORMAT_RETRIES: u32 = 4;
 /// silently, so the list is never mistaken for the whole repository.
 const MAX_FILES_LISTED: usize = 200;
 
-/// A run's prompt tokens: the reported figures summed, and how many calls
-/// reported none (ADR 0027, #106).
+/// A figure the replies report, summed, and how many calls reported none:
+/// a run's prompt tokens (ADR 0027, #106), or a step's output tokens and
+/// queue wait (ADR 0047 decision 8).
 #[derive(Debug, Default, Clone, Copy)]
-struct PromptTokens {
+struct Reported {
     sum: u64,
     unreported: u64,
 }
 
-impl PromptTokens {
+impl Reported {
     fn add(&mut self, n: Option<u64>) {
         match n {
             Some(n) => self.sum = self.sum.saturating_add(n),
@@ -547,7 +548,7 @@ impl PromptTokens {
     }
 
     /// Unknown once any call went unreported, rather than the partial sum:
-    /// a low figure would read as a cheap run.
+    /// a low figure would read as a cheap run, or a short queue.
     fn total(&self) -> Option<u64> {
         (self.unreported == 0).then_some(self.sum)
     }
@@ -560,7 +561,7 @@ pub struct RuntimeModel {
     tokens: u64,
     /// Prompt tokens as reported, and the calls that reported none; see
     /// [`Model::prompt_tokens`].
-    prompt: PromptTokens,
+    prompt: Reported,
     /// Prompt size on the most recent call, for the context-fill measurement
     /// the v0.2 gate asks for. Bytes, because TRELLIS does not tokenize.
     last_prompt_bytes: Option<usize>,
@@ -612,7 +613,7 @@ impl RuntimeModel {
             // edit at 2048.
             max_tokens: DEFAULT_MAX_REPLY_TOKENS,
             tokens: 0,
-            prompt: PromptTokens::default(),
+            prompt: Reported::default(),
             last_prompt_bytes: None,
             compaction: Compaction::default(),
         }
@@ -1230,7 +1231,7 @@ pub struct HostedModel {
     /// Output tokens the provider reported.
     tokens: u64,
     /// Prompt tokens as reported, and the replies that reported none.
-    prompt: PromptTokens,
+    prompt: Reported,
     /// Replies that carried no usage figure. Each is charged to the in-run
     /// ceiling at the `max_tokens` it was requested with, the most it can
     /// have cost; none of them reaches the trail as a number.
@@ -1254,6 +1255,10 @@ pub struct HostedModel {
     /// `trellis run --image`, sent with the first user message of every
     /// request (ADR 0041).
     images: Vec<trellis_model::Image>,
+    /// Output tokens and queue wait over the replies the last `next_step`
+    /// read; `None` until it reads one, so a step with no reply reports
+    /// nothing rather than a sum of 0.
+    step: Option<(Reported, Reported)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1269,7 +1274,7 @@ impl HostedModel {
             client,
             max_tokens: HOSTED_MAX_REPLY_TOKENS,
             tokens: 0,
-            prompt: PromptTokens::default(),
+            prompt: Reported::default(),
             unreported: 0,
             usage_required: false,
             last_prompt_bytes: None,
@@ -1278,6 +1283,7 @@ impl HostedModel {
             pending: None,
             thinking_withheld: false,
             images: Vec::new(),
+            step: None,
         }
     }
 
@@ -1510,6 +1516,7 @@ pub(crate) fn native_tools(t: &Transcript) -> Vec<NativeTool> {
 impl Model for HostedModel {
     async fn next_step(&mut self, t: &Transcript) -> Result<Step, String> {
         self.record_pending(t);
+        self.step = None;
         let tools = native_tools(t);
         let protocol = self.client.protocol();
         let mut last = String::new();
@@ -1589,6 +1596,9 @@ impl Model for HostedModel {
             // prompt figure does not end a budgeted run the way a missing
             // output figure does: the ledger counts output tokens only.
             self.prompt.add(reply.prompt_tokens);
+            let (tokens, wait) = self.step.get_or_insert_default();
+            tokens.add(reply.tokens);
+            wait.add(reply.queue_wait_ms);
             match reply.tokens {
                 Some(n) => self.tokens += n,
                 None => {
@@ -1673,6 +1683,16 @@ impl Model for HostedModel {
 
     fn requested_compactions(&self) -> &[RequestedCompaction] {
         &self.compaction.requested
+    }
+
+    fn step_usage(&self) -> crate::agent::StepUsage {
+        match self.step {
+            Some((tokens, wait)) => crate::agent::StepUsage {
+                completion_tokens: tokens.total(),
+                queue_wait_ms: wait.total(),
+            },
+            None => crate::agent::StepUsage::default(),
+        }
     }
 }
 
@@ -2649,6 +2669,20 @@ mod compaction_and_hosted_tests {
         idle: std::time::Duration,
         mut respond: impl FnMut(&Value) -> (u16, String) + Send + 'static,
     ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        stub_headed(n, idle, move |b| {
+            let (status, body) = respond(b);
+            (status, body, String::new())
+        })
+        .await
+    }
+
+    /// As [`stub_with_idle`], with `respond` also giving header lines to
+    /// add, each ending in CRLF.
+    async fn stub_headed(
+        n: usize,
+        idle: std::time::Duration,
+        mut respond: impl FnMut(&Value) -> (u16, String, String) + Send + 'static,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let h = tokio::spawn(async move {
@@ -2679,9 +2713,9 @@ mod compaction_and_hosted_tests {
                         break;
                     }
                 }
-                let (status, r) = respond(bodies.last().unwrap_or(&Value::Null));
+                let (status, r, extra) = respond(bodies.last().unwrap_or(&Value::Null));
                 let out = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}\r\n{r}",
                     r.len()
                 );
                 s.write_all(out.as_bytes()).await.unwrap();
@@ -3058,6 +3092,108 @@ mod compaction_and_hosted_tests {
         let mut m = HostedModel::new(client);
         let e = m.next_step(&transcript(Vec::new())).await.unwrap_err();
         assert!(e.contains("unknown tool `bash`"), "{e}");
+    }
+
+    /// An OpenAI chat reply as colibri sends it: a `read_file` call, or
+    /// prose (a format failure) when `call` is false; with `tokens` as its
+    /// `usage.completion_tokens` and `wait` as its queue-wait header, each
+    /// left out when `None`.
+    fn colibri_reply(call: bool, tokens: Option<u64>, wait: Option<u64>) -> (String, String) {
+        let message = if call {
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function",
+                "function":{"name":"read_file","arguments":"{\"path\":\"app/util.py\"}"}}]})
+        } else {
+            json!({"role":"assistant","content":"I will read it."})
+        };
+        let mut body = json!({"choices":[{"message": message}]});
+        if let Some(n) = tokens {
+            body["usage"] = json!({"completion_tokens": n});
+        }
+        let header = wait.map_or_else(String::new, |w| format!("x-colibri-queue-wait-ms: {w}\r\n"));
+        (body.to_string(), header)
+    }
+
+    /// The `turn` events of a run of `HostedModel` against a loopback stub
+    /// answering with `replies` in order, then `done`.
+    async fn hosted_turns(replies: Vec<(String, String)>) -> Vec<crate::testutil::TurnFields> {
+        let d = repo();
+        let mut replies = replies.into_iter();
+        let n = replies.len() + 1;
+        let (base, h) = stub_headed(n, std::time::Duration::from_secs(120), move |_| {
+            let (body, header) = replies
+                .next()
+                .unwrap_or_else(|| (reply("c9", "done", json!({"summary": "x"})), String::new()));
+            (200, body, header)
+        })
+        .await;
+        let client = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut m = HostedModel::new(client);
+        let (orch, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let b = Budget {
+            max_iterations: 10,
+            ..Budget::default()
+        };
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        crate::agent::run("fix it", &mut m, &orch, &b).await;
+        drop(guard);
+        drop(orch);
+        assert_eq!(
+            h.await.unwrap().len(),
+            n,
+            "every scripted reply was asked for"
+        );
+        events.taken()
+    }
+
+    #[tokio::test]
+    async fn turn_event_carries_output_tokens_and_queue_wait_summed_over_format_retries() {
+        // The risk (ADR 0047 decision 8): a format retry is a reply the
+        // provider generated and colibri queued, and leaving it out makes
+        // the step look faster per token than it was. Turn 2 carries only
+        // its own reply, so the sums are per step, not per run.
+        let got = hosted_turns(vec![
+            colibri_reply(false, Some(5), Some(30)),
+            colibri_reply(true, Some(9), Some(12)),
+            colibri_reply(true, Some(4), Some(0)),
+        ])
+        .await;
+        assert_eq!(got.len(), 2, "{got:?}");
+        let field = |i: usize, k: &str| got[i].get(k).cloned();
+        assert_eq!(field(0, "completion_tokens").as_deref(), Some("14"));
+        assert_eq!(field(0, "queue_wait_ms").as_deref(), Some("42"));
+        assert_eq!(field(1, "completion_tokens").as_deref(), Some("4"));
+        // A measured wait of 0 is carried as one.
+        assert_eq!(field(1, "queue_wait_ms").as_deref(), Some("0"));
+        assert!(got.iter().all(|e| e.contains_key("model_ms")), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn turn_event_carries_no_sum_when_one_reply_lacked_its_figure() {
+        // The risk: a partial sum, or a 0, in place of an unreported figure
+        // reads as a fast reply or an idle server. The format retry is the
+        // reply that lacks it, so a step summing only its last reply would
+        // pass this wrongly. Each figure is decided on its own.
+        let got = hosted_turns(vec![
+            colibri_reply(false, None, Some(30)),
+            colibri_reply(true, Some(9), Some(12)),
+        ])
+        .await;
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].get("completion_tokens"), None, "{:?}", got[0]);
+        assert_eq!(got[0].get("queue_wait_ms").map(String::as_str), Some("42"));
+
+        let got = hosted_turns(vec![
+            colibri_reply(false, Some(5), None),
+            colibri_reply(true, Some(9), Some(12)),
+        ])
+        .await;
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(
+            got[0].get("completion_tokens").map(String::as_str),
+            Some("14")
+        );
+        assert_eq!(got[0].get("queue_wait_ms"), None, "{:?}", got[0]);
     }
 }
 
