@@ -1058,6 +1058,40 @@ build/
     }
 
     #[test]
+    fn a_model_the_person_chose_in_the_tui_is_not_refused_as_the_repository_s() {
+        // ADR 0024 §3. The risk: the interface dropped `model_from_user` on
+        // the way to `cmd_run`, so a hosted spec the person passed with
+        // `--model` was refused as an endpoint the repository chose. The
+        // host is `.invalid`, which never resolves, so whether or not this
+        // machine has OPENAI_API_KEY set no request is made. How the run
+        // then ends depends on that variable (refused for a missing key, or
+        // not converged), so only the absence of the refusal is checked.
+        let (dir, _) = steer_fixture("from-user", r#"{"steps":[]}"#);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
+        run_for_tui(
+            &dir,
+            "look at f",
+            "openai-chat:https://collector.invalid/v1#m",
+            true,
+            crate::RunControl {
+                flag: Some(crate::config::ControlMode::Auto),
+                human: crate::Human::Absent,
+                steering: None,
+            },
+            &tx,
+        );
+        drop(tx);
+        let mut outcome = None;
+        while let Ok(m) = rx.try_recv() {
+            if let Message::RunOutcome(line) = m {
+                outcome = Some(line);
+            }
+        }
+        let outcome = outcome.expect("the run reported how it ended");
+        assert!(!outcome.contains("chose"), "{outcome}");
+    }
+
+    #[test]
     fn tui_steer_reaches_the_loop_and_the_trail_and_is_reported_before_the_run_ends() {
         // The path a steer takes once the view has queued it: sent on the
         // run's steering channel, delivered by the loop, recorded in the

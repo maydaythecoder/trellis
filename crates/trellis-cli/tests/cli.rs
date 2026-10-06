@@ -1928,6 +1928,34 @@ fn session_with_env(root: &Path, lines: &str, vars: &[(&str, &Path)]) -> Output 
 }
 
 #[test]
+fn session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists() {
+    // The risks: `!cmd` printing "exit 0" after a command that worked, or
+    // nothing after one that failed; `/prompts` or `/models` printing
+    // nothing; a template's description left out of `/prompts`.
+    let d = repo("session-extra");
+    std::fs::create_dir_all(d.join(".trellis/prompts")).unwrap();
+    std::fs::write(
+        d.join(".trellis/prompts/review.md"),
+        "---\ndescription: Review one module\n---\nReview $1\n",
+    )
+    .unwrap();
+    let out = session_with(
+        &d,
+        "!git --version\n!git no-such-command-248\n/prompts\n/models\n/exit\n",
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("exit 1"), "{s}");
+    assert!(!s.contains("exit 0"), "{s}");
+    assert!(s.contains("  /review\n      Review one module\n"), "{s}");
+    assert!(s.contains("configured specs\n"), "{s}");
+    assert!(
+        s.contains("catalog (weights `trellis model pull` can fetch)"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn every_command_help_lists_is_routed_somewhere() {
     // Each of these is one match arm, and deleting any of them leaves the
     // command falling through to "unknown command" — a command the tool

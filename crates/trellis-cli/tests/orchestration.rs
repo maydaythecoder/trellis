@@ -426,6 +426,9 @@ fn a_budget_hard_stop_pauses_the_agent_and_an_approved_raise_resumes_it() {
     let s = ok(&d, &["work"]);
     assert!(s.contains("reached its monthly limit (150 of 100"), "{s}");
     assert_eq!(ids(&d, "pending").len(), 1, "its task is skipped:\n{s}");
+    // Which pause it is decides how to lift it, so `show` names the budget.
+    let s = ok(&d, &["agents", "show", "rev"]);
+    assert!(s.contains("state:        paused (budget)\n"), "{s}");
 
     let list = ok(&d, &["queue", "list"]);
     let req = list
@@ -484,6 +487,104 @@ fn a_budget_hard_stop_pauses_the_agent_and_an_approved_raise_resumes_it() {
     ] {
         assert!(log.contains(a), "{a}:\n{log}");
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The rest of the first line of `agents show <name>` that starts `prefix`.
+fn shown(d: &Path, name: &str, prefix: &str) -> String {
+    let s = ok(d, &["agents", "show", name]);
+    s.lines()
+        .find_map(|l| l.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("no `{prefix}` line:\n{s}"))
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked() {
+    // The risk: `agents show` and `agents resume` are what a person reads
+    // to lift a pause and to trust a spend figure. A file pause shown as an
+    // overlay one (or the reverse), a limit not printed, a missing-count or
+    // edited-trail note printed for a profile with no such trail (or not
+    // printed for one with it), or "is not paused" said of a profile its
+    // file pauses, each sends them the wrong way.
+    // One trail for `rev`: no completion count, and a digest that does not
+    // match. A fixed date: only the lifetime-wide notes are read here.
+    let edited = r#"{"task":"earlier","started_at":"2020-01-01T00:00:00Z","factual":{"agent":"rev"},"factual_sha256":"0000"}"#;
+    let d = fixture(
+        "agents-show",
+        &[
+            (
+                ".trellis/agents/rev.toml",
+                "model = \"scripted:{ROOT}/stop.json\"\n[budget]\nmonthly_tokens = 100\n",
+            ),
+            (".trellis/agents/idle.toml", "role = \"idle\"\n"),
+            (
+                ".trellis/agents/held.toml",
+                "paused = true\n[control]\nmode = \"approve\"\n",
+            ),
+            (
+                ".trellis/agents/maker.toml",
+                "command = [\"python\", \"make.py\"]\n",
+            ),
+            (".trellis/runs/20200101-000000-earlier.json", edited),
+        ],
+    );
+
+    let rev = ok(&d, &["agents", "show", "rev"]);
+    assert!(rev.contains(": 0 of 100; lifetime 0 (no limit);"), "{rev}");
+    assert!(rev.contains("1 run(s) recorded no count"), "{rev}");
+    assert!(rev.contains("1 trail(s) were edited"), "{rev}");
+    assert!(!rev.contains("approve mode needs a person"), "{rev}");
+    let idle = ok(&d, &["agents", "show", "idle"]);
+    assert!(!idle.contains("recorded no count"), "{idle}");
+    assert!(!idle.contains("were edited"), "{idle}");
+    let held = ok(&d, &["agents", "show", "held"]);
+    assert!(held.contains("approve mode needs a person"), "{held}");
+    assert_eq!(shown(&d, "held", "state:"), "paused (in its file)");
+    assert_eq!(shown(&d, "maker", "runs with:"), "process `python make.py`");
+
+    // An overlay pause is not the file's.
+    ok(&d, &["agents", "pause", "idle"]);
+    assert_eq!(shown(&d, "idle", "state:"), "paused");
+
+    let s = ok(&d, &["agents", "resume", "rev"]);
+    assert!(s.contains("agent `rev` is not paused"), "{s}");
+    let s = ok(&d, &["agents", "resume", "held"]);
+    assert!(!s.contains("is not paused"), "{s}");
+    assert!(
+        s.contains("is also paused in .trellis/agents/held.toml"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_routine_may_assign_its_task_to_a_profile_and_not_to_a_missing_one() {
+    // The risk: the assignee check is inverted, so every routine that
+    // names a real profile is refused and a typo is let through to `work`.
+    let d = fixture(
+        "routine-assignee",
+        &[
+            (".trellis/agents/rev.toml", "role = \"reviews\"\n"),
+            (
+                ".trellis/routines/r.toml",
+                "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\nassignee = \"rev\"\n",
+            ),
+        ],
+    );
+    assert!(ok(&d, &["routines", "list"]).contains("not armed yet"));
+    std::fs::write(
+        d.join(".trellis/routines/r.toml"),
+        "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\nassignee = \"rve\"\n",
+    )
+    .unwrap();
+    let o = trellis(&d, &["routines", "list"]);
+    let s = combined(&o);
+    assert!(
+        !o.status.success() && s.contains("assignee `rve` is not a profile"),
+        "{s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
