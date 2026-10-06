@@ -1,5 +1,7 @@
 //! `trellis run` identifies and probes a loopback colibri endpoint before
-//! its snapshot (#268, ADR 0047 decisions 3 and 4).
+//! its snapshot (#268, ADR 0047 decisions 3 and 4), and `trellis run` and
+//! `trellis ask` send colibri's request profile to an endpoint so
+//! identified, and to no other (#270, decision 5).
 //!
 //! Driven through the real binary against a loopback stub, which routes by
 //! request: the identification read (`GET /v1/models`), the tools probe (a
@@ -148,15 +150,7 @@ fn serve(mut s: TcpStream, models: &Answer, probe: &Answer, log: &Log, chats: &M
         l.len() - 1
     };
     match answer {
-        Answer::Reply(status, body) => {
-            let _ = s.write_all(
-                format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .as_bytes(),
-            );
-        }
+        Answer::Reply(status, body) => respond(&mut s, status, &body),
         Answer::Hang => {
             // Held until the client gives up: a read of 0 bytes, or an error,
             // is the connection closed.
@@ -170,6 +164,16 @@ fn serve(mut s: TcpStream, models: &Answer, probe: &Answer, log: &Log, chats: &M
             log.lock().unwrap()[index].closed_after = Some(arrived.elapsed());
         }
     }
+}
+
+fn respond(s: &mut TcpStream, status: &str, body: &str) {
+    let _ = s.write_all(
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    );
 }
 
 fn read_request(s: &mut TcpStream) -> String {
@@ -684,4 +688,186 @@ fn colibri_run_a_user_provider_s_key_reaches_the_identification_and_is_recorded_
     for (name, text) in &places {
         assert!(!text.contains(&key), "{name} contains the key");
     }
+}
+
+/// The profile's two keys on an openai-chat body with thinking off (ADR
+/// 0047 decision 5).
+fn has_profile(b: &serde_json::Value) -> bool {
+    b["temperature"] == 0 && b["enable_thinking"] == false
+}
+
+fn has_neither(b: &serde_json::Value) -> bool {
+    b.get("temperature").is_none() && b.get("enable_thinking").is_none()
+}
+
+#[test]
+fn colibri_profile_a_run_against_colibri_sends_temperature_0_and_thinking_off() {
+    // The risk: an identified colibri left sampling at 0.7, its Qwen3.8
+    // thinking at `xhigh` because the run never said otherwise.
+    let (base, log) = stub(
+        reply("200 OK", &models_colibri("glm-5.2")),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let (_d, r) = chat_run("profile-on", &base, "glm-5.2");
+    went_ahead(&r);
+    let bodies = chat_bodies(&log);
+    assert!(bodies.len() >= 2, "the run's own requests: {}", r.all);
+    for b in &bodies {
+        assert!(has_profile(b), "{b}");
+    }
+}
+
+#[test]
+fn colibri_profile_a_run_against_a_vllm_owned_list_sends_neither_key() {
+    // The risk: the profile sent to a server that is not colibri, whose body
+    // must stay byte for byte as it was.
+    let (base, log) = stub(reply("200 OK", MODELS_VLLM), Answer::Hang);
+    let (_d, r) = chat_run("profile-vllm", &base, "glm-5.2");
+    went_ahead(&r);
+    let bodies = chat_bodies(&log);
+    assert!(!bodies.is_empty(), "{}", r.all);
+    for b in &bodies {
+        assert!(has_neither(b), "{b}");
+    }
+}
+
+/// What the classifier reads as an answer, so no run follows it.
+const ANSWER: &str = r#"{"choices":[{"message":{"role":"assistant","content":"helper returns 1."}}],"usage":{"completion_tokens":4}}"#;
+
+/// A stub for `trellis ask`: `models` to the identification read, and
+/// [`ANSWER`] to every chat request.
+fn ask_stub(models: Answer) -> (String, Log) {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            s.set_read_timeout(Some(Duration::from_secs(30))).ok();
+            let raw = read_request(&mut s);
+            let answer = if is_models_get(&raw) {
+                models.clone()
+            } else {
+                reply("200 OK", ANSWER)
+            };
+            seen.lock().unwrap().push(Seen {
+                raw,
+                closed_after: None,
+            });
+            if let Answer::Reply(status, body) = answer {
+                respond(&mut s, status, &body);
+            }
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+/// One question typed into `trellis session`, which classifies it through
+/// `ask` before anything else: after `/model spec` when given, else with
+/// the repository's `[model] spec`. No provider key is in the environment.
+fn ask(d: &Path, spec: Option<&str>) -> Ran {
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(d)
+        .arg("session")
+        .current_dir(d)
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user_dir(d))
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("COLI_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let typed = match spec {
+        Some(s) => format!("/model {s}\nwhat does helper return?\n/exit\n"),
+        None => "what does helper return?\n/exit\n".to_string(),
+    };
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(typed.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let all = format!("{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    Ran { out, all, stdout }
+}
+
+/// The one classification body, after the identification read: `ask`
+/// answered the question and nothing else was sent.
+fn classification(log: &Log, r: &Ran) -> serde_json::Value {
+    assert!(r.stdout.contains("helper returns 1."), "{}", r.all);
+    let got = requests(log);
+    let ident = got
+        .iter()
+        .position(|s| is_models_get(&s.raw))
+        .unwrap_or_else(|| panic!("no identification read: {got:?}\n{}", r.all));
+    let chats: Vec<usize> = (0..got.len())
+        .filter(|&i| got[i].raw.starts_with("POST "))
+        .collect();
+    assert_eq!(chats.len(), 1, "one classification call: {got:?}");
+    assert!(ident < chats[0], "identified before classifying: {got:?}");
+    serde_json::from_str(got[chats[0]].raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+}
+
+#[test]
+fn colibri_profile_ask_classifies_on_colibri_at_temperature_0_with_thinking_off() {
+    // The risk: one question on Qwen3.8 thinking at `xhigh` and sampling at
+    // 0.7, because the classifier built its own client without the profile.
+    let (base, log) = ask_stub(reply("200 OK", &models_colibri("glm-5.2")));
+    let d = repo("ask-profile", "", "");
+    let r = ask(&d, Some(&format!("openai-chat:{base}/v1#glm-5.2")));
+    let b = classification(&log, &r);
+    assert!(has_profile(&b), "{b}");
+    assert_eq!(probes(&log), 0, "ask sends no tools probe");
+}
+
+#[test]
+fn colibri_profile_ask_sends_the_classification_as_today_when_not_identified() {
+    // The risk: a 404, a 5xx, a body that is not JSON or another server's
+    // list taken for colibri, and the profile sent where it was not.
+    for (name, models) in [
+        ("404", reply("404 Not Found", NOT_FOUND)),
+        (
+            "500",
+            reply("500 Internal Server Error", r#"{"error":"boom"}"#),
+        ),
+        ("notjson", reply("200 OK", "<html>hello</html>")),
+        ("vllm", reply("200 OK", MODELS_VLLM)),
+    ] {
+        let (base, log) = ask_stub(models);
+        let d = repo(&format!("ask-{name}"), "", "");
+        let r = ask(&d, Some(&format!("openai-chat:{base}/v1#glm-5.2")));
+        let b = classification(&log, &r);
+        assert!(has_neither(&b), "{name}: {b}");
+    }
+}
+
+#[test]
+fn colibri_profile_ask_identifies_a_repository_chosen_stub_without_a_key() {
+    // The risk: the identification read giving a port the repository chose
+    // a key the classification itself would not send (ADR 0024 §3).
+    let (base, log) = ask_stub(reply("200 OK", &models_colibri("glm-5.2")));
+    let d = repo(
+        "ask-repo-chosen",
+        &format!("[model]\nspec = \"openai-chat:{base}/v1#glm-5.2\"\n"),
+        "",
+    );
+    let r = ask(&d, None);
+    let b = classification(&log, &r);
+    assert!(has_profile(&b), "{b}");
+    let got = requests(&log);
+    let ident = got.iter().find(|s| is_models_get(&s.raw)).unwrap();
+    let lower = ident.raw.to_ascii_lowercase();
+    assert!(
+        !lower.contains("authorization") && !lower.contains("x-api-key"),
+        "{}",
+        ident.raw
+    );
 }

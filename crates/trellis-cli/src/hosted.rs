@@ -6,7 +6,8 @@
 //! it is read from the environment inside `HostedClient::new`, and, for the
 //! reads that ask a loopback endpoint whether it is colibri (ADR 0047), by
 //! `colibri_key` here, under the same rule and held only for those reads
-//! (the run's `preflight`, and `doctor`'s). No other caller holds it.
+//! (the run's `preflight`, `doctor`'s, and `ask`'s identification). No other
+//! caller holds it.
 
 use crate::config::RepoConfig;
 use crate::plain;
@@ -345,13 +346,18 @@ pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usi
 
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
 /// plain-http remote, or a build without TLS.
-pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
+///
+/// `colibri` sends colibri's request profile (ADR 0047 decision 5), and is
+/// true only for an endpoint [`preflight`] identified as colibri: every
+/// other endpoint's body stays byte for byte as it was.
+pub(crate) fn build(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<HostedModel> {
     // `main` registers every configured `key_env`; this covers a caller that
     // reached a provider some other way. Registering twice is harmless.
     trellis_core::secrets::register_key_vars([&r.key_env]);
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
         .with_thinking(cfg.thinking()?)
+        .with_colibri_profile(colibri)
         // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
         .with_timeout(cfg.model_timeout());
     let budget = hosted_context_bytes(r, cfg)?;
@@ -456,9 +462,11 @@ fn probed() -> &'static Mutex<HashMap<(String, String), ToolsProbe>> {
 ///
 /// `Ok(None)` when the base is not this machine (nothing is read) or the
 /// server is not colibri: the run goes on as it always has. `Ok(Some(_))` is
-/// the run's `runtime:` line for an identified colibri. `Err` stops the run
-/// before its snapshot. Every read is bounded by `colibri::READ_TIMEOUT`,
-/// and every string the server supplied passes through [`plain`].
+/// the run's `runtime:` line for an identified colibri, and is returned for
+/// nothing else, so it is also the identification the request profile is
+/// turned on by (decision 5). `Err` stops the run before its snapshot. Every
+/// read is bounded by `colibri::READ_TIMEOUT`, and every string the server
+/// supplied passes through [`plain`].
 pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
     const NOT_STARTED: &str = "Nothing was snapshotted: the run did not start.";
     let key = colibri_key(r);
@@ -955,7 +963,7 @@ mod tests {
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: None,
         };
-        let Err(e) = build(&r, &RepoConfig::default()) else {
+        let Err(e) = build(&r, &RepoConfig::default(), false) else {
             panic!("a missing key must refuse");
         };
         let e = e.to_string();
@@ -1129,7 +1137,7 @@ mod tests {
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: provider.map(str::to_string),
         };
-        let mut m = build(&r, cfg).unwrap();
+        let mut m = build(&r, cfg, false).unwrap();
         let checks = trellis_checks::CheckConfig {
             typecheck: if cfg!(windows) {
                 vec!["cmd".into(), "/C".into(), "exit 0".into()]
