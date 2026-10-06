@@ -1182,27 +1182,27 @@ equivalent (#248): `end` is `finish` and a bounded reap; the loop calls `finish`
 killed (#248) by process_agent::tests::a_timed_out_command_is_ended_before_it_can_write_again | crates/trellis-cli/src/process_agent.rs:731:9: replace Running::finish with ()
 killed (#248) by process_agent::tests::the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files | crates/trellis-cli/src/process_agent.rs:815:24: delete ! in write_trail
 killed (#248) by process_agent::tests::the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files | crates/trellis-cli/src/process_agent.rs:822:21: delete ! in write_trail
-#248 | crates/trellis-cli/src/services.rs:40:34: replace * with +
-#248 | crates/trellis-cli/src/services.rs:256:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in create_fresh
-#248 | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
-#248 | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 1))
-#248 | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with true
-#248 | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with false
-#248 | crates/trellis-cli/src/services.rs:333:9: replace Proc::stop -> bool with true
-#248 | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with true
-#248 | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with false
-#248 | crates/trellis-cli/src/services.rs:349:43: replace + with - in reap
-#248 | crates/trellis-cli/src/services.rs:349:43: replace + with * in reap
-#248 | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with true in reap
-#248 | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with false in reap
-#248 | crates/trellis-cli/src/services.rs:354:51: replace >= with < in reap
-#248 | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in outliving
-#248 | crates/trellis-cli/src/services.rs:369:28: replace == with != in outliving
-#248 | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in outliving
-#248 | crates/trellis-cli/src/services.rs:410:29: replace + with - in read_record
-#248 | crates/trellis-cli/src/services.rs:413:26: replace > with >= in read_record
-#248 | crates/trellis-cli/src/services.rs:410:29: replace + with * in read_record
-#248 | crates/trellis-cli/src/services.rs:413:26: replace > with == in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:40:34: replace * with +
+killed (#248) by services::tests::a_name_that_cannot_be_replaced_is_said_to_be_that | crates/trellis-cli/src/services.rs:256:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in create_fresh
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 1))
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with true
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with false
+equivalent (#248): every caller drops the `Proc` right after `stop`, and its KillOnDrop and kill-on-close job end the tree then; the mutant only removes the record a moment before the tree is gone instead of after | crates/trellis-cli/src/services.rs:333:9: replace Proc::stop -> bool with true
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with true
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with false
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:43: replace + with - in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:43: replace + with * in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with true in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with false in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:354:51: replace >= with < in reap
+killed (#248) by services::tests::no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in outliving
+killed (#248) by services::tests::no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said | crates/trellis-cli/src/services.rs:369:28: replace == with != in outliving
+killed (#248) by services::tests::no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in outliving
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:410:29: replace + with - in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:413:26: replace > with >= in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:410:29: replace + with * in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:413:26: replace > with == in read_record
 #248 | crates/trellis-cli/src/session.rs:35:9: replace <impl std::io::Write for Stdout>::write -> std::io::Result<usize> with Ok(0)
 #248 | crates/trellis-cli/src/session.rs:35:9: replace <impl std::io::Write for Stdout>::write -> std::io::Result<usize> with Ok(1)
 #248 | crates/trellis-cli/src/session.rs:38:9: replace <impl std::io::Write for Stdout>::flush -> std::io::Result<()> with Ok(())
