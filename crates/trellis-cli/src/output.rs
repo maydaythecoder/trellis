@@ -120,6 +120,10 @@ pub(crate) struct RunExtras {
     /// `trellis run --agents N --target ...` with N above 1: the plan its
     /// agents run, one per partition (#466). `None` for every other run.
     pub fanout: Option<crate::run_cmd::Fanout>,
+    /// RPC's record of the trails its runs wrote, for `get_session_stats`
+    /// (#319). `framed` pushes the run's id before it writes `run_end`, so
+    /// a client that has read `run_end` and asks finds the run counted.
+    pub run_ids: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -139,6 +143,7 @@ impl Default for RunExtras {
             images: Vec::new(),
             steer_watch: None,
             fanout: None,
+            run_ids: None,
         }
     }
 }
@@ -167,6 +172,11 @@ pub(crate) fn framed(
     }
     frame(sink, &start);
     let (result, run_id) = crate::work::with_run_id(root, body);
+    if let (Some(ids), Some(id)) = (&extras.run_ids, &run_id) {
+        ids.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(id.clone());
+    }
     frame(
         sink,
         &run_end(&result, run_id, extras.request_id.as_deref()),
