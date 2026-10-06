@@ -117,8 +117,9 @@ impl Driver {
         tools: &trellis_loop::ToolSet,
         cfg: &config::RepoConfig,
         from_user: bool,
+        source: hosted::SpecSource,
     ) -> Result<Self> {
-        if let Some(r) = hosted::resolve(spec, cfg, from_user)? {
+        if let Some(r) = hosted::resolve_from(spec, cfg, from_user, source)? {
             if unconstrained {
                 anyhow::bail!(
                     "--unconstrained is meaningless for a hosted model: it calls tools \
@@ -247,6 +248,10 @@ pub(crate) struct RunSeeding<'a> {
     /// the user's allowlist before a key is sent to it (ADR 0024 §3).
     /// `false` by default, which is the stricter reading.
     pub(crate) model_from_user: bool,
+    /// Where a spec the user did not choose came from, so a key refusal
+    /// says where to look (#457). Wording only: `model_from_user` alone
+    /// decides what is refused. The repository's configuration by default.
+    pub(crate) model_source: hosted::SpecSource,
     /// A queued task's run, from `work`: offered `ask_human`, since only
     /// here does a question have a task to wait on (ADR 0026 §1).
     pub(crate) queued: bool,
@@ -513,6 +518,7 @@ fn run_body(
         focus,
         profile,
         model_from_user,
+        model_source,
         queued,
         services,
     } = seeding;
@@ -618,7 +624,14 @@ fn run_body(
         _ => None,
     };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
-    let mut driver = Driver::build(&spec, unconstrained, &tooling.tools, &cfg, model_from_user)?;
+    let mut driver = Driver::build(
+        &spec,
+        unconstrained,
+        &tooling.tools,
+        &cfg,
+        model_from_user,
+        model_source,
+    )?;
 
     // `--image` (ADR 0041): refused for anything but hosted tier 1 before the
     // reachability probe, so the refusal is about the model and not about a
@@ -645,7 +658,7 @@ fn run_body(
         // again rather than read off the driver: it is a pure function of the
         // spec, the config and the environment, and `refuse_unless_hosted`
         // above means it names a hosted model.
-        let budget = match hosted::resolve(&spec, &cfg, model_from_user)? {
+        let budget = match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
             Some(r) => hosted::hosted_context_bytes(&r, &cfg)?,
             None => anyhow::bail!(
                 "--image: `{model_spec}` passed the hosted-model check but does not \
@@ -726,7 +739,14 @@ fn run_body(
             // Not a warning and not a failure. The loop already validates and
             // retries; what was wrong was the claim, so the fix is to report
             // the tier that is actually running.
-            driver = Driver::build(&spec, true, &tooling.tools, &cfg, model_from_user)?;
+            driver = Driver::build(
+                &spec,
+                true,
+                &tooling.tools,
+                &cfg,
+                model_from_user,
+                model_source,
+            )?;
         }
         schema_note = Some(note);
     }
@@ -3329,6 +3349,43 @@ mod approval_tests {
     }
 
     #[test]
+    fn a_queued_run_that_asks_ends_as_asked_with_the_question() {
+        // #248. The risk: a restored run that ended on `ask_human` reported
+        // as an ordinary rollback, so `work` never parks the task on the
+        // question and the person is never asked.
+        let (dir, spec) = fixture(
+            "asks-human",
+            r#"{"steps":[{"tool":"ask_human","question":"Keep the v1 endpoint?","options":["yes","no"]}]}"#,
+        );
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding {
+                queued: true,
+                ..RunSeeding::default()
+            },
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+                steering: None,
+            },
+            &mut out,
+        );
+        let said = String::from_utf8(out).unwrap();
+        assert_eq!(
+            r.unwrap(),
+            RunExit::Asked {
+                question: "Keep the v1 endpoint?".to_string(),
+                options: vec!["yes".to_string(), "no".to_string()],
+            },
+            "{said}"
+        );
+    }
+
+    #[test]
     fn an_approve_list_someone_wrote_is_not_widened() {
         // #425 widens only the default. A repository that wrote
         // `approve = ["edit"]` asked for edits only, and gets that.
@@ -3631,6 +3688,26 @@ mod audit_mode_tests {
             (1, 0),
             "the covered call on line 2 was looked up on another line"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_coverage_file_with_no_files_measures_nothing() {
+        // #248. The risk: a `coverage.json` that names no file read as data,
+        // so every caller counts as Reviewed (not covered) rather than the
+        // whole run as not measured.
+        let dir = crate::testutil::scratch("audit-mode-empty-coverage");
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/core.py"), "def greet():\n    return 1\n").unwrap();
+        std::fs::write(
+            dir.join("app/edge.py"),
+            "from app.core import greet\ngreet()\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("coverage.json"), r#"{"files": {}}"#).unwrap();
+
+        let counts = audit_modes(&dir, &["app/core.py".to_string()]);
+        assert_eq!((counts.verified, counts.reviewed), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

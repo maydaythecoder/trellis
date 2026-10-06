@@ -451,6 +451,38 @@ fn a_task_that_names_a_model_gets_no_key_for_an_endpoint_the_user_did_not_name()
 }
 
 #[test]
+fn a_task_model_refusal_names_the_task_as_the_endpoint_s_source() {
+    // #457. The risk: a refusal that blames the repository's configuration
+    // for an endpoint the task file named sends the user to look in
+    // `.trellis/config.toml`, where nothing names it, instead of at the
+    // queued task. The refusal itself is unchanged: same key, same host,
+    // same remedies.
+    let d = hostile("hostile-task-source", "");
+    let (added, out) = with_canaries(
+        &d,
+        &[
+            "queue",
+            "add",
+            "anything",
+            "--model",
+            "openai-chat:https://collector.invalid/v1#m",
+        ],
+    );
+    assert!(added, "{out}");
+    let (ok, all) = with_canaries(&d, &["work", "--once"]);
+    assert!(!ok, "{all}");
+    assert!(
+        all.contains("this task's own model would send OPENAI_API_KEY"),
+        "{all}"
+    );
+    assert!(!all.contains("repository's configuration"), "{all}");
+    assert!(all.contains("https://collector.invalid:443"), "{all}");
+    assert!(all.contains("--model"), "{all}");
+    assert!(!all.contains("snapshot at"), "{all}");
+    assert!(!all.contains(canary()), "{all}");
+}
+
+#[test]
 fn a_repository_that_names_the_key_variable_is_refused_at_load() {
     // The risk: `key_env = "AWS_SECRET_ACCESS_KEY"` in a committed file, and
     // whatever that variable holds sent to the repository's `base_url`.
@@ -602,6 +634,66 @@ fn ask_hosted_classify_a_question_takes_no_snapshot() {
     for (name, text) in [("stdout", &stdout), ("stderr", &stderr)] {
         assert!(!text.contains(canary()), "{name} contains the key");
     }
+}
+
+#[test]
+fn a_hosted_spec_typed_at_the_session_prompt_is_the_user_s_choice_for_the_run_too() {
+    // #248. ADR 0024 §3: `/model` typed at the prompt is the user's choice,
+    // so the run sends the user's key to it. The risk: the session's run
+    // dropping that and treating the spec as the repository's, refusing a
+    // loopback endpoint the user named because the key is set. Not a
+    // `provider:` spec, whose rule reads the user's file instead.
+    let (base, server) = stub(vec![
+        openai_text("<<TRELLIS_TASK>>"),
+        openai(
+            "c1",
+            "run_checks",
+            r#"{"paths":["app/util.py"],"kinds":["typecheck"]}"#,
+        ),
+        openai("c2", "done", r#"{"summary":"checked"}"#),
+    ]);
+    let d = repo("session-typed-hosted", "openai", &base);
+    std::fs::write(user_dir(&d).join("config.toml"), "").unwrap();
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(&d)
+        .arg("session")
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user_dir(&d))
+        .env("OPENAI_API_KEY", canary())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            format!("/model openai-chat:{base}/v1#m\nmake helper return 2\n/exit\n").as_bytes(),
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Before the join: a refused run never connects, and the stub would
+    // wait for it.
+    assert!(
+        stdout.contains("CONVERGED"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    for (name, text) in [("stdout", &stdout), ("stderr", &stderr)] {
+        assert!(!text.contains(canary()), "{name} contains the key");
+    }
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(
+        requests[1].contains(&format!("Authorization: Bearer {}", canary())),
+        "the run's request carries the user's key: {}",
+        requests[1]
+    );
 }
 
 // HTTPS_PROXY (#150, ADR 0024 amended). The provider's host is `.invalid`,
