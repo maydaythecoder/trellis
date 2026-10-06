@@ -766,3 +766,187 @@ fn queue_cancel_children_refuses_when_any_is_claimed_and_writes_nothing() {
     assert_eq!(ids(&d, "claimed").len(), 2);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Of `among`, the ids `queue list <args>` prints, in `among`'s order.
+fn listed(d: &Path, args: &[&str], among: &[&String]) -> Vec<String> {
+    let mut a = vec!["queue", "list"];
+    a.extend_from_slice(args);
+    let o = trellis(d, &a);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    among
+        .iter()
+        .filter(|id| s.contains(id.as_str()))
+        .map(|id| id.to_string())
+        .collect()
+}
+
+#[test]
+fn queue_list_text_matches_id_text_labels_and_notes_ignoring_case() {
+    // The risk: a backlog routines keep adding cannot be searched by what a
+    // task says, or a match is missed for its case or for where it is.
+    let d = fixture("list-text");
+    let text = add_id(&d, &["Rename Greet"]);
+    let label = add_id(&d, &["tidy", "--label", "FrontEnd"]);
+    let note = add_id(&d, &["later"]);
+    let o = trellis(&d, &["queue", "note", &note, "Needs a DB Migration"]);
+    assert!(o.status.success(), "{}", combined(&o));
+    let none = add_id(&d, &["unrelated"]);
+    let all = [&text, &label, &note, &none];
+
+    assert_eq!(
+        listed(&d, &["--text", "rename GREET"], &all),
+        vec![text.clone()]
+    );
+    assert_eq!(
+        listed(&d, &["--text", "frontend"], &all),
+        vec![label.clone()]
+    );
+    assert_eq!(
+        listed(&d, &["--text", "db migration"], &all),
+        vec![note.clone()]
+    );
+    assert_eq!(
+        listed(&d, &["--text", &none.to_uppercase()], &all),
+        vec![none.clone()]
+    );
+    let o = trellis(&d, &["queue", "list", "--text", "no such words"]);
+    let s = combined(&o);
+    assert!(o.status.success() && s.contains("no task matches"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_list_text_narrows_each_other_filter() {
+    // The risk: `--text` replaces a filter given with it instead of
+    // narrowing it, and the list shows tasks the person excluded.
+    let d = fixture("list-text-combined");
+    std::fs::create_dir_all(d.join(".trellis/agents")).unwrap();
+    std::fs::write(d.join(".trellis/agents/m.toml"), "model = \"scripted:x\"\n").unwrap();
+    let login = add_id(
+        &d,
+        &[
+            "fix login",
+            "--priority",
+            "high",
+            "--label",
+            "ui",
+            "--assignee",
+            "m",
+        ],
+    );
+    let logout = add_id(
+        &d,
+        &[
+            "fix logout",
+            "--priority",
+            "low",
+            "--label",
+            "ui",
+            "--assignee",
+            "m",
+        ],
+    );
+    let signup = add_id(&d, &["fix signup", "--priority", "high", "--label", "api"]);
+    let search = add_id(
+        &d,
+        &[
+            "fix search",
+            "--priority",
+            "high",
+            "--label",
+            "ui",
+            "--backlog",
+        ],
+    );
+    let other = add_id(
+        &d,
+        &[
+            "rename greet",
+            "--priority",
+            "high",
+            "--label",
+            "ui",
+            "--assignee",
+            "m",
+        ],
+    );
+    let all = [&login, &logout, &signup, &search, &other];
+    let fix = |extra: &[&str]| {
+        let mut a = vec!["--text", "FIX"];
+        a.extend_from_slice(extra);
+        listed(&d, &a, &all)
+    };
+
+    assert_eq!(
+        fix(&[]),
+        vec![
+            login.clone(),
+            logout.clone(),
+            signup.clone(),
+            search.clone()
+        ]
+    );
+    assert_eq!(
+        fix(&["--priority", "high"]),
+        vec![login.clone(), signup.clone(), search.clone()]
+    );
+    assert_eq!(
+        fix(&["--label", "ui"]),
+        vec![login.clone(), logout.clone(), search.clone()]
+    );
+    assert_eq!(
+        fix(&["--assignee", "m"]),
+        vec![login.clone(), logout.clone()]
+    );
+    assert_eq!(fix(&["--status", "backlog"]), vec![search.clone()]);
+    assert_eq!(
+        fix(&[
+            "--priority",
+            "high",
+            "--label",
+            "ui",
+            "--assignee",
+            "m",
+            "--status",
+            "todo"
+        ]),
+        vec![login.clone()]
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_list_text_still_lists_an_unreadable_task_file() {
+    // The risk: a corrupt task file has no text to match, so a search hides
+    // the one thing in the queue a person must repair.
+    let d = fixture("list-text-unreadable");
+    let fine = add_id(&d, &["rename greet"]);
+    std::fs::write(queue_dir(&d, "pending").join("broken.json"), "not json").unwrap();
+
+    let o = trellis(&d, &["queue", "list", "--text", "no such words"]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(
+        s.lines()
+            .any(|l| l.contains("broken") && l.contains("unreadable")),
+        "{s}"
+    );
+    assert!(!s.contains(&fine), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_list_text_empty_or_blank_is_refused_and_lists_nothing() {
+    // The risk: an empty search matches every task and reads as a result.
+    let d = fixture("list-text-empty");
+    let id = add_id(&d, &["rename greet"]);
+    for text in ["", "   ", "\t"] {
+        let o = trellis(&d, &["queue", "list", "--text", text]);
+        let s = combined(&o);
+        assert!(!o.status.success(), "{text:?}: {s}");
+        assert!(s.contains("--text is empty"), "{text:?}: {s}");
+        assert!(!s.contains(&id), "{text:?}: nothing listed:\n{s}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

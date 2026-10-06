@@ -86,6 +86,10 @@ pub(crate) enum QueueAction {
         assignee: Option<String>,
         #[arg(long, value_parser = PRIORITIES)]
         priority: Option<String>,
+        /// Only tasks whose id, text, labels or notes contain this,
+        /// ignoring case.
+        #[arg(long)]
+        text: Option<String>,
     },
     /// Change a task that is not running.
     Set {
@@ -287,7 +291,14 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             label,
             assignee,
             priority,
+            text,
         } => {
+            // An empty needle matches every task, which would read as a
+            // search that found everything.
+            if text.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                anyhow::bail!("--text is empty: give the words to look for");
+            }
+            let text = text.map(|s| s.to_lowercase());
             let entries = q.list()?;
             let ix = Queue::index_of(&entries);
             let shown: Vec<&trellis_queue::Entry> = entries
@@ -304,6 +315,13 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                             .as_deref()
                             .is_none_or(|a| t.assignee.as_deref() == Some(a))
                         && priority.as_deref().is_none_or(|p| t.priority.as_str() == p)
+                        && text.as_deref().is_none_or(|s| {
+                            std::iter::once(&e.id)
+                                .chain(std::iter::once(&t.task))
+                                .chain(&t.labels)
+                                .chain(t.notes.iter().map(|n| &n.text))
+                                .any(|h| h.to_lowercase().contains(s))
+                        })
                 })
                 .collect();
             if entries.is_empty() {

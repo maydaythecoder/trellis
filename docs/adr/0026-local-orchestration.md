@@ -390,6 +390,19 @@ read from the index `queue set` uses, so trellis-queue does not change.
   resume it later: that pause is its own ticket and ADR, and this flag
   stands.
 
+*Amended 2026-10-06 (#338), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**`queue list --text <s>`** lists only tasks whose id, task text, labels
+or note text contain `<s>`, compared after lowercasing both. It is one
+more predicate beside `--status`, `--label`, `--assignee` and
+`--priority`, and narrows whatever they list. A task file `queue list`
+cannot read is still listed as unreadable, whatever `--text` says, since
+it has no text to match and is the one entry a person must repair. An
+empty or all-whitespace `--text` is refused, since it would match every
+task. A backlog of a few hundred tasks needs no ranking; reversed if
+backlogs grow to where a substring match lists too much to read, then
+BM25 over task text (as `vault search` ranks notes, ADR 0022) is its own
+ticket, and this flag stays.
+
 ### 4. Agent profiles
 
 A profile is `.trellis/agents/<name>.toml`, committed with the repository
