@@ -70,7 +70,7 @@ Assume compromise. Hardening a breached system locks the attacker in.
      The owner confirms.
    - The known case is GitGuardian incident 37736010. It is two test
      Basic-Auth literals in 917654d/bc5818a, on the history of `drain`, a
-     legacy branch now frozen (ADR 0051). #185 removed them from the tree,
+     legacy branch deleted on 2026-10-06 at 44ac48e (ADR 0051). #185 removed them from the tree,
      and the squash merges kept them off `v0.1-resolver` and `main`. Since
      ADR 0051 both commits are ancestors of `dev` and `audit` (`drain` is
      their ancestor) and not of `main`. Before each `dev` -> `main` pull
@@ -113,7 +113,7 @@ under Unverified; that is not a failure you can fix.
     A selected-actions setting that blocks `dtolnay/*` or `Swatinem/*`
     breaks every CI run.
 - **Branch protection:** `main` (the launch branch, moved only by the owner
-  merging a `dev` pull request) and the frozen legacy `v0.1-resolver` are
+  merging a `dev` pull request) and the deleted legacy `v0.1-resolver` are
   protected by the local pre-push hook (ADR 0036, amended by ADR 0051).
   Check that `.git/hooks/pre-push` still refuses a push to either.
 - **Self-hosted runners:** `trellis-win` and `trellis-wsl` exist. On a private
