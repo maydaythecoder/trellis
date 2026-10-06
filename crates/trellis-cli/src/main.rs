@@ -689,6 +689,7 @@ fn main() -> Result<()> {
                     focus: focus.as_deref(),
                     profile: None,
                     model_from_user,
+                    model_source: crate::hosted::SpecSource::Repository,
                     // `trellis run` has no task for a question to wait on.
                     queued: false,
                     services: &[],

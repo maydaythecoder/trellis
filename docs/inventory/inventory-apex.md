@@ -68,3 +68,29 @@ The inventory was made by reading the repository through `gh api`; nothing was r
 
 ## H–I. Build and desktop only
 Build scripts, macOS packaging, CI, native dialogs and self-update. [ui]
+
+## Re-inventory notes (re-inventory 2026-10-04)
+Read at the same commit, f449644a (#359). Corrections to the items above, then the items the list folded into others or missed; ADR 0021's Apex rows 43 to 55 disposition them.
+
+- **Item 7.** Apex refuses a `notes` subfolder that is a symbolic link, with the message "Notes folder cannot be a symlink" (src-tauri/src/lib.rs:236-243, `read_workspace_blocking`).
+- **Item 9.** Apex reads an unparseable layout.json as empty and replaces the file with only the patched keys on its next patch (lib.rs:1443-1453 `read_layout_file`, lib.rs:447-474 `write_layout_patch_blocking`).
+- **Item 12.** Besides 5k items and 4 MiB, lib.rs:105-118 caps 4,096 points per stroke, 100,000 points in total, 120 characters per name, 20,000 characters of text per item and 200,000 in total.
+- **Item 23.** Apex's rename rewrites body wikilinks only: `updateRenamedNoteLinks` (web/appShell.ts:3774-3805) keeps each note's frontmatter, so a child whose parent named the old title is left with a parent that no longer resolves.
+- **Item 24.** Apex's reparent can rewrite the parent note as well as the child (findFallbackApex, web/appShell.ts:7497-7533): a parent with no usable hierarchy slot is given the first valid apex note as its own parent.
+- **Item 30.** The index has four fields: title (3), path (1.4), searchText (1) and body (1) (web/searchIndex.ts:1-420).
+
+New items:
+
+- 43 path safety for workspace files. A symlinked notes/, manifest.json or layout.json is refused (lib.rs:236-243 for notes/).
+- 44 workspace tabs (web/appShell.ts:1102-1222). [ui]
+- 45 recent projects (appShell.ts:1346-1380). [ui]
+- 46 project folder rename (appShell.ts:1058-1131). [ui]
+- 47 project location chooser (appShell.ts:1382-1537). [ui]
+- 48 paste plain text as a note (web/notes/noteComposer.ts:67-96). [ui]
+- 49 editor link rendering (appShell.ts:179-298). [ui]
+- 50 per-line date labels and the note date header (web/ui/dateDecorations.ts:1-281). [ui]
+- 51 date tracking that never blocks Markdown. A note edit lands even when dates.json cannot follow it (README.md).
+- 52 search result ranking layer (web/searchResults.ts:1-255).
+- 53 rope connect gesture (appShell.ts:5883-5920). [ui]
+- 54 hub and PageRank scoring (web/labelVisibility.ts:19-234). [ui]
+- 55 workspace chrome (appShell.ts:443-637). [ui]
