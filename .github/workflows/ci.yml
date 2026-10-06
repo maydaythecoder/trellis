@@ -10,7 +10,7 @@ on:
   # request ran the whole suite twice for the same commit (#156); listing
   # `audit` and every PR target ran it four times (#381). `audit` is left out
   # because promotion fast-forwards `dev` to the commit `audit` holds, so that
-  # commit runs when it reaches `dev`; `v0.1-resolver` is frozen (ADR 0051).
+  # commit runs when it reaches `dev`.
   # A pull request runs into `dev` and `main`: those are the two promotions on
   # the way to `main` (`audit` into `dev`, `dev` into `main`), and each is
   # checked here before it merges (#426).
