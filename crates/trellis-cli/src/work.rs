@@ -1236,6 +1236,17 @@ fn run_ids(root: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+/// Runs `body` and returns, beside its result, the id of the trail it
+/// wrote: the stem in `.trellis/runs` that was not there before it, or None
+/// when it wrote no trail. The one rule for a run's id, used by `work` and by
+/// the `run_end` frame of `--json` and `rpc` (#472, #475).
+pub(crate) fn with_run_id<T>(root: &Path, body: impl FnOnce() -> T) -> (T, Option<String>) {
+    let before = run_ids(root);
+    let out = body();
+    let id = run_ids(root).difference(&before).max().cloned();
+    (out, id)
+}
+
 /// The line for a budget pause `enforce` lifted, with its reason: a
 /// rollover and a raised limit call for different things from the person.
 fn resumed_line(agent: &str, why: &str) -> String {
@@ -1499,25 +1510,25 @@ impl Runner for CliRunner<'_> {
                 steering: None,
             },
         };
-        let before = run_ids(self.root);
-        let exit = cmd_run(
-            self.root,
-            &text,
-            &model,
-            self.unconstrained,
-            RunSeeding {
-                resume: false,
-                focus: t.focus.as_deref(),
-                profile: profile.as_ref(),
-                model_from_user,
-                model_source,
-                queued: true,
-                services: &service_actions,
-            },
-            control,
-            &mut crate::output::human(),
-        );
-        let run_id = run_ids(self.root).difference(&before).max().cloned();
+        let (exit, run_id) = with_run_id(self.root, || {
+            cmd_run(
+                self.root,
+                &text,
+                &model,
+                self.unconstrained,
+                RunSeeding {
+                    resume: false,
+                    focus: t.focus.as_deref(),
+                    profile: profile.as_ref(),
+                    model_from_user,
+                    model_source,
+                    queued: true,
+                    services: &service_actions,
+                },
+                control,
+                &mut crate::output::human(),
+            )
+        });
         match exit {
             Ok(RunExit::Converged) => RunEnd::Converged { run_id },
             Ok(RunExit::NotConverged { restored: true }) => RunEnd::RolledBack { run_id },
