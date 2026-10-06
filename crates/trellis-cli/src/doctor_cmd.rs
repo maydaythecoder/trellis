@@ -103,6 +103,68 @@ pub(crate) fn truncate_module(m: &str, width: usize) -> String {
         .collect()
 }
 
+/// What the backend `spec` names says about running requests at once (S18).
+///
+/// One probe for `doctor`, which reports it, and `trellis run --agents
+/// auto`, which takes its width from it: two copies would let the width a
+/// run picks drift from the capability `doctor` shows. A hosted provider
+/// batches by design and reports no number; a scripted model has no backend
+/// at all, so its capability is unknown. An `Err` is a slot count that could
+/// not be read, which says nothing about the runtime, so callers treat it as
+/// `Unknown` and say why.
+pub(crate) fn probe_batching(
+    spec: &trellis_model::ModelSpec,
+    cfg: &config::RepoConfig,
+    from_user: bool,
+) -> Result<trellis_model::BatchingCapability> {
+    use trellis_model::BatchingCapability;
+
+    if hosted::resolve(spec, cfg, from_user)?.is_some() {
+        return Ok(BatchingCapability::ContinuousUnmeasured);
+    }
+    let trellis_model::ModelSpec::Runtime {
+        dialect,
+        base,
+        model,
+    } = spec
+    else {
+        return Ok(BatchingCapability::Unknown);
+    };
+    let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
+        .with_timeout(std::time::Duration::from_secs(30));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    Ok(match rt.block_on(client.probe_slots())? {
+        Some(n) if n > 1 => BatchingCapability::Continuous {
+            measured_concurrency: n,
+        },
+        Some(_) => BatchingCapability::SingleStream,
+        // Continuous batching is inherent here, but the concurrency its
+        // scheduler will actually grant is not a number to invent.
+        None => BatchingCapability::ContinuousUnmeasured,
+    })
+}
+
+/// What `doctor` adds about a serving runtime's batching capability.
+fn batching_note(b: trellis_model::BatchingCapability) -> Option<&'static str> {
+    use trellis_model::BatchingCapability;
+    match b {
+        BatchingCapability::SingleStream => Some(concat!(
+            "llama.cpp reports a single slot. Multi-agent mode would serialize; ",
+            "start it with --parallel N for real concurrency (S18). "
+        )),
+        BatchingCapability::ContinuousUnmeasured => Some(concat!(
+            "This runtime batches continuously, so multi-agent mode is supported ",
+            "in principle. The concurrency it will grant is its scheduler's ",
+            "decision and is not reported, so `--agents auto` runs one agent. ",
+            "`--agents` takes a number or `auto`, but running more than one ",
+            "agent at once is not built yet, and a run that would is refused. "
+        )),
+        BatchingCapability::Continuous { .. } | BatchingCapability::Unknown => None,
+    }
+}
+
 pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool) -> Result<()> {
     use trellis_model::{AdapterTier, BatchingCapability, Probe};
 
@@ -121,13 +183,14 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
         // Tier 1 is the protocol, not a probe finding (ADR 0024 §2).
-        if let Some(h) = hosted::resolve(&spec, &repo_cfg, from_user)? {
+        let resolved = hosted::resolve(&spec, &repo_cfg, from_user)?;
+        let is_hosted = resolved.is_some();
+        if let Some(h) = resolved {
             let (m, r, n) = hosted::doctor(&h);
             model_id = m;
             runtime = r;
             notes.extend(n);
             tier = Some(AdapterTier::Native);
-            batching = BatchingCapability::ContinuousUnmeasured;
         } else {
             let trellis_model::ModelSpec::Runtime {
                 dialect,
@@ -185,41 +248,21 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                     }
                     Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
                 }
-
-                match client.probe_slots().await {
-                    Ok(Some(n)) if n > 1 => {
-                        batching = BatchingCapability::Continuous {
-                            measured_concurrency: n,
-                        };
-                    }
-                    Ok(Some(_)) => {
-                        batching = BatchingCapability::SingleStream;
-                        notes.push(
-                        concat!(
-                            "llama.cpp reports a single slot. Multi-agent mode would serialize; ",
-                            "start it with --parallel N for real concurrency (S18). "
-                        )
-                        .into(),
-                    );
-                    }
-                    Ok(None) => {
-                        // Continuous batching is inherent here, but the concurrency
-                        // its scheduler will actually grant is not a number to
-                        // invent; multi-agent mode is not built yet either.
-                        batching = BatchingCapability::ContinuousUnmeasured;
-                        notes.push(
-                        concat!(
-                            "This runtime batches continuously, so multi-agent mode is supported ",
-                            "in principle. The concurrency it will grant is its scheduler's ",
-                            "decision and is not reported. Multi-agent mode is not built yet: ",
-                            "`--agents` accepts only 1. "
-                        )
-                        .into(),
-                    );
-                    }
-                    Err(e) => notes.push(format!("Could not read slot count: {e}")),
-                }
             });
+        }
+
+        // After the constraint probe, so its note still reads first. A hosted
+        // provider batches by design and says nothing more, so its
+        // `ContinuousUnmeasured` carries no note: there is no runtime to
+        // restart differently.
+        match probe_batching(&spec, &repo_cfg, from_user) {
+            Ok(b) => {
+                batching = b;
+                if !is_hosted {
+                    notes.extend(batching_note(b).map(str::to_string));
+                }
+            }
+            Err(e) => notes.push(format!("Could not read slot count: {e}")),
         }
     }
 
