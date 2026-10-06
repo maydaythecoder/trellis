@@ -937,6 +937,27 @@ fn queue_list_text_still_lists_an_unreadable_task_file() {
 }
 
 #[test]
+fn queue_list_priority_hides_an_unreadable_task_file_as_label_does() {
+    // The risk: a corrupt task file has no priority, so listing it under
+    // `--priority high` reports a match that is not one, unlike `--label`.
+    let d = fixture("list-priority-unreadable");
+    let high = add_id(&d, &["rename greet", "--priority", "high"]);
+    std::fs::write(queue_dir(&d, "pending").join("broken.json"), "not json").unwrap();
+
+    for filter in [&["--priority", "high"], &["--label", "x"]] {
+        let mut args = vec!["queue", "list"];
+        args.extend_from_slice(filter);
+        let o = trellis(&d, &args);
+        let s = combined(&o);
+        assert!(o.status.success(), "{filter:?}: {s}");
+        assert!(!s.contains("broken"), "{filter:?}: {s}");
+    }
+    let s = combined(&trellis(&d, &["queue", "list", "--priority", "high"]));
+    assert!(s.contains(&high), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn queue_list_text_empty_or_blank_is_refused_and_lists_nothing() {
     // The risk: an empty search matches every task and reads as a result.
     let d = fixture("list-text-empty");
@@ -948,5 +969,134 @@ fn queue_list_text_empty_or_blank_is_refused_and_lists_nothing() {
         assert!(s.contains("--text is empty"), "{text:?}: {s}");
         assert!(!s.contains(&id), "{text:?}: nothing listed:\n{s}");
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_set_reason_until_refuses_a_missing_or_malformed_at() {
+    // The risk: a wait with no instant, or one read as some other instant
+    // than the person meant, would park a task that nothing wakes or wake
+    // it at the wrong time. Each is refused, naming `--at`, before the task
+    // file is touched.
+    let d = fixture("set-until-refused");
+    let id = add_id(&d, &["rename greet"]);
+    let before = task_json(&d, "pending", &id);
+    let set = |extra: &[&str]| {
+        let mut a = vec!["queue", "set", id.as_str()];
+        a.extend_from_slice(extra);
+        trellis(&d, &a)
+    };
+    let mut cases: Vec<Vec<&str>> = vec![
+        vec!["--status", "blocked", "--reason", "until"],
+        vec!["--at", "2999-01-01T00:00:00Z"],
+        vec![
+            "--status",
+            "blocked",
+            "--reason",
+            "manual",
+            "--detail",
+            "x",
+            "--at",
+            "2999-01-01T00:00:00Z",
+        ],
+    ];
+    for bad in [
+        "tomorrow",
+        "2999-01-01",
+        "2999-01-01T00:00:00",
+        "2999-01-01T00:00Z",
+        "29990101T000000Z",
+        "2999-01-01T00:00:00+01",
+        "2999-01-01T00:00:00Z[UTC]",
+        "",
+    ] {
+        cases.push(vec![
+            "--status", "blocked", "--reason", "until", "--at", bad,
+        ]);
+    }
+    for c in &cases {
+        let o = set(c);
+        let s = combined(&o);
+        assert!(!o.status.success(), "{c:?}: {s}");
+        assert!(s.contains("--at"), "{c:?}: the refusal names --at:\n{s}");
+        assert_eq!(
+            task_json(&d, "pending", &id),
+            before,
+            "{c:?}: task file unchanged"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_set_reason_until_is_listed_with_its_instant() {
+    // The risk: a waiting task whose list line does not say until when,
+    // so a person cannot tell a timed wait from a stuck one. The instant is
+    // stored and shown in UTC whatever offset it was given in.
+    let d = fixture("set-until-listed");
+    let id = add_id(&d, &["rename greet"]);
+    let o = trellis(
+        &d,
+        &[
+            "queue",
+            "set",
+            &id,
+            "--status",
+            "blocked",
+            "--reason",
+            "until",
+            "--at",
+            "2999-01-01T01:30:00+01:00",
+        ],
+    );
+    assert!(o.status.success(), "{}", combined(&o));
+    let t = task_json(&d, "pending", &id);
+    assert_eq!(t["status"], "blocked", "{t}");
+    assert_eq!(t["blocked"]["reason"], "until", "{t}");
+    assert_eq!(t["blocked"]["at"], "2999-01-01T00:30:00Z", "{t}");
+
+    let o = trellis(&d, &["queue", "list"]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(
+        s.contains("waiting: blocked until 2999-01-01T00:30:00Z"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn work_sends_no_key_to_an_endpoint_the_repository_chose() {
+    // #248, ADR 0024 §3. The risk: `work` passing the repository's own
+    // `[model] spec` to the run as the person's choice, so a cloned
+    // repository's port received OPENAI_API_KEY from a heartbeat where a
+    // plain `trellis run` refuses it.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    let d = fixture("work-hostile-spec");
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!(
+            "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n\
+             [model]\nspec = \"openai-chat:http://127.0.0.1:{port}/v1#m\"\n"
+        ),
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "the repository's spec"]);
+    add(&d, &["rename greet"]);
+    // Built at run time: a key-shaped literal trips the secret scanners.
+    let canary = format!("sk-{}-leak-canary-{}", "trellis", std::process::id());
+    let o = trellis_env(&d, &["work", "--once"], &[("OPENAI_API_KEY", &canary)]);
+    let s = combined(&o);
+    assert!(
+        s.contains("OPENAI_API_KEY"),
+        "the refusal names the key: {s}"
+    );
+    assert!(!s.contains(&canary), "{s}");
+    assert!(
+        matches!(l.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "something connected to the repository's port: {s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
