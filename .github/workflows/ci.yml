@@ -377,8 +377,17 @@ jobs:
         run: cargo audit --file fuzz/Cargo.lock
 
       # desktop/ is a third workspace with its own lock (ADR 0048), so the
-      # root's audits never read what it depends on (#384). As for fuzz/,
-      # cargo deny finds the root deny.toml by looking upward.
+      # root's audits never read what it depends on (#384). The same guard
+      # G5 runs, self-test first (#290): Tauri out of the root lock, the
+      # desktop's lock current and its deny.toml in step with the root's, no
+      # audit.toml, and its code inside ADR 0048's lines.
+      - name: Desktop guards (ADR 0048)
+        run: |
+          scripts/checks/desktop-guards.sh --self-test
+          scripts/checks/desktop-guards.sh
+
+      # Unlike fuzz/, the desktop has its own policy, desktop/deny.toml (ADR
+      # 0048 section 7): cargo deny reads the one nearest the manifest.
       - name: Licences, bans, sources, advisories (desktop/)
         run: cargo deny --locked --manifest-path desktop/Cargo.toml check
 

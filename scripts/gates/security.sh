@@ -25,6 +25,19 @@ cargo audit
 scripts/checks/fuzz-lock-current.sh
 cargo deny --locked --manifest-path fuzz/Cargo.toml check
 cargo audit --file fuzz/Cargo.lock
+# desktop/ is a third workspace with its own lock (ADR 0048 section 7,
+# #290). Unlike fuzz/, it has its own policy: cargo deny reads
+# desktop/deny.toml, the root policy plus the lines between its
+# desktop-only markers. The guard checks first that Tauri stays out of the
+# root lock, that the desktop's lock is current and its copy of the policy
+# in step with the root's, and that its code stays inside ADR 0048's lines;
+# its self-test before it, so a guard that cannot fail does not pass.
+# cargo audit gets no --ignore and no audit.toml exists (the guard fails on
+# one), so a `vulnerability` in Tauri's tree fails here until the lock moves.
+scripts/checks/desktop-guards.sh --self-test
+scripts/checks/desktop-guards.sh
+cargo deny --locked --manifest-path desktop/Cargo.toml check
+cargo audit --file desktop/Cargo.lock
 # The workflows, as the pre-commit hook audits them but over the whole
 # directory, so a workflow change that reached the branch without the hook
 # (another clone, --no-verify) is still held to it (#215). zizmor at medium
@@ -91,4 +104,4 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
   exit 1
 fi
-echo "OK: fuzz/Cargo.lock current; cargo deny, cargo audit (root and fuzz/ locks); zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"
+echo "OK: fuzz/Cargo.lock current; desktop guards and their self-test pass; cargo deny, cargo audit (root, fuzz/Cargo.lock and desktop/Cargo.lock); zizmor clean and every workflow cargo command --locked; no CI job lost; pre-push, pre-commit and ci-local self-tests pass; gitleaks clean over $GATE_BASE..HEAD; no key-shaped literal or basic-auth URL added"
