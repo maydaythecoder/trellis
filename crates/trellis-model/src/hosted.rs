@@ -159,6 +159,12 @@ pub struct Reply {
     pub prompt_tokens: Option<u64>,
     /// The assistant message to replay with this call's result.
     pub replay: Value,
+    /// How long colibri held the request in its admission queue, from its
+    /// `x-colibri-queue-wait-ms` header (ADR 0047 decision 8); `None` when
+    /// the header is absent or its value is not a non-negative integer.
+    /// Set by `HostedClient::send`, which has the headers; `parse_reply`
+    /// sees only the body and leaves it `None`.
+    pub queue_wait_ms: Option<u64>,
 }
 
 /// The thinking a request is sent with, given whether every assistant turn
@@ -199,10 +205,24 @@ pub fn request_body(
     max_tokens: u32,
     thinking: Thinking,
 ) -> Value {
+    body_for(protocol, model, conv, tools, max_tokens, thinking, false)
+}
+
+/// [`request_body`], with colibri's request profile when `colibri` (ADR 0047
+/// decision 5). Without it the body is exactly `request_body`'s.
+fn body_for(
+    protocol: Protocol,
+    model: &str,
+    conv: &Conversation,
+    tools: &[NativeTool],
+    max_tokens: u32,
+    thinking: Thinking,
+    colibri: bool,
+) -> Value {
     let thinking = thinking_sent(protocol, thinking, every_turn_replayed(conv));
     match protocol {
-        Protocol::OpenAiChat => openai_body(model, conv, tools, max_tokens, thinking),
-        Protocol::Anthropic => anthropic_body(model, conv, tools, max_tokens, thinking),
+        Protocol::OpenAiChat => openai_body(model, conv, tools, max_tokens, thinking, colibri),
+        Protocol::Anthropic => anthropic_body(model, conv, tools, max_tokens, thinking, colibri),
     }
 }
 
@@ -212,6 +232,7 @@ fn openai_body(
     tools: &[NativeTool],
     max_tokens: u32,
     thinking: Thinking,
+    colibri: bool,
 ) -> Value {
     // A plain string when there is no image, so every other body is byte
     // for byte what it was; a parts array, the text first, when there is.
@@ -260,8 +281,9 @@ fn openai_body(
             })
         })
         .collect();
-    // No `temperature`: reasoning models reject a non-default one, and
-    // `max_completion_tokens` because they reject `max_tokens`.
+    // No `temperature` (colibri excepted, below): reasoning models reject a
+    // non-default one, and `max_completion_tokens` because they reject
+    // `max_tokens`.
     let mut b = json!({
         "model": model,
         "messages": messages,
@@ -273,6 +295,16 @@ fn openai_body(
     if let Some(e) = thinking.effort() {
         b["reasoning_effort"] = json!(e);
     }
+    // colibri is no reasoning API: with no `temperature` it samples at 0.7,
+    // and with no thinking field its Qwen3.8 thinks at `xhigh` (ADR 0047
+    // decision 5). `enable_thinking: false` asks for the least thinking the
+    // family's template allows.
+    if colibri {
+        b["temperature"] = json!(0);
+        if thinking.effort().is_none() {
+            b["enable_thinking"] = json!(false);
+        }
+    }
     b
 }
 
@@ -282,6 +314,7 @@ fn anthropic_body(
     tools: &[NativeTool],
     max_tokens: u32,
     thinking: Thinking,
+    colibri: bool,
 ) -> Value {
     // Images before the text, the order Anthropic's documentation asks for.
     let mut first: Vec<Value> = conv
@@ -332,7 +365,18 @@ fn anthropic_body(
         "tools": tools,
         "tool_choice": { "type": "auto", "disable_parallel_tool_use": true },
     });
-    if let Some(e) = thinking.effort() {
+    if colibri {
+        // colibri thinks on this path only for `enabled`, reading `adaptive`
+        // as off, and takes no effort (ADR 0047 decision 5). Withheld
+        // thinking arrives here as `Off` and is stated as `disabled`.
+        b["temperature"] = json!(0);
+        let kind = if thinking.effort().is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        b["thinking"] = json!({ "type": kind });
+    } else if let Some(e) = thinking.effort() {
         b["thinking"] = json!({ "type": "adaptive" });
         b["output_config"] = json!({ "effort": e });
     }
@@ -411,6 +455,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 call,
                 tokens,
                 prompt_tokens,
+                queue_wait_ms: None,
                 replay: Value::Object(replay),
             })
         }
@@ -453,6 +498,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 call,
                 tokens,
                 prompt_tokens,
+                queue_wait_ms: None,
                 replay: json!({ "role": "assistant", "content": content }),
             })
         }
@@ -504,6 +550,20 @@ fn retryable(status: u16) -> bool {
 
 /// How many attempts one model call gets, the first included.
 pub const MAX_ATTEMPTS: u32 = 4;
+
+/// colibri's `x-colibri-queue-wait-ms` value as a count of milliseconds.
+///
+/// The value is server input: only ASCII digits, after trimming, that fit a
+/// `u64` are read. A sign, a fraction, a unit or an overflow is `None`, not
+/// an error, so a malformed figure never fails a reply that is otherwise
+/// good. (`u64::from_str` alone would accept a leading `+`.)
+fn queue_wait_ms(value: Option<&str>) -> Option<u64> {
+    let v = value?.trim();
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse().ok()
+}
 
 /// The longest wait honoured from `Retry-After`. A provider asking for more
 /// is asking a run to sit idle for longer than a turn is worth.
@@ -626,6 +686,9 @@ pub struct HostedClient {
     key: Option<ApiKey>,
     thinking: Thinking,
     timeout: Duration,
+    /// ADR 0047 decision 5: the endpoint was identified as colibri, so its
+    /// bodies carry `temperature: 0` and state thinking explicitly.
+    colibri: bool,
 }
 
 impl std::fmt::Debug for HostedClient {
@@ -701,12 +764,22 @@ impl HostedClient {
             key,
             thinking: Thinking::Off,
             timeout: Duration::from_secs(300),
+            colibri: false,
         })
     }
 
     #[must_use]
     pub fn with_thinking(mut self, t: Thinking) -> Self {
         self.thinking = t;
+        self
+    }
+
+    /// Sends colibri's request profile (ADR 0047 decision 5) when `on`: for
+    /// an endpoint identified as colibri, which otherwise samples at 0.7 and
+    /// reads an absent thinking setting by its own family default.
+    #[must_use]
+    pub fn with_colibri_profile(mut self, on: bool) -> Self {
+        self.colibri = on;
         self
     }
 
@@ -737,15 +810,17 @@ impl HostedClient {
         self.key.as_ref().map(ApiKey::source)
     }
 
-    /// The request body for this client's protocol, model and thinking.
+    /// The request body for this client's protocol, model and thinking, with
+    /// colibri's request profile when it is on.
     pub fn body(&self, conv: &Conversation, tools: &[NativeTool], max_tokens: u32) -> Value {
-        request_body(
+        body_for(
             self.protocol,
             &self.model,
             conv,
             tools,
             max_tokens,
             self.thinking,
+            self.colibri,
         )
     }
 
@@ -801,7 +876,9 @@ impl HostedClient {
                             cut(&self.scrub(&r.body))
                         ))
                     })?;
-                    return parse_reply(self.protocol, &v);
+                    let mut reply = parse_reply(self.protocol, &v)?;
+                    reply.queue_wait_ms = queue_wait_ms(r.header("x-colibri-queue-wait-ms"));
+                    return Ok(reply);
                 }
                 Ok(r) if matches!(r.status, 401 | 403) => {
                     // Not the body: OpenAI's echoes a masked form of the key.
@@ -1119,6 +1196,141 @@ mod tests {
         )
         .unwrap();
         assert_eq!(keyless.key_source(), None);
+    }
+
+    fn colibri(protocol: Protocol, thinking: Thinking) -> HostedClient {
+        HostedClient::with_key(protocol, "http://127.0.0.1:9/v1", "m", "K", None)
+            .unwrap()
+            .with_thinking(thinking)
+            .with_colibri_profile(true)
+    }
+
+    /// `conv()` with its one turn replayed as the provider sent it, so
+    /// Anthropic thinking is not withheld.
+    fn replayed() -> Conversation {
+        let mut c = conv();
+        c.exchanges[0].replay = Some(json!({"role":"assistant","content":[
+            {"type":"thinking","thinking":"","signature":"sig"},
+            {"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.py"}}]}));
+        c
+    }
+
+    #[test]
+    fn colibri_profile_openai_with_thinking_off_sends_temperature_0_and_enable_thinking_false() {
+        // The risk: colibri samples at 0.7 with no `temperature`, and its
+        // Qwen3.8 reads an absent thinking setting as `xhigh` (ADR 0047 d5).
+        let b = colibri(Protocol::OpenAiChat, Thinking::Off).body(&conv(), &tools(), 100);
+        assert_eq!(b["temperature"], json!(0));
+        assert_eq!(b["enable_thinking"], json!(false));
+        assert!(b.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn colibri_profile_openai_with_thinking_on_sends_the_effort_and_no_enable_thinking() {
+        let b = colibri(Protocol::OpenAiChat, Thinking::Low).body(&conv(), &tools(), 100);
+        assert_eq!(b["temperature"], json!(0));
+        assert_eq!(b["reasoning_effort"], "low");
+        assert!(b.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn colibri_profile_anthropic_with_thinking_off_sends_thinking_disabled() {
+        let b = colibri(Protocol::Anthropic, Thinking::Off).body(&replayed(), &tools(), 100);
+        assert_eq!(b["temperature"], json!(0));
+        assert_eq!(b["thinking"], json!({"type": "disabled"}));
+        assert!(b.get("output_config").is_none());
+    }
+
+    #[test]
+    fn colibri_profile_anthropic_with_thinking_on_sends_thinking_enabled_not_adaptive() {
+        // colibri thinks on the Anthropic path only for `enabled`; the
+        // `adaptive` sent to Anthropic itself would read as off.
+        let b = colibri(Protocol::Anthropic, Thinking::High).body(&replayed(), &tools(), 100);
+        assert_eq!(b["temperature"], json!(0));
+        assert_eq!(b["thinking"], json!({"type": "enabled"}));
+        assert!(b.get("output_config").is_none());
+    }
+
+    #[test]
+    fn colibri_profile_anthropic_with_thinking_withheld_sends_thinking_disabled() {
+        // A turn with no recorded reply withholds thinking (ADR 0024 §4);
+        // with the profile that is stated, not left to colibri's default.
+        let b = colibri(Protocol::Anthropic, Thinking::High).body(&conv(), &tools(), 100);
+        assert_eq!(b["temperature"], json!(0));
+        assert_eq!(b["thinking"], json!({"type": "disabled"}));
+        assert!(b.get("output_config").is_none());
+    }
+
+    #[test]
+    fn colibri_profile_off_leaves_every_other_body_byte_for_byte() {
+        // The risk: the profile leaking into bodies for hosted providers,
+        // whose reasoning models reject a `temperature`. The literals are
+        // the bodies as sent before the profile existed.
+        let openai = concat!(
+            r#"{"model":"m","messages":[{"role":"system","content":"SYSTEM"},"#,
+            r#"{"role":"user","content":"Task: fix it"},{"role":"assistant","content":null,"#,
+            r#""tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","#,
+            r#""arguments":"{\"path\":\"a.py\"}"}}]},"#,
+            r#"{"role":"tool","tool_call_id":"c1","content":"file text"},"#,
+            r#"{"role":"user","content":"last step"}],"#,
+            r#""tools":[{"type":"function","function":{"name":"read_file","#,
+            r#""description":"Read a file","parameters":{"type":"object","#,
+            r#""properties":{"path":{"type":"string"}},"required":["path"]}}}],"#,
+            r#""tool_choice":"required","parallel_tool_calls":false,"max_completion_tokens":100"#,
+        );
+        let anthropic = concat!(
+            r#"{"model":"m","max_tokens":100,"system":"SYSTEM","messages":["#,
+            r#"{"role":"user","content":[{"type":"text","text":"Task: fix it"}]},"#,
+            r#"{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig"},"#,
+            r#"{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.py"}}]},"#,
+            r#"{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"file text"},"#,
+            r#"{"type":"text","text":"last step"}]}],"#,
+            r#""tools":[{"name":"read_file","description":"Read a file","input_schema":{"#,
+            r#""type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],"#,
+            r#""tool_choice":{"type":"auto","disable_parallel_tool_use":true}"#,
+        );
+        let cases = [
+            (
+                Protocol::OpenAiChat,
+                Thinking::Off,
+                conv(),
+                format!("{openai}}}"),
+            ),
+            (
+                Protocol::OpenAiChat,
+                Thinking::High,
+                conv(),
+                format!(r#"{openai},"reasoning_effort":"high"}}"#),
+            ),
+            (
+                Protocol::Anthropic,
+                Thinking::Off,
+                replayed(),
+                format!("{anthropic}}}"),
+            ),
+            (
+                Protocol::Anthropic,
+                Thinking::High,
+                replayed(),
+                format!(
+                    r#"{anthropic},"thinking":{{"type":"adaptive"}},"output_config":{{"effort":"high"}}}}"#
+                ),
+            ),
+        ];
+        for (protocol, thinking, conv, golden) in cases {
+            for c in [
+                HostedClient::with_key(protocol, "http://127.0.0.1:9/v1", "m", "K", None)
+                    .unwrap()
+                    .with_thinking(thinking),
+                colibri(protocol, thinking).with_colibri_profile(false),
+            ] {
+                assert_eq!(
+                    c.body(&conv, &tools(), 100).to_string(),
+                    golden,
+                    "{protocol:?} {thinking:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1692,6 +1904,70 @@ mod tests {
             other => panic!("expected the 404, got {other:?}"),
         }
         assert_eq!(h.await.unwrap().len(), 1);
+    }
+
+    const OPENAI_OK: &str = r#"{"choices":[{"message":{"role":"assistant","content":null,
+        "tool_calls":[{"id":"c","type":"function",
+        "function":{"name":"done","arguments":"{}"}}]}}]}"#;
+
+    /// What `send` puts in `queue_wait_ms` for each of `extras`, the extra
+    /// headers of a `200 OK` the stub answers each request with in turn.
+    async fn queue_waits(extras: Vec<&'static str>) -> Vec<Option<u64>> {
+        let n = extras.len();
+        let (base, h) = stub(
+            extras
+                .into_iter()
+                .map(|e| ("200 OK", e, OPENAI_OK))
+                .collect(),
+        )
+        .await;
+        let c = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut got = Vec::new();
+        for _ in 0..n {
+            let r = c.send(&json!({})).await.expect("a 200 with a call");
+            got.push(r.queue_wait_ms);
+        }
+        assert_eq!(h.await.unwrap().len(), n);
+        got
+    }
+
+    #[tokio::test]
+    async fn colibri_queue_wait_header_is_read() {
+        // The risk (ADR 0047 decision 8): on a colibri server shared with
+        // other clients, time spent queued for admission is indistinguishable
+        // from time spent generating unless the reply carries the figure.
+        // Header names are case-insensitive (RFC 9110 §5.1).
+        assert_eq!(
+            queue_waits(vec![
+                "x-colibri-queue-wait-ms: 1234\r\n",
+                "X-Colibri-Queue-Wait-Ms: 0\r\n",
+                "X-COLIBRI-QUEUE-WAIT-MS:  42 \r\n",
+            ])
+            .await,
+            vec![Some(1234), Some(0), Some(42)]
+        );
+    }
+
+    #[tokio::test]
+    async fn colibri_queue_wait_header_absent_or_malformed_is_none() {
+        // The risk: the header is server input. A value that is not a plain
+        // non-negative integer must read as "not reported", never as a
+        // number it does not say, and never fail a reply that is otherwise
+        // good.
+        assert_eq!(
+            queue_waits(vec![
+                "",
+                "x-colibri-queue-wait-ms: -5\r\n",
+                "x-colibri-queue-wait-ms: +5\r\n",
+                "x-colibri-queue-wait-ms: 1.5\r\n",
+                "x-colibri-queue-wait-ms: 12ms\r\n",
+                "x-colibri-queue-wait-ms: abc\r\n",
+                "x-colibri-queue-wait-ms: \r\n",
+                "x-colibri-queue-wait-ms: 99999999999999999999999\r\n",
+            ])
+            .await,
+            vec![None; 8]
+        );
     }
 
     /// `c.send_via` where attempt `n` (from 1) fails with `fail(n)` when that
