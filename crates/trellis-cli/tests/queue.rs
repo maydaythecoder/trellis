@@ -263,6 +263,55 @@ fn rolled_back_runs_continue_to_the_next_task_and_the_queue_survives_them() {
 }
 
 #[test]
+fn a_backward_clock_step_still_records_the_run_id_of_a_rolled_back_run() {
+    // A trail's name is `<wall-clock stamp>-<slug>`. After the clock steps
+    // back, the next run's trail sorts below the one written before the
+    // step. Run one task, then rename its trail to a stamp in the future:
+    // the same files on disk as a clock that was ahead and was pulled back
+    // (#472), with no sleeping and no change to the real clock.
+    let d = fixture("clock-step");
+    add(&d, &["one"]);
+    let o = trellis(&d, &["work", "--once", "--model", &model(&d, "stop.json")]);
+    assert!(o.status.success(), "{}", combined(&o));
+    let runs = d.join(".trellis/runs");
+    let first = task_json(&d, "failed", &ids(&d, "failed")[0]);
+    let first = first["outcome"]["run_id"].as_str().unwrap().to_string();
+    let ahead = format!("9{}", &first[1..]);
+    std::fs::rename(
+        runs.join(format!("{first}.json")),
+        runs.join(format!("{ahead}.json")),
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(
+        &d,
+        &[
+            "commit",
+            "-qm",
+            "a trail stamped before the clock stepped back",
+        ],
+    );
+
+    add(&d, &["two"]);
+    let o = trellis(&d, &["work", "--once", "--model", &model(&d, "stop.json")]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    let two = ids(&d, "failed")
+        .into_iter()
+        .find(|i| i.ends_with("-two"))
+        .unwrap();
+    let t = task_json(&d, "failed", &two);
+    assert!(t["outcome"]["exit"].as_str().unwrap().contains("restored"));
+    let id = t["outcome"]["run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{t}"));
+    assert_ne!(id, ahead, "the id of the run before the step:\n{t}");
+    assert!(id.ends_with("-two"), "{t}");
+    assert!(runs.join(format!("{id}.json")).is_file(), "{t}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_dirty_tree_refuses_to_claim() {
     let d = fixture("dirty");
     add(&d, &["one"]);
