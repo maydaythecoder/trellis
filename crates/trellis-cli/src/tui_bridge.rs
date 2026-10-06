@@ -30,6 +30,10 @@ struct TurnFields {
     candidates: Option<u64>,
     unresolved: Option<u64>,
     prompt_bytes: Option<u64>,
+    /// The turn's model call (#256): absent when the runtime did not report it.
+    model_ms: Option<u64>,
+    completion_tokens: Option<u64>,
+    queue_wait_ms: Option<u64>,
     max_iterations: Option<u64>,
     /// On the loop's "steer delivered" event: turns completed before it.
     after_step: Option<u64>,
@@ -44,6 +48,9 @@ impl Visit for TurnFields {
             "candidates" => self.candidates = Some(v),
             "unresolved" => self.unresolved = Some(v),
             "prompt_bytes" => self.prompt_bytes = Some(v),
+            "model_ms" => self.model_ms = Some(v),
+            "completion_tokens" => self.completion_tokens = Some(v),
+            "queue_wait_ms" => self.queue_wait_ms = Some(v),
             "after_step" => self.after_step = Some(v),
             "max_iterations" => self.max_iterations = Some(v),
             _ => {}
@@ -272,6 +279,9 @@ impl<S: tracing::Subscriber> Layer<S> for LoopLayer {
                 iteration: turn as u32,
                 prompt_bytes: f.prompt_bytes.unwrap_or(0),
                 elapsed_secs: self.started.elapsed().as_secs(),
+                completion_tokens: f.completion_tokens,
+                model_ms: f.model_ms,
+                queue_wait_ms: f.queue_wait_ms,
             });
         }
     }
@@ -335,6 +345,7 @@ mod tests {
             iteration,
             prompt_bytes,
             elapsed_secs,
+            ..
         }) = got
             .iter()
             .find(|m| matches!(m, Message::BudgetUpdated { .. }))
@@ -343,6 +354,53 @@ mod tests {
         };
         assert_eq!((*iteration, *prompt_bytes), (3, 9800));
         assert!(*elapsed_secs >= 2, "elapsed from the run's start, not 0");
+    }
+
+    #[test]
+    fn turn_tokens_reach_the_budget() {
+        // The risk (#257): the turn event carries the model call's output
+        // tokens, wall time and queue wait (#256), and a bridge that drops
+        // them leaves the budget line unable to tell a slow turn from a stuck
+        // one. Emitted as `agent.rs` does, as `Option`s: a reported value
+        // arrives, an unreported one stays unknown rather than becoming 0.
+        let got = capture(|| {
+            tracing::info!(
+                turn = 2u64,
+                call = "read_file app/core.py",
+                model_ms = 25_000u64,
+                completion_tokens = Some(30u64),
+                queue_wait_ms = Some(10_000u64),
+                "turn"
+            );
+            tracing::info!(
+                turn = 3u64,
+                call = "read_file app/core.py",
+                model_ms = 4_000u64,
+                completion_tokens = None::<u64>,
+                queue_wait_ms = None::<u64>,
+                "turn"
+            );
+        });
+        let budgets: Vec<_> = got
+            .iter()
+            .filter_map(|m| match m {
+                Message::BudgetUpdated {
+                    completion_tokens,
+                    model_ms,
+                    queue_wait_ms,
+                    ..
+                } => Some((*completion_tokens, *model_ms, *queue_wait_ms)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            budgets,
+            vec![
+                (Some(30), Some(25_000), Some(10_000)),
+                (None, Some(4_000), None),
+            ],
+            "{got:?}"
+        );
     }
 
     #[test]

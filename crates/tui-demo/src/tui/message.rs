@@ -45,10 +45,18 @@ pub enum Message {
     },
     /// After each turn. `prompt_bytes` is the prompt's size in bytes as
     /// the loop measured it, not a token count (#243).
+    ///
+    /// The last three are that turn's model call as the `turn` event reports
+    /// it (#256): output tokens, the call's wall time, and the queue wait the
+    /// runtime said it spent. Each is `None` when it was not reported, so
+    /// the view can draw nothing rather than a rate made from a guess (#257).
     BudgetUpdated {
         iteration: u32,
         prompt_bytes: u64,
         elapsed_secs: u64,
+        completion_tokens: Option<u64>,
+        model_ms: Option<u64>,
+        queue_wait_ms: Option<u64>,
     },
     /// At the start of a run: the iteration ceiling the loop enforces.
     BudgetKnown {
