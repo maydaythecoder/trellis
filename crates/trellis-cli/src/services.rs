@@ -535,4 +535,57 @@ mod tests {
         assert!(left.is_empty(), "a record outlived the failed start");
         let _ = std::fs::remove_dir_all(&t);
     }
+
+    #[test]
+    fn a_record_is_read_up_to_its_bound_and_refused_by_size_past_it() {
+        // #248. The risk: the bound off by one either way, or a record
+        // past it cut short and refused as bad JSON rather than for its
+        // size, which hides what is wrong with it.
+        let t = crate::testutil::scratch("services-record-bound");
+        let r = Record {
+            pid: 21,
+            started: None,
+            agent: "a".into(),
+            service: "web".into(),
+            task: "t1".into(),
+            argv: vec!["srv".into()],
+        };
+        let body = serde_json::to_string(&r).unwrap();
+        let sized = |n: u64| format!("{body}{}", " ".repeat(n as usize - body.len()));
+        let p = t.join("21.json");
+        std::fs::write(&p, sized(RECORD_MAX_BYTES)).unwrap();
+        assert_eq!(read_record(&p), Ok(r), "exactly the bound is read");
+        for n in [RECORD_MAX_BYTES + 1, RECORD_MAX_BYTES + 100] {
+            std::fs::write(&p, sized(n)).unwrap();
+            let e = read_record(&p).unwrap_err();
+            assert!(e.contains("larger than 65536 bytes"), "{n}: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said() {
+        // #248. The risk: `doctor` calling a missing directory unreadable,
+        // or keeping quiet about one it could not read.
+        let t = crate::testutil::scratch("services-dir");
+        let none = Table(Vec::new());
+        assert_eq!(outliving(&t, &none), (Vec::new(), Vec::new()));
+        std::fs::write(t.join(DIR), "a file, not a directory").unwrap();
+        let (alive, bad) = outliving(&t, &none);
+        assert!(alive.is_empty());
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_replaced_is_said_to_be_that() {
+        // #248. The risk: a log or record name held by a directory
+        // reported as a failed create, which sends the reader to the wrong
+        // cause.
+        let t = crate::testutil::scratch("services-fresh");
+        std::fs::create_dir_all(t.join("x.log")).unwrap();
+        let e = format!("{:#}", create_fresh(&t.join("x.log")).unwrap_err());
+        assert!(e.contains("cannot replace"), "{e}");
+        let _ = std::fs::remove_dir_all(&t);
+    }
 }
