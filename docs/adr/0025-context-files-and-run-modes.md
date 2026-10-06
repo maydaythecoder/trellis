@@ -543,6 +543,33 @@ on stderr.
   user files, and the session's current model.
 - **Explicit runs skip `ask::classify`.** A template run or a `/skill` run is
   a task because the person said so.
+- **`/status` prints the session's tokens per model** (2026-10-04, #318;
+  Accepted (owner-directed): the session's choice under the owner's
+  2026-10-04 delegation).
+  - One line per model used by runs started in this session:
+    `tokens   <model>: prompt <p>, completion <c>`. Prompt and completion
+    are two numbers and are never added into one.
+  - Before any run it prints `tokens   none yet`.
+  - The figures are what each run's trail records, `Factual::prompt_tokens`
+    and `Factual::tokens`, never an estimate. A model with any run whose
+    prompt figure was not reported shows `prompt unknown`, never a total
+    that counts the missing figure as 0; the same holds for completion. A
+    scripted run reports neither.
+  - The totals come from one function, `session_extra::tokens_by_model`,
+    which takes the trails of the session's runs and returns the totals per
+    model; `/status` prints what it returns. A run's trail is the one whose
+    name is new after the run, found by `work::with_run_id`, and is read
+    back once, right after the run, as untrusted data (S10). A trail that
+    does not read back is named as not counted, not left out unsaid.
+  - The model name is read from a trail, so it is printed through `plain`,
+    as `trellis log` prints trail text: ESC or a C1 control prints escaped.
+  - No dollar figure is printed (#67). `/help` describes `/status` as
+    "root, index, model, tier, tokens".
+  - It persists nothing: the trails are held in memory for the session's
+    life, the session's history file is untouched, and no trail field or
+    `SCHEMA` changes.
+  - Evidence: the `session_status_tokens` tests in
+    `crates/trellis-cli/src/session.rs`.
 
 ### 7. User-level configuration
 
