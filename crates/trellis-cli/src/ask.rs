@@ -232,8 +232,11 @@ pub(crate) async fn classify(
             base,
             model,
         } => {
-            let client =
-                RuntimeClient::new(base, *dialect, model.clone()).context(BUILDING_CLIENT)?;
+            // `[model] timeout_s`, as for a run's requests (ADR 0047
+            // decision 9): this is a model request too, not a probe.
+            let client = RuntimeClient::new(base, *dialect, model.clone())
+                .context(BUILDING_CLIENT)?
+                .with_timeout(cfg.model_timeout());
             let completion = client
                 .complete(&prompt_for(input, files), None, MAX_REPLY_TOKENS)
                 .await
@@ -271,8 +274,9 @@ async fn ask_hosted(
     // Thinking stays off whatever `[model] thinking` says: this is one short
     // call on every input a person types, and a reasoning budget spent here
     // is the measured way this prompt returns an empty reply.
-    let client =
-        HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env).context(BUILDING_CLIENT)?;
+    let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
+        .context(BUILDING_CLIENT)?
+        .with_timeout(cfg.model_timeout());
     let reply = client
         .send(&text_only_body(&client, prompt))
         .await
