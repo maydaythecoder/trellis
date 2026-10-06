@@ -95,6 +95,45 @@ pub struct Governance {
     /// run has no profile or its profile has none: then nothing here
     /// narrows, which is the behaviour before the field existed.
     scope: Option<WriteScope>,
+    /// The configured vault's notes root (ADR 0049), or `None` when
+    /// `[context] vault` is not set.
+    vault: Option<VaultRoot>,
+}
+
+/// The vault's notes root, refused as a `deny_write` rule is but kept apart
+/// from them, so its refusal names `[context] vault` and not a rule the
+/// user never wrote.
+#[derive(Debug, Clone)]
+struct VaultRoot {
+    /// `[context] vault` as written, for the refusal.
+    source: String,
+    /// The notes root relative to the repository, ending in `/`.
+    notes_root: String,
+    /// `notes_root` [`fold`]ed, as a `Prefix` rule's pattern is.
+    folded: String,
+}
+
+/// Why a write is refused: a `deny_write` rule, or the vault's notes root.
+/// Its [`Display`](std::fmt::Display) is the wording a carry-back uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal<'a> {
+    Rule(&'a Rule),
+    Vault {
+        source: &'a str,
+        notes_root: &'a str,
+    },
+}
+
+impl std::fmt::Display for Refusal<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::Rule(r) => write!(f, "deny_write `{}`", r.as_written()),
+            Refusal::Vault { source, notes_root } => write!(
+                f,
+                "[context] vault = \"{source}\", notes root `{notes_root}`"
+            ),
+        }
+    }
 }
 
 /// A profile's `allow_write`: the only paths its runs may write. Kept apart
@@ -128,7 +167,27 @@ impl Governance {
             deny_write,
             folded,
             scope: None,
+            vault: None,
         }
+    }
+
+    /// Refuses every write into the configured vault's notes root (ADR
+    /// 0049). `source` is `[context] vault` as written; `notes_root` is the
+    /// notes root relative to the repository, matched as a `Prefix` rule
+    /// is. A missing trailing `/` is added, since without it `vault` would
+    /// also refuse `vaulted/`.
+    pub fn with_vault(mut self, source: &str, notes_root: &str) -> Self {
+        let notes_root = if notes_root.ends_with(['/', '\\']) {
+            notes_root.to_string()
+        } else {
+            format!("{notes_root}/")
+        };
+        self.vault = Some(VaultRoot {
+            source: source.to_string(),
+            folded: fold(&notes_root),
+            notes_root,
+        });
+        self
     }
 
     /// Narrows the run to `allow` (profile `profile`'s `allow_write`, in
@@ -172,16 +231,32 @@ impl Governance {
             .map(|(r, _)| r)
     }
 
-    /// The rule forbidding a write to `rel` under `root`, if any: the
+    /// What forbids a write to `rel` under `root`, if anything: the
     /// spelling, and then the repository-relative path the write really
     /// lands on through any link (the one `write_refusal` computes). Every
-    /// place `deny_write` is consulted asks this — the gate for `edit` and
+    /// place a write is judged asks this — the gate for `edit` and
     /// `write_file`, and a process agent's audit of what its command wrote —
-    /// so a rule cannot hold at one and not the other.
-    pub fn denies_write_at(&self, root: &std::path::Path, rel: &str) -> Option<&Rule> {
-        self.denies_write(rel).or_else(|| {
-            let real = crate::orchestrator::real_rel(root, rel).ok()?;
-            self.denies_write(&real)
+    /// so a refusal cannot hold at one and not the other. `deny_write` is
+    /// asked first, then the vault's notes root.
+    pub fn denies_write_at(&self, root: &std::path::Path, rel: &str) -> Option<Refusal<'_>> {
+        // Resolved at most once, and only when the spelling is not refused.
+        let real = std::cell::OnceCell::new();
+        let real = || {
+            real.get_or_init(|| crate::orchestrator::real_rel(root, rel).ok())
+                .as_deref()
+        };
+        if let Some(r) = self
+            .denies_write(rel)
+            .or_else(|| self.denies_write(real()?))
+        {
+            return Some(Refusal::Rule(r));
+        }
+        let v = self.vault.as_ref()?;
+        // As a `Prefix` rule matches: inside the directory, at any depth.
+        let inside = |p: &str| fold(p).starts_with(&v.folded);
+        (inside(rel) || real().is_some_and(inside)).then_some(Refusal::Vault {
+            source: &v.source,
+            notes_root: &v.notes_root,
         })
     }
 
@@ -357,6 +432,35 @@ mod tests {
             "Exact means exact"
         );
         assert!(g.denies_write("vendored/x.py").is_none());
+    }
+
+    #[test]
+    fn vault_notes_root_is_refused_through_denies_write_at() {
+        // The risk (ADR 0049): a model writing the notes later runs read as
+        // prompt input, refused nowhere, or refused under a `deny_write`
+        // rule the user never wrote and would go looking for.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let g = Governance::new(&[]).with_vault("vault", "vault/");
+        for p in ["vault/x.md", "vault/sub/y.md"] {
+            let r = g.denies_write_at(root, p).expect(p);
+            assert!(
+                r.to_string().contains("[context] vault = \"vault\""),
+                "{p}: {r}"
+            );
+        }
+        for p in ["vaulted/x.md", "app/x.py"] {
+            assert!(g.denies_write_at(root, p).is_none(), "{p}");
+        }
+        assert!(
+            Governance::new(&[])
+                .denies_write_at(root, "vault/x.md")
+                .is_none()
+        );
+        // `deny_write` is asked first and still reads as it always has.
+        let g = Governance::new(&["vendor/".into()]).with_vault("vault", "vault/");
+        let r = g.denies_write_at(root, "vendor/a.py").expect("denied");
+        assert_eq!(r.to_string(), "deny_write `vendor/`");
     }
 
     #[cfg(windows)]

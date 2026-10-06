@@ -339,8 +339,8 @@ that does not see it. Paperclip keeps comments as context for the assignee
 and, since #14577 ("Mentions in task comments are kept as context for the
 assignee; only explicit assignment and review requests start work"), no
 longer starts a run from a mention. Trellis keeps the wake and adds the
-context. Not built: this records the rule a later ticket (CLIP-03) builds
-to; `notes_seen` does not exist in the code today.
+context. ~~Not built: this records the rule a later ticket (CLIP-03) builds
+to; `notes_seen` does not exist in the code today.~~ Built for #351.
 
 - **What a run is given.** After the task's text, one fenced block holding
   every note a person wrote with `trellis queue note` (actor `human`, with
@@ -1028,8 +1028,9 @@ nothing. Paperclip's `require_external_activity` gate suppresses a
 scheduled fire when its activity log has nothing since the routine's last
 dispatched run apart from the routine's own records. In a repository the
 activity such a routine exists for is commits, which the activity log (§9)
-does not see. Not built: this records the rule a later ticket (CLIP-05)
-builds to; neither the key nor the state field exists in the code today.
+does not see. ~~Not built: this records the rule a later ticket (CLIP-05)
+builds to; neither the key nor the state field exists in the code today.~~
+Built for #349.
 
 - **The key and the state.** A routine may set `activity_gate = "commits"`.
   Its state gains a field `last_head`, written only when a scheduled fire

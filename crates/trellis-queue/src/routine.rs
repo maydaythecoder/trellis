@@ -44,6 +44,9 @@ pub struct RoutineFile {
     pub catch_up_max: Option<u32>,
     #[serde(default)]
     pub paused: bool,
+    /// `"commits"`: a scheduled fire is skipped when nothing outside
+    /// `.trellis/runs/` was committed since the last one that enqueued.
+    pub activity_gate: Option<String>,
     pub task: TemplateFile,
     #[serde(default)]
     pub vars: BTreeMap<String, String>,
@@ -58,6 +61,14 @@ pub enum Concurrency {
     Skip,
     /// A new task every time.
     Always,
+}
+
+/// What a scheduled fire waits for besides its instant (ADR 0026 §7,
+/// amended for #348).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityGate {
+    /// A commit changing a path outside `.trellis/runs/` since `last_head`.
+    Commits,
 }
 
 /// What happens to fires missed while nothing was evaluating.
@@ -77,6 +88,7 @@ pub struct Routine {
     pub tz: Tz,
     pub concurrency: Concurrency,
     pub catch_up: CatchUp,
+    pub activity_gate: Option<ActivityGate>,
     pub priority: Priority,
 }
 
@@ -136,6 +148,11 @@ pub fn parse(name: &str, text: &str) -> Result<Routine, QueueError> {
         }
         (o, _) => return Err(bad(format!("catch_up = \"{o}\"; use skip or enqueue"))),
     };
+    let activity_gate = match file.activity_gate.as_deref() {
+        None => None,
+        Some("commits") => Some(ActivityGate::Commits),
+        Some(o) => return Err(bad(format!("activity_gate = \"{o}\"; use commits"))),
+    };
     let priority = match &file.task.priority {
         None => Priority::Medium,
         Some(p) => Priority::parse(p)
@@ -170,6 +187,7 @@ pub fn parse(name: &str, text: &str) -> Result<Routine, QueueError> {
         tz,
         concurrency,
         catch_up,
+        activity_gate,
         priority,
     })
 }
@@ -262,6 +280,66 @@ pub struct RoutineState {
     pub last_fired: Option<i64>,
     #[serde(default)]
     pub last_task: Option<String>,
+    /// HEAD when a scheduled fire of a gated routine last enqueued a task.
+    /// Untrusted when read back: see [`object_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_head: Option<String>,
+}
+
+/// The repository a routine with `activity_gate = "commits"` asks. `work`
+/// supplies one over git; `None` from either method is a git error, and the
+/// gate then fires rather than skips.
+pub trait Repo {
+    /// The commit HEAD names, or `None` when it cannot be read (an unborn
+    /// branch, a git error).
+    fn head(&self) -> Option<String>;
+    /// The paths changed between commit `since` and commit `head`, or `None`
+    /// when git cannot compare them (history rewritten, an object gone).
+    /// Called only with two [`object_id`]s.
+    fn changed(&self, since: &str, head: &str) -> Option<Vec<String>>;
+}
+
+/// A full object id: 40 (SHA-1) or 64 (SHA-256) lowercase hex characters.
+/// `last_head` comes from a file in the git directory that anything with
+/// write access can plant, and `tree_diff` passes it to git with no
+/// `--end-of-options`, so `--output=<path>` must never get that far.
+fn object_id(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Trellis's own trail commits (ADR 0007): changes under here are not
+/// activity, or each run of a routine's task would count as some.
+const TRAIL: &str = ".trellis/runs/";
+
+/// Why a scheduled fire of a gated routine is quiet, for the log, or `None`
+/// when it should go ahead: a commit outside the trail since `last_head`,
+/// no usable `last_head`, or anything git could not answer.
+fn quiet(repo: &dyn Repo, last_head: Option<&str>, head: Option<&str>) -> Option<String> {
+    let since = last_head.filter(|h| object_id(h))?;
+    let head = head?;
+    if since == head {
+        return Some(format!("no commit since {since} (HEAD {head})"));
+    }
+    let paths = repo.changed(since, head)?;
+    paths
+        .iter()
+        .all(|p| p.starts_with(TRAIL))
+        .then(|| format!("only {TRAIL} changed between {since} and HEAD {head}"))
+}
+
+/// A repository for routines with no gate, in tests that must spawn no git:
+/// it panics if asked anything.
+#[cfg(test)]
+pub(crate) struct NoGit;
+
+#[cfg(test)]
+impl Repo for NoGit {
+    fn head(&self) -> Option<String> {
+        panic!("an ungated routine read HEAD")
+    }
+    fn changed(&self, _: &str, _: &str) -> Option<Vec<String>> {
+        panic!("an ungated routine asked what changed")
+    }
 }
 
 fn state_path(q: &Queue, name: &str) -> PathBuf {
@@ -421,8 +499,9 @@ fn fire(
 
 /// Evaluates one routine at `now` (ADR 0026 §7): arms it if new, fires what
 /// is due under its catch-up and concurrency policies, and records the
-/// latest instant handled.
-pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
+/// latest instant handled. `repo` is asked only for a routine with an
+/// activity gate, and only when something is due.
+pub fn evaluate(q: &Queue, r: &Routine, now: i64, repo: &dyn Repo) -> Result<Tick, QueueError> {
     let mut tick = Tick {
         name: r.name.clone(),
         ..Tick::default()
@@ -444,6 +523,7 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
             armed_at: now,
             last_fired: None,
             last_task: None,
+            last_head: None,
         };
         replace(&path, &st)?;
         return Ok(tick);
@@ -491,10 +571,42 @@ pub fn evaluate(q: &Queue, r: &Routine, now: i64) -> Result<Tick, QueueError> {
         )?;
     }
     let mut already = seen(q, &r.name)?;
+    // Read once per tick: every instant of a catch-up compares against the
+    // same HEAD. One that is not an object id is as good as unreadable.
+    let head = match r.activity_gate {
+        Some(ActivityGate::Commits) => repo.head().filter(|h| object_id(h)),
+        None => None,
+    };
     for at in due {
+        // A task already made for this instant is this fire (see `fire`),
+        // so the gate comes after that check and before the concurrency
+        // policy, which `fire` applies. Its HEAD at the time is unknown, so
+        // it records none; the next fire then compares against an older
+        // one, which can only make it enqueue.
+        let made = already.by_at.contains_key(&at);
+        if r.activity_gate.is_some()
+            && !made
+            && let Some(why) = quiet(repo, st.last_head.as_deref(), head.as_deref())
+        {
+            q.log(
+                Event::new(
+                    Actor::Routine,
+                    "routine.quiet",
+                    format!("routine:{}", r.name),
+                )
+                .detail(format!("{}; {why}", crate::secs_to_iso(at))),
+            )?;
+            // Handled like a skipped fire, so catch-up does not replay it.
+            st.last_fired = Some(at);
+            replace(&path, &st)?;
+            continue;
+        }
         let f = fire(q, r, at, Actor::Routine, Some(&mut already))?;
         if let Fired::Enqueued(id) = &f {
             st.last_task = Some(id.clone());
+            if !made && head.is_some() {
+                st.last_head = head.clone();
+            }
         }
         st.last_fired = Some(at);
         replace(&path, &st)?;
@@ -558,7 +670,7 @@ mod tests {
         // instant since the epoch, or since whenever cron says it "was due".
         let (_d, q) = queue();
         let r = routine("");
-        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         assert!(t.armed && t.fired.is_empty());
         assert!(pending(&q).is_empty());
     }
@@ -567,9 +679,9 @@ mod tests {
     fn the_template_is_filled_per_fire_in_the_routine_timezone() {
         let (_d, q) = queue();
         let r = routine("timezone = \"+05:00\"");
-        evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         // 03:00 at +05:00 is 22:00Z the day before.
-        let t = evaluate(&q, &r, at("2026-09-27T22:00:00Z")).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T22:00:00Z"), &NoGit).unwrap();
         assert_eq!(t.fired.len(), 1);
         let tasks = pending(&q);
         assert_eq!(tasks[0].task, "triage 2026-09-28 for parser (nightly)");
@@ -580,13 +692,13 @@ mod tests {
     fn skip_catch_up_fires_once_and_counts_what_it_dropped() {
         let (_d, q) = queue();
         let r = routine("concurrency = \"always\"");
-        evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
-        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        evaluate(&q, &r, at("2026-09-20T12:00:00Z"), &NoGit).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         assert_eq!((t.fired.len(), t.missed), (1, 6));
         assert_eq!(t.fired[0].0, at("2026-09-27T03:00:00Z"), "the most recent");
         // Handled means handled: evaluating again at the same moment fires
         // nothing more.
-        let again = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        let again = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         assert!(again.fired.is_empty());
         assert_eq!(pending(&q).len(), 1);
     }
@@ -595,8 +707,8 @@ mod tests {
     fn enqueue_catch_up_replays_at_most_its_cap_oldest_first() {
         let (_d, q) = queue();
         let r = routine("concurrency = \"always\"\ncatch_up = \"enqueue\"\ncatch_up_max = 3");
-        evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
-        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        evaluate(&q, &r, at("2026-09-20T12:00:00Z"), &NoGit).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         let times: Vec<i64> = t.fired.iter().map(|(a, _)| *a).collect();
         assert_eq!(
             times,
@@ -618,8 +730,8 @@ mod tests {
             let r = routine(&format!(
                 "concurrency = \"{policy}\"\ncatch_up = \"enqueue\""
             ));
-            evaluate(&q, &r, at("2026-09-24T12:00:00Z")).unwrap();
-            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+            evaluate(&q, &r, at("2026-09-24T12:00:00Z"), &NoGit).unwrap();
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
             assert!(matches!(t.fired[0].1, Fired::Enqueued(_)));
             assert!(t.fired[1..].iter().all(|(_, f)| if coalesced {
                 matches!(f, Fired::Coalesced(_))
@@ -646,13 +758,13 @@ mod tests {
         for k in 1..=24 {
             let (_d, q) = queue();
             let r = routine("concurrency = \"always\"\ncatch_up = \"enqueue\"\ncatch_up_max = 3");
-            evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
+            evaluate(&q, &r, at("2026-09-20T12:00:00Z"), &NoGit).unwrap();
             crate::files::fail::nth_link(k);
-            let first = evaluate(&q, &r, at("2026-09-27T12:00:00Z"));
+            let first = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit);
             crate::files::fail::nth_link(0);
             // Ticks after the failure, as `work` would run them.
             for _ in 0..2 {
-                evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+                evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
             }
             let mut texts: Vec<String> = pending(&q).into_iter().map(|t| t.task).collect();
             texts.sort();
@@ -683,9 +795,9 @@ mod tests {
             )
             .unwrap();
         }
-        evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
+        evaluate(&q, &r, at("2026-09-20T12:00:00Z"), &NoGit).unwrap();
         SCANS.with(|c| c.set(0));
-        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         assert_eq!(t.fired.len(), 5);
         assert_eq!(SCANS.with(|c| c.get()), 1, "one scan for five instants");
     }
@@ -710,9 +822,9 @@ mod tests {
                 )
                 .unwrap();
             }
-            evaluate(&q, &r, at("2026-09-20T12:00:00Z")).unwrap();
+            evaluate(&q, &r, at("2026-09-20T12:00:00Z"), &NoGit).unwrap();
             SCANS.with(|c| c.set(0));
-            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
             assert_eq!(t.fired.len(), 5);
             let Fired::Enqueued(first) = &t.fired[0].1 else {
                 panic!("{:?}", t.fired)
@@ -816,7 +928,7 @@ mod tests {
         let (_d, q) = queue();
         let r = routine("");
         assert_eq!(state(&q, "nightly").unwrap(), None);
-        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         assert_eq!(t.name, "nightly");
         assert_eq!(
             state(&q, "nightly").unwrap().map(|s| s.armed_at),
@@ -837,11 +949,11 @@ mod tests {
     fn only_a_tick_that_dropped_fires_logs_them_as_missed() {
         let (_d, q) = queue();
         let r = routine("concurrency = \"always\"");
-        evaluate(&q, &r, at("2026-09-26T12:00:00Z")).unwrap();
-        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+        evaluate(&q, &r, at("2026-09-26T12:00:00Z"), &NoGit).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
         assert_eq!((t.fired.len(), t.missed), (1, 0));
         assert_eq!(missed_logged(&q), 0);
-        let t = evaluate(&q, &r, at("2026-09-30T12:00:00Z")).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-30T12:00:00Z"), &NoGit).unwrap();
         assert_eq!((t.fired.len(), t.missed), (1, 2));
         assert_eq!(missed_logged(&q), 1);
     }
@@ -885,8 +997,8 @@ mod tests {
                     std::mem::forget(q.claim(id).unwrap().unwrap());
                 }
             }
-            evaluate(&q, &r, at("2026-09-26T12:00:00Z")).unwrap();
-            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z")).unwrap();
+            evaluate(&q, &r, at("2026-09-26T12:00:00Z"), &NoGit).unwrap();
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
             // ids[0] is the first claimed one, or with none claimed the
             // first pending one.
             assert_eq!(t.fired[0].1, Fired::Coalesced(ids[0].clone()), "{claimed}");
@@ -904,5 +1016,314 @@ mod tests {
             next_due(&set, at("2026-09-27T12:00:00Z")),
             Some(at("2026-09-28T03:00:00Z"))
         );
+    }
+
+    // ---- activity_gate = "commits" (ADR 0026 §7, amended for #348) ----
+
+    const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// A repository that answers from its fields and spawns no git. It
+    /// fails the test if asked to compare anything that is not an object
+    /// id, since `tree_diff` would hand that to git as an option.
+    struct Fake {
+        head: Option<&'static str>,
+        changed: Option<Vec<&'static str>>,
+        asked: std::cell::Cell<u32>,
+    }
+
+    fn fake(head: Option<&'static str>, changed: Option<Vec<&'static str>>) -> Fake {
+        Fake {
+            head,
+            changed,
+            asked: std::cell::Cell::new(0),
+        }
+    }
+
+    impl Repo for Fake {
+        fn head(&self) -> Option<String> {
+            self.head.map(str::to_string)
+        }
+        fn changed(&self, since: &str, head: &str) -> Option<Vec<String>> {
+            assert!(
+                object_id(since) && object_id(head),
+                "the repository was asked about `{since}`..`{head}`"
+            );
+            self.asked.set(self.asked.get() + 1);
+            self.changed
+                .as_ref()
+                .map(|v| v.iter().map(|p| p.to_string()).collect())
+        }
+    }
+
+    fn gated(extra: &str) -> Routine {
+        routine(&format!("activity_gate = \"commits\"\n{extra}"))
+    }
+
+    /// Armed on the 26th, with `last_head` set as a previous fire would
+    /// have left it; the next evaluation at noon on the 27th has the 03:00
+    /// fire due.
+    fn armed_with(q: &Queue, r: &Routine, last_head: Option<&str>) {
+        evaluate(q, r, at("2026-09-26T12:00:00Z"), &NoGit).unwrap();
+        let mut st = state(q, &r.name).unwrap().unwrap();
+        st.last_head = last_head.map(str::to_string);
+        replace(&state_path(q, &r.name), &st).unwrap();
+    }
+
+    fn last_head(q: &Queue) -> Option<String> {
+        state(q, "nightly").unwrap().unwrap().last_head
+    }
+
+    fn quiet_logged(q: &Queue) -> Vec<String> {
+        q.activity()
+            .tail(1000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.action == "routine.quiet")
+            .map(|e| e.detail.unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn routine_activity_gate_is_commits_or_absent_and_anything_else_is_refused() {
+        // The risk: a misspelt gate read as no gate (fires every night) or
+        // as some gate nobody defined.
+        assert_eq!(routine("").activity_gate, None);
+        assert_eq!(gated("").activity_gate, Some(ActivityGate::Commits));
+        for v in ["Commits", "activity", ""] {
+            let e = parse(
+                "nightly",
+                &format!(
+                    "schedule = \"0 3 * * *\"\nactivity_gate = \"{v}\"\n[task]\ntext = \"x\"\n"
+                ),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                e.contains(&format!("activity_gate = \"{v}\"")) && e.contains("use commits"),
+                "{v}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn routine_activity_gate_the_first_fire_after_arming_enqueues_and_records_head() {
+        // The risk: with nothing to compare against, the gate skips every
+        // fire forever.
+        let (_d, q) = queue();
+        let r = gated("");
+        armed_with(&q, &r, None);
+        let repo = fake(Some(A), None);
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+        assert!(matches!(t.fired[..], [(_, Fired::Enqueued(_))]), "{t:?}");
+        assert_eq!(last_head(&q).as_deref(), Some(A));
+        assert_eq!(repo.asked.get(), 0, "nothing to compare with");
+    }
+
+    #[test]
+    fn routine_activity_gate_a_quiet_fire_creates_no_task_logs_both_commits_and_is_not_replayed() {
+        // The risk: a night with no commit, or with only trellis's own
+        // trail commits, still queues a task; or a quiet fire is left
+        // unhandled and catch-up replays it once a commit lands.
+        let cases: [(&str, Option<Vec<&str>>); 3] = [
+            (A, None),
+            (
+                B,
+                Some(vec![".trellis/runs/r1/trail.json", ".trellis/runs/r2/x"]),
+            ),
+            (B, Some(vec![])),
+        ];
+        for (head, changed) in cases {
+            let (_d, q) = queue();
+            let r = gated("catch_up = \"enqueue\"");
+            // An open task: a quiet fire is decided before the concurrency
+            // policy, so it is not coalesced into it as a note.
+            let open = of_routine(&q, "nightly", "open");
+            armed_with(&q, &r, Some(A));
+            let repo = fake(Some(head), changed);
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+            assert!(t.fired.is_empty(), "{head}: {t:?}");
+            assert_eq!(pending(&q).len(), 1, "{head}");
+            assert!(
+                crate::read_task(&q.path(State::Pending, &open))
+                    .unwrap()
+                    .notes
+                    .is_empty()
+            );
+            let logged = quiet_logged(&q);
+            assert!(
+                matches!(&logged[..], [d] if d.contains(A) && d.contains(head)),
+                "{head}: {logged:?}"
+            );
+            let st = state(&q, "nightly").unwrap().unwrap();
+            assert_eq!(st.last_fired, Some(at("2026-09-27T03:00:00Z")));
+            assert_eq!(
+                st.last_head.as_deref(),
+                Some(A),
+                "a quiet fire records no HEAD"
+            );
+            // A commit now does not replay the quiet instant.
+            let busy = fake(Some(B), Some(vec!["src/lib.rs"]));
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &busy).unwrap();
+            assert!(t.fired.is_empty(), "{head}: replayed {t:?}");
+        }
+    }
+
+    #[test]
+    fn routine_activity_gate_a_commit_outside_the_trail_enqueues_and_records_the_new_head() {
+        let (_d, q) = queue();
+        let r = gated("concurrency = \"always\"\ncatch_up = \"enqueue\"");
+        // Armed on the 24th: the 25th, 26th and 27th are due in one tick.
+        evaluate(&q, &r, at("2026-09-24T12:00:00Z"), &NoGit).unwrap();
+        let mut st = state(&q, "nightly").unwrap().unwrap();
+        st.last_head = Some(A.into());
+        replace(&state_path(&q, "nightly"), &st).unwrap();
+        let repo = fake(
+            Some(B),
+            Some(vec![".trellis/runs/r1/trail.json", "src/lib.rs"]),
+        );
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+        // The first due fire sees the commit; the two after it in the same
+        // tick see HEAD equal to what that fire recorded, so are quiet.
+        assert!(matches!(t.fired[..], [(_, Fired::Enqueued(_))]), "{t:?}");
+        assert_eq!(t.fired[0].0, at("2026-09-25T03:00:00Z"));
+        assert_eq!(last_head(&q).as_deref(), Some(B));
+        assert_eq!(quiet_logged(&q).len(), 2);
+        assert_eq!(repo.asked.get(), 1);
+    }
+
+    #[test]
+    fn routine_activity_gate_a_git_error_or_an_unreadable_head_enqueues() {
+        // The risk: a rewritten history, a pruned object or an unborn
+        // branch silences the routine; the gate fails open instead.
+        let (_d, q) = queue();
+        let r = gated("");
+        armed_with(&q, &r, Some(A));
+        let repo = fake(Some(B), None);
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+        assert!(matches!(t.fired[..], [(_, Fired::Enqueued(_))]), "{t:?}");
+        assert_eq!(last_head(&q).as_deref(), Some(B));
+        assert_eq!(repo.asked.get(), 1);
+
+        // HEAD unreadable, or read as something that is not an object id.
+        for head in [None, Some("--output=planted")] {
+            let (_d, q) = queue();
+            armed_with(&q, &r, Some(A));
+            let repo = fake(head, Some(vec![]));
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+            assert!(
+                matches!(t.fired[..], [(_, Fired::Enqueued(_))]),
+                "{head:?}: {t:?}"
+            );
+            assert_eq!(
+                last_head(&q).as_deref(),
+                Some(A),
+                "{head:?}: no HEAD to record"
+            );
+            assert_eq!(repo.asked.get(), 0, "{head:?}");
+        }
+    }
+
+    #[test]
+    fn routine_activity_gate_a_malformed_last_head_is_absent_and_never_reaches_git() {
+        // The risk: `last_head` is read from a file in the git directory and
+        // `tree_diff` passes it to git with no `--end-of-options`, so a
+        // planted `--output=<path>` would be an option. `Fake::changed`
+        // fails the test if it receives one.
+        let bad = [
+            "--output=planted".to_string(),
+            A.to_uppercase(),
+            A[..39].to_string(),
+            format!("{A}a"),
+            "g".repeat(40),
+            "a".repeat(63),
+        ];
+        for b in bad {
+            let (_d, q) = queue();
+            let r = gated("");
+            armed_with(&q, &r, Some(&b));
+            let repo = fake(Some(A), Some(vec![]));
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+            assert!(
+                matches!(t.fired[..], [(_, Fired::Enqueued(_))]),
+                "{b}: {t:?}"
+            );
+            assert_eq!(repo.asked.get(), 0, "{b}");
+            assert_eq!(last_head(&q).as_deref(), Some(A), "{b}");
+        }
+        // A 64-character (SHA-256) id is an object id.
+        assert!(object_id(&"c".repeat(64)) && object_id(A));
+    }
+
+    #[test]
+    fn routine_activity_gate_last_head_moves_only_when_a_scheduled_fire_enqueues() {
+        // Coalesced and skipped fires leave it, as does a manual run, which
+        // is not gated at all.
+        for policy in ["coalesce", "skip"] {
+            let (_d, q) = queue();
+            let r = gated(&format!("concurrency = \"{policy}\""));
+            of_routine(&q, "nightly", "open");
+            armed_with(&q, &r, Some(A));
+            let repo = fake(Some(B), Some(vec!["src/lib.rs"]));
+            let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+            assert!(
+                matches!(t.fired[..], [(_, Fired::Coalesced(_) | Fired::Skipped(_))]),
+                "{policy}: {t:?}"
+            );
+            assert_eq!(last_head(&q).as_deref(), Some(A), "{policy}");
+        }
+        let (_d, q) = queue();
+        let r = gated("");
+        armed_with(&q, &r, Some(A));
+        assert!(matches!(
+            run_now(&q, &r, at("2026-09-27T12:00:00Z")).unwrap(),
+            Fired::Enqueued(_)
+        ));
+        assert_eq!(last_head(&q).as_deref(), Some(A), "run_now");
+
+        // Without the key nothing asks the repository and nothing is
+        // recorded: `NoGit` panics if asked.
+        let (_d, q) = queue();
+        let r = routine("");
+        evaluate(&q, &r, at("2026-09-26T12:00:00Z"), &NoGit).unwrap();
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &NoGit).unwrap();
+        assert!(matches!(t.fired[..], [(_, Fired::Enqueued(_))]));
+        assert_eq!(last_head(&q), None);
+
+        // A state file from before the field loads, and one without a HEAD
+        // is written as before.
+        let old: RoutineState =
+            serde_json::from_str(r#"{"armed_at":5,"last_fired":7,"last_task":"t"}"#).unwrap();
+        assert_eq!(old.last_head, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("last_head"));
+    }
+
+    #[test]
+    fn routine_activity_gate_comes_after_the_check_for_a_task_already_made_for_the_instant() {
+        // A task for this instant is this fire, done by a tick that failed
+        // before saving; the gate must not call it quiet, and its HEAD at
+        // the time is unknown, so none is recorded.
+        let (_d, q) = queue();
+        let r = gated("");
+        armed_with(&q, &r, Some(A));
+        let id = q
+            .add_task(
+                crate::NewTask {
+                    task: "made".into(),
+                    routine: Some("nightly".into()),
+                    routine_at: Some(at("2026-09-27T03:00:00Z")),
+                    ..Default::default()
+                },
+                Actor::Routine,
+            )
+            .unwrap();
+        let repo = fake(Some(A), None);
+        let t = evaluate(&q, &r, at("2026-09-27T12:00:00Z"), &repo).unwrap();
+        assert_eq!(
+            t.fired,
+            vec![(at("2026-09-27T03:00:00Z"), Fired::Enqueued(id))]
+        );
+        assert!(quiet_logged(&q).is_empty());
+        assert_eq!(last_head(&q).as_deref(), Some(A));
     }
 }
