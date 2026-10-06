@@ -14,5 +14,7 @@ fi
 # Every ADR has a number of its own, including against the base, which a
 # branch cut before another ADR merged cannot see in its tree (#284).
 bash scripts/checks/adr-numbers.sh --self-test > /dev/null || fail "adr-numbers.sh self-test failed"
+# The exit-gate check holds a ticked box to a test that exists (#467, #484).
+bash scripts/checks/gate-checked.sh --self-test > /dev/null || fail "gate-checked.sh self-test failed"
 adr=$(bash scripts/checks/adr-numbers.sh "$GATE_BASE") || { printf '%s\n' "$adr"; fail "two ADRs share a number, or a held number is misused"; }
 echo "OK: fmt, clippy -D warnings, no #[allow] added; $adr"
