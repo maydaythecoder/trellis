@@ -1102,6 +1102,32 @@ fn listen_for_ctrl_c(flag: Arc<AtomicBool>) {
     });
 }
 
+/// The repository a routine's activity gate asks (ADR 0026 §7, amended for
+/// #348). Every failure is `None`, which the gate reads as "fire": an
+/// unreadable HEAD or an uncomparable `last_head` must not silence a
+/// routine.
+struct RoutineRepo<'a>(&'a Path);
+
+impl routine::Repo for RoutineRepo<'_> {
+    fn head(&self) -> Option<String> {
+        // `-q --verify`: an unborn branch is a failure with nothing printed,
+        // not an error message read back as a commit id.
+        let out = trellis_vcs::command()
+            .args(["rev-parse", "-q", "--verify", "HEAD^{commit}"])
+            .current_dir(self.0)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn changed(&self, since: &str, head: &str) -> Option<Vec<String>> {
+        trellis_vcs::tree_diff(self.0, since, head).ok()
+    }
+}
+
 struct CliRunner<'a> {
     root: &'a Path,
     model: Option<String>,
@@ -1154,11 +1180,14 @@ impl CliRunner<'_> {
         {
             text = format!("{}\n\n{text}", instructions.trim_end());
         }
-        // After the task: the question the last run ended on, quoted as
-        // that run's output, and the person's answer as their input
-        // (ADR 0026 §1). A task that never asked gets the text it always did.
-        if let Some(answers) = t.answers_since_question() {
-            text = format!("{text}\n\n{answers}");
+        // After the task, one fenced block (ADR 0026 §1, amended for #347):
+        // every note a person wrote with `queue note` since the task's last
+        // run was claimed, and, when that run asked, its question quoted as
+        // its model output with every person's note after it. All of it is
+        // input, never a verdict. A task with neither gets the text it
+        // always did.
+        if let Some(input) = t.input_since_last_run() {
+            text = format!("{text}\n\n{input}");
         }
         Ok(text)
     }
@@ -1246,7 +1275,7 @@ impl Runner for CliRunner<'_> {
         let now = trellis_queue::now_secs();
         let routines: Vec<Routine> = self.routines.values().cloned().collect();
         for r in &routines {
-            match routine::evaluate(q, r, now) {
+            match routine::evaluate(q, r, now, &RoutineRepo(self.root)) {
                 Ok(t) => {
                     if t.armed {
                         let _ = writeln!(out, "routine:  {} armed", r.name);
@@ -1933,6 +1962,42 @@ mod queue_set_tests {
     }
 
     #[test]
+    fn rerun_input_reaches_a_task_set_back_to_todo_with_queue_set() {
+        // The risk the #347 amendment names: a person notes a request on a
+        // task whose run finished and sets it back to `todo`, and the run
+        // that claims it is given the task's text alone.
+        let (root, q) = repo("rerun-input");
+        let id = plain_task(&q, "retire the v1 endpoint");
+        q.claim(&id)
+            .unwrap()
+            .expect("claimable")
+            .finish(
+                State::Done,
+                trellis_queue::Outcome {
+                    run_id: None,
+                    exit: "converged".into(),
+                    finished_at: "2026-10-06T00:00:00Z".into(),
+                },
+            )
+            .unwrap();
+        run(&root, &["note", &id, "keep the redirect for a release"]).unwrap();
+        run(&root, &["set", &id, "--status", "todo"]).unwrap();
+
+        let c = q.claim(&id).unwrap().expect("claimable again");
+        let r = test_runner(&root, q.clone(), trusted);
+        let text = r.text(&c.task, None).unwrap();
+        let (task, block) = text.split_once("\n\n").unwrap();
+        assert_eq!(task, "retire the v1 endpoint");
+        assert!(block.starts_with("--- user input:"), "{text}");
+        assert!(
+            block.contains("    keep the redirect for a release"),
+            "{text}"
+        );
+        assert!(block.ends_with("--- end of user input ---"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn labels_and_blockers_are_added_once_and_removed_by_name() {
         // The risk: `--label` or `--blocked-by` adding nothing, or a
         // duplicate on a repeat; `--unlabel`/`--unblock` removing every
@@ -2219,7 +2284,13 @@ mod runner_tests {
         let set = load_routines(&root, &BTreeMap::new()).unwrap();
         // Armed a week ago: seven 03:00 fires since, the newest run and six
         // dropped under the default catch-up.
-        routine::evaluate(&q, &set["nightly"], trellis_queue::now_secs() - 7 * 86_400).unwrap();
+        routine::evaluate(
+            &q,
+            &set["nightly"],
+            trellis_queue::now_secs() - 7 * 86_400,
+            &RoutineRepo(&root),
+        )
+        .unwrap();
         let mut r = test_runner(&root, q.clone(), trusted);
         let mut out = Vec::new();
         r.tick(&q, &mut out);

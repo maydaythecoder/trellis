@@ -156,8 +156,7 @@ impl Judge {
                         "{p} (under .trellis/, which holds what judges this run)"
                     ));
                 }
-                g.denies_write_at(root, p)
-                    .map(|r| format!("{p} (deny_write `{}`)", r.as_written()))
+                g.denies_write_at(root, p).map(|r| format!("{p} ({r})"))
             })
             .collect()
     }
