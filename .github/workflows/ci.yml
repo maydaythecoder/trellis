@@ -91,11 +91,21 @@ jobs:
         run: cargo test --locked --workspace
 
   # desktop/ is its own Cargo workspace with its own lock (ADR 0048), so
-  # nothing in `test` builds, lints or tests it (#384). Linux only: it
-  # depends on no trellis crate and spawns the binary, so the platform split
-  # `test` covers is not what this job is for.
+  # nothing in `test` builds, lints or tests it (#384). Both platforms, as
+  # `test` runs: the binary its tests spawn is `trellis.exe` on Windows and
+  # `trellis` on Linux, and when Tauri arrives (#289) the shell builds
+  # against WebView2 and MSVC on Windows and WebKitGTK on Linux (#297).
+  #
+  # Not here yet: Tauri's Linux prerequisites (`libwebkit2gtk-4.1-dev` among
+  # them). The desktop has no Tauri dependency until #289, so nothing would
+  # build against them, and an install step on the self-hosted Linux runner
+  # changes the owner's machine; #289 adds it with the dependency.
   desktop:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-latest"') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -115,19 +125,31 @@ jobs:
         with:
           workspaces: desktop
 
+      # The desktop's tests spawn `target/debug/trellis` (desktop/src/child.rs),
+      # so it is built first; without it the test fails asking for it (#426).
+      - name: Build trellis (the desktop's tests spawn it)
+        run: cargo build --locked -p trellis-cli
+
       - name: Format (desktop/)
         run: cargo fmt --check --manifest-path desktop/Cargo.toml
 
       - name: Clippy (desktop/)
         run: cargo clippy --locked --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
 
-      # The desktop's tests spawn `target/debug/trellis` (desktop/src/child.rs),
-      # so it is built first; without it the test fails asking for it (#426).
-      - name: Build trellis (the desktop's tests spawn it)
-        run: cargo build --locked -p trellis-cli
+      - name: Build (desktop/)
+        run: cargo build --locked --manifest-path desktop/Cargo.toml
 
       - name: Test (desktop/)
         run: cargo test --locked --manifest-path desktop/Cargo.toml
+
+      # The guard the supply-chain job runs on Linux, here on Windows too.
+      # `shell: bash` is Git Bash on Windows; a bare `bash` from the default
+      # pwsh can resolve to WSL's System32\bash.exe instead.
+      - name: Desktop guards (ADR 0048)
+        shell: bash
+        run: |
+          scripts/checks/desktop-guards.sh --self-test
+          scripts/checks/desktop-guards.sh
 
   # `hosted` (TLS) is a default feature of trellis-cli (ADR 0024 §1), so
   # every other job builds with it on. This one turns it off, so a change

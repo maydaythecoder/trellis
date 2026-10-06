@@ -343,7 +343,9 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
     trellis_core::secrets::register_key_vars([&r.key_env]);
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
-        .with_thinking(cfg.thinking()?);
+        .with_thinking(cfg.thinking()?)
+        // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
+        .with_timeout(cfg.model_timeout());
     let budget = hosted_context_bytes(r, cfg)?;
     Ok(HostedModel::new(client).with_context_bytes(Some(budget)))
 }
@@ -379,9 +381,12 @@ pub(crate) fn thinking_ignored(cfg: &RepoConfig, what: &str) -> Option<String> {
 
 /// `doctor`'s model, runtime and notes for a hosted spec.
 ///
-/// No request is sent. Tier 1 is what the protocol is, not something a
-/// probe discovers, and a probe would spend the key's quota to learn it.
-pub(crate) fn doctor(r: &Resolved) -> (String, String, Vec<String>) {
+/// No completion is requested. Tier 1 is what the protocol is, not something
+/// a probe discovers, and a probe would spend the key's quota to learn it.
+/// `read` is whether doctor read the endpoint's `/v1/models` to ask whether
+/// it is colibri, which it does for a loopback base only (ADR 0047
+/// decision 3).
+pub(crate) fn doctor(r: &Resolved, read: bool) -> (String, String, Vec<String>) {
     let runtime = format!(
         "{} at {}{}",
         r.protocol.describe(),
@@ -400,9 +405,16 @@ pub(crate) fn doctor(r: &Resolved) -> (String, String, Vec<String>) {
                 r.key_env
             ),
         },
-        "No request was sent: tier 1 is the protocol's own tool calling, and a probe \
-         would spend the key's quota to confirm it."
-            .to_string(),
+        if read {
+            "No completion was requested: tier 1 is the protocol's own tool calling. This \
+             endpoint is on this machine, so its `/v1/models` (and colibri's `/health`) \
+             was read to ask whether it is colibri (ADR 0047 decision 3)."
+                .to_string()
+        } else {
+            "No request was sent: tier 1 is the protocol's own tool calling, and a probe \
+             would spend the key's quota to confirm it."
+                .to_string()
+        },
     ];
     if r.base.starts_with("https://") && !cfg!(feature = "hosted") {
         notes.push(
@@ -1274,7 +1286,7 @@ context_bytes = {set}
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: Some("mine".into()),
         };
-        let (model, runtime, notes) = doctor(&r);
+        let (model, runtime, notes) = doctor(&r, false);
         assert_eq!(model, "m-1 (named in the spec)");
         assert_eq!(
             runtime,

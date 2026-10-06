@@ -175,6 +175,10 @@ pub(crate) fn layer(repo: RepoConfig, user: RepoConfig) -> RepoConfig {
             unconstrained: r.unconstrained.or(u.unconstrained),
             thinking: r.thinking.or(u.thinking),
             context_bytes: r.context_bytes.or(u.context_bytes),
+            // Lower wins, as for `[checks] timeout_s` (ADR 0047 §9): a cloned
+            // repository may shorten how long a request may hold the run,
+            // not lengthen a limit the user set.
+            timeout_s: lower(r.timeout_s, u.timeout_s),
         }),
         // Hosted providers (ADR 0024): both lists apply, and on a name both
         // define **the user's wins** — the one exception to "the repository
@@ -436,7 +440,20 @@ impl RepoConfig {
                 path.display()
             );
         }
-        toml::from_str(text).with_context(|| format!("{} is not valid TOML", path.display()))
+        let parsed: Self = toml::from_str(text)
+            .with_context(|| format!("{} is not valid TOML", path.display()))?;
+        // Per file, before layering: 0 has no meaning a user would choose
+        // (no timeout, or every request failing at once), and refused here
+        // it names the file that said it.
+        if parsed.model_timeout().is_zero() {
+            anyhow::bail!(
+                "{} sets [model] timeout_s = 0; it is the seconds one model request \
+                 may take and must be at least 1 (absent means {} s)",
+                path.display(),
+                crate::config::DEFAULT_MODEL_TIMEOUT_S
+            );
+        }
+        Ok(parsed)
     }
 }
 
@@ -641,6 +658,48 @@ mod tests {
         assert_eq!(t("[checks]\ntimeout_s = 60\n", ""), 60);
         assert_eq!(t("", "[checks]\ntimeout_s = 600\n"), 600);
         assert_eq!(t("", ""), trellis_checks::DEFAULT_CHECK_TIMEOUT_S);
+    }
+
+    /// `[model] timeout_s` layers as `[checks] timeout_s` does (ADR 0047
+    /// §9): a cloned repository may shorten how long a request may hold
+    /// the run, never lengthen a limit the user set.
+    #[test]
+    fn model_timeout_s_the_lower_of_the_two_wins() {
+        let t = |repo: &str, user: &str| load(repo, user).model_timeout().as_secs();
+        assert_eq!(
+            t("[model]\ntimeout_s = 9000\n", "[model]\ntimeout_s = 600\n"),
+            600
+        );
+        assert_eq!(
+            t("[model]\ntimeout_s = 60\n", "[model]\ntimeout_s = 600\n"),
+            60
+        );
+        assert_eq!(t("[model]\ntimeout_s = 60\n", ""), 60);
+        assert_eq!(t("", "[model]\ntimeout_s = 600\n"), 600);
+        assert_eq!(t("", ""), 300);
+    }
+
+    #[test]
+    fn model_timeout_s_of_zero_is_refused_at_load_from_either_file() {
+        // The risk: 0 read as "no timeout" (a request that may hang the run
+        // until the wall clock ends it) or as an instant failure of every
+        // request. Either file's 0 is refused, naming the key and the file.
+        for (repo, user, file) in [
+            ("[model]\ntimeout_s = 0\n", "", "config.toml"),
+            ("", "[model]\ntimeout_s = 0\n", "user.toml"),
+            (
+                "[model]\ntimeout_s = 0\n",
+                "[model]\ntimeout_s = 600\n",
+                "config.toml",
+            ),
+        ] {
+            let (d, u) = files(repo, user);
+            let e = RepoConfig::load_with_user(d.path(), Some(&u))
+                .expect_err("timeout_s = 0 must refuse the load");
+            let msg = format!("{e:#}");
+            assert!(msg.contains("[model] timeout_s"), "{msg}");
+            assert!(msg.contains(file), "{msg}");
+        }
     }
 
     #[test]

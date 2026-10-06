@@ -112,6 +112,99 @@ fn walk(dir: &Path, base: &Path, dirs: &mut Vec<PathBuf>, files: &mut Vec<(PathB
     }
 }
 
+/// One `turn` event's fields, as `name -> value as text`. A field the event
+/// did not record is absent, which is what tells an unreported figure from
+/// a 0.
+pub(crate) type TurnFields = std::collections::BTreeMap<String, String>;
+
+/// The `turn` events emitted on this thread while [`TurnEvents::install`]'s
+/// guard lives.
+///
+/// Hand-written over `tracing` alone rather than `tracing-subscriber`, which
+/// this crate does not depend on. One process-wide subscriber hands each
+/// event to the capture installed on the emitting thread, if any, so a
+/// `#[tokio::test]` (current-thread) sees its own run's events and no other
+/// test's. Not a scoped default per test: `tracing` caches whether a
+/// callsite is wanted, and with scoped defaults coming and going on
+/// parallel test threads a callsite could be cached as unwanted while a
+/// capture was installed, and its events silently dropped.
+#[derive(Clone, Default)]
+pub(crate) struct TurnEvents(std::sync::Arc<std::sync::Mutex<Vec<TurnFields>>>);
+
+thread_local! {
+    static CAPTURE: std::cell::RefCell<Option<TurnEvents>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Ends a capture when dropped.
+pub(crate) struct Installed;
+
+impl Drop for Installed {
+    fn drop(&mut self) {
+        CAPTURE.with(|c| c.borrow_mut().take());
+    }
+}
+
+impl TurnEvents {
+    pub(crate) fn install(&self) -> Installed {
+        static GLOBAL: std::sync::Once = std::sync::Once::new();
+        GLOBAL.call_once(|| {
+            tracing::subscriber::set_global_default(Router)
+                .expect("no other global subscriber in trellis-loop's tests");
+        });
+        CAPTURE.with(|c| *c.borrow_mut() = Some(self.clone()));
+        Installed
+    }
+
+    pub(crate) fn taken(&self) -> Vec<TurnFields> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[derive(Default)]
+struct Fields(TurnFields);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+        self.0.insert(f.name().into(), format!("{v:?}"));
+    }
+    fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+        self.0.insert(f.name().into(), v.into());
+    }
+}
+
+/// The process-wide subscriber behind [`TurnEvents`].
+struct Router;
+
+impl tracing::Subscriber for Router {
+    /// A `turn` event is an info event. Everything else stays disabled, so
+    /// the fields of the rest (a request body at trace) are not built in
+    /// every other test for nothing.
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        m.is_event() && *m.level() == tracing::Level::INFO
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let Some(capture) = CAPTURE.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let mut f = Fields::default();
+        event.record(&mut f);
+        // The test `TurnCapture` in trellis-cli's rpc applies.
+        if f.0.get("message").map(String::as_str) == Some("turn")
+            && f.0.contains_key("turn")
+            && f.0.contains_key("call")
+        {
+            capture.0.lock().unwrap().push(f.0);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
