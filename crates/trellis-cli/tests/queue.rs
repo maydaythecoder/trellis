@@ -937,6 +937,27 @@ fn queue_list_text_still_lists_an_unreadable_task_file() {
 }
 
 #[test]
+fn queue_list_priority_hides_an_unreadable_task_file_as_label_does() {
+    // The risk: a corrupt task file has no priority, so listing it under
+    // `--priority high` reports a match that is not one, unlike `--label`.
+    let d = fixture("list-priority-unreadable");
+    let high = add_id(&d, &["rename greet", "--priority", "high"]);
+    std::fs::write(queue_dir(&d, "pending").join("broken.json"), "not json").unwrap();
+
+    for filter in [&["--priority", "high"], &["--label", "x"]] {
+        let mut args = vec!["queue", "list"];
+        args.extend_from_slice(filter);
+        let o = trellis(&d, &args);
+        let s = combined(&o);
+        assert!(o.status.success(), "{filter:?}: {s}");
+        assert!(!s.contains("broken"), "{filter:?}: {s}");
+    }
+    let s = combined(&trellis(&d, &["queue", "list", "--priority", "high"]));
+    assert!(s.contains(&high), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn queue_list_text_empty_or_blank_is_refused_and_lists_nothing() {
     // The risk: an empty search matches every task and reads as a result.
     let d = fixture("list-text-empty");
