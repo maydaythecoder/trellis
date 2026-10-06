@@ -381,6 +381,9 @@ impl SteeringPort {
 /// the moment it is made. Reading them here, rather than from the
 /// transcript the run returns, is what makes delivery known on an aborted
 /// run too. With no port it forwards and does nothing else.
+///
+/// It forwards every method but `prompt_tokens`, which only the trail reads,
+/// from the concrete driver after the run (#487).
 pub(crate) struct Watched<'a, M> {
     model: &'a mut M,
     port: Option<&'a SteeringPort>,
