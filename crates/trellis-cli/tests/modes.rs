@@ -1780,6 +1780,217 @@ fn rpc_vault_graph_returns_what_vault_graph_prints() {
     );
 }
 
+/// An OpenAI-protocol tool call that reports both token figures.
+fn openai_call_with_usage(name: &str, args: Value, prompt: u64, completion: u64) -> String {
+    serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,
+        "tool_calls":[{"id":"c","type":"function","function":{"name":name,
+        "arguments":args.to_string()}}]}}],
+        "usage":{"prompt_tokens":prompt,"completion_tokens":completion}})
+    .to_string()
+}
+
+/// Each trail under `.trellis/runs`, as JSON.
+fn trails(f: &Fixture) -> Vec<Value> {
+    std::fs::read_dir(f.root.join(".trellis/runs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .map(|p| serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap())
+        .collect()
+}
+
+#[test]
+fn rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart() {
+    // The risks: prompt and completion added into one figure, which bills
+    // context as output; a run that reported no figure counted as 0, which
+    // reads as an exact total that is not one; and a second count beside
+    // `/status`'s, which could disagree with what the trails record.
+    let f = fixture("rpc-stats");
+    let edit = || serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"});
+    let done = || serde_json::json!({"summary": "changed it"});
+    let (base, server) = provider_stub(vec![
+        openai_call_with_usage("edit", edit(), 100, 3),
+        openai_call_with_usage("done", done(), 150, 4),
+        openai_call_with_usage("edit", edit(), 1000, 30),
+        openai_call_with_usage("done", done(), 1500, 40),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_STATS_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+
+    rpc.send(serde_json::json!({"id": "s0", "type": "get_session_stats"}));
+    let before = rpc.next(|v| v["id"] == "s0");
+    assert_eq!(before["command"], "get_session_stats", "{before}");
+    assert_eq!(before["success"], true, "{before}");
+    assert_eq!(
+        before["data"],
+        serde_json::json!({"models": [], "runs_not_counted": 0}),
+        "no run yet: {before}"
+    );
+
+    // Two runs of the stub's model with a scripted run between them: the
+    // stub's figures are summed across its runs, and the script, which
+    // reports neither figure, is its own model with both unknown.
+    for (id, model) in [
+        ("p1", "provider:stub#m"),
+        ("p2", f.spec.as_str()),
+        ("p3", "provider:stub#m"),
+    ] {
+        rpc.send(
+            serde_json::json!({"id": id, "type": "prompt", "task": "change f",
+                                    "model": model}),
+        );
+        let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == id);
+        assert!(end["run_id"].is_string(), "a trail was written: {end}");
+    }
+    rpc.send(serde_json::json!({"id": "s1", "type": "get_session_stats"}));
+    let got = rpc.next(|v| v["id"] == "s1");
+    rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 4);
+    assert_eq!(got["success"], true, "{got}");
+
+    // What the trails record, per model. The three runs land in the same
+    // second, so `started_at` cannot order them (and a wall clock can step
+    // back); the stub's model is the one two trails name, the script's the
+    // one a single trail names.
+    let runs = trails(&f);
+    assert_eq!(runs.len(), 3);
+    let model = |r: &serde_json::Value| r["provenance"]["model"].clone();
+    assert!(runs.iter().all(|r| model(r).is_string()), "{runs:?}");
+    let named = |m: &serde_json::Value| runs.iter().filter(|r| &model(r) == m).count();
+    let stub_model = runs
+        .iter()
+        .map(model)
+        .find(|m| named(m) == 2)
+        .expect("two stub runs");
+    let script_model = runs
+        .iter()
+        .map(model)
+        .find(|m| named(m) == 1)
+        .expect("one scripted run");
+    assert_ne!(stub_model, script_model);
+    let stub_runs: Vec<_> = runs.iter().filter(|r| model(r) == stub_model).collect();
+    let sum = |field: &str| -> u64 {
+        stub_runs
+            .iter()
+            .map(|r| r["factual"][field].as_u64().unwrap())
+            .sum()
+    };
+    assert_eq!(
+        (sum("prompt_tokens"), sum("tokens")),
+        (2750, 77),
+        "{runs:?}"
+    );
+    assert_eq!(
+        got["data"],
+        serde_json::json!({
+            "models": [
+                {"model": stub_model, "prompt_tokens": 2750, "completion_tokens": 77},
+                {"model": script_model, "prompt_tokens": null, "completion_tokens": null},
+            ],
+            "runs_not_counted": 0,
+        }),
+        "{got}"
+    );
+    let mut names = Vec::new();
+    keys(&got["data"], &mut names);
+    for k in &names {
+        let k = k.to_ascii_lowercase();
+        assert!(
+            !["total", "sum", "ratio", "percent"]
+                .iter()
+                .any(|w| k.contains(w)),
+            "`{k}` names a figure that is not one the trails record"
+        );
+    }
+}
+
+#[test]
+fn rpc_get_last_assistant_text_is_the_last_done_summary_as_data() {
+    // The risks: a run that ended some other way (here an abort) replacing
+    // the summary with nothing, which loses what `/copy` would still copy;
+    // and model output reaching the client as anything but a JSON string,
+    // where a terminal escape could act on whoever prints it.
+    let f = fixture("rpc-last-text");
+    let scripts = scratch("rpc-last-text-scripts");
+    let script = |name: &str, summary: &str| -> String {
+        let p = scripts.join(format!("{name}.json"));
+        let steps = serde_json::json!({"steps": [
+            {"tool": "edit", "path": "a.py", "old": "return 1", "new": "return 2"},
+            {"tool": "done", "summary": summary},
+        ]});
+        std::fs::write(&p, steps.to_string()).unwrap();
+        format!("scripted:{}", p.display())
+    };
+    // ESC, a C1 CSI and a line break: printed raw, the first two drive a
+    // terminal.
+    let hostile = "made it red \u{1b}[31m\u{9b}2J\nand cleared";
+    let first = script("first", hostile);
+    let later = script("later", "the later one");
+
+    let mut rpc = Rpc::start(trellis(&f));
+    let ask = |rpc: &mut Rpc, id: &str| -> Value {
+        rpc.send(serde_json::json!({"id": id, "type": "get_last_assistant_text"}));
+        let got = rpc.next(|v| v["id"] == id);
+        assert_eq!(got["command"], "get_last_assistant_text", "{got}");
+        assert_eq!(got["success"], true, "{got}");
+        got["data"].clone()
+    };
+    assert_eq!(
+        ask(&mut rpc, "t0"),
+        serde_json::json!({"text": null}),
+        "no run yet"
+    );
+
+    rpc.send(
+        serde_json::json!({"id": "p1", "type": "prompt", "task": "change f",
+                                "model": first}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p1");
+    assert_eq!(
+        ask(&mut rpc, "t1"),
+        serde_json::json!({"text": hostile}),
+        "the summary, byte for byte, as a string"
+    );
+
+    // Stopped at its question: it never reaches `done`.
+    rpc.send(
+        serde_json::json!({"id": "p2", "type": "prompt", "task": "change f",
+                                "model": later, "control": "approve"}),
+    );
+    rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "a", "type": "abort"}));
+    let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "p2");
+    assert_eq!(end["outcome"], "interrupted", "{end}");
+    assert_eq!(
+        ask(&mut rpc, "t2"),
+        serde_json::json!({"text": hostile}),
+        "an aborted run leaves the last summary as it was"
+    );
+
+    rpc.send(
+        serde_json::json!({"id": "p3", "type": "prompt", "task": "change f",
+                                "model": later}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p3");
+    assert_eq!(
+        ask(&mut rpc, "t3"),
+        serde_json::json!({"text": "the later one"}),
+        "the most recent run that ended on `done`"
+    );
+    rpc.finish();
+}
+
 /// The rpc and `log --json` fields a client may rely on (ADR 0048 §6), as
 /// data the tests below hold the binary to.
 fn contract() -> Value {

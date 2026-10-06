@@ -177,9 +177,11 @@ enum Command {
         /// takes the cap from the backend's measured batching capacity and is
         /// 1 for an unmeasured one. Never derived from CPU count (S18).
         ///
-        /// Above 1, and `auto`, need `--target`. Running more than one agent
-        /// at once is not built yet (#466), so a run whose cap comes to more
-        /// than 1 is refused before the snapshot.
+        /// Above 1, and `auto`, need `--target`. With `--target`, each
+        /// partition of the plan runs in its own agent and worktree, and the
+        /// merged union is checked as a whole (#466); one at a time at 1
+        /// (#482), and never more at once than the plan has parallel
+        /// partitions.
         #[arg(long, default_value = "1")]
         agents: String,
         /// A symbol this run works on, resolved as `trellis radius` resolves
@@ -688,13 +690,14 @@ fn main() -> Result<()> {
                     .with_context(first_run::no_model)?,
             };
             // With no target the width is 1 (refused above otherwise), and
-            // the run is today's single-agent run with nothing added.
+            // the run is today's single-agent run with nothing added. With
+            // targets, the plan's partitions run each in its own agent (#466),
+            // one at a time at width 1 (ADR 0045 §2, #482), which is also the
+            // width of any N on a backend not measured to batch (#483).
+            let mut fanout = None;
             if !target.is_empty() {
-                let why = one_at_a_time(&root, width, &target, &model, model_from_user)?;
-                let _ = writeln!(
-                    output::human(),
-                    "agents:   running partitions one at a time: {why}"
-                );
+                let (n, why) = agents_for(&root, width, &target, &model, model_from_user)?;
+                fanout = Some(run_cmd::Fanout::plan(&root, &target, n, why)?);
             }
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
@@ -726,6 +729,7 @@ fn main() -> Result<()> {
                 output::RunExtras {
                     skills: skill,
                     images: image,
+                    fanout,
                     ..output::RunExtras::default()
                 },
                 &mut output::human(),
@@ -864,66 +868,84 @@ fn parse_agents(s: &str) -> Result<Agents> {
     }
 }
 
-/// Resolves every target and the run's width, refusing anything that cannot
-/// run; on success, why the partitions run one at a time.
+/// Resolves every target and the number of agents `--agents` asks for, with
+/// why it is that number.
 ///
-/// Called before the snapshot, so an unknown target or a width this build
-/// cannot run costs nothing. Targets resolve before the width is judged, so a
-/// mistyped symbol is reported as that rather than hidden behind "not built".
-fn one_at_a_time(
+/// Called before the snapshot, so an unknown target costs nothing. Targets
+/// resolve before the number is judged, so a mistyped symbol is reported as
+/// that rather than hidden behind a width.
+fn agents_for(
     root: &Path,
     width: Agents,
     targets: &[String],
     spec: &str,
     from_user: bool,
-) -> Result<String> {
+) -> Result<(u32, String)> {
     let index = trellis_index::build_cached(root);
     for t in targets {
         index_cmd::resolve_symbol(&index, t)?;
     }
     let (n, why) = match width {
-        Agents::Count(n) => (n, format!("--agents is {n}")),
+        Agents::Count(1) => (1, "--agents is 1".to_string()),
+        // An explicit N asks the backend as `auto` does (exit gate item 10,
+        // #483): N agents on a runtime that serves one request at a time is
+        // slower than one after another, and a user who typed N would not
+        // know why. Only measured continuous batching keeps N.
+        Agents::Count(n) => match batching(root, spec, from_user)? {
+            (cap, why) if cap.supports_multi_agent() => (n, format!("--agents is {n}; {why}")),
+            (_, why) => (
+                1,
+                format!(
+                    "--agents {n} is 1 because {why}; {n} at once needs a backend measured to \
+                     batch continuously, such as llama.cpp started with --parallel {n}"
+                ),
+            ),
+        },
         Agents::Auto => {
-            use trellis_model::BatchingCapability as B;
-            let parsed: trellis_model::ModelSpec = spec.parse()?;
-            let cfg = config::RepoConfig::load(root)?;
-            let (cap, why) = match doctor_cmd::probe_batching(&parsed, &cfg, from_user) {
-                Ok(cap @ B::Continuous { .. }) => {
-                    (cap, "the runtime reports that many slots".into())
-                }
-                Ok(cap @ B::SingleStream) => (cap, "the runtime reports a single slot".into()),
-                Ok(cap @ B::ContinuousUnmeasured) => (
-                    cap,
-                    "the backend batches continuously but does not report how much".into(),
-                ),
-                Ok(cap @ B::Unknown) => (
-                    cap,
-                    "the backend's batching capability is unknown (a scripted model has none)"
-                        .into(),
-                ),
-                Err(e) => (
-                    B::Unknown,
-                    format!(
-                        "the runtime's slot count could not be read ({e}), so its capability is unknown"
-                    ),
-                ),
-            };
+            let (cap, why) = batching(root, spec, from_user)?;
             let n = cap.auto_agents();
             (n, format!("--agents auto is {n} because {why}"))
         }
     };
-    if n > 1 {
-        anyhow::bail!(
-            concat!(
-                "{} would run up to {} agents at once, and running partitions together is ",
-                "not built yet (#466). Pass --agents 1 to run them one at a time. ",
-                "Nothing was snapshotted."
+    Ok((n, why))
+}
+
+/// The backend's batching capability, by the probe `doctor` uses, with why it
+/// is that. Reads the runtime and writes nothing; the probe's own timeout
+/// bounds it. A slot count that could not be read is `Unknown`, said so.
+fn batching(
+    root: &Path,
+    spec: &str,
+    from_user: bool,
+) -> Result<(trellis_model::BatchingCapability, String)> {
+    use trellis_model::BatchingCapability as B;
+    let parsed: trellis_model::ModelSpec = spec.parse()?;
+    let cfg = config::RepoConfig::load(root)?;
+    Ok(match doctor_cmd::probe_batching(&parsed, &cfg, from_user) {
+        Ok(
+            cap @ B::Continuous {
+                measured_concurrency,
+            },
+        ) => (
+            cap,
+            format!("the runtime reports {measured_concurrency} slots"),
+        ),
+        Ok(cap @ B::SingleStream) => (cap, "the runtime reports a single slot".into()),
+        Ok(cap @ B::ContinuousUnmeasured) => (
+            cap,
+            "the backend batches continuously but does not report how much".into(),
+        ),
+        Ok(cap @ B::Unknown) => (
+            cap,
+            "the backend's batching capability is unknown (a scripted model has none)".into(),
+        ),
+        Err(e) => (
+            B::Unknown,
+            format!(
+                "the runtime's slot count could not be read ({e}), so its capability is unknown"
             ),
-            why,
-            n
-        );
-    }
-    Ok(why)
+        ),
+    })
 }
 
 /// The repository root, walking up from the working directory.
