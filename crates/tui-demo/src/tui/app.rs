@@ -124,6 +124,11 @@ pub struct Budget {
     pub iteration: u32,
     pub prompt_bytes: u64,
     pub elapsed_secs: u64,
+    /// The last turn's output tokens, model wall time and queue wait, each
+    /// `None` when that turn did not report it (#257).
+    pub completion_tokens: Option<u64>,
+    pub model_ms: Option<u64>,
+    pub queue_wait_ms: Option<u64>,
     /// The run's ceiling, 0 until a `BudgetKnown` says it.
     pub max_iterations: u32,
 }
@@ -182,11 +187,17 @@ impl AppState {
                 iteration,
                 prompt_bytes,
                 elapsed_secs,
+                completion_tokens,
+                model_ms,
+                queue_wait_ms,
             } => {
                 self.budget = Budget {
                     iteration,
                     prompt_bytes,
                     elapsed_secs,
+                    completion_tokens,
+                    model_ms,
+                    queue_wait_ms,
                     max_iterations: self.budget.max_iterations,
                 }
             }
@@ -1034,6 +1045,9 @@ mod tests {
             iteration: 2,
             prompt_bytes: 8400,
             elapsed_secs: 18,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
         });
         s.update(Message::CheckFinished {
             name: "typecheck".into(),
