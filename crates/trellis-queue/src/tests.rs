@@ -2969,3 +2969,260 @@ fn input_since_last_run_an_older_task_file_without_the_marker_reads_back_unchang
     };
     assert_eq!(serde_json::to_value(&marked).unwrap()["notes_seen"], 1);
 }
+
+// ---------------------------------------------------------------------------
+// Blocking a task after its third stale-claim release (#352, ADR 0020 §5)
+// ---------------------------------------------------------------------------
+
+/// Rewrites the task in `claimed/` as `f` leaves it, as a claim on a task
+/// that had already been released some number of times would be on disk.
+fn rewrite_claimed(q: &Queue, id: &str, f: impl FnOnce(&mut Task)) -> Task {
+    let path = q.path(State::Claimed, id);
+    let mut t = read_task(&path).unwrap();
+    f(&mut t);
+    std::fs::write(&path, serde_json::to_string(&t).unwrap()).unwrap();
+    t
+}
+
+/// A dead local claim on a task released `MAX_STALE_RELEASES` times, the
+/// last of them `last_release` seconds before the claim.
+fn claim_at_the_limit(q: &Queue, task: &str, last_release: i64) -> (String, i64) {
+    let (id, at) = crashed_claim(q, task, Some(here()));
+    rewrite_claimed(q, &id, |t| {
+        t.stale_releases = MAX_STALE_RELEASES;
+        t.stale_released_at = Some(secs_to_iso(at - last_release));
+    });
+    (id, at)
+}
+
+fn manual_detail(t: &Task) -> String {
+    match &t.blocked {
+        Some(Blocked::Manual { detail }) => detail.clone(),
+        other => panic!("not a manual block: {other:?}"),
+    }
+}
+
+#[test]
+fn stale_claim_block_count_starts_at_zero_and_each_release_adds_one() {
+    // The count is what ends the loop, so it has to survive every release
+    // and claim, and a file from before it has to load (as 0) and be
+    // written without it until a release happens.
+    let (_d, q) = queue();
+    let (id, at) = crashed_claim(&q, "dies", Some(here()));
+    let raw = std::fs::read_to_string(q.path(State::Claimed, &id)).unwrap();
+    assert!(!raw.contains("stale_releases"), "{raw}");
+    let t = read_task(&q.path(State::Claimed, &id)).unwrap();
+    assert_eq!(t.stale_releases, 0);
+    assert!(
+        !serde_json::to_string(&t)
+            .unwrap()
+            .contains("stale_releases")
+    );
+
+    for n in 1..=MAX_STALE_RELEASES {
+        let now = at + i64::from(n) * RELEASE_THROTTLE_SECS;
+        let swept = q.release_stale_claims(&dead_here(), now).unwrap();
+        assert!(matches!(swept[0].1, Swept::Released(_)), "{swept:?}");
+        let raw = std::fs::read_to_string(q.path(State::Pending, &id)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["stale_releases"], n);
+        if n < MAX_STALE_RELEASES {
+            let claim = q.clone().with_claimant(here()).claim(&id).unwrap().unwrap();
+            assert_eq!(claim.task.stale_releases, n, "kept by the claim");
+            std::mem::forget(claim);
+        }
+    }
+    assert_eq!(MAX_STALE_RELEASES, 3);
+    assert_eq!(events(&q, "stale_claim_released").len(), 3);
+}
+
+#[test]
+fn stale_claim_block_at_the_limit_blocks_instead_of_releasing_whatever_the_hourly_limit_says() {
+    // The fourth death would otherwise feed the task back for a fourth run.
+    // The hourly limit is for releases: a block one minute after the last
+    // release is not held back by it, because a block runs nothing.
+    let (_d, q) = queue();
+    let (id, at) = claim_at_the_limit(&q, "dies", 60);
+    let swept = q.release_stale_claims(&dead_here(), at).unwrap();
+    assert!(
+        matches!(&swept[..], [(i, Swept::Blocked(_))] if *i == id),
+        "{swept:?}"
+    );
+    assert!(q.ids(State::Claimed).unwrap().is_empty());
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!(t.status, Some(Status::Blocked));
+    let detail = manual_detail(&t);
+    assert!(detail.contains("3 "), "{detail}");
+    assert!(
+        detail.contains(&format!("`trellis queue set {id} --status todo`")),
+        "{detail}"
+    );
+    // What `queue list` prints for it.
+    assert!(t.blocked.as_ref().unwrap().describe().contains(&detail));
+    assert_eq!(t.stale_releases, MAX_STALE_RELEASES, "no fourth release");
+    assert!(events(&q, "stale_claim_released").is_empty());
+    assert!(q.ids(State::Failed).unwrap().is_empty(), "never failed");
+    assert!(q.claim_next().unwrap().is_none(), "blocked, so not claimed");
+}
+
+#[test]
+fn stale_claim_block_changes_only_the_status_the_block_and_the_claim() {
+    // A block that dropped a field would lose what a person needs to judge
+    // the task (its attempts, notes, outcome) or reset the count that put it
+    // there. Every optional field is set, so a dropped one shows.
+    let (_d, q) = queue();
+    let (id, at) = crashed_claim(&q, "everything", Some(here()));
+    let seen = rewrite_claimed(&q, &id, |t| {
+        t.args = Some("--fast".into());
+        t.model = Some("local:m".into());
+        t.attempts = 7;
+        t.outcome = Some(Outcome {
+            run_id: Some("r1".into()),
+            exit: "killed".into(),
+            finished_at: secs_to_iso(at - 5),
+        });
+        t.blocked = Some(Blocked::Children);
+        t.priority = Priority::High;
+        t.labels = vec!["oom".into()];
+        t.parent = Some("p".into());
+        t.assignee = Some("a".into());
+        t.blockers = vec!["b".into()];
+        t.needs_approval = true;
+        t.approval = Some(Decision {
+            decision: Verdict::Approved,
+            at: secs_to_iso(at - 9),
+            reason: Some("ok".into()),
+        });
+        t.note(Actor::Human, "careful");
+        t.notes_seen = Some(1);
+        t.routine = Some("nightly".into());
+        t.routine_at = Some(at - 100);
+        t.stale_released_at = Some(secs_to_iso(at - 10));
+        t.stale_releases = MAX_STALE_RELEASES;
+    });
+    assert!(seen.claimed_pid_started.is_some() && seen.claimed_host.is_some());
+
+    let swept = q.release_stale_claims(&dead_here(), at + 30).unwrap();
+    assert!(matches!(swept[0].1, Swept::Blocked(_)), "{swept:?}");
+    let got = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert!(manual_detail(&got).contains("--status todo"));
+    let mut expected = seen;
+    crate::clear_claim(&mut expected);
+    expected.status = Some(Status::Blocked);
+    expected.blocked = got.blocked.clone();
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn stale_claim_block_is_logged_with_the_pid_age_and_host() {
+    let (_d, q) = queue();
+    let (id, at) = claim_at_the_limit(&q, "dies", 4 * RELEASE_THROTTLE_SECS);
+    let pid = read_task(&q.path(State::Claimed, &id))
+        .unwrap()
+        .claimed_by_pid
+        .unwrap();
+    let swept = q.release_stale_claims(&dead_here(), at + 600).unwrap();
+    let want = format!("pid {pid}, age 600s, host box");
+    assert_eq!(swept, vec![(id.clone(), Swept::Blocked(want.clone()))]);
+    let logged = events(&q, "stale_claim_blocked");
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].entity, format!("task:{id}"));
+    assert_eq!(logged[0].actor, Actor::Work);
+    assert_eq!(logged[0].detail.as_deref(), Some(want.as_str()));
+    assert!(events(&q, "stale_claim_released").is_empty());
+}
+
+#[test]
+fn stale_claim_block_reads_the_claim_again_under_the_lock_and_keeps_what_changed() {
+    // As for a release: blocking what was seen rather than what is there
+    // takes a live claim away or brings back a finished task.
+    let (_d, q) = queue();
+    let (id, at) = claim_at_the_limit(&q, "x", 60);
+    let path = q.path(State::Claimed, &id);
+    let reclaim = || {
+        let mut t = read_task(&path).unwrap();
+        t.claimed_at = Some(secs_to_iso(at + 1));
+        std::fs::write(&path, serde_json::to_string(&t).unwrap()).unwrap();
+    };
+    let swept = q
+        .release_stale_claims(&Meddling(reclaim), at + 600)
+        .unwrap();
+    assert!(
+        matches!(&swept[..], [(_, Swept::Kept(why))] if why.contains("claimed again")),
+        "{swept:?}"
+    );
+    assert!(path.exists());
+    std::fs::remove_file(&path).unwrap();
+
+    // Its holder finished it while it was being looked at.
+    let (id, at) = claim_at_the_limit(&q, "y", 60);
+    let path = q.path(State::Claimed, &id);
+    let done = q.path(State::Done, &id);
+    let finish = || {
+        std::fs::create_dir_all(done.parent().unwrap()).unwrap();
+        std::fs::copy(&path, &done).unwrap();
+    };
+    let swept = q.release_stale_claims(&Meddling(finish), at + 600).unwrap();
+    assert!(
+        matches!(&swept[..], [(_, Swept::Kept(why))] if why.contains("finished")),
+        "{swept:?}"
+    );
+    assert!(!q.path(State::Pending, &id).exists(), "not run twice");
+    assert!(events(&q, "stale_claim_blocked").is_empty());
+}
+
+#[test]
+fn stale_claim_block_under_work_says_so_and_does_not_run_the_task() {
+    let (_d, q) = queue();
+    let (id, at) = claim_at_the_limit(&q, "dies", 60);
+    let opts = WorkOptions {
+        stale_claims: StaleClaims::Release,
+        ..WorkOptions::default()
+    };
+    let mut r = Probed {
+        inner: Fake::default(),
+        live: dead_here(),
+        now: at + 120,
+    };
+    let (n, _, out) = drain(&q, &mut r, opts);
+    assert_eq!(n, 0);
+    assert!(r.inner.ran.is_empty(), "{:?}", r.inner.ran);
+    assert!(
+        out.contains(&format!("{id} -> pending/ blocked"))
+            && out.contains(&format!("trellis queue set {id} --status todo")),
+        "{out}"
+    );
+    assert!(!out.contains("stale claim released"), "{out}");
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!(t.status, Some(Status::Blocked));
+}
+
+#[test]
+fn stale_claim_block_again_after_a_person_sets_it_back_to_todo() {
+    // A person who reopens the task gives it one more run, not three: the
+    // count stays, so the next dead holder blocks it again.
+    let (_d, q) = queue();
+    let (id, at) = claim_at_the_limit(&q, "dies", 60);
+    q.release_stale_claims(&dead_here(), at).unwrap();
+    q.edit(&id, |t, _| {
+        t.status = Some(Status::Todo);
+        t.blocked = None;
+        Ok(None)
+    })
+    .unwrap();
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!((t.status, t.stale_releases), (Some(Status::Todo), 3));
+
+    let claim = q.clone().with_claimant(here()).claim(&id).unwrap().unwrap();
+    std::mem::forget(claim);
+    let later = at + 10 * RELEASE_THROTTLE_SECS;
+    let swept = q.release_stale_claims(&dead_here(), later).unwrap();
+    assert!(matches!(swept[0].1, Swept::Blocked(_)), "{swept:?}");
+    let t = read_task(&q.path(State::Pending, &id)).unwrap();
+    assert_eq!((t.status, t.stale_releases), (Some(Status::Blocked), 3));
+    assert!(
+        events(&q, "stale_claim_released").is_empty(),
+        "no fourth release"
+    );
+    assert_eq!(events(&q, "stale_claim_blocked").len(), 2);
+}

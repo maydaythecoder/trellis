@@ -4,6 +4,8 @@
 hard link, not a rename), §5 and §7. Each amendment is marked in place.
 §2 and §5 amended again on 2026-09-29 for #59: an opt-in release of a stale
 claim, decided by the owner on 2026-09-28.
+§5 amended again on 2026-10-06 for #352: a task is blocked after its
+third stale-claim release instead of being released again.
 **Date:** 2026-09-27
 **Reference design:** Paperclip (`paperclipai/paperclip`, MIT). Five of its
 ideas are borrowed as designs, and no Paperclip code or server is used:
@@ -311,6 +313,38 @@ move.
 **Not enforced.** Two `work` processes in one worktree at the same time.
 `trellis run` does not lock either. The snapshot's clean-tree check catches
 the second run once the first has written anything, but not before.
+
+*Amended 2026-10-06 (#352), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+The hourly limit slows a task whose runs keep killing their holder (by
+exhausting memory, say) but never stops it: it was released again every
+hour for as long as `work` kept running. A task now records how many
+times its stale claim has been released, as `stale_releases`, a count
+omitted from the file while it is 0, so every earlier file loads and is
+written back unchanged, and an older binary reads a file carrying it and
+drops it if it rewrites the task. Each release adds one.
+`MAX_STALE_RELEASES` (3) caps it: when the holder of a task already
+released three times is found dead, under the same checks as a release,
+the task is moved to `pending/` with status `blocked` and reason
+`manual`, whose detail names the three releases and
+`trellis queue set <id> --status todo`, which is how `queue list` shows
+it and how a person reopens it. The hourly limit does not hold back a
+block, since a block runs nothing. The block takes the same task lock,
+reads the task again under it, keeps a claim that was claimed again or
+finished meanwhile, clears the claim fields and changes nothing else:
+`attempts`, `stale_releases` and `stale_released_at` stay. It is logged
+to the activity log as `stale_claim_blocked`, actor `work`, with the
+pid, the claim's age and the host, as `stale_claim_released` is, and
+`work` says it on the terminal. The block is not a failure: the task
+waits in `pending/` as `blocked`, and `failed/` is not touched, so
+"nothing ever fails a task automatically" holds. `queue set --status
+todo` leaves the count at 3, so a reopened task gets one more run, and a
+holder that dies again blocks it again with no fourth release. Paperclip
+escalates a task that has spent its retry budget to a visible blocked
+state the same way (`releases/beta/v2026.1002.0-beta.0.md:29`, #14046).
+Reversed if tasks are blocked this way whose holders died for reasons
+outside the task, such as host restarts, often enough that 3 is too few:
+the limit is then raised by an amendment here, and releases without a
+limit return only if no limit fits.
 
 ### 6. Goal ancestry is the vault lineage
 

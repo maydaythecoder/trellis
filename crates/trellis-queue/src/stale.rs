@@ -10,18 +10,26 @@
 //! releasing a live claim runs one task twice.
 //!
 //! Nothing here fails a task. A claim is released at most once an hour, so a
-//! task whose runs keep dying is not fed back to the heartbeat in a loop;
-//! after that it waits for a person, as every stale claim did before.
+//! task whose runs keep dying is not fed back to the heartbeat in a loop,
+//! and at most [`MAX_STALE_RELEASES`] times (#352): the next dead holder
+//! blocks the task in `pending/` instead, where it waits for a person.
 //!
 //! The probe and the clock are the caller's. This crate spawns nothing but
 //! `git` through `trellis_vcs`; the binary, which already depends on
 //! `trellis_core::secrets`, supplies the platform probe.
 
 use crate::files::{move_to, present, read_json, remove};
-use crate::{Actor, Event, Queue, QueueError, State, Status, Task, parse_iso, secs_to_iso};
+use crate::{
+    Actor, Blocked, Event, Queue, QueueError, State, Status, Task, parse_iso, secs_to_iso,
+};
 
 /// How long after one release the same task may be released again.
 pub const RELEASE_THROTTLE_SECS: i64 = 3600;
+
+/// How many times one task's stale claim is released. After that a dead
+/// holder blocks it instead (ADR 0020 §5, amended for #352): a task that
+/// kills every run it gets, by exhausting memory say, stops being run.
+pub const MAX_STALE_RELEASES: u32 = 3;
 
 /// `[work] stale_claims`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -88,6 +96,10 @@ pub trait Liveness {
 pub enum Swept {
     /// Moved back to `pending/`, and logged. The detail is what the log says.
     Released(String),
+    /// Moved back to `pending/` as `blocked`, because it had already been
+    /// released [`MAX_STALE_RELEASES`] times, and logged. The detail is what
+    /// the log says.
+    Blocked(String),
     /// Left in `claimed/`, with why.
     Kept(String),
 }
@@ -184,6 +196,11 @@ impl Queue {
                 )));
             }
         }
+        // Before the hourly limit, which holds back releases only: a block
+        // runs nothing, so there is no loop for it to slow.
+        if t.stale_releases >= MAX_STALE_RELEASES {
+            return self.release_dead(id, t, pid, &here, now, Dead::Block);
+        }
         if let Some(last) = t.stale_released_at.as_deref().and_then(parse_iso)
             && now - last < RELEASE_THROTTLE_SECS
         {
@@ -193,11 +210,12 @@ impl Queue {
                 secs_to_iso(last)
             )));
         }
-        self.release_dead(id, t, pid, &here, now)
+        self.release_dead(id, t, pid, &here, now, Dead::Release)
     }
 
     /// Moves a claim whose holder is dead back to `pending/`, under the
-    /// task lock `requeue` takes, keeping `attempts`.
+    /// task lock `requeue` takes, keeping `attempts`: as `todo` to run
+    /// again, or as `blocked` once it has been released too often.
     fn release_dead(
         &self,
         id: &str,
@@ -205,6 +223,7 @@ impl Queue {
         pid: u32,
         host: &str,
         now: i64,
+        how: Dead,
     ) -> Result<Swept, QueueError> {
         let _lock = self.lock_task(id)?;
         let from = self.path(State::Claimed, id);
@@ -226,8 +245,26 @@ impl Queue {
             .and_then(parse_iso)
             .map_or_else(|| "unknown".to_string(), |at| format!("{}s", now - at));
         crate::clear_claim(&mut t);
-        t.status = Some(Status::Todo);
-        t.stale_released_at = Some(secs_to_iso(now));
+        match how {
+            Dead::Release => {
+                t.status = Some(Status::Todo);
+                t.stale_released_at = Some(secs_to_iso(now));
+                t.stale_releases = t.stale_releases.saturating_add(1);
+            }
+            // Not `failed`: nothing here fails a task. Only the status and
+            // its reason change, so the count and the last release stay for
+            // the person who reads it.
+            Dead::Block => {
+                t.status = Some(Status::Blocked);
+                t.blocked = Some(Blocked::Manual {
+                    detail: format!(
+                        "its claim's holder died after {MAX_STALE_RELEASES} stale-claim \
+                         releases, so it was not released again; \
+                         `trellis queue set {id} --status todo` gives it another run"
+                    ),
+                });
+            }
+        }
         let to = self.path(State::Pending, id);
         move_to(&from, &to, &t)?;
         // A holder the probe wrongly called dead may have finished between
@@ -238,14 +275,27 @@ impl Queue {
             .any(|s| present(&self.path(s, id)))
         {
             remove(&to)?;
-            return Ok(Swept::Kept(
-                "its holder finished it while it was being released".into(),
-            ));
+            return Ok(Swept::Kept(match how {
+                Dead::Release => "its holder finished it while it was being released".into(),
+                Dead::Block => "its holder finished it while it was being blocked".into(),
+            }));
         }
         let detail = format!("pid {pid}, age {age}, host {}", crate::plain(host));
-        self.log(
-            Event::new(Actor::Work, "stale_claim_released", format!("task:{id}")).detail(&detail),
-        )?;
-        Ok(Swept::Released(detail))
+        let action = match how {
+            Dead::Release => "stale_claim_released",
+            Dead::Block => "stale_claim_blocked",
+        };
+        self.log(Event::new(Actor::Work, action, format!("task:{id}")).detail(&detail))?;
+        Ok(match how {
+            Dead::Release => Swept::Released(detail),
+            Dead::Block => Swept::Blocked(detail),
+        })
     }
+}
+
+/// What [`Queue::release_dead`] does with a claim whose holder is dead.
+#[derive(Clone, Copy)]
+enum Dead {
+    Release,
+    Block,
 }
