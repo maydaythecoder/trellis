@@ -9,7 +9,7 @@
 //! passes the tool gate (ADR 0018), and none checks for a clean worktree:
 //! the edit is the human's, and `git diff` shows it.
 
-use crate::config;
+use crate::{config, plain};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::path::{Path, PathBuf};
@@ -170,8 +170,9 @@ fn file_days(root: &Path, rel: &str) -> FileDays {
 
 /// Prints what an edit did, then keeps `dates.json` in step when it exists.
 fn print_outcome(dir: &Path, out: &Outcome) -> Result<()> {
+    // Edit messages name notes by path and title, which are untrusted (#461).
     for m in &out.messages {
-        println!("{m}");
+        println!("{}", plain(m));
     }
     sync_dates(dir, &out.touched)
 }
@@ -184,23 +185,26 @@ fn sync_dates(dir: &Path, touched: &dates::Touched) -> Result<()> {
     if let Some(m) = dates::after_edit(&trellis_vault::notes_root(dir), touched, &today())
         .map_err(anyhow::Error::msg)?
     {
-        println!("{m}");
+        // Several lines, each naming a note: escaped one line at a time.
+        for l in m.split('\n') {
+            println!("{}", plain(l));
+        }
     }
     Ok(())
 }
 
 fn check(dir: &Path, fix: bool) -> Result<()> {
     let r = edit::check(dir, fix)?;
-    println!("{}", r.line);
+    println!("{}", plain(&r.line));
     sync_dates(dir, &r.touched)?;
     if !r.issues.is_empty() {
         println!("issues:");
         for i in &r.issues {
-            println!("  {i}");
+            println!("  {}", plain(&i.to_string()));
         }
     }
     for w in &r.warnings {
-        println!("warning: {w}");
+        println!("warning: {}", plain(&w.to_string()));
     }
     match &r.gate {
         Ok(stats) => println!("run gate: accepts this vault ({stats})"),
@@ -210,7 +214,7 @@ fn check(dir: &Path, fix: bool) -> Result<()> {
                 violations.len()
             );
             for v in violations {
-                println!("  {v}");
+                println!("  {}", plain(&v.to_string()));
             }
             if !fix {
                 println!("`trellis vault check --fix` repairs frontmatter and the manifest.");
@@ -249,8 +253,15 @@ fn search_lines(dir: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
     if hits.is_empty() {
         lines.push(format!("no matches for \"{query}\""));
     }
+    // A note is untrusted content (#461): its path and title go through
+    // `plain`, so a control sequence in either cannot repaint the terminal.
     for h in hits {
-        lines.push(format!("{:>8.4}  {}  \"{}\"", h.score, h.path, h.title));
+        lines.push(format!(
+            "{:>8.4}  {}  \"{}\"",
+            h.score,
+            plain(&h.path),
+            plain(&h.title)
+        ));
     }
     Ok(lines)
 }
@@ -260,7 +271,15 @@ fn graph(dir: &Path, arg: &str) -> Result<()> {
     let i = s.resolve(arg)?;
     let (v, g): (&Vault, &Graph) = (&s.vault, &s.graph);
     let n = &v.notes[i];
-    let label = |j: usize| format!("{} \"{}\"", v.notes[j].path, v.notes[j].title);
+    // Paths, titles, link targets and issues come from the notes, which
+    // are untrusted (#461): every one goes through `plain` before printing.
+    let label = |j: usize| {
+        format!(
+            "{} \"{}\"",
+            plain(&v.notes[j].path),
+            plain(&v.notes[j].title)
+        )
+    };
     println!("note:     {}", label(i));
     match g.depth[i] {
         Some(d) => println!("depth:    {d}"),
@@ -270,14 +289,14 @@ fn graph(dir: &Path, arg: &str) -> Result<()> {
         "lineage:  {}",
         g.lineage(i)
             .iter()
-            .map(|&j| v.notes[j].path.as_str())
+            .map(|&j| plain(&v.notes[j].path))
             .collect::<Vec<_>>()
             .join(" > ")
     );
     if g.parents[i].is_none()
         && let Some(t) = n.parent_target()
     {
-        println!("parent:   [[{t}]] does not resolve");
+        println!("parent:   [[{}]] does not resolve", plain(&t));
     }
     let list = |name: &str, items: Vec<String>| {
         if items.is_empty() {
@@ -311,7 +330,7 @@ fn graph(dir: &Path, arg: &str) -> Result<()> {
         .issues
         .iter()
         .filter(|x| mentions(x, &n.path))
-        .map(ToString::to_string)
+        .map(|x| plain(&x.to_string()))
         .collect();
     if !mine.is_empty() {
         list("issues:", mine);
@@ -393,7 +412,7 @@ fn dates_cmd(dir: &Path, seed: bool) -> Result<()> {
         let root = v.root.clone();
         let (s, r, d, failures) = dates::refresh(&v, &mut doc, &|p| file_days(&root, p));
         for f in &failures {
-            println!("skipped: {f}");
+            println!("skipped: {}", plain(&f.to_string()));
         }
         let wrote = match file {
             Some(mut f) => {
@@ -418,10 +437,10 @@ fn dates_cmd(dir: &Path, seed: bool) -> Result<()> {
     };
     let (rows, stale) = dates::coverage(&v, &f.doc);
     for c in rows {
-        println!("{}", coverage_row(&c));
+        println!("{}", plain(&coverage_row(&c)));
     }
     for s in stale {
-        println!("{s}  entry for a note that does not exist");
+        println!("{}  entry for a note that does not exist", plain(&s));
     }
     Ok(())
 }
