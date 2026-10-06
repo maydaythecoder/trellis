@@ -218,10 +218,15 @@ on stderr.
   - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
+  - `get_session_stats` and `get_last_assistant_text` (*added 2026-10-06,
+    #319; see "get_session_stats and get_last_assistant_text" below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
   `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th,
   `get_queue`, the 15th, and `vault_search` and `vault_graph`, the 16th and
-  17th, are trellis's own, not pi's)
+  17th, are trellis's own, not pi's; 14 since `get_session_stats` and
+  `get_last_assistant_text`, pi's, which make `get_commands` list 19. Each
+  of pi 1.0.2's 33 is in the table under "get_session_stats and
+  get_last_assistant_text" below, built or not built, with its reason.)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -229,13 +234,22 @@ on stderr.
     `abort` already hands back everything queued.*
   - The thinking, retry and compaction commands are W-C. `compact` answers
     "not built" by name. *Amended 2026-09-29 (#110): `compact` is built;
-    see below. The thinking and retry commands are still not.*
+    see below. The thinking and retry commands are still not.* *Amended
+    2026-10-06 (#319): by name, `set_thinking_level`,
+    `cycle_thinking_level`, `get_available_thinking_levels`,
+    `set_auto_retry` and `abort_retry` are not built (W-C).
+    `set_auto_compaction` is not built either: compaction is elision keyed
+    to `[model] context_bytes` (ADR 0024 §5) and happens only when a request
+    would exceed it, so there is no on or off for a client to set.*
   - `bash` and `abort_bash` are excluded. A client that can start trellis can
     run a shell itself, and a shell reached through the harness would look
     like part of a run while bypassing its gates.
-  - The session-tree commands (`new_session`, `fork`, `clone`, `switch`,
-    `get_tree`, `export_html`, `set_session_name`) are deferred (ADR 0021
-    8.1–8.4). Each prompt here is a fresh run.
+  - The session-tree commands (`new_session`, `fork`, `clone`,
+    `switch_session`, `get_tree`, `export_html`, `set_session_name`) are
+    deferred (ADR 0021 8.1–8.4). Each prompt here is a fresh run. *Amended
+    2026-10-06 (#319): pi's name is `switch_session`, which this list wrote
+    as `switch`; `get_fork_messages`, which lists the messages a fork can
+    start from, is deferred with `fork` and the rest of this list.*
 - **Ids.** A command's optional `id` is echoed on its response. Approval
   requests are trellis's own records, so their ids live in their own
   namespace, `approval-N`. `approve`'s `id` names the approval being
@@ -496,6 +510,91 @@ on stderr.
     what `trellis vault search retry` or `trellis vault graph child` prints,
     scores to the four decimals printed. Each also checks the no-vault
     message, and `vault_graph` the missing-note message, against the CLI's.
+- *Added 2026-10-06 (#319). Accepted (owner-directed): the session's choice
+  under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`get_session_stats`** and **`get_last_assistant_text`** give a front end
+  two facts trellis already holds, so it never parses trails itself to learn
+  a session's token use or what the last run said it did. Both are
+  read-only: neither starts a run, changes a run input or writes anything.
+  - `get_session_stats` answers with what `/status` prints in `trellis
+    session` (§6, #318), for the runs this rpc process started: `data` is
+    `{models, runs_not_counted}`, `models` one entry per model in the order
+    each was first used, `{model, prompt_tokens, completion_tokens}`.
+    Prompt and completion are two numbers and are never added into one; a
+    figure is `null` when any run of that model did not report it (a
+    scripted run reports neither), never a total counting it as 0. No
+    total, cost or context-window figure is given.
+  - The totals come from `session_extra::tokens_by_model`, the one function
+    `/status` prints from; there is no second count. A run's trail id is
+    found by the one rule for it (`work::with_run_id`) in `output::framed`,
+    which records it before writing `run_end`, so a client that has read
+    `run_end` and asks finds the run counted. The trails are read when the
+    command is asked, as untrusted data (S10); one that does not read back
+    is counted in `runs_not_counted`, not left out unsaid. The model name is
+    trail text and goes out as a JSON string through `frame`, which escapes
+    C1 controls as well.
+  - `get_last_assistant_text` answers `{"text": ...}` with the `done`
+    summary of the most recent run this process started that ended on
+    `done`, what `/copy` copies in `trellis session`, or `{"text": null}`
+    before one. The run writes it through `RunExtras::done`, as the
+    session's run does, and only when its loop returned on `done`, so an
+    aborted run leaves the previous summary standing. The summary is model
+    output, sent as a JSON string exactly as the model gave it, as
+    `get_messages` sends a run's turns: data, never instructions (rule 10).
+  - Both are answered on the reader thread, as `get_state` is: they read a
+    few small files or nothing, so neither holds up a waiting run's
+    `approve` or `abort`.
+  - Evidence: `rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart`
+    and `rpc_get_last_assistant_text_is_the_last_done_summary_as_data` in
+    `tests/modes.rs`, through the binary over stdio. The first runs the
+    provider stub's model twice with a scripted run between, and checks
+    the answer before any run, the stub's per-run figures summed per model
+    as the trails record them, the scripted model's two `null`s, and that
+    no key names a total, sum, ratio or percent. The second checks `null`
+    before any run, a summary holding ESC, a C1 CSI and a newline returned
+    byte for byte, the same summary after an aborted run, and the later
+    run's summary after it. `rpc::tests::get_session_stats_names_a_trail_that_did_not_read_back`
+    holds `runs_not_counted`.
+  - **pi 1.0.2's 33 commands** (`packages/coding-agent/docs/rpc-commands.md`
+    at `200387122ca4`), each built or not built, with its reason.
+    `approve` and `quit` are trellis's own beside them, and so are the five
+    read-only commands of #292–#295.
+
+    | pi command | trellis | Reason |
+    |---|---|---|
+    | `prompt` | built | runs a task as `trellis run` does |
+    | `steer` | built | #114 |
+    | `follow_up` | built | #114 |
+    | `abort` | built | the Ctrl-C path: rollback, then a trail |
+    | `clear_queue` | not built | excluded by the owner; `abort` hands back everything queued |
+    | `new_session` | not built | deferred with the session-tree commands (ADR 0021 8.1–8.4); each prompt is a fresh run |
+    | `get_state` | built | |
+    | `get_messages` | built | the current or last run's turns |
+    | `set_model` | built | |
+    | `cycle_model` | not built | `set_model` over `get_available_models`' list does the same |
+    | `get_available_models` | built | |
+    | `set_thinking_level` | not built | W-C |
+    | `cycle_thinking_level` | not built | W-C |
+    | `get_available_thinking_levels` | not built | W-C |
+    | `set_steering_mode` | not built | every steer waiting at a model request is delivered in it |
+    | `set_follow_up_mode` | not built | a follow-up already starts after the run it was sent during |
+    | `compact` | built | #110 |
+    | `set_auto_compaction` | not built | compaction is elision keyed to `[model] context_bytes` (ADR 0024 §5) and happens only when a request would exceed it; there is no on or off to set |
+    | `set_auto_retry` | not built | W-C |
+    | `abort_retry` | not built | W-C |
+    | `bash` | not built | excluded: a shell through the harness would bypass its gates |
+    | `abort_bash` | not built | excluded with `bash` |
+    | `get_session_stats` | built | #319, above |
+    | `export_html` | not built | deferred (ADR 0021 8.1–8.4) |
+    | `switch_session` | not built | deferred (ADR 0021 8.1–8.4) |
+    | `fork` | not built | deferred (ADR 0021 8.1–8.4) |
+    | `clone` | not built | deferred (ADR 0021 8.1–8.4) |
+    | `get_fork_messages` | not built | deferred with `fork`; it lists the messages a fork can start from |
+    | `get_entries` | not built | trellis keeps no session entry log with stable ids to page through: each prompt is a fresh run, `get_messages` returns the current or last run's turns, and `trellis log --json` prints a run's whole trail |
+    | `get_tree` | not built | deferred (ADR 0021 8.1–8.4) |
+    | `get_last_assistant_text` | built | #319, above |
+    | `set_session_name` | not built | deferred (ADR 0021 8.1–8.4) |
+    | `get_commands` | built | lists this protocol's commands, the prompt templates and the skills |
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation

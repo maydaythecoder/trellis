@@ -15,6 +15,7 @@
 use crate::agent::{Model, Step, Transcript};
 use crate::registry::{ToolCallError, ToolSet};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// Why a script was refused at load. Each message is the string
 /// [`ScriptedModel::from_json_with`] returned before (review round 11).
@@ -27,11 +28,57 @@ pub enum ScriptError {
     Step { step: usize, source: ToolCallError },
     #[error("script has no steps")]
     NoSteps,
+    /// A step in a `targets` section, numbered from 1 within it.
+    #[error("targets.{target} step {step}: {source}")]
+    TargetStep {
+        target: String,
+        step: usize,
+        source: ToolCallError,
+    },
+    #[error("targets.{0} has no steps")]
+    TargetNoSteps(String),
+    /// A section for a symbol the run was not given: a typo there would
+    /// otherwise fall back to `steps` and do less than the script says.
+    #[error("targets.{0} names no --target of this run (its targets: {1})")]
+    UnknownTarget(String, String),
+    /// One agent plays one list of steps, and two of its targets each have
+    /// their own; running one and dropping the other would do less than the
+    /// script says.
+    #[error(
+        "targets `{0}` and `{1}` are one partition, so one agent works on both, and the \
+         script gives each its own steps; give them one section between them, or use \
+         `steps` (`trellis partitions` shows which targets share a partition)"
+    )]
+    SharedPartition(String, String),
 }
 
 #[derive(Debug, Deserialize)]
 struct Script {
+    /// What every agent plays, unless `targets` gives it its own.
+    #[serde(default)]
     steps: Vec<serde_json::Value>,
+    /// Steps for the agent working on one `--target` of a multi-agent run,
+    /// keyed by the symbol as it was typed (#466).
+    #[serde(default)]
+    targets: BTreeMap<String, Section>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Section {
+    steps: Vec<serde_json::Value>,
+}
+
+/// Parses each step through the run's own parser; `err` numbers a failure.
+fn parse_steps(
+    values: Vec<serde_json::Value>,
+    tools: &ToolSet,
+    err: impl Fn(usize, ToolCallError) -> ScriptError,
+) -> Result<Vec<Step>, ScriptError> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| tools.parse_value(v).map_err(|source| err(i + 1, source)))
+        .collect()
 }
 
 #[derive(Debug)]
@@ -57,19 +104,63 @@ impl ScriptedModel {
     /// tool the run does not have is an error at load, for the reason an
     /// unknown tool is: a script that does less than it says makes the loop
     /// look better behaved than it is.
+    ///
+    /// Plays `steps`. A `targets` section is for one agent of a multi-agent
+    /// run, and only [`from_json_for`](Self::from_json_for) reads it.
     pub fn from_json_with(text: &str, tools: &ToolSet) -> Result<Self, ScriptError> {
         let script: Script = serde_json::from_str(text).map_err(ScriptError::NotJson)?;
-        let steps = script
-            .steps
-            .into_iter()
-            .enumerate()
-            .map(|(i, v)| {
-                tools.parse_value(v).map_err(|source| ScriptError::Step {
-                    step: i + 1,
-                    source,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        Self::fallback(script.steps, tools)
+    }
+
+    /// The script for one agent of a multi-agent run (#466): the `targets`
+    /// section of the one target in `mine` that has one, else `steps`.
+    ///
+    /// `all` is every target of the run, as typed: a section naming none of
+    /// them is refused, as is a partition two of whose targets each have a
+    /// section. Both are refused at load, before the run's snapshot.
+    pub fn from_json_for(
+        text: &str,
+        tools: &ToolSet,
+        all: &[String],
+        mine: &[String],
+    ) -> Result<Self, ScriptError> {
+        let mut script: Script = serde_json::from_str(text).map_err(ScriptError::NotJson)?;
+        if let Some(stray) = script.targets.keys().find(|k| !all.contains(k)) {
+            return Err(ScriptError::UnknownTarget(stray.clone(), all.join(", ")));
+        }
+        let with: Vec<&String> = mine
+            .iter()
+            .filter(|t| script.targets.contains_key(*t))
+            .collect();
+        match with.as_slice() {
+            [] => Self::fallback(script.steps, tools),
+            [target] => {
+                let section = script
+                    .targets
+                    .remove(*target)
+                    .expect("filtered on contains_key above");
+                let steps = parse_steps(section.steps, tools, |step, source| {
+                    ScriptError::TargetStep {
+                        target: (*target).clone(),
+                        step,
+                        source,
+                    }
+                })?;
+                if steps.is_empty() {
+                    return Err(ScriptError::TargetNoSteps((*target).clone()));
+                }
+                Ok(Self { steps, at: 0 })
+            }
+            [a, b, ..] => Err(ScriptError::SharedPartition((*a).clone(), (*b).clone())),
+        }
+    }
+
+    /// `steps`, which every agent without a section of its own plays.
+    fn fallback(values: Vec<serde_json::Value>, tools: &ToolSet) -> Result<Self, ScriptError> {
+        let steps = parse_steps(values, tools, |step, source| ScriptError::Step {
+            step,
+            source,
+        })?;
         if steps.is_empty() {
             return Err(ScriptError::NoSteps);
         }
@@ -177,6 +268,97 @@ mod tests {
     #[test]
     fn an_empty_script_is_refused() {
         assert!(ScriptedModel::from_json(r#"{"steps":[]}"#).is_err());
+    }
+
+    /// Every target of the run, and the ones one agent holds.
+    fn names(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
+    const TARGETED: &str = r#"{
+        "steps": [{"tool":"read_file","path":"x.py"}],
+        "targets": {
+            "fa": {"steps": [{"tool":"read_file","path":"a.py"},{"tool":"done","summary":"a"}]},
+            "fb": {"steps": [{"tool":"read_file","path":"b.py"}]}
+        }
+    }"#;
+
+    #[test]
+    fn an_agent_plays_its_targets_section_and_falls_back_to_steps() {
+        // Option (a) on #466: each partition's agent plays the section of
+        // the target it holds, and one with no section plays `steps`.
+        let all = names(&["fa", "fb", "fc"]);
+        let tools = ToolSet::every_builtin();
+        let a = ScriptedModel::from_json_for(TARGETED, &tools, &all, &names(&["fa"])).unwrap();
+        assert_eq!(a.len(), 2);
+        let b = ScriptedModel::from_json_for(TARGETED, &tools, &all, &names(&["fb"])).unwrap();
+        assert_eq!(b.len(), 1);
+        let c = ScriptedModel::from_json_for(TARGETED, &tools, &all, &names(&["fc"])).unwrap();
+        assert_eq!(c.len(), 1, "fc has no section and plays steps");
+        // A single-agent run plays `steps`, as before #466.
+        assert_eq!(ScriptedModel::from_json(TARGETED).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_section_for_a_symbol_the_run_was_not_given_is_refused() {
+        // A typo in a key would otherwise fall back to `steps`, and the
+        // script would silently do less than it says.
+        let e = ScriptedModel::from_json_for(
+            TARGETED,
+            &ToolSet::every_builtin(),
+            &names(&["fa", "fc"]),
+            &names(&["fa"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("targets.fb") && e.contains("fa, fc"), "{e}");
+    }
+
+    #[test]
+    fn two_sections_for_one_agent_are_refused_rather_than_one_dropped() {
+        let e = ScriptedModel::from_json_for(
+            TARGETED,
+            &ToolSet::every_builtin(),
+            &names(&["fa", "fb"]),
+            &names(&["fa", "fb"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("`fa` and `fb`"), "{e}");
+    }
+
+    #[test]
+    fn a_bad_step_in_a_section_is_refused_naming_the_section() {
+        let text = r#"{"targets":{"fa":{"steps":[{"tool":"sudo"}]}}}"#;
+        let e = ScriptedModel::from_json_for(
+            text,
+            &ToolSet::every_builtin(),
+            &names(&["fa"]),
+            &names(&["fa"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("targets.fa step 1"), "{e}");
+        let text = r#"{"targets":{"fa":{"steps":[]}}}"#;
+        assert!(
+            ScriptedModel::from_json_for(
+                text,
+                &ToolSet::every_builtin(),
+                &names(&["fa"]),
+                &names(&["fa"])
+            )
+            .is_err()
+        );
+        // With no `steps` and no section, an agent has nothing to play.
+        assert!(
+            ScriptedModel::from_json_for(
+                text,
+                &ToolSet::every_builtin(),
+                &names(&["fa", "fb"]),
+                &names(&["fb"])
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
