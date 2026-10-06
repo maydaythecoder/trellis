@@ -45,9 +45,17 @@ file. That is a TRELLIS defect rather than a model one, and collapsing it into
 reference checker from `floor_tasks.json`, on the file the defect was injected
 into, by this script rather than by anything under measurement.
 
+**Model-call time comes from trellis's own events, never from this script's
+clock.** Each run writes `--log-json <out>/<task id>.jsonl`, and the report's
+`model_ms_*` figures are read from the `model_ms` field of its `turn` events.
+`seconds` is the whole process, checker runs included; `model_ms` is the time
+spent waiting on the model. A turn whose event carries no `model_ms` is left
+out of the figures rather than counted as 0.
+
 Usage:
   python docs/bench/run_floor.py <corpus> <tasks.json> <model-spec> <out.json>
                                  [--limit N] [--max-iterations N]
+  py -3 docs/bench/run_floor.py --self-test
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -194,16 +203,90 @@ def turn_sequence(out: str) -> list[str]:
     return seq
 
 
+def model_ms_figures(logs: list[str]) -> dict:
+    """Median, p90 (nearest rank) and count of `model_ms` over every `turn`
+    event in the given `--log-json` texts, pooled across runs.
+
+    The figure is the one trellis measured around the model call (ADR 0047
+    decision 8). A turn event without it is a turn the adapter could not time,
+    and is left out rather than counted as 0: a zero would pull the median
+    toward a speed nobody measured. A line that is not JSON is skipped, since a
+    run killed at the harness timeout can leave its last line half-written.
+    """
+    values = []
+    for text in logs:
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fields = event.get("fields") if isinstance(event, dict) else None
+            if not isinstance(fields, dict) or fields.get("message") != "turn":
+                continue
+            ms = fields.get("model_ms")
+            if isinstance(ms, int) and not isinstance(ms, bool):
+                values.append(ms)
+    values.sort()
+    if not values:
+        return {"model_ms_median": None, "model_ms_p90": None, "model_ms_turns": 0}
+    return {
+        # The same upper-middle convention as `wall_clock_s.median`.
+        "model_ms_median": values[len(values) // 2],
+        "model_ms_p90": values[math.ceil(0.9 * len(values)) - 1],
+        "model_ms_turns": len(values),
+    }
+
+
+# --- self-test ---------------------------------------------------------------
+
+# The shape `--log-json` writes: one tracing event per line, its fields under
+# `fields`. Five timed turns, one turn the adapter could not time, and one
+# event that is not a turn but carries a `model_ms` all the same.
+SELFTEST_LOG = "\n".join([
+    '{"timestamp":"t","level":"INFO","fields":{"message":"turn","turn":1,"model_ms":300},"target":"trellis_loop::agent"}',
+    '{"timestamp":"t","level":"INFO","fields":{"message":"turn","turn":2,"model_ms":100},"target":"trellis_loop::agent"}',
+    '{"timestamp":"t","level":"INFO","fields":{"message":"turn","turn":3},"target":"trellis_loop::agent"}',
+    '{"timestamp":"t","level":"INFO","fields":{"message":"turn","turn":4,"model_ms":500},"target":"trellis_loop::agent"}',
+    '{"timestamp":"t","level":"INFO","fields":{"message":"other","model_ms":9999},"target":"trellis_loop::agent"}',
+    '{"timestamp":"t","level":"INFO","fields":{"message":"turn","turn":5,"model_ms":200},"target":"trellis_loop::agent"}',
+    '{"timestamp":"t","level":"INFO","fields":{"message":"turn","turn":6,"model_ms":400},"target":"trellis_loop::agent"}',
+])
+
+
+def self_test() -> int:
+    cases = [
+        ("five timed turns", [SELFTEST_LOG],
+         {"model_ms_median": 300, "model_ms_p90": 500, "model_ms_turns": 5}),
+        # No turn event at all: absent figures, never zeros.
+        ("no turn event", ["", '{"fields":{"message":"other"}}\n{"truncat'],
+         {"model_ms_median": None, "model_ms_p90": None, "model_ms_turns": 0}),
+    ]
+    failed = 0
+    for label, logs, want in cases:
+        got = model_ms_figures(logs)
+        print(f"-- {label}: {got}")
+        if got != want:
+            print(f"FAIL ({label}): expected {want}")
+            failed = 1
+    print("OK: run_floor self-test" if not failed else "FAIL: run_floor self-test")
+    return failed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("corpus")
-    ap.add_argument("tasks")
-    ap.add_argument("model")
-    ap.add_argument("out")
+    ap.add_argument("corpus", nargs="?")
+    ap.add_argument("tasks", nargs="?")
+    ap.add_argument("model", nargs="?")
+    ap.add_argument("out", nargs="?")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max-iterations", type=int, default=8)
     ap.add_argument("--max-wall-clock-s", type=int, default=1800)
+    ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.self_test:
+        return self_test()
+    if not (a.corpus and a.tasks and a.model and a.out):
+        ap.error("corpus, tasks, model and out are required")
 
     corpus = Path(a.corpus).resolve()
     spec = json.loads(Path(a.tasks).read_text(encoding="utf-8"))
@@ -278,10 +361,15 @@ def main() -> int:
         git(corpus, "add", "-A")
         git(corpus, "commit", "-qm", f"defect {task['id']}")
 
+        # `--log-json` appends, so a file left by an earlier run into the same
+        # directory would have its turns counted twice.
+        events = out_dir / f"{task['id']}.jsonl"
+        events.unlink(missing_ok=True)
         started = time.time()
         try:
             p = subprocess.run(
-                [TRELLIS, "run", "--root", str(corpus), "--model", a.model,
+                [TRELLIS, "--log-json", str(events), "run", "--root", str(corpus),
+                 "--model", a.model,
                  f"a type check is failing in {task['file']}; fix it"],
                 capture_output=True, text=True, timeout=a.max_wall_clock_s + 900,
             )
@@ -335,6 +423,9 @@ def main() -> int:
 
     ran = [r for r in results if r["outcome"] != "skipped"]
     secs = sorted(r.get("seconds", 0) for r in ran)
+    logs = [(out_dir / f"{r['id']}.jsonl") for r in ran]
+    model_ms = model_ms_figures(
+        [p.read_text(encoding="utf-8") for p in logs if p.exists()])
     report = {
         "configuration": a.model,
         "corpus": corpus.name,
@@ -365,6 +456,7 @@ def main() -> int:
                 "of the probe server, not of TRELLIS."
             ),
         },
+        **model_ms,
         "floor_note": (
             "A floor is a configuration — model, quantization, runtime — not a "
             "parameter count. Outcomes are tallied separately because they "
@@ -377,7 +469,7 @@ def main() -> int:
     print()
     print(json.dumps({k: report[k] for k in
                       ("configuration", "tasks_attempted", "outcomes",
-                       "check_recovery", "wall_clock_s")}, indent=1))
+                       "check_recovery", "wall_clock_s", *model_ms)}, indent=1))
     print(f"\nreport {a.out}   logs and trails {out_dir}/")
     return 0
 
