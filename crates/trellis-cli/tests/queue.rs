@@ -541,22 +541,75 @@ fn no_model_message_is_why_work_says_a_queued_task_waits() {
 
     let o = trellis(&d, &["work", "--once"]);
     let s = combined(&o);
-    let line = s
-        .lines()
-        .find(|l| l.trim_start().starts_with(&format!("{id}: ")))
-        .unwrap_or_else(|| panic!("a waiting line for {id}:\n{s}"));
+    let block = waiting_block(&s, &id);
     // The shared message's parts: its opening, the picker, one complete
     // `--model` form, and the user's own config file.
     assert!(
-        line.contains("no model configured. Any one of these sets one:"),
+        block.contains("no model configured. Any one of these sets one:"),
         "{s}"
     );
-    assert!(line.contains("  trellis "), "names bare trellis:\n{s}");
+    assert!(block.contains("  trellis "), "names bare trellis:\n{s}");
     assert!(
-        line.contains("--model llamacpp:http://127.0.0.1:8080"),
+        block.contains("--model llamacpp:http://127.0.0.1:8080"),
         "{s}"
     );
-    assert!(line.contains(&config.display().to_string()), "{s}");
+    assert!(block.contains(&config.display().to_string()), "{s}");
     assert_eq!(ids(&d, "pending"), vec![id], "the task still waits");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The waiting line `trellis work` prints for `id`, and the indented lines
+/// under it up to the next line that is not part of it.
+fn waiting_block(s: &str, id: &str) -> String {
+    let mut lines = s.lines();
+    let first = lines
+        .by_ref()
+        .find(|l| l.trim_start().starts_with(&format!("{id}: ")))
+        .unwrap_or_else(|| panic!("a waiting line for {id}:\n{s}"));
+    let mut block = vec![first];
+    block.extend(lines.take_while(|l| l.starts_with("          ") && !l.trim().is_empty()));
+    block.join("\n")
+}
+
+#[test]
+fn no_model_message_prints_one_line_per_line_of_the_reason() {
+    // #444: the waiting reason went through `plain()`, which escapes
+    // control characters, so the multi-line no-model message printed as one
+    // line with a literal `\n` between its parts. The risk is a reason that
+    // reads differently, and worse, from `trellis work` than from `trellis run`.
+    let d = fixture("no-model-lines");
+    add(&d, &["rename greet"]);
+    let id = ids(&d, "pending").remove(0);
+
+    let o = trellis(&d, &["work", "--once"]);
+    let s = combined(&o);
+    let block = waiting_block(&s, &id);
+    // An escaped newline before the message's two-space indent; a bare
+    // `\n` could be part of a Windows path such as the config file's.
+    assert!(
+        !block.contains("\\n  "),
+        "a literal \\n in the reason:\n{s}"
+    );
+    let lines: Vec<&str> = block.lines().collect();
+    assert_eq!(
+        lines.len(),
+        4,
+        "one printed line per line of the reason:\n{s}"
+    );
+    assert!(
+        lines[0].ends_with(&format!(
+            "{id}: no model configured. Any one of these sets one:"
+        )),
+        "{s}"
+    );
+    assert!(lines[1].contains("  trellis      in a terminal"), "{s}");
+    assert!(
+        lines[2].contains("  trellis run --model llamacpp:http://127.0.0.1:8080"),
+        "{s}"
+    );
+    assert!(
+        lines[3].contains("  [model] spec in your user config file, "),
+        "{s}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
