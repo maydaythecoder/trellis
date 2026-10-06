@@ -1,7 +1,7 @@
 //! What ADR 0025 §6 adds to `trellis session`: `!cmd`, `/prompts`,
 //! `/models`, and the model listing `rpc` shares; `/name` and `/copy`
-//! (ADR 0027, #109); and the one reader of stdin while a run is in flight
-//! (#116).
+//! (ADR 0027, #109); the one reader of stdin while a run is in flight
+//! (#116); and `/status`'s tokens per model (#318).
 //!
 //! `/skill` and `/<template>` are dispatched in `session.rs`, because they
 //! start a run and the session owns how a run is started.
@@ -172,6 +172,65 @@ pub(crate) fn check_label(label: &str) -> Result<String, String> {
         );
     }
     Ok(label.to_string())
+}
+
+/// What one model's runs in a session used, as `/status` prints it (#318).
+///
+/// Two figures, never one: prompt tokens are context and completion tokens
+/// are generated output, and a sum would bill one as the other. `None` is
+/// unknown, because a run of this model did not report the figure (a
+/// scripted run never does); a total that counted that run as 0 would
+/// understate what was used and read as exact.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ModelTokens {
+    /// `provenance.model` as the trail recorded it. Untrusted text read
+    /// from a file: print it through `plain`.
+    pub(crate) model: String,
+    pub(crate) prompt: Option<u64>,
+    pub(crate) completion: Option<u64>,
+}
+
+/// What a trail with no `provenance.model` is listed under. The session
+/// never starts a run without a model, so this is a trail edited since.
+pub(crate) const NO_MODEL_RECORDED: &str = "(no model recorded)";
+
+/// The tokens the session's runs used, per model, in the order each model
+/// was first used. Read only from what each run's trail records
+/// (`Factual::prompt_tokens` and `Factual::tokens`), never estimated.
+///
+/// A figure is a total only when every run of that model reported it; one
+/// run without it makes it unknown. An overflow is unknown too, rather than
+/// a number that wrapped or stopped.
+pub(crate) fn tokens_by_model(trails: &[trellis_trail::UntrustedTrail]) -> Vec<ModelTokens> {
+    let mut totals: Vec<ModelTokens> = Vec::new();
+    for t in trails {
+        let model = t
+            .provenance
+            .as_ref()
+            .and_then(|p| p.model.as_deref())
+            .unwrap_or(NO_MODEL_RECORDED);
+        let at = match totals.iter().position(|m| m.model == model) {
+            Some(i) => i,
+            None => {
+                totals.push(ModelTokens {
+                    model: model.to_string(),
+                    prompt: Some(0),
+                    completion: Some(0),
+                });
+                totals.len() - 1
+            }
+        };
+        let m = &mut totals[at];
+        m.prompt = m
+            .prompt
+            .zip(t.factual.prompt_tokens)
+            .and_then(|(a, b)| a.checked_add(b));
+        m.completion = m
+            .completion
+            .zip(t.factual.tokens)
+            .and_then(|(a, b)| a.checked_add(b));
+    }
+    totals
 }
 
 /// One clipboard program and its arguments. The text goes on its stdin.
