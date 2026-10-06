@@ -215,6 +215,10 @@ impl Server {
 /// start-up; 20 s is the bound trellis-cli's `liveness.rs` gives its probes.
 const INITIALIZE_BOUND: Duration = Duration::from_secs(20);
 
+/// How long a server whose output has closed is given to be reported as
+/// exited, before the message says only that its output closed.
+const EXIT_GRACE: Duration = Duration::from_secs(1);
+
 /// The sites the backstop may be asked about: every call site whose edge the
 /// resolver left `Unresolved` or `Candidates`, in site order.
 pub fn doubt_sites(index: &Index) -> Vec<CallSiteId> {
@@ -932,7 +936,7 @@ impl Lsp {
                     ));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(format!("the server exited before answering {method}"));
+                    return Err(self.closed_before(method));
                 }
             };
             if let (Some(their), Some(asked)) = (msg.get("id"), msg.get("method")) {
@@ -957,6 +961,24 @@ impl Lsp {
                 return Err(format!("{method} failed: {err}"));
             }
             return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+
+    /// What to say when the server's stdout ended before `method` was
+    /// answered. End of stream means the output closed, not that the process
+    /// is gone (#448): it says it exited only when the OS reports a status.
+    /// A process that exits closes its output a moment before it can be
+    /// reaped, so the status is polled for briefly rather than read once.
+    fn closed_before(&mut self, method: &str) -> String {
+        let until = Instant::now() + EXIT_GRACE;
+        loop {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return format!("the server exited ({status}) before answering {method}");
+            }
+            if Instant::now() >= until {
+                return format!("the server closed its output before answering {method}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -1049,8 +1071,10 @@ mod tests {
     /// server-to-client request before its own reply arrives. With `die` as
     /// its second argument it exits on the first definition request; with
     /// `noinfo` it leaves `serverInfo` out of `initialize`, as Pyright does.
+    /// On `initialize`, `closeout` closes its stdout and keeps running for
+    /// five seconds, and `exit3` exits with status 3, both without answering.
     const FAKE_SERVER: &str = r#"
-import json, sys
+import json, os, sys, time
 inp, out = sys.stdin.buffer, sys.stdout.buffer
 answers = json.load(open(sys.argv[1]))
 mode = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -1077,6 +1101,12 @@ while True:
         break
     meth = m.get("method")
     if meth == "initialize":
+        if mode == "closeout":
+            os.close(1)
+            time.sleep(5)
+            sys.exit(0)
+        if mode == "exit3":
+            sys.exit(3)
         send(dict(jsonrpc="2.0", id="cfg", method="workspace/configuration", params=dict(items=[dict(section="python")])))
         reply = read()
         assert reply.get("id") == "cfg", reply
@@ -1194,7 +1224,7 @@ def use(obj, cb):
             let table = self.root.join("answers.json");
             std::fs::write(&script, FAKE_SERVER).unwrap();
             std::fs::write(&table, answers.to_string()).unwrap();
-            let (program, mut args): (&str, Vec<OsString>) = python();
+            let (program, mut args) = python();
             args.push(script.into());
             args.push(table.into());
             args.push(mode.into());
@@ -1207,16 +1237,24 @@ def use(obj, cb):
         }
     }
 
-    fn python() -> (&'static str, Vec<OsString>) {
+    /// The interpreter itself, not the launcher that found it: `py` on
+    /// Windows keeps the server's stdout open while Python runs, so a server
+    /// that closes its own stdout would not be seen to (#448).
+    fn python() -> (String, Vec<OsString>) {
         let candidates: [(&str, &[&str]); 2] = [("py", &["-3"]), ("python3", &[])];
         for (program, pre) in candidates {
-            let ok = Command::new(program)
+            let exe = Command::new(program)
                 .args(pre)
-                .arg("--version")
+                .args(["-c", "import sys; print(sys.executable)"])
+                .stdin(Stdio::null())
                 .output()
-                .is_ok_and(|o| o.status.success());
-            if ok {
-                return (program, pre.iter().map(OsString::from).collect());
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(exe) = exe {
+                return (exe, Vec::new());
             }
         }
         panic!(
@@ -1351,6 +1389,51 @@ def use(obj, cb):
         assert!(report.edges.is_empty());
         assert_eq!(report.queried, 0);
         assert_eq!(report.not_queried, u32::try_from(doubt.len()).unwrap());
+    }
+
+    #[test]
+    fn backstop_reports_a_closed_output_without_claiming_the_server_exited() {
+        // #448: end of stream on stdout says the output closed, not that the
+        // process is gone. This server closes its stdout and keeps running;
+        // a message naming an exit would send the reader after a crash that
+        // did not happen.
+        let f = fixture("closeout");
+        let report = run(
+            &f.index,
+            &f.root,
+            &doubt_sites(&f.index),
+            &f.server(json!({}), "closeout"),
+        );
+        let BackstopStatus::NotRun { reason } = &report.status else {
+            panic!("expected a backstop that did not run: {:?}", report.status);
+        };
+        assert_eq!(
+            reason,
+            "the server closed its output before answering initialize"
+        );
+    }
+
+    #[test]
+    fn backstop_reports_the_exit_status_of_a_server_that_exits() {
+        // #448: when the process has exited, the message says so and names
+        // the status the OS gave, so a crash reads as a crash.
+        let f = fixture("exit3");
+        let report = run(
+            &f.index,
+            &f.root,
+            &doubt_sites(&f.index),
+            &f.server(json!({}), "exit3"),
+        );
+        let BackstopStatus::NotRun { reason } = &report.status else {
+            panic!("expected a backstop that did not run: {:?}", report.status);
+        };
+        // `ExitStatus` prints "exit code: 3" on Windows, "exit status: 3"
+        // on Unix.
+        assert!(
+            reason.starts_with("the server exited (exit ")
+                && reason.ends_with(": 3) before answering initialize"),
+            "{reason}"
+        );
     }
 
     #[test]
