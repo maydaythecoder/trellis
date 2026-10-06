@@ -146,7 +146,10 @@ impl Driver {
                 base,
                 model,
             } => {
-                let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?;
+                // `[model] timeout_s` bounds each request (ADR 0047 decision
+                // 9); the wall-clock budget still bounds the run (ADR 0008).
+                let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
+                    .with_timeout(cfg.model_timeout());
                 // Named rather than `new(client, !unconstrained)`: the flag is
                 // called --unconstrained, so a negated bool at the call site
                 // meant reading two negations to learn which tier runs.

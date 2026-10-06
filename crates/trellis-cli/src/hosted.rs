@@ -343,7 +343,9 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
     trellis_core::secrets::register_key_vars([&r.key_env]);
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
-        .with_thinking(cfg.thinking()?);
+        .with_thinking(cfg.thinking()?)
+        // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
+        .with_timeout(cfg.model_timeout());
     let budget = hosted_context_bytes(r, cfg)?;
     Ok(HostedModel::new(client).with_context_bytes(Some(budget)))
 }
