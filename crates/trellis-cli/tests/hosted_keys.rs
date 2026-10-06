@@ -88,13 +88,34 @@ fn repo(name: &str, protocol: &str, base: &str) -> PathBuf {
     d
 }
 
+/// Whether `raw` is a `GET` of a path ending in `/models`: the
+/// identification read a run makes of a loopback base (ADR 0047 decision
+/// 3). A stub that spent a canned reply on it would pass for a runtime and
+/// shift every later reply.
+fn is_models_get(raw: &str) -> bool {
+    let mut line = raw.lines().next().unwrap_or_default().split_whitespace();
+    line.next() == Some("GET") && line.next().is_some_and(|p| p.ends_with("/models"))
+}
+
+/// The answer a server that is not colibri gives that read.
+fn models_404() -> String {
+    let body = r#"{"error":{"message":"not found","type":"not_found_error"}}"#;
+    format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 /// Serves `replies` in order on a loopback port, returning each raw request.
+/// A `GET` of `/models` is answered 404 and neither takes a reply nor is
+/// returned.
 fn stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     let h = std::thread::spawn(move || {
         let mut got = Vec::new();
-        for r in replies {
+        let mut replies = replies.into_iter().peekable();
+        while let Some(r) = replies.peek() {
             let Ok((mut s, _)) = l.accept() else { break };
             s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
                 .ok();
@@ -118,12 +139,18 @@ fn stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) 
                     break;
                 }
             }
-            got.push(String::from_utf8_lossy(&raw).into_owned());
+            let request = String::from_utf8_lossy(&raw).into_owned();
+            if is_models_get(&request) {
+                s.write_all(models_404().as_bytes()).ok();
+                continue;
+            }
+            got.push(request);
             let out = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
                 r.len()
             );
             s.write_all(out.as_bytes()).ok();
+            replies.next();
         }
         got
     });
@@ -985,4 +1012,37 @@ fn image_refused_by_scripted_and_local_models_before_the_snapshot() {
     }
     assert!(!d.join(".trellis/runs").exists());
     let _ = std::fs::remove_file(&img);
+}
+
+#[test]
+fn stub_answers_get_models_with_404() {
+    // The risk: a run's identification read of a loopback base (ADR 0047
+    // decision 3) took the stub's first canned reply, so the stub passed for
+    // a runtime and every later reply went to the wrong request. It must be
+    // answered as a server that is not colibri answers it, and not counted.
+    fn send(base: &str, request: &str) -> String {
+        let mut s = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .ok();
+        s.write_all(request.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).ok();
+        out
+    }
+    let (base, server) = stub(vec!["first".to_string()]);
+    let got = send(&base, "GET /v1/models HTTP/1.1\r\nHost: stub\r\n\r\n");
+    assert!(got.starts_with("HTTP/1.1 404 "), "{got}");
+    let body = got.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(body).is_ok_and(|v| v["error"].is_object()),
+        "{got}"
+    );
+    let post = "POST /v1/chat/completions HTTP/1.1\r\nHost: stub\r\nContent-Length: 2\r\n\r\n{}";
+    let got = send(&base, post);
+    assert!(
+        got.starts_with("HTTP/1.1 200 ") && got.ends_with("\r\n\r\nfirst"),
+        "{got}"
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests, vec![post.to_string()]);
 }

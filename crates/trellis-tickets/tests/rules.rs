@@ -462,3 +462,31 @@ fn the_desktop_workspace_is_an_interface_area() {
     );
     assert_eq!(value(&area(&t)).label(), "area:tui");
 }
+
+#[test]
+fn area_of_root_claude_md_is_docs() {
+    // #282: tickets name the root CLAUDE.md, and an unmapped path routes
+    // each to a person. The row matches the root file only: desktop's own
+    // CLAUDE.md is under `desktop` and must stay an interface ticket.
+    for (file, want) in [
+        ("CLAUDE.md", "area:docs"),
+        ("desktop/CLAUDE.md", "area:tui"),
+    ] {
+        let t = ticket("Add a thing", &body(&format!("**Files:** {file}")), &[]);
+        assert_eq!(value(&area(&t)).label(), want, "{file}");
+    }
+}
+
+#[test]
+fn area_of_the_tickets_crate_is_build_and_tui_demo_is_tui() {
+    // #282: #194's mapping left both crates out, so every ticket touching
+    // them went to a person. The tickets crate is repository tooling, as
+    // scripts/ is; tui-demo is an interface, as the desktop is.
+    for (file, want) in [
+        ("crates/trellis-tickets/src/rules.rs", "area:build"),
+        ("crates/tui-demo/src/tui/app.rs", "area:tui"),
+    ] {
+        let t = ticket("Add a thing", &body(&format!("**Files:** {file}")), &[]);
+        assert_eq!(value(&area(&t)).label(), want, "{file}");
+    }
+}

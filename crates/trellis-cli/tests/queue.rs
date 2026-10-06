@@ -524,3 +524,39 @@ fn queue_note_in_run_absent_writes_a_person_note_as_before() {
     assert_eq!(porcelain(&d), "");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn no_model_message_is_why_work_says_a_queued_task_waits() {
+    // #440, ADR 0050 section 2: `trellis run` and bare `trellis` share one
+    // missing-model message, and `trellis work` gave a task's wait its own
+    // older wording, which named neither the picker nor the user config
+    // file. The risk is that drift: the queue telling the user something
+    // different from every other command.
+    let d = fixture("no-model-message");
+    add(&d, &["rename greet"]);
+    let id = ids(&d, "pending").remove(0);
+    let config = std::env::temp_dir()
+        .join("trellis-tests-no-user-config")
+        .join("config.toml");
+
+    let o = trellis(&d, &["work", "--once"]);
+    let s = combined(&o);
+    let line = s
+        .lines()
+        .find(|l| l.trim_start().starts_with(&format!("{id}: ")))
+        .unwrap_or_else(|| panic!("a waiting line for {id}:\n{s}"));
+    // The shared message's parts: its opening, the picker, one complete
+    // `--model` form, and the user's own config file.
+    assert!(
+        line.contains("no model configured. Any one of these sets one:"),
+        "{s}"
+    );
+    assert!(line.contains("  trellis "), "names bare trellis:\n{s}");
+    assert!(
+        line.contains("--model llamacpp:http://127.0.0.1:8080"),
+        "{s}"
+    );
+    assert!(line.contains(&config.display().to_string()), "{s}");
+    assert_eq!(ids(&d, "pending"), vec![id], "the task still waits");
+    let _ = std::fs::remove_dir_all(&d);
+}

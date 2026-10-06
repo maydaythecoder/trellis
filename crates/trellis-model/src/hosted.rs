@@ -354,6 +354,10 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
             // summed to match it.
             let prompt_tokens = v["usage"]["prompt_tokens"].as_u64();
             let calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+            // A reply cut at the room the prompt leaves loses its call, or
+            // ends inside it; naming the limit points the fix at the context
+            // window, not at formatting, as `max_tokens` does below (#254).
+            let length_limited = v.pointer("/choices/0/finish_reason") == Some(&json!("length"));
             let call = match calls.as_slice() {
                 [one] => {
                     let name = one
@@ -371,13 +375,25 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                             name,
                             args,
                         }),
+                        Err(e) if length_limited => Err(format!(
+                            "the reply stopped at its length limit inside a tool call to \
+                             `{name}`; its arguments are not JSON ({e}): {}",
+                            cut(raw)
+                        )),
                         Err(e) => Err(format!(
                             "the arguments of `{name}` are not JSON ({e}): {}",
                             cut(raw)
                         )),
                     }
                 }
-                [] => Err(no_call(msg["content"].as_str().unwrap_or(""))),
+                [] => {
+                    let why = no_call(msg["content"].as_str().unwrap_or(""));
+                    Err(if length_limited {
+                        format!("the reply stopped at its length limit before a tool call. {why}")
+                    } else {
+                        why
+                    })
+                }
                 many => Err(format!(
                     "{} tool calls in one reply; the loop takes exactly one per turn",
                     many.len()
@@ -1162,6 +1178,82 @@ mod tests {
                 .call
                 .unwrap_err();
             assert!(e.contains(says) && e.contains("Sure!"), "{stop}: {e}");
+        }
+    }
+
+    /// An openai-chat reply with one call whose arguments are `raw`, or with
+    /// no call when `raw` is `None`, and `finish` as its finish_reason.
+    fn openai_reply(raw: Option<&str>, finish: Option<&str>) -> Value {
+        let mut msg = json!({"content":"Sure!"});
+        if let Some(raw) = raw {
+            msg["tool_calls"] = json!([
+                {"id":"x","type":"function","function":{"name":"read_file","arguments":raw}}]);
+        }
+        let mut choice = json!({ "message": msg });
+        if let Some(f) = finish {
+            choice["finish_reason"] = json!(f);
+        }
+        json!({ "choices": [choice] })
+    }
+
+    #[test]
+    fn a_no_call_reply_cut_at_its_length_limit_says_so() {
+        // colibri cuts a reply at the room the prompt leaves; a call cut off
+        // arrives as no call, and the fix is the context window, not format.
+        let e = parse_reply(Protocol::OpenAiChat, &openai_reply(None, Some("length")))
+            .unwrap()
+            .call
+            .unwrap_err();
+        assert!(
+            e.starts_with("the reply stopped at its length limit before a tool call")
+                && e.contains("Sure!"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_call_cut_at_its_length_limit_says_so_and_names_the_tool() {
+        // A server that returns the partial call: the arguments are not JSON
+        // because they were cut, not because the model formatted them badly.
+        let v = openai_reply(Some("{\"path\":\"a.p"), Some("length"));
+        let e = parse_reply(Protocol::OpenAiChat, &v)
+            .unwrap()
+            .call
+            .unwrap_err();
+        assert!(
+            e.starts_with("the reply stopped at its length limit inside a tool call")
+                && e.contains("`read_file`"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_whole_call_at_its_length_limit_is_still_accepted() {
+        // The limit can land just after a complete call; that call stands.
+        let v = openai_reply(Some("{\"path\":\"a.py\"}"), Some("length"));
+        let call = parse_reply(Protocol::OpenAiChat, &v).unwrap().call.unwrap();
+        assert_eq!(call.name, "read_file");
+        assert_eq!(call.args, json!({"path":"a.py"}));
+    }
+
+    #[test]
+    fn only_finish_reason_length_is_called_a_length_limit() {
+        // Any other reason, or none, keeps the format-failure message.
+        for finish in [None, Some("stop"), Some("tool_calls")] {
+            let e = parse_reply(Protocol::OpenAiChat, &openai_reply(None, finish))
+                .unwrap()
+                .call
+                .unwrap_err();
+            assert!(e.starts_with("the reply called no tool"), "{finish:?}: {e}");
+            let v = openai_reply(Some("{\"path\":"), finish);
+            let e = parse_reply(Protocol::OpenAiChat, &v)
+                .unwrap()
+                .call
+                .unwrap_err();
+            assert!(
+                e.starts_with("the arguments of `read_file` are not JSON"),
+                "{finish:?}: {e}"
+            );
         }
     }
 
