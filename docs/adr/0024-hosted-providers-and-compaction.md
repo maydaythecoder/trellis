@@ -500,6 +500,11 @@ repository may no longer name `key_env`.
   retrying one would multiply a stall), and neither is a refused connection.
   The retry waits are real sleeps and are not charged separately to the
   budget; the wall-clock ceiling covers them.
+  *Amended 2026-10-06 (#266), by ADR 0047 decision 9:* the 300 s is now
+  the default of `[model] timeout_s`, which a run's and `ask`'s requests on
+  every hosted and runtime client take as their timeout (the 300 s figures
+  below read as that setting). The run's wall-clock budget still bounds the
+  whole run (ADR 0008), and the probes keep their own short bounds.
 
   *Amended by #210.* A connect the operating system timed out (`TimedOut`;
   on Windows `os error 10060`) is retried like a failure mid-request: at
