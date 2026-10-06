@@ -1964,7 +1964,8 @@ pub(crate) struct Fanout {
     /// Each partition's targets, as typed, in command-line order.
     names: HashMap<PartitionId, Vec<String>>,
     /// `max(1, min(N, plan.parallel.len()))`: the plan decides concurrency,
-    /// never the flag (ADR 0045 §4).
+    /// never the flag (ADR 0045 §4). N is already 1 on a backend not
+    /// measured to batch (#483).
     width: NonZeroUsize,
     /// Why N is what it is, for the `agents:` line.
     why: String,
