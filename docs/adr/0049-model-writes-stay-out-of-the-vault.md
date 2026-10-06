@@ -1,8 +1,8 @@
 # ADR 0049 — Model writes stay out of the configured vault
 
-**Status:** Accepted (owner-directed). Not built: the enforcement is landing
-(the governance refusal #357, the run and process-agent wiring #361 and the
-carry-back test #358; #363 then records it as built).
+**Status:** Accepted (owner-directed). Built (the governance refusal #357,
+the run and process-agent wiring #361 and the carry-back test #358; #363
+records it in ADR 0022 §3 and the CLAUDE.md invariant list).
 **Date:** 2026-10-06
 **Decided by:** the session, under the owner's 2026-10-04 delegation of the
 upstream plan's open questions, option A of APEX-08's question (#356).
