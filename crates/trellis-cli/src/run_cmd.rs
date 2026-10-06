@@ -2098,7 +2098,7 @@ fn head_of(root: &Path) -> Result<String> {
         .context("running git rev-parse HEAD")?;
     anyhow::ensure!(
         out.status.success(),
-        "git rev-parse HEAD failed: {}",
+        "rev-parse HEAD failed: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
