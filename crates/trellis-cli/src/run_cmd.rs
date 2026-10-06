@@ -499,6 +499,54 @@ pub(crate) fn cmd_run_with(
     })
 }
 
+/// `[context] vault` as written and its notes root
+/// (`trellis_vault::notes_root`) relative to the repository: where a run and
+/// a process agent's judge refuse model writes (ADR 0049 §1).
+///
+/// Resolved as the vault itself is (`resolve_repo_input`), so a vault that
+/// is a committed link is refused where its notes really are; a write
+/// spelt through the link is still refused, since the refusal also judges
+/// the path a write lands on. A notes root not yet on disk is the path as
+/// written. A notes root that is the repository root is an error (§5): the
+/// refusal would cover every write the task needs.
+pub(crate) fn vault_notes_root(root: &Path, v: &config::VaultSetting) -> Result<(String, String)> {
+    let notes = trellis_vault::notes_root(&v.dir);
+    let (at, base) = match trellis_core::paths::resolve_repo_input(root, &notes)
+        .map_err(|why| anyhow::anyhow!("[context] vault = \"{}\": {why}", v.source))?
+    {
+        Some(real) => (
+            real,
+            std::fs::canonicalize(root)
+                .with_context(|| format!("could not resolve {}", root.display()))?,
+        ),
+        None => (notes, root.to_path_buf()),
+    };
+    let rel = at.strip_prefix(&base).map_err(|_| {
+        anyhow::anyhow!(
+            "[context] vault = \"{}\": its notes root {} is not inside the repository",
+            v.source,
+            at.display()
+        )
+    })?;
+    let rel: Vec<String> = rel
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if rel.is_empty() {
+        anyhow::bail!(
+            "[context] vault = \"{}\": its notes root is the repository root, so refusing \
+             model writes into it (ADR 0049) would refuse every write the task needs. Point \
+             [context] vault at a directory inside the repository, or give the vault a \
+             notes/ directory. The run did not start and nothing was snapshotted",
+            v.source
+        );
+    }
+    Ok((v.source.clone(), rel.join("/")))
+}
+
 /// The body of a run; see `cmd_run`.
 fn run_body(
     root: &Path,
@@ -591,6 +639,13 @@ fn run_body(
     // invalid vault or an over-cap note is a run that cannot start as
     // configured, which should cost nothing (ADR 0017).
     let vault_setting = cfg.vault(root, focus)?;
+    // Model writes stay out of the vault's notes root (ADR 0049). Worked out
+    // here, before the snapshot, so a notes root that is the whole
+    // repository stops a run that could change nothing (§5).
+    let vault_refusal = vault_setting
+        .as_ref()
+        .map(|v| vault_notes_root(root, v))
+        .transpose()?;
     // The note tools read the configured vault (ADR 0024 §6). Attached
     // before the driver is built, so a script is parsed against the same set,
     // and before the snapshot, so a note tool enabled with no vault costs
@@ -870,6 +925,11 @@ fn run_body(
         .collect();
     deny.extend(trellis_checks::governance::deny_write_paths(&rules));
     let mut governance = trellis_loop::Governance::new(&deny);
+    // Beside `deny_write`, so the gate, the carry-back and the writer guards
+    // cloned below all refuse it (ADR 0049 §2).
+    if let Some((source, notes_root)) = &vault_refusal {
+        governance = governance.with_vault(source, notes_root);
+    }
     // A profile's `allow_write` narrows the run's writes (ADR 0026 §4). It
     // is kept out of `deny_write`, so the writer guards cloned below still
     // protect exactly what the repository's rules name, and a cache a check
@@ -926,6 +986,7 @@ fn run_body(
     }
     let disclosed = skills.disclosed();
     if !governance.is_empty()
+        || vault_refusal.is_some()
         || notes.is_some()
         || vault.is_some()
         || !skills.valid.is_empty()
@@ -935,8 +996,16 @@ fn run_body(
     {
         let _ = writeln!(
             out,
-            "repo:     {} write rule(s){}{}{}{}{}",
+            "repo:     {} write rule(s){}{}{}{}{}{}",
             governance.rules().len(),
+            // `rules()` is `deny_write` only; the vault's refusal is said
+            // apart, naming the setting that put it there.
+            match &vault_refusal {
+                Some((source, notes_root)) => format!(
+                    ", vault notes root `{notes_root}` refused to writes ([context] vault = \"{source}\")"
+                ),
+                None => String::new(),
+            },
             if notes.is_some() {
                 ", .trellis/context.md loaded"
             } else {
