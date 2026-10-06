@@ -1102,6 +1102,32 @@ fn listen_for_ctrl_c(flag: Arc<AtomicBool>) {
     });
 }
 
+/// The repository a routine's activity gate asks (ADR 0026 §7, amended for
+/// #348). Every failure is `None`, which the gate reads as "fire": an
+/// unreadable HEAD or an uncomparable `last_head` must not silence a
+/// routine.
+struct RoutineRepo<'a>(&'a Path);
+
+impl routine::Repo for RoutineRepo<'_> {
+    fn head(&self) -> Option<String> {
+        // `-q --verify`: an unborn branch is a failure with nothing printed,
+        // not an error message read back as a commit id.
+        let out = trellis_vcs::command()
+            .args(["rev-parse", "-q", "--verify", "HEAD^{commit}"])
+            .current_dir(self.0)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn changed(&self, since: &str, head: &str) -> Option<Vec<String>> {
+        trellis_vcs::tree_diff(self.0, since, head).ok()
+    }
+}
+
 struct CliRunner<'a> {
     root: &'a Path,
     model: Option<String>,
@@ -1246,7 +1272,7 @@ impl Runner for CliRunner<'_> {
         let now = trellis_queue::now_secs();
         let routines: Vec<Routine> = self.routines.values().cloned().collect();
         for r in &routines {
-            match routine::evaluate(q, r, now) {
+            match routine::evaluate(q, r, now, &RoutineRepo(self.root)) {
                 Ok(t) => {
                     if t.armed {
                         let _ = writeln!(out, "routine:  {} armed", r.name);
@@ -2219,7 +2245,13 @@ mod runner_tests {
         let set = load_routines(&root, &BTreeMap::new()).unwrap();
         // Armed a week ago: seven 03:00 fires since, the newest run and six
         // dropped under the default catch-up.
-        routine::evaluate(&q, &set["nightly"], trellis_queue::now_secs() - 7 * 86_400).unwrap();
+        routine::evaluate(
+            &q,
+            &set["nightly"],
+            trellis_queue::now_secs() - 7 * 86_400,
+            &RoutineRepo(&root),
+        )
+        .unwrap();
         let mut r = test_runner(&root, q.clone(), trusted);
         let mut out = Vec::new();
         r.tick(&q, &mut out);
