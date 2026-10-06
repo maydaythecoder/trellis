@@ -367,6 +367,29 @@ goes out in one write, and a reader skips a last line that does not parse.
 - `queue log [--limit N]`: §9.
 - `queue export`, `queue import`: §10.
 
+*Amended 2026-10-06 (#336), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**`queue cancel <id> --children [--reason <r>]`** cancels the named task
+as `queue cancel <id>` does, then every descendant by `parent`, at any
+depth, that is in `pending/` (backlog, todo or blocked). The subtree is
+read from the index `queue set` uses, so trellis-queue does not change.
+
+- Descendants in `done/`, `failed/` or `cancelled/`, `in_review` ones
+  among them, are left as they are and named in the output.
+- If the named task or any descendant is in `claimed/` when the command
+  starts, nothing is written and the refusal names each claimed id.
+- **Best-effort against a claim made while it runs.** The queue cannot
+  hold every task at once, so a `work` tick may claim a descendant between
+  the check and its move. That descendant is skipped, the rest are
+  cancelled, the output names each id cancelled and each not, and the
+  command exits non-zero. A running descendant is reported, not stopped.
+- Each cancelled task gets its own `task.cancel` line with the reason, and
+  each descendant's line names the id the command was given.
+- **Not taken.** A subtree pause like Paperclip's tree holds would be a
+  second state beside `status`, kept for a later restore. Cancel is
+  terminal and needs none. Reversed if a person needs to stop a subtree and
+  resume it later: that pause is its own ticket and ADR, and this flag
+  stands.
+
 ### 4. Agent profiles
 
 A profile is `.trellis/agents/<name>.toml`, committed with the repository

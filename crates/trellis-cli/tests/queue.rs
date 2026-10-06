@@ -613,3 +613,156 @@ fn no_model_message_prints_one_line_per_line_of_the_reason() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `queue add`, returning the id it made: the one id in pending/ that was
+/// not there before.
+fn add_id(d: &Path, args: &[&str]) -> String {
+    let before = ids(d, "pending");
+    add(d, args);
+    let mut new: Vec<String> = ids(d, "pending")
+        .into_iter()
+        .filter(|i| !before.contains(i))
+        .collect();
+    assert_eq!(new.len(), 1, "{new:?}");
+    new.remove(0)
+}
+
+fn cancel_events(d: &Path) -> Vec<serde_json::Value> {
+    activity(d)
+        .into_iter()
+        .filter(|e| e["action"] == "task.cancel")
+        .collect()
+}
+
+#[test]
+fn queue_cancel_children_cancels_the_task_and_its_pending_descendants_at_any_depth() {
+    // The risk: a person drops a breakdown filed with `queue add --parent`
+    // and a grandchild, or a sibling outside the tree, is missed or caught.
+    let d = fixture("cancel-children");
+    let p = add_id(&d, &["the breakdown"]);
+    let c = add_id(&d, &["a part", "--parent", &p]);
+    let g = add_id(&d, &["a part of the part", "--parent", &c]);
+    let b = add_id(&d, &["blocked part", "--parent", &p, "--backlog"]);
+    let other = add_id(&d, &["not in the tree"]);
+
+    let o = trellis(
+        &d,
+        &["queue", "cancel", &p, "--children", "--reason", "dropped"],
+    );
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    let mut want = vec![p.clone(), c.clone(), g.clone(), b.clone()];
+    want.sort();
+    assert_eq!(ids(&d, "cancelled"), want, "{s}");
+    assert_eq!(ids(&d, "pending"), vec![other], "{s}");
+    for id in &want {
+        assert!(s.contains(&format!("cancelled: {id}")), "{s}");
+        let t = task_json(&d, "cancelled", id);
+        assert_eq!(t["status"], "cancelled", "{t}");
+    }
+
+    let events = cancel_events(&d);
+    assert_eq!(events.len(), 4, "one task.cancel per task: {events:?}");
+    for e in &events {
+        let detail = e["detail"].as_str().unwrap_or_default();
+        assert!(detail.contains("dropped"), "{e}");
+        if e["entity"] != format!("task:{p}") {
+            assert!(detail.contains(&p), "a descendant's line names {p}: {e}");
+        }
+    }
+    assert_eq!(porcelain(&d), "");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_cancel_children_leaves_finished_descendants_and_names_each() {
+    // The risk: a descendant already done, in review, failed or cancelled
+    // is rewritten as cancelled, losing its outcome, or skipped unsaid.
+    let d = fixture("cancel-children-finished");
+    let p = add_id(&d, &["the breakdown"]);
+    let done = add_id(&d, &["done part", "--parent", &p]);
+    let review = add_id(&d, &["review part", "--parent", &p]);
+    let failed = add_id(&d, &["failed part", "--parent", &p]);
+    let gone = add_id(&d, &["cancelled part", "--parent", &p]);
+    let open = add_id(&d, &["open part", "--parent", &p]);
+    for (id, st) in [(&done, "done"), (&review, "in_review"), (&failed, "failed")] {
+        let o = trellis(&d, &["queue", "set", id, "--status", st]);
+        assert!(o.status.success(), "{}", combined(&o));
+    }
+    let o = trellis(&d, &["queue", "cancel", &gone]);
+    assert!(o.status.success(), "{}", combined(&o));
+    let before = (
+        task_json(&d, "done", &done),
+        task_json(&d, "done", &review),
+        task_json(&d, "failed", &failed),
+        task_json(&d, "cancelled", &gone),
+    );
+
+    let o = trellis(&d, &["queue", "cancel", &p, "--children"]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    let mut done_ids = vec![done.clone(), review.clone()];
+    done_ids.sort();
+    assert_eq!(ids(&d, "done"), done_ids, "{s}");
+    assert_eq!(ids(&d, "failed"), vec![failed.clone()], "{s}");
+    let mut cancelled = vec![p.clone(), gone.clone(), open.clone()];
+    cancelled.sort();
+    assert_eq!(ids(&d, "cancelled"), cancelled, "{s}");
+    assert!(ids(&d, "pending").is_empty(), "{s}");
+    assert_eq!(
+        (
+            task_json(&d, "done", &done),
+            task_json(&d, "done", &review),
+            task_json(&d, "failed", &failed),
+            task_json(&d, "cancelled", &gone),
+        ),
+        before,
+        "a finished descendant is left as it is"
+    );
+    for id in [&done, &review, &failed, &gone] {
+        assert!(
+            s.lines()
+                .any(|l| l.contains("left") && l.contains(id.as_str())),
+            "{id} is named as left:\n{s}"
+        );
+    }
+    // The one cancelled earlier, then the parent and the open part.
+    assert_eq!(cancel_events(&d).len(), 3);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_cancel_children_refuses_when_any_is_claimed_and_writes_nothing() {
+    // The risk: a running descendant is cancelled under its run, which
+    // then publishes its own copy and drops the cancel silently.
+    let d = fixture("cancel-children-claimed");
+    let p = add_id(&d, &["the breakdown"]);
+    let c = add_id(&d, &["a part", "--parent", &p]);
+    let g = add_id(&d, &["a part of the part", "--parent", &c]);
+    let check = |claimed: &[&String]| {
+        std::fs::create_dir_all(queue_dir(&d, "claimed")).unwrap();
+        for id in claimed {
+            std::fs::rename(
+                queue_dir(&d, "pending").join(format!("{id}.json")),
+                queue_dir(&d, "claimed").join(format!("{id}.json")),
+            )
+            .unwrap();
+        }
+        let pending = ids(&d, "pending");
+        let logged = activity(&d).len();
+        let o = trellis(&d, &["queue", "cancel", &p, "--children"]);
+        let s = combined(&o);
+        assert!(!o.status.success(), "{s}");
+        for id in ids(&d, "claimed") {
+            assert!(s.contains(&id), "the refusal names {id}:\n{s}");
+        }
+        assert_eq!(ids(&d, "pending"), pending, "nothing written:\n{s}");
+        assert!(ids(&d, "cancelled").is_empty(), "{s}");
+        assert_eq!(activity(&d).len(), logged, "nothing logged:\n{s}");
+    };
+    // A grandchild claimed, then the named task as well: both are named.
+    check(&[&g]);
+    check(&[&p]);
+    assert_eq!(ids(&d, "claimed").len(), 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
