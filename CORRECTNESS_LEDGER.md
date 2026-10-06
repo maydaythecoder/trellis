@@ -1028,6 +1028,19 @@ a rollback that fails, an ERROR event on demand). vault_cmd.rs: 18 killed.
 Two were already killed by a test in the suite at this pass's base; those
 lines say so. No bug was found.
 
+The fourth pass marks its own the same way, over the 89 lines no pass had
+examined: orchestrate.rs 17, session_extra.rs 16, tooling.rs 10,
+context_files.rs 8, doctor_extra.rs 7 (services_line), templates.rs 4,
+tui_bridge.rs 3 (one already killed by the #243 budget test), rpc.rs 2 and
+ask.rs 1, all killed; liveness.rs 11 (4 killed, 5 unix-only: `probe_ps`
+runs only on a Unix that is not Linux, 2 unexercisable); tui_run.rs 6 (1
+killed, 5 unexercisable behind the terminal check); image_input.rs 4 (3
+killed, 1 unexercisable). 76 killed in all. Lines in tooling.rs,
+context_files.rs, tui_run.rs and tui_bridge.rs had moved; each mutant was
+found at its new line. No bug was found. The `#248 |` lines still open
+below are the first pass's 119, whose dispositions are in `c0fc32f`'s
+message.
+
 ```
 unexercisable (#248): differs only for ERROR-level events (an empty RUST_LOG parsed as a directive is ERROR everywhere), and trellis's three are not reachable on demand: an orchestrator task gone, or a failed rollback of an interrupted plan | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 #248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
@@ -1104,7 +1117,7 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with true in repo_lines
 #248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with false in repo_lines
 #248 | crates/trellis-cli/src/main.rs:4782:25: replace == with != in repo_lines
-#248 | crates/trellis-cli/src/ask.rs:116:19: replace > with >= in prompt_for
+killed (#248) by ask::tests::the_inventory_reaches_the_prompt_and_says_what_it_does_not_cover | crates/trellis-cli/src/ask.rs:116:19: replace > with >= in prompt_for
 #248 | crates/trellis-cli/src/config.rs:453:27: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in RepoConfig::prompt_raw_in
 #248 | crates/trellis-cli/src/config.rs:508:21: delete match arm "metered" in RepoConfig::budget
 #248 | crates/trellis-cli/src/config.rs:509:21: delete match arm "local" in RepoConfig::budget
@@ -1388,11 +1401,11 @@ killed (#248) by context_files::tests::a_skill_forced_twice_loads_once_and_each_
 #248 | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
 #248 | crates/trellis-cli/src/rpc.rs:338:9: replace <impl trellis_loop::Model for Watched<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
 #248 | crates/trellis-cli/src/rpc.rs:342:9: replace <impl trellis_loop::Model for Watched<'_, M>>::requested_compactions -> &[trellis_loop::RequestedCompaction] with Vec::leak(Vec::new())
-#248 | crates/trellis-cli/src/rpc.rs:611:33: delete ! in Server::in_flight
+killed (#248) by rpc::tests::in_flight_forgets_answered_waiters_and_keeps_the_ones_still_waiting | crates/trellis-cli/src/rpc.rs:611:33: delete ! in Server::in_flight
 #248 | crates/trellis-cli/src/rpc.rs:613:24: replace match guard !r.thread.is_finished() with true in Server::in_flight
 #248 | crates/trellis-cli/src/rpc.rs:799:21: replace match guard cmd.get("args").is_some() with false in Server::prompt
 #248 | crates/trellis-cli/src/rpc.rs:802:21: replace match guard task.trim().is_empty() with false in Server::prompt
-#248 | crates/trellis-cli/src/rpc.rs:809:55: replace || with && in Server::prompt
+killed (#248) by rpc::tests::a_hosted_model_named_in_the_prompt_is_the_client_s_choice | crates/trellis-cli/src/rpc.rs:809:55: replace || with && in Server::prompt
 #248 | crates/trellis-cli/src/rpc.rs:1088:5: replace summary -> Value with Default::default()
 killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
 killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
