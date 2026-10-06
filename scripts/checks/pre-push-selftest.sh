@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shows the tracked pre-push guard, as scripts/hooks/install.sh installs it,
-# refuses every push to main, v0.1-resolver and drain and of a v* release tag,
-# and lets a push to dev, audit or a ticket branch through (#217, #380,
-# ADR 0036, ADR 0051).
+# refuses every push to main, to the deleted legacy branches v0.1-resolver and
+# drain, and of a v* release tag, and lets a push to dev, audit or a ticket
+# branch through (#217, #380, #474, ADR 0036, ADR 0051).
 #
 # Every push goes to a bare repository created under a temp dir, added as the
 # remote `throwaway`. The work repository has no other remote, so nothing
@@ -90,6 +90,8 @@ second=$(w rev-parse HEAD)
 w checkout -q -b other "$base" || die "checkout other"
 w commit -q --allow-empty -m diverged || die "diverged commit"
 
+# v0.1-resolver and drain were deleted on 2026-10-06; the hook refuses them so
+# an old clone cannot re-create them (#474), and this checks that it does.
 for protected in refs/heads/main refs/heads/v0.1-resolver refs/heads/drain; do
   name=${protected#refs/heads/}
   refuse "create $name" "$base:$protected"
