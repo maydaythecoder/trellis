@@ -4,8 +4,12 @@ use crate::{
     config, context_files, hosted, image_input, output, rpc, tooling, user_config, vault_cmd,
 };
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::io::Write as _;
+use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use trellis_core::PartitionId;
 
 /// How a run ended, and what the process should exit with.
 ///
@@ -111,6 +115,10 @@ impl Driver {
     /// Takes a [`ModelSpec`] rather than a string: the string form was parsed
     /// here, in `cmd_doctor` and in the session, each deciding for itself what
     /// was valid. Construction is now the only thing this does.
+    ///
+    /// `targets` is `(every target of the run, this agent's)` for one agent
+    /// of a multi-agent run, which a script answers from its `targets`
+    /// section (#466); `None` for every other run.
     fn build(
         spec: &trellis_model::ModelSpec,
         unconstrained: bool,
@@ -118,6 +126,7 @@ impl Driver {
         cfg: &config::RepoConfig,
         from_user: bool,
         source: hosted::SpecSource,
+        targets: Option<(&[String], &[String])>,
     ) -> Result<Self> {
         if let Some(r) = hosted::resolve_from(spec, cfg, from_user, source)? {
             if unconstrained {
@@ -137,8 +146,13 @@ impl Driver {
                     .with_context(|| format!("cannot read script {}", path.display()))?;
                 // Against the run's own tool set: a step calling a tool this
                 // run does not offer fails here, before the snapshot.
-                let m = trellis_loop::ScriptedModel::from_json_with(&text, tools)
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+                let m = match targets {
+                    None => trellis_loop::ScriptedModel::from_json_with(&text, tools),
+                    Some((all, mine)) => {
+                        trellis_loop::ScriptedModel::from_json_for(&text, tools, all, mine)
+                    }
+                }
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
                 Ok(Driver::Scripted(m))
             }
             trellis_model::ModelSpec::Runtime {
@@ -194,6 +208,26 @@ impl Driver {
             ),
             Driver::Runtime(m) => m.compact_on_request(requests),
             Driver::Hosted(m) => m.compact_on_request(requests),
+        }
+    }
+
+    /// Completion tokens as the adapter counted them (ADR 0026 §8); `None`
+    /// for a scripted driver, and for a hosted one once a reply went
+    /// unreported. As `run_body` reads them.
+    fn tokens(&self) -> Option<u64> {
+        match self {
+            Driver::Scripted(_) => None,
+            Driver::Runtime(m) => Some(trellis_loop::Model::tokens_used(m)),
+            Driver::Hosted(m) => m.tokens_measured(),
+        }
+    }
+
+    /// Prompt tokens, `None` once any call went unreported (ADR 0027).
+    fn prompt_tokens(&self) -> Option<u64> {
+        match self {
+            Driver::Scripted(_) => None,
+            Driver::Runtime(m) => trellis_loop::Model::prompt_tokens(m),
+            Driver::Hosted(m) => trellis_loop::Model::prompt_tokens(m.as_ref()),
         }
     }
 
@@ -585,6 +619,20 @@ fn run_body(
     {
         dial.add_profile_approvals(list);
     }
+    // Before the terminal check, so the refusal names the width and not the
+    // missing terminal: agents running at once would each put questions
+    // about their own worktree to one person, interleaved (#466).
+    if let Some(f) = &extras.fanout
+        && f.width.get() > 1
+        && dial.mode == config::ControlMode::Approve
+    {
+        anyhow::bail!(
+            "approve mode asks one person about each listed call, and this run would have {} \
+             agents asking at once about edits in separate worktrees. Pass --auto, set \
+             [control] mode = \"auto\", or pass --agents 1. Nothing was snapshotted.",
+            f.width
+        );
+    }
     if dial.mode == config::ControlMode::Approve && matches!(control.human, Human::Absent) {
         anyhow::bail!(NEEDS_A_TERMINAL);
     }
@@ -631,6 +679,40 @@ fn run_body(
                 dial.approve.push(t.to_string());
             }
         }
+    }
+    // A multi-agent run's partitions work in worktrees, and what watches
+    // trusted code is tied to the root: the trust guard re-hashes the root's
+    // `.trellis/` (`tooling::prepare` captures `root` in its closure), and the
+    // writer guards (`.git/` and the ignored files) are taken over the root.
+    // Trusted code running in a partition would go unwatched, so a run that
+    // loaded any is refused here, before the snapshot (#466).
+    if extras.fanout.is_some() && tooling.guard.is_some() {
+        let mut loaded = Vec::new();
+        if tooling.tools.bash().is_some() {
+            loaded.push("bash".to_string());
+        }
+        let customs: Vec<&str> = tooling
+            .tools
+            .customs()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        if !customs.is_empty() {
+            loaded.push(format!("custom tools ({})", customs.join(", ")));
+        }
+        if tooling.hooks.is_some() {
+            loaded.push("hooks".to_string());
+        }
+        if loaded.is_empty() {
+            loaded.push("trusted process agents or services".to_string());
+        }
+        anyhow::bail!(
+            "this repository's trusted code ({}) runs under a trust guard and writer guards \
+             that watch the repository root, and a multi-agent run works in one worktree per \
+             partition, where they would not watch it. Pass --agents 1, or run without the \
+             trusted configuration. Nothing was snapshotted.",
+            loaded.join(", ")
+        );
     }
 
     // The vault is compiled here, in memory, before the model is contacted
@@ -679,6 +761,12 @@ fn run_body(
         _ => None,
     };
     let spec: trellis_model::ModelSpec = model_spec.parse()?;
+    // In a multi-agent run this is the first partition's driver, built to be
+    // described and probed; each partition gets its own in `run_partitioned`.
+    let first_agent = extras
+        .fanout
+        .as_ref()
+        .and_then(|f| f.plan.in_order().next().map(|p| f.script_targets(p.id)));
     let mut driver = Driver::build(
         &spec,
         unconstrained,
@@ -686,7 +774,16 @@ fn run_body(
         &cfg,
         model_from_user,
         model_source,
+        first_agent,
     )?;
+    // Whether the driver that runs is tier 4, after the schema probe below.
+    let mut tier4 = unconstrained;
+    if extras.fanout.is_some() && !extras.images.is_empty() {
+        anyhow::bail!(
+            "--image goes to one agent's first message, and this run has one agent per \
+             partition; pass --agents 1 to send it. Nothing was snapshotted."
+        );
+    }
 
     // `--image` (ADR 0041): refused for anything but hosted tier 1 before the
     // reachability probe, so the refusal is about the model and not about a
@@ -801,7 +898,9 @@ fn run_body(
                 &cfg,
                 model_from_user,
                 model_source,
+                first_agent,
             )?;
+            tier4 = true;
         }
         schema_note = Some(note);
     }
@@ -888,6 +987,39 @@ fn run_body(
         input_hook(&probe_rt, h, task, out)?;
     }
 
+    // A multi-agent run branches here, before the snapshot: its snapshot and
+    // its rollback are `Supervisor::run_integrated`'s alone, so this path
+    // never takes one of its own (#466).
+    if let Some(fanout) = &extras.fanout {
+        return run_partitioned(
+            Partitioned {
+                root,
+                task,
+                model_spec,
+                spec: &spec,
+                tier4,
+                model_from_user,
+                model_source,
+                fanout,
+                cfg: &cfg,
+                dial: &dial,
+                tooling: &tooling,
+                vault_refusal: vault_refusal.as_ref(),
+                vault_setting: vault_setting.as_ref(),
+                vault,
+                prior,
+                added: &added,
+                skill_dirs: &skill_dirs,
+                stamp: &stamp,
+                run_id: &run_id,
+                label: extras.label.clone(),
+                abort: extras.abort.clone(),
+                human: control.human,
+            },
+            out,
+        );
+    }
+
     // A clean worktree is required so rollback is `git reset --hard` rather
     // than a restore of a dirty tree, which is where data-loss bugs live
     // (ADR 0009).
@@ -909,36 +1041,9 @@ fn run_body(
     // and `info/` are read too, and put back before any git command runs
     // once the loop has ended (review round 8).
     //
-    // Rule documents from `.trellis/governance/`, plus the older
-    // `[governance] deny_write` in config.toml. Both feed the same write-path
-    // refusal; the documents additionally carry rank and prose, which the
-    // audit and the prompt need and a config list cannot express. Read
-    // before the writers are guarded, which judge a changed ignored file by
-    // the same rules.
-    let rules = trellis_checks::governance::load(root)
-        .context("a governance rule would not load; runs would silently ignore it")?;
-    let mut deny: Vec<String> = cfg
-        .governance()
-        .rules()
-        .iter()
-        .map(|r| r.as_written())
-        .collect();
-    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
-    let mut governance = trellis_loop::Governance::new(&deny);
-    // Beside `deny_write`, so the gate, the carry-back and the writer guards
-    // cloned below all refuse it (ADR 0049 §2).
-    if let Some((source, notes_root)) = &vault_refusal {
-        governance = governance.with_vault(source, notes_root);
-    }
-    // A profile's `allow_write` narrows the run's writes (ADR 0026 §4). It
-    // is kept out of `deny_write`, so the writer guards cloned below still
-    // protect exactly what the repository's rules name, and a cache a check
-    // writes outside the scope is not a tree left unrestored.
-    if let Some(p) = profile
-        && let Some(allow) = &p.file.allow_write
-    {
-        governance = governance.with_allow_write(&p.name, allow);
-    }
+    // The governance is read before the writers are guarded, which judge a
+    // changed ignored file by the same rules.
+    let (rules, governance) = run_governance(root, &cfg, vault_refusal.as_ref(), profile)?;
     let writers = if tooling.tools.bash().is_some()
         || !tooling.tools.customs().is_empty()
         || tooling.hooks.is_some()
@@ -972,182 +1077,24 @@ fn run_body(
         armed: true,
     };
 
-    let notes = config::RepoConfig::notes(root)?;
-    // Skills (ADR 0019): names and descriptions to the prompt, capped. Read,
-    // with the notes above, after the snapshot and the armed guard; both only
-    // read, so an error here returns before anything is written.
-    let mut skills = trellis_loop::SkillCatalog::discover_with(root, &skill_dirs);
-    // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4),
-    // and the same policy goes to the orchestrator, which refuses `read_skill`
-    // for the rest (integrated).
-    let skill_policy = profile.and_then(context_files::skill_policy);
-    if let Some(pol) = &skill_policy {
-        skills.valid.retain(|s| pol.check(&s.name).is_ok());
-    }
-    let disclosed = skills.disclosed();
-    if !governance.is_empty()
-        || vault_refusal.is_some()
-        || notes.is_some()
-        || vault.is_some()
-        || !skills.valid.is_empty()
-        || !skills.invalid.is_empty()
-        || tooling.untrusted.is_some()
-        || !added.report.is_empty()
-    {
-        let _ = writeln!(
-            out,
-            "repo:     {} write rule(s){}{}{}{}{}{}",
-            governance.rules().len(),
-            // `rules()` is `deny_write` only; the vault's refusal is said
-            // apart, naming the setting that put it there.
-            match &vault_refusal {
-                Some((source, notes_root)) => format!(
-                    ", vault notes root `{notes_root}` refused to writes ([context] vault = \"{source}\")"
-                ),
-                None => String::new(),
-            },
-            if notes.is_some() {
-                ", .trellis/context.md loaded"
-            } else {
-                ""
-            },
-            match &vault {
-                // The byte count is what the prompt pays on every turn, and
-                // the drop count is said aloud because a reference heading
-                // with no body under it is easy to read past.
-                Some((stem, source, c, dates)) => format!(
-                    ", vault note `{stem}` from {source} loaded ({} B{}{})",
-                    c.bytes,
-                    match c.dropped_reference_bodies {
-                        0 => String::new(),
-                        n => format!(", {n} reference bod(ies) dropped to fit the cap"),
-                    },
-                    dates.as_ref().map(|d| format!(", {d}")).unwrap_or_default()
-                ),
-                None => String::new(),
-            },
-            // Said whenever there are skills, with both numbers: the cap
-            // leaves skills out, and a list that was cut must not read as
-            // the library.
-            if skills.valid.is_empty() && skills.invalid.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    ", skills: {} listed, {} omitted (cap){}{}",
-                    disclosed.listed.len(),
-                    disclosed.omitted,
-                    match skills.invalid.len() {
-                        0 => String::new(),
-                        n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
-                    },
-                    // Integrated (ADR 0025): says these were not trust-gated.
-                    context_files::user_skills_note(
-                        &skills,
-                        root,
-                        &skill_dirs,
-                        user_config::dir().as_deref()
-                    )
-                    .map(|n| format!(", {n}"))
-                    .unwrap_or_default()
-                )
-            },
-            match &tooling.untrusted {
-                Some(u) => format!(", {u}"),
-                None => String::new(),
-            },
-            // ADR 0025: what was loaded and what was left out, by name.
-            added
-                .report
-                .iter()
-                .map(|r| format!(", {r}"))
-                .collect::<String>(),
-        );
-    }
-
-    // Configured and silently unused is the failure this line prevents: a
-    // user who set up a vault would otherwise assume the model saw it.
-    if let Some(v) = &vault_setting
-        && v.focus.is_none()
-    {
-        let _ = writeln!(
-            out,
-            "vault:    {} configured but no focus set; no vault note sent. \
-             Pass --focus <stem> or set [context] focus",
-            v.source
-        );
-    }
-    // The model is told the rules it will be held to, ranked, with the prose
-    // that explains them. A refusal a contributor cannot act on is a wall;
-    // the description is what turns it into a direction.
-    let mut prompt_rules: Vec<String> = governance
-        .rules()
-        .iter()
-        .map(|r| format!("{} (no writes)", r.as_written()))
-        .collect();
-    // Told, not only enforced, for the reason the rules are: a model that
-    // does not know the scope spends turns on refusals. Phrased for the
-    // prompt's heading, which lists the files the model may not edit, and
-    // written as the rules parse, as the `deny_write` lines above are.
-    if let Some(p) = profile
-        && let Some(allow) = &p.file.allow_write
-    {
-        prompt_rules.push(if allow.is_empty() {
-            format!(
-                "every path (agent `{}` has an empty allow_write: no writes)",
-                p.name
-            )
-        } else {
-            let written: Vec<String> = allow
-                .iter()
-                .map(|a| trellis_loop::Rule::parse(a).as_written())
-                .collect();
-            format!(
-                "every path except {} (agent `{}`'s allow_write)",
-                written.join(", "),
-                p.name
-            )
-        });
-    }
-    for r in &rules {
-        let rank = match r.rank {
-            trellis_checks::governance::Rank::NonNegotiable => "non-negotiable",
-            trellis_checks::governance::Rank::NiceToHave => "nice-to-have",
-        };
-        prompt_rules.push(if r.description.trim().is_empty() {
-            format!("{} [{rank}]", r.name)
-        } else {
-            format!("{} [{rank}] — {}", r.name, r.description.trim())
-        });
-    }
-    // What the repository contains, from the index's own walk.
-    //
-    // Without it the model guesses a path from the symbol in the task and
-    // every tool call lands on a file that does not exist. This is a walk,
-    // not a parse: the paths are wanted, not the graph, and a run should not
-    // pay for an index it may never query.
-    let files = trellis_index::discover_relative(root);
-    let _ = writeln!(
-        out,
-        "files:    {} first-party Python file(s) named to the model",
-        files.len()
-    );
-
+    let (repo, skill_policy) = repo_context(
+        RepoInputs {
+            root,
+            profile,
+            governance: &governance,
+            rules: &rules,
+            vault_refusal: vault_refusal.as_ref(),
+            vault_setting: vault_setting.as_ref(),
+            vault,
+            tooling: &tooling,
+            added: &added,
+            skill_dirs: &skill_dirs,
+        },
+        &mut *out,
+    )?;
     let mut seed = trellis_loop::Seed {
         prior,
-        repo: trellis_loop::RepoContext {
-            notes,
-            vault: vault.map(|(focus, source, c, _)| trellis_loop::VaultContext {
-                focus,
-                source,
-                text: c.text,
-            }),
-            rules: prompt_rules,
-            files,
-            skills: disclosed.listed,
-            skills_omitted: disclosed.omitted,
-            tools: tooling.tools.clone(),
-            extra: added.extra,
-        },
+        repo,
         // `None` for every caller but `trellis tui` (#115), `session` at a
         // terminal (#116) and `rpc` (ADR 0025 §5), and a run given `None` is
         // exactly the one before #113.
@@ -1471,6 +1418,9 @@ fn run_body(
         compactions: &compactions,
         requested: &requested,
         services,
+        plan: Vec::new(),
+        integrated: Vec::new(),
+        suspected_recall_gaps: Vec::new(),
     };
     let Some(outcome) = outcome else {
         // The interrupt path rolls back itself and then commits a trail; a
@@ -1739,6 +1689,966 @@ fn run_body(
                     Ok(RunExit::Asked { question, options })
                 }
                 _ => Ok(RunExit::NotConverged { restored }),
+            }
+        }
+    }
+}
+
+/// What a run reads about the repository for the model's prompt, beyond
+/// the task.
+struct RepoInputs<'a> {
+    root: &'a Path,
+    profile: Option<&'a trellis_queue::profile::Profile>,
+    governance: &'a trellis_loop::Governance,
+    rules: &'a [trellis_checks::governance::Rule],
+    vault_refusal: Option<&'a (String, String)>,
+    vault_setting: Option<&'a config::VaultSetting>,
+    vault: Option<CompiledNote>,
+    tooling: &'a tooling::Tooling,
+    added: &'a context_files::Loaded,
+    skill_dirs: &'a [std::path::PathBuf],
+}
+
+/// A compiled vault note: its stem, where the vault is, the note, and the
+/// `[context] dates` remark.
+type CompiledNote = (String, String, trellis_vault::Compiled, Option<String>);
+
+/// What the model is told about the repository (the notes, the vault note,
+/// the skills, the rules it is held to, the files there are), with the
+/// `repo:`, `vault:` and `files:` lines that say so, and the skill policy
+/// `read_skill` enforces. Only reads. A multi-agent run tells each of its
+/// agents exactly what a single-agent run tells its one (#466).
+fn repo_context(
+    i: RepoInputs<'_>,
+    out: &mut dyn std::io::Write,
+) -> Result<(trellis_loop::RepoContext, Option<trellis_loop::SkillPolicy>)> {
+    let RepoInputs {
+        root,
+        profile,
+        governance,
+        rules,
+        vault_refusal,
+        vault_setting,
+        vault,
+        tooling,
+        added,
+        skill_dirs,
+    } = i;
+    let notes = config::RepoConfig::notes(root)?;
+    // Skills (ADR 0019): names and descriptions to the prompt, capped. Read,
+    // with the notes above, after the snapshot and the armed guard; both only
+    // read, so an error here returns before anything is written.
+    let mut skills = trellis_loop::SkillCatalog::discover_with(root, skill_dirs);
+    // A profile's [skills] allow/deny filters what is disclosed (ADR 0026 §4),
+    // and the same policy goes to the orchestrator, which refuses `read_skill`
+    // for the rest (integrated).
+    let skill_policy = profile.and_then(context_files::skill_policy);
+    if let Some(pol) = &skill_policy {
+        skills.valid.retain(|s| pol.check(&s.name).is_ok());
+    }
+    let disclosed = skills.disclosed();
+    if !governance.is_empty()
+        || vault_refusal.is_some()
+        || notes.is_some()
+        || vault.is_some()
+        || !skills.valid.is_empty()
+        || !skills.invalid.is_empty()
+        || tooling.untrusted.is_some()
+        || !added.report.is_empty()
+    {
+        let _ = writeln!(
+            out,
+            "repo:     {} write rule(s){}{}{}{}{}{}",
+            governance.rules().len(),
+            // `rules()` is `deny_write` only; the vault's refusal is said
+            // apart, naming the setting that put it there.
+            match &vault_refusal {
+                Some((source, notes_root)) => format!(
+                    ", vault notes root `{notes_root}` refused to writes ([context] vault = \"{source}\")"
+                ),
+                None => String::new(),
+            },
+            if notes.is_some() {
+                ", .trellis/context.md loaded"
+            } else {
+                ""
+            },
+            match &vault {
+                // The byte count is what the prompt pays on every turn, and
+                // the drop count is said aloud because a reference heading
+                // with no body under it is easy to read past.
+                Some((stem, source, c, dates)) => format!(
+                    ", vault note `{stem}` from {source} loaded ({} B{}{})",
+                    c.bytes,
+                    match c.dropped_reference_bodies {
+                        0 => String::new(),
+                        n => format!(", {n} reference bod(ies) dropped to fit the cap"),
+                    },
+                    dates.as_ref().map(|d| format!(", {d}")).unwrap_or_default()
+                ),
+                None => String::new(),
+            },
+            // Said whenever there are skills, with both numbers: the cap
+            // leaves skills out, and a list that was cut must not read as
+            // the library.
+            if skills.valid.is_empty() && skills.invalid.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", skills: {} listed, {} omitted (cap){}{}",
+                    disclosed.listed.len(),
+                    disclosed.omitted,
+                    match skills.invalid.len() {
+                        0 => String::new(),
+                        n => format!(", {n} invalid and skipped (`trellis doctor` says why)"),
+                    },
+                    // Integrated (ADR 0025): says these were not trust-gated.
+                    context_files::user_skills_note(
+                        &skills,
+                        root,
+                        skill_dirs,
+                        user_config::dir().as_deref()
+                    )
+                    .map(|n| format!(", {n}"))
+                    .unwrap_or_default()
+                )
+            },
+            match &tooling.untrusted {
+                Some(u) => format!(", {u}"),
+                None => String::new(),
+            },
+            // ADR 0025: what was loaded and what was left out, by name.
+            added
+                .report
+                .iter()
+                .map(|r| format!(", {r}"))
+                .collect::<String>(),
+        );
+    }
+
+    // Configured and silently unused is the failure this line prevents: a
+    // user who set up a vault would otherwise assume the model saw it.
+    if let Some(v) = &vault_setting
+        && v.focus.is_none()
+    {
+        let _ = writeln!(
+            out,
+            "vault:    {} configured but no focus set; no vault note sent. \
+             Pass --focus <stem> or set [context] focus",
+            v.source
+        );
+    }
+    // The model is told the rules it will be held to, ranked, with the prose
+    // that explains them. A refusal a contributor cannot act on is a wall;
+    // the description is what turns it into a direction.
+    let mut prompt_rules: Vec<String> = governance
+        .rules()
+        .iter()
+        .map(|r| format!("{} (no writes)", r.as_written()))
+        .collect();
+    // Told, not only enforced, for the reason the rules are: a model that
+    // does not know the scope spends turns on refusals. Phrased for the
+    // prompt's heading, which lists the files the model may not edit, and
+    // written as the rules parse, as the `deny_write` lines above are.
+    if let Some(p) = profile
+        && let Some(allow) = &p.file.allow_write
+    {
+        prompt_rules.push(if allow.is_empty() {
+            format!(
+                "every path (agent `{}` has an empty allow_write: no writes)",
+                p.name
+            )
+        } else {
+            let written: Vec<String> = allow
+                .iter()
+                .map(|a| trellis_loop::Rule::parse(a).as_written())
+                .collect();
+            format!(
+                "every path except {} (agent `{}`'s allow_write)",
+                written.join(", "),
+                p.name
+            )
+        });
+    }
+    for r in rules {
+        let rank = match r.rank {
+            trellis_checks::governance::Rank::NonNegotiable => "non-negotiable",
+            trellis_checks::governance::Rank::NiceToHave => "nice-to-have",
+        };
+        prompt_rules.push(if r.description.trim().is_empty() {
+            format!("{} [{rank}]", r.name)
+        } else {
+            format!("{} [{rank}] — {}", r.name, r.description.trim())
+        });
+    }
+    // What the repository contains, from the index's own walk.
+    //
+    // Without it the model guesses a path from the symbol in the task and
+    // every tool call lands on a file that does not exist. This is a walk,
+    // not a parse: the paths are wanted, not the graph, and a run should not
+    // pay for an index it may never query.
+    let files = trellis_index::discover_relative(root);
+    let _ = writeln!(
+        out,
+        "files:    {} first-party Python file(s) named to the model",
+        files.len()
+    );
+
+    let repo = trellis_loop::RepoContext {
+        notes,
+        vault: vault.map(|(focus, source, c, _)| trellis_loop::VaultContext {
+            focus,
+            source,
+            text: c.text,
+        }),
+        rules: prompt_rules,
+        files,
+        skills: disclosed.listed,
+        skills_omitted: disclosed.omitted,
+        tools: tooling.tools.clone(),
+        extra: added.extra.clone(),
+    };
+    Ok((repo, skill_policy))
+}
+
+/// The repository's rule documents and the write refusals a run's
+/// orchestrator enforces.
+///
+/// Rule documents from `.trellis/governance/`, plus the older `[governance]
+/// deny_write` in config.toml. Both feed the same write-path refusal; the
+/// documents additionally carry rank and prose, which the audit and the
+/// prompt need and a config list cannot express.
+fn run_governance(
+    root: &Path,
+    cfg: &config::RepoConfig,
+    vault_refusal: Option<&(String, String)>,
+    profile: Option<&trellis_queue::profile::Profile>,
+) -> Result<(
+    Vec<trellis_checks::governance::Rule>,
+    trellis_loop::Governance,
+)> {
+    let rules = trellis_checks::governance::load(root)
+        .context("a governance rule would not load; runs would silently ignore it")?;
+    let mut deny: Vec<String> = cfg
+        .governance()
+        .rules()
+        .iter()
+        .map(|r| r.as_written())
+        .collect();
+    deny.extend(trellis_checks::governance::deny_write_paths(&rules));
+    let mut governance = trellis_loop::Governance::new(&deny);
+    // Beside `deny_write`, so the gate, the carry-back and the writer guards
+    // cloned below all refuse it (ADR 0049 §2).
+    if let Some((source, notes_root)) = vault_refusal {
+        governance = governance.with_vault(source, notes_root);
+    }
+    // A profile's `allow_write` narrows the run's writes (ADR 0026 §4). It
+    // is kept out of `deny_write`, so the writer guards cloned below still
+    // protect exactly what the repository's rules name, and a cache a check
+    // writes outside the scope is not a tree left unrestored.
+    if let Some(p) = profile
+        && let Some(allow) = &p.file.allow_write
+    {
+        governance = governance.with_allow_write(&p.name, allow);
+    }
+    Ok((rules, governance))
+}
+
+/// `trellis run --agents N --target <symbol>...` with N above 1 (ADR 0045,
+/// #466): the plan the targets make, which targets each partition holds,
+/// and how many partitions run at once.
+pub(crate) struct Fanout {
+    plan: trellis_loop::partition::Plan,
+    /// Every target, as the user typed it.
+    targets: Vec<String>,
+    /// Each partition's targets, as typed, in command-line order.
+    names: HashMap<PartitionId, Vec<String>>,
+    /// `max(1, min(N, plan.parallel.len()))`: the plan decides concurrency,
+    /// never the flag (ADR 0045 §4).
+    width: NonZeroUsize,
+    /// Why N is what it is, for the `agents:` line.
+    why: String,
+}
+
+impl Fanout {
+    /// The plan `targets` make, as `trellis partitions` shows it, run by up
+    /// to `agents` at once. Each target resolves as `radius` resolves it; an
+    /// unknown or ambiguous one is refused (ADR 0045 §1).
+    pub(crate) fn plan(root: &Path, targets: &[String], agents: u32, why: String) -> Result<Self> {
+        let index = trellis_index::build_cached(root);
+        let mut units = Vec::with_capacity(targets.len());
+        let mut resolved = Vec::with_capacity(targets.len());
+        for t in targets {
+            let id = crate::index_cmd::resolve_symbol(&index, t)?;
+            units.push(trellis_loop::partition::unit_for(&index, id));
+            resolved.push((t.clone(), id));
+        }
+        let plan = trellis_loop::partition::plan(&index, units);
+        let names = plan
+            .in_order()
+            .map(|p| {
+                let mine = resolved
+                    .iter()
+                    .filter(|(_, id)| p.units.iter().any(|u| u.target == *id))
+                    .map(|(t, _)| t.clone())
+                    .collect();
+                (p.id, mine)
+            })
+            .collect();
+        let width = NonZeroUsize::new(
+            usize::try_from(agents)
+                .unwrap_or(usize::MAX)
+                .min(plan.parallel.len()),
+        )
+        .unwrap_or(NonZeroUsize::MIN);
+        Ok(Self {
+            plan,
+            targets: targets.to_vec(),
+            names,
+            width,
+            why,
+        })
+    }
+
+    /// What a script needs to choose one agent's steps: every target of the
+    /// run, and the ones partition `id` holds.
+    fn script_targets(&self, id: PartitionId) -> (&[String], &[String]) {
+        (
+            &self.targets,
+            self.names.get(&id).map(Vec::as_slice).unwrap_or(&[]),
+        )
+    }
+}
+
+/// What `run_body` hands a multi-agent run at its branch point: everything
+/// decided before the snapshot.
+struct Partitioned<'a> {
+    root: &'a Path,
+    task: &'a str,
+    model_spec: &'a str,
+    spec: &'a trellis_model::ModelSpec,
+    /// Whether the run's driver is tier 4, after the schema probe.
+    tier4: bool,
+    model_from_user: bool,
+    model_source: hosted::SpecSource,
+    fanout: &'a Fanout,
+    cfg: &'a config::RepoConfig,
+    dial: &'a config::Control,
+    tooling: &'a tooling::Tooling,
+    vault_refusal: Option<&'a (String, String)>,
+    vault_setting: Option<&'a config::VaultSetting>,
+    vault: Option<CompiledNote>,
+    prior: Option<trellis_loop::PriorContext>,
+    added: &'a context_files::Loaded,
+    skill_dirs: &'a [std::path::PathBuf],
+    stamp: &'a (String, String),
+    run_id: &'a str,
+    label: Option<String>,
+    abort: Option<std::sync::Arc<output::Abort>>,
+    human: Human,
+}
+
+/// What one partition's agent left behind, for the trail. Filled by the
+/// partition's own task, whether or not it converged, because a partition
+/// that did not converge reports only an error string to the supervisor.
+struct PartitionRun {
+    transcript: trellis_loop::Transcript,
+    touched: Vec<String>,
+    gates: Vec<trellis_loop::GateDenial>,
+    tokens: Option<u64>,
+    prompt_tokens: Option<u64>,
+    compactions: Vec<trellis_loop::Compacted>,
+    requested: Vec<trellis_loop::RequestedCompaction>,
+}
+
+/// The task one partition's agent is given: the run's task, and which of
+/// its targets are this agent's (#466).
+fn partition_task(task: &str, mine: &[String], partitions: usize) -> String {
+    format!(
+        "{task}\n\nThis run has {partitions} agents, each in its own copy of the repository. \
+         Yours works on: {}. Change what those need, and leave the other targets to their \
+         agents.",
+        mine.join(", ")
+    )
+}
+
+/// Whether the root is back where the run found it: HEAD at `base` and
+/// nothing uncommitted. Read, never restored: the rollback is
+/// `run_integrated`'s, and this only reports on it. A tree that cannot be
+/// read is not one known to be restored.
+fn back_at(root: &Path, base: &str) -> bool {
+    head_of(root).is_ok_and(|h| h == base) && trellis_vcs::pending(root).is_ok_and(|p| p.is_empty())
+}
+
+/// The commit `HEAD` names.
+fn head_of(root: &Path) -> Result<String> {
+    let out = trellis_vcs::command()
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .context("running git rev-parse HEAD")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git rev-parse HEAD failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A multi-agent run (#466): each partition of the plan by its own agent in
+/// its own worktree, then the integrated check over the merged union.
+///
+/// `Supervisor::run_integrated` owns the snapshot and the rollback; nothing
+/// here takes or restores one. Each partition's orchestrator has the run's
+/// governance (the vault's notes root included, ADR 0049), rules, tools and
+/// checks, rooted at its worktree; its own driver; and its share of the run's
+/// one budget (`Budget::shares`, rule 9). The policy is all-or-nothing, so a
+/// partition that did not converge merges nothing, and a partition's own pass
+/// never converges the run: only the integrated verdicts do (rules 5 and 6).
+/// The trail is one, with every partition's actions in plan order.
+///
+/// Refused before this is reached: approve mode at a width above 1, trusted
+/// repository code (its guards watch the root), and `--image`.
+fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) -> Result<RunExit> {
+    let Partitioned {
+        root,
+        task,
+        model_spec,
+        spec,
+        tier4,
+        model_from_user,
+        model_source,
+        fanout,
+        cfg,
+        dial,
+        tooling,
+        vault_refusal,
+        vault_setting,
+        vault,
+        prior,
+        added,
+        skill_dirs,
+        stamp,
+        run_id,
+        label,
+        abort,
+        human,
+    } = p;
+    let plan = &fanout.plan;
+    let count = plan.in_order().count();
+
+    // Every partition's driver before anything is written, so a script
+    // refused for one of them, or a budget too small to divide, costs
+    // nothing.
+    let mut drivers = HashMap::new();
+    for part in plan.in_order() {
+        let driver = Driver::build(
+            spec,
+            tier4,
+            &tooling.tools,
+            cfg,
+            model_from_user,
+            model_source,
+            Some(fanout.script_targets(part.id)),
+        )?;
+        drivers.insert(part.id, driver);
+    }
+    let budget = cfg.budget();
+    budget.shares(u32::try_from(count).unwrap_or(u32::MAX))?;
+    let base = head_of(root)?;
+
+    let (rules, governance) = run_governance(root, cfg, vault_refusal, None)?;
+    let (repo, skill_policy) = repo_context(
+        RepoInputs {
+            root,
+            profile: None,
+            governance: &governance,
+            rules: &rules,
+            vault_refusal,
+            vault_setting,
+            vault,
+            tooling,
+            added,
+            skill_dirs,
+        },
+        &mut *out,
+    )?;
+    let _ = writeln!(
+        out,
+        "agents:   {count} partition(s), up to {} at once ({})",
+        fanout.width, fanout.why
+    );
+    for part in plan.in_order() {
+        let _ = writeln!(
+            out,
+            "          partition {}: {}{}",
+            part.id.0,
+            fanout
+                .names
+                .get(&part.id)
+                .map(|n| n.join(", "))
+                .unwrap_or_default(),
+            if part.conservative {
+                " (runs first, alone: the graph cannot vouch for it)"
+            } else {
+                ""
+            }
+        );
+    }
+    let _ = writeln!(out, "base:     {base}");
+
+    let checks = cfg.checks();
+    let results: Arc<Mutex<HashMap<PartitionId, PartitionRun>>> = Arc::default();
+    let drivers = Arc::new(Mutex::new(drivers));
+    // At width 1 approve mode is allowed: one agent asks at a time, about
+    // its own worktree. Above 1 it was refused in `run_body`.
+    let (gate_tx, mut answering) = match (dial.mode, human) {
+        (config::ControlMode::Auto, _) | (_, Human::Absent) => (None, None),
+        (config::ControlMode::Approve, Human::Channel(tx)) => (Some(tx), None),
+        (config::ControlMode::Approve, Human::Line(read)) => {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            (Some(tx), Some((rx, read)))
+        }
+    };
+    let skills = trellis_loop::SkillAccess {
+        user_dirs: skill_dirs.to_vec(),
+        policy: skill_policy,
+    };
+    let supervisor = trellis_loop::Supervisor {
+        root,
+        run: run_id,
+        base: &base,
+        budget: &budget,
+        width: fanout.width,
+        policy: trellis_loop::FailurePolicy::AllOrNothing,
+    };
+    let work = |part: trellis_loop::PartitionTask| {
+        let driver = drivers.lock().ok().and_then(|mut d| d.remove(&part.id));
+        let mut orchestrator = trellis_loop::Orchestrator::new(&part.root, checks.clone())
+            .with_governance(governance.clone())
+            .with_rules(rules.clone())
+            .with_tools(tooling.tools.clone())
+            .with_env(tooling.env.clone())
+            .with_skills(skills.clone());
+        if let Some(tx) = &gate_tx {
+            orchestrator = orchestrator.with_gate(Box::new(trellis_loop::ApprovalGate::new(
+                &part.root,
+                dial.approve.clone(),
+                tx.clone(),
+            )));
+        }
+        let mine = fanout.names.get(&part.id).cloned().unwrap_or_default();
+        let text = partition_task(task, &mine, count);
+        let seed = trellis_loop::Seed {
+            prior: prior.clone(),
+            repo: repo.clone(),
+            steering: None,
+        };
+        let results = Arc::clone(&results);
+        async move {
+            let Some(mut driver) = driver else {
+                return Err("no driver was built for it".to_string());
+            };
+            let (handle, join) = orchestrator.spawn();
+            let budget = &part.budget;
+            let (outcome, transcript) = match &mut driver {
+                Driver::Scripted(m) => {
+                    trellis_loop::run_seeded(&text, m, &handle, budget, seed).await
+                }
+                Driver::Runtime(m) => {
+                    trellis_loop::run_seeded(&text, m, &handle, budget, seed).await
+                }
+                Driver::Hosted(m) => {
+                    trellis_loop::run_seeded(&text, &mut **m, &handle, budget, seed).await
+                }
+            };
+            let touched = handle.touched().await;
+            let gates = handle.gate_log().await;
+            // The orchestrator ends once its handle is gone; waited for, so
+            // nothing of it is still running when the worktree is merged and
+            // removed.
+            drop(handle);
+            let _ = join.await;
+            let failed = match &outcome {
+                trellis_loop::Outcome::Converged { .. } => None,
+                trellis_loop::Outcome::NotConverged { reason, .. } => Some(reason.explain()),
+            };
+            if let Ok(mut r) = results.lock() {
+                r.insert(
+                    part.id,
+                    PartitionRun {
+                        transcript,
+                        touched,
+                        gates,
+                        tokens: driver.tokens(),
+                        prompt_tokens: driver.prompt_tokens(),
+                        compactions: driver.compactions(),
+                        requested: driver.requested_compactions(),
+                    },
+                );
+            }
+            // `Err` for a partition that did not converge, or the supervisor
+            // would merge edits no check passed.
+            match failed {
+                None => Ok(()),
+                Some(why) => Err(why),
+            }
+        }
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let raced = on_run_stack(|| {
+        rt.block_on(async {
+            let answer = async {
+                if let Some((rx, read)) = answering.take() {
+                    answer_on_the_line(rx, read, &mut *out).await;
+                }
+                std::future::pending::<()>().await
+            };
+            // Ctrl-C drops `run_integrated`'s future, whose own guard rolls
+            // the root back to its snapshot; the partitions' tasks are
+            // aborted with it and their worktrees removed as they drop.
+            tokio::select! {
+                r = supervisor.run_integrated(plan, &checks, work) => Some(r),
+                _ = answer => None,
+                _ = tokio::signal::ctrl_c() => None,
+                _ = output::aborted(abort) => None,
+            }
+        })
+    })?;
+    // Not a plain drop, for the reason `run_body` gives: a line reader
+    // blocked on stdin would hold it. The partitions' tasks are dropped
+    // either way, and with them their worktrees.
+    rt.shutdown_background();
+    drop(gate_tx);
+
+    let mut results = match Arc::try_unwrap(results) {
+        Ok(m) => m.into_inner().unwrap_or_default(),
+        Err(shared) => shared
+            .lock()
+            .map(|mut m| std::mem::take(&mut *m))
+            .unwrap_or_default(),
+    };
+    let mut trail = PartitionedTrail::default();
+    let reports: HashMap<PartitionId, String> = match &raced {
+        Some(Ok(i)) => i
+            .reports
+            .iter()
+            .map(|r| {
+                (
+                    r.id,
+                    match &r.outcome {
+                        Ok(()) => "converged in its worktree".to_string(),
+                        Err(e) => e.to_string(),
+                    },
+                )
+            })
+            .collect(),
+        _ => HashMap::new(),
+    };
+    let _ = writeln!(out);
+    for part in plan.in_order() {
+        let status = reports
+            .get(&part.id)
+            .cloned()
+            .unwrap_or_else(|| "did not finish".to_string());
+        let _ = writeln!(out, "partition {}: {status}", part.id.0);
+        trail.partition(
+            part.id,
+            fanout.names.get(&part.id).map(Vec::as_slice).unwrap_or(&[]),
+            &status,
+            results.remove(&part.id),
+        );
+    }
+
+    let facts = |gaps, integrated, plan_actions| TrailFacts {
+        approved: trellis_trail::Approval::None,
+        base_commit: &base,
+        model: Some(model_spec),
+        control: Some(dial.describe()),
+        gates: &trail.gates,
+        stamp: Some(stamp),
+        tokens: trail.tokens,
+        prompt_tokens: trail.prompt_tokens,
+        agent: None,
+        label: label.clone(),
+        inputs: added.inputs.clone(),
+        compactions: &trail.compactions,
+        requested: &trail.requested,
+        services: &[],
+        plan: plan_actions,
+        integrated,
+        suspected_recall_gaps: gaps,
+    };
+    let transcript = trellis_loop::Transcript {
+        task: task.to_string(),
+        turns: std::mem::take(&mut trail.turns),
+        final_notice: false,
+        steering: trellis_loop::SteeringLog::default(),
+        prior: None,
+        repo: trellis_loop::RepoContext::default(),
+    };
+
+    let Some(result) = raced else {
+        let _ = writeln!(
+            out,
+            "INTERRUPTED. The partitions were stopped and the root rolled back to its \
+             snapshot; nothing is accepted on an abort."
+        );
+        let restored = back_at(root, &base);
+        let _ = writeln!(out, "Worktree restored: {restored}.");
+        let plan_actions = std::mem::take(&mut trail.plan);
+        match record_trail(
+            root,
+            task,
+            &transcript,
+            &trail.touched,
+            facts(Vec::new(), Vec::new(), plan_actions),
+            &mut *out,
+        ) {
+            Ok(p) => {
+                let _ = writeln!(out, "trail:    {} (interrupted)", p.display());
+            }
+            Err(e) => {
+                let _ = writeln!(out, "could not write the trail: {e}");
+            }
+        }
+        return Ok(RunExit::Interrupted { restored });
+    };
+    let integrated = match result {
+        Ok(i) => i,
+        // Refused at the snapshot: nothing ran, and there is nothing to
+        // record or roll back.
+        Err(trellis_loop::SuperviseError::Vcs(
+            e @ (trellis_vcs::VcsError::DirtyWorktree(_) | trellis_vcs::VcsError::NotARepo(_)),
+        )) => {
+            return Err(anyhow::Error::new(e))
+                .context("a clean git worktree is required before a run");
+        }
+        Err(e) => {
+            // A merge that failed part-way, or a rollback that did: the
+            // message says which, and how to finish a failed one by hand.
+            let _ = writeln!(out, "\nNOT CONVERGED: {e}");
+            let restored = back_at(root, &base);
+            let _ = writeln!(out, "Worktree restored: {restored}.");
+            let plan_actions = std::mem::take(&mut trail.plan);
+            match record_trail(
+                root,
+                task,
+                &transcript,
+                &trail.touched,
+                facts(Vec::new(), Vec::new(), plan_actions),
+                &mut *out,
+            ) {
+                Ok(p) => {
+                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "could not write the trail: {e}");
+                }
+            }
+            return Ok(RunExit::NotConverged { restored });
+        }
+    };
+
+    // The integrated verdicts: the only ones that can converge this run.
+    let mut integrated_checks = Vec::new();
+    let mut plan_actions = std::mem::take(&mut trail.plan);
+    let after = u32::try_from(transcript.turns.len())
+        .unwrap_or(u32::MAX)
+        .saturating_add(1);
+    for v in &integrated.checks {
+        let kind = format!("{:?}", v.kind());
+        let _ = writeln!(
+            out,
+            "integrated {kind}: {}",
+            if v.passed() { "passed" } else { "FAILED" }
+        );
+        if !v.passed() {
+            const SHOWN: usize = 24;
+            let d = v.detail();
+            for line in d.stdout.lines().chain(d.stderr.lines()).take(SHOWN) {
+                let _ = writeln!(out, "  {line}");
+            }
+        }
+        plan_actions.push(trellis_trail::Action {
+            turn: after,
+            tool: "integrated_check".to_string(),
+            target: format!("{kind} on whole repository"),
+            outcome: if v.passed() { "passed" } else { "failed" }.to_string(),
+            wrote: false,
+            changed: Vec::new(),
+            changed_count: 0,
+        });
+        integrated_checks.push(trellis_trail::CheckOutcome {
+            kind,
+            passed: v.passed(),
+        });
+    }
+    let gaps: Vec<trellis_trail::SuspectedRecallGap> = integrated
+        .suspected_recall_gaps
+        .iter()
+        .map(|g| trellis_trail::SuspectedRecallGap {
+            partitions: g.partitions.iter().map(|p| p.0).collect(),
+            files: g.files.clone(),
+            check: format!("{:?}", g.check),
+        })
+        .collect();
+    for g in &gaps {
+        let _ = writeln!(
+            out,
+            "recall:   the integrated {} failure named {} from partitions {}: a collision \
+             the plan did not predict, so an edge the graph may have missed (suspected)",
+            g.check,
+            g.files.join(", "),
+            g.partitions
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(" and ")
+        );
+    }
+
+    match &integrated.integration {
+        trellis_loop::Integration::Converged => {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "CONVERGED: {count} partition(s) merged, and the integrated checks passed on \
+                 the union."
+            );
+            let _ = writeln!(
+                out,
+                "files written: {}",
+                if integrated.merged.is_empty() {
+                    "none".to_string()
+                } else {
+                    integrated.merged.join(", ")
+                }
+            );
+            let path = record_trail(
+                root,
+                task,
+                &transcript,
+                &integrated.merged,
+                facts(gaps, integrated_checks, plan_actions),
+                &mut *out,
+            )?;
+            let _ = writeln!(out, "trail:    {}", path.display());
+            let _ = writeln!(
+                out,
+                "{}",
+                concat!(
+                    "Changes are left in the working tree for you to review. ",
+                    "Nothing is committed:\n",
+                    "acceptance is yours, and the trail records the run as unapproved ",
+                    "until you give it."
+                )
+            );
+            Ok(RunExit::Converged)
+        }
+        trellis_loop::Integration::RolledBack(why) => {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "NOT CONVERGED: {why}.");
+            let restored = back_at(root, &base);
+            let _ = writeln!(out, "Rolled back to {base}. Worktree restored: {restored}.");
+            // After the rollback, as in `run_body`: the rollback cleans
+            // untracked files, and the trail is one until it is committed.
+            match record_trail(
+                root,
+                task,
+                &transcript,
+                &trail.touched,
+                facts(gaps, integrated_checks, plan_actions),
+                &mut *out,
+            ) {
+                Ok(p) => {
+                    let _ = writeln!(out, "trail:    {} (survives the rollback)", p.display());
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "could not write the trail: {e}");
+                }
+            }
+            Ok(RunExit::NotConverged { restored })
+        }
+    }
+}
+
+/// Every partition's record, joined in plan order into what one trail
+/// holds: turns numbered on from the partition before, and an action
+/// opening each partition that names its targets and how it ended.
+#[derive(Default)]
+struct PartitionedTrail {
+    turns: Vec<trellis_loop::Turn>,
+    plan: Vec<trellis_trail::Action>,
+    gates: Vec<trellis_loop::GateDenial>,
+    compactions: Vec<trellis_loop::Compacted>,
+    requested: Vec<trellis_loop::RequestedCompaction>,
+    /// Every path a partition wrote, in plan order, once each.
+    touched: Vec<String>,
+    tokens: Option<u64>,
+    prompt_tokens: Option<u64>,
+    /// Whether any partition has been added, so a sum starts at the first
+    /// rather than at a zero nobody measured.
+    started: bool,
+}
+
+impl PartitionedTrail {
+    fn partition(
+        &mut self,
+        id: PartitionId,
+        names: &[String],
+        status: &str,
+        run: Option<PartitionRun>,
+    ) {
+        let offset = u32::try_from(self.turns.len()).unwrap_or(u32::MAX);
+        self.plan.push(trellis_trail::Action {
+            turn: offset.saturating_add(1),
+            tool: "partition".to_string(),
+            target: format!("{} ({})", id.0, names.join(", ")),
+            outcome: summarise(status),
+            wrote: false,
+            changed: Vec::new(),
+            changed_count: 0,
+        });
+        // A partition that never ran counts nothing, and a sum over the
+        // ones that did would be part of the run presented as all of it.
+        let (tokens, prompt_tokens) = run
+            .as_ref()
+            .map_or((None, None), |r| (r.tokens, r.prompt_tokens));
+        let sum = |acc: Option<u64>, this: Option<u64>, first: bool| {
+            if first {
+                this
+            } else {
+                acc.zip(this).map(|(a, b)| a.saturating_add(b))
+            }
+        };
+        self.tokens = sum(self.tokens, tokens, !self.started);
+        self.prompt_tokens = sum(self.prompt_tokens, prompt_tokens, !self.started);
+        self.started = true;
+        let Some(run) = run else {
+            return;
+        };
+        self.turns.extend(run.transcript.turns);
+        self.gates.extend(run.gates.into_iter().map(|mut g| {
+            g.call = g.call.saturating_add(offset);
+            g
+        }));
+        self.compactions
+            .extend(run.compactions.into_iter().map(|mut c| {
+                c.turn = c.turn.saturating_add(offset);
+                c
+            }));
+        self.requested
+            .extend(run.requested.into_iter().map(|mut c| {
+                c.turn = c.turn.saturating_add(offset);
+                c
+            }));
+        for t in run.touched {
+            if !self.touched.contains(&t) {
+                self.touched.push(t);
             }
         }
     }
@@ -2407,6 +3317,17 @@ struct TrailFacts<'a> {
     /// The services that ran beside the task (ADR 0026 §12), recorded
     /// ahead of the first turn's actions. Empty outside `work`.
     services: &'a [trellis_trail::Action],
+    /// A multi-agent run's own actions (#466): each partition's opening,
+    /// before its first turn, and the integrated checks, after the last.
+    /// Each goes before the turn it names, after the last turn when it names
+    /// one past it. Empty for a single-agent run.
+    plan: Vec<trellis_trail::Action>,
+    /// The integrated checks a multi-agent run ran over its merged union,
+    /// after the partitions' own (ADR 0042). Empty for a single-agent run.
+    integrated: Vec<trellis_trail::CheckOutcome>,
+    /// Integrated-check failures naming files from two or more partitions
+    /// (ADR 0042), from `Integrated::suspected_recall_gaps`.
+    suspected_recall_gaps: Vec<trellis_trail::SuspectedRecallGap>,
 }
 
 /// What a person sent during the run, as the trail records it (ADR 0034).
@@ -2471,6 +3392,9 @@ fn record_trail(
         compactions,
         requested,
         services,
+        plan,
+        integrated,
+        suspected_recall_gaps,
     } = facts;
     use trellis_trail::{CheckOutcome, Factual, Judgment, Provenance, RadiusCounts, SCHEMA, Trail};
 
@@ -2517,6 +3441,7 @@ fn record_trail(
                 passed: t.verdict_passed?,
             })
         })
+        .chain(integrated)
         .collect();
 
     // A human's decision is an action of its own, recorded before the call it
@@ -2568,8 +3493,12 @@ fn record_trail(
                         .map(hosted::requested_compaction_action),
                 )
                 .collect();
-            compacted
+            // A partition's opening goes before its first turn (#466).
+            let opened: Vec<trellis_trail::Action> =
+                plan.iter().filter(|a| a.turn == at).cloned().collect();
+            opened
                 .into_iter()
+                .chain(compacted)
                 .chain(decision)
                 .chain(denied)
                 .chain(std::iter::once(act))
@@ -2590,6 +3519,12 @@ fn record_trail(
             .iter()
             .filter(|c| c.turn as usize > turns.turns.len())
             .map(hosted::requested_compaction_action),
+    );
+    // A partition that ran no turn, last in the plan, and the integrated
+    // checks, which ran after every turn.
+    actions.extend(
+        plan.into_iter()
+            .filter(|a| a.turn as usize > turns.turns.len()),
     );
 
     let (timestamp, started_at) = stamp.cloned().unwrap_or_else(trellis_trail::now);
@@ -2615,8 +3550,9 @@ fn record_trail(
         // such a trail has the bytes it had before the field (ADR 0034).
         steering: steering_entries(&turns.steering, turns.turns.len()),
         // A single-agent run has no partitions, so no failure of its can
-        // name files from two of them (ADR 0042). Empty is omitted on disk.
-        suspected_recall_gaps: Vec::new(),
+        // name files from two of them, and its gaps are empty (ADR 0042).
+        // Empty is omitted on disk.
+        suspected_recall_gaps,
     };
 
     let slug = trellis_trail::slugify(task);
@@ -2684,6 +3620,9 @@ mod interrupt_tests {
             compactions: &[],
             requested: &[],
             services: &[],
+            plan: Vec::new(),
+            integrated: Vec::new(),
+            suspected_recall_gaps: Vec::new(),
         }
     }
 

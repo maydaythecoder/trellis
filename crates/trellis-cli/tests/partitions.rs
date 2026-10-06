@@ -256,38 +256,6 @@ fn agents_auto_on_a_scripted_backend_runs_at_width_one_and_says_why() {
     );
 }
 
-#[test]
-fn agents_above_one_with_targets_is_refused_as_not_built_yet() {
-    // Part B (#466) builds running partitions together. Until then a width
-    // above 1 is refused rather than quietly run as one agent: a run that
-    // appears to do what was asked without doing it is the failure CLAUDE.md
-    // names.
-    let f = fixture("not-built");
-    let o = run(
-        &f,
-        &[
-            "run",
-            "change fa",
-            "--model",
-            &f.spec,
-            "--agents",
-            "3",
-            "--target",
-            "fa",
-            "--target",
-            "fb",
-            "--target",
-            "fc",
-        ],
-    );
-    assert_refused_before_snapshot(&f, &o);
-    let err = said(&o);
-    assert!(
-        err.contains("not built yet") && err.contains("#466"),
-        "{err}"
-    );
-}
-
 /// A `[checks]` section whose type check and tests both pass, whatever the
 /// tree holds: `git --version` runs everywhere these tests do.
 const CHECKS_PASS: &str =
@@ -544,4 +512,51 @@ fn agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot(
     assert_refused_before_snapshot(&f, &o);
     let err = said(&o);
     assert!(err.contains("bash") && err.contains("--agents 1"), "{err}");
+}
+
+#[test]
+fn a_partitions_edit_into_the_vault_is_refused_and_named() {
+    // ADR 0049 (#357) in a multi-agent run: each partition's orchestrator
+    // has the run's governance, the vault's notes root included. The risk:
+    // a partition's worktree is a fresh checkout, and governance built for
+    // the root alone would let an agent there rewrite a note, which the
+    // merge would then carry into the root.
+    let config = format!("{CHECKS_PASS}\n[context]\nvault = \"vault\"\n");
+    let mut fa = section("a.py", "A_NEW");
+    fa["steps"].as_array_mut().unwrap().insert(
+        0,
+        serde_json::json!({"tool": "edit", "path": "vault/retries.md",
+            "old": "Backoff doubles.", "new": "Backoff triples."}),
+    );
+    let script = serde_json::json!({"targets": {"fa": fa, "fb": section("b.py", "B_NEW")}});
+    let f = fixture_with("vault", Some(&config), &script.to_string());
+    std::fs::create_dir_all(f.root.join("vault")).unwrap();
+    let note = "---\ntitle: \"Retry policy\"\nparent: null\n---\n\nBackoff doubles.\n";
+    std::fs::write(f.root.join("vault/retries.md"), note).unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "a note"]);
+    let o = run(
+        &f,
+        &[
+            "run",
+            "change fa and fb",
+            "--model",
+            &f.spec,
+            "--agents",
+            "2",
+            "--target",
+            "fa",
+            "--target",
+            "fb",
+        ],
+    );
+    let out = said(&o);
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("vault/retries.md")).unwrap(),
+        note,
+        "the note changed:\n{out}"
+    );
+    let trail = the_trail(&f.root).to_string();
+    assert!(trail.contains("edit refused"), "{trail}");
+    assert!(trail.contains("[context] vault"), "{trail}");
 }
