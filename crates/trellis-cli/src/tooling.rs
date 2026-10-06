@@ -1305,4 +1305,146 @@ mod run_tests {
             "an ignored file the custom tool created survived the rollback:\n{said}"
         );
     }
+
+    const LINT: &str = "[[tools.custom]]\nname = \"lint\"\ndescription = \"Lint.\"\n\
+                        command = [\"python\", \"lint.py\"]\n\
+                        schema = { type = \"object\", properties = {} }\n";
+
+    #[test]
+    fn the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none() {
+        // The risk: the line a person reads before `trellis trust` names a
+        // kind that is absent ("hooks: 0 present") or leaves out a process
+        // agent or a service, which run repository code too; and a trusted
+        // run with no hooks still carries an empty hook set, so its `tools:`
+        // line names hooks that do not exist.
+        let (dir, _) = fixture("untrusted-counts", LINT, EDIT_THEN_STOP);
+        std::fs::create_dir_all(dir.join(".trellis/agents")).unwrap();
+        std::fs::write(
+            dir.join(".trellis/agents/maker.toml"),
+            "command = [\"python\", \"make.py\"]\n\
+             [[services]]\nname = \"db\"\ncommand = [\"python\", \"db.py\"]\n",
+        )
+        .unwrap();
+        let cfg = config::RepoConfig::load(&dir).unwrap();
+        let t = super::prepare(&dir, &cfg, "r", "m").unwrap();
+        assert_eq!(
+            t.untrusted.as_deref(),
+            Some(
+                "custom tools: 1 present, process agents: 1 present, services: 1 present, \
+                 not trusted (run trellis trust)"
+            )
+        );
+        trust(&dir);
+        let t = super::prepare(&dir, &cfg, "r", "m").unwrap();
+        assert_eq!(t.untrusted, None);
+        assert!(t.hooks.is_none(), "no hook is declared");
+    }
+
+    #[test]
+    fn a_profile_may_keep_a_declared_custom_tool_by_name_and_not_a_typo() {
+        // The risk: a profile's `tools` list refused the custom tool the
+        // repository declares, so a profile could not keep it.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(d.path().join(".trellis/config.toml"), LINT).unwrap();
+        let cfg = config::RepoConfig::load_with_user(d.path(), None).unwrap();
+        let keep = |t: &str| super::check_profile_tools("rev", &[t.to_string()], &cfg);
+        keep("lint").expect("a declared custom tool");
+        keep("read_file").expect("a built-in");
+        let e = keep("lnit").unwrap_err();
+        assert!(
+            format!("{e:#}").contains("`lnit`, which is not a tool"),
+            "{e:#}"
+        );
+    }
+
+    #[test]
+    fn a_profile_that_leaves_out_run_checks_is_told_it_was_kept() {
+        // The risk: the note that run_checks was kept regardless shown when
+        // the profile listed it, or missing when it did not.
+        let d = tempfile::tempdir().unwrap();
+        let cfg = config::RepoConfig::load_with_user(d.path(), None).unwrap();
+        let narrowed = |keep: &[&str]| {
+            let mut t = super::prepare(d.path(), &cfg, "r", "m").unwrap();
+            let keep: Vec<String> = keep.iter().map(|k| k.to_string()).collect();
+            t.narrow_for_profile("rev", &keep);
+            t.narrowed_by.unwrap()
+        };
+        assert!(narrowed(&["read_file"]).contains("run_checks kept though unlisted"));
+        let n = narrowed(&["read_file", "run_checks"]);
+        assert!(!n.contains("run_checks kept"), "{n}");
+    }
+
+    #[test]
+    fn the_tools_line_names_auto_mode_s_bash_policy() {
+        // The risk: an unattended bash described as one that refuses every
+        // command, or an empty allowlist described as one that admits some.
+        let line = |allow: &[&str], unattended: bool| {
+            let tools = trellis_loop::ToolSet::build(trellis_loop::ToolSelection {
+                bash: Some(trellis_loop::BashSettings {
+                    shell: vec!["sh".into(), "-c".into()],
+                    timeout: Duration::from_secs(5),
+                    allow: allow.iter().map(|a| a.to_string()).collect(),
+                    unattended,
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+            super::Tooling {
+                tools,
+                hooks: None,
+                env: Vec::new(),
+                untrusted: None,
+                narrowed_by: None,
+                guard: None,
+            }
+            .line(config::ControlMode::Auto)
+            .unwrap()
+        };
+        let l = line(&[], true);
+        assert!(l.contains("(any command, unattended, timeout 5s)"), "{l}");
+        let l = line(&[], false);
+        assert!(
+            l.contains("every command refused (bash_allow is empty)"),
+            "{l}"
+        );
+        let l = line(&["cargo test"], false);
+        assert!(l.contains("auto mode: only cargo test"), "{l}");
+    }
+
+    #[test]
+    fn after_run_is_told_whether_the_run_converged_and_why_not() {
+        // The risk: the hook handed an empty document, so it cannot tell a
+        // converged run from one that stopped.
+        let touched = vec!["a.py".to_string()];
+        let v = super::outcome_json(
+            &trellis_loop::Outcome::Converged {
+                iterations: 3,
+                checks_passed: 1,
+            },
+            &touched,
+            "run-1",
+        );
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "run_id": "run-1",
+                "converged": true,
+                "iterations": 3,
+                "reason": null,
+                "touched": ["a.py"],
+            })
+        );
+        let v = super::outcome_json(
+            &trellis_loop::Outcome::NotConverged {
+                reason: trellis_loop::NotConverged::ModelFailed("timed out".into()),
+                iterations: 2,
+            },
+            &[],
+            "run-2",
+        );
+        assert_eq!(v["converged"], false);
+        assert_eq!(v["iterations"], 2);
+        assert!(v["reason"].as_str().unwrap().contains("timed out"), "{v}");
+    }
 }
