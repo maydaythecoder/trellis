@@ -54,6 +54,12 @@ pub(crate) enum QueueAction {
         /// string, split shell-style when the task runs.
         #[arg(long, requires = "prompt", value_name = "STRING")]
         args: Option<String>,
+        /// The model this task runs on, as `run --model`, over its
+        /// assignee profile's and `work --model`. Counts as the
+        /// repository's choice for keys: a hosted endpoint is sent a key
+        /// only if your own config names it (ADR 0024 §3).
+        #[arg(long, value_name = "SPEC")]
+        model: Option<String>,
         #[arg(long, value_parser = PRIORITIES, default_value = "medium")]
         priority: String,
         /// Repeatable.
@@ -195,7 +201,8 @@ pub(crate) struct WorkArgs {
     /// Run at most this many tasks in this invocation.
     #[arg(long, value_name = "N")]
     max_tasks: Option<u32>,
-    /// As `trellis run --model`; falls back to `[model] spec`. A task
+    /// As `trellis run --model`; falls back to `[model] spec`. A task that
+    /// names a model (`queue add --model`) uses its own; otherwise a task
     /// assigned to a profile that names a model uses the profile's.
     #[arg(long)]
     model: Option<String>,
@@ -238,6 +245,7 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             focus,
             prompt,
             args,
+            model,
             priority,
             labels,
             parent,
@@ -259,6 +267,12 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                 crate::templates::split_args(a)
                     .with_context(|| format!("--args `{}`", plain(a)))?;
             }
+            // Parsed as `run --model` parses it, for the same reason. Only
+            // parsed: whether a key may go to its endpoint is decided when
+            // the task runs, against the configuration in force then.
+            if let Some(m) = &model {
+                let _: trellis_model::ModelSpec = m.parse()?;
+            }
             if let Some(stem) = &focus {
                 check_focus(root, stem)?;
             }
@@ -274,6 +288,7 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                     focus,
                     prompt,
                     args,
+                    model,
                     priority: parse_priority(&priority),
                     labels,
                     parent,
@@ -1091,7 +1106,8 @@ struct CliRunner<'a> {
     root: &'a Path,
     model: Option<String>,
     /// Whether `model` came from `--model` rather than `[model] spec`
-    /// (ADR 0024 §3). A profile's own model is the repository's.
+    /// (ADR 0024 §3). A profile's own model is the repository's, and so is
+    /// a task's (ADR 0026 §1).
     model_from_user: bool,
     unconstrained: bool,
     stop: Arc<AtomicBool>,
@@ -1281,7 +1297,7 @@ impl Runner for CliRunner<'_> {
 
     fn gate(&mut self, _id: &str, t: &trellis_queue::Task, _out: &mut dyn Write) -> Option<String> {
         let Some(name) = &t.assignee else {
-            return self.model.is_none().then(crate::first_run::no_model);
+            return (self.model.is_none() && t.model.is_none()).then(crate::first_run::no_model);
         };
         let Some(p) = self.profiles.get(name) else {
             return Some(format!("no agent profile `{name}` in .trellis/agents/"));
@@ -1309,7 +1325,7 @@ impl Runner for CliRunner<'_> {
                 return Some(format!("agent `{name}` runs a repository command; {why}"));
             }
         }
-        if !p.is_process() && p.file.model.is_none() && self.model.is_none() {
+        if !p.is_process() && p.file.model.is_none() && self.model.is_none() && t.model.is_none() {
             return Some(format!(
                 "agent `{name}` names no model, and `work` has none: pass --model"
             ));
@@ -1403,11 +1419,18 @@ impl Runner for CliRunner<'_> {
                 &mut crate::output::human(),
             );
         }
-        let model_from_user =
-            self.model_from_user && profile.as_ref().is_none_or(|p| p.file.model.is_none());
-        let Some(model) = profile
-            .as_ref()
-            .and_then(|p| p.file.model.clone())
+        // The task's own model, then the profile's, then `work --model` or
+        // `[model] spec` (ADR 0026 §1). Only `work --model` is the user's
+        // choice for keys: a task file can arrive through `queue import`,
+        // so its model counts as the repository's, as a profile's does
+        // (ADR 0024 §3).
+        let model_from_user = self.model_from_user
+            && t.model.is_none()
+            && profile.as_ref().is_none_or(|p| p.file.model.is_none());
+        let Some(model) = t
+            .model
+            .clone()
+            .or_else(|| profile.as_ref().and_then(|p| p.file.model.clone()))
             .or_else(|| self.model.clone())
         else {
             return RunEnd::Error {
@@ -1652,6 +1675,7 @@ mod queue_add_args_tests {
                 focus: None,
                 prompt: Some(prompt.into()),
                 args: Some(args.into()),
+                model: None,
                 priority: "medium".into(),
                 labels: Vec::new(),
                 parent: None,

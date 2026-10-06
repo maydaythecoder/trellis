@@ -302,6 +302,85 @@ fn a_profile_task_runs_with_the_profile_model_and_instructions_and_the_trail_nam
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// `scripted:<fixture>/<script>`, with the path written as `fixture` writes
+/// `{ROOT}`, so a spec given on the command line matches one in a file.
+fn scripted(d: &Path, script: &str) -> String {
+    format!(
+        "scripted:{}/{script}",
+        d.display().to_string().replace('\\', "/")
+    )
+}
+
+#[test]
+fn queue_add_model_refuses_a_spec_that_does_not_parse() {
+    // ADR 0026 §1 (#346). The risk: a typo in a task's model is found by the
+    // heartbeat hours later, failing the task with nobody watching, rather
+    // than refused while the person who typed it is there.
+    let d = fixture("task-model-parse", &[]);
+    let o = trellis(&d, &["queue", "add", "x", "--model", "no-scheme-here"]);
+    let s = combined(&o);
+    assert!(!o.status.success(), "{s}");
+    assert!(
+        s.contains("`no-scheme-here` is not a model spec"),
+        "refused by the spec parser `run --model` uses: {s}"
+    );
+    assert!(ids(&d, "pending").is_empty(), "no task file was written");
+
+    // A spec that parses is stored on the task as given.
+    let spec = scripted(&d, "converge.json");
+    let id = queued_id(&ok(&d, &["queue", "add", "y", "--model", &spec]));
+    assert_eq!(task(&d, "pending", &id)["model"], spec.as_str());
+    // A task without one is written as before: no `model` key at all.
+    let plain = queued_id(&ok(&d, &["queue", "add", "z"]));
+    assert!(task(&d, "pending", &plain).get("model").is_none());
+    assert_eq!(porcelain(&d), "", "the queue must never dirty the worktree");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_task_that_names_a_model_runs_on_it_over_its_profile_and_work_model() {
+    // ADR 0026 §1 (#346). The profile and `work --model` both name a script
+    // that stops without a change, and only the task's own converges: a run
+    // on either of the others cannot pass for the task's.
+    let d = fixture(
+        "task-model-run",
+        &[(
+            ".trellis/agents/rev.toml",
+            "role = \"reviewer\"\nmodel = \"scripted:{ROOT}/stop.json\"\n",
+        )],
+    );
+    let own = scripted(&d, "converge.json");
+    let id = queued_id(&ok(
+        &d,
+        &[
+            "queue",
+            "add",
+            "change the greeting",
+            "--assignee",
+            "rev",
+            "--model",
+            &own,
+        ],
+    ));
+    let o = trellis(&d, &["work", "--model", &scripted(&d, "stop.json")]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(
+        s.contains("agent:    rev") && s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
+        "{s}"
+    );
+    let t = task(&d, "done", &id);
+    assert_eq!(t["status"], "in_review", "{t}");
+    let tr = trail(&d, t["outcome"]["run_id"].as_str().unwrap());
+    assert_eq!(
+        tr["provenance"]["model"],
+        own.as_str(),
+        "the trail names the model that drove the run: {tr}"
+    );
+    assert_eq!(tr["factual"]["agent"], "rev");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn a_paused_agent_is_skipped_until_resumed() {
     let d = fixture(
