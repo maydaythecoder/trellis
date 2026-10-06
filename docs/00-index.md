@@ -107,8 +107,8 @@ descoped by ADR 0013 and three partial or unmet, and v0.3 is eight of nine.
 Branches follow ADR 0051: `main` is the launch branch, moved only when the
 owner merges a pull request from `dev`; `dev` is the trunk that ticket and
 feature branches are cut from; `audit` is the integration branch they merge
-into before it is promoted into `dev`. The legacy branches `v0.1-resolver` and
-`drain` are frozen.
+into before it is promoted into `dev`. No other branch is permanent; the
+legacy ones were deleted on 2026-10-06 (ADR 0051 item 5).
 
 The one thing a reader should carry into every other document: **recall was
 measured at 47.8%, which fired the pre-registered S16 pivot trigger; a bounded

@@ -143,13 +143,19 @@ SHA by hand.
 | `audit` | integration: ticket and feature branches meet here, conflicts are resolved, gates and the security audit run | `git merge --no-ff` of a green ticket or feature branch |
 | `t<n>-<slug>`, `feature/<slug>` | one ticket, or a feature spanning several | their author; deleted after merging |
 
-The legacy branches `v0.1-resolver` (the old default, frozen), `drain` (the
-old integration branch, frozen at the commit `dev` and `audit` started from),
-`inherit`, `agents-setup` and `orchestrator-state` are kept, not deleted.
+These are the only permanent branches; the legacy ones were deleted on
+2026-10-06, and ADR 0051 item 5 records their tips.
+
+`audit` reaches `dev` through an `audit → dev` pull request, and `dev`
+reaches `main` through a `dev → main` one. CI (`ci.yml`) runs on each of
+those pull requests and on a push to `main`, not on a push to `dev`: the
+`audit → dev` pull request has already run it on the tree `dev` receives,
+and a cancelled duplicate run on the `dev` push showed as failed checks on
+the `dev → main` pull request (#473; ADR 0051 item 4, amended by #477).
 
 The pre-push hook (`scripts/hooks/pre-push`,
 installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
-shows it firing) refuses every push to `main`, `v0.1-resolver` and the frozen `drain`, and of any `v*` tag (ADR 0051 item 3), from a clone that has
+shows it firing) refuses every push to `main`, and to the deleted `v0.1-resolver` and `drain` so an old clone cannot re-create them, and of any `v*` tag (ADR 0051 item 3), from a clone that has
 installed it (GitHub branch protection needs Pro on a private repository;
 ADR 0036 records the gap and the ruleset to apply later).
 

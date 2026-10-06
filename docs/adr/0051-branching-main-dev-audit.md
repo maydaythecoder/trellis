@@ -44,16 +44,37 @@ and there was no branch that meant "ready to launch".
    owner's act; other tags go through.
 4. **CI** runs on pushes to `main`, `dev`, `audit` and `v0.1-resolver`, and
    on every pull request.
+   *2026-10-06 (#477):* CI runs on a push to `main` only, and on a pull
+   request into `main` or `dev` (`audit` left the push list in #381, the
+   pull request list narrowed to `main` and `dev` in #426, and `dev` leaves
+   the push list here). Promotion from `audit` into `dev` goes through an
+   `audit → dev` pull request (as `dev`'s history shows, e.g. "merge #471
+   (audit -> dev)"), whose CI ran on the tree `dev` receives, and the
+   `dev → main` pull request runs CI again on `dev`. A run on the `dev` push
+   repeated that work, and when the concurrency group cancelled it GitHub
+   showed nine failed checks on the `dev → main` pull request #473. Merging
+   `main` back into `dev` after a squash leaves `dev`'s tree as it was, so
+   it needs no run either. Reversed by adding `"dev"` back to `push.branches`
+   in `ci.yml`.
 5. **Legacy.** `v0.1-resolver` (frozen), `drain` (frozen at the commit `dev`
    and `audit` start from), `inherit`, `agents-setup` and
    `orchestrator-state` are kept, not deleted: deleting a branch cannot be
    undone, and their history is cited by issues and ADRs.
+   *Amended 2026-10-06 (#474):* the owner had `agents-setup` (tip 040b634),
+   `drain` (44ac48e), `orchestrator-state` (2f5e5c3) and `v0.1-resolver`
+   (747df54) deleted; a comparison against `dev` found nothing in them still
+   wanted. The remote now holds only `main`, `dev` and `audit`, the permanent
+   branches. The tips above are what a citation by issue or ADR resolves to.
+   The pre-push hook still refuses `drain` and `v0.1-resolver`, so a clone
+   fetched before the deletion cannot re-create them by accident.
 
 ## Reversal
 
 Point the default branch back at `v0.1-resolver`, restore `lib.sh`'s
 `INTEGRATION_BRANCH="drain"`, and the old flow resumes; no branch was
-deleted and no history rewritten.
+deleted and no history rewritten. *Amended 2026-10-06 (#474):* the legacy
+branches are now deleted; reversing means re-creating `v0.1-resolver` at
+747df54 and `drain` at 44ac48e first (with `--no-verify`, the owner's act).
 
 ## Consequences
 

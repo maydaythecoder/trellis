@@ -6,7 +6,7 @@
 #
 # A Verify line for a removed reference, the counterpart of path-absent.sh.
 # <text> is matched as a fixed string, not a pattern, so a ref name such as
-# `origin/drain` or a dotted version means exactly what it says. Only tracked
+# `origin/legacy-x` or a dotted version means exactly what it says. Only tracked
 # files count (their working-tree contents, as `git grep` reads them): a build
 # directory or an ignored file under the path does not. Run from the
 # repository; <path> is relative to the current directory, as git reads it.
