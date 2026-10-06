@@ -1006,7 +1006,16 @@ message, not on these lines. The second pass marks its own here: each
 mutant was applied by hand to the code at its base, the named test run
 with `cargo test -p trellis-cli` and seen to fail, and the source restored;
 neither cargo-mutants nor the workspace suite was run. Line numbers are
-`989b2a2`'s; every work.rs mutant was still present, at a moved line.
+`989b2a2`'s; every work.rs mutant was still present, at a moved line, and
+process_agent.rs's and services.rs's too. Pass 2 covers those three files
+(112 lines): 89 killed, 3 equivalent, 3 unexercisable (a pty, a SIGINT
+this Windows host cannot send, and one failure with no deterministic
+trigger), and 17 not examined. Those 17 are
+`#[cfg(unix)]` code that cargo-mutants mutated on a Windows host where it
+is never compiled, so they survive there by construction. No bug was
+found. A side finding, not a survivor: `queue list --priority` alone still
+lists unreadable task files, which `--status`, `--label` and `--assignee`
+hide.
 
 ```
 #248 | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
