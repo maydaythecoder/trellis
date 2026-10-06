@@ -3349,6 +3349,43 @@ mod approval_tests {
     }
 
     #[test]
+    fn a_queued_run_that_asks_ends_as_asked_with_the_question() {
+        // #248. The risk: a restored run that ended on `ask_human` reported
+        // as an ordinary rollback, so `work` never parks the task on the
+        // question and the person is never asked.
+        let (dir, spec) = fixture(
+            "asks-human",
+            r#"{"steps":[{"tool":"ask_human","question":"Keep the v1 endpoint?","options":["yes","no"]}]}"#,
+        );
+        let mut out = Vec::new();
+        let r = cmd_run(
+            &dir,
+            "change f",
+            &spec,
+            false,
+            RunSeeding {
+                queued: true,
+                ..RunSeeding::default()
+            },
+            RunControl {
+                flag: Some(config::ControlMode::Auto),
+                human: Human::Absent,
+                steering: None,
+            },
+            &mut out,
+        );
+        let said = String::from_utf8(out).unwrap();
+        assert_eq!(
+            r.unwrap(),
+            RunExit::Asked {
+                question: "Keep the v1 endpoint?".to_string(),
+                options: vec!["yes".to_string(), "no".to_string()],
+            },
+            "{said}"
+        );
+    }
+
+    #[test]
     fn an_approve_list_someone_wrote_is_not_widened() {
         // #425 widens only the default. A repository that wrote
         // `approve = ["edit"]` asked for edits only, and gets that.
@@ -3651,6 +3688,26 @@ mod audit_mode_tests {
             (1, 0),
             "the covered call on line 2 was looked up on another line"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_coverage_file_with_no_files_measures_nothing() {
+        // #248. The risk: a `coverage.json` that names no file read as data,
+        // so every caller counts as Reviewed (not covered) rather than the
+        // whole run as not measured.
+        let dir = crate::testutil::scratch("audit-mode-empty-coverage");
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/core.py"), "def greet():\n    return 1\n").unwrap();
+        std::fs::write(
+            dir.join("app/edge.py"),
+            "from app.core import greet\ngreet()\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("coverage.json"), r#"{"files": {}}"#).unwrap();
+
+        let counts = audit_modes(&dir, &["app/core.py".to_string()]);
+        assert_eq!((counts.verified, counts.reviewed), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

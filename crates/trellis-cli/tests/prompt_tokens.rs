@@ -260,6 +260,73 @@ fn anthropic_prompt_tokens_in_the_trail_include_the_cache_fields() {
 }
 
 #[test]
+fn a_local_runtime_s_compaction_reaches_the_trail_and_the_report() {
+    // #248, ADR 0024 §5 and ADR 0033. The risk: the driver's compactions
+    // dropped between the adapter and the trail, so a run whose model was
+    // shown elided observations records that it was shown everything. Two
+    // reads of different 2 KB files against a 4,000 B budget put the third
+    // request over it, and eliding the first read brings it back under.
+    let reply = |call: &str| {
+        serde_json::json!({"content": call, "tokens_predicted": 3,
+            "tokens_evaluated": 10, "timings": {"prompt_n": 1}})
+        .to_string()
+    };
+    let replies = vec![
+        reply(r#"{"tool":"read_file","path":"app/one.py"}"#),
+        reply(r#"{"tool":"read_file","path":"app/two.py"}"#),
+        reply(r#"{"tool":"done","summary":"read them"}"#),
+    ];
+    let n = replies.len();
+    let (base, server) = stub(replies);
+    let d = repo("compaction", None, &base);
+    for name in ["one", "two"] {
+        let body: String = (0..80)
+            .map(|i| format!("{name}_{i:03} = {i}  # pad\n"))
+            .collect();
+        std::fs::write(d.join(format!("app/{name}.py")), body).unwrap();
+    }
+    let config = d.join(".trellis/config.toml");
+    let mut cfg = std::fs::read_to_string(&config).unwrap();
+    cfg.push_str("[model]\ncontext_bytes = 4000\n");
+    std::fs::write(&config, cfg).unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-q", "-m", "two files"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(&d)
+        .args(["run", "read it twice", "--unconstrained"])
+        .args(["--model", &format!("llamacpp:{base}")])
+        .env("TRELLIS_CONFIG_DIR", user_dir(&d))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        server.join().unwrap(),
+        n,
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("context:  compacted 1 time(s)"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    let runs = d.join(".trellis/runs");
+    let trail = std::fs::read_dir(&runs)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "json"))
+        .unwrap_or_else(|| panic!("a trail under {}", runs.display()));
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&trail).unwrap()).unwrap();
+    let actions = v["factual"]["actions"].as_array().unwrap();
+    assert!(
+        actions.iter().any(|a| a["tool"] == "compaction"),
+        "{actions:?}"
+    );
+}
+
+#[test]
 fn llamacpp_prompt_tokens_evaluated_are_summed_into_the_trail() {
     // `--unconstrained` so no schema probe is sent: the probe goes through
     // the client, not the loop, and is not part of the run's total.
