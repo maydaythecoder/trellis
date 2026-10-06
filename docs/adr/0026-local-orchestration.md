@@ -1019,6 +1019,42 @@ limits on unsandboxed writers matter most.
 - `trellis routines run <name>` fires the routine now. Concurrency still
   applies, as in Paperclip's manual run.
 
+*Amended 2026-10-06 (#348), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**A routine may skip a scheduled fire when no commit has landed.** A
+routine fires through its concurrency and catch-up policies alone
+(`routine::evaluate`), so a nightly "triage new failures" routine queues a
+task on a night when nothing changed, and the run spends tokens to find
+nothing. Paperclip's `require_external_activity` gate suppresses a
+scheduled fire when its activity log has nothing since the routine's last
+dispatched run apart from the routine's own records. In a repository the
+activity such a routine exists for is commits, which the activity log (§9)
+does not see. Not built: this records the rule a later ticket (CLIP-05)
+builds to; neither the key nor the state field exists in the code today.
+
+- **The key and the state.** A routine may set `activity_gate = "commits"`.
+  Its state gains a field `last_head`, written only when a scheduled fire
+  enqueues a task.
+- **A quiet fire.** A scheduled fire is quiet, and skipped, when HEAD
+  equals `last_head`, or when every path changed between them is under
+  `.trellis/runs/`. Trellis commits a trail there after every run (ADR
+  0007, `trellis_vcs::commit_paths`), so those commits do not count, or
+  each run of the routine's own task would count as activity.
+- **Failing open.** A `last_head` that is not a full hex object id is
+  treated as absent and never passed to git, where every spawn goes through
+  `trellis_vcs`. Any git error fires rather than skips.
+- **What is not gated.** `trellis routines run <name>` is not gated. A
+  routine without the key fires on its schedule alone, as today. The gate
+  does not read the queue's activity log.
+- **Older binaries.** `RoutineFile` has `deny_unknown_fields`, so a binary
+  from before the change refuses a routine that sets the key, and `work`
+  refuses to start while any routine is invalid (a running `work` keeps its
+  last good set of routines and says so).
+
+Reversed if routines that set the gate are found skipping fires that had
+new work, because that work arrives without a commit (an outside service's
+state, for example): those routines leave the key unset, and the gate is
+withdrawn only if no routine has a use for it.
+
 ### 8. What a trail now records
 
 `Factual` gains two optional fields. Each is omitted when it is `None`, the
