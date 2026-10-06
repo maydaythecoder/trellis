@@ -5,7 +5,8 @@
 create the file; a BOM changes anchors), §7 (added: `[context] dates` and
 auto-created linked notes are not built), and "Evidence" (how the vectors were produced). Each amendment is
 marked in place. Amended by the re-inventory of 2026-10-04: §5 (a vault
-edit never fails because of `dates.json`). Integrated afterwards: `[context] dates` (§7) and `vault
+edit never fails because of `dates.json`); §4 and "Evidence" (`searchResults.ts`
+is reproduced and `trellis vault search` ranks with it, #355, #362). Integrated afterwards: `[context] dates` (§7) and `vault
 init` outside a repository (Consequences).
 **Date:** 2026-09-27
 **Reference design:** Apex Notes (`boriemannetje/apex-notes`, MIT), commit
@@ -309,6 +310,23 @@ locale collation on punctuation order, and on nothing else in these fields.
 The UI layer in `searchResults.ts` is not reproduced: it adds substring and
 subsequence boosts on top of the index.
 
+*Amended 2026-10-06 (#355, #362) (re-inventory 2026-10-04):*
+searchResults.ts is reproduced in trellis_vault::search, as
+`search_results`, beside the index, which is unchanged. It re-scores the
+index hits (`score*12 + bm25*4 + trigram*18`, trigrams always merged at
+0.12 or more) and adds exact, prefix, substring, all-token and subsequence
+matches on the title, filename, path and, when the body is indexed,
+searchText; a note keeps the higher score. trellis vault search ranks with it,
+so a query ranks in the command as in Apex's search box, which shows the top
+12 (`updateSearchResults`, web/appShell.ts:5202-5212). The §3 table's
+`search` row names the index the layer runs on. The arguments, the default
+limit of 12 and the reduced-mode lines are unchanged, and
+this amendment does not change search_notes, which keeps the index ranking
+ADR 0024 §6 records. Porting the layer was an open question in the
+re-inventory, and
+the porting question was answered under the owner's 2026-10-04 delegation,
+taking the option the ticket recommended.
+
 ### 5. `dates.json`
 
 **Reading and validation are exact.** The shape is
@@ -547,7 +565,7 @@ The method:
 |---|---|
 | `crates/trellis-vault/src/dates.rs` | `lineAnchor` for nine strings; `seedNoteDates` with markers; two `reconcileNoteDates` cases; four documents `normalizeDateDocument` rejects |
 | `src/refs.rs` | `slugify`, `normalizeKey`, `parseWikiTarget`, `getNoteAliasKeys` |
-| `src/search.rs` | `createSearchIndex(…).search(q, {limit: 12})` scores for four queries |
+| `src/search.rs` | `createSearchIndex(…).search(q, {limit: 12})` scores for four queries; *amended 2026-10-06 (#355):* `buildSearchResults(notes, index, q, {limit: 12, includeBody})` paths and scores, in full and in reduced (body not indexed) mode (`search_results_match_apex_vectors`) |
 | `tests/parity.rs` (`graph_matches_apex_vectors`) | `createGraphIndex` parents, `resolvePath`, `refsOut`, `roots`, `derivedLevels`, `duplicateAliases` |
 
 The anchor strings cover ASCII, a BMP character (`é`) and a surrogate pair

@@ -436,6 +436,28 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_index_in_braces_is_not_a_placeholder() {
+        // The risk: `usize::from_str` takes a leading `+`, so a digit check
+        // that let any non-empty text through would read `${+1}` as `${1}`.
+        assert_eq!(substitute("${+1}", &v(&["x"])).0, "${+1}");
+    }
+
+    #[test]
+    fn an_opening_fence_with_no_close_is_the_template_as_written() {
+        // The risk: a template that starts with `---` and never closes it
+        // sent as nothing at all.
+        assert_eq!(render_text("---\nFix it.\n", None), "---\nFix it.");
+    }
+
+    #[test]
+    fn an_empty_description_or_hint_is_as_if_unset() {
+        // The risk: `description:` with no value hides the first-line
+        // fallback, and an empty hint prints as a blank one.
+        let p = parse("---\ndescription:\nargument-hint: \"\"\n---\nbody\n");
+        assert_eq!((p.description, p.argument_hint), (None, None));
+    }
+
+    #[test]
     fn a_dollar_that_is_not_a_placeholder_is_left_alone() {
         let (out, used) = substitute("costs $ and $HOME and ${HOME} and $0 and $", &v(&["x"]));
         assert_eq!(out, "costs $ and $HOME and ${HOME} and $0 and $");

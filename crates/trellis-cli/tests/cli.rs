@@ -1928,6 +1928,34 @@ fn session_with_env(root: &Path, lines: &str, vars: &[(&str, &Path)]) -> Output 
 }
 
 #[test]
+fn session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists() {
+    // The risks: `!cmd` printing "exit 0" after a command that worked, or
+    // nothing after one that failed; `/prompts` or `/models` printing
+    // nothing; a template's description left out of `/prompts`.
+    let d = repo("session-extra");
+    std::fs::create_dir_all(d.join(".trellis/prompts")).unwrap();
+    std::fs::write(
+        d.join(".trellis/prompts/review.md"),
+        "---\ndescription: Review one module\n---\nReview $1\n",
+    )
+    .unwrap();
+    let out = session_with(
+        &d,
+        "!git --version\n!git no-such-command-248\n/prompts\n/models\n/exit\n",
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("exit 1"), "{s}");
+    assert!(!s.contains("exit 0"), "{s}");
+    assert!(s.contains("  /review\n      Review one module\n"), "{s}");
+    assert!(s.contains("configured specs\n"), "{s}");
+    assert!(
+        s.contains("catalog (weights `trellis model pull` can fetch)"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn every_command_help_lists_is_routed_somewhere() {
     // Each of these is one match arm, and deleting any of them leaves the
     // command falling through to "unknown command" — a command the tool
@@ -4072,6 +4100,60 @@ fn vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault() {
     let s = stdout(&run(&d, &["vault", "search", "CHILD-BODY"]));
     assert!(s.contains("child.md"), "{s}");
     assert!(!s.contains("reduced"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// No raw ESC or carriage return reaches the terminal, and each shows as
+/// the escape that names it.
+fn assert_escaped(out: &str) {
+    assert!(!out.contains('\x1b'), "{out:?}");
+    assert!(!out.contains('\r'), "{out:?}");
+    assert!(out.contains("\\u{1b}"), "{out:?}");
+}
+
+#[test]
+fn vault_escapes_a_note_title_in_search_and_graph() {
+    // #461. The risk: a note is untrusted content (a cloned repository's
+    // vault), and a title holding ESC and a carriage return, printed raw,
+    // can recolour or overwrite the line a person reads. The frontmatter
+    // value is decoded as a JSON string, so `\u001b` and `\r` are the real
+    // characters by the time the title is printed.
+    let (d, _) = repo_with_vault("vault-escapes-title", "vault = \"notes\"\n");
+    std::fs::write(
+        d.join("notes/evil.md"),
+        "---\ntitle: \"Evil\\u001b[31m\\rForged\"\nparent: \"[[root]]\"\n---\nEVIL-BODY\n",
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["vault", "search", "EVIL-BODY"]));
+    assert!(s.contains("evil.md"), "{s:?}");
+    assert_escaped(&s);
+    assert!(s.contains("\\r"), "{s:?}");
+    for note in ["evil", "root"] {
+        let g = stdout(&run(&d, &["vault", "graph", note]));
+        assert!(g.contains("evil.md"), "{g:?}");
+        assert_escaped(&g);
+        assert!(g.contains("\\r"), "{g:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(unix)]
+#[test]
+fn vault_escapes_a_note_file_name_in_search_and_graph() {
+    // #461. The risk: the same forged terminal through a path rather than
+    // a title. Unix only: Windows refuses control characters in file names.
+    let (d, _) = repo_with_vault("vault-escapes-path", "vault = \"notes\"\n");
+    std::fs::write(
+        d.join("notes/es\x1b[31mc.md"),
+        "---\ntitle: \"Plain\"\nparent: \"[[root]]\"\n---\nPATH-BODY\n",
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["vault", "search", "PATH-BODY"]));
+    assert!(s.contains("Plain"), "{s:?}");
+    assert_escaped(&s);
+    let g = stdout(&run(&d, &["vault", "graph", "root"]));
+    assert!(g.contains("Plain"), "{g:?}");
+    assert_escaped(&g);
     let _ = std::fs::remove_dir_all(&d);
 }
 

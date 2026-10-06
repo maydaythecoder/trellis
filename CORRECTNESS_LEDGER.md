@@ -1028,6 +1028,19 @@ a rollback that fails, an ERROR event on demand). vault_cmd.rs: 18 killed.
 Two were already killed by a test in the suite at this pass's base; those
 lines say so. No bug was found.
 
+The fourth pass marks its own the same way, over the 89 lines no pass had
+examined: orchestrate.rs 17, session_extra.rs 16, tooling.rs 10,
+context_files.rs 8, doctor_extra.rs 7 (services_line), templates.rs 4,
+tui_bridge.rs 3 (one already killed by the #243 budget test), rpc.rs 2 and
+ask.rs 1, all killed; liveness.rs 11 (4 killed, 5 unix-only: `probe_ps`
+runs only on a Unix that is not Linux, 2 unexercisable); tui_run.rs 6 (1
+killed, 5 unexercisable behind the terminal check); image_input.rs 4 (3
+killed, 1 unexercisable). 76 killed in all. Lines in tooling.rs,
+context_files.rs, tui_run.rs and tui_bridge.rs had moved; each mutant was
+found at its new line. No bug was found. The `#248 |` lines still open
+below are the first pass's 119, whose dispositions are in `c0fc32f`'s
+message.
+
 ```
 unexercisable (#248): differs only for ERROR-level events (an empty RUST_LOG parsed as a directive is ERROR everywhere), and trellis's three are not reachable on demand: an orchestrator task gone, or a failed rollback of an interrupted plan | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 #248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
@@ -1104,7 +1117,7 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with true in repo_lines
 #248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with false in repo_lines
 #248 | crates/trellis-cli/src/main.rs:4782:25: replace == with != in repo_lines
-#248 | crates/trellis-cli/src/ask.rs:116:19: replace > with >= in prompt_for
+killed (#248) by ask::tests::the_inventory_reaches_the_prompt_and_says_what_it_does_not_cover | crates/trellis-cli/src/ask.rs:116:19: replace > with >= in prompt_for
 #248 | crates/trellis-cli/src/config.rs:453:27: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in RepoConfig::prompt_raw_in
 #248 | crates/trellis-cli/src/config.rs:508:21: delete match arm "metered" in RepoConfig::budget
 #248 | crates/trellis-cli/src/config.rs:509:21: delete match arm "local" in RepoConfig::budget
@@ -1132,10 +1145,10 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with None
 #248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some(String::new())
 #248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/image_input.rs:127:19: replace > with == in read_one
-#248 | crates/trellis-cli/src/image_input.rs:127:19: replace > with >= in read_one
-#248 | crates/trellis-cli/src/image_input.rs:132:53: replace + with - in read_one
-#248 | crates/trellis-cli/src/image_input.rs:132:53: replace + with * in read_one
+killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:127:19: replace > with == in read_one
+killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:127:19: replace > with >= in read_one
+killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:132:53: replace + with - in read_one
+unexercisable (#248): take(MAX) and take(MAX + 1) differ only for a file that grows past the cap between the metadata check and the read, a race with no hook to drive it | crates/trellis-cli/src/image_input.rs:132:53: replace + with * in read_one
 #248 | crates/trellis-cli/src/install.rs:65:5: replace run -> Result<()> with Ok(())
 #248 | crates/trellis-cli/src/install.rs:224:51: replace && with || in install
 #248 | crates/trellis-cli/src/install.rs:338:79: replace || with && in split_spec
@@ -1153,34 +1166,34 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/install.rs:636:41: replace || with && in resolve
 #248 | crates/trellis-cli/src/install.rs:773:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load
 #248 | crates/trellis-cli/src/install.rs:801:38: replace || with && in remove_tree
-#248 | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in probe_proc
-#248 | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in probe_proc
-#248 | crates/trellis-cli/src/liveness.rs:59:28: replace == with != in probe_proc
-#248 | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with true in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with false in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with false in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with true in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:123:28: delete ! in probe_ps
-#248 | crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with false in bounded
-#248 | crates/trellis-cli/src/orchestrate.rs:97:16: delete ! in load_routines
-#248 | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with String::new()
-#248 | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with "xyzzy".into()
-#248 | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with true in state_text
-#248 | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with false in state_text
-#248 | crates/trellis-cli/src/orchestrate.rs:166:13: delete match arm Some(PausedBy::Budget) in state_text
-#248 | crates/trellis-cli/src/orchestrate.rs:201:25: replace match guard !p.file.pass_env.is_empty() with true in runs_with
-#248 | crates/trellis-cli/src/orchestrate.rs:309:40: replace == with != in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with == in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with < in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with >= in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with == in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with < in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with >= in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with true in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with false in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:450:25: delete ! in agents
+killed (#248) by liveness::tests::the_host_is_the_name_the_platform_records_for_this_machine | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some(String::new())
+killed (#248) by liveness::tests::the_host_is_the_name_the_platform_records_for_this_machine | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some("xyzzy".into())
+unexercisable (#248): needs a /proc/<pid>/stat read that fails other than NotFound (a holder exiting between open and read); none happens on demand, and `/proc` stat files are world-readable | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in probe_proc
+killed (#248) by liveness::tests::a_pid_with_no_proc_entry_is_gone | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in probe_proc
+killed (#248) by liveness::tests::a_pid_with_no_proc_entry_is_gone | crates/trellis-cli/src/liveness.rs:59:28: replace == with != in probe_proc
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with true in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:123:28: replace match guard !out.trim().is_empty() with false in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with false in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with true in probe_ps
+unix-only (#248): probe_ps is chosen only on a Unix that is not Linux (macOS, BSD); this host is Windows and CI's runner Linux, and a direct call here would test whatever `ps` PATH holds (Git for Windows' takes no -o) | crates/trellis-cli/src/liveness.rs:123:28: delete ! in probe_ps
+unexercisable (#248): needs a probe child that runs past PROBE_BOUND, a 20 s const; a test would block for it | crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with false in bounded
+killed (#248) by tests/orchestration.rs a_routine_may_assign_its_task_to_a_profile_and_not_to_a_missing_one | crates/trellis-cli/src/orchestrate.rs:97:16: delete ! in load_routines
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with String::new()
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with "xyzzy".into()
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with true in state_text
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with false in state_text
+killed (#248) by tests/orchestration.rs a_budget_hard_stop_pauses_the_agent_and_an_approved_raise_resumes_it | crates/trellis-cli/src/orchestrate.rs:166:13: delete match arm Some(PausedBy::Budget) in state_text
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:201:25: replace match guard !p.file.pass_env.is_empty() with true in runs_with
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:309:40: replace == with != in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with == in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with < in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with >= in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with == in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with < in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with >= in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with true in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with false in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:450:25: delete ! in agents
 killed (#248) by process_agent::tests::a_path_deny_write_refuses_is_refused_once_not_again_by_allow_write | crates/trellis-cli/src/process_agent.rs:135:51: replace || with && in Judge::governance
 killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:401:8: delete ! in run
 killed (#248) by process_agent::tests::a_change_that_cannot_be_read_or_rolled_back_is_not_restored | crates/trellis-cli/src/process_agent.rs:414:62: replace && with || in run
@@ -1263,25 +1276,25 @@ killed (#248) by session::tests::inspect_shows_twenty_sites_and_counts_only_what
 killed (#248) by session::tests::what_to_test_names_each_function_with_its_own_count | crates/trellis-cli/src/session.rs:975:9: replace Session::what_to_test with ()
 killed (#248) by session::tests::what_to_test_names_each_function_with_its_own_count | crates/trellis-cli/src/session.rs:979:74: replace += with *= in Session::what_to_test
 killed (#248) by tests/cli.rs a_session_keeps_its_history_outside_the_repository | crates/trellis-cli/src/session.rs:1075:5: replace history_path -> Option<PathBuf> with None
-#248 | crates/trellis-cli/src/tooling.rs:240:46: replace > with >= in prepare
-#248 | crates/trellis-cli/src/tooling.rs:250:29: replace > with >= in prepare
-#248 | crates/trellis-cli/src/tooling.rs:267:19: replace > with < in prepare
-#248 | crates/trellis-cli/src/tooling.rs:275:21: replace > with < in prepare
-#248 | crates/trellis-cli/src/tooling.rs:301:64: replace == with != in check_profile_tools
-#248 | crates/trellis-cli/src/tooling.rs:334:12: delete ! in Tooling::narrow_for_profile
-#248 | crates/trellis-cli/src/tooling.rs:334:35: replace == with != in Tooling::narrow_for_profile
-#248 | crates/trellis-cli/src/tooling.rs:371:38: replace match guard b.unattended with false in Tooling::line
-#248 | crates/trellis-cli/src/tooling.rs:372:38: replace match guard b.allow.is_empty() with false in Tooling::line
-#248 | crates/trellis-cli/src/tooling.rs:400:5: replace outcome_json -> serde_json::Value with Default::default()
-#248 | crates/trellis-cli/src/tui_bridge.rs:45:13: delete match arm "prompt_bytes" in <impl Visit for TurnFields>::record_u64
-#248 | crates/trellis-cli/src/tui_bridge.rs:56:13: delete match arm "message" in <impl Visit for TurnFields>::record_str
-#248 | crates/trellis-cli/src/tui_bridge.rs:78:13: delete match arm "check_kind" in <impl Visit for TurnFields>::record_debug
-#248 | crates/trellis-cli/src/tui_run.rs:334:17: delete field model_from_user from struct crate::RunSeeding expression in run_for_tui
-#248 | crates/trellis-cli/src/tui_run.rs:408:40: replace || with && in run
-#248 | crates/trellis-cli/src/tui_run.rs:408:8: delete ! in run
-#248 | crates/trellis-cli/src/tui_run.rs:408:43: delete ! in run
-#248 | crates/trellis-cli/src/tui_run.rs:435:9: delete match arm Some("scripted") in run
-#248 | crates/trellis-cli/src/tui_run.rs:515:24: delete ! in run
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:240:46: replace > with >= in prepare
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:250:29: replace > with >= in prepare
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:267:19: replace > with < in prepare
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:275:21: replace > with < in prepare
+killed (#248) by tooling::run_tests::a_profile_may_keep_a_declared_custom_tool_by_name_and_not_a_typo | crates/trellis-cli/src/tooling.rs:301:64: replace == with != in check_profile_tools
+killed (#248) by tooling::run_tests::a_profile_that_leaves_out_run_checks_is_told_it_was_kept | crates/trellis-cli/src/tooling.rs:334:12: delete ! in Tooling::narrow_for_profile
+killed (#248) by tooling::run_tests::a_profile_that_leaves_out_run_checks_is_told_it_was_kept | crates/trellis-cli/src/tooling.rs:334:35: replace == with != in Tooling::narrow_for_profile
+killed (#248) by tooling::run_tests::the_tools_line_names_auto_mode_s_bash_policy | crates/trellis-cli/src/tooling.rs:371:38: replace match guard b.unattended with false in Tooling::line
+killed (#248) by tooling::run_tests::the_tools_line_names_auto_mode_s_bash_policy | crates/trellis-cli/src/tooling.rs:372:38: replace match guard b.allow.is_empty() with false in Tooling::line
+killed (#248) by tooling::run_tests::after_run_is_told_whether_the_run_converged_and_why_not | crates/trellis-cli/src/tooling.rs:400:5: replace outcome_json -> serde_json::Value with Default::default()
+killed (#248) by tui_bridge::tests::tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time (already in the suite, since #243) | crates/trellis-cli/src/tui_bridge.rs:45:13: delete match arm "prompt_bytes" in <impl Visit for TurnFields>::record_u64
+killed (#248) by tui_bridge::tests::a_warning_whose_message_is_a_plain_string_field_still_reaches_the_transcript | crates/trellis-cli/src/tui_bridge.rs:56:13: delete match arm "message" in <impl Visit for TurnFields>::record_str
+killed (#248) by tui_bridge::tests::a_check_kind_written_with_the_display_sigil_names_the_check | crates/trellis-cli/src/tui_bridge.rs:78:13: delete match arm "check_kind" in <impl Visit for TurnFields>::record_debug
+killed (#248) by tui_run::tests::a_model_the_person_chose_in_the_tui_is_not_refused_as_the_repository_s | crates/trellis-cli/src/tui_run.rs:334:17: delete field model_from_user from struct crate::RunSeeding expression in run_for_tui
+unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:40: replace || with && in run
+unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:8: delete ! in run
+unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:43: delete ! in run
+unexercisable (#248): the status bar's first label, set only after `run` has found a terminal on both ends, which no test here has (a pty) | crates/trellis-cli/src/tui_run.rs:435:9: delete match arm Some("scripted") in run
+unexercisable (#248): inside `run`'s task driver, reached only after the terminal check, which no test here passes (a pty) | crates/trellis-cli/src/tui_run.rs:515:24: delete ! in run
 killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:159:5: replace file_days -> FileDays with Default::default()
 killed (#248) by tests/cli.rs vault_new_says_what_it_created | crates/trellis-cli/src/vault_cmd.rs:171:5: replace print_outcome -> Result<()> with Ok(())
 killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:187:5: replace check -> Result<()> with Ok(())
@@ -1371,14 +1384,14 @@ killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_
 killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1268:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
 equivalent (#248): at `now == until` the mutant runs one more pass that sleeps `min(100ms, 0)` and checks the flag again; the wait, the flag and the answer are the same | crates/trellis-cli/src/work.rs:1268:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
 killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1276:9: delete ! in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/context_files.rs:86:52: replace == with != in user_skills_note
-#248 | crates/trellis-cli/src/context_files.rs:96:26: replace && with || in user_skills_note
-#248 | crates/trellis-cli/src/context_files.rs:103:18: replace > with >= in user_skills_note
-#248 | crates/trellis-cli/src/context_files.rs:325:30: replace > with >= in context_files
-#248 | crates/trellis-cli/src/context_files.rs:378:19: replace > with >= in system_file
-#248 | crates/trellis-cli/src/context_files.rs:405:40: replace + with - in load
-#248 | crates/trellis-cli/src/context_files.rs:406:16: replace > with >= in load
-#248 | crates/trellis-cli/src/context_files.rs:432:59: replace == with != in load
+killed (#248) by context_files::installed_tests::a_user_s_own_skill_alone_is_reported_with_no_installed_count | crates/trellis-cli/src/context_files.rs:86:52: replace == with != in user_skills_note
+killed (#248) by context_files::installed_tests::a_user_s_own_skill_alone_is_reported_with_no_installed_count | crates/trellis-cli/src/context_files.rs:96:26: replace && with || in user_skills_note
+killed (#248) by context_files::installed_tests::a_user_s_own_skill_alone_is_reported_with_no_installed_count | crates/trellis-cli/src/context_files.rs:103:18: replace > with >= in user_skills_note
+killed (#248) by context_files::tests::a_context_file_exactly_at_the_cap_loads_and_so_does_a_system_file | crates/trellis-cli/src/context_files.rs:325:30: replace > with >= in context_files
+killed (#248) by context_files::tests::a_context_file_exactly_at_the_cap_loads_and_so_does_a_system_file | crates/trellis-cli/src/context_files.rs:378:19: replace > with >= in system_file
+killed (#248) by context_files::tests::files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none | crates/trellis-cli/src/context_files.rs:405:40: replace + with - in load
+killed (#248) by context_files::tests::files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none | crates/trellis-cli/src/context_files.rs:406:16: replace > with >= in load
+killed (#248) by context_files::tests::a_skill_forced_twice_loads_once_and_each_named_skill_loads | crates/trellis-cli/src/context_files.rs:432:59: replace == with != in load
 #248 | crates/trellis-cli/src/rpc.rs:104:9: replace <impl Visit for Fields>::record_i64 with ()
 #248 | crates/trellis-cli/src/rpc.rs:107:9: replace <impl Visit for Fields>::record_bool with ()
 #248 | crates/trellis-cli/src/rpc.rs:330:9: replace <impl trellis_loop::Model for Watched<'_, M>>::tokens_used -> u64 with 0
@@ -1388,32 +1401,32 @@ killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_
 #248 | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
 #248 | crates/trellis-cli/src/rpc.rs:338:9: replace <impl trellis_loop::Model for Watched<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
 #248 | crates/trellis-cli/src/rpc.rs:342:9: replace <impl trellis_loop::Model for Watched<'_, M>>::requested_compactions -> &[trellis_loop::RequestedCompaction] with Vec::leak(Vec::new())
-#248 | crates/trellis-cli/src/rpc.rs:611:33: delete ! in Server::in_flight
+killed (#248) by rpc::tests::in_flight_forgets_answered_waiters_and_keeps_the_ones_still_waiting | crates/trellis-cli/src/rpc.rs:611:33: delete ! in Server::in_flight
 #248 | crates/trellis-cli/src/rpc.rs:613:24: replace match guard !r.thread.is_finished() with true in Server::in_flight
 #248 | crates/trellis-cli/src/rpc.rs:799:21: replace match guard cmd.get("args").is_some() with false in Server::prompt
 #248 | crates/trellis-cli/src/rpc.rs:802:21: replace match guard task.trim().is_empty() with false in Server::prompt
-#248 | crates/trellis-cli/src/rpc.rs:809:55: replace || with && in Server::prompt
+killed (#248) by rpc::tests::a_hosted_model_named_in_the_prompt_is_the_client_s_choice | crates/trellis-cli/src/rpc.rs:809:55: replace || with && in Server::prompt
 #248 | crates/trellis-cli/src/rpc.rs:1088:5: replace summary -> Value with Default::default()
-#248 | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
-#248 | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
-#248 | crates/trellis-cli/src/session_extra.rs:68:5: replace print_prompts with ()
-#248 | crates/trellis-cli/src/session_extra.rs:82:12: delete ! in print_prompts
-#248 | crates/trellis-cli/src/session_extra.rs:124:5: replace print_models with ()
-#248 | crates/trellis-cli/src/session_extra.rs:296:54: replace || with && in Reader::spawn
-#248 | crates/trellis-cli/src/session_extra.rs:296:47: replace || with && in Reader::spawn
-#248 | crates/trellis-cli/src/session_extra.rs:306:9: replace Reader::stop with ()
-#248 | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with true
-#248 | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with false
-#248 | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with true in Reader::drain_late
-#248 | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with false in Reader::drain_late
-#248 | crates/trellis-cli/src/session_extra.rs:317:28: delete ! in Reader::drain_late
-#248 | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with None
-#248 | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/templates.rs:64:13: delete field body from struct Parsed expression in parse
-#248 | crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
-#248 | crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
-#248 | crates/trellis-cli/src/templates.rs:357:24: replace && with || in braced
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:68:5: replace print_prompts with ()
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:82:12: delete ! in print_prompts
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:124:5: replace print_models with ()
+killed (#248) by session_extra::tests::the_reader_reads_nothing_after_end_of_input | crates/trellis-cli/src/session_extra.rs:296:54: replace || with && in Reader::spawn
+killed (#248) by session_extra::tests::the_reader_reads_nothing_after_end_of_input | crates/trellis-cli/src/session_extra.rs:296:47: replace || with && in Reader::spawn
+killed (#248) by session_extra::tests::a_stopped_reader_reads_no_line_after_the_one_in_flight | crates/trellis-cli/src/session_extra.rs:306:9: replace Reader::stop with ()
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with true
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with false
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with true in Reader::drain_late
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with false in Reader::drain_late
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:317:28: delete ! in Reader::drain_late
+killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with None
+killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some(String::new())
+killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some("xyzzy".into())
+killed (#248) by templates::tests::an_opening_fence_with_no_close_is_the_template_as_written | crates/trellis-cli/src/templates.rs:64:13: delete field body from struct Parsed expression in parse
+killed (#248) by templates::tests::an_empty_description_or_hint_is_as_if_unset | crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
+killed (#248) by templates::tests::an_empty_description_or_hint_is_as_if_unset | crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
+killed (#248) by templates::tests::a_signed_index_in_braces_is_not_a_placeholder | crates/trellis-cli/src/templates.rs:357:24: replace && with || in braced
 #248 | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
 #248 | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
 #248 | crates/trellis-cli/src/user_config.rs:99:5: replace prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
@@ -1429,13 +1442,13 @@ killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_
 #248 | crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with false in user_config_line
 #248 | crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with < in trust_line_with
 #248 | crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with < in trust_line_with
-#248 | crates/trellis-cli/src/doctor_extra.rs:208:13: replace && with || in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:205:13: replace && with || in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:204:9: delete ! in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:207:65: replace || with && in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:207:52: replace || with && in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:207:70: replace == with != in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:249:8: delete ! in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:208:13: replace && with || in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:205:13: replace && with || in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:204:9: delete ! in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:207:65: replace || with && in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:207:52: replace || with && in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:207:70: replace == with != in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:249:8: delete ! in services_line
 ```
 
 </details>
