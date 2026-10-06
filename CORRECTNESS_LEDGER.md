@@ -1001,6 +1001,22 @@ killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | cra
 <details>
 <summary>trellis-cli: 407 survivors</summary>
 
+#248's first pass (`c0fc32f`) gave its 119 dispositions in that commit's
+message, not on these lines. The second pass marks its own here: each
+mutant was applied by hand to the code at its base, the named test run
+with `cargo test -p trellis-cli` and seen to fail, and the source restored;
+neither cargo-mutants nor the workspace suite was run. Line numbers are
+`989b2a2`'s; every work.rs mutant was still present, at a moved line, and
+process_agent.rs's and services.rs's too. Pass 2 covers those three files
+(112 lines): 89 killed, 3 equivalent, 3 unexercisable (a pty, a SIGINT
+this Windows host cannot send, and one failure with no deterministic
+trigger), and 17 not examined. Those 17 are
+`#[cfg(unix)]` code that cargo-mutants mutated on a Windows host where it
+is never compiled, so they survive there by construction. No bug was
+found. A side finding, not a survivor: `queue list --priority` alone still
+lists unreadable task files, which `--status`, `--label` and `--assignee`
+hide.
+
 ```
 #248 | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 #248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
@@ -1154,48 +1170,48 @@ killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | cra
 #248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with true in agents
 #248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with false in agents
 #248 | crates/trellis-cli/src/orchestrate.rs:450:25: delete ! in agents
-#248 | crates/trellis-cli/src/process_agent.rs:135:51: replace || with && in Judge::governance
-#248 | crates/trellis-cli/src/process_agent.rs:401:8: delete ! in run
-#248 | crates/trellis-cli/src/process_agent.rs:414:62: replace && with || in run
-#248 | crates/trellis-cli/src/process_agent.rs:444:42: replace && with || in run
-#248 | crates/trellis-cli/src/process_agent.rs:505:13: delete match arm Ended::TimedOut in run
-#248 | crates/trellis-cli/src/process_agent.rs:506:13: delete match arm Ended::Interrupted in run
-#248 | crates/trellis-cli/src/process_agent.rs:507:18: replace match guard !git_changed.is_empty() with false in run
-#248 | crates/trellis-cli/src/process_agent.rs:514:18: replace match guard ignored_unread.is_some() with false in run
-#248 | crates/trellis-cli/src/process_agent.rs:523:18: replace match guard !denied.is_empty() with false in run
-#248 | crates/trellis-cli/src/process_agent.rs:572:9: delete match arm Ended::Interrupted in run
-#248 | crates/trellis-cli/src/process_agent.rs:640:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
-#248 | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with None
-#248 | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with Some(Default::default())
-#248 | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
-#248 | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
-#248 | crates/trellis-cli/src/process_agent.rs:659:9: replace Running::end with ()
-#248 | crates/trellis-cli/src/process_agent.rs:709:9: replace Running::take_stdin -> Option<std::fs::File> with None
-#248 | crates/trellis-cli/src/process_agent.rs:721:9: replace Running::end with ()
-#248 | crates/trellis-cli/src/process_agent.rs:731:9: replace Running::finish with ()
-#248 | crates/trellis-cli/src/process_agent.rs:815:24: delete ! in write_trail
-#248 | crates/trellis-cli/src/process_agent.rs:822:21: delete ! in write_trail
-#248 | crates/trellis-cli/src/services.rs:40:34: replace * with +
-#248 | crates/trellis-cli/src/services.rs:256:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in create_fresh
-#248 | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
-#248 | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 1))
-#248 | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with true
-#248 | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with false
-#248 | crates/trellis-cli/src/services.rs:333:9: replace Proc::stop -> bool with true
-#248 | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with true
-#248 | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with false
-#248 | crates/trellis-cli/src/services.rs:349:43: replace + with - in reap
-#248 | crates/trellis-cli/src/services.rs:349:43: replace + with * in reap
-#248 | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with true in reap
-#248 | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with false in reap
-#248 | crates/trellis-cli/src/services.rs:354:51: replace >= with < in reap
-#248 | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in outliving
-#248 | crates/trellis-cli/src/services.rs:369:28: replace == with != in outliving
-#248 | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in outliving
-#248 | crates/trellis-cli/src/services.rs:410:29: replace + with - in read_record
-#248 | crates/trellis-cli/src/services.rs:413:26: replace > with >= in read_record
-#248 | crates/trellis-cli/src/services.rs:410:29: replace + with * in read_record
-#248 | crates/trellis-cli/src/services.rs:413:26: replace > with == in read_record
+killed (#248) by process_agent::tests::a_path_deny_write_refuses_is_refused_once_not_again_by_allow_write | crates/trellis-cli/src/process_agent.rs:135:51: replace || with && in Judge::governance
+killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:401:8: delete ! in run
+killed (#248) by process_agent::tests::a_change_that_cannot_be_read_or_rolled_back_is_not_restored | crates/trellis-cli/src/process_agent.rs:414:62: replace && with || in run
+killed (#248) by process_agent::tests::a_command_that_changed_nothing_is_not_audited | crates/trellis-cli/src/process_agent.rs:444:42: replace && with || in run
+killed (#248) by process_agent::tests::a_timed_out_command_says_it_timed_out | crates/trellis-cli/src/process_agent.rs:505:13: delete match arm Ended::TimedOut in run
+killed (#248) by process_agent::tests::an_interrupted_command_ends_as_interrupted_and_says_so | crates/trellis-cli/src/process_agent.rs:506:13: delete match arm Ended::Interrupted in run
+killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:507:18: replace match guard !git_changed.is_empty() with false in run
+unexercisable (#248): needs the ignored-file listing to fail after the command while `git diff` on the same repository succeeds (a broken index fails both, and returns earlier); no deterministic way found | crates/trellis-cli/src/process_agent.rs:514:18: replace match guard ignored_unread.is_some() with false in run
+killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:523:18: replace match guard !denied.is_empty() with false in run
+killed (#248) by process_agent::tests::an_interrupted_command_ends_as_interrupted_and_says_so | crates/trellis-cli/src/process_agent.rs:572:9: delete match arm Ended::Interrupted in run
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:640:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with None
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with Some(Default::default())
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:659:9: replace Running::end with ()
+killed (#248) by process_agent::tests::the_task_text_reaches_the_command_on_stdin | crates/trellis-cli/src/process_agent.rs:709:9: replace Running::take_stdin -> Option<std::fs::File> with None
+equivalent (#248): `end` is `finish` and a bounded reap; the loop calls `finish` again as soon as it breaks, so the job is ended either way and only the reap of an already-killed process is lost | crates/trellis-cli/src/process_agent.rs:721:9: replace Running::end with ()
+killed (#248) by process_agent::tests::a_timed_out_command_is_ended_before_it_can_write_again | crates/trellis-cli/src/process_agent.rs:731:9: replace Running::finish with ()
+killed (#248) by process_agent::tests::the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files | crates/trellis-cli/src/process_agent.rs:815:24: delete ! in write_trail
+killed (#248) by process_agent::tests::the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files | crates/trellis-cli/src/process_agent.rs:822:21: delete ! in write_trail
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:40:34: replace * with +
+killed (#248) by services::tests::a_name_that_cannot_be_replaced_is_said_to_be_that | crates/trellis-cli/src/services.rs:256:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in create_fresh
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 1))
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with true
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:287:9: replace Proc::stop -> bool with false
+equivalent (#248): every caller drops the `Proc` right after `stop`, and its KillOnDrop and kill-on-close job end the tree then; the mutant only removes the record a moment before the tree is gone instead of after | crates/trellis-cli/src/services.rs:333:9: replace Proc::stop -> bool with true
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with true
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:5: replace reap -> bool with false
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:43: replace + with - in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:349:43: replace + with * in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with true in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:354:25: replace match guard std::time::Instant::now() >= until with false in reap
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; not run on unix for this pass | crates/trellis-cli/src/services.rs:354:51: replace >= with < in reap
+killed (#248) by services::tests::no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in outliving
+killed (#248) by services::tests::no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said | crates/trellis-cli/src/services.rs:369:28: replace == with != in outliving
+killed (#248) by services::tests::no_services_directory_is_nothing_and_one_that_cannot_be_read_is_said | crates/trellis-cli/src/services.rs:369:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with false in outliving
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:410:29: replace + with - in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:413:26: replace > with >= in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:410:29: replace + with * in read_record
+killed (#248) by services::tests::a_record_is_read_up_to_its_bound_and_refused_by_size_past_it | crates/trellis-cli/src/services.rs:413:26: replace > with == in read_record
 #248 | crates/trellis-cli/src/session.rs:35:9: replace <impl std::io::Write for Stdout>::write -> std::io::Result<usize> with Ok(0)
 #248 | crates/trellis-cli/src/session.rs:35:9: replace <impl std::io::Write for Stdout>::write -> std::io::Result<usize> with Ok(1)
 #248 | crates/trellis-cli/src/session.rs:38:9: replace <impl std::io::Write for Stdout>::flush -> std::io::Result<()> with Ok(())
@@ -1274,76 +1290,76 @@ killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | cra
 #248 | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with false in dates_cmd
 #248 | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with true in dates_cmd
 #248 | crates/trellis-cli/src/vault_cmd.rs:368:26: delete ! in dates_cmd
-#248 | crates/trellis-cli/src/work.rs:198:5: replace reconcile -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/work.rs:293:68: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:293:49: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:297:71: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:301:67: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:302:83: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:348:20: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:353:43: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:361:17: delete match arm (Some(Status::Blocked), Some("blockers")) in queue
-#248 | crates/trellis-cli/src/work.rs:362:17: delete match arm (Some(Status::Blocked), Some("children")) in queue
-#248 | crates/trellis-cli/src/work.rs:363:17: delete match arm (Some(Status::Blocked), Some(_)) in queue
-#248 | crates/trellis-cli/src/work.rs:366:37: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:373:22: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:376:20: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:388:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:394:43: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:414:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:420:45: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with true in queue
-#248 | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with false in queue
-#248 | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with true in queue
-#248 | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with false in queue
-#248 | crates/trellis-cli/src/work.rs:441:61: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:454:52: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:454:57: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:454:34: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:464:21: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:463:21: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:461:29: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:462:21: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:462:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:463:39: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:464:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:616:34: replace > with == in queue
-#248 | crates/trellis-cli/src/work.rs:616:34: replace > with < in queue
-#248 | crates/trellis-cli/src/work.rs:616:34: replace > with >= in queue
-#248 | crates/trellis-cli/src/work.rs:716:19: replace > with == in list_line
-#248 | crates/trellis-cli/src/work.rs:716:19: replace > with < in list_line
-#248 | crates/trellis-cli/src/work.rs:716:19: replace > with >= in list_line
-#248 | crates/trellis-cli/src/work.rs:738:8: delete ! in list_line
-#248 | crates/trellis-cli/src/work.rs:744:8: delete ! in list_line
-#248 | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with String::new()
-#248 | crates/trellis-cli/src/work.rs:758:9: delete match arm 0..60 in ago
-#248 | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with "xyzzy".into()
-#248 | crates/trellis-cli/src/work.rs:759:9: delete match arm 60..3600 in ago
-#248 | crates/trellis-cli/src/work.rs:760:9: delete match arm 3600..86_400 in ago
-#248 | crates/trellis-cli/src/work.rs:784:21: replace == with != in work
-#248 | crates/trellis-cli/src/work.rs:861:5: replace listen_for_ctrl_c with ()
-#248 | crates/trellis-cli/src/work.rs:937:9: replace CliRunner<'_>::approve_mode -> bool with false
-#248 | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with true
-#248 | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with false
-#248 | crates/trellis-cli/src/work.rs:1024:33: replace > with == in <impl Runner for CliRunner<'_>>::tick
-#248 | crates/trellis-cli/src/work.rs:1024:33: replace > with < in <impl Runner for CliRunner<'_>>::tick
-#248 | crates/trellis-cli/src/work.rs:1024:33: replace > with >= in <impl Runner for CliRunner<'_>>::tick
-#248 | crates/trellis-cli/src/work.rs:1087:37: delete ! in <impl Runner for CliRunner<'_>>::gate
-#248 | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with None
-#248 | crates/trellis-cli/src/work.rs:1111:79: replace - with + in <impl Runner for CliRunner<'_>>::next_due
-#248 | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with Some(Default::default())
-#248 | crates/trellis-cli/src/work.rs:1111:79: replace - with / in <impl Runner for CliRunner<'_>>::next_due
-#248 | crates/trellis-cli/src/work.rs:1115:9: replace <impl Runner for CliRunner<'_>>::starting with ()
-#248 | crates/trellis-cli/src/work.rs:1119:9: replace <impl Runner for CliRunner<'_>>::liveness -> Option<&dyn trellis_queue::Liveness> with None
-#248 | crates/trellis-cli/src/work.rs:1196:34: replace && with || in <impl Runner for CliRunner<'_>>::run
-#248 | crates/trellis-cli/src/work.rs:1263:9: replace <impl Runner for CliRunner<'_>>::stop_requested -> bool with false
-#248 | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with true
-#248 | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with false
-#248 | crates/trellis-cli/src/work.rs:1267:36: replace + with - in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1268:30: replace < with == in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1268:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1268:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1276:9: delete ! in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::queue_set_tests::a_change_that_ends_a_blocker_wakes_what_it_blocked | crates/trellis-cli/src/work.rs:198:5: replace reconcile -> Result<()> with Ok(())
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:293:68: replace && with || in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:293:49: replace && with || in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:297:71: replace == with != in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:301:67: replace == with != in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:302:83: replace == with != in queue
+killed (#248) by work::queue_set_tests::an_assignee_must_be_a_profile_in_the_repository | crates/trellis-cli/src/work.rs:348:20: delete ! in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:353:43: replace != with == in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:361:17: delete match arm (Some(Status::Blocked), Some("blockers")) in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:362:17: delete match arm (Some(Status::Blocked), Some("children")) in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:363:17: delete match arm (Some(Status::Blocked), Some(_)) in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:366:37: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:373:22: replace == with != in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:376:20: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:388:24: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:394:43: replace != with == in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:414:24: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:420:45: replace != with == in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with true in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with false in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with true in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with false in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:441:61: replace == with != in queue
+killed (#248) by work::queue_set_tests::a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does | crates/trellis-cli/src/work.rs:454:52: replace && with || in queue
+killed (#248) by work::queue_set_tests::a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does | crates/trellis-cli/src/work.rs:454:57: replace != with == in queue
+killed (#248) by work::queue_set_tests::a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does | crates/trellis-cli/src/work.rs:454:34: replace == with != in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:464:21: replace && with || in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:463:21: replace && with || in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:461:29: replace == with != in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:462:21: replace && with || in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:462:24: delete ! in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:463:39: replace == with != in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:464:24: delete ! in queue
+killed (#248) by tests/orchestration.rs export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none | crates/trellis-cli/src/work.rs:616:34: replace > with == in queue
+killed (#248) by tests/orchestration.rs export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none | crates/trellis-cli/src/work.rs:616:34: replace > with < in queue
+killed (#248) by tests/orchestration.rs export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none | crates/trellis-cli/src/work.rs:616:34: replace > with >= in queue
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:716:19: replace > with == in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:716:19: replace > with < in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:716:19: replace > with >= in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:738:8: delete ! in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:744:8: delete ! in list_line
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with String::new()
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:758:9: delete match arm 0..60 in ago
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with "xyzzy".into()
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:759:9: delete match arm 60..3600 in ago
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:760:9: delete match arm 3600..86_400 in ago
+killed (#248) by tests/orchestration.rs a_claim_records_where_it_was_made_under_release_and_only_there | crates/trellis-cli/src/work.rs:784:21: replace == with != in work
+unexercisable on Windows (#248): needs a Ctrl-C delivered to the `work` process, which a test can send only on unix (`kill -INT`, as tests/interrupt.rs does); a unix-only `work --every` + SIGINT test is the kill, not written here because it could not be seen failing on this host | crates/trellis-cli/src/work.rs:861:5: replace listen_for_ctrl_c with ()
+killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:937:9: replace CliRunner<'_>::approve_mode -> bool with false
+killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with true
+unexercisable by `cargo test` (#248): differs only when stdin and stdout are both a terminal, which needs a pty the suite does not have | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with false
+killed (#248) by work::runner_tests::a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none | crates/trellis-cli/src/work.rs:1024:33: replace > with == in <impl Runner for CliRunner<'_>>::tick
+killed (#248) by work::runner_tests::a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none | crates/trellis-cli/src/work.rs:1024:33: replace > with < in <impl Runner for CliRunner<'_>>::tick
+killed (#248) by work::runner_tests::a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none | crates/trellis-cli/src/work.rs:1024:33: replace > with >= in <impl Runner for CliRunner<'_>>::tick
+killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:1087:37: delete ! in <impl Runner for CliRunner<'_>>::gate
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with None
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1111:79: replace - with + in <impl Runner for CliRunner<'_>>::next_due
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with Some(Default::default())
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1111:79: replace - with / in <impl Runner for CliRunner<'_>>::next_due
+killed (#248) by work::runner_tests::the_runner_names_its_task_and_offers_a_process_probe | crates/trellis-cli/src/work.rs:1115:9: replace <impl Runner for CliRunner<'_>>::starting with ()
+killed (#248) by work::runner_tests::the_runner_names_its_task_and_offers_a_process_probe | crates/trellis-cli/src/work.rs:1119:9: replace <impl Runner for CliRunner<'_>>::liveness -> Option<&dyn trellis_queue::Liveness> with None
+killed (#248) by tests/queue.rs work_sends_no_key_to_an_endpoint_the_repository_chose (under the mutant the key reached the repository's port) | crates/trellis-cli/src/work.rs:1196:34: replace && with || in <impl Runner for CliRunner<'_>>::run
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1263:9: replace <impl Runner for CliRunner<'_>>::stop_requested -> bool with false
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with true
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with false
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1267:36: replace + with - in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1268:30: replace < with == in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1268:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
+equivalent (#248): at `now == until` the mutant runs one more pass that sleeps `min(100ms, 0)` and checks the flag again; the wait, the flag and the answer are the same | crates/trellis-cli/src/work.rs:1268:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1276:9: delete ! in <impl Runner for CliRunner<'_>>::idle
 #248 | crates/trellis-cli/src/context_files.rs:86:52: replace == with != in user_skills_note
 #248 | crates/trellis-cli/src/context_files.rs:96:26: replace && with || in user_skills_note
 #248 | crates/trellis-cli/src/context_files.rs:103:18: replace > with >= in user_skills_note
