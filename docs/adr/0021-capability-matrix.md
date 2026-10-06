@@ -4,7 +4,9 @@
 **Date:** 2026-09-27
 **Inventories:** `docs/inventory/inventory-pi.md` (pi 1.0.2 at upstream commit 200387122ca4, re-inventoried 2026-10-04; the pi rows dated before 2026-10-04 were written against pi 0.87.1),
 `docs/inventory/inventory-apex.md` (apex-notes `f449644a`),
-`docs/inventory/inventory-paperclip.md` (Paperclip v2026.916.1). All three
+`docs/inventory/inventory-paperclip.md` (Paperclip v2026.916.1), with the addendum
+`docs/inventory/inventory-paperclip-20261004.md` (PC-101 to PC-144, Paperclip at
+upstream commit 1c07b590, 2026-10-04; added 2026-10-06, #335). All three
 are MIT-licensed. Each inventory was read from its project's own source and
 docs, not from memory.
 
@@ -243,6 +245,89 @@ Rows for items that `docs/inventory/inventory-pi.md` (pi 1.0.2) tags NEW. Dispos
 | 94–96 CLI | built in effect: the local subcommands; `--json` → W-D |
 | 97–98 REST API | excluded [server] |
 | 99–100 UI | excluded [web-ui] |
+
+### Paperclip re-inventory (2026-10-04)
+
+**Status:** Accepted (owner-directed), 2026-10-04: the session's choice under the owner's 2026-10-04 delegation. Added 2026-10-06 (#335). The owner can override any row (Context).
+
+Rows for PC-101 to PC-144, the capabilities `docs/inventory/inventory-paperclip-20261004.md` lists at Paperclip commit 1c07b590 (2026-10-04, #15100) that the v2026.916.1 inventory has no row for. Eleven arrived upstream after v2026.916.1 (PC-105, 107, 108, 117, 118, 119, 121, 122, 138, 140, 142); the other 33 were missed by that inventory or folded into another of its rows (the native runner, PC-109, is split out of row 10). The last column is the upstream paths the addendum gives for each row, relative to the Paperclip repository at 1c07b590. A sentence beginning `S17 question:` names a question another ticket of story S17 answers; that ticket replaces the sentence. No row adds CLI surface, a dependency, or a profile or routine field.
+
+| ID | Capability | Disposition | Clause | Upstream paths (inventory-paperclip-20261004.md) |
+|---|---|---|---|---|
+| PC-101 | Agent Chat | built in part | `trellis session` is the conversation (ADR 0025); a persistent conversation per agent is deferred with pi rows 8.1–8.4; a chat that files tasks for the model is excluded by row 31 (#141). | server/src/services/agent-conversations.ts; server/src/services/chat-completion-delivery.ts; packages/db/src/migrations/0288_glorious_jamie_braddock.sql |
+| PC-102 | Board concierge chat, Conference Room | excluded [web-ui] | Brief Part 1, "any surface beyond the CLI" (#70). | server/src/routes/board-chat.ts; packages/shared/src/feature-catalog.ts:165 |
+| PC-103 | Chat channel connectors | excluded | Brief Part 1, "any networked component"; as rows 72–75 (#73). | server/src/routes/chat-channels.ts; server/src/services/chat-channels.ts; doc/connections/CHAT-CONNECTOR-UX.md |
+| PC-104 | Email channels | excluded | Brief Part 1, networked. | server/src/routes/email.ts; server/src/services/email-channels.ts |
+| PC-105 | GitHub review bots | excluded | Brief Part 1, networked; rule 5 (ADR 0005) where the reviewed change is agent-written. | doc/connections/GITHUB-REVIEW-BOT.md; server/src/services/chat-github-reviews.ts; server/src/services/chat-github-review-policy.ts; packages/db/src/migrations/0283_jittery_psynapse.sql |
+| PC-106 | AI connections | excluded | ADR 0010 (the user's key never touches infrastructure trellis controls) and ADR 0024 §3 (only the user chooses where a key is sent); OAuth and device login are excluded (pi rows 2.1–2.4). | doc/connections/AI-CONNECTIONS.md; server/src/routes/ai-connections.ts; server/src/services/ai-connections.ts; server/src/services/device-login-service.ts |
+| PC-107 | Browser Use Cloud | excluded | Brief Part 1, networked. | doc/connections/BROWSER-USE.md; server/src/routes/browser-use.ts; server/src/services/browser-use.ts; packages/db/src/migrations/0290_browser_use_cloud.sql |
+| PC-108 | Memory connectors | excluded | Brief Part 1, networked; trellis's memory is the trail (ADR 0007) and the vault (ADR 0017). | doc/connections/MEMORY.md; doc/memory-landscape.md; packages/shared/src/validators/instance.ts:56 (`enableMemoryConnectors`); server/src/services/cognee-connection.ts |
+| PC-109 | Paperclip native runner | built in part | Trellis runs its own loop natively and drives another agent as a process profile (ADR 0026 §11); Paperclip's runner protocol (PRP) belongs to its control plane and is excluded with it [server]. S17 question: ACP for process profiles, at rows 10–11. | doc/architecture/paperclip-runner.md; packages/paperclip-runner/; server/src/services/native-runtime/; server/src/realtime/runner-prp-ws.ts; doc/grok-native-runner.md |
+| PC-110 | Durable session goals | excluded | A trellis run ends when an executed check converges it or a budget stops it (ADR 0004, ADR 0008); a goal held by the provider is not consulted, and Paperclip's goals are part of PRP (PC-109). | server/src/services/runner-goals.ts; server/src/services/runner-goal-control-broker.ts; packages/db/src/schema/agent_task_sessions.ts |
+| PC-111 | Completion contracts and status arbitration | built, stricter | Only an executed check converges a run; `Verdict` is sealed in `trellis-checks`; `ToolResult` has no pass variant (ADR 0004). | doc/architecture/native-status-arbitration.md; doc/execution-semantics.md:1397; doc/execution-semantics.md:1492 |
+| PC-112 | Durable continuations and scheduled retries | built in part | Attempts are counted per task and `queue requeue` puts a task back by hand; a stale claim returns to `pending/` on its own only under `[work] stale_claims = "release"` (#59, ADR 0020 §5); nothing retries on a schedule. S17 question: blocking a task after repeated stale-claim releases (row 33). | doc/architecture/durable-continuation-scheduler.md; server/src/services/routable-blocked.ts; server/src/services/run-continuations.ts; releases/beta/v2026.1002.0-beta.0.md:29 (#14046, #13888) |
+| PC-113 | Issue tree control | deferred | A subtree hold would be a second state beside `status`. S17 question: cancelling a task and its pending descendants in one command. | packages/shared/src/constants.ts:429-436 (`ISSUE_TREE_CONTROL_MODES`); server/src/routes/issue-tree-control.ts; server/src/services/issue-tree-control.ts; doc/composer-stop.md |
+| PC-114 | Execution monitors | excluded | Re-checking an external service needs a networked component (brief Part 1); a monitor the agent sets is the model scheduling its own work, which row 31 (#141) keeps with a person; a person's recurring re-check is a routine or `work --every` (ADR 0026 §7). | packages/shared/src/constants.ts:527-543 (`ISSUE_EXECUTION_MONITOR_KINDS`); server/src/services/issue-execution-policy.ts; doc/execution-semantics.md:351 |
+| PC-115 | Run diagnostics and failure reports | built | The trail (ADR 0007), `trellis log` and `trellis resume <run_id>` (ADR 0038), and the waiting reasons `queue list` prints (ADR 0026 §1). | server/src/services/run-failure-diagnostics.ts; server/src/services/run-failure-report.ts |
+| PC-116 | Live events | built | Loop events to the TUI (crates/trellis-cli/src/tui_bridge.rs); JSONL on stdout and rpc events (ADR 0025). | server/src/services/live-events.ts; server/src/realtime/live-events-ws.ts; doc/run-log-events.md |
+| PC-117 | Persistent agent files | deferred | Agent-writable files under `.trellis/` are excluded by the rule that model writes never land there (ADR 0023). S17 question: a profile memory note outside `.trellis/`. | doc/agent-files.md; server/src/services/agent-file-store.ts; packages/db/src/migrations/0287_serious_tinkerer.sql; skills/para-memory-files/SKILL.md |
+| PC-118 | Skills created from work | excluded | Model writes never land in `.trellis/` (ADR 0023), where skills live (ADR 0019); a run may write a draft skill elsewhere in the repository for a person to move. | doc/runner-created-skills.md; packages/paperclip-runner/src/protocol-actions/create-skill.ts |
+| PC-119 | Skill sources from GitHub | built in part | `trellis install <source>@<ref>`, `--list` and `--remove` import skills from a git source at a pinned ref (ADR 0039); refreshing in place is not built, since reinstalling a name is refused until `--remove` (ADR 0039, "Not built"), so nothing matches Paperclip's refresh that keeps the last good version when it fails. | server/src/services/skill-sources.ts; server/src/services/github-skill-source.ts; server/src/services/skill-source-git-snapshot.ts; packages/db/src/migrations/0291_conscious_secret_warriors.sql; packages/db/src/migrations/0292_powerful_devos.sql |
+| PC-120 | Core Paperclip agent skills | built in effect | The loop's prompt and tools carry what Paperclip's skills teach its agents (ADR 0005); trellis ships no built-in skill, and for Apex's writing contract `trellis vault check` prints the report line its SKILL.md asks for instead (ADR 0022 §6). | skills/paperclip/SKILL.md; skills/paperclip-board/SKILL.md; skills/paperclip-converting-plans-to-tasks/SKILL.md; skills/paperclip-create-agent/SKILL.md |
+| PC-121 | Runner API escape hatch | excluded [server] | There is no REST API to call (rows 97–98). | doc/runner-api-tools.md; packages/paperclip-runner/src/protocol-actions/search-api.ts; packages/paperclip-runner/src/protocol-actions/call-api.ts; server/src/services/native-runtime/runner-api-rollout.ts |
+| PC-122 | Agent personas | excluded, cosmetic | "Cosmetic and [ui] exclusions". | doc/agent-personas.md; packages/shared/src/agent-appearance.ts; packages/db/src/migrations/0280_unique_genesis.sql |
+| PC-123 | Onboarding and first task | excluded [web-ui] | Brief Part 1; `trellis doctor` probes the setup. | server/src/services/onboarding-first-task-assets.ts; server/src/services/onboarding-seed.ts; server/src/routes/onboarding-seed.ts |
+| PC-124 | Company and task search | built in part | `queue list` filters by status, label, assignee and priority, and `trellis vault search` searches notes (ADR 0022 §4). S17 question: filtering `queue list` by a substring of task text. | doc/SEARCH.md; server/src/services/task-search.ts; server/src/services/company-search.ts; server/src/routes/issues.ts:7814 |
+| PC-125 | Document annotations | excluded | Documents are excluded (rows 26–28, #56), and annotation editing is [ui] (Apex row 12). | server/src/services/document-annotations.ts; packages/shared/src/document-anchors.ts |
+| PC-126 | External objects | excluded | Brief Part 1, networked: status is fetched from remote services. | server/src/services/external-objects.ts; server/src/services/github-external-object-provider.ts; packages/shared/src/external-objects.ts |
+| PC-127 | Folders | excluded [web-ui] | Labels group tasks (row 29). | server/src/routes/folders.ts; server/src/services/folders.ts |
+| PC-128 | In-app announcements | excluded | Brief Part 1: a networked fetch shown in a UI card. | doc/ANNOUNCEMENTS.md; server/src/services/announcement-feed.ts; server/src/routes/announcements.ts; announcements/current.json |
+| PC-129 | Smoke Lab | excluded | It exercises connector paths, which rows 72–75 exclude (#73). | doc/connections/SMOKE-LAB-TUTORIAL.md; server/src/routes/smoke-lab.ts; server/src/services/smoke-lab.ts |
+| PC-130 | Decision queues and triage | excluded [web-ui][multi-user] | As rows 35–36. | server/src/routes/decision-queues.ts; server/src/services/decision-queues.ts; packages/shared/src/validators/decision-queue.ts |
+| PC-131 | Per-user surfaces | excluded [multi-user][web-ui] | Brief Part 1. | server/src/routes/user-profiles.ts; server/src/routes/sidebar-preferences.ts; server/src/routes/inbox-dismissals.ts |
+| PC-132 | Workspace file resources | built in part | `@` file search in `tui` over `git ls-files` (#52) and the `read_file` tool; a file browser is [web-ui]. | server/src/routes/file-resources.ts; server/src/services/workspace-file-resources.ts |
+| PC-133 | Hosted agent profiles | excluded | The provider runs the loop on its own infrastructure, so trellis's gate (ADR 0018), write path and rollback never see its tool calls; a provider's CLI can run as a process profile (ADR 0026 §11), with its writes judged at carry-back (ADR 0032). | server/src/routes/managed-agent-profiles.ts; server/src/services/managed-agent-profiles.ts; server/src/routes/remote-agent-profiles.ts; server/src/services/remote-agent-profiles.ts |
+| PC-134 | Cloud-managed instances and execution allowlist | excluded | Brief Part 1 (networked, multi-user); ADR 0010. | server/src/routes/cloud.ts; server/src/services/cloud-instance.ts; server/src/services/execution-allowlist.ts |
+| PC-135 | Task drain and hot restart | excluded | No daemon (ADR 0020; ADR 0026 §7, #68); Ctrl-C rolls back (ADR 0009). | packages/shared/src/validators/instance.ts:123-144 (`startTaskDrainRequestSchema`); server/src/routes/instance-settings.ts; server/src/services/hot-restart.ts |
+| PC-136 | Evals | built in effect | Trellis measures through its benchmark protocol (docs/BENCHMARK_AND_EVAL.md); Paperclip's evals test its own control plane and runner, and a model-graded oracle would be a model verdict (ADR 0004). | doc/evals.md; evals/; packages/paperclip-eval-kernel/ |
+| PC-137 | First-party telemetry | excluded | Brief Part 1, networked; `tracing` is the one telemetry path (CLAUDE.md, Style). | server/src/telemetry.ts; doc/TELEMETRY_WORKFLOW.md |
+| PC-138 | Per-message run settings, prompt-only task creation | built in part | A model per run (`--model`, session `/model`), thinking levels where the protocol carries them (pi row 2.8, ADR 0024), a profile's model for queued tasks; a model-written task title is excluded: a task is the text a person typed. | ui/src/components/task-chat/ComposerRunSettingsPicker.tsx; server/src/services/issue-title.ts; packages/db/src/migrations/0293_broad_rattler.sql |
+| PC-139 | Routine activity gate | deferred | S17 question: whether a routine may skip a scheduled fire when nothing has changed. | packages/shared/src/constants.ts:642-646 (`ROUTINE_ACTIVITY_GATE_POLICIES`); packages/shared/src/validators/routine.ts; server/src/services/routines.ts |
+| PC-140 | Harness permission defaults | built | The control dial, auto or approve with an approve list (ADR 0018); a process agent runs unattended in a throwaway clone (ADR 0032). | server/src/services/native-runtime/native-execution-input.ts:265; releases/v2026.1001.0.md (Breaking Changes, #13686, #13693) |
+| PC-141 | Responsible-user attribution, per-person GitHub identity | excluded [multi-user] | Trellis runs as the one local user, with that user's git identity. | doc/execution-github-identity.md; server/src/services/responsible-user-denial-run-outcomes.ts; packages/shared/src/validators/company.ts |
+| PC-142 | Queued responses and steering into a running turn | built | `steer` and `follow_up` between loop turns in rpc, tui and session, recorded in the trail (ADR 0034); `ask_human` ends the run and the answer reaches the next one (ADR 0026 §1). S17 question: whether a re-run is given every note a person added since its last run, and whether a mention still wakes a task (rows 25 and 41). | server/src/services/queued-interaction-response.ts; server/src/services/issue-comment-wakeup.ts; server/src/services/issue-queued-comment-queue.ts; doc/execution-semantics.md:425 |
+| PC-143 | Agents hiring agents | excluded [multi-user] | Hire approvals are excluded (rows 55–57); a profile is a committed file a person writes (ADR 0026 §4). | skills/paperclip-create-agent/SKILL.md; server/src/services/hire-hook.ts; packages/shared/src/constants.ts:690 (`hire_agent`) |
+| PC-144 | Agent delegation | excluded | Row 31 (#141): a model does not file its own tasks without a human step; agents parallelize work, never judgment (ADR 0005); trellis's own parallelism is partitioning by blast radius (ADR 0016, ADR 0037). | doc/execution-semantics.md:273 (`create_task`, `set_dependencies`); skills/paperclip-converting-plans-to-tasks/SKILL.md |
+
+#### Rows 1–100 whose upstream changed
+
+Between v2026.916.1 and 1c07b590 the upstream of these rows changed; each disposition above stands, on the clause given here.
+
+| Rows | Upstream change | The disposition still rests on |
+|---|---|---|
+| 1–3, 5–6 | Resolver-policy cap, default responsible user, board and bootstrap claim, Owner Instance Admin. | [db][multi-user]: one repository is one company, and one person answers. |
+| 10–11 | paperclip_runner on by default for self-hosted instances, ACP engines on more adapters, a shared rich-ACP transport. | The named adapters still each wrap a third-party agent; the S17 question on ACP for process profiles is recorded at rows 10–11. |
+| 12, 16–18 | Plugin environment driver, lease policies, kubernetes mode, CreateOS, Daytona hardening. | [server], and the order the owner set on #20: the throwaway clone first (ADR 0032), containers later. |
+| 26–28 | Text-attachment tabs, artifact cards, `register_deliverable`. | #56: the trail and the diff are the work product. |
+| 31 | `skill_test` mode. | #141; a skill test from the command line is `trellis run --skill <name> --prompt <template> --args` (ADR 0025). |
+| 32 | `review_policy`, native review handoffs. | A person reviews `in_review` work; a reviewer-agent stage stays out by rule 5 (ADR 0005). |
+| 35–37 | Combined Inbox + Task List, summary slots written by the Summarizer. | [web-ui][multi-user]; #58. |
+| 47 | `app_webhook` and `fireflies_hmac` signing modes, a trigger wizard. | A webhook trigger needs a listening server (brief Part 1). |
+| 64–65 | GitHub skill sources, more bundled skills. | `trellis install <source>@<ref>` (ADR 0039); most catalog skills drive Paperclip's own API, and a generic one can be copied into a package as `skills/<name>/SKILL.md`. |
+| 69–71 | gcp and vault provider stubs, class-3 static leases, remote import. | ADR 0010. |
+| 72–75 | Composio broker retired, MCP aggregators on by default, 82 app definitions, new gateway application types. | The owner's answer of 2026-09-28 on #73, "Keep all excluded": MCP and connectors stay excluded until a v2.0 "MCP exposure" brief, and trusted custom command tools (ADR 0023) are how the model gets an external tool; none of the changes touches that. |
+| 76–82 | `approvals.respond` and other new plugin capabilities, distribution image catalogs, new UI slots. | [server][web-ui]; a plugin answering approvals is further still from the rule that only a person answers (#189). |
+| 88–100 | Bind presets, backup retention, release channels, rewritten experimental flags, Chat-first navigation. | [server][db][multi-user][web-ui]; #70. |
+
+#### Claims the source does not bear out
+
+These claims, in Paperclip's docs or in the v2026.916.1 inventory, are not borne out by Paperclip's source at 1c07b590, so nothing is ported from them. Each is as the addendum's section `Claims the source does not bear out` gives it.
+
+- **The 30-second minimum heartbeat interval.** Stated only in doc/SPEC-implementation.md:1350 (§11.6).
+- **Secret folders.** They exist only as the Secrets page's grouping of `/`-separated secret names (ui/src/pages/secrets/secret-path.ts); the server stores no folder.
+- **The Task Chat and Auto-Create Recovery Tasks experimental flags** (row 100 of `docs/inventory/inventory-paperclip.md`). No flag in packages/shared/src/feature-catalog.ts or packages/shared/src/validators/instance.ts names either.
+- **Routine signing modes.** docs/api/routines.md:129 lists four; packages/shared/src/constants.ts:651 has six, `app_webhook` and `fireflies_hmac` besides those four.
+- **Plugin approval decisions.** doc/plugins/PLUGIN_SPEC.md:878 (§15.2, forbidden capabilities) lists approval decisions, against the `approvals.respond` plugin capability in packages/shared/src/constants.ts:1372 and server/src/services/plugin-capability-validator.ts.
 
 ## Cosmetic and [ui] exclusions, itemised
 
