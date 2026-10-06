@@ -147,6 +147,13 @@ The legacy branches `v0.1-resolver` (the old default, frozen), `drain` (the
 old integration branch, frozen at the commit `dev` and `audit` started from),
 `inherit`, `agents-setup` and `orchestrator-state` are kept, not deleted.
 
+`audit` reaches `dev` through an `audit → dev` pull request, and `dev`
+reaches `main` through a `dev → main` one. CI (`ci.yml`) runs on each of
+those pull requests and on a push to `main`, not on a push to `dev`: the
+`audit → dev` pull request has already run it on the tree `dev` receives,
+and a cancelled duplicate run on the `dev` push showed as failed checks on
+the `dev → main` pull request (#473; ADR 0051 item 4, amended by #477).
+
 The pre-push hook (`scripts/hooks/pre-push`,
 installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
 shows it firing) refuses every push to `main`, `v0.1-resolver` and the frozen `drain`, and of any `v*` tag (ADR 0051 item 3), from a clone that has
