@@ -15,7 +15,7 @@ use clap::Subcommand;
 use std::path::{Path, PathBuf};
 use trellis_vault::dates::{self, FileDays, State};
 use trellis_vault::edit::{self, Outcome};
-use trellis_vault::search::{Index, search_results};
+use trellis_vault::search::{Index, Mode, Ranked, search_results};
 use trellis_vault::{Graph, Issue, Vault};
 
 #[derive(clap::Args)]
@@ -234,22 +234,46 @@ fn search(dir: &Path, query: &str, limit: usize) -> Result<()> {
     Ok(())
 }
 
-/// What `trellis vault search` prints, one string per line.
-fn search_lines(dir: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
+/// What `trellis vault search` finds: which of Apex's reductions the index
+/// is under, and the hits. The CLI prints from this and rpc's
+/// `vault_search` serializes it, so the two cannot rank a query
+/// differently. Only reads: the index is built in memory.
+fn search_hits(dir: &Path, query: &str, limit: usize) -> Result<(Mode, Vec<Ranked>)> {
     let v = Vault::open(dir)?;
     let idx = Index::build(&v);
+    // `searchResults.ts`, the order Apex's search box shows, not the
+    // index's own (ADR 0022 §4).
+    let hits = search_results(&v, &idx, query, limit);
+    Ok((idx.mode, hits))
+}
+
+/// `rpc`'s `vault_search`: `search_hits` over `[context] vault`, as data.
+/// Strings are given as stored; the CLI escapes control characters for the
+/// terminal, and JSON escapes its own.
+pub(crate) fn search_json(root: &Path, query: &str, limit: usize) -> Result<serde_json::Value> {
+    let (mode, hits) = search_hits(&vault_dir(root, None)?, query, limit)?;
+    let hits: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|h| serde_json::json!({"path": h.path, "title": h.title, "score": h.score}))
+        .collect();
+    Ok(serde_json::json!({
+        "hits": hits,
+        "mode": {"body": mode.include_body, "trigrams": mode.include_trigrams},
+    }))
+}
+
+/// What `trellis vault search` prints, one string per line.
+fn search_lines(dir: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
+    let (mode, hits) = search_hits(dir, query, limit)?;
     let mut lines = Vec::new();
-    if !idx.mode.include_body {
+    if !mode.include_body {
         lines.push(
             "search reduced to titles and paths: the vault is over Apex's body-index limits"
                 .to_string(),
         );
-    } else if !idx.mode.include_trigrams {
+    } else if !mode.include_trigrams {
         lines.push("fuzzy search reduced: the vault is over Apex's trigram limit".to_string());
     }
-    // `searchResults.ts`, the order Apex's search box shows, not the
-    // index's own (ADR 0022 §4).
-    let hits = search_results(&v, &idx, query, limit);
     if hits.is_empty() {
         lines.push(format!("no matches for \"{query}\""));
     }
@@ -266,37 +290,106 @@ fn search_lines(dir: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-fn graph(dir: &Path, arg: &str) -> Result<()> {
+/// A note as `trellis vault graph` names it.
+struct Named {
+    path: String,
+    title: String,
+}
+
+/// What `trellis vault graph` shows about one note, as the notes give it.
+/// The CLI prints from this and rpc's `vault_graph` serializes it. Only
+/// reads: `Session::open` is `Vault::open` plus `Graph::build`.
+struct GraphView {
+    note: Named,
+    depth: Option<usize>,
+    lineage: Vec<String>,
+    /// The parent target that does not resolve, if there is one.
+    unresolved_parent: Option<String>,
+    children: Vec<Named>,
+    refs_out: Vec<(Named, usize)>,
+    refs_in: Vec<(Named, usize)>,
+    /// The graph issues that name this note, as their text.
+    issues: Vec<String>,
+}
+
+fn graph_view(dir: &Path, arg: &str) -> Result<GraphView> {
     let s = edit::Session::open(dir)?;
     let i = s.resolve(arg)?;
     let (v, g): (&Vault, &Graph) = (&s.vault, &s.graph);
     let n = &v.notes[i];
+    let named = |j: usize| Named {
+        path: v.notes[j].path.clone(),
+        title: v.notes[j].title.clone(),
+    };
+    let weighted = |r: &[(usize, usize)]| r.iter().map(|&(t, w)| (named(t), w)).collect();
+    Ok(GraphView {
+        note: named(i),
+        depth: g.depth[i],
+        lineage: g
+            .lineage(i)
+            .iter()
+            .map(|&j| v.notes[j].path.clone())
+            .collect(),
+        unresolved_parent: if g.parents[i].is_none() {
+            n.parent_target()
+        } else {
+            None
+        },
+        children: g.children[i].iter().map(|&c| named(c)).collect(),
+        refs_out: weighted(&g.refs_out[i]),
+        refs_in: weighted(&g.refs_in[i]),
+        issues: g
+            .issues
+            .iter()
+            .filter(|x| mentions(x, &n.path))
+            .map(|x| x.to_string())
+            .collect(),
+    })
+}
+
+/// `rpc`'s `vault_graph`: `graph_view` over `[context] vault`, as data.
+/// Strings are given as stored; the CLI escapes control characters for the
+/// terminal, and JSON escapes its own.
+pub(crate) fn graph_json(root: &Path, arg: &str) -> Result<serde_json::Value> {
+    let gv = graph_view(&vault_dir(root, None)?, arg)?;
+    let named = |n: &Named| serde_json::json!({"path": n.path, "title": n.title});
+    let weighted = |r: &[(Named, usize)]| -> Vec<serde_json::Value> {
+        r.iter()
+            .map(|(n, w)| serde_json::json!({"path": n.path, "title": n.title, "weight": w}))
+            .collect()
+    };
+    Ok(serde_json::json!({
+        "note": named(&gv.note),
+        "depth": gv.depth,
+        "lineage": gv.lineage,
+        "unresolved_parent": gv.unresolved_parent,
+        "children": gv.children.iter().map(named).collect::<Vec<_>>(),
+        "refs_out": weighted(&gv.refs_out),
+        "refs_in": weighted(&gv.refs_in),
+        "issues": gv.issues,
+    }))
+}
+
+fn graph(dir: &Path, arg: &str) -> Result<()> {
+    let gv = graph_view(dir, arg)?;
     // Paths, titles, link targets and issues come from the notes, which
     // are untrusted (#461): every one goes through `plain` before printing.
-    let label = |j: usize| {
-        format!(
-            "{} \"{}\"",
-            plain(&v.notes[j].path),
-            plain(&v.notes[j].title)
-        )
-    };
-    println!("note:     {}", label(i));
-    match g.depth[i] {
+    let label = |n: &Named| format!("{} \"{}\"", plain(&n.path), plain(&n.title));
+    println!("note:     {}", label(&gv.note));
+    match gv.depth {
         Some(d) => println!("depth:    {d}"),
         None => println!("depth:    none (under a missing parent, or on a cycle)"),
     }
     println!(
         "lineage:  {}",
-        g.lineage(i)
+        gv.lineage
             .iter()
-            .map(|&j| plain(&v.notes[j].path))
+            .map(|p| plain(p))
             .collect::<Vec<_>>()
             .join(" > ")
     );
-    if g.parents[i].is_none()
-        && let Some(t) = n.parent_target()
-    {
-        println!("parent:   [[{}]] does not resolve", plain(&t));
+    if let Some(t) = &gv.unresolved_parent {
+        println!("parent:   [[{}]] does not resolve", plain(t));
     }
     let list = |name: &str, items: Vec<String>| {
         if items.is_empty() {
@@ -308,32 +401,23 @@ fn graph(dir: &Path, arg: &str) -> Result<()> {
             }
         }
     };
-    list(
-        "children:",
-        g.children[i].iter().map(|&c| label(c)).collect(),
-    );
+    list("children:", gv.children.iter().map(label).collect());
     list(
         "refs out:",
-        g.refs_out[i]
+        gv.refs_out
             .iter()
-            .map(|&(t, w)| format!("{} x{w}", label(t)))
+            .map(|(t, w)| format!("{} x{w}", label(t)))
             .collect(),
     );
     list(
         "refs in:",
-        g.refs_in[i]
+        gv.refs_in
             .iter()
-            .map(|&(t, w)| format!("{} x{w}", label(t)))
+            .map(|(t, w)| format!("{} x{w}", label(t)))
             .collect(),
     );
-    let mine: Vec<String> = g
-        .issues
-        .iter()
-        .filter(|x| mentions(x, &n.path))
-        .map(|x| plain(&x.to_string()))
-        .collect();
-    if !mine.is_empty() {
-        list("issues:", mine);
+    if !gv.issues.is_empty() {
+        list("issues:", gv.issues.iter().map(|x| plain(x)).collect());
     }
     Ok(())
 }
