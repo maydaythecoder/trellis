@@ -8,14 +8,16 @@ name: CI
 on:
   # Each commit runs once. Pushing on every branch as well as on every pull
   # request ran the whole suite twice for the same commit (#156); listing
-  # `audit` and every PR target ran it four times (#381). `audit` is left out
-  # because promotion fast-forwards `dev` to the commit `audit` holds, so that
-  # commit runs when it reaches `dev`; `v0.1-resolver` is frozen (ADR 0051).
-  # A pull request runs into `dev` and `main`: those are the two promotions on
-  # the way to `main` (`audit` into `dev`, `dev` into `main`), and each is
-  # checked here before it merges (#426).
+  # `audit` and every PR target ran it four times (#381). A pull request runs
+  # into `dev` and `main`: those are the two promotions on the way to `main`
+  # (`audit` into `dev`, `dev` into `main`), and each is checked here before
+  # it merges (#426). A push runs on `main` only. `audit` and `dev` are left
+  # out because the `audit` -> `dev` pull request has already run CI on the
+  # tree `dev` receives, and the `dev` -> `main` pull request runs it again; a
+  # run on the `dev` push only repeated that, and when it was cancelled GitHub
+  # showed it as failed checks on the `dev` -> `main` pull request (#473, #477).
   push:
-    branches: ["main", "dev"]
+    branches: ["main"]
   pull_request:
     branches: ["main", "dev"]
 

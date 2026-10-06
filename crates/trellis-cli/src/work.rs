@@ -1219,17 +1219,32 @@ fn instructions(root: &Path, p: &Profile) -> Result<Option<String>> {
     }
 }
 
-/// The newest trail's run id: its file stem, which `record_trail` makes
+/// Every trail's run id: its file stem, which `record_trail` makes
 /// `<timestamp>-<slug>`. Read by name only — the contents are untrusted, and
-/// the name is all that is needed.
-fn newest_run_id(root: &Path) -> Option<String> {
-    let rd = std::fs::read_dir(root.join(".trellis").join("runs")).ok()?;
+/// the name is all that is needed. A run's id is the stem that was not here
+/// before it, not the greatest one: the stamp is wall-clock time, and after
+/// the clock steps back a new trail sorts below an older one (#472).
+fn run_ids(root: &Path) -> BTreeSet<String> {
+    let Ok(rd) = std::fs::read_dir(root.join(".trellis").join("runs")) else {
+        return BTreeSet::new();
+    };
     rd.filter_map(Result::ok)
         .filter_map(|e| {
             let n = e.file_name().to_str()?.to_string();
             n.strip_suffix(".json").map(str::to_string)
         })
-        .max()
+        .collect()
+}
+
+/// Runs `body` and returns, beside its result, the id of the trail it
+/// wrote: the stem in `.trellis/runs` that was not there before it, or None
+/// when it wrote no trail. The one rule for a run's id, used by `work` and by
+/// the `run_end` frame of `--json` and `rpc` (#472, #475).
+pub(crate) fn with_run_id<T>(root: &Path, body: impl FnOnce() -> T) -> (T, Option<String>) {
+    let before = run_ids(root);
+    let out = body();
+    let id = run_ids(root).difference(&before).max().cloned();
+    (out, id)
 }
 
 /// The line for a budget pause `enforce` lifted, with its reason: a
@@ -1495,26 +1510,25 @@ impl Runner for CliRunner<'_> {
                 steering: None,
             },
         };
-        let before = newest_run_id(self.root);
-        let exit = cmd_run(
-            self.root,
-            &text,
-            &model,
-            self.unconstrained,
-            RunSeeding {
-                resume: false,
-                focus: t.focus.as_deref(),
-                profile: profile.as_ref(),
-                model_from_user,
-                model_source,
-                queued: true,
-                services: &service_actions,
-            },
-            control,
-            &mut crate::output::human(),
-        );
-        let after = newest_run_id(self.root);
-        let run_id = if after != before { after } else { None };
+        let (exit, run_id) = with_run_id(self.root, || {
+            cmd_run(
+                self.root,
+                &text,
+                &model,
+                self.unconstrained,
+                RunSeeding {
+                    resume: false,
+                    focus: t.focus.as_deref(),
+                    profile: profile.as_ref(),
+                    model_from_user,
+                    model_source,
+                    queued: true,
+                    services: &service_actions,
+                },
+                control,
+                &mut crate::output::human(),
+            )
+        });
         match exit {
             Ok(RunExit::Converged) => RunEnd::Converged { run_id },
             Ok(RunExit::NotConverged { restored: true }) => RunEnd::RolledBack { run_id },
