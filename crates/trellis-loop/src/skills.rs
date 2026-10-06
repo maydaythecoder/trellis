@@ -661,6 +661,79 @@ mod tests {
         );
     }
 
+    /// Apex's own writing skill: `skills/apex-notes-writing/SKILL.md` from
+    /// boriemannetje/apex-notes at commit `f449644a` (blob `976aa86f`),
+    /// copied byte for byte with its LF endings. apex-notes is MIT-licensed;
+    /// its licence is `tests/fixtures/skills/LICENSE-apex-notes`. See
+    /// `tests/fixtures/skills/README.md`.
+    const APEX_DESCRIPTION: &str = "use skill when writing .md for Apex Notes; create/edit/import/delete/connect notes; enforce title/parent frontmatter, parent-only hierarchy, body wikilink refs, manifest sync.";
+
+    fn apex_skill_md() -> Vec<u8> {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/skills/apex-notes-writing/SKILL.md");
+        let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        // A checkout that turned LF into CRLF would hand the loader bytes
+        // Apex never published; the upstream blob is 3,581 bytes, all LF.
+        assert!(!bytes.contains(&b'\r'), "the fixture lost its LF endings");
+        assert_eq!(bytes.len(), 3_581, "the fixture is not the upstream blob");
+        bytes
+    }
+
+    #[test]
+    fn apex_s_writing_skill_loads_unchanged_from_the_repository() {
+        // ADR 0021 row 35–37 is built in effect only if Apex's SKILL.md
+        // (apex-notes `f449644a`, skills/apex-notes-writing/SKILL.md, MIT)
+        // loads as it is when a repository copies it into `.trellis/skills/`.
+        // trellis carries no skill in its binary (ADR 0022 §6).
+        let d = tempfile::tempdir().unwrap();
+        let dst = d.path().join(SKILLS_DIR).join("apex-notes-writing");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(dst.join("SKILL.md"), apex_skill_md()).unwrap();
+        let c = SkillCatalog::discover(d.path());
+        assert!(c.invalid.is_empty(), "{:?}", c.invalid);
+        assert_eq!(
+            c.valid,
+            [Skill {
+                name: "apex-notes-writing".into(),
+                description: APEX_DESCRIPTION.into(),
+            }]
+        );
+        let body = read_body(d.path(), "apex-notes-writing").unwrap();
+        assert!(body.starts_with("# Apex Notes Writing"), "{}", &body[..40]);
+    }
+
+    #[test]
+    fn apex_s_writing_skill_loads_unchanged_from_an_installed_package() {
+        // The same file (apex-notes `f449644a`,
+        // skills/apex-notes-writing/SKILL.md, MIT) where `trellis install`
+        // puts it: an installed package's `skills/` directory, outside the
+        // repository, which ADR 0039 §10 passes to `discover_with`.
+        let repo = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_skills = tmp.path().join("packages/apex-notes/skills");
+        user_skill(
+            &pkg_skills,
+            "apex-notes-writing",
+            std::str::from_utf8(&apex_skill_md()).unwrap(),
+        );
+        let dirs = [pkg_skills];
+        let c = SkillCatalog::discover_with(repo.path(), &dirs);
+        assert!(c.invalid.is_empty(), "{:?}", c.invalid);
+        assert_eq!(
+            c.valid,
+            [Skill {
+                name: "apex-notes-writing".into(),
+                description: APEX_DESCRIPTION.into(),
+            }]
+        );
+        assert_eq!(c.user, ["apex-notes-writing"]);
+        assert!(
+            read_body_in(repo.path(), &dirs, "apex-notes-writing")
+                .unwrap()
+                .starts_with("# Apex Notes Writing")
+        );
+    }
+
     #[test]
     fn a_name_that_does_not_match_its_directory_is_skipped_with_the_reason() {
         let d = tempfile::tempdir().unwrap();

@@ -429,8 +429,8 @@ fn admitted(root: &Path, governance: &Governance, rel: &str, out: &mut CarriedBa
         refuse(out, rel, why);
         return false;
     }
-    if let Some(rule) = governance.denies_write_at(root, rel) {
-        breach(out, rel, format!("deny_write `{}`", rule.as_written()));
+    if let Some(refusal) = governance.denies_write_at(root, rel) {
+        breach(out, rel, refusal.to_string());
         return false;
     }
     if let Some(why) = governance.outside_allow_write_at(root, rel) {
@@ -535,6 +535,25 @@ mod tests {
         assert_eq!(back.breaches[0].path, "app/a.py");
         assert!(root.join("app/a.py").exists());
         assert!(!root.join("docs/d.md").exists());
+    }
+
+    #[test]
+    fn vault_notes_root_refuses_a_process_agent_s_carried_back_write() {
+        // The risk (ADR 0049 §2): a process agent writing a note in its
+        // clone, which reaches the repository through the carry-back and
+        // not through any tool the gate sees.
+        let d = committed();
+        let root = d.path();
+        let clone = AgentClone::prepare(root).unwrap();
+        std::fs::create_dir_all(clone.path().join("vault")).unwrap();
+        std::fs::write(clone.path().join("vault/x.md"), "note\n").unwrap();
+        let gov = Governance::new(&[]).with_vault("vault", "vault/");
+        let back = clone.carry_back(root, &gov);
+        assert!(back.created.is_empty(), "{back:?}");
+        assert!(!root.join("vault/x.md").exists());
+        assert_eq!(back.breaches.len(), 1, "{back:?}");
+        assert_eq!(back.breaches[0].path, "vault/x.md");
+        assert!(back.breaches[0].why.contains("[context] vault"), "{back:?}");
     }
 
     #[test]
