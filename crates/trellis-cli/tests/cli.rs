@@ -232,6 +232,80 @@ backstop = \"pyright\"
     let _ = std::fs::remove_dir_all(&empty);
 }
 
+#[test]
+fn index_does_not_wait_two_minutes_on_a_backstop_server_that_never_answers_initialize() {
+    // #445: `trellis index --graph` went quiet for over two minutes and was
+    // stopped by hand. With `[index] backstop = "pyright"` and a server that
+    // starts but never answers `initialize`, the handshake was held to the
+    // 120 s meant for a first query's import analysis, then `finish` added
+    // up to 7 s: 125 s measured, with nothing printed after the coverage.
+    // The handshake now has its own bound, and the output names it.
+    let d = repo("index-silent-backstop");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[index]\nbackstop = \"pyright\"\n",
+    )
+    .unwrap();
+    // A `pyright-langserver` that reads its input to the end and writes
+    // nothing. It exits when trellis closes its stdin, so nothing outlives
+    // the test.
+    let bin = scratch("index-silent-backstop-bin");
+    if cfg!(windows) {
+        std::fs::write(
+            bin.join("pyright-langserver.cmd"),
+            "@\"%SystemRoot%\\System32\\sort.exe\" > nul\r\n",
+        )
+        .unwrap();
+    } else {
+        // No `exec`: `sh` must stay alive holding the stdout pipe, as
+        // cmd.exe does on Windows. With `exec cat > /dev/null` no process
+        // holds it, trellis reads end of stream at once and reports "the
+        // server exited", which is not the silent server this test is about.
+        let stub = bin.join("pyright-langserver");
+        std::fs::write(&stub, "#!/bin/sh\ncat > /dev/null\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["index", "--graph"])
+        .current_dir(&d)
+        .env("NO_COLOR", "1")
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let took = started.elapsed();
+
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(
+        s.contains("backstop: pyright did not run (no answer to initialize within 20s)"),
+        "{s}"
+    );
+    assert!(s.contains("codebase graph"), "{s}");
+    // 20 s for the handshake and at most 7 s for `finish`; well under the
+    // 125 s it took before.
+    assert!(
+        took < std::time::Duration::from_secs(60),
+        "index waited {took:?} on a silent server"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
 // ---------------------------------------------------------------------------
 // radius
 // ---------------------------------------------------------------------------
@@ -3359,6 +3433,38 @@ fn subcommand_case_leaves_a_task_text_alone() {
     }
 }
 
+#[test]
+fn start_screen_is_for_bare_trellis_only_and_run_still_refuses() {
+    // ADR 0050 §3: the start screen is bare `trellis`'s alone. The risk is
+    // that opening it loosened root discovery for everything, and `trellis
+    // run` in a home directory starts walking it instead of refusing.
+    let d = scratch("start-screen-run");
+    let above: Vec<_> = d.ancestors().filter(|a| a.join(".git").exists()).collect();
+    assert!(
+        above.is_empty(),
+        "the scratch directory is inside a repository, so this proves nothing: {above:?}"
+    );
+    let out = run(&d, &["run", "--model", "scripted:none.json", "x"]);
+    let said = combined(&out);
+    assert!(!out.status.success(), "{said}");
+    assert!(
+        said.contains("cannot determine the repository root"),
+        "{said}"
+    );
+    assert!(said.contains("no git repository found at"), "{said}");
+    // Bare `trellis` with no terminal (output is captured here) has no one
+    // to answer a screen, so it refuses as it did before.
+    let bare = run(&d, &[]);
+    let said = combined(&bare);
+    assert!(!bare.status.success(), "{said}");
+    assert!(
+        said.contains("cannot determine the repository root"),
+        "{said}"
+    );
+    assert!(!d.join(".git").exists(), "{said}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn trellis_out(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
@@ -3510,4 +3616,66 @@ fn install_list_prints_what_the_manifest_records() {
     );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&user);
+}
+
+#[test]
+fn no_model_message_is_the_same_from_run_and_from_bare_trellis_on_a_pipe() {
+    // #376, ADR 0050 section 2: two commands that refuse for the same reason
+    // used to say it two ways, and neither mentioned the picker. The risk is
+    // drift: one wording updated and the other not. So the text `trellis
+    // run` prints must appear, whole, in what bare `trellis` prints when a
+    // pipe sends it to the line session.
+    let d = repo("no-model-message");
+    let config = std::env::temp_dir()
+        .join("trellis-tests-no-user-config")
+        .join("config.toml");
+
+    let out = run(&d, &["run", "x"]);
+    assert!(!out.status.success(), "a run with no model must refuse");
+    let err = String::from_utf8_lossy(&out.stderr);
+    let said = err
+        .trim()
+        .strip_prefix("Error: ")
+        .unwrap_or_else(|| panic!("an error, not:\n{err}"));
+    // What it has to name: the picker, one complete `--model` form, and the
+    // user's own config file.
+    assert!(said.contains("  trellis "), "names bare trellis:\n{said}");
+    assert!(
+        said.contains("--model llamacpp:http://127.0.0.1:8080"),
+        "a concrete --model:\n{said}"
+    );
+    assert!(
+        said.contains(&config.display().to_string()),
+        "the user config file:\n{said}"
+    );
+
+    let bare = {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+            .current_dir(&d)
+            .env("NO_COLOR", "1")
+            .env(
+                "TRELLIS_CONFIG_DIR",
+                std::env::temp_dir().join("trellis-tests-no-user-config"),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"x\n/exit\n")
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let shown = combined(&bare);
+    assert!(
+        shown.contains(said),
+        "bare trellis must print the same text as `trellis run`.\nrun:\n{said}\nbare:\n{shown}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
 }

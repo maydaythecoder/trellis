@@ -22,6 +22,29 @@ pub fn notes_root(dir: &Path) -> PathBuf {
     }
 }
 
+/// Refuses `path` when it is a symbolic link, as Apex refuses a linked
+/// `notes/` and linked workspace metadata (APX-43, APX-07). Not followed:
+/// `symlink_metadata`, whose `is_symlink` is also true for a Windows
+/// junction. A link out of the vault would have trellis read, or write
+/// through to, a file no vault entry names.
+pub(crate) fn refuse_link(path: &Path, what: &str) -> Result<(), VaultError> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(VaultError::Refused(format!(
+            "{}: {what} cannot be a symlink",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// [`notes_root`], refusing a `notes` that is a link rather than falling
+/// back to `dir` and reading files Apex would not.
+pub(crate) fn checked_notes_root(dir: &Path) -> Result<PathBuf, VaultError> {
+    let root = notes_root(dir);
+    refuse_link(&dir.join("notes"), "notes folder")?;
+    Ok(root)
+}
+
 pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> VaultError + '_ {
     move |source| VaultError::Io {
         path: path.to_path_buf(),
@@ -270,7 +293,7 @@ impl Vault {
     /// Reads every note under `dir`'s notes root. Fails only on I/O; a
     /// malformed note is still a note.
     pub fn open(dir: &Path) -> Result<Vault, VaultError> {
-        let root = notes_root(dir);
+        let root = checked_notes_root(dir)?;
         if !root.is_dir() {
             return Err(VaultError::Io {
                 path: root.clone(),

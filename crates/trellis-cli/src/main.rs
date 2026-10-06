@@ -26,6 +26,7 @@ mod process_agent;
 mod run_cmd;
 mod services;
 mod session;
+mod start_screen;
 #[cfg(test)]
 mod testutil;
 mod tooling;
@@ -556,9 +557,28 @@ fn main() -> Result<()> {
         None => match discover_root() {
             Ok(r) => r,
             Err(_) if !needs_repo => std::env::current_dir()?,
+            // ADR 0050 §3: bare `trellis` at a terminal asks where to go
+            // instead. Only bare `trellis`, and only with someone to answer:
+            // a pipe, a redirect or CI gets the refusal below, as every
+            // other command does.
+            Err(_) if cli.command.is_none() && interactive() => match start_screen::offer()? {
+                Some(r) => r,
+                None => return Ok(()),
+            },
             Err(e) => return Err(e.context("cannot determine the repository root")),
         },
     };
+    // ADR 0050 §3: the start screen's list. Only a root that is a
+    // repository, so an exempt command's fallback to the working directory
+    // or a `--root` naming a plain tree is not offered back later. A list
+    // that cannot be written costs the next start screen a line, not this
+    // command its run.
+    if root.join(".git").exists()
+        && let Some(file) = start_screen::file()
+        && let Err(e) = start_screen::record(&file, &root)
+    {
+        tracing::debug!(error = %format!("{e:#}"), "recent repositories not recorded");
+    }
     // ADR 0024 §3: every `key_env` in the effective configuration, the
     // user's file included, is removed from each child process trellis
     // starts. Before any command runs, so no spawn precedes it. A config that
@@ -648,10 +668,9 @@ fn main() -> Result<()> {
             // "no model": the refusal may be the point (ADR 0024 §3).
             let model = match model {
                 Some(m) => m,
-                None => config::RepoConfig::load(&root)?.model().context(
-                    "no model. Pass --model, or set [model] spec in \
-                     .trellis/config.toml",
-                )?,
+                None => config::RepoConfig::load(&root)?
+                    .model()
+                    .with_context(first_run::no_model)?,
             };
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
@@ -787,6 +806,15 @@ fn subcommand_lowercased(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
         break;
     }
     args
+}
+
+/// Whether there is a person at a terminal: stdin and stdout for the
+/// interface, stderr for the start screen's prompt (ADR 0050 §3).
+fn interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
 }
 
 /// The repository root, walking up from the working directory.

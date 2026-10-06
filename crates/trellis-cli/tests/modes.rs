@@ -210,6 +210,13 @@ fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
     let mut rpc = Rpc::start(trellis(&f));
     rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
     let q = rpc.next(|v| v["type"] == "approval_request");
+    // What the desktop shows a question by (ADR 0048 §6).
+    let gaps = missing(
+        &q,
+        &contract()["rpc"]["framing"]["approval_request"]["always"],
+        "approval_request",
+    );
+    assert!(gaps.is_empty(), "{gaps:?}: {q}");
     assert_eq!(q["question"], "edit a.py (+1 -1)");
     rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": true}));
     let end = rpc.next(|v| v["type"] == "run_end");
@@ -218,6 +225,116 @@ fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
     let m = rpc.next(|v| v["id"] == "m");
     assert_eq!(m["data"]["messages"][0]["call"], "edit a.py", "{m}");
     rpc.finish();
+}
+
+#[test]
+fn rpc_run_whose_client_closes_every_pipe_still_rolls_back_and_writes_its_trail() {
+    // The risk: a desktop that crashes, or is ended from the task manager,
+    // closes the child's stdin, stdout and stderr together (ADR 0025 §5, ADR
+    // 0048 §9). End of input must still decline the open question, roll back
+    // the edit already applied, and write the trail, with nobody left to
+    // read a line of it; one write that panics on a closed pipe skips both.
+    // The first edit is approved so the tree holds an applied write when the
+    // client goes: stopping at the first question would pass with rollback
+    // broken, since approve mode asks before it applies.
+    let f = fixture("rpc-vanish");
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let script = scratch("rpc-vanish-two-edits").join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"edit","path":"a.py","old":"return 2","new":"return 3"},
+            {"tool":"done","summary":"changed it twice"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let mut child = trellis(&f)
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let stderr = child.stderr.take().unwrap();
+    let mut seen = Vec::new();
+    let mut next_question = |stdout: &mut std::io::BufReader<std::process::ChildStdout>| loop {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let n = stdout.read_line(&mut line).unwrap();
+        assert!(n > 0, "stdout ended before an approval_request: {seen:?}");
+        let v: Value = serde_json::from_str(&line).expect("stdout is JSONL");
+        seen.push(v.clone());
+        if v["type"] == "approval_request" {
+            return v;
+        }
+    };
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": spec})
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let q = next_question(&mut stdout);
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": q["id"], "type": "approve", "yes": true})
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    next_question(&mut stdout);
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 2\n",
+        "the first edit is applied when the client goes"
+    );
+
+    drop((stdin, stdout, stderr));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("trellis rpc still running 60 s after its client closed every pipe");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 1\n",
+        "rolled back to the committed content (exit {status})"
+    );
+    let trails: Vec<PathBuf> = std::fs::read_dir(f.root.join(".trellis/runs"))
+        .unwrap_or_else(|e| panic!("no trail directory (exit {status}): {e}"))
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    assert_eq!(trails.len(), 1, "one trail (exit {status}): {trails:?}");
+    let trail: Value = serde_json::from_str(&std::fs::read_to_string(&trails[0]).unwrap()).unwrap();
+    // `trellis log` derives the outcome from the last check's verdict; a run
+    // that converged has one that passed.
+    let factual = &trail["factual"];
+    let last = factual["check_outcomes"]
+        .as_array()
+        .and_then(|c| c.last())
+        .or_else(|| factual["checks"].as_array().and_then(|c| c.last()));
+    assert_ne!(
+        last.map(|c| &c["passed"]),
+        Some(&Value::Bool(true)),
+        "the trail records a converged run: {trail}"
+    );
 }
 
 #[test]
@@ -291,15 +408,35 @@ fn rpc_compact_with_no_run_in_flight_answers_no_run_in_flight() {
     assert_eq!(resp["error"], "no run in flight", "{resp}");
 }
 
+/// Whether `raw` is a `GET` of a path ending in `/models`: the
+/// identification read a run makes of a loopback base (ADR 0047 decision
+/// 3). A stub that spent a canned reply on it would pass for a runtime and
+/// shift every later reply.
+fn is_models_get(raw: &str) -> bool {
+    let mut line = raw.lines().next().unwrap_or_default().split_whitespace();
+    line.next() == Some("GET") && line.next().is_some_and(|p| p.ends_with("/models"))
+}
+
+/// The answer a server that is not colibri gives that read.
+fn models_404() -> String {
+    let body = r#"{"error":{"message":"not found","type":"not_found_error"}}"#;
+    format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 /// Serves `replies` in order as an OpenAI-protocol endpoint on a loopback
-/// port, returning each request body it received.
+/// port, returning each request body it received. A `GET` of `/models` is
+/// answered 404 and neither takes a reply nor is returned.
 fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
     use std::io::Read;
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     let h = std::thread::spawn(move || {
         let mut got = Vec::new();
-        for r in replies {
+        let mut replies = replies.into_iter().peekable();
+        while let Some(r) = replies.peek() {
             let Ok((mut s, _)) = l.accept() else { break };
             s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
                 .ok();
@@ -325,12 +462,17 @@ fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<S
                     break String::new();
                 }
             };
+            if is_models_get(&String::from_utf8_lossy(&raw)) {
+                s.write_all(models_404().as_bytes()).ok();
+                continue;
+            }
             got.push(body);
             let out = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
                 r.len()
             );
             s.write_all(out.as_bytes()).ok();
+            replies.next();
         }
         got
     });
@@ -569,7 +711,19 @@ fn rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run() {
     // The model called `done` on the steer's word, with no check run: not
     // converged, and rolled back.
     assert_eq!(end["outcome"], "not_converged", "{end}");
-    rpc.finish();
+    let records = rpc.finish();
+    // The event the desktop marks a delivered steer by carries what
+    // tests/client_contract.json lists (ADR 0048 §6).
+    let delivered = records
+        .iter()
+        .find(|r| r["fields"]["message"] == "steer delivered")
+        .unwrap_or_else(|| panic!("no steer delivered event: {records:?}"));
+    let gaps = missing(
+        &delivered["fields"],
+        &contract()["rpc"]["events"]["steer delivered"]["always"],
+        "steer delivered",
+    );
+    assert!(gaps.is_empty(), "{gaps:?}: {delivered}");
     assert_eq!(
         std::fs::read_to_string(f.root.join("a.py")).unwrap(),
         "def f():\n    return 1\n"
@@ -662,4 +816,786 @@ fn rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order() {
     assert_eq!(task("p"), "change f");
     assert_eq!(task("u1"), "second task");
     assert_eq!(task("u2"), "third task");
+}
+
+#[test]
+fn stub_answers_get_models_with_404() {
+    // The risk: a run's identification read of a loopback base (ADR 0047
+    // decision 3) took the stub's first canned reply, so the stub passed for
+    // a runtime and every later reply went to the wrong request. It must be
+    // answered as a server that is not colibri answers it, and not recorded.
+    fn send(base: &str, request: &str) -> String {
+        use std::io::Read;
+        let mut s = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .ok();
+        s.write_all(request.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).ok();
+        out
+    }
+    let (base, server) = provider_stub(vec!["first".to_string()]);
+    let got = send(&base, "GET /v1/models HTTP/1.1\r\nHost: stub\r\n\r\n");
+    assert!(got.starts_with("HTTP/1.1 404 "), "{got}");
+    let body = got.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    assert!(
+        serde_json::from_str::<Value>(body).is_ok_and(|v| v["error"].is_object()),
+        "{got}"
+    );
+    let got = send(
+        &base,
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: stub\r\nContent-Length: 2\r\n\r\n{}",
+    );
+    assert!(
+        got.starts_with("HTTP/1.1 200 ") && got.ends_with("\r\n\r\nfirst"),
+        "{got}"
+    );
+    assert_eq!(server.join().unwrap(), vec!["{}".to_string()]);
+}
+
+/// One module as `trellis index --graph` draws it: name, definitions,
+/// ambiguous, unresolved, and its edges as (callee, call sites).
+type DrawnModule = (String, u64, u64, u64, Vec<(String, u64)>);
+
+/// The header counts and modules `trellis index --graph` printed.
+fn drawn_graph(stdout: &str) -> ((u64, u64, u64, u64), Vec<DrawnModule>) {
+    let mut lines = stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("codebase graph — "));
+    let header = lines.next().expect("a graph header");
+    let n = |s: &str| s.trim().parse::<u64>().unwrap();
+    let indexed = n(header
+        .trim_start_matches("codebase graph — ")
+        .trim_end_matches(" module(s)"));
+    let counts: Vec<u64> = lines
+        .next()
+        .unwrap()
+        .split(',')
+        .map(|part| n(part.split_whitespace().next().unwrap()))
+        .collect();
+    let mut modules: Vec<DrawnModule> = Vec::new();
+    for l in lines {
+        if let Some(node) = l.strip_prefix("  ● ").or_else(|| l.strip_prefix("  ○ ")) {
+            // The legend under the graph starts with the same glyphs and
+            // has no ` def`.
+            let Some((left, doubt)) = node.split_once(" def") else {
+                continue;
+            };
+            let (name, defines) = left.trim().rsplit_once(' ').unwrap();
+            let mark = |m: char| {
+                doubt
+                    .split_whitespace()
+                    .find_map(|t| t.strip_prefix(m))
+                    .map_or(0, n)
+            };
+            modules.push((
+                name.trim().to_string(),
+                n(defines),
+                mark('~'),
+                mark('?'),
+                Vec::new(),
+            ));
+        } else if let Some(edge) = l
+            .strip_prefix("    ├─▶ ")
+            .or_else(|| l.strip_prefix("    └─▶ "))
+        {
+            let (callee, count) = edge.rsplit_once("  ×").unwrap();
+            modules
+                .last_mut()
+                .unwrap()
+                .4
+                .push((callee.to_string(), n(count)));
+        }
+    }
+    ((indexed, counts[0], counts[1], counts[2]), modules)
+}
+
+/// Every key in `v`, at any depth, for the no-ratio checks (CLAUDE.md rule 3).
+fn keys(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, v) in m {
+                out.push(k.clone());
+                keys(v, out);
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|v| keys(v, out)),
+        _ => {}
+    }
+}
+
+#[test]
+fn rpc_get_codebase_returns_the_graph_codebase_lines_prints() {
+    // The risks: a client parsing human text because the graph has no data
+    // form (ADR 0048 §2); coverage arriving as a ratio (CLAUDE.md rule 3);
+    // a read that writes the index cache or the worktree; an index build
+    // blocking the reader while a run waits on an approval; and data that
+    // drifts from what `trellis index --graph` draws.
+    let f = fixture("rpc-codebase");
+    std::fs::write(
+        f.root.join("b.py"),
+        "from a import f\n\ndef g():\n    return f() + f()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.root.join("c.py"),
+        "from b import g\n\ndef h():\n    return g() + missing()\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "modules that call each other"]);
+
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "g", "type": "get_codebase"}));
+    let got = rpc.next(|v| v["id"] == "g");
+    rpc.finish();
+    assert_eq!(got["command"], "get_codebase", "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    let mut all = Vec::new();
+    keys(&data, &mut all);
+    for k in &all {
+        for banned in ["ratio", "percent", "fraction", "total"] {
+            assert!(!k.contains(banned), "key `{k}` in {data}");
+        }
+    }
+    assert!(
+        !f.root.join(".trellis/index.bin").exists(),
+        "get_codebase wrote the index cache"
+    );
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "g2", "type": "get_codebase", "limit": 40}));
+    let mid = rpc.next(|v| v["id"] == "g2" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "g2", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same graph mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // Last: `index` writes the cache, which is its job.
+    let o = run(&f, &["index", "--graph"]);
+    assert!(o.status.success());
+    let (header, drawn) = drawn_graph(&String::from_utf8_lossy(&o.stdout));
+    let u = |v: &Value| v.as_u64().unwrap();
+    assert_eq!(
+        header,
+        (
+            u(&data["modules_indexed"]),
+            u(&data["bound_call_sites"]),
+            u(&data["ambiguous"]),
+            u(&data["unresolved"])
+        ),
+        "{data}"
+    );
+    let answered: Vec<DrawnModule> = data["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            assert_eq!(m["calls_not_drawn"], 0, "{m}");
+            (
+                m["module"].as_str().unwrap().to_string(),
+                u(&m["defines"]),
+                u(&m["ambiguous"]),
+                u(&m["unresolved"]),
+                m["calls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| {
+                        (
+                            c["module"].as_str().unwrap().to_string(),
+                            u(&c["call_sites"]),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(answered, drawn, "{data}");
+    assert_eq!(drawn.len(), 3, "a, b and c: {drawn:?}");
+    assert!(
+        drawn.iter().map(|m| m.4.len()).sum::<usize>() >= 2,
+        "the fixture's calls bound across modules: {drawn:?}"
+    );
+    assert_eq!(data["modules_not_drawn"], 0, "{data}");
+}
+
+/// What `trellis radius <symbol>` printed, in `get_radius`'s `data` shape,
+/// read off the text: the reach block, then the doubt block with its reason
+/// rows and the files it is concentrated in.
+fn printed_radius(stdout: &str) -> Value {
+    let mut lines = stdout.lines();
+    let (symbol, file) = lines.next().unwrap().split_once("  (").unwrap();
+    let n = |s: &str| s.trim().parse::<u64>().unwrap();
+    let first = |l: &str| n(l.split_whitespace().next().unwrap());
+    let mut lines = lines.skip_while(|l| !l.starts_with("reach — "));
+    lines.next();
+    let reach: Vec<u64> = lines.by_ref().take(3).map(first).collect();
+    let mut lines = lines.skip_while(|l| !l.starts_with("doubt — "));
+    lines.next();
+    let head = lines.next().unwrap();
+    let touched = n(head
+        .split_once(" the ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .next()
+        .unwrap());
+    let (mut reasons, mut files) = (Vec::new(), Vec::new());
+    let mut in_files = false;
+    for l in lines.take_while(|l| !l.starts_with("  partitionable:")) {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with("Any of them") {
+            continue;
+        }
+        assert!(!t.contains("further"), "the fixture fits uncollapsed: {l}");
+        if t == "concentrated in:" {
+            in_files = true;
+        } else if in_files {
+            let (count, path) = t.split_once("  ").unwrap();
+            files.push(serde_json::json!({"path": path.trim(), "call_sites": n(count)}));
+        } else {
+            let (reason, rest) = t.split_once(' ').unwrap();
+            let (count, explain) = rest.trim_start().split_once(' ').unwrap();
+            reasons.push(serde_json::json!({
+                "reason": reason,
+                "call_sites": n(count),
+                "explain": explain.trim(),
+            }));
+        }
+    }
+    serde_json::json!({
+        "symbol": symbol,
+        "file": file.trim_end_matches(')'),
+        "reach": {
+            "resolved": reach[0],
+            "ambiguous": reach[1],
+            "symbols_reached": reach[2],
+        },
+        "doubt": {
+            "unbound_in_touched_files": first(head),
+            "touched_files": touched,
+            "reasons": reasons,
+            "files": files,
+        },
+    })
+}
+
+#[test]
+fn rpc_get_radius_returns_reach_and_doubt_as_separate_counts() {
+    // The risks: a client parsing human text because a radius has no data
+    // form (ADR 0048 §2); reach and doubt arriving as one ratio, which once
+    // read as a resolver twenty times worse than audited (ADR 0014,
+    // CLAUDE.md rule 3); a read that writes the index cache or the worktree;
+    // an index build blocking the reader while a run waits on an approval;
+    // and data that drifts from what `trellis radius` prints.
+    let f = fixture("rpc-radius");
+    std::fs::write(
+        f.root.join("b.py"),
+        "from a import f\n\ndef g(x):\n    return f() + f() + x.go()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.root.join("c.py"),
+        "from b import g\n\ndef h(y):\n    return g(y) + missing() + y.run()\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "callers, some unbindable"]);
+
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "r", "type": "get_radius", "symbol": "f"}));
+    let got = rpc.next(|v| v["id"] == "r");
+    rpc.finish();
+    assert_eq!(got["command"], "get_radius", "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    let mut all = Vec::new();
+    keys(&data, &mut all);
+    for k in &all {
+        for banned in ["ratio", "percent", "fraction", "total"] {
+            assert!(!k.contains(banned), "key `{k}` in {data}");
+        }
+    }
+    assert!(
+        !f.root.join(".trellis/index.bin").exists(),
+        "get_radius wrote the index cache"
+    );
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "r2", "type": "get_radius", "symbol": "a.f"}));
+    let mid = rpc.next(|v| v["id"] == "r2" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "r2", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same radius mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // Last: `radius` builds through the cache, which writes it.
+    let o = run(&f, &["radius", "f"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        printed_radius(&String::from_utf8_lossy(&o.stdout)),
+        data,
+        "the counts `trellis radius f` prints"
+    );
+    // Both blocks carry something, so the comparison is not of zeros.
+    assert_eq!(data["reach"]["resolved"], 3, "{data}");
+    assert_eq!(
+        data["doubt"]["files"].as_array().unwrap().len(),
+        2,
+        "{data}"
+    );
+}
+
+/// Every file under `dir`, by path relative to it, with its bytes.
+fn files_under(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let bytes = std::fs::read(&p).unwrap();
+                out.insert(p.strip_prefix(dir).unwrap().to_path_buf(), bytes);
+            }
+        }
+    }
+    out
+}
+
+/// The id `trellis queue add` printed on its `queued:` line.
+fn queued(o: &Output) -> String {
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let line = out.lines().find(|l| l.starts_with("queued:")).unwrap();
+    line.split_whitespace().nth(1).unwrap().to_string()
+}
+
+/// What `trellis queue list` printed, in `get_queue`'s task shape, read off
+/// the text: each entry's head line, its task line and any `waiting:` line,
+/// up to the approvals block, which is not a task.
+fn printed_queue(stdout: &str) -> Vec<Value> {
+    let mut tasks: Vec<Value> = Vec::new();
+    for line in stdout.lines() {
+        if line.is_empty() || line == "approvals waiting:" {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("          ") {
+            let t = tasks.last_mut().unwrap();
+            if let Some(why) = rest.strip_prefix("waiting: ") {
+                t["waiting"] = Value::from(why);
+                continue;
+            }
+            let (text, tags) = rest.split_once(" [").map_or((rest, ""), |(a, b)| (a, b));
+            t["task"] = Value::from(text);
+            let tag = |name: &str| {
+                tags.split(" [")
+                    .find_map(|s| s.strip_prefix(name))
+                    .map(|s| s.trim_end_matches(']').to_string())
+            };
+            t["labels"] = tag("labels ")
+                .map(|l| l.split(',').map(Value::from).collect())
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            t["assignee"] = tag("agent ").map_or(Value::Null, Value::from);
+            continue;
+        }
+        let mut head = line.split_whitespace();
+        let (state, id) = (head.next().unwrap(), head.next().unwrap());
+        let rest = line.split_once(id).unwrap().1.trim_start();
+        if let Some(why) = rest.strip_prefix("unreadable: ") {
+            tasks.push(serde_json::json!({"id": id, "state": state, "error": why}));
+            continue;
+        }
+        let mut words = rest.split_whitespace();
+        tasks.push(serde_json::json!({
+            "id": id,
+            "state": state,
+            "status": words.next().unwrap(),
+            "priority": words.next().unwrap(),
+            "waiting": null,
+        }));
+    }
+    tasks
+}
+
+#[test]
+fn rpc_get_queue_lists_what_queue_list_prints() {
+    // The risks: a client parsing `queue list`'s text because the queue has
+    // no data form (ADR 0048 §2); a read that writes, claims or moves a task
+    // (the queue's writes are `trellis queue`'s and `trellis work`'s, ADR
+    // 0020 §5), which `git status` cannot see, since the queue lives in the
+    // git directory; a read blocking the reader while a run waits on an
+    // approval; a `quit` that exits before the answer is written; and data
+    // that drifts from what `trellis queue list` prints.
+    let f = fixture("rpc-queue");
+    let blocker = queued(&run(
+        &f,
+        &["queue", "add", "fix the parser", "--priority", "high"],
+    ));
+    queued(&run(
+        &f,
+        &[
+            "queue",
+            "add",
+            "then the docs",
+            "--label",
+            "docs",
+            "--label",
+            "later",
+            "--blocked-by",
+            &blocker,
+        ],
+    ));
+    queued(&run(
+        &f,
+        &["queue", "add", "some day", "--backlog", "--priority", "low"],
+    ));
+    let queue_dir = trellis_vcs::git_dir(&f.root).unwrap().join("trellis");
+    std::fs::write(
+        queue_dir.join("queue/pending/20260101-000000-000000000-broken.json"),
+        "{ not a task",
+    )
+    .unwrap();
+    let before = files_under(&queue_dir);
+
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "q", "type": "get_queue"}));
+    let got = rpc.next(|v| v["id"] == "q");
+    rpc.finish();
+    assert_eq!(got["command"], "get_queue", "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+    let after = files_under(&queue_dir);
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>(),
+        "the files under the git directory's trellis/"
+    );
+    for (path, bytes) in &before {
+        assert!(after[path] == *bytes, "{} changed", path.display());
+    }
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "q2", "type": "get_queue"}));
+    let mid = rpc.next(|v| v["id"] == "q2" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "q2", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same queue mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // A `quit` on the next line waits for the answer before its own.
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "q3", "type": "get_queue"}));
+    rpc.send(serde_json::json!({"id": "x", "type": "quit"}));
+    let first = rpc.next(|v| v["id"] == "q3" || v["id"] == "x");
+    assert_eq!(first["id"], "q3", "answered before `quit`: {first}");
+    assert_eq!(first["success"], true, "{first}");
+    rpc.next(|v| v["id"] == "x");
+    rpc.finish();
+
+    // Last: what `trellis queue list` prints, task by task in its order.
+    let o = run(&f, &["queue", "list"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let printed = printed_queue(&String::from_utf8_lossy(&o.stdout));
+    let answered = data["tasks"].as_array().unwrap();
+    assert_eq!(answered.len(), printed.len(), "{data}");
+    for (a, p) in answered.iter().zip(&printed) {
+        assert_eq!(a, p, "a task as `queue list` prints it");
+    }
+    // Each kind the fixture set up is in the comparison, so it is not of
+    // empty fields.
+    assert_eq!(printed.len(), 4, "{printed:?}");
+    assert!(
+        printed.iter().any(|t| t["error"].is_string()),
+        "{printed:?}"
+    );
+    assert!(
+        printed
+            .iter()
+            .any(|t| t["labels"].as_array().is_some_and(|l| l.len() == 2))
+    );
+    assert!(
+        printed.iter().any(|t| t["waiting"] == "in backlog"),
+        "{printed:?}"
+    );
+    assert!(
+        printed
+            .iter()
+            .any(|t| t["status"] == "blocked" && t["waiting"].as_str().is_some()),
+        "{printed:?}"
+    );
+}
+
+/// The rpc and `log --json` fields a client may rely on (ADR 0048 §6), as
+/// data the tests below hold the binary to.
+fn contract() -> Value {
+    serde_json::from_str(include_str!("client_contract.json"))
+        .expect("client_contract.json is JSON")
+}
+
+/// The field names in one of the contract's lists.
+fn names(list: &Value) -> Vec<&str> {
+    list.as_array()
+        .expect("a contract list")
+        .iter()
+        .map(|n| n.as_str().expect("a field name"))
+        .collect()
+}
+
+/// Each field of `fields` that `record` does not carry, as `<what>.<field>`.
+/// A field present with `null` is carried.
+fn missing(record: &Value, fields: &Value, what: &str) -> Vec<String> {
+    names(fields)
+        .into_iter()
+        .filter(|f| record.get(f).is_none())
+        .map(|f| format!("{what}.{f}"))
+        .collect()
+}
+
+/// Whether `record` carries `path`: dotted keys, with `[]` meaning every
+/// element of a non-empty array. A key present with `null` is carried.
+fn carries(record: &Value, path: &str) -> bool {
+    let (head, rest) = match path.split_once('.') {
+        Some((h, r)) => (h, Some(r)),
+        None => (path, None),
+    };
+    let (key, each) = match head.strip_suffix("[]") {
+        Some(k) => (k, true),
+        None => (head, false),
+    };
+    let Some(v) = record.get(key) else {
+        return false;
+    };
+    match (each, rest) {
+        (false, None) => true,
+        (false, Some(r)) => carries(v, r),
+        (true, r) => v
+            .as_array()
+            .is_some_and(|a| !a.is_empty() && a.iter().all(|e| r.is_none_or(|r| carries(e, r)))),
+    }
+}
+
+/// Commits a `.trellis/config.toml` whose checks pass on Windows and Linux,
+/// as `cli.rs`'s fixtures do, so a run that calls `run_checks` converges
+/// without depending on the machine's toolchain.
+fn commit_passing_checks(f: &Fixture) {
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "checks"]);
+}
+
+#[test]
+fn rpc_stream_carries_every_field_the_desktop_reads() {
+    // The risk: a field the desktop's run panes read is renamed or dropped
+    // in trellis-loop or the framing. The TUI reads the same events in
+    // process, so its tests would pass and the desktop would go blank with
+    // nothing failing (ADR 0048 §6). The model is the provider stub, not a
+    // script: the scripted driver sends no prompt, so its turns never carry
+    // `prompt_bytes`.
+    let c = contract();
+    let rpc_c = &c["rpc"];
+    let f = fixture("rpc-contract");
+    commit_passing_checks(&f);
+    let (base, server) = provider_stub(vec![
+        openai_call("c1", "blast_radius", serde_json::json!({"symbol": "f"})),
+        openai_call(
+            "c2",
+            "edit",
+            serde_json::json!({"path": "a.py", "old": "return 1", "new": "return 2"}),
+        ),
+        openai_call(
+            "c3",
+            "run_checks",
+            serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+        ),
+        openai_call("c4", "done", serde_json::json!({"summary": "changed it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_CONTRACT_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 4, "{records:?}");
+
+    let events = &rpc_c["events"];
+    let of = |message: &str| -> Vec<&Value> {
+        records
+            .iter()
+            .filter(|r| r["fields"]["message"] == message)
+            .map(|r| &r["fields"])
+            .collect()
+    };
+    let mut gaps: Vec<String> = Vec::new();
+    let turns = of("turn");
+    let turn = &events["turn"];
+    if turns.is_empty() {
+        gaps.push("no turn event".into());
+    }
+    let verdicts = names(&turn["verdict_values"]);
+    for t in &turns {
+        gaps.extend(missing(
+            t,
+            &turn["always"],
+            &format!("turn {} ({})", t["turn"], t["call"]),
+        ));
+        if let Some(v) = t.get("verdict")
+            && !v.as_str().is_some_and(|v| verdicts.contains(&v))
+        {
+            gaps.push(format!(
+                "turn {} verdict {v}, not one of {verdicts:?}",
+                t["turn"]
+            ));
+        }
+    }
+    match turns.iter().find(|t| {
+        t["call"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("blast_radius "))
+    }) {
+        Some(t) => {
+            gaps.extend(missing(t, &turn["blast_radius_only"], "blast_radius turn"));
+            // A turn the provider's reply made: the driver sent a prompt.
+            gaps.extend(missing(t, &turn["prompt_driver_only"], "blast_radius turn"));
+            if t["check_kind"] != "" {
+                gaps.push(format!(
+                    "blast_radius turn check_kind {}, not \"\" on a turn that ran no check",
+                    t["check_kind"]
+                ));
+            }
+        }
+        None => gaps.push("no blast_radius turn".into()),
+    }
+    match of("run budget").first() {
+        Some(b) => gaps.extend(missing(b, &events["run budget"]["always"], "run budget")),
+        None => gaps.push("no run budget event".into()),
+    }
+    for ty in ["run_start", "run_end", "response"] {
+        let found: Vec<&Value> = records.iter().filter(|r| r["type"] == ty).collect();
+        if found.is_empty() {
+            gaps.push(format!("no {ty} record"));
+        }
+        for r in found {
+            gaps.extend(missing(r, &rpc_c["framing"][ty]["always"], ty));
+        }
+    }
+    assert!(
+        gaps.is_empty(),
+        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+    // The run took the path the fixture is built for, so the turns above
+    // are the ones meant.
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}");
+}
+
+#[test]
+fn log_json_carries_every_trail_field_the_desktop_reads() {
+    // The risk: a path the desktop's trails view reads is renamed or moved
+    // in the record or the trail, and the view goes blank with nothing
+    // failing (ADR 0048 §6). The run calls `run_checks`, so the trail has a
+    // check outcome to read through.
+    let c = contract();
+    let f = fixture("log-json-contract");
+    commit_passing_checks(&f);
+    let script = scratch("log-json-contract-checks").join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[
+            {"tool":"edit","path":"a.py","old":"return 1","new":"return 2"},
+            {"tool":"run_checks","paths":["a.py"],"kinds":["typecheck","tests"]},
+            {"tool":"done","summary":"changed it"}
+        ]}"#,
+    )
+    .unwrap();
+    let spec = format!("scripted:{}", script.display());
+    let o = run(&f, &["run", "change f", "--model", &spec]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = run(&f, &["--json", "log"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lines = jsonl(&o);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let gaps: Vec<&str> = names(&c["log_json"]["always"])
+        .into_iter()
+        .filter(|p| !carries(&lines[0], p))
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "the log --json line lacks what tests/client_contract.json lists: {gaps:?}\n{}",
+        lines[0]
+    );
 }
