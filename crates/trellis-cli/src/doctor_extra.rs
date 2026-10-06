@@ -413,4 +413,61 @@ mod tests {
             "{s}"
         );
     }
+
+    #[test]
+    fn a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise() {
+        // The risk: a service left running after its task ended reported as
+        // expected (so nobody kills it), or one `work` is running reported
+        // as a leak; and a line that names unreadable records when there
+        // are none. The record names this test's own process, which is
+        // alive; the claimed task's id is respelled with both separators
+        // the id alphabet admits.
+        let d = tempfile::tempdir().unwrap();
+        crate::testutil::git_init(d.path());
+        let q = trellis_queue::Queue::for_repo(d.path()).unwrap();
+        let id = q.add("serve", None, None).unwrap();
+        q.claim(&id).unwrap().expect("nobody else claims it");
+        let claimed = q.dir().join("claimed");
+        std::fs::rename(
+            claimed.join(format!("{id}.json")),
+            claimed.join("serve-1_a.json"),
+        )
+        .unwrap();
+        let services = q.trellis_dir().join(crate::services::DIR);
+        std::fs::create_dir_all(&services).unwrap();
+        let pid = std::process::id();
+        let record = |task: &str| {
+            let r = crate::services::Record {
+                pid,
+                started: None,
+                agent: "maker".into(),
+                service: "db".into(),
+                task: task.into(),
+                argv: vec!["db".into()],
+            };
+            std::fs::write(
+                services.join(format!("{pid}.json")),
+                serde_json::to_vec(&r).unwrap(),
+            )
+            .unwrap();
+        };
+        record("serve-1_a");
+        assert_eq!(
+            services_line(d.path()),
+            format!(
+                "services:   1 running for a task still claimed (expected while `work` runs \
+                 it): pid {pid} (maker/db, task serve-1_a: db)"
+            )
+        );
+        record("serve-2_b");
+        let s = services_line(d.path());
+        assert!(
+            s.starts_with(&format!(
+                "services:   1 recorded service(s) alive after their task ended: pid {pid} \
+                 (maker/db, task serve-2_b: db)"
+            )),
+            "{s}"
+        );
+        assert!(!s.contains("running for a task"), "{s}");
+    }
 }

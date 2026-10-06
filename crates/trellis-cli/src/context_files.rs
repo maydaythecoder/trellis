@@ -527,6 +527,60 @@ mod tests {
     }
 
     #[test]
+    fn a_context_file_exactly_at_the_cap_loads_and_so_does_a_system_file() {
+        // The risk: an off-by-one that omits (or refuses) a file whose size
+        // is exactly the cap the documentation promises fits.
+        let d = dir();
+        std::fs::write(d.path().join("AGENTS.md"), "a".repeat(CONTEXT_FILES_CAP)).unwrap();
+        std::fs::write(
+            d.path().join(".trellis/system.md"),
+            "s".repeat(SYSTEM_FILE_CAP),
+        )
+        .unwrap();
+        let l = load(d.path(), None, true, &[], &[]).unwrap();
+        assert_eq!(l.extra.files.len(), 1, "{:?}", l.report);
+        assert_eq!(l.extra.system.map(|s| s.len()), Some(SYSTEM_FILE_CAP));
+    }
+
+    #[test]
+    fn files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none() {
+        // The risk: "off" said where there was nothing to turn off, or the
+        // user directory's files not counted toward saying it.
+        let d = dir();
+        let user = tempfile::tempdir().unwrap();
+        let l = load(d.path(), Some(user.path()), false, &[], &[]).unwrap();
+        assert!(l.report.is_empty(), "{:?}", l.report);
+        std::fs::write(user.path().join("AGENTS.md"), "x").unwrap();
+        let l = load(d.path(), Some(user.path()), false, &[], &[]).unwrap();
+        assert_eq!(l.report, ["context files: off ([context] files = false)"]);
+    }
+
+    #[test]
+    fn a_skill_forced_twice_loads_once_and_each_named_skill_loads() {
+        // The risk: the same skill sent twice when asked for twice, or a
+        // second, different skill dropped as if it were a repeat.
+        let d = dir();
+        for n in ["alpha", "beta"] {
+            let s = d.path().join(trellis_loop::SKILLS_DIR).join(n);
+            std::fs::create_dir_all(&s).unwrap();
+            std::fs::write(
+                s.join("SKILL.md"),
+                format!("---\nname: {n}\ndescription: {n} skill\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        let asked: Vec<String> = ["alpha", "beta", "alpha"].map(String::from).to_vec();
+        let l = load(d.path(), None, true, &asked, &[]).unwrap();
+        let names: Vec<&str> = l
+            .extra
+            .forced_skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "beta"]);
+    }
+
+    #[test]
     fn identical_files_are_sent_once() {
         let d = dir();
         std::fs::write(d.path().join("AGENTS.md"), "same").unwrap();
@@ -1032,6 +1086,25 @@ mod installed_tests {
                 f.agents.display()
             )),
             "{note}"
+        );
+    }
+
+    #[test]
+    fn a_user_s_own_skill_alone_is_reported_with_no_installed_count() {
+        // The risk: the one user-level skill a run lists goes unreported
+        // (so nobody is told it was not trust-gated), or the line counts
+        // installed packages there are none of.
+        let f = fixture();
+        manifest(&f.config, &[]);
+        skill_in(&f.config.join("skills"), "own", "OWN");
+        let dirs = f.dirs();
+        let c = SkillCatalog::discover_with(&f.root, &dirs);
+        assert_eq!(
+            user_skills_note(&c, &f.root, &dirs, Some(&f.config)).as_deref(),
+            Some(
+                "user skills: 1 from the user's own directories (not gated on repository \
+                 trust)"
+            )
         );
     }
 
