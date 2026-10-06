@@ -1164,23 +1164,23 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/liveness.rs:126:29: replace match guard out.trim().is_empty() with true in probe_ps
 #248 | crates/trellis-cli/src/liveness.rs:123:28: delete ! in probe_ps
 #248 | crates/trellis-cli/src/liveness.rs:146:25: replace match guard started.elapsed() >= PROBE_BOUND with false in bounded
-#248 | crates/trellis-cli/src/orchestrate.rs:97:16: delete ! in load_routines
-#248 | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with String::new()
-#248 | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with "xyzzy".into()
-#248 | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with true in state_text
-#248 | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with false in state_text
-#248 | crates/trellis-cli/src/orchestrate.rs:166:13: delete match arm Some(PausedBy::Budget) in state_text
-#248 | crates/trellis-cli/src/orchestrate.rs:201:25: replace match guard !p.file.pass_env.is_empty() with true in runs_with
-#248 | crates/trellis-cli/src/orchestrate.rs:309:40: replace == with != in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with == in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with < in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with >= in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with == in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with < in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with >= in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with true in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with false in agents
-#248 | crates/trellis-cli/src/orchestrate.rs:450:25: delete ! in agents
+killed (#248) by tests/orchestration.rs a_routine_may_assign_its_task_to_a_profile_and_not_to_a_missing_one | crates/trellis-cli/src/orchestrate.rs:97:16: delete ! in load_routines
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with String::new()
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:131:5: replace limit_text -> String with "xyzzy".into()
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with true in state_text
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:164:20: replace match guard p.file.paused with false in state_text
+killed (#248) by tests/orchestration.rs a_budget_hard_stop_pauses_the_agent_and_an_approved_raise_resumes_it | crates/trellis-cli/src/orchestrate.rs:166:13: delete match arm Some(PausedBy::Budget) in state_text
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:201:25: replace match guard !p.file.pass_env.is_empty() with true in runs_with
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:309:40: replace == with != in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with == in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with < in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:378:41: replace > with >= in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with == in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with < in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:385:30: replace > with >= in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with true in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with false in agents
+killed (#248) by tests/orchestration.rs agents_show_and_resume_say_which_pause_holds_and_what_the_trails_lacked | crates/trellis-cli/src/orchestrate.rs:450:25: delete ! in agents
 killed (#248) by process_agent::tests::a_path_deny_write_refuses_is_refused_once_not_again_by_allow_write | crates/trellis-cli/src/process_agent.rs:135:51: replace || with && in Judge::governance
 killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:401:8: delete ! in run
 killed (#248) by process_agent::tests::a_change_that_cannot_be_read_or_rolled_back_is_not_restored | crates/trellis-cli/src/process_agent.rs:414:62: replace && with || in run
