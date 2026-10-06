@@ -616,12 +616,36 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                 n.tasks,
                 dir.display()
             );
+            // First: the one left-behind state that changes what an import
+            // does. The exported file does not say `paused`, so it runs there.
+            for name in &n.paused_by_overlay {
+                println!(
+                    "          agent `{name}` is paused here (`agents pause` or a budget stop), \
+                     not in its file: an import does not carry its pause, and will run it"
+                );
+            }
             if n.claimed_skipped > 0 {
                 println!(
                     "          {} claimed task(s) not exported: they belong to a run in \
                      progress",
                     n.claimed_skipped
                 );
+            }
+            // This checkout's runtime state, not definitions (ADR 0026 §10).
+            for (count, what) in [
+                (n.overlays, "agent overlay(s) (pauses, budget raises)"),
+                (
+                    n.routine_states,
+                    "routine state file(s) (when each last fired)",
+                ),
+                (n.approval_requests, "approval request(s)"),
+                (n.activity_lines, "activity log line(s)"),
+            ] {
+                if count > 0 {
+                    println!(
+                        "          {count} {what} not exported: runtime state of this checkout"
+                    );
+                }
             }
             println!(
                 "          nothing secret to scrub: profiles name a model spec, and keys \
@@ -682,6 +706,44 @@ fn check_focus(root: &Path, stem: &str) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// `rpc`'s `get_queue`: every task `queue list` prints with no filter, in its
+/// order, as data. Only reads: `Queue::at` creates nothing until a write.
+///
+/// Strings are given as stored; `queue list` escapes control characters for
+/// the terminal, and JSON escapes its own. The approvals block is not a task
+/// and is left out.
+pub(crate) fn queue_json(root: &Path) -> std::result::Result<serde_json::Value, QueueError> {
+    let q = Queue::for_repo(root)?;
+    let entries = q.list()?;
+    let ix = Queue::index_of(&entries);
+    let tasks: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let state = e.state.dir_name();
+            match &e.task {
+                Err(why) => serde_json::json!({"id": e.id, "state": state, "error": why}),
+                Ok(t) => {
+                    // The same condition `list_line` prints `waiting:` under.
+                    let waiting = (e.state == State::Pending)
+                        .then(|| Queue::waiting_reason(t, &ix))
+                        .flatten();
+                    serde_json::json!({
+                        "id": e.id,
+                        "state": state,
+                        "status": t.status_in(e.state).as_str(),
+                        "priority": t.priority.as_str(),
+                        "task": t.task,
+                        "labels": t.labels,
+                        "assignee": t.assignee,
+                        "waiting": waiting,
+                    })
+                }
+            }
+        })
+        .collect();
+    Ok(serde_json::json!({ "tasks": tasks }))
 }
 
 fn list_line(e: &trellis_queue::Entry, ix: &trellis_queue::Index) -> String {
@@ -1070,10 +1132,7 @@ impl Runner for CliRunner<'_> {
 
     fn gate(&mut self, _id: &str, t: &trellis_queue::Task, _out: &mut dyn Write) -> Option<String> {
         let Some(name) = &t.assignee else {
-            return self
-                .model
-                .is_none()
-                .then(|| "no model: pass --model, or set [model] spec".to_string());
+            return self.model.is_none().then(crate::first_run::no_model);
         };
         let Some(p) = self.profiles.get(name) else {
             return Some(format!("no agent profile `{name}` in .trellis/agents/"));

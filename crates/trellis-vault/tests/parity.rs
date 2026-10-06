@@ -769,6 +769,225 @@ fn notes_root_follows_the_notes_folder_rule() {
     assert_eq!(trellis_vault::notes_root(d.path()), d.path().join("notes"));
 }
 
+// ---------------------------------------------------------------------------
+// Links Apex refuses (APX-43, APX-07)
+// ---------------------------------------------------------------------------
+
+/// A symbolic link at `link` to `target`, or `Err` with a line starting
+/// `skipped:` where this host cannot make one (Windows without Developer
+/// Mode or elevation). The same logic as `trellis_core::paths::
+/// symlink_for_test`, copied because trellis-vault takes no dependency on
+/// trellis-core.
+fn symlink(target: &Path, link: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let r = if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+    r.map_err(|e| {
+        format!(
+            "skipped: a symbolic link could not be created on this host ({e}); on Windows \
+             this needs Developer Mode or an elevated process"
+        )
+    })
+}
+
+/// A file outside the vault holding `body`, and its bytes, for asserting a
+/// link's target was never written through.
+fn outside_file(name: &str, body: &str) -> (tempfile::TempDir, PathBuf) {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join(name);
+    std::fs::write(&p, body).unwrap();
+    (d, p)
+}
+
+fn assert_notes_link_refused(vault: &Path) {
+    let msg = |r: Result<(), VaultError>| match r {
+        Err(e) => e.to_string(),
+        Ok(()) => panic!("a linked notes/ was read as the vault"),
+    };
+    let open = msg(Vault::open(vault).map(drop));
+    assert!(open.contains("notes folder cannot be a symlink"), "{open}");
+    let gate = msg(validate(vault).map(drop));
+    assert!(gate.contains("notes folder cannot be a symlink"), "{gate}");
+}
+
+#[test]
+fn a_symlinked_notes_folder_is_refused_not_read_from_the_parent() {
+    // Apex refuses the folder; trellis fell back to the vault directory
+    // itself, so the two tools read different files for the same vault and
+    // the run gate passed on notes Apex would never show.
+    let elsewhere = copy_vault();
+    let d = copy_vault();
+    let link = d.path().join("notes");
+    // A junction needs no privilege, so a Windows host without Developer
+    // Mode still checks that one is treated as a link.
+    #[cfg(windows)]
+    {
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(elsewhere.path())
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(made, "mklink /J needs no privilege");
+        assert_notes_link_refused(d.path());
+        std::fs::remove_dir(&link).unwrap();
+    }
+    if let Err(why) = symlink(elsewhere.path(), &link) {
+        println!("{why}");
+        return;
+    }
+    assert_notes_link_refused(d.path());
+}
+
+#[test]
+fn a_symlinked_manifest_is_refused_before_any_write() {
+    // `vault new` rewrote whatever file the link named, outside the vault.
+    let d = copy_vault();
+    let manifest_text = read(d.path(), "manifest.json");
+    let (_out, target) = outside_file("manifest.json", &manifest_text);
+    std::fs::remove_file(d.path().join("manifest.json")).unwrap();
+    if let Err(why) = symlink(&target, &d.path().join("manifest.json")) {
+        println!("{why}");
+        return;
+    }
+    let notes_before: Vec<_> = snapshot(d.path()).into_iter().map(|(n, _)| n).collect();
+
+    let err = edit::create(d.path(), "Fresh", None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("cannot be a symlink"), "{err}");
+    let notes_after: Vec<_> = snapshot(d.path()).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(notes_after, notes_before, "no note was created");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), manifest_text);
+
+    let gate = validate(d.path()).unwrap_err().to_string();
+    assert!(
+        gate.contains("manifest.json") && gate.contains("cannot be a symlink"),
+        "{gate}"
+    );
+}
+
+#[test]
+fn a_symlinked_layout_is_refused_before_any_write() {
+    // `rm` pruned the removed note's key from whatever file the link named.
+    let d = copy_vault();
+    let layout = "{\"glossary.md\":{},\"root.md\":{}}";
+    let (_out, target) = outside_file("layout.json", layout);
+    if let Err(why) = symlink(&target, &d.path().join("layout.json")) {
+        println!("{why}");
+        return;
+    }
+    let err = edit::remove(d.path(), "glossary").unwrap_err().to_string();
+    assert!(err.contains("cannot be a symlink"), "{err}");
+    assert!(
+        d.path().join("glossary.md").is_file(),
+        "the note was removed"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), layout);
+}
+
+#[test]
+fn a_symlinked_dates_json_is_refused_and_left_unchanged() {
+    // The refusal existed with nothing asserting it: #246 found
+    // `is_symlink -> false` survived. A valid document behind the link is
+    // the case that matters, since an invalid one is refused anyway.
+    let d = copy_vault();
+    let doc = "{\"version\":1,\"notes\":{}}";
+    let (_out, target) = outside_file("dates.json", doc);
+    if let Err(why) = symlink(&target, &d.path().join("dates.json")) {
+        println!("{why}");
+        return;
+    }
+    match dates::load(d.path()) {
+        dates::State::Invalid(e) => assert!(e.contains("cannot be a symlink"), "{e}"),
+        other => panic!("a linked dates.json was read: {other:?}"),
+    }
+    let touched = Touched {
+        created: vec!["root.md".into()],
+        ..Touched::default()
+    };
+    dates::after_edit(d.path(), &touched, "2026-10-04").unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), doc);
+}
+
+/// `edit::init` on `vault` refused naming `name`, with neither metadata file
+/// written: the refusal comes before the first write, not between the two.
+fn assert_init_refused(vault: &Path, name: &str) {
+    let err = edit::init(vault).unwrap_err().to_string();
+    assert!(
+        err.contains(name) && err.contains("cannot be a symlink"),
+        "{err}"
+    );
+    for f in ["manifest.json", "layout.json"] {
+        let p = vault.join(f);
+        assert!(
+            std::fs::symlink_metadata(&p).is_err() || f == name,
+            "{f} was written"
+        );
+    }
+}
+
+/// A broken link: `exists()` follows it and reads it as absent, which is
+/// how `init` came to write a new vault's metadata through it, outside the
+/// vault, to a file the link's target named.
+fn assert_init_refuses_broken_link(name: &str) {
+    let d = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join(name);
+    if let Err(why) = symlink(&target, &d.path().join(name)) {
+        println!("{why}");
+        return;
+    }
+    assert_init_refused(d.path(), name);
+    assert!(
+        !target.exists(),
+        "init wrote through the link to {target:?}"
+    );
+}
+
+#[test]
+fn init_refuses_a_linked_manifest_json() {
+    assert_init_refuses_broken_link("manifest.json");
+}
+
+#[test]
+fn init_refuses_a_linked_layout_json() {
+    // Checked before `manifest.json` is written, so the refusal leaves no
+    // half-initialised vault behind.
+    assert_init_refuses_broken_link("layout.json");
+}
+
+#[test]
+fn init_refuses_a_linked_notes_folder() {
+    // Every later read refuses a linked `notes/`, so a vault `init` accepted
+    // over one could never be opened.
+    let outside = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    {
+        // A junction needs no privilege, so this runs on every Windows host.
+        let d = tempfile::tempdir().unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(d.path().join("notes"))
+            .arg(outside.path())
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(made, "mklink /J needs no privilege");
+        assert_init_refused(d.path(), "notes");
+    }
+    let d = tempfile::tempdir().unwrap();
+    if let Err(why) = symlink(&outside.path().join("gone"), &d.path().join("notes")) {
+        println!("{why}");
+        return;
+    }
+    assert_init_refused(d.path(), "notes");
+}
+
 #[test]
 fn a_shared_title_resolves_as_ambiguous_naming_both() {
     let r = trellis_vault::Resolver::new([("a/x.md", "Same"), ("b/y.md", "Same")]);

@@ -8,7 +8,9 @@
 use crate::VaultError;
 use crate::graph::{Resolved, Resolver};
 use crate::js;
-use crate::reader::{file_of, is_null_parent, note_paths, notes_root, read_text, unquote};
+use crate::reader::{
+    checked_notes_root, file_of, is_null_parent, note_paths, read_text, refuse_link, unquote,
+};
 use crate::refs::{has_md_ext, strip_md};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -231,7 +233,7 @@ pub(crate) fn parse(dir: &Path) -> Result<Parsed, VaultError> {
             stats: Stats::default(),
         });
     }
-    let root = notes_root(dir);
+    let root = checked_notes_root(dir)?;
 
     // Sorted before parsing, not only after, so violations are reported in an
     // order that does not depend on the filesystem's directory order.
@@ -343,6 +345,10 @@ pub(crate) fn manifest_state(
 ) -> Result<ManifestState, VaultError> {
     let before = violations.len();
     let path = root.join("manifest.json");
+    // An error, not a violation: `sync_manifest` discards the violations and
+    // would write through the link. Before `exists`, which follows a link,
+    // so a dangling one is not "missing" either.
+    refuse_link(&path, "workspace metadata")?;
     if !path.exists() {
         violations.push("manifest.json: missing".to_string());
         return Ok(ManifestState {

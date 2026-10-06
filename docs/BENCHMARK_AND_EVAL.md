@@ -597,6 +597,21 @@ two rows were measured, which is why they show none — the cost columns are
 comparable only within a harness version, the `repaired` column across all of
 them.
 
+**Floor reports are compared only through `docs/bench/compare_floor.py`**
+(#344). `run_floor.py` writes a `comparable` block into each report:
+`tasks_sha256` (the task file), `checker`, `budget`, `limit` (the `--limit`
+that cut the task set), `trellis_sha256` (the binary that ran) and
+`trellis_version` (its `--version`). Only `configuration` and
+`trellis_sha256` may differ; they are the axes a comparison is for, and the
+binary's `--version` is printed beside its hash. If `tasks_sha256`, `checker`,
+`budget` or `limit` differ, the script exits 1 naming each field and prints no
+figure. It prints each report's figures in its own column and never combines
+them, and it shows wall-clock only when every report ran the same binary.
+Every report committed before #344, including the four rows above, has no
+`comparable` block and is refused by name, so this table is not
+`compare_floor.py` output. `scripts/checks/floor-compare-selftest.sh` holds the
+script to its four cases.
+
 `errors_after == errors_before` on all 20 tasks of the first row.
 
 The Ollama row is `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`
@@ -754,9 +769,9 @@ kept.
 | 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
 | 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 (ADR 0028) |
 | Floor as a configuration | Three configurations (§5.2), all below the floor | Reported as a lower bound, not a floor |
-| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; the three runs in §5.2 are re-scored below. #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
+| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; three of §5.2's four runs (the two 0.5B runs and the Coder-3B run) are re-scored below; the `qwen2.5:3b` Ollama run is not (§5.7). #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
 | Metric 5, run-to-run variance | **Waived for temperature-0 configurations only** (ADR 0028) | Nothing varies at temperature 0. A configuration sampled above 0 still needs the five repetitions per task designed above |
-| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. Neither measured configuration repaired a task |
+| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. None of the three measured configurations (§5.2, §5.7) repaired a task |
 
 #### Metric 3: the per-call audit of the runs in §5.2
 
@@ -899,20 +914,21 @@ never that its arguments refer to anything real.
 neither of which is the behaviour the loop is built around — read, change,
 verify.
 
-### 5.7 What two configurations establish
+### 5.7 What three configurations establish
 
-**The floor is still not located.** Two points, both below it:
+**The floor is still not located.** Three points, all below it:
 
 | Configuration | Repaired | Characteristic failure |
 |---|---|---|
 | Qwen2.5-0.5B-Instruct Q4_K_M | 0 / 20 | Schema-valid nonsense: placeholders as anchors, the path in every field |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M | 0 / 17 | Sound edits aimed at a path it cannot spell |
+| `qwen2.5:3b` Q4_K_M, Ollama 0.34.2 | 0 / 20 | Not characterised: §5.4's per-call audit does not cover this run. 16 of 20 ended on the no-progress stop (§5.2) |
 
-Two failing points bound the floor from below more tightly than one and still
+Three failing points bound the floor from below more tightly than one and still
 do not say where it is. A configuration that *passes* is the only thing that
-turns this into an interval, and neither of these is it.
+turns this into an interval, and none of these is it.
 
-What the pair does establish is that the two failures are **different in kind**,
+What the first two do establish is that the two failures are **different in kind**,
 which a single measurement could not have shown. The 0.5B cannot form a useful
 call; the 3B forms one and cannot address it. A harness improvement that fixed
 the first would do nothing for the second.
@@ -1010,8 +1026,9 @@ rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
 
 A measured recall figure — **done**, §2. A stated threshold with reasoning —
 **done**, §3. An ADR on whether a semantic backstop is needed — **done**,
-ADR 0012. A known model floor as a configuration — **partial**: two
-configurations are measured and both are below the floor, which bounds it from
-below without locating it. The two fail differently — one cannot form a useful
-call, the other forms one and cannot address it — which a single measurement
-could not have shown.
+ADR 0012. A known model floor as a configuration — **partial**: three
+configurations are measured (§5.2) and all are below the floor, which bounds it
+from below without locating it. The two candle configurations fail differently
+— one cannot form a useful call, the other forms one and cannot address it —
+which a single measurement could not have shown. The third, `qwen2.5:3b` on
+Ollama, has no per-call audit, so its failure is not characterised (§5.7).
