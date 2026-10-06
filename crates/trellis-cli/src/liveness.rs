@@ -182,6 +182,31 @@ mod tests {
     }
 
     #[test]
+    fn a_pid_with_no_proc_entry_is_gone() {
+        // The risk: a holder whose `/proc` entry is absent read as unknown,
+        // so `release` keeps a claim whose process has gone. u32::MAX is
+        // above every kernel's pid limit, so no entry exists for it; where
+        // there is no `/proc` at all, the read fails the same way.
+        assert_eq!(probe_proc(u32::MAX), Probe::Gone);
+    }
+
+    #[test]
+    fn the_host_is_the_name_the_platform_records_for_this_machine() {
+        // The risk: claims recorded under a name that is not this machine's,
+        // so `release` takes every claim made here for another host's.
+        let recorded = if cfg!(windows) {
+            std::env::var("COMPUTERNAME").ok()
+        } else if cfg!(target_os = "linux") {
+            std::fs::read_to_string("/proc/sys/kernel/hostname").ok()
+        } else {
+            return;
+        };
+        let recorded = recorded.map(|n| n.trim().to_string());
+        assert!(recorded.as_ref().is_some_and(|n| !n.is_empty()));
+        assert_eq!(SystemLiveness.host(), recorded);
+    }
+
+    #[test]
     fn only_a_clear_gone_is_gone() {
         assert_eq!(parse_tagged("GONE\r\n"), Probe::Gone);
         assert_eq!(

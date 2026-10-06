@@ -375,6 +375,40 @@ mod tests {
     }
 
     #[test]
+    fn a_check_kind_written_with_the_display_sigil_names_the_check() {
+        // The risk: `agent.rs` emits `check_kind = %...`, which arrives
+        // through `record_debug`; dropped there, every check in the pane
+        // is named "check".
+        let got = capture(|| {
+            tracing::info!(
+                turn = 2u64,
+                call = "run_checks [Tests] (no paths)",
+                verdict = ?Some(true),
+                check_kind = %"Tests",
+                "turn"
+            );
+        });
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::CheckFinished { name, .. } if name == "Tests")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_warning_whose_message_is_a_plain_string_field_still_reaches_the_transcript() {
+        // The risk: a message recorded as a `&str` field rather than as the
+        // format string is dropped, and the warning explaining why a run is
+        // ending never shows.
+        let got = capture(|| tracing::warn!(message = "no progress; stopping"));
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, Message::AgentToken(t) if t == "no progress; stopping\n")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
     fn a_failing_check_says_failed_and_is_not_recorded_as_a_pass() {
         let got = capture(|| {
             tracing::info!(
