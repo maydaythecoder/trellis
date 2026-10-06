@@ -6,7 +6,8 @@ create the file; a BOM changes anchors), §7 (added: `[context] dates` and
 auto-created linked notes are not built), and "Evidence" (how the vectors were produced). Each amendment is
 marked in place. Amended by the re-inventory of 2026-10-04: §5 (a vault
 edit never fails because of `dates.json`); §4 and "Evidence" (`searchResults.ts`
-is reproduced and `trellis vault search` ranks with it, #355, #362). Integrated afterwards: `[context] dates` (§7) and `vault
+is reproduced and `trellis vault search` ranks with it, #355, #362); §3 (#30's
+sentence is enforced, ADR 0049, #363). Integrated afterwards: `[context] dates` (§7) and `vault
 init` outside a repository (Consequences).
 **Date:** 2026-09-27
 **Reference design:** Apex Notes (`boriemannetje/apex-notes`, MIT), commit
@@ -274,6 +275,16 @@ What the model learns goes in its run summary and the trail, which read back
 as untrusted data (ADR 0007). A human who agrees with it files it with
 `trellis vault new`. `trellis vault` stays a command the human runs, as
 above.
+
+*Amended 2026-10-06 (#363) (re-inventory 2026-10-04):* the sentence above
+is enforced for every writer the run judges (ADR 0049). When `[context]
+vault` is set, a run and a process agent's judge add the vault's notes root
+to their write refusals, so edit, write_file, bash, custom tools, hooks and
+process agents are refused there, each refusal naming `[context] vault`.
+The vault_notes_root_ tests in crates/trellis-loop hold the refusal at each
+writer; a_model_edit_into_the_vault_is_refused_and_named and
+a_process_agent_s_write_into_the_vault_is_refused_and_named in
+crates/trellis-cli hold that runs and process agents add the notes root.
 
 ### 4. Search
 
