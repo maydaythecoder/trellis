@@ -12,6 +12,7 @@
 //! TLS behind the `hosted` cargo feature (ADR 0024).
 
 pub mod catalog;
+pub mod colibri;
 #[cfg(feature = "grammar")]
 mod grammar;
 mod hosted;
