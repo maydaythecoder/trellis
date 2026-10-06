@@ -523,8 +523,14 @@ trellis starts has; see §4), and a timeout
   else, a timeout, or a failure to start denies. Fail closed. Implemented as
   a `ToolGate`, consulted after governance and the bash policy and before
   the approval gate, so a person is never asked about a call a hook refused.
+  (*Amended 2026-10-04, #328*: for a built-in tool the object also carries
+  `"read_only": true` or `false`, from the table `READ_ONLY_TOOLS` in
+  gate.rs; a custom tool's object has no such key; and the key is added to
+  the hook payload only, not to `call_json`. See the amendment at the end.)
 - **`post_tool`**: the call and the tool's result as JSON on stdin. Observe
   only: its output is discarded and it cannot alter the observation.
+  (*Amended 2026-10-04, #328*: the `call` object carries `read_only` as
+  `pre_tool`'s does.)
 - **`before_run`**: stdout, capped to its first 4 KiB (with the true total
   printed after the cut; *amended 2026-09-27*, it had been a 4 KiB slice
   from the middle of the last 8 KiB), is added to the repository's
@@ -1245,7 +1251,8 @@ names are in the code beside each.
   the run starts and handed to the trail, so a hook can find the trail by
   the id it was given. A consequence: `started_at` in a `cmd_run` trail is
   now the start of the run rather than the moment the trail was written.
-- **What hooks receive.** `pre_tool`: the call's flat wire JSON.
+- **What hooks receive.** `pre_tool`: the call's flat wire JSON (with
+  `read_only` for a built-in since #328).
   `post_tool`: `{"call": <wire JSON>, "result": <the ToolResult as
   serialized>}`. `before_run`: `{}`. `after_run`: `{"run_id", "converged",
   "iterations", "reason", "touched"}` (on an interrupt, `reason` is
@@ -1342,3 +1349,39 @@ refused at trust time, with the same fix as a repository file outside
 first, as for the repository rule. The owner chose refusal over hashing the
 file (which would support a pattern ADR 0039 says should not exist) and over
 leaving it. Tests: `trust_package_path_*` in `crates/trellis-loop/src/trust.rs`.
+
+## Amendment 2026-10-04: hooks are told whether a built-in call only reads (#328)
+
+Status: Accepted (owner-directed): the session's choice under the owner's
+2026-10-04 delegation (option A of #328).
+
+A `pre_tool` hook is trellis's permission-gate extension point (§5), and a
+gate that allows reads and asks about writes had to keep its own copy of
+which tools only read, which went stale when a built-in was added. The
+`pre_tool` input and the `call` object in `post_tool`'s stdin now carry
+`"read_only": true` or `false` for every built-in tool call. The fact comes
+from one table, `READ_ONLY_TOOLS` in `crates/trellis-loop/src/gate.rs`:
+read-only are `blast_radius`, `read_file`, `read_skill`, `grep`, `find`,
+`ls`, `search_notes`, `read_note`, `callers_of`, `callees_of`,
+`coverage_report` and `ask_human`; not read-only are `edit`, `write_file`,
+`bash` and `run_checks`, which runs repository code. A test fails when a
+name in `APPROVABLE_TOOLS` is missing from the table.
+
+- **Built-ins only.** A custom tool's call object is unchanged and has no
+  `read_only` key: trellis does not know what a repository's command does,
+  and the object holds the repository's own argument names, so an added key
+  could collide with one. The choice is made on the call's variant, not its
+  name, so a custom tool named like a built-in gets nothing.
+- **The hook payload only, not `call_json`.** The key is inserted in
+  `crates/trellis-loop/src/hooks.rs` after `registry::call_json` returns.
+  `call_json` is unchanged, because it also builds the hosted transcript's
+  tool arguments, where `read_only` would be an argument no schema declares.
+- **Nothing loosened.** Hooks still run in the throwaway clone (ADR 0032),
+  the trust digest and `[control]` are untouched, and a repository cannot
+  set the fact.
+
+What reverses it: the owner wanting custom tools to declare
+`read_only = true` under trust (a config schema change), or no payload key
+at all. Tests: `read_only_table_*` in `gate.rs`, and
+`call_json_has_no_read_only_*` and `hook_payload_read_only_*` in
+`crates/trellis-loop/src/extension_tests.rs`.
