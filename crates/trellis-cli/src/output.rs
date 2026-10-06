@@ -162,10 +162,7 @@ pub(crate) fn framed(
         start["id"] = json!(id);
     }
     frame(sink, &start);
-    let before = newest_run_id(root);
-    let result = body();
-    let after = newest_run_id(root);
-    let run_id = if after != before { after } else { None };
+    let (result, run_id) = crate::work::with_run_id(root, body);
     frame(
         sink,
         &run_end(&result, run_id, extras.request_id.as_deref()),
@@ -209,18 +206,6 @@ pub(crate) fn run_end(
         v["id"] = json!(id);
     }
     v
-}
-
-/// The newest trail's stem, by name only; the contents are untrusted and
-/// not needed. The same rule `work.rs` uses to find a run's id.
-fn newest_run_id(root: &Path) -> Option<String> {
-    let rd = std::fs::read_dir(root.join(".trellis").join("runs")).ok()?;
-    rd.filter_map(Result::ok)
-        .filter_map(|e| {
-            let n = e.file_name().to_str()?.to_string();
-            n.strip_suffix(".json").map(str::to_string)
-        })
-        .max()
 }
 
 // ---------------------------------------------------------------------------
