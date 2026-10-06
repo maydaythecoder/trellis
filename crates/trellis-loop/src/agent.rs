@@ -731,6 +731,30 @@ pub trait Model {
     fn requested_compactions(&self) -> &[crate::adapter::RequestedCompaction] {
         &[]
     }
+
+    /// What the replies read by the last [`Model::next_step`] reported,
+    /// format retries included, for the `turn` event (ADR 0047 decision 8).
+    ///
+    /// Nothing by default: a driver with no provider reply, the scripted
+    /// one, has no figure to give, and a 0 would read as a measurement.
+    fn step_usage(&self) -> StepUsage {
+        StepUsage::default()
+    }
+}
+
+/// The figures the replies behind one step reported, each summed over every
+/// reply the step read.
+///
+/// A field is `None` once any of those replies did not carry it, rather than
+/// the partial sum: on a shared colibri server a missing queue wait is not a
+/// wait of 0, and a missing token count is not a free reply.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StepUsage {
+    /// Output tokens, as the provider reported them.
+    pub completion_tokens: Option<u64>,
+    /// Milliseconds colibri held the requests in its admission queue, from
+    /// its `x-colibri-queue-wait-ms` header.
+    pub queue_wait_ms: Option<u64>,
 }
 
 /// Drives the loop until it converges, the model stops, or a budget runs out.
@@ -825,7 +849,12 @@ pub async fn run_seeded<M: Model>(
         // earlier one, and a steer can never land between a call and the
         // observation of its result.
         t.steering.drain(&mut steering, t.turns.len(), false);
-        let step = match model.next_step(&t).await {
+        // `Instant`, not the wall clock: a host's clock can step mid-call,
+        // and a model time that went backwards would be an invented figure.
+        let asked = Instant::now();
+        let step = model.next_step(&t).await;
+        let model_ms = u64::try_from(asked.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let step = match step {
             Ok(s) => s,
             Err(e) => {
                 break 'run Outcome::NotConverged {
@@ -931,6 +960,7 @@ pub async fn run_seeded<M: Model>(
                 // Read before dispatch: it describes the prompt that produced
                 // this call, not the next one.
                 let prompt_bytes = model.prompt_bytes();
+                let usage = model.step_usage();
                 let crate::orchestrator::Dispatched {
                     result,
                     radius_sites,
@@ -1038,6 +1068,14 @@ pub async fn run_seeded<M: Model>(
                     unresolved = rad_unresolved,
                     summarised = radius_summarised,
                     prompt_bytes = prompt_bytes,
+                    // ADR 0047 decision 8: with these a reader can compute
+                    // tokens per second and tell time queued on a shared
+                    // colibri server from time generating. All three cover
+                    // the same replies, format retries included. An
+                    // unreported figure is left off rather than sent as 0.
+                    model_ms = model_ms,
+                    completion_tokens = usage.completion_tokens,
+                    queue_wait_ms = usage.queue_wait_ms,
                     "turn"
                 );
 
@@ -3866,6 +3904,134 @@ rank = \"non-negotiable\"
         );
         assert!(t.steering.delivered.is_empty());
         assert_eq!(t.steering.undelivered, vec![steer("STEER-OVER-BUDGET")]);
+    }
+
+    /// Steps that each report their own figures, and sleep `ms` before
+    /// answering, so the event's fields can be told apart per step.
+    struct Reporting {
+        steps: Vec<(Step, StepUsage)>,
+        at: usize,
+        last: StepUsage,
+        ms: u64,
+    }
+
+    impl Model for Reporting {
+        async fn next_step(&mut self, _: &Transcript) -> Result<Step, String> {
+            tokio::time::sleep(std::time::Duration::from_millis(self.ms)).await;
+            let (s, u) = self.steps.get(self.at).cloned().unwrap_or((
+                Step::Done {
+                    summary: "script exhausted".into(),
+                },
+                StepUsage::default(),
+            ));
+            self.at += 1;
+            self.last = u;
+            Ok(s)
+        }
+
+        fn step_usage(&self) -> StepUsage {
+            self.last
+        }
+    }
+
+    fn read_step(path: &str, usage: StepUsage) -> (Step, StepUsage) {
+        (Step::Call(ToolCall::ReadFile { path: path.into() }), usage)
+    }
+
+    #[tokio::test]
+    async fn turn_event_carries_each_step_s_own_tokens_and_queue_wait() {
+        // The risk: the figures read after dispatch, or from the next
+        // request, land on the wrong turn and tokens per second is computed
+        // from another step's tokens.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Reporting {
+            steps: vec![
+                read_step(
+                    "app/util.py",
+                    StepUsage {
+                        completion_tokens: Some(11),
+                        queue_wait_ms: Some(300),
+                    },
+                ),
+                read_step(
+                    "app/missing.py",
+                    StepUsage {
+                        completion_tokens: Some(0),
+                        queue_wait_ms: None,
+                    },
+                ),
+            ],
+            at: 0,
+            last: StepUsage::default(),
+            ms: 0,
+        };
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        run("read", &mut m, &h, &budget()).await;
+        drop(guard);
+        let got = events.taken();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            got[0].get("completion_tokens").map(String::as_str),
+            Some("11")
+        );
+        assert_eq!(got[0].get("queue_wait_ms").map(String::as_str), Some("300"));
+        // A reported 0 is a figure and is carried; an absent wait stays
+        // absent.
+        assert_eq!(
+            got[1].get("completion_tokens").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(got[1].get("queue_wait_ms"), None, "{:?}", got[1]);
+    }
+
+    #[tokio::test]
+    async fn turn_event_carries_no_figure_the_driver_did_not_report() {
+        // The risk: a driver with no provider reply (the scripted one)
+        // shows 0 tokens and 0 ms queued, which reads as a measurement.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Scripted::new(vec![Step::Call(ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })]);
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        run("read", &mut m, &h, &budget()).await;
+        drop(guard);
+        let got = events.taken();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].get("completion_tokens"), None, "{:?}", got[0]);
+        assert_eq!(got[0].get("queue_wait_ms"), None, "{:?}", got[0]);
+        // The call's time is measured here, whatever the driver reports.
+        assert!(got[0].contains_key("model_ms"), "{:?}", got[0]);
+    }
+
+    #[tokio::test]
+    async fn turn_event_carries_the_model_call_s_time() {
+        // The risk: no figure separates a slow model from a slow tool, so
+        // tokens per second cannot be computed. A lower bound only: a loaded
+        // host may take longer, never less.
+        let d = repo();
+        let (h, _j) = Orchestrator::new(d.path(), checker(0)).spawn();
+        let mut m = Reporting {
+            steps: vec![read_step("app/util.py", StepUsage::default())],
+            at: 0,
+            last: StepUsage::default(),
+            ms: 40,
+        };
+        let events = crate::testutil::TurnEvents::default();
+        let guard = events.install();
+        run("read", &mut m, &h, &budget()).await;
+        drop(guard);
+        let got = events.taken();
+        assert_eq!(got.len(), 1, "{got:?}");
+        let ms: u64 = got[0]
+            .get("model_ms")
+            .unwrap_or_else(|| panic!("no model_ms: {:?}", got[0]))
+            .parse()
+            .unwrap();
+        assert!(ms >= 40, "{ms}");
     }
 }
 
