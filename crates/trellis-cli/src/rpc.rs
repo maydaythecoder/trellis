@@ -78,6 +78,16 @@ const COMMANDS: &[(&str, &str)] = &[
         "the tasks `trellis queue list` prints, as data, read-only; claims nothing",
     ),
     (
+        "vault_search",
+        "the hits `trellis vault search` prints, as data, read-only: {query, limit?} \
+         (default 12)",
+    ),
+    (
+        "vault_graph",
+        "a note's lineage, children and links `trellis vault graph` prints, as data, \
+         read-only: {note}",
+    ),
+    (
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
@@ -610,6 +620,63 @@ impl Server {
         }));
     }
 
+    /// `vault_search`: the hits `trellis vault search` prints, from the same
+    /// function, as data; nothing is written. Every vault write stays a
+    /// `trellis vault` command (#70). Answered from another thread, as
+    /// `get_codebase` is, so a waiting run's `approve` or `abort` is still
+    /// read at once.
+    fn vault_search(&mut self, cmd: &Value, id: Option<&str>) {
+        let Some(query) = cmd.get("query").and_then(Value::as_str) else {
+            self.respond(
+                id,
+                "vault_search",
+                Err("`query` is required: the text `trellis vault search` takes".into()),
+            );
+            return;
+        };
+        let limit = match cmd.get("limit") {
+            None => 12,
+            Some(v) => match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+                Some(n) => n,
+                None => {
+                    self.respond(
+                        id,
+                        "vault_search",
+                        Err(format!("`limit` is a count of hits, not {v}")),
+                    );
+                    return;
+                }
+            },
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        let query = query.to_string();
+        self.waiters.push(std::thread::spawn(move || {
+            let result =
+                crate::vault_cmd::search_json(&root, &query, limit).map_err(|e| format!("{e:#}"));
+            respond_on(&sink, id.as_deref(), "vault_search", result);
+        }));
+    }
+
+    /// `vault_graph`: what `trellis vault graph` prints about a note, from
+    /// the same function, as data; nothing is written. Answered from
+    /// another thread, as `vault_search` is.
+    fn vault_graph(&mut self, cmd: &Value, id: Option<&str>) {
+        let Some(note) = cmd.get("note").and_then(Value::as_str) else {
+            self.respond(
+                id,
+                "vault_graph",
+                Err("`note` is required: the note `trellis vault graph` takes".into()),
+            );
+            return;
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        let note = note.to_string();
+        self.waiters.push(std::thread::spawn(move || {
+            let result = crate::vault_cmd::graph_json(&root, &note).map_err(|e| format!("{e:#}"));
+            respond_on(&sink, id.as_deref(), "vault_graph", result);
+        }));
+    }
+
     /// `steer` and `follow_up`: refused with no run in flight; otherwise
     /// sent on the run's steering channel, never the approval channel.
     ///
@@ -796,6 +863,8 @@ impl Server {
             "get_codebase" => self.get_codebase(cmd, id),
             "get_radius" => self.get_radius(cmd, id),
             "get_queue" => self.get_queue(id),
+            "vault_search" => self.vault_search(cmd, id),
+            "vault_graph" => self.vault_graph(cmd, id),
             other => self.respond(
                 id,
                 if other.is_empty() { "unknown" } else { other },

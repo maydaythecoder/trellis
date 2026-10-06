@@ -2,8 +2,10 @@
 //! reference material the model asks for.
 //!
 //! Both read the vault afresh on every call. A vault is a directory of
-//! Markdown in the repository, and a run can edit it; an index built at run
-//! start would answer about notes as they were.
+//! Markdown in the repository that a person keeps, with `trellis vault` or
+//! an editor: the model cannot write to it (ADR 0049), but the person can
+//! change it while a run or session is open, and an index built at run start
+//! would answer about notes as they were.
 //!
 //! Every observation says what it is on its first line and its last, as a
 //! skill does: a note is prose the repository wrote, often in the

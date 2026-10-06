@@ -1383,6 +1383,341 @@ fn rpc_get_queue_lists_what_queue_list_prints() {
     );
 }
 
+/// A repository whose committed `[context] vault` holds a parent, its
+/// child, and a note under a missing parent that links both ways with the
+/// child. A link along a parent edge is not a reference (`Graph::build`),
+/// so the links are between the child and the other note.
+fn vault_fixture(name: &str) -> Fixture {
+    let f = fixture(name);
+    let notes = f.root.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    for (file, body) in [
+        (
+            "root.md",
+            "---\ntitle: \"Root\"\nparent: null\n---\nOverview.\n",
+        ),
+        (
+            "child.md",
+            "---\ntitle: \"Child\"\nparent: \"[[root]]\"\n---\nThe retry policy doubles. See [[orphan]], and [[orphan]] again.\n",
+        ),
+        (
+            "orphan.md",
+            "---\ntitle: \"Orphan\"\nparent: \"[[gone]]\"\n---\nA lost retry note. Back to [[child]].\n",
+        ),
+        (
+            "manifest.json",
+            "[\"child.md\",\"orphan.md\",\"root.md\"]\n",
+        ),
+    ] {
+        std::fs::write(notes.join(file), body).unwrap();
+    }
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        "[context]\nvault = \"notes\"\n",
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "a vault"]);
+    f
+}
+
+/// Sends the read-only `cmd` three times, as `get_queue` is held: alone,
+/// then the worktree must be clean; while an approve-mode run waits on its
+/// question, answered before that run's `run_end`, and the run declined;
+/// and followed by `quit` on the next line, answered first. Returns the
+/// first answer's `data`, which the other two must equal.
+fn answered_three_ways(f: &Fixture, cmd: &Value) -> Value {
+    let with_id = |id: &str| {
+        let mut c = cmd.clone();
+        c["id"] = Value::from(id);
+        c
+    };
+    // Alone first: a run would write its trail under `.trellis/runs/`.
+    let mut rpc = Rpc::start(trellis(f));
+    rpc.send(with_id("a"));
+    let got = rpc.next(|v| v["id"] == "a");
+    rpc.finish();
+    assert_eq!(got["command"], cmd["type"], "{got}");
+    assert_eq!(got["success"], true, "{got}");
+    let data = got["data"].clone();
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+
+    // Answered while an approve-mode run waits on its question.
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let q = rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(with_id("b"));
+    let mid = rpc.next(|v| v["id"] == "b" || v["type"] == "run_end");
+    assert_eq!(mid["id"], "b", "answered before the run ended: {mid}");
+    assert_eq!(mid["success"], true, "{mid}");
+    assert_eq!(mid["data"], data, "the same answer mid-run");
+    rpc.send(serde_json::json!({"id": q["id"], "type": "approve", "yes": false}));
+    rpc.next(|v| v["type"] == "run_end");
+    rpc.finish();
+
+    // A `quit` on the next line waits for the answer before its own.
+    let mut rpc = Rpc::start(trellis(f));
+    rpc.send(with_id("c"));
+    rpc.send(serde_json::json!({"id": "x", "type": "quit"}));
+    let first = rpc.next(|v| v["id"] == "c" || v["id"] == "x");
+    assert_eq!(first["id"], "c", "answered before `quit`: {first}");
+    assert_eq!(first["success"], true, "{first}");
+    assert_eq!(first["data"], data, "the same answer before `quit`");
+    rpc.next(|v| v["id"] == "x");
+    rpc.finish();
+    data
+}
+
+/// One rpc answer, alone, for the error cases.
+fn answer(f: &Fixture, cmd: Value) -> Value {
+    let mut rpc = Rpc::start(trellis(f));
+    rpc.send(cmd);
+    let got = rpc.next(|v| v["type"] == "response");
+    rpc.finish();
+    got
+}
+
+/// The first line `trellis <args>` printed on stderr, with the `Error: `
+/// the binary puts before a failure's message taken off.
+fn cli_error(f: &Fixture, args: &[&str]) -> String {
+    let o = run(f, args);
+    assert!(!o.status.success(), "{args:?} succeeded");
+    let err = String::from_utf8_lossy(&o.stderr);
+    err.lines()
+        .find_map(|l| l.strip_prefix("Error: "))
+        .unwrap_or_else(|| panic!("no `Error:` line in {err}"))
+        .to_string()
+}
+
+/// What `trellis vault search` printed, in `vault_search`'s shape, scores
+/// as the four decimals it prints.
+fn printed_search(stdout: &str) -> Value {
+    let titles_only = stdout.lines().any(|l| l.starts_with("search reduced"));
+    let fuzzy_off = stdout
+        .lines()
+        .any(|l| l.starts_with("fuzzy search reduced"));
+    let hits: Vec<Value> = stdout
+        .lines()
+        .filter(|l| !l.starts_with("search reduced") && !l.starts_with("fuzzy search reduced"))
+        .filter(|l| !l.starts_with("no matches for"))
+        .map(|l| {
+            let (score, rest) = l.trim_start().split_once("  ").unwrap();
+            let (path, title) = rest.split_once("  ").unwrap();
+            serde_json::json!({
+                "path": path,
+                "title": title.trim_matches('"'),
+                "score": score,
+            })
+        })
+        .collect();
+    // Titles-only drops trigrams too (`Mode::for_vault`), though `search`
+    // then prints only the first of its two lines.
+    serde_json::json!({
+        "hits": hits,
+        "mode": {"body": !titles_only, "trigrams": !(titles_only || fuzzy_off)},
+    })
+}
+
+/// `vault_search`'s answer with each score cut to the four decimals
+/// `trellis vault search` prints.
+fn scores_as_printed(data: &Value) -> Value {
+    let mut d = data.clone();
+    for h in d["hits"].as_array_mut().unwrap() {
+        h["score"] = Value::from(format!("{:.4}", h["score"].as_f64().unwrap()));
+    }
+    d
+}
+
+#[test]
+fn rpc_vault_search_returns_what_vault_search_prints() {
+    // The risks: a client parsing `vault search`'s text because it has no
+    // data form (ADR 0048 §2); a read that writes the vault (every vault
+    // write is a `trellis vault` command, #70); a search blocking the reader
+    // while a run waits on an approval; a `quit` that exits before the
+    // answer; and an rpc ranking that drifts from the CLI's.
+    let f = vault_fixture("rpc-vault-search");
+    let data = answered_three_ways(
+        &f,
+        &serde_json::json!({"type": "vault_search", "query": "retry"}),
+    );
+
+    // Last: what `trellis vault search retry` prints, hit by hit.
+    let o = run(&f, &["vault", "search", "retry"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        scores_as_printed(&data),
+        printed_search(&String::from_utf8_lossy(&o.stdout)),
+        "the hits `trellis vault search retry` prints"
+    );
+    // Two hits, so the comparison is of an order and not of nothing.
+    assert_eq!(data["hits"].as_array().unwrap().len(), 2, "{data}");
+
+    // `limit` is the CLI's `--limit`; no match is an empty list.
+    let one = answer(
+        &f,
+        serde_json::json!({"id": "l", "type": "vault_search", "query": "retry", "limit": 1}),
+    );
+    let o = run(&f, &["vault", "search", "retry", "--limit", "1"]);
+    assert_eq!(
+        scores_as_printed(&one["data"]),
+        printed_search(&String::from_utf8_lossy(&o.stdout))
+    );
+    let none = answer(
+        &f,
+        serde_json::json!({"id": "n", "type": "vault_search", "query": "zzqqxx"}),
+    );
+    assert_eq!(none["success"], true, "{none}");
+    assert_eq!(none["data"]["hits"], serde_json::json!([]), "{none}");
+
+    // No vault configured: the CLI's message.
+    let bare = fixture("rpc-vault-search-bare");
+    let got = answer(
+        &bare,
+        serde_json::json!({"id": "e", "type": "vault_search", "query": "retry"}),
+    );
+    assert_eq!(got["success"], false, "{got}");
+    assert_eq!(
+        got["error"],
+        cli_error(&bare, &["vault", "search", "retry"]),
+        "{got}"
+    );
+}
+
+/// `path "title"`, as `vault graph` labels a note.
+fn printed_label(s: &str) -> Value {
+    let (path, title) = s.split_once(" \"").unwrap();
+    serde_json::json!({"path": path, "title": title.trim_end_matches('"')})
+}
+
+/// What `trellis vault graph` printed, in `vault_graph`'s shape.
+fn printed_graph(stdout: &str) -> Value {
+    let mut d = serde_json::json!({
+        "unresolved_parent": null,
+        "children": [], "refs_out": [], "refs_in": [], "issues": [],
+    });
+    let mut section = "";
+    for line in stdout.lines() {
+        if let Some(item) = line.strip_prefix("  ") {
+            let entry = match section {
+                "children" => printed_label(item),
+                "issues" => Value::from(item),
+                _ => {
+                    let (label, w) = item.rsplit_once(" x").unwrap();
+                    let mut e = printed_label(label);
+                    e["weight"] = Value::from(w.parse::<u64>().unwrap());
+                    e
+                }
+            };
+            d[section].as_array_mut().unwrap().push(entry);
+            continue;
+        }
+        let (head, rest) = line.split_once(':').unwrap();
+        let rest = rest.trim_start();
+        section = "";
+        match head {
+            "note" => d["note"] = printed_label(rest),
+            "depth" => {
+                d["depth"] = rest.parse::<u64>().map_or(Value::Null, Value::from);
+            }
+            "lineage" => d["lineage"] = rest.split(" > ").map(Value::from).collect(),
+            "parent" => {
+                let t = rest.strip_suffix(" does not resolve").unwrap();
+                d["unresolved_parent"] = Value::from(t.trim_matches(['[', ']']));
+            }
+            "children" => section = "children",
+            "refs out" => section = "refs_out",
+            "refs in" => section = "refs_in",
+            "issues" => section = "issues",
+            other => panic!("a line `vault graph` does not print: {other}"),
+        }
+    }
+    d
+}
+
+#[test]
+fn rpc_vault_graph_returns_what_vault_graph_prints() {
+    // The risks: a client parsing `vault graph`'s text because it has no
+    // data form (ADR 0048 §2); a read that writes the vault (every vault
+    // write is a `trellis vault` command, #70); a graph build blocking the
+    // reader while a run waits on an approval; a `quit` that exits before
+    // the answer; and data that drifts from what `trellis vault graph`
+    // prints.
+    let f = vault_fixture("rpc-vault-graph");
+    let data = answered_three_ways(
+        &f,
+        &serde_json::json!({"type": "vault_graph", "note": "child"}),
+    );
+
+    // Last: what `trellis vault graph child` prints.
+    let o = run(&f, &["vault", "graph", "child"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        data,
+        printed_graph(&String::from_utf8_lossy(&o.stdout)),
+        "what `trellis vault graph child` prints"
+    );
+    // The parent, the child and the links both ways are in the comparison.
+    assert_eq!(data["depth"], 1, "{data}");
+    assert_eq!(data["lineage"], serde_json::json!(["root.md", "child.md"]));
+    assert_eq!(data["refs_out"][0]["weight"], 2, "{data}");
+    assert_eq!(data["refs_in"][0]["path"], "orphan.md", "{data}");
+
+    // A note under a missing parent: no depth, the target that does not
+    // resolve, and its issue.
+    let orphan = answer(
+        &f,
+        serde_json::json!({"id": "o", "type": "vault_graph", "note": "orphan"}),
+    );
+    assert_eq!(orphan["success"], true, "{orphan}");
+    let o = run(&f, &["vault", "graph", "orphan"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        orphan["data"],
+        printed_graph(&String::from_utf8_lossy(&o.stdout))
+    );
+    assert_eq!(orphan["data"]["depth"], Value::Null, "{orphan}");
+    assert_eq!(orphan["data"]["unresolved_parent"], "gone", "{orphan}");
+    assert!(
+        !orphan["data"]["issues"].as_array().unwrap().is_empty(),
+        "{orphan}"
+    );
+
+    // A missing note, and no vault configured: the CLI's message.
+    let got = answer(
+        &f,
+        serde_json::json!({"id": "m", "type": "vault_graph", "note": "nowhere"}),
+    );
+    assert_eq!(got["success"], false, "{got}");
+    assert_eq!(
+        got["error"],
+        cli_error(&f, &["vault", "graph", "nowhere"]),
+        "{got}"
+    );
+    let bare = fixture("rpc-vault-graph-bare");
+    let got = answer(
+        &bare,
+        serde_json::json!({"id": "e", "type": "vault_graph", "note": "child"}),
+    );
+    assert_eq!(got["success"], false, "{got}");
+    assert_eq!(
+        got["error"],
+        cli_error(&bare, &["vault", "graph", "child"]),
+        "{got}"
+    );
+}
+
 /// The rpc and `log --json` fields a client may rely on (ADR 0048 §6), as
 /// data the tests below hold the binary to.
 fn contract() -> Value {
