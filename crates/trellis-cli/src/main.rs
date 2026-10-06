@@ -173,12 +173,20 @@ enum Command {
         /// rather than a silent fallback.
         #[arg(long)]
         unconstrained: bool,
-        /// Cap concurrent agents. Only `1` is accepted until multi-agent
-        /// mode is built (v1.1); `auto`, deriving the cap from measured
-        /// backend batching capacity, is refused with it. Never derived from
-        /// CPU count (S18).
+        /// Cap concurrent agents: a number of at least 1, or `auto`, which
+        /// takes the cap from the backend's measured batching capacity and is
+        /// 1 for an unmeasured one. Never derived from CPU count (S18).
+        ///
+        /// Above 1, and `auto`, need `--target`. Running more than one agent
+        /// at once is not built yet (#466), so a run whose cap comes to more
+        /// than 1 is refused before the snapshot.
         #[arg(long, default_value = "1")]
         agents: String,
+        /// A symbol this run works on, resolved as `trellis radius` resolves
+        /// it. Repeatable: each target is one work unit of the plan `trellis
+        /// partitions` shows (ADR 0045). Unknown or ambiguous is refused.
+        #[arg(long, value_name = "SYMBOL")]
+        target: Vec<String>,
         /// Start from the last trail in `.trellis/runs/`, so the model is not
         /// re-told what the previous run established.
         ///
@@ -643,6 +651,7 @@ fn main() -> Result<()> {
             model,
             unconstrained,
             agents,
+            target,
             resume,
             prompt,
             args,
@@ -654,12 +663,18 @@ fn main() -> Result<()> {
         } => {
             // Checked here rather than in `cmd_run`: the session and the
             // interface always run one agent, and this is the only caller
-            // that takes the flag.
-            if agents != "1" {
-                anyhow::bail!(concat!(
-                    "multi-agent mode is v1.1 and is gated on single-agent numbers that ",
-                    "do not exist yet. Use --agents 1."
-                ));
+            // that takes the flags. Every refusal below comes before
+            // `cmd_run_with`, which owns the snapshot.
+            let width = parse_agents(&agents)?;
+            if target.is_empty() && width != Agents::Count(1) {
+                anyhow::bail!(
+                    concat!(
+                        "--agents {} needs the run's work units named: pass --target <symbol> ",
+                        "once per unit. `trellis partitions <symbol>...` shows the plan those ",
+                        "targets would produce without running it (ADR 0045)."
+                    ),
+                    agents
+                );
             }
             // ADR 0025 §3: frontmatter stripped, `--args` substituted.
             let task = templates::task_text(&root, prompt.as_deref(), args.as_deref(), &task)?;
@@ -672,6 +687,15 @@ fn main() -> Result<()> {
                     .model()
                     .with_context(first_run::no_model)?,
             };
+            // With no target the width is 1 (refused above otherwise), and
+            // the run is today's single-agent run with nothing added.
+            if !target.is_empty() {
+                let why = one_at_a_time(&root, width, &target, &model, model_from_user)?;
+                let _ = writeln!(
+                    output::human(),
+                    "agents:   running partitions one at a time: {why}"
+                );
+            }
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
                 (_, true) => Some(config::ControlMode::Auto),
@@ -816,6 +840,90 @@ fn interactive() -> bool {
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::io::stderr().is_terminal()
+}
+
+/// `trellis run --agents`, parsed (ADR 0045 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Agents {
+    /// At least 1.
+    Count(u32),
+    /// From the backend's measured batching capacity (S18).
+    Auto,
+}
+
+/// `0` would be a run with no agent, and a fraction or a word other than
+/// `auto` has no meaning to guess at, so both are refused naming what is
+/// accepted.
+fn parse_agents(s: &str) -> Result<Agents> {
+    if s == "auto" {
+        return Ok(Agents::Auto);
+    }
+    match s.parse::<u32>() {
+        Ok(n) if n >= 1 => Ok(Agents::Count(n)),
+        _ => anyhow::bail!("--agents takes a number of at least 1, or `auto`; got `{s}`"),
+    }
+}
+
+/// Resolves every target and the run's width, refusing anything that cannot
+/// run; on success, why the partitions run one at a time.
+///
+/// Called before the snapshot, so an unknown target or a width this build
+/// cannot run costs nothing. Targets resolve before the width is judged, so a
+/// mistyped symbol is reported as that rather than hidden behind "not built".
+fn one_at_a_time(
+    root: &Path,
+    width: Agents,
+    targets: &[String],
+    spec: &str,
+    from_user: bool,
+) -> Result<String> {
+    let index = trellis_index::build_cached(root);
+    for t in targets {
+        index_cmd::resolve_symbol(&index, t)?;
+    }
+    let (n, why) = match width {
+        Agents::Count(n) => (n, format!("--agents is {n}")),
+        Agents::Auto => {
+            use trellis_model::BatchingCapability as B;
+            let parsed: trellis_model::ModelSpec = spec.parse()?;
+            let cfg = config::RepoConfig::load(root)?;
+            let (cap, why) = match doctor_cmd::probe_batching(&parsed, &cfg, from_user) {
+                Ok(cap @ B::Continuous { .. }) => {
+                    (cap, "the runtime reports that many slots".into())
+                }
+                Ok(cap @ B::SingleStream) => (cap, "the runtime reports a single slot".into()),
+                Ok(cap @ B::ContinuousUnmeasured) => (
+                    cap,
+                    "the backend batches continuously but does not report how much".into(),
+                ),
+                Ok(cap @ B::Unknown) => (
+                    cap,
+                    "the backend's batching capability is unknown (a scripted model has none)"
+                        .into(),
+                ),
+                Err(e) => (
+                    B::Unknown,
+                    format!(
+                        "the runtime's slot count could not be read ({e}), so its capability is unknown"
+                    ),
+                ),
+            };
+            let n = cap.auto_agents();
+            (n, format!("--agents auto is {n} because {why}"))
+        }
+    };
+    if n > 1 {
+        anyhow::bail!(
+            concat!(
+                "{} would run up to {} agents at once, and running partitions together is ",
+                "not built yet (#466). Pass --agents 1 to run them one at a time. ",
+                "Nothing was snapshotted."
+            ),
+            why,
+            n
+        );
+    }
+    Ok(why)
 }
 
 /// The repository root, walking up from the working directory.
