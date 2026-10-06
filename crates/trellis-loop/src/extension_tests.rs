@@ -1898,3 +1898,146 @@ async fn changed_paths_a_custom_tool_that_fails_still_records_what_came_back() {
     );
     assert_eq!(t.turns[0].changed, ["app/util.py"], "{:?}", t.turns[0]);
 }
+
+/// One call of every built-in tool, in `APPROVABLE_TOOLS`'s order.
+fn one_call_per_built_in() -> Vec<ToolCall> {
+    let s = |v: &str| v.to_string();
+    vec![
+        ToolCall::Edit {
+            path: s("app/util.py"),
+            old: s("return 1"),
+            new: s("return 2"),
+        },
+        ToolCall::ReadFile {
+            path: s("app/util.py"),
+        },
+        ToolCall::RunChecks {
+            paths: vec![],
+            kinds: vec![trellis_checks::CheckKind::Tests],
+        },
+        ToolCall::BlastRadius {
+            symbol: s("helper"),
+        },
+        ToolCall::ReadSkill { name: s("review") },
+        ToolCall::WriteFile {
+            path: s("app/new.py"),
+            content: s("x = 1\n"),
+        },
+        ToolCall::Grep {
+            pattern: s("helper"),
+            path: None,
+        },
+        ToolCall::Find { glob: s("*.py") },
+        ToolCall::Ls { path: s("app") },
+        ToolCall::Bash { command: s("ls") },
+        ToolCall::SearchNotes {
+            query: s("x"),
+            limit: None,
+        },
+        ToolCall::ReadNote { note: s("x") },
+        ToolCall::CallersOf {
+            symbol: s("helper"),
+        },
+        ToolCall::CalleesOf {
+            symbol: s("helper"),
+        },
+        ToolCall::CoverageReport {
+            paths: vec![s("app/util.py")],
+        },
+        ToolCall::AskHuman {
+            question: s("which?"),
+            options: vec![],
+        },
+    ]
+}
+
+#[test]
+fn call_json_has_no_read_only_key_for_any_built_in() {
+    // `call_json` also builds the hosted transcript's tool arguments
+    // (adapter.rs), where `read_only` would be an argument no schema
+    // declares; the fact belongs to the hook payload only (#328). And a
+    // built-in this list misses is a built-in this test does not cover.
+    let calls = one_call_per_built_in();
+    let names: Vec<&str> = calls.iter().map(crate::gate::tool_name).collect();
+    assert_eq!(
+        names,
+        crate::gate::APPROVABLE_TOOLS,
+        "one call per built-in"
+    );
+    for call in &calls {
+        let v = crate::registry::call_json(call);
+        assert!(v.get("read_only").is_none(), "{v}");
+    }
+}
+
+/// What a `pre_tool` and a `post_tool` hook were sent for `call`.
+async fn hook_payloads(call: &ToolCall) -> (serde_json::Value, serde_json::Value) {
+    let d = git_repo(); // the pre_tool gate clones it (ADR 0032, "Hooks")
+    let logs = tempfile::tempdir().unwrap();
+    let (pre, post) = (logs.path().join("pre.log"), logs.path().join("post.log"));
+    let h = hooks(
+        d.path(),
+        HookConfig {
+            pre_tool: stdin_to(&pre),
+            post_tool: stdin_to(&post),
+            ..Default::default()
+        },
+    );
+    let mut gate = h.pre_tool_gate().unwrap();
+    let allowed = crate::gate::ToolGate::check(&mut gate, call).await;
+    assert_eq!(allowed, crate::gate::GateDecision::Allow);
+    let clone = tempfile::tempdir().unwrap();
+    h.post_tool(clone.path(), call, serde_json::json!("ok"))
+        .await;
+    let one = |log: &Path| {
+        let mut p = payloads(log);
+        assert_eq!(p.len(), 1, "{p:?}");
+        p.remove(0)
+    };
+    (one(&pre), one(&post)["call"].clone())
+}
+
+#[tokio::test]
+async fn hook_payload_read_only_is_true_for_a_read_only_built_in() {
+    let call = ToolCall::ReadFile {
+        path: "app/util.py".into(),
+    };
+    let (pre, post) = hook_payloads(&call).await;
+    for v in [&pre, &post] {
+        assert_eq!(v["tool"], "read_file", "{v}");
+        assert_eq!(v["read_only"], true, "{v}");
+    }
+}
+
+#[tokio::test]
+async fn hook_payload_read_only_is_false_for_edit() {
+    let call = ToolCall::Edit {
+        path: "app/util.py".into(),
+        old: "return 1".into(),
+        new: "return 2".into(),
+    };
+    let (pre, post) = hook_payloads(&call).await;
+    for v in [&pre, &post] {
+        assert_eq!(v["tool"], "edit", "{v}");
+        assert_eq!(v["read_only"], false, "{v}");
+    }
+}
+
+#[tokio::test]
+async fn hook_payload_read_only_is_absent_for_a_custom_tool() {
+    // trellis does not know what a repository's tool does, and its call
+    // object holds the repository's own argument names: a key added there
+    // could collide with one. Named like a built-in, so a lookup by name
+    // rather than by variant would wrongly stamp it.
+    let call = ToolCall::Custom {
+        name: "grep".into(),
+        args: serde_json::json!({ "path": "app/util.py" }),
+    };
+    let (pre, post) = hook_payloads(&call).await;
+    for v in [&pre, &post] {
+        assert_eq!(
+            v,
+            &serde_json::json!({"tool": "grep", "path": "app/util.py"})
+        );
+    }
+}

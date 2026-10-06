@@ -194,6 +194,47 @@ pub const APPROVABLE_TOOLS: &[&str] = &[
     "ask_human",
 ];
 
+/// Whether each built-in tool only reads, the fact a `pre_tool` or
+/// `post_tool` hook is given as `read_only` (ADR 0023 §5, #328), so a hook
+/// that allows reads and asks about writes need not keep its own list.
+/// `run_checks` is not read-only: it runs the repository's own code.
+/// Every name in [`APPROVABLE_TOOLS`] is here, which a test holds.
+pub(crate) const READ_ONLY_TOOLS: &[(&str, bool)] = &[
+    ("blast_radius", true),
+    ("read_file", true),
+    ("read_skill", true),
+    ("grep", true),
+    ("find", true),
+    ("ls", true),
+    ("search_notes", true),
+    ("read_note", true),
+    ("callers_of", true),
+    ("callees_of", true),
+    ("coverage_report", true),
+    ("ask_human", true),
+    ("edit", false),
+    ("write_file", false),
+    ("bash", false),
+    ("run_checks", false),
+];
+
+/// [`READ_ONLY_TOOLS`]'s answer for a built-in call, and `None` for a
+/// repository's own tool, whose nature trellis does not know. Matched on
+/// the variant, not the name, so a custom tool named like a built-in is
+/// not given the built-in's fact. A built-in missing from the table (which
+/// a test prevents) is `false`: a hook is never told a write only reads.
+pub(crate) fn read_only(call: &ToolCall) -> Option<bool> {
+    if matches!(call, ToolCall::Custom { .. }) {
+        return None;
+    }
+    let name = tool_name(call);
+    Some(
+        READ_ONLY_TOOLS
+            .iter()
+            .any(|&(n, read_only)| n == name && read_only),
+    )
+}
+
 /// The tool name a call is listed under in `[control] approve`, `[tools]`,
 /// and the trail.
 pub fn tool_name(call: &ToolCall) -> &str {
@@ -558,6 +599,36 @@ pub fn preview_edit(root: &Path, path: &str, old: &str, new: &str) -> Option<Edi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_only_table_names_every_built_in_tool_and_nothing_else() {
+        // A built-in added to APPROVABLE_TOOLS but not here would reach a
+        // hook as `"read_only": false` whatever it does; a name here that
+        // is no tool is a typo that hides a real one.
+        for name in APPROVABLE_TOOLS {
+            assert!(
+                READ_ONLY_TOOLS.iter().any(|(n, _)| n == name),
+                "`{name}` is a built-in with no read_only entry"
+            );
+        }
+        for (name, _) in READ_ONLY_TOOLS {
+            assert!(
+                APPROVABLE_TOOLS.contains(name),
+                "`{name}` is in the read_only table but is no built-in"
+            );
+        }
+        assert_eq!(
+            READ_ONLY_TOOLS.len(),
+            APPROVABLE_TOOLS.len(),
+            "a name twice"
+        );
+        let writers: Vec<&str> = READ_ONLY_TOOLS
+            .iter()
+            .filter(|(_, r)| !r)
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(writers, ["edit", "write_file", "bash", "run_checks"]);
+    }
 
     #[test]
     fn a_label_names_the_first_command_line_not_a_leading_blank_one() {
