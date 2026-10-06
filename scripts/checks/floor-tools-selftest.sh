@@ -6,7 +6,8 @@
 #
 # Runs docs/bench/run_floor.py --self-test (model-call time from `turn`
 # events: median, p90 and count, an untimed turn left out rather than counted
-# as 0) and docs/bench/bytes_per_token.py --self-test (`--no-runtime-log` on a
+# as 0; the config text and harness wait with and without --model-timeout-s,
+# and its refusal below 1) and docs/bench/bytes_per_token.py --self-test (`--no-runtime-log` on a
 # hosted and a runtime adapter log, with the pooled ratio fixed in the script).
 #
 # Exit 0: both self-tests passed. Exit 1: either failed, or no Python on PATH.
