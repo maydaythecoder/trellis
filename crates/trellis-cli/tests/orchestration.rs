@@ -761,6 +761,33 @@ fn allow_write_refuses_a_process_agent_s_write_outside_it_and_names_it() {
     }
 }
 
+#[test]
+fn a_process_agent_s_write_into_the_vault_is_refused_and_named() {
+    // The risk (ADR 0049 §2): a process agent's writes reach the repository
+    // through its clone's carry-back, with no `edit` call for the gate to
+    // check, so a vault refused only at the gate stays writable to it. The
+    // refusal names `[context] vault`, the setting that put the path off
+    // limits, and the run rolls back.
+    let d = process_fixture("proc-vault", MAKES_A_FILE, PASSES);
+    let cfg = d.join(".trellis/config.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("[context]\nvault = \"app\"\n");
+    std::fs::write(&cfg, text).unwrap();
+    git(&d, &["commit", "-qam", "vault"]);
+    ok(&d, &["trust"]);
+    ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(s.contains("NOT CONVERGED"), "{s}");
+    assert!(
+        s.lines().any(|l| l.contains("refused")
+            && l.contains("app/made.cfg")
+            && l.contains("[context] vault")),
+        "the refusal names the path and the setting:\n{s}"
+    );
+    assert!(!d.join("app/made.cfg").exists(), "rolled back:\n{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_process_agent_runs_in_trellis_s_own_process_group() {
