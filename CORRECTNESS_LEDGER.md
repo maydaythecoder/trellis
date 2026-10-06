@@ -1001,8 +1001,18 @@ killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | cra
 <details>
 <summary>trellis-cli: 407 survivors</summary>
 
-#248's first pass (`c0fc32f`) gave its 119 dispositions in that commit's
-message, not on these lines. The second pass marks its own here: each
+#248's first pass (`c0fc32f`, verifying the tests of WIP `91cf422`) gave
+its 119 dispositions in that commit's message; they are recorded on their
+lines here after the fact, in the later passes' format. hosted.rs 24,
+user_config.rs 11, install.rs 15, rpc.rs 13, main.rs 41, doctor_extra.rs
+4 and config.rs 2 killed (110); 7 equivalent (main.rs 937, C-024; main.rs
+1090 x3 and 4040, display text only; config.rs 509; install.rs 636); 2
+not applicable (install.rs 224 and vault_cmd.rs 189, rewritten or moved).
+Each killing test is named as it stands at HEAD; main.rs's code has since
+moved to run_cmd.rs and doctor_cmd.rs, where its tests are. Where the
+message named a group of tests and not one per mutant (graph_lines'
+seven, skill_dirs and prompt_dirs), the test is the one whose assertions
+cover that line. No bug was found. The second pass marks its own here: each
 mutant was applied by hand to the code at its base, the named test run
 with `cargo test -p trellis-cli` and seen to fail, and the source restored;
 neither cargo-mutants nor the workspace suite was run. Line numbers are
@@ -1037,30 +1047,28 @@ runs only on a Unix that is not Linux, 2 unexercisable); tui_run.rs 6 (1
 killed, 5 unexercisable behind the terminal check); image_input.rs 4 (3
 killed, 1 unexercisable). 76 killed in all. Lines in tooling.rs,
 context_files.rs, tui_run.rs and tui_bridge.rs had moved; each mutant was
-found at its new line. No bug was found. The `#248 |` lines still open
-below are the first pass's 119, whose dispositions are in `c0fc32f`'s
-message.
+found at its new line. No bug was found.
 
 ```
 unexercisable (#248): differs only for ERROR-level events (an empty RUST_LOG parsed as a directive is ERROR everywhere), and trellis's three are not reachable on demand: an orchestrator task gone, or a failed rollback of an interrupted plan | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
-#248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
+killed (#248) by tests/cli.rs an_inferred_root_is_named_and_an_explicit_one_is_not | crates/trellis-cli/src/main.rs:507:8: delete ! in main
 unexercisable (#248): bare `trellis` with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty | crates/trellis-cli/src/main.rs:527:43: replace && with || in main
-#248 | crates/trellis-cli/src/main.rs:585:17: delete match arm (true, _) in main
-#248 | crates/trellis-cli/src/main.rs:611:21: delete field skills from struct output::RunExtras expression in main
-#248 | crates/trellis-cli/src/main.rs:833:5: replace print_actions with ()
-#248 | crates/trellis-cli/src/main.rs:860:12: delete ! in print_actions
-#248 | crates/trellis-cli/src/main.rs:937:21: replace match guard m.task_mentions with true in cmd_why
-#248 | crates/trellis-cli/src/main.rs:1090:13: replace > with == in pull_model
-#248 | crates/trellis-cli/src/main.rs:1090:13: replace > with < in pull_model
-#248 | crates/trellis-cli/src/main.rs:1090:13: replace > with >= in pull_model
-#248 | crates/trellis-cli/src/main.rs:1220:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::tokens_used -> u64 with 0
-#248 | crates/trellis-cli/src/main.rs:1220:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::tokens_used -> u64 with 1
-#248 | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with None
-#248 | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with Some(0)
-#248 | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
-#248 | crates/trellis-cli/src/main.rs:1228:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
+killed (#248) by tests/cli.rs run_approve_overrides_a_repository_in_auto_mode | crates/trellis-cli/src/main.rs:585:17: delete match arm (true, _) in main
+killed (#248) by tests/cli.rs run_refuses_a_skill_it_cannot_find_rather_than_running_without_it | crates/trellis-cli/src/main.rs:611:21: delete field skills from struct output::RunExtras expression in main
+killed (#248) by tests/cli.rs log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are | crates/trellis-cli/src/main.rs:833:5: replace print_actions with ()
+killed (#248) by tests/cli.rs log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are | crates/trellis-cli/src/main.rs:860:12: delete ! in print_actions
+equivalent (#248): ledger C-024; a `None` in that arm implies the task mentioned the module, so the guard cannot be false where it is reached | crates/trellis-cli/src/main.rs:937:21: replace match guard m.task_mentions with true in cmd_why
+equivalent (#248): display text only; the guard gates the "resuming at" line of `pull_model`'s progress output | crates/trellis-cli/src/main.rs:1090:13: replace > with == in pull_model
+equivalent (#248): display text only; the guard gates the "resuming at" line of `pull_model`'s progress output | crates/trellis-cli/src/main.rs:1090:13: replace > with < in pull_model
+equivalent (#248): display text only; the guard gates the "resuming at" line of `pull_model`'s progress output | crates/trellis-cli/src/main.rs:1090:13: replace > with >= in pull_model
+killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1220:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::tokens_used -> u64 with 0
+killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1220:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::tokens_used -> u64 with 1
+killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with None
+killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with Some(0)
+killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
+killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1228:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
 killed (#248) by tests/prompt_tokens.rs a_local_runtime_s_compaction_reaches_the_trail_and_the_report | crates/trellis-cli/src/main.rs:1293:9: replace Driver::compactions -> Vec<trellis_loop::Compacted> with vec![]
-#248 | crates/trellis-cli/src/main.rs:1303:9: replace Driver::requested_compactions -> Vec<trellis_loop::RequestedCompaction> with vec![]
+killed (#248) by tests/modes.rs rpc_compact_mid_run_folds_the_older_turns_before_the_next_request | crates/trellis-cli/src/main.rs:1303:9: replace Driver::requested_compactions -> Vec<trellis_loop::RequestedCompaction> with vec![]
 unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree | crates/trellis-cli/src/main.rs:1407:43: replace && with || in Human::terminal
 killed (#248) by tooling::run_tests::a_custom_tool_s_write_to_an_ignored_file_is_undone_by_the_rollback | crates/trellis-cli/src/main.rs:1972:9: replace || with && in run_body
 killed (#248) by tooling::run_tests::a_custom_tool_s_write_to_an_ignored_file_is_undone_by_the_rollback | crates/trellis-cli/src/main.rs:1971:12: delete ! in run_body
@@ -1077,36 +1085,36 @@ killed (#248) by tests/cli.rs a_converged_run_names_the_ignored_files_it_changed
 killed (#248) by tests/cli.rs a_failed_check_s_output_is_cut_at_twenty_four_lines_and_says_what_it_cut | crates/trellis-cli/src/main.rs:2547:24: replace > with >= in run_body
 unexercisable (#248): needs a run that asked a person and whose rollback then failed; no deterministic way to make `reset --hard` and `clean` fail after the snapshot was found (pass 2 met the same) | crates/trellis-cli/src/main.rs:2756:81: replace match guard restored with true in run_body
 killed (#248) by run_cmd::approval_tests::a_queued_run_that_asks_ends_as_asked_with_the_question | crates/trellis-cli/src/main.rs:2756:81: replace match guard restored with false in run_body
-#248 | crates/trellis-cli/src/main.rs:2854:22: replace > with == in unknown_run_id
-#248 | crates/trellis-cli/src/main.rs:2854:22: replace > with < in unknown_run_id
-#248 | crates/trellis-cli/src/main.rs:2854:22: replace > with >= in unknown_run_id
-#248 | crates/trellis-cli/src/main.rs:2894:25: replace && with || in <impl Drop for RollbackOnPanic<'_>>::drop
-#248 | crates/trellis-cli/src/main.rs:3177:16: delete ! in rollback_and_report
+killed (#248) by run_cmd::interrupt_tests::an_unknown_run_id_lists_ten_runs_and_counts_only_the_ones_left_out | crates/trellis-cli/src/main.rs:2854:22: replace > with == in unknown_run_id
+killed (#248) by run_cmd::interrupt_tests::an_unknown_run_id_lists_ten_runs_and_counts_only_the_ones_left_out | crates/trellis-cli/src/main.rs:2854:22: replace > with < in unknown_run_id
+killed (#248) by run_cmd::interrupt_tests::an_unknown_run_id_lists_ten_runs_and_counts_only_the_ones_left_out | crates/trellis-cli/src/main.rs:2854:22: replace > with >= in unknown_run_id
+killed (#248) by run_cmd::interrupt_tests::a_disarmed_panic_guard_leaves_the_tree_alone_while_unwinding | crates/trellis-cli/src/main.rs:2894:25: replace && with || in <impl Drop for RollbackOnPanic<'_>>::drop
+killed (#248) by run_cmd::interrupt_tests::a_clean_rollback_reports_true | crates/trellis-cli/src/main.rs:3177:16: delete ! in rollback_and_report
 killed (#248) by run_cmd::audit_mode_tests::a_coverage_file_with_no_files_measures_nothing | crates/trellis-cli/src/main.rs:3227:28: replace || with && in audit_modes
 killed (#248) by run_cmd::audit_mode_tests::a_covered_call_at_column_zero_is_verified_not_reviewed (already in the suite) | crates/trellis-cli/src/main.rs:3223:5: replace audit_modes -> trellis_trail::ModeCounts with Default::default()
-#248 | crates/trellis-cli/src/main.rs:3534:36: replace == with != in record_trail
-#248 | crates/trellis-cli/src/main.rs:3539:44: replace == with != in record_trail
-#248 | crates/trellis-cli/src/main.rs:3557:41: replace > with == in record_trail
-#248 | crates/trellis-cli/src/main.rs:3557:41: replace > with >= in record_trail
-#248 | crates/trellis-cli/src/main.rs:3563:41: replace > with == in record_trail
-#248 | crates/trellis-cli/src/main.rs:3563:41: replace > with >= in record_trail
+killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3534:36: replace == with != in record_trail
+killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3539:44: replace == with != in record_trail
+killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3557:41: replace > with == in record_trail
+killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3557:41: replace > with >= in record_trail
+killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3563:41: replace > with == in record_trail
+killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3563:41: replace > with >= in record_trail
 killed (#248) by session::tests::radius_takes_a_name_qualified_by_only_its_last_modules | crates/trellis-cli/src/main.rs:3722:17: replace || with && in resolve_symbol
-#248 | crates/trellis-cli/src/main.rs:4040:22: replace > with >= in render_backstop
-#248 | crates/trellis-cli/src/main.rs:4192:39: replace && with || in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4192:30: replace == with != in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4192:26: replace + with * in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4192:56: replace == with != in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4198:26: replace > with >= in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4206:22: replace > with == in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4206:22: replace > with >= in graph_lines
-#248 | crates/trellis-cli/src/main.rs:4252:5: replace codebase_lines -> Vec<String> with vec![]
-#248 | crates/trellis-cli/src/main.rs:4252:5: replace codebase_lines -> Vec<String> with vec!["xyzzy".into()]
-#248 | crates/trellis-cli/src/main.rs:4262:5: replace truncate_module -> String with String::new()
-#248 | crates/trellis-cli/src/main.rs:4252:5: replace codebase_lines -> Vec<String> with vec![String::new()]
-#248 | crates/trellis-cli/src/main.rs:4262:5: replace truncate_module -> String with "xyzzy".into()
-#248 | crates/trellis-cli/src/main.rs:4263:10: replace <= with > in truncate_module
-#248 | crates/trellis-cli/src/main.rs:4268:33: replace - with / in truncate_module
-#248 | crates/trellis-cli/src/main.rs:4268:33: replace - with + in truncate_module
+equivalent (#248): display text only; the guard gates a zero "not queried" row of the backstop report | crates/trellis-cli/src/main.rs:4040:22: replace > with >= in render_backstop
+killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:39: replace && with || in graph_lines
+killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:30: replace == with != in graph_lines
+killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:26: replace + with * in graph_lines
+killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:56: replace == with != in graph_lines
+killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4198:26: replace > with >= in graph_lines
+killed (#248) by doctor_cmd::init_tests::modules_past_the_limit_are_counted_and_none_past_it_are_not | crates/trellis-cli/src/main.rs:4206:22: replace > with == in graph_lines
+killed (#248) by doctor_cmd::init_tests::modules_past_the_limit_are_counted_and_none_past_it_are_not | crates/trellis-cli/src/main.rs:4206:22: replace > with >= in graph_lines
+killed (#248) by doctor_cmd::init_tests::codebase_lines_draws_the_repository_s_own_modules | crates/trellis-cli/src/main.rs:4252:5: replace codebase_lines -> Vec<String> with vec![]
+killed (#248) by doctor_cmd::init_tests::codebase_lines_draws_the_repository_s_own_modules | crates/trellis-cli/src/main.rs:4252:5: replace codebase_lines -> Vec<String> with vec!["xyzzy".into()]
+killed (#248) by doctor_cmd::init_tests::a_module_path_too_wide_for_the_column_keeps_its_tail | crates/trellis-cli/src/main.rs:4262:5: replace truncate_module -> String with String::new()
+killed (#248) by doctor_cmd::init_tests::codebase_lines_draws_the_repository_s_own_modules | crates/trellis-cli/src/main.rs:4252:5: replace codebase_lines -> Vec<String> with vec![String::new()]
+killed (#248) by doctor_cmd::init_tests::a_module_path_too_wide_for_the_column_keeps_its_tail | crates/trellis-cli/src/main.rs:4262:5: replace truncate_module -> String with "xyzzy".into()
+killed (#248) by doctor_cmd::init_tests::a_module_path_too_wide_for_the_column_keeps_its_tail | crates/trellis-cli/src/main.rs:4263:10: replace <= with > in truncate_module
+killed (#248) by doctor_cmd::init_tests::a_module_path_too_wide_for_the_column_keeps_its_tail | crates/trellis-cli/src/main.rs:4268:33: replace - with / in truncate_module
+killed (#248) by doctor_cmd::init_tests::a_module_path_too_wide_for_the_column_keeps_its_tail | crates/trellis-cli/src/main.rs:4268:33: replace - with + in truncate_module
 killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:36: replace match guard n > 1 with true in cmd_doctor
 killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:38: replace > with == in cmd_doctor
 killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:36: replace match guard n > 1 with false in cmd_doctor
@@ -1114,58 +1122,58 @@ killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_a
 killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:38: replace > with >= in cmd_doctor
 killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_test_runner_offers_cov | crates/trellis-cli/src/main.rs:4675:5: replace coverage_available -> bool with true
 killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_test_runner_offers_cov | crates/trellis-cli/src/main.rs:4675:5: replace coverage_available -> bool with false
-#248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with true in repo_lines
-#248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with false in repo_lines
-#248 | crates/trellis-cli/src/main.rs:4782:25: replace == with != in repo_lines
+killed (#248) by doctor_cmd::init_tests::doctor_warns_that_approve_mode_needs_a_terminal_and_only_then | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with true in repo_lines
+killed (#248) by doctor_cmd::init_tests::doctor_warns_that_approve_mode_needs_a_terminal_and_only_then | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with false in repo_lines
+killed (#248) by doctor_cmd::init_tests::doctor_warns_that_approve_mode_needs_a_terminal_and_only_then | crates/trellis-cli/src/main.rs:4782:25: replace == with != in repo_lines
 killed (#248) by ask::tests::the_inventory_reaches_the_prompt_and_says_what_it_does_not_cover | crates/trellis-cli/src/ask.rs:116:19: replace > with >= in prompt_for
-#248 | crates/trellis-cli/src/config.rs:453:27: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in RepoConfig::prompt_raw_in
-#248 | crates/trellis-cli/src/config.rs:508:21: delete match arm "metered" in RepoConfig::budget
-#248 | crates/trellis-cli/src/config.rs:509:21: delete match arm "local" in RepoConfig::budget
-#248 | crates/trellis-cli/src/hosted.rs:213:54: replace || with && in origin
-#248 | crates/trellis-cli/src/hosted.rs:325:5: replace thinking_ignored -> Option<String> with None
-#248 | crates/trellis-cli/src/hosted.rs:325:5: replace thinking_ignored -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/hosted.rs:325:5: replace thinking_ignored -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec![])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec![String::new()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec!["xyzzy".into()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec![])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec![String::new()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec!["xyzzy".into()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec![])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec![String::new()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec!["xyzzy".into()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec![])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec![String::new()])
-#248 | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec!["xyzzy".into()])
-#248 | crates/trellis-cli/src/hosted.rs:361:42: delete ! in doctor
-#248 | crates/trellis-cli/src/hosted.rs:361:39: replace && with || in doctor
-#248 | crates/trellis-cli/src/hosted.rs:373:5: replace compaction_line -> Option<String> with None
-#248 | crates/trellis-cli/src/hosted.rs:373:5: replace compaction_line -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/hosted.rs:373:5: replace compaction_line -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with None
-#248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some("xyzzy".into())
+killed (#248) by config::provider_tests::an_installed_template_that_cannot_be_read_is_an_error_not_a_skip | crates/trellis-cli/src/config.rs:453:27: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in RepoConfig::prompt_raw_in
+killed (#248) by config::provider_tests::a_metered_regime_is_read_and_an_unknown_one_keeps_the_default | crates/trellis-cli/src/config.rs:508:21: delete match arm "metered" in RepoConfig::budget
+equivalent (#248): `Budget::default().regime` is Local, so the fallback arm gives what the deleted arm did | crates/trellis-cli/src/config.rs:509:21: delete match arm "local" in RepoConfig::budget
+killed (#248) by hosted::tests::an_origin_with_userinfo_or_a_fragment_is_no_origin_at_all | crates/trellis-cli/src/hosted.rs:213:54: replace || with && in origin
+killed (#248) by hosted::tests::a_thinking_setting_the_driver_cannot_carry_is_said_and_off_is_not | crates/trellis-cli/src/hosted.rs:325:5: replace thinking_ignored -> Option<String> with None
+killed (#248) by hosted::tests::a_thinking_setting_the_driver_cannot_carry_is_said_and_off_is_not | crates/trellis-cli/src/hosted.rs:325:5: replace thinking_ignored -> Option<String> with Some(String::new())
+killed (#248) by hosted::tests::a_thinking_setting_the_driver_cannot_carry_is_said_and_off_is_not | crates/trellis-cli/src/hosted.rs:325:5: replace thinking_ignored -> Option<String> with Some("xyzzy".into())
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec![])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec![String::new()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), String::new(), vec!["xyzzy".into()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec![])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec![String::new()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with (String::new(), "xyzzy".into(), vec!["xyzzy".into()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec![])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec![String::new()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), String::new(), vec!["xyzzy".into()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec![])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec![String::new()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:339:5: replace doctor -> (String, String, Vec<String>) with ("xyzzy".into(), "xyzzy".into(), vec!["xyzzy".into()])
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:361:42: delete ! in doctor
+killed (#248) by hosted::tests::doctor_names_the_model_endpoint_provider_and_the_unset_key_variable | crates/trellis-cli/src/hosted.rs:361:39: replace && with || in doctor
+killed (#248) by hosted::tests::the_context_lines_report_the_last_compaction_and_are_absent_without_one | crates/trellis-cli/src/hosted.rs:373:5: replace compaction_line -> Option<String> with None
+killed (#248) by hosted::tests::the_context_lines_report_the_last_compaction_and_are_absent_without_one | crates/trellis-cli/src/hosted.rs:373:5: replace compaction_line -> Option<String> with Some(String::new())
+killed (#248) by hosted::tests::the_context_lines_report_the_last_compaction_and_are_absent_without_one | crates/trellis-cli/src/hosted.rs:373:5: replace compaction_line -> Option<String> with Some("xyzzy".into())
+killed (#248) by hosted::tests::the_context_lines_report_the_last_compaction_and_are_absent_without_one | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with None
+killed (#248) by hosted::tests::the_context_lines_report_the_last_compaction_and_are_absent_without_one | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some(String::new())
+killed (#248) by hosted::tests::the_context_lines_report_the_last_compaction_and_are_absent_without_one | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some("xyzzy".into())
 killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:127:19: replace > with == in read_one
 killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:127:19: replace > with >= in read_one
 killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:132:53: replace + with - in read_one
 unexercisable (#248): take(MAX) and take(MAX + 1) differ only for a file that grows past the cap between the metadata check and the read, a race with no hook to drive it | crates/trellis-cli/src/image_input.rs:132:53: replace + with * in read_one
-#248 | crates/trellis-cli/src/install.rs:65:5: replace run -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/install.rs:224:51: replace && with || in install
-#248 | crates/trellis-cli/src/install.rs:338:79: replace || with && in split_spec
-#248 | crates/trellis-cli/src/install.rs:346:5: replace unacceptable_source -> Option<String> with None
-#248 | crates/trellis-cli/src/install.rs:404:23: replace || with && in bad_component
-#248 | crates/trellis-cli/src/install.rs:404:36: replace > with == in bad_component
-#248 | crates/trellis-cli/src/install.rs:404:36: replace > with >= in bad_component
-#248 | crates/trellis-cli/src/install.rs:444:67: replace || with && in skill_name_ok
-#248 | crates/trellis-cli/src/install.rs:518:30: replace match guard file.ends_with(".md") with true in why_skipped
-#248 | crates/trellis-cli/src/install.rs:543:19: replace > with >= in check_bounds
-#248 | crates/trellis-cli/src/install.rs:549:50: replace > with == in check_bounds
-#248 | crates/trellis-cli/src/install.rs:549:50: replace > with >= in check_bounds
-#248 | crates/trellis-cli/src/install.rs:557:14: replace > with == in check_bounds
-#248 | crates/trellis-cli/src/install.rs:557:14: replace > with >= in check_bounds
-#248 | crates/trellis-cli/src/install.rs:636:41: replace || with && in resolve
-#248 | crates/trellis-cli/src/install.rs:773:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load
-#248 | crates/trellis-cli/src/install.rs:801:38: replace || with && in remove_tree
+killed (#248) by tests/cli.rs install_list_prints_what_the_manifest_records | crates/trellis-cli/src/install.rs:65:5: replace run -> Result<()> with Ok(())
+not applicable (#248): the filter was rewritten as a strip_prefix/strip_suffix chain | crates/trellis-cli/src/install.rs:224:51: replace && with || in install
+killed (#248) by install::tests::a_ref_with_a_space_a_control_character_or_a_leading_dash_is_not_a_ref | crates/trellis-cli/src/install.rs:338:79: replace || with && in split_spec
+killed (#248) by install::tests::a_source_that_is_an_option_holds_a_control_character_or_a_password_is_refused | crates/trellis-cli/src/install.rs:346:5: replace unacceptable_source -> Option<String> with None
+killed (#248) by install::tests::a_path_component_is_one_to_128_characters | crates/trellis-cli/src/install.rs:404:23: replace || with && in bad_component
+killed (#248) by install::tests::a_path_component_is_one_to_128_characters | crates/trellis-cli/src/install.rs:404:36: replace > with == in bad_component
+killed (#248) by install::tests::a_path_component_is_one_to_128_characters | crates/trellis-cli/src/install.rs:404:36: replace > with >= in bad_component
+killed (#248) by install::tests::a_skill_name_may_hold_lowercase_letters_digits_and_inner_hyphens | crates/trellis-cli/src/install.rs:444:67: replace || with && in skill_name_ok
+killed (#248) by install::tests::only_a_markdown_file_directly_under_prompts_is_a_template | crates/trellis-cli/src/install.rs:518:30: replace match guard file.ends_with(".md") with true in why_skipped
+killed (#248) by install::tests::package_bounds_admit_exactly_the_limit_and_refuse_one_over | crates/trellis-cli/src/install.rs:543:19: replace > with >= in check_bounds
+killed (#248) by install::tests::package_bounds_admit_exactly_the_limit_and_refuse_one_over | crates/trellis-cli/src/install.rs:549:50: replace > with == in check_bounds
+killed (#248) by install::tests::package_bounds_admit_exactly_the_limit_and_refuse_one_over | crates/trellis-cli/src/install.rs:549:50: replace > with >= in check_bounds
+killed (#248) by install::tests::package_bounds_admit_exactly_the_limit_and_refuse_one_over | crates/trellis-cli/src/install.rs:557:14: replace > with == in check_bounds
+killed (#248) by install::tests::package_bounds_admit_exactly_the_limit_and_refuse_one_over | crates/trellis-cli/src/install.rs:557:14: replace > with >= in check_bounds
+equivalent (#248): `rev-parse --verify <ref>^{commit}` prints a full hex id, so its length and its alphabet never fail apart | crates/trellis-cli/src/install.rs:636:41: replace || with && in resolve
+killed (#248) by install::tests::a_manifest_that_is_there_but_unreadable_is_an_error_not_no_packages | crates/trellis-cli/src/install.rs:773:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load
+killed (#248) by install::tests::remove_tree_removes_a_plain_file_as_well_as_a_directory | crates/trellis-cli/src/install.rs:801:38: replace || with && in remove_tree
 killed (#248) by liveness::tests::the_host_is_the_name_the_platform_records_for_this_machine | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some(String::new())
 killed (#248) by liveness::tests::the_host_is_the_name_the_platform_records_for_this_machine | crates/trellis-cli/src/liveness.rs:29:9: replace <impl Liveness for SystemLiveness>::host -> Option<String> with Some("xyzzy".into())
 unexercisable (#248): needs a /proc/<pid>/stat read that fails other than NotFound (a holder exiting between open and read); none happens on demand, and `/proc` stat files are world-readable | crates/trellis-cli/src/liveness.rs:59:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in probe_proc
@@ -1298,7 +1306,7 @@ unexercisable (#248): inside `run`'s task driver, reached only after the termina
 killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:159:5: replace file_days -> FileDays with Default::default()
 killed (#248) by tests/cli.rs vault_new_says_what_it_created | crates/trellis-cli/src/vault_cmd.rs:171:5: replace print_outcome -> Result<()> with Ok(())
 killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:187:5: replace check -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/vault_cmd.rs:189:8: delete ! in check
+not applicable (#248): the check moved into `sync_dates` | crates/trellis-cli/src/vault_cmd.rs:189:8: delete ! in check
 killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:197:8: delete ! in check
 killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:216:16: delete ! in check
 killed (#248) by tests/cli.rs vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault | crates/trellis-cli/src/vault_cmd.rs:228:5: replace search -> Result<()> with Ok(())
@@ -1392,21 +1400,21 @@ killed (#248) by context_files::tests::a_context_file_exactly_at_the_cap_loads_a
 killed (#248) by context_files::tests::files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none | crates/trellis-cli/src/context_files.rs:405:40: replace + with - in load
 killed (#248) by context_files::tests::files_off_is_said_for_a_user_file_alone_and_not_when_there_is_none | crates/trellis-cli/src/context_files.rs:406:16: replace > with >= in load
 killed (#248) by context_files::tests::a_skill_forced_twice_loads_once_and_each_named_skill_loads | crates/trellis-cli/src/context_files.rs:432:59: replace == with != in load
-#248 | crates/trellis-cli/src/rpc.rs:104:9: replace <impl Visit for Fields>::record_i64 with ()
-#248 | crates/trellis-cli/src/rpc.rs:107:9: replace <impl Visit for Fields>::record_bool with ()
-#248 | crates/trellis-cli/src/rpc.rs:330:9: replace <impl trellis_loop::Model for Watched<'_, M>>::tokens_used -> u64 with 0
-#248 | crates/trellis-cli/src/rpc.rs:330:9: replace <impl trellis_loop::Model for Watched<'_, M>>::tokens_used -> u64 with 1
-#248 | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with None
-#248 | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with Some(0)
-#248 | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
-#248 | crates/trellis-cli/src/rpc.rs:338:9: replace <impl trellis_loop::Model for Watched<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
-#248 | crates/trellis-cli/src/rpc.rs:342:9: replace <impl trellis_loop::Model for Watched<'_, M>>::requested_compactions -> &[trellis_loop::RequestedCompaction] with Vec::leak(Vec::new())
+killed (#248) by rpc::tests::a_turn_s_signed_and_boolean_fields_reach_get_messages | crates/trellis-cli/src/rpc.rs:104:9: replace <impl Visit for Fields>::record_i64 with ()
+killed (#248) by rpc::tests::a_turn_s_signed_and_boolean_fields_reach_get_messages | crates/trellis-cli/src/rpc.rs:107:9: replace <impl Visit for Fields>::record_bool with ()
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:330:9: replace <impl trellis_loop::Model for Watched<'_, M>>::tokens_used -> u64 with 0
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:330:9: replace <impl trellis_loop::Model for Watched<'_, M>>::tokens_used -> u64 with 1
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with None
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with Some(0)
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:334:9: replace <impl trellis_loop::Model for Watched<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:338:9: replace <impl trellis_loop::Model for Watched<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
+killed (#248) by rpc::tests::watched_passes_the_driver_s_figures_through | crates/trellis-cli/src/rpc.rs:342:9: replace <impl trellis_loop::Model for Watched<'_, M>>::requested_compactions -> &[trellis_loop::RequestedCompaction] with Vec::leak(Vec::new())
 killed (#248) by rpc::tests::in_flight_forgets_answered_waiters_and_keeps_the_ones_still_waiting | crates/trellis-cli/src/rpc.rs:611:33: delete ! in Server::in_flight
-#248 | crates/trellis-cli/src/rpc.rs:613:24: replace match guard !r.thread.is_finished() with true in Server::in_flight
-#248 | crates/trellis-cli/src/rpc.rs:799:21: replace match guard cmd.get("args").is_some() with false in Server::prompt
-#248 | crates/trellis-cli/src/rpc.rs:802:21: replace match guard task.trim().is_empty() with false in Server::prompt
+killed (#248) by rpc::tests::get_state_after_a_run_says_it_is_over_and_how_it_ended | crates/trellis-cli/src/rpc.rs:613:24: replace match guard !r.thread.is_finished() with true in Server::in_flight
+killed (#248) by rpc::tests::a_prompt_without_a_task_or_with_args_and_no_template_says_which | crates/trellis-cli/src/rpc.rs:799:21: replace match guard cmd.get("args").is_some() with false in Server::prompt
+killed (#248) by rpc::tests::a_prompt_without_a_task_or_with_args_and_no_template_says_which | crates/trellis-cli/src/rpc.rs:802:21: replace match guard task.trim().is_empty() with false in Server::prompt
 killed (#248) by rpc::tests::a_hosted_model_named_in_the_prompt_is_the_client_s_choice | crates/trellis-cli/src/rpc.rs:809:55: replace || with && in Server::prompt
-#248 | crates/trellis-cli/src/rpc.rs:1088:5: replace summary -> Value with Default::default()
+killed (#248) by rpc::tests::get_state_after_a_run_says_it_is_over_and_how_it_ended | crates/trellis-cli/src/rpc.rs:1088:5: replace summary -> Value with Default::default()
 killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
 killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
 killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:68:5: replace print_prompts with ()
@@ -1427,21 +1435,21 @@ killed (#248) by templates::tests::an_opening_fence_with_no_close_is_the_templat
 killed (#248) by templates::tests::an_empty_description_or_hint_is_as_if_unset | crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
 killed (#248) by templates::tests::an_empty_description_or_hint_is_as_if_unset | crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
 killed (#248) by templates::tests::a_signed_index_in_braces_is_not_a_placeholder | crates/trellis-cli/src/templates.rs:357:24: replace && with || in braced
-#248 | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
-#248 | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
-#248 | crates/trellis-cli/src/user_config.rs:99:5: replace prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
-#248 | crates/trellis-cli/src/user_config.rs:99:5: replace prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
-#248 | crates/trellis-cli/src/user_config.rs:110:5: replace installed_prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
-#248 | crates/trellis-cli/src/user_config.rs:110:5: replace installed_prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
-#248 | crates/trellis-cli/src/user_config.rs:224:9: delete field agents from struct RepoConfig expression in layer
-#248 | crates/trellis-cli/src/user_config.rs:225:9: delete field index from struct RepoConfig expression in layer
-#248 | crates/trellis-cli/src/user_config.rs:234:33: replace match guard u == "list" with true in layer
-#248 | crates/trellis-cli/src/user_config.rs:322:44: replace && with || in key_in::a_custom_tool
-#248 | crates/trellis-cli/src/user_config.rs:400:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in RepoConfig::load_with_user
-#248 | crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with true in user_config_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with false in user_config_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with < in trust_line_with
-#248 | crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with < in trust_line_with
+killed (#248) by tests/cli.rs doctor_reports_the_user_s_file_and_an_installed_package_s_skills | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
+killed (#248) by tests/cli.rs doctor_reports_the_user_s_file_and_an_installed_package_s_skills | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
+killed (#248) by tests/cli.rs a_run_finds_a_template_only_an_installed_package_carries | crates/trellis-cli/src/user_config.rs:99:5: replace prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
+killed (#248) by tests/cli.rs a_run_finds_a_template_only_an_installed_package_carries | crates/trellis-cli/src/user_config.rs:99:5: replace prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
+killed (#248) by user_config::tests::installed_template_directories_are_each_package_s_prompts_in_name_order | crates/trellis-cli/src/user_config.rs:110:5: replace installed_prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
+killed (#248) by user_config::tests::installed_template_directories_are_each_package_s_prompts_in_name_order | crates/trellis-cli/src/user_config.rs:110:5: replace installed_prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
+killed (#248) by user_config::tests::a_user_s_agents_and_index_sections_survive_a_repository_without_them | crates/trellis-cli/src/user_config.rs:224:9: delete field agents from struct RepoConfig expression in layer
+killed (#248) by user_config::tests::a_user_s_agents_and_index_sections_survive_a_repository_without_them | crates/trellis-cli/src/user_config.rs:225:9: delete field index from struct RepoConfig expression in layer
+killed (#248) by user_config::tests::a_user_s_release_does_not_override_the_repository_s_list | crates/trellis-cli/src/user_config.rs:234:33: replace match guard u == "list" with true in layer
+killed (#248) by user_config::tests::only_a_digit_index_under_tools_custom_turns_the_name_test_off | crates/trellis-cli/src/user_config.rs:322:44: replace && with || in key_in::a_custom_tool
+killed (#248) by user_config::tests::a_user_file_that_is_there_but_unreadable_is_an_error_naming_it | crates/trellis-cli/src/user_config.rs:400:23: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in RepoConfig::load_with_user
+killed (#248) by tests/cli.rs doctor_reports_the_user_s_file_and_an_installed_package_s_skills | crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with true in user_config_line
+killed (#248) by tests/cli.rs doctor_reports_the_user_s_file_and_an_installed_package_s_skills | crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with false in user_config_line
+killed (#248) by trust_cmd::tests::doctor_s_trust_line_counts_the_hooks_it_asks_trust_for | crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with < in trust_line_with
+killed (#248) by trust_cmd::tests::doctor_s_trust_line_counts_the_services_it_asks_trust_for | crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with < in trust_line_with
 killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:208:13: replace && with || in services_line
 killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:205:13: replace && with || in services_line
 killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:204:9: delete ! in services_line
