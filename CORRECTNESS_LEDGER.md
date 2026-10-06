@@ -1018,9 +1018,9 @@ lists unreadable task files, which `--status`, `--label` and `--assignee`
 hide.
 
 ```
-#248 | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
+unexercisable (#248): differs only for ERROR-level events (an empty RUST_LOG parsed as a directive is ERROR everywhere), and trellis's three are not reachable on demand: an orchestrator task gone, or a failed rollback of an interrupted plan | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 #248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
-#248 | crates/trellis-cli/src/main.rs:527:43: replace && with || in main
+unexercisable (#248): bare `trellis` with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where `&&` and `||` agree, and a terminal needs a pty | crates/trellis-cli/src/main.rs:527:43: replace && with || in main
 #248 | crates/trellis-cli/src/main.rs:585:17: delete match arm (true, _) in main
 #248 | crates/trellis-cli/src/main.rs:611:21: delete field skills from struct output::RunExtras expression in main
 #248 | crates/trellis-cli/src/main.rs:833:5: replace print_actions with ()
@@ -1035,38 +1035,38 @@ hide.
 #248 | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with Some(0)
 #248 | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with Some(1)
 #248 | crates/trellis-cli/src/main.rs:1228:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::compactions -> &[trellis_loop::Compacted] with Vec::leak(Vec::new())
-#248 | crates/trellis-cli/src/main.rs:1293:9: replace Driver::compactions -> Vec<trellis_loop::Compacted> with vec![]
+killed (#248) by tests/prompt_tokens.rs a_local_runtime_s_compaction_reaches_the_trail_and_the_report | crates/trellis-cli/src/main.rs:1293:9: replace Driver::compactions -> Vec<trellis_loop::Compacted> with vec![]
 #248 | crates/trellis-cli/src/main.rs:1303:9: replace Driver::requested_compactions -> Vec<trellis_loop::RequestedCompaction> with vec![]
-#248 | crates/trellis-cli/src/main.rs:1407:43: replace && with || in Human::terminal
-#248 | crates/trellis-cli/src/main.rs:1972:9: replace || with && in run_body
-#248 | crates/trellis-cli/src/main.rs:1971:12: delete ! in run_body
-#248 | crates/trellis-cli/src/main.rs:2019:9: replace || with && in run_body
-#248 | crates/trellis-cli/src/main.rs:2195:13: delete match arm Some(Err(e)) in run_body
-#248 | crates/trellis-cli/src/main.rs:2183:31: replace match guard !text.trim().is_empty() with true in run_body
-#248 | crates/trellis-cli/src/main.rs:2183:31: replace match guard !text.trim().is_empty() with false in run_body
-#248 | crates/trellis-cli/src/main.rs:2183:31: delete ! in run_body
-#248 | crates/trellis-cli/src/main.rs:2339:32: replace match guard h.config().after_run.is_some() with true in run_body
-#248 | crates/trellis-cli/src/main.rs:2426:38: replace match guard !paths.is_empty() with true in run_body
-#248 | crates/trellis-cli/src/main.rs:2547:24: replace > with == in run_body
-#248 | crates/trellis-cli/src/main.rs:2661:30: replace match guard c.is_empty() with true in run_body
-#248 | crates/trellis-cli/src/main.rs:2661:30: replace match guard c.is_empty() with false in run_body
-#248 | crates/trellis-cli/src/main.rs:2547:24: replace > with >= in run_body
-#248 | crates/trellis-cli/src/main.rs:2756:81: replace match guard restored with true in run_body
-#248 | crates/trellis-cli/src/main.rs:2756:81: replace match guard restored with false in run_body
+unexercisable (#248): needs exactly one of stdin and stdout to be a terminal; every test here runs both as pipes, where `&&` and `||` agree | crates/trellis-cli/src/main.rs:1407:43: replace && with || in Human::terminal
+killed (#248) by tooling::run_tests::a_custom_tool_s_write_to_an_ignored_file_is_undone_by_the_rollback | crates/trellis-cli/src/main.rs:1972:9: replace || with && in run_body
+killed (#248) by tooling::run_tests::a_custom_tool_s_write_to_an_ignored_file_is_undone_by_the_rollback | crates/trellis-cli/src/main.rs:1971:12: delete ! in run_body
+killed (#248) by tests/cli.rs a_run_with_only_skipped_skills_still_says_so | crates/trellis-cli/src/main.rs:2019:9: replace || with && in run_body
+killed (#248) by tooling::run_tests::before_run_is_reported_only_when_it_adds_context_and_its_failure_is_said | crates/trellis-cli/src/main.rs:2195:13: delete match arm Some(Err(e)) in run_body
+killed (#248) by tooling::run_tests::before_run_is_reported_only_when_it_adds_context_and_its_failure_is_said | crates/trellis-cli/src/main.rs:2183:31: replace match guard !text.trim().is_empty() with true in run_body
+killed (#248) by tooling::run_tests::before_run_is_reported_only_when_it_adds_context_and_its_failure_is_said | crates/trellis-cli/src/main.rs:2183:31: replace match guard !text.trim().is_empty() with false in run_body
+killed (#248) by tooling::run_tests::before_run_is_reported_only_when_it_adds_context_and_its_failure_is_said | crates/trellis-cli/src/main.rs:2183:31: delete ! in run_body
+unexercisable (#248): reached only on a Ctrl-C mid-run with hooks configured and no `after_run`; interrupt.rs's tests send SIGINT on unix only, and this Windows host cannot send one | crates/trellis-cli/src/main.rs:2339:32: replace match guard h.config().after_run.is_some() with true in run_body
+equivalent (#248): the arm is reached only when the two fingerprints (tree ids) differ, and `git diff-tree -r --name-only` between two different trees always names a path | crates/trellis-cli/src/main.rs:2426:38: replace match guard !paths.is_empty() with true in run_body
+killed (#248) by tests/cli.rs a_failed_check_s_output_is_cut_at_twenty_four_lines_and_says_what_it_cut | crates/trellis-cli/src/main.rs:2547:24: replace > with == in run_body
+killed (#248) by tests/cli.rs a_converged_run_names_the_ignored_files_it_changed_and_says_nothing_when_none | crates/trellis-cli/src/main.rs:2661:30: replace match guard c.is_empty() with true in run_body
+killed (#248) by tests/cli.rs a_converged_run_names_the_ignored_files_it_changed_and_says_nothing_when_none | crates/trellis-cli/src/main.rs:2661:30: replace match guard c.is_empty() with false in run_body
+killed (#248) by tests/cli.rs a_failed_check_s_output_is_cut_at_twenty_four_lines_and_says_what_it_cut | crates/trellis-cli/src/main.rs:2547:24: replace > with >= in run_body
+unexercisable (#248): needs a run that asked a person and whose rollback then failed; no deterministic way to make `reset --hard` and `clean` fail after the snapshot was found (pass 2 met the same) | crates/trellis-cli/src/main.rs:2756:81: replace match guard restored with true in run_body
+killed (#248) by run_cmd::approval_tests::a_queued_run_that_asks_ends_as_asked_with_the_question | crates/trellis-cli/src/main.rs:2756:81: replace match guard restored with false in run_body
 #248 | crates/trellis-cli/src/main.rs:2854:22: replace > with == in unknown_run_id
 #248 | crates/trellis-cli/src/main.rs:2854:22: replace > with < in unknown_run_id
 #248 | crates/trellis-cli/src/main.rs:2854:22: replace > with >= in unknown_run_id
 #248 | crates/trellis-cli/src/main.rs:2894:25: replace && with || in <impl Drop for RollbackOnPanic<'_>>::drop
 #248 | crates/trellis-cli/src/main.rs:3177:16: delete ! in rollback_and_report
-#248 | crates/trellis-cli/src/main.rs:3227:28: replace || with && in audit_modes
-#248 | crates/trellis-cli/src/main.rs:3223:5: replace audit_modes -> trellis_trail::ModeCounts with Default::default()
+killed (#248) by run_cmd::audit_mode_tests::a_coverage_file_with_no_files_measures_nothing | crates/trellis-cli/src/main.rs:3227:28: replace || with && in audit_modes
+killed (#248) by run_cmd::audit_mode_tests::a_covered_call_at_column_zero_is_verified_not_reviewed (already in the suite) | crates/trellis-cli/src/main.rs:3223:5: replace audit_modes -> trellis_trail::ModeCounts with Default::default()
 #248 | crates/trellis-cli/src/main.rs:3534:36: replace == with != in record_trail
 #248 | crates/trellis-cli/src/main.rs:3539:44: replace == with != in record_trail
 #248 | crates/trellis-cli/src/main.rs:3557:41: replace > with == in record_trail
 #248 | crates/trellis-cli/src/main.rs:3557:41: replace > with >= in record_trail
 #248 | crates/trellis-cli/src/main.rs:3563:41: replace > with == in record_trail
 #248 | crates/trellis-cli/src/main.rs:3563:41: replace > with >= in record_trail
-#248 | crates/trellis-cli/src/main.rs:3722:17: replace || with && in resolve_symbol
+killed (#248) by session::tests::radius_takes_a_name_qualified_by_only_its_last_modules | crates/trellis-cli/src/main.rs:3722:17: replace || with && in resolve_symbol
 #248 | crates/trellis-cli/src/main.rs:4040:22: replace > with >= in render_backstop
 #248 | crates/trellis-cli/src/main.rs:4192:39: replace && with || in graph_lines
 #248 | crates/trellis-cli/src/main.rs:4192:30: replace == with != in graph_lines
@@ -1083,13 +1083,13 @@ hide.
 #248 | crates/trellis-cli/src/main.rs:4263:10: replace <= with > in truncate_module
 #248 | crates/trellis-cli/src/main.rs:4268:33: replace - with / in truncate_module
 #248 | crates/trellis-cli/src/main.rs:4268:33: replace - with + in truncate_module
-#248 | crates/trellis-cli/src/main.rs:4356:36: replace match guard n > 1 with true in cmd_doctor
-#248 | crates/trellis-cli/src/main.rs:4356:38: replace > with == in cmd_doctor
-#248 | crates/trellis-cli/src/main.rs:4356:36: replace match guard n > 1 with false in cmd_doctor
-#248 | crates/trellis-cli/src/main.rs:4356:38: replace > with < in cmd_doctor
-#248 | crates/trellis-cli/src/main.rs:4356:38: replace > with >= in cmd_doctor
-#248 | crates/trellis-cli/src/main.rs:4675:5: replace coverage_available -> bool with true
-#248 | crates/trellis-cli/src/main.rs:4675:5: replace coverage_available -> bool with false
+killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:36: replace match guard n > 1 with true in cmd_doctor
+killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:38: replace > with == in cmd_doctor
+killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:36: replace match guard n > 1 with false in cmd_doctor
+killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:38: replace > with < in cmd_doctor
+killed (#248) by tests/cli.rs doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency | crates/trellis-cli/src/main.rs:4356:38: replace > with >= in cmd_doctor
+killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_test_runner_offers_cov | crates/trellis-cli/src/main.rs:4675:5: replace coverage_available -> bool with true
+killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_test_runner_offers_cov | crates/trellis-cli/src/main.rs:4675:5: replace coverage_available -> bool with false
 #248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with true in repo_lines
 #248 | crates/trellis-cli/src/main.rs:4782:18: replace match guard c.mode == config::ControlMode::Approve with false in repo_lines
 #248 | crates/trellis-cli/src/main.rs:4782:25: replace == with != in repo_lines

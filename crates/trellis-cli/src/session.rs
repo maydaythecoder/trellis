@@ -1455,6 +1455,16 @@ mod tests {
     }
 
     #[test]
+    fn radius_takes_a_name_qualified_by_only_its_last_modules() {
+        // #248. `helper` is `app.m.helper`; `m.helper` names it as well,
+        // matched by the end of its qualified name rather than its bare name.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.dispatch("/radius m.helper")
+            .expect("m.helper is app.m.helper");
+    }
+
+    #[test]
     fn diff_shows_the_change_not_just_the_filename() {
         // "Acceptance is yours" is not a real offer if taking it up means
         // leaving for another terminal. A decision made on a list of
