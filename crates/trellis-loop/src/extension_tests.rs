@@ -1265,6 +1265,132 @@ async fn a_link_out_of_the_repository_is_neither_read_nor_written() {
     }
 }
 
+/// A repository with three directory links the whole-repository search
+/// must not follow: `g` into `.git`, `out` out of the repository, and
+/// `gone` to a directory since removed. `None` where this host makes no
+/// directory link.
+fn with_three_links() -> Option<(tempfile::TempDir, tempfile::TempDir, String)> {
+    let d = git_repo();
+    let outside = tempfile::tempdir().unwrap();
+    let canary = format!("canary-{}", std::process::id());
+    std::fs::write(
+        outside.path().join("secret.txt"),
+        format!("outside\n{canary}\n"),
+    )
+    .unwrap();
+    std::fs::write(d.path().join(".git/canary"), format!("{canary}\n")).unwrap();
+    let removed = outside.path().join("removed");
+    std::fs::create_dir_all(&removed).unwrap();
+    let linked = link_dir(&d.path().join(".git"), &d.path().join("g"))
+        && link_dir(outside.path(), &d.path().join("out"))
+        && link_dir(&removed, &d.path().join("gone"));
+    assert!(linked || !cfg!(windows), "a junction needs no privilege");
+    if !linked {
+        return None;
+    }
+    std::fs::remove_dir(&removed).unwrap();
+    Some((d, outside, canary))
+}
+
+#[tokio::test]
+async fn one_path_rule_read_file_refuses_what_the_whole_repository_search_hides() {
+    // The risk (#441): `read_file` decided "inside the repository and not
+    // in .git" with a resolver of its own, the whole-repository search
+    // with `resolve_repo_input` (#428), and the two had drifted: a link to
+    // nothing was hidden by `ls`/`grep` and walked past by `read_file`,
+    // which went on to the disk. Two rules for one boundary is how the next
+    // hole opens; each entry the search hides, a read refuses.
+    let Some((d, _outside, canary)) = with_three_links() else {
+        eprintln!("skipped: this host made no directory link");
+        return;
+    };
+    let (orch, _j) = Orchestrator::new(d.path(), CheckConfig::default())
+        .with_tools(write_tools())
+        .spawn();
+    // What the search shows: the repository's own files, none of the links.
+    let ToolResult::Output(listed) = orch.call(&ToolCall::Ls { path: ".".into() }).await.result
+    else {
+        panic!("ls . failed");
+    };
+    let names: Vec<&str> = listed.lines().collect();
+    assert!(names.contains(&"app/"), "{listed}");
+    for hidden in ["g/", "out/", "gone/", "g", "out", "gone"] {
+        assert!(!names.contains(&hidden), "{hidden}: {listed}");
+    }
+    let found = format!(
+        "{:?}",
+        orch.call(&ToolCall::Grep {
+            pattern: canary.clone(),
+            path: None,
+        })
+        .await
+        .result
+    );
+    assert!(
+        !found.contains("g/canary") && !found.contains("out/secret.txt"),
+        "{found}"
+    );
+    // And what a read refuses: the same entries, not just a failure to read.
+    let mut reads = vec!["g", "g/canary", "out", "out/secret.txt", "gone", "gone/x"];
+    if cfg!(windows) {
+        // Spellings NTFS opens as the same links.
+        reads.extend(["G/canary", "g./canary", "OUT/secret.txt", "gone./x"]);
+    }
+    for path in reads {
+        match orch
+            .call(&ToolCall::ReadFile { path: path.into() })
+            .await
+            .result
+        {
+            ToolResult::Error(e) => {
+                assert!(e.starts_with("read_file refused:"), "{path}: {e}");
+                assert!(!e.contains(&canary), "{path}: {e}");
+            }
+            other => panic!("`{path}` must be refused: {other:?}"),
+        }
+    }
+    let read = orch
+        .call(&ToolCall::ReadFile {
+            path: "app/util.py".into(),
+        })
+        .await
+        .result;
+    assert!(matches!(read, ToolResult::FileContent(_)), "{read:?}");
+}
+
+#[test]
+fn one_path_rule_read_refusal_and_the_search_filter_agree_on_every_entry() {
+    // The same, at the two predicates: for every entry in the tree, through
+    // each link, `read_refusal` refuses exactly what the search's filter
+    // (`resolve_repo_input`) does not admit.
+    let Some((d, _outside, _)) = with_three_links() else {
+        eprintln!("skipped: this host made no directory link");
+        return;
+    };
+    let root = d.path();
+    for rel in [
+        "app",
+        "app/util.py",
+        "g",
+        "g/canary",
+        "g/config",
+        "out",
+        "out/secret.txt",
+        "gone",
+    ] {
+        assert!(
+            std::fs::symlink_metadata(root.join(rel)).is_ok(),
+            "{rel} is an entry"
+        );
+        let shown = matches!(
+            trellis_core::paths::resolve_repo_input(root, &root.join(rel)),
+            Ok(Some(_))
+        );
+        let refused = crate::orchestrator::read_refusal(root, rel);
+        assert_eq!(refused.is_none(), shown, "{rel}: {refused:?}");
+    }
+}
+
 /// A trust guard over what `hooks` and `bash` would make trusted, as the
 /// binary builds one: the fingerprint at the start, recomputed on each
 /// check.
