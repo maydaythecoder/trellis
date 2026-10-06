@@ -164,8 +164,8 @@ pub(crate) struct ModelSection {
     pub context_bytes: Option<u64>,
     /// Seconds one model request may take, for every runtime (ADR 0047 §9);
     /// [`DEFAULT_MODEL_TIMEOUT_S`] when absent, and 0 is refused at load.
-    /// Read and layered here; the clients still use their fixed 300 s until
-    /// #266 applies it.
+    /// Read and layered here; #266 applies it to the hosted and runtime
+    /// clients when the driver is built.
     pub timeout_s: Option<u64>,
 }
 
