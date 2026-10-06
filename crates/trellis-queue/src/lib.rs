@@ -39,7 +39,9 @@ use std::time::{Duration, SystemTime};
 
 pub use activity::{ActivityLog, Actor, Event};
 use files::{io, move_to, present, publish, read_json, remove};
-pub use stale::{Claimant, Liveness, Probe, RELEASE_THROTTLE_SECS, StaleClaims, Swept};
+pub use stale::{
+    Claimant, Liveness, MAX_STALE_RELEASES, Probe, RELEASE_THROTTLE_SECS, StaleClaims, Swept,
+};
 pub use stamp::iso_now;
 pub use stamp::{civil_from_secs, month_of, now_secs, parse_iso, secs_to_iso};
 
@@ -343,6 +345,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// A task file's contents.
 ///
 /// `focus` and `prompt` serialise as `null` rather than being omitted, so a
@@ -437,6 +443,14 @@ pub struct Task {
     /// once an hour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_released_at: Option<String>,
+    /// How many times a heartbeat has released this task's stale claim.
+    /// At [`MAX_STALE_RELEASES`] the next dead holder blocks the task
+    /// instead (ADR 0020 §5, amended for #352). Nothing resets it, so a
+    /// person who sets the task back to `todo` gives it one more run, not
+    /// three. Omitted at 0, so a file from before it loads and is written
+    /// back unchanged.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stale_releases: u32,
 }
 
 impl Task {
@@ -1618,6 +1632,14 @@ fn release_stale_and_say(
                         let _ = writeln!(
                             out,
                             "queue:    {id} -> pending/ (stale claim released: {detail}; attempts kept)"
+                        );
+                    }
+                    Swept::Blocked(detail) => {
+                        let _ = writeln!(
+                            out,
+                            "queue:    {id} -> pending/ blocked (stale claim not released again: \
+                             {detail}; released {MAX_STALE_RELEASES} times already; \
+                             `trellis queue set {id} --status todo` gives it another run)"
                         );
                     }
                     Swept::Kept(why) => {
