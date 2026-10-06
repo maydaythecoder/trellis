@@ -1,0 +1,113 @@
+# Dependency policy for `cargo deny check`.
+#
+# Written 2026-09-21, during the quality audit's Tier 10. Before this file
+# existed `cargo deny` failed on licences for a reason that was purely
+# procedural: with no policy, nothing is allowed, so every MIT crate in the
+# tree was rejected. That is a missing configuration, not a licensing problem.
+
+# desktop-only: begin
+# desktop/Cargo.lock's policy (ADR 0048 section 7, #290). cargo deny reads
+# the deny.toml nearest the manifest, so this file, not the root's, governs
+# `cargo deny --manifest-path desktop/Cargo.toml`. cargo-deny cannot include
+# one policy in another, so every other line is the root deny.toml's, in its
+# order; scripts/checks/desktop-guards.sh fails when the two drift. Lines the
+# root file lacks sit between these markers and are only those section 7
+# allows, each naming its crate, its chain, a reason and what would end it.
+#
+# The two supported targets, as the root policy's RUSTSEC-2023-0089 note
+# names them, so cargo deny skips the macOS, iOS and Android crates in
+# Tauri's graph. cargo audit has no such filter and reads every package in
+# the lock.
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+
+# desktop-only: end
+[licenses]
+# TRELLIS ships under Apache-2.0. Every expression below was read out of the
+# lockfile rather than copied from a template, and each offers an option
+# compatible with that.
+#
+# Not present and not allowed: anything copyleft as the only option. One crate
+# offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the first two are taken and
+# the LGPL option is simply not exercised, which is what an OR expression
+# means.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    # Public-domain dedication, with an MIT fallback for jurisdictions that do
+    # not recognise one. Used by the regex crates.
+    "Unlicense",
+    "Zlib",
+    # MIT with the attribution clause removed — strictly more permissive than
+    # MIT, which is already allowed above.
+    "MIT-0",
+    # Boost. Permissive, and does not require attribution in binaries.
+    "BSL-1.0",
+    # Community Data License Agreement, permissive: `webpki-roots` (ADR 0024),
+    # Mozilla's root certificates as data. Permits use and redistribution
+    # with no copyleft condition.
+    "CDLA-Permissive-2.0",
+]
+
+# `Apache-2.0 WITH LLVM-exception` appears on the compiler-builtins family.
+# The exception only removes an attribution requirement, so it is strictly
+# more permissive than plain Apache-2.0.
+#
+# NCSA (the University of Illinois/NCSA licence, LLVM's before 2019) is
+# permissive, BSD-style with an attribution clause. It is allowed for one
+# crate only: libfuzzer-sys, which vendors LLVM's libFuzzer and is reached
+# only from fuzz/Cargo.lock (issue #95). The fuzzer is a test tool built on
+# nightly and never linked into the shipped binary; allowing NCSA globally
+# would let it into the binary's tree unreviewed.
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[advisories]
+# Accepted, with reasons. Nothing here is a blanket ignore, and each entry
+# says what would make it stop being acceptable.
+ignore = [
+    # RUSTSEC-2023-0089 — atomic-polyfill is unmaintained (archived upstream).
+    #
+    # Chain: atomic-polyfill <- heapless 0.7 <- postcard <- trellis-index.
+    # postcard is the index cache format, chosen because bincode 3.0 is a
+    # protest release that deliberately fails to compile.
+    #
+    # Unmaintained rather than vulnerable, and `cargo tree -i atomic-polyfill`
+    # on the host target prints nothing: it is gated behind targets lacking
+    # native atomics and is not compiled for either supported platform
+    # (x86_64 Windows, x86_64 Linux). The advisory names `portable-atomic` as
+    # the successor, which heapless 0.8 moved to.
+    #
+    # Revisit when postcard takes a heapless 0.8 dependency. Stops being
+    # acceptable the moment TRELLIS supports a target without native atomics,
+    # which no roadmap item proposes.
+    "RUSTSEC-2023-0089",
+]
+
+[bans]
+# Duplicate major versions are a size and confusion cost, not a correctness
+# one, so they warn rather than fail. `deny` here would block routine
+# dependency updates for no safety gain.
+multiple-versions = "warn"
+
+# Catches `foo = "*"` from a registry, which is a supply-chain hazard: any
+# future publish becomes a silent upgrade. The workspace's own crates are
+# path dependencies with no version, which the lint also reads as wildcards
+# and which carry none of that risk — they resolve to the source tree in this
+# repository and nowhere else.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
