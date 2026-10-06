@@ -339,8 +339,8 @@ that does not see it. Paperclip keeps comments as context for the assignee
 and, since #14577 ("Mentions in task comments are kept as context for the
 assignee; only explicit assignment and review requests start work"), no
 longer starts a run from a mention. Trellis keeps the wake and adds the
-context. Not built: this records the rule a later ticket (CLIP-03) builds
-to; `notes_seen` does not exist in the code today.
+context. ~~Not built: this records the rule a later ticket (CLIP-03) builds
+to; `notes_seen` does not exist in the code today.~~ Built for #351.
 
 - **What a run is given.** After the task's text, one fenced block holding
   every note a person wrote with `trellis queue note` (actor `human`, with
