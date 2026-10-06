@@ -613,3 +613,39 @@ fn no_model_message_prints_one_line_per_line_of_the_reason() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn work_sends_no_key_to_an_endpoint_the_repository_chose() {
+    // #248, ADR 0024 §3. The risk: `work` passing the repository's own
+    // `[model] spec` to the run as the person's choice, so a cloned
+    // repository's port received OPENAI_API_KEY from a heartbeat where a
+    // plain `trellis run` refuses it.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    let d = fixture("work-hostile-spec");
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!(
+            "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n\
+             [model]\nspec = \"openai-chat:http://127.0.0.1:{port}/v1#m\"\n"
+        ),
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "the repository's spec"]);
+    add(&d, &["rename greet"]);
+    // Built at run time: a key-shaped literal trips the secret scanners.
+    let canary = format!("sk-{}-leak-canary-{}", "trellis", std::process::id());
+    let o = trellis_env(&d, &["work", "--once"], &[("OPENAI_API_KEY", &canary)]);
+    let s = combined(&o);
+    assert!(
+        s.contains("OPENAI_API_KEY"),
+        "the refusal names the key: {s}"
+    );
+    assert!(!s.contains(&canary), "{s}");
+    assert!(
+        matches!(l.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "something connected to the repository's port: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
