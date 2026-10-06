@@ -47,8 +47,8 @@ the work is worse than one that says it is not built yet.
 - `main` is the launch branch, `dev` the trunk, `audit` the integration
   branch (ADR 0051). Cut `t<n>-<slug>` or `feature/<slug>` from `origin/dev`,
   merge a green branch into `audit`, promote `audit` into `dev`; `dev` reaches
-  `main` only by the owner's pull request, squash-merged. Never push `main`,
-  `v0.1-resolver`, `drain` or a `v*` tag.
+  `main` only by the owner's pull request, squash-merged. Never push `main` or
+  a `v*` tag. The permanent branches are `main`, `dev` and `audit`, no others.
 - Run gates from Git Bash, not WSL. One cargo process at a time: the host has
   15 GB shared with a local model, and parallel builds have been killed for
   memory. G2b needs the local runtime listening on 127.0.0.1:11434.

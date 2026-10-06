@@ -47,6 +47,12 @@ in every dialect it speaks, which is how both configurations in §5.2 were
 driven. The hosted adapter (`hosted.rs`) sends no temperature, so the
 provider's default applies; a hosted configuration is treated as sampled and
 gets the five repetitions.
+*Amended 2026-10-06 (#252), by ADR 0047 decision 5:* the hosted adapter
+sends temperature 0 to an endpoint identified as colibri (a loopback
+endpoint whose `GET /v1/models` answers `owned_by: "colibri"`), so a
+configuration driven through it is a temperature-0 configuration under this
+waiver. Every other hosted endpoint is still sent no temperature and is
+treated as sampled.
 
 What would reopen it: evidence that a temperature-0 configuration is not
 deterministic on the runtime used (for example batched inference changing
