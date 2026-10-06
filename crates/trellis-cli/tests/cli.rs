@@ -258,8 +258,12 @@ fn index_does_not_wait_two_minutes_on_a_backstop_server_that_never_answers_initi
         )
         .unwrap();
     } else {
+        // No `exec`: `sh` must stay alive holding the stdout pipe, as
+        // cmd.exe does on Windows. With `exec cat > /dev/null` no process
+        // holds it, trellis reads end of stream at once and reports "the
+        // server exited", which is not the silent server this test is about.
         let stub = bin.join("pyright-langserver");
-        std::fs::write(&stub, "#!/bin/sh\nexec cat > /dev/null\n").unwrap();
+        std::fs::write(&stub, "#!/bin/sh\ncat > /dev/null\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
