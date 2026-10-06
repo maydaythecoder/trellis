@@ -197,6 +197,68 @@ fn rpc_runs_a_prompt_to_completion_when_input_ends() {
 }
 
 #[test]
+fn rpc_a_backward_clock_step_still_reports_the_run_id_of_the_run() {
+    // A trail's name is `<wall-clock stamp>-<slug>`, so after the clock
+    // steps back the next run's trail sorts below an older one. Staged as
+    // #472's queue test stages it: run once, rename that trail to a stamp in
+    // the future, commit, then run over rpc (#475).
+    let f = fixture("rpc-clock-step");
+    run(&f, &["run", "change f", "--model", &f.spec]);
+    let runs = f.root.join(".trellis/runs");
+    let first = std::fs::read_dir(&runs)
+        .unwrap()
+        .filter_map(|e| {
+            e.unwrap()
+                .file_name()
+                .to_str()?
+                .strip_suffix(".json")
+                .map(str::to_string)
+        })
+        .next()
+        .unwrap();
+    let ahead = format!("9{}", &first[1..]);
+    std::fs::rename(
+        runs.join(format!("{first}.json")),
+        runs.join(format!("{ahead}.json")),
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(
+        &f.root,
+        &[
+            "commit",
+            "-qm",
+            "a trail stamped before the clock stepped back",
+        ],
+    );
+
+    let mut child = trellis(&f)
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"id": "1", "type": "prompt", "task": "change f", "model": f.spec})
+    )
+    .unwrap();
+    drop(stdin);
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success());
+    let lines = jsonl(&o);
+    let end = lines.iter().find(|l| l["type"] == "run_end").unwrap();
+    let id = end["run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no run_id: {end}"));
+    assert_ne!(id, ahead, "the id of the run before the step: {end}");
+    assert!(runs.join(format!("{id}.json")).is_file(), "{end}");
+}
+
+#[test]
 fn rpc_approve_mode_asks_on_the_stream_while_input_stays_open() {
     // The process-level version of the unit test. The unit tests drive
     // `serve` in-process; here a run thread writes to a real stdout while the
