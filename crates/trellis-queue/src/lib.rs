@@ -362,6 +362,13 @@ pub struct Task {
     /// older reader of a file that has it ignores the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
+    /// The model spec this task runs on, over its assignee profile's and
+    /// `work --model` (ADR 0026 §1). Stored as given and parsed by the
+    /// binary, which owns model specs. A task file can arrive through
+    /// `queue import`, so the binary holds it to the key rule a profile's
+    /// model is held to (ADR 0024 §3). Omitted when absent, as `args` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub added_at: String,
     /// How many runs this task has started. A run that was interrupted and
     /// put back counts, so a task that keeps being interrupted says so.
@@ -555,6 +562,8 @@ pub struct NewTask {
     pub prompt: Option<String>,
     /// With `prompt`: its arguments, unsplit (`Task::args`).
     pub args: Option<String>,
+    /// The task's own model spec (`Task::model`).
+    pub model: Option<String>,
     pub priority: Priority,
     pub labels: Vec<String>,
     pub parent: Option<String>,
@@ -713,6 +722,7 @@ impl Queue {
             focus: new.focus,
             prompt: new.prompt,
             args: new.args,
+            model: new.model,
             added_at: iso_now(),
             priority: new.priority,
             labels: new.labels,

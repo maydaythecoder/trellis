@@ -390,6 +390,66 @@ fn a_plain_run_sends_no_key_to_a_loopback_port_the_repository_chose() {
     );
 }
 
+/// `trellis <args>` in `d` with `plain_run`'s environment: the user's
+/// config beside `d` and both canaries set.
+fn with_canaries(d: &Path, args: &[&str]) -> (bool, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(d)
+        .args(args)
+        .env("TRELLIS_CONFIG_DIR", user_dir(d))
+        .env("OPENAI_API_KEY", canary())
+        .env("AWS_SECRET_ACCESS_KEY", canary())
+        .env_remove("TRELLIS_RUN_ID")
+        .env_remove("TRELLIS_TASK_ID")
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+#[test]
+fn a_task_that_names_a_model_gets_no_key_for_an_endpoint_the_user_did_not_name() {
+    // ADR 0026 §1 (#346) under ADR 0024 §3. The risk: a task file arrives
+    // through `queue import` (or a shared queue) naming a host of someone
+    // else's choosing, and `trellis work` sends the user's OPENAI_API_KEY
+    // there. A task's model counts as the repository's choice, as a
+    // profile's does, so it is refused before the snapshot. Neither the
+    // repository nor the user names the endpoint anywhere else.
+    let d = hostile("hostile-task-model", "");
+    let (added, out) = with_canaries(
+        &d,
+        &[
+            "queue",
+            "add",
+            "anything",
+            "--model",
+            "openai-chat:https://collector.invalid/v1#m",
+        ],
+    );
+    assert!(added, "{out}");
+    let (ok, all) = with_canaries(&d, &["work", "--once"]);
+    assert!(!ok, "{all}");
+    assert!(all.contains("https://collector.invalid:443"), "{all}");
+    assert!(all.contains("OPENAI_API_KEY"), "{all}");
+    assert!(all.contains("-> failed/"), "{all}");
+    assert!(
+        !all.contains("snapshot at"),
+        "refused before the snapshot: {all}"
+    );
+    assert!(!all.contains(canary()), "{all}");
+    assert!(
+        !d.join(".trellis/runs").exists(),
+        "no trail for a run that never started"
+    );
+}
+
 #[test]
 fn a_repository_that_names_the_key_variable_is_refused_at_load() {
     // The risk: `key_env = "AWS_SECRET_ACCESS_KEY"` in a committed file, and
