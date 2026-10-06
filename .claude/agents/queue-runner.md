@@ -33,7 +33,7 @@ implementer's rules are your rules while you write code.
    The same gate failing three times: park the ticket with the three outputs
    verbatim, delete the branch, move on.
 6. All gates exit 0 → `git checkout audit && git pull --ff-only origin audit && git merge --no-ff t<n>-<slug> -m "merge #<n> (t<n>-<slug>): all gates green"`,
-   `git push origin audit`; if `audit` was otherwise level with `dev`, promote it: `git checkout dev && git merge --ff-only audit && git push origin dev`; `gh issue close <n> --comment "<commit>, gates G0–G6 exit 0 on the branch tip"`,
+   `git push origin audit`; promotion into `dev` goes through an `audit → dev` pull request, whose CI checks the tree (CI does not run on a push to `dev`, #477), so do not promote by pushing `dev`; `gh issue close <n> --comment "<commit>, gates G0–G6 exit 0 on the branch tip"`,
    `git branch -d t<n>-<slug>`. Never push to `main` or `v0.1-resolver`.
 7. Append a line to the ledger you were given: ticket, result, attempts, note.
 8. Repeat. `next.sh` recomputes eligibility live, so tickets unblocked by the
