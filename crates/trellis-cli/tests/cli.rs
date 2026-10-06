@@ -1894,10 +1894,16 @@ fn log_does_not_offer_more_when_it_showed_everything() {
 /// loop — the banner, `/help`, `/status`, the coverage block — is reachable
 /// only through a real stdin, which is why none of it had a test.
 fn session_with(root: &Path, lines: &str) -> Output {
+    session_with_env(root, lines, &[])
+}
+
+/// [`session_with`], with `vars` added to the child's environment.
+fn session_with_env(root: &Path, lines: &str, vars: &[(&str, &Path)]) -> Output {
     use std::io::Write;
     use std::process::Stdio;
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .envs(vars.iter().copied())
         .arg("session")
         .current_dir(root)
         .env("NO_COLOR", "1")
@@ -2032,6 +2038,76 @@ fn an_unknown_command_is_refused_rather_than_run_as_a_task() {
         s.contains("/help"),
         "and it must say where the list is:\n{s}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn accept_reads_its_answer_from_the_next_line_of_input() {
+    // #248. The risk: the approval question reading end of input, or a
+    // key it never got, so `a` typed after `/accept` cancels instead.
+    let d = repo("session-accept-stdin");
+    let caller = d.join("app/caller.py");
+    let mut body = std::fs::read_to_string(&caller).unwrap();
+    body.push_str("# edited\n");
+    std::fs::write(&caller, body).unwrap();
+
+    let s = stdout(&session_with(&d, "/accept kept\na\n/exit\n"));
+    assert!(s.contains("accept> "), "{s}");
+    assert!(s.contains("committed 1 path(s)"), "{s}");
+    assert_eq!(git(&d, &["log", "-1", "--pretty=%s"]).trim(), "kept");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_session_keeps_its_history_outside_the_repository() {
+    // #248. The risk: no history file at all, which the unit tests allow
+    // for a machine with no HOME or LOCALAPPDATA.
+    let d = repo("session-history");
+    let data = scratch("session-history-data");
+    let out = session_with_env(
+        &d,
+        "/status\n/exit\n",
+        &[("LOCALAPPDATA", &data), ("XDG_DATA_HOME", &data)],
+    );
+    assert!(out.status.success(), "{}", combined(&out));
+    let saved: Vec<_> = std::fs::read_dir(data.join("trellis"))
+        .expect("the history directory was made")
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert!(
+        saved[0].to_string_lossy().ends_with(".history"),
+        "{saved:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&saved[0])
+            .unwrap()
+            .contains("/status"),
+        "the typed line was kept"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_runtime_that_is_not_listening_is_said_at_open_and_at_model() {
+    // #248. The risk: the banner, and `/model`, silent about a runtime
+    // nothing is listening on, so the first task is where the user finds
+    // out. Port 1 refuses at once.
+    let d = repo("session-unreachable");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[model]\nspec = \"llamacpp:http://127.0.0.1:1\"\n",
+    )
+    .unwrap();
+    let s = stdout(&session_with(
+        &d,
+        "/model llamacpp:http://127.0.0.1:1\n/exit\n",
+    ));
+    assert!(s.contains("NOT REACHABLE"), "the banner:\n{s}");
+    assert!(s.contains("not reachable yet"), "`/model`:\n{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -3678,5 +3754,355 @@ fn no_model_message_is_the_same_from_run_and_from_bare_trellis_on_a_pipe() {
         shown.contains(said),
         "bare trellis must print the same text as `trellis run`.\nrun:\n{said}\nbare:\n{shown}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// #248, pass 3: run_body's reporting, and doctor's slot count
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_run_with_only_skipped_skills_still_says_so() {
+    // #248. The risk: the `repo:` line printed only when some skill was
+    // valid, so a repository whose one skill is malformed hears nothing
+    // about it, and its author believes the model can read it.
+    let d = repo("skills-only-invalid");
+    add_skill(
+        &d,
+        "misnamed",
+        "other-name",
+        "Skipped: the name is not the directory.",
+    );
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "skills"]);
+    let out = run(
+        &d,
+        &[
+            "run",
+            "--model",
+            &script_that_stops(&scratch("skills-only-invalid-script")),
+            "t",
+        ],
+    );
+    let said = stdout(&out);
+    let repo_line = said
+        .lines()
+        .find(|l| l.starts_with("repo:"))
+        .unwrap_or_else(|| panic!("no repo: line\n{}", combined(&out)));
+    assert!(
+        repo_line.contains("skills: 0 listed, 0 omitted (cap), 1 invalid and skipped"),
+        "{repo_line}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// What `trellis run` printed for a run whose typecheck prints `n` lines
+/// and fails.
+fn check_failure_said(name: &str, n: usize) -> String {
+    let d = empty_repo(name);
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    let body: String = (1..=n).map(|i| format!("line{i}\n")).collect();
+    std::fs::write(d.join("out.txt"), body).unwrap();
+    let check = if cfg!(windows) {
+        "['cmd', '/C', 'type out.txt & exit 1']"
+    } else {
+        "['sh', '-c', 'cat out.txt; exit 1']"
+    };
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!("[checks]\ntypecheck = {check}\n"),
+    )
+    .unwrap();
+    std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
+    let script = scratch(&format!("{name}-script")).join("s.json");
+    std::fs::write(
+        &script,
+        r#"{"steps":[{"tool":"run_checks","paths":[],"kinds":["typecheck"]}]}"#,
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "fixture"]);
+    let out = run(
+        &d,
+        &[
+            "run",
+            "--model",
+            &format!("scripted:{}", script.display()),
+            "t",
+        ],
+    );
+    let said = stdout(&out);
+    assert!(said.contains("why the check failed:"), "{}", combined(&out));
+    let _ = std::fs::remove_dir_all(&d);
+    said
+}
+
+/// The `K` of "… K more line(s)", if the run said it.
+fn more_lines(said: &str) -> Option<usize> {
+    let (_, rest) = said.split_once("  … ")?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+#[test]
+fn a_failed_check_s_output_is_cut_at_twenty_four_lines_and_says_what_it_cut() {
+    // #248. The boundary of "why the check failed": an observation of
+    // exactly 24 lines is shown whole, with no "0 more", and one of 25
+    // says it left one out. The observation carries a header around the
+    // checker's output, so the fixture first measures that header rather
+    // than hardcoding it.
+    const SHOWN: usize = 24;
+    let probe = 40;
+    let total = SHOWN
+        + more_lines(&check_failure_said("check-cut-probe", probe))
+            .expect("40 lines of output are more than are shown");
+    let header = total - probe;
+    assert!(header < SHOWN, "the header alone fills the block: {header}");
+    let exact = check_failure_said("check-cut-exact", SHOWN - header);
+    assert_eq!(more_lines(&exact), None, "{exact}");
+    let over = check_failure_said("check-cut-over", SHOWN - header + 1);
+    assert_eq!(more_lines(&over), Some(1), "{over}");
+}
+
+/// A model run in `ignored_model_fixture` that runs `cmd` through `bash`,
+/// then checks, then stops; what it printed.
+fn converge_after_bash(name: &str, cmd: impl Fn(&Path) -> String) -> String {
+    let (d, run) = ignored_model_fixture(name);
+    let script = d
+        .parent()
+        .unwrap()
+        .join(format!("{name}-script-{}.json", std::process::id()));
+    std::fs::write(
+        &script,
+        serde_json::json!({"steps": [
+            {"tool": "bash", "command": cmd(&d)},
+            {"tool": "run_checks", "paths": ["a.py"], "kinds": ["typecheck", "tests"]},
+            {"tool": "done", "summary": "done"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let out = run(&[
+        "run",
+        "a task",
+        "--model",
+        &format!("scripted:{}", script.display()),
+    ]);
+    let said = combined(&out);
+    assert!(
+        said.contains("CONVERGED") && !said.contains("NOT CONVERGED"),
+        "{said}"
+    );
+    said
+}
+
+#[test]
+fn a_converged_run_names_the_ignored_files_it_changed_and_says_nothing_when_none() {
+    // #248. A converged run leaves its changes for review, and a change
+    // to an ignored file is one `git status` does not show. The risk: that
+    // line dropped, or printed with an empty list on every run that could
+    // have written one.
+    let said = converge_after_bash("converged-ignored", |d| {
+        let p = d.display();
+        if cfg!(windows) {
+            format!(r"echo x = 1> {p}\.venv\new.py")
+        } else {
+            format!("echo 'x = 1' > '{p}/.venv/new.py'")
+        }
+    });
+    assert!(
+        said.contains("ignored:  the run changed files git ignores")
+            && said.contains(".venv/new.py"),
+        "{said}"
+    );
+    let said = converge_after_bash("converged-no-ignored", |_| "echo hello".to_string());
+    assert!(!said.contains("ignored:"), "{said}");
+}
+
+/// A loopback llama.cpp stand-in reporting `slots` in `/props`, answering
+/// every other request with an empty completion. Serves until the process
+/// ends.
+fn llamacpp_with_slots(slots: u32) -> String {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .ok();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 16384];
+            loop {
+                let n = s.read(&mut buf).unwrap_or(0);
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if body.len() >= len {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&raw);
+            let body = if request.starts_with("GET /props") {
+                format!("{{\"total_slots\":{slots}}}")
+            } else {
+                r#"{"content":""}"#.to_string()
+            };
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    format!("llamacpp:http://{addr}")
+}
+
+#[test]
+fn doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency() {
+    // #248. S18: a runtime started without --parallel serialises agents,
+    // and doctor is where a person finds out. The risk: the slot count
+    // misread at the boundary between one and more than one.
+    let d = repo("doctor-slots");
+    let one = stdout(&run(&d, &["doctor", "--model", &llamacpp_with_slots(1)]));
+    assert!(one.contains("batching:   single-stream"), "{one}");
+    assert!(one.contains("reports a single slot"), "{one}");
+    let two = stdout(&run(&d, &["doctor", "--model", &llamacpp_with_slots(2)]));
+    assert!(
+        two.contains("batching:   continuous, measured concurrency 2"),
+        "{two}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// #248, pass 3: `trellis vault`
+// ---------------------------------------------------------------------------
+
+/// `repo_with_vault`'s `root` and `child`, plus `lost`, whose parent does
+/// not exist, and `a` and `b`, each the other's parent: one note with a
+/// missing parent and two on a cycle, beside two with no issue.
+fn vault_with_issues(name: &str) -> PathBuf {
+    let (d, _) = repo_with_vault(name, "vault = \"notes\"\n");
+    let v = d.join("notes");
+    for (file, title, parent) in [
+        ("lost.md", "Lost", "[[nowhere]]"),
+        ("a.md", "A", "[[b]]"),
+        ("b.md", "B", "[[a]]"),
+    ] {
+        std::fs::write(
+            v.join(file),
+            format!("---\ntitle: \"{title}\"\nparent: \"{parent}\"\n---\nBODY\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        v.join("manifest.json"),
+        r#"["a.md","b.md","child.md","lost.md","root.md"]"#,
+    )
+    .unwrap();
+    d
+}
+
+#[test]
+fn vault_graph_lists_a_note_s_own_issues_and_no_other_note_s() {
+    // #248. The risk: `graph` printing nothing, or a note's issues filtered
+    // wrongly, so a note on a cycle or under a missing parent looks sound
+    // and a sound note carries another note's problem.
+    let d = vault_with_issues("vault-graph");
+    let lost = stdout(&run(&d, &["vault", "graph", "lost"]));
+    assert!(lost.contains("note:     lost.md \"Lost\""), "{lost}");
+    assert!(lost.contains("issues:"), "{lost}");
+    assert!(lost.contains("nowhere"), "{lost}");
+    let on_cycle = stdout(&run(&d, &["vault", "graph", "a"]));
+    assert!(on_cycle.contains("issues:"), "{on_cycle}");
+    let sound = stdout(&run(&d, &["vault", "graph", "child"]));
+    assert!(sound.contains("note:     child.md"), "{sound}");
+    assert!(!sound.contains("issues:"), "{sound}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal() {
+    // #248. The risk: `check` saying nothing, an empty "issues:" header on
+    // a sound vault, or a refused vault left without the command that
+    // repairs it.
+    let (d, _) = repo_with_vault("vault-check", "vault = \"notes\"\n");
+    let out = run(&d, &["vault", "check"]);
+    let sound = stdout(&out);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(sound.contains("run gate: accepts this vault"), "{sound}");
+    assert!(!sound.contains("issues:"), "{sound}");
+
+    let d2 = vault_with_issues("vault-check-issues");
+    let issues = stdout(&run(&d2, &["vault", "check"]));
+    assert!(issues.contains("issues:"), "{issues}");
+
+    std::fs::write(
+        d.join("notes/child.md"),
+        "---\ntitle: \"Child\"\ntags: x\nparent: \"[[root]]\"\n---\nCHILD-BODY\n",
+    )
+    .unwrap();
+    let out = run(&d, &["vault", "check"]);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(
+        stdout(&out).contains("`trellis vault check --fix` repairs"),
+        "{}",
+        combined(&out)
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
+#[test]
+fn vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault() {
+    // #248. The risk: `search` printing nothing, or saying it was reduced
+    // to titles or lost its fuzzy matching on a vault far under the limits.
+    let (d, _) = repo_with_vault("vault-search", "vault = \"notes\"\n");
+    let s = stdout(&run(&d, &["vault", "search", "CHILD-BODY"]));
+    assert!(s.contains("child.md"), "{s}");
+    assert!(!s.contains("reduced"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn vault_new_says_what_it_created() {
+    // #248. The risk: an edit that reports nothing, so the person cannot
+    // tell which file the title became.
+    let (d, _) = repo_with_vault("vault-new", "vault = \"notes\"\n");
+    let s = stdout(&run(&d, &["vault", "new", "Third", "--parent", "root"]));
+    assert!(s.contains("created third.md (\"Third\")"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files() {
+    // #248. The risk: `dates` silent about a missing dates.json, `--seed`
+    // refusing to create one, or the seeded entries carrying no day where
+    // the file times give one.
+    let (d, _) = repo_with_vault("vault-dates", "vault = \"notes\"\n");
+    let s = stdout(&run(&d, &["vault", "dates"]));
+    assert!(s.contains("no dates.json in"), "{s}");
+    assert!(s.contains("--seed"), "{s}");
+    let out = run(&d, &["vault", "dates", "--seed"]);
+    let s = stdout(&out);
+    assert!(s.contains("dates.json: 2 seeded"), "{}", combined(&out));
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("notes/dates.json")).unwrap())
+            .unwrap();
+    // Written moments ago, so the file times name a day; which day depends
+    // on the host's zone, so only its shape is asserted.
+    let day = doc["notes"]["root.md"]["created"]["day"].as_str();
+    assert!(day.is_some_and(|d| d.len() == 10), "{doc}");
     let _ = std::fs::remove_dir_all(&d);
 }
