@@ -3,8 +3,10 @@
 //! it, and how compaction is reported.
 //!
 //! Kept out of `main.rs` so the key's path through the binary is one file:
-//! it is read from the environment inside `HostedClient::new`, and nothing
-//! here or in the caller ever holds it.
+//! it is read from the environment inside `HostedClient::new`, and, for the
+//! reads that ask a loopback endpoint whether it is colibri (ADR 0047), by
+//! `colibri_key` here, under the same rule and held only for those reads
+//! (the run's `preflight`, and `doctor`'s). No other caller holds it.
 
 use crate::config::RepoConfig;
 use crate::plain;
