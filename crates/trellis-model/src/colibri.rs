@@ -12,6 +12,9 @@
 //!
 //! `/health` sits at the server root while an openai-chat base ends in
 //! `/v1`, so both reads go to the base's origin, whatever its path.
+//!
+//! [`probe_tools`] sends the one tools probe of ADR 0047 decision 4 through
+//! [`transport::post`] under the same cap, bound and origin rule.
 
 use crate::runtime::RuntimeError;
 use crate::secret::ApiKey;
@@ -161,6 +164,127 @@ pub async fn health(base: &str, key: Option<&ApiKey>) -> Result<Health, RuntimeE
     })
 }
 
+/// What colibri said to one chat request carrying one tool (ADR 0047
+/// decision 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolsProbe {
+    /// A 400 whose `param` is `tools`: the served family's template cannot
+    /// render tools. `fallback_named` is true only when colibri's own
+    /// message named `COLI_TOOL_FALLBACK` (OLMoE's and Qwen3.6's do,
+    /// Inkling's does not).
+    Refused { fallback_named: bool },
+    /// A 200: the template accepted the tools. Not evidence the model calls
+    /// them well.
+    Accepted,
+    /// Anything else. `reason` is TRELLIS's, written from the HTTP status or
+    /// the transport error and never from the response body.
+    NotVerified { reason: String },
+}
+
+/// colibri's error envelope (`error_object`, c/openai_server.py:75-77 at
+/// ce370e8).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ErrorBody {
+    error: ErrorObject,
+}
+
+/// All four fields, so a body of another shape is not read as a refusal;
+/// only `param` and `message` decide anything.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ErrorObject {
+    message: String,
+    #[serde(rename = "type")]
+    _type: String,
+    param: Option<String>,
+    #[serde(rename = "code")]
+    _code: String,
+}
+
+/// Sends one `POST <origin>/v1/chat/completions` to the loopback colibri
+/// at `base`, carrying one tool and `max_tokens: 1`, and says whether the
+/// served family accepts tools. The path is the origin's whatever `base`'s
+/// protocol: an `anthropic:` base has no `/v1` (ADR 0047 decision 2).
+///
+/// A base that is not loopback is a configuration error, returned before
+/// any connection: remote endpoints are never probed. Every other outcome,
+/// a transport failure included, is a [`ToolsProbe`].
+pub async fn probe_tools(
+    base: &str,
+    served_id: &str,
+    key: Option<&ApiKey>,
+) -> Result<ToolsProbe, RuntimeError> {
+    let Some(origin) = loopback_origin(base)? else {
+        return Err(RuntimeError::Config(format!(
+            "{base} is not this machine; only a loopback server is sent the tools probe"
+        )));
+    };
+    let body = serde_json::json!({
+        "model": served_id,
+        "messages": [{"role": "user", "content": "Say ok."}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "noop",
+                "description": "Does nothing.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        "max_tokens": 1,
+    })
+    .to_string();
+    let auth = key.map(|k| (Auth::Bearer, k));
+    let r = match transport::post(
+        &origin,
+        None,
+        "/v1/chat/completions",
+        &[],
+        auth,
+        &body,
+        READ_TIMEOUT,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(SendError::Timeout) => {
+            return Ok(ToolsProbe::NotVerified {
+                reason: format!("no answer within {} s", READ_TIMEOUT.as_secs()),
+            });
+        }
+        // A `Broken` message can quote the server's status line, so it is
+        // not repeated. The others are TRELLIS's own: an address and an OS
+        // error, or a configuration fault, and never a response byte.
+        Err(SendError::Broken(_)) => {
+            return Ok(ToolsProbe::NotVerified {
+                reason: "the connection broke, or the reply was not well-formed HTTP".to_string(),
+            });
+        }
+        Err(e @ (SendError::Connect(_) | SendError::ConnectTimedOut(_) | SendError::Config(_))) => {
+            return Ok(ToolsProbe::NotVerified {
+                reason: e.to_string(),
+            });
+        }
+    };
+    Ok(match r.status {
+        200 => ToolsProbe::Accepted,
+        400 => match serde_json::from_str::<ErrorBody>(&r.body) {
+            Ok(b) if b.error.param.as_deref() == Some("tools") => ToolsProbe::Refused {
+                fallback_named: b.error.message.contains("COLI_TOOL_FALLBACK"),
+            },
+            Ok(_) => ToolsProbe::NotVerified {
+                reason: "HTTP 400 about a parameter other than tools".to_string(),
+            },
+            Err(_) => ToolsProbe::NotVerified {
+                reason: "HTTP 400 with a body that is not colibri's error shape".to_string(),
+            },
+        },
+        s => ToolsProbe::NotVerified {
+            reason: format!("HTTP {s}"),
+        },
+    })
+}
+
 /// `base`'s origin as an endpoint with no path, or `None` when its host is
 /// not loopback. The host is read before [`Endpoint::parse`], which refuses
 /// plain http to a remote host: such a base is not this machine, which is
@@ -263,9 +387,7 @@ mod tests {
                 else {
                     break;
                 };
-                let mut buf = vec![0u8; 65536];
-                let n = s.read(&mut buf).await.unwrap();
-                got.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                got.push(read_request(&mut s).await);
                 let out = match body {
                     Some(b) => format!(
                         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
@@ -279,6 +401,35 @@ mod tests {
             got
         });
         (format!("http://{addr}"), h)
+    }
+
+    /// One whole request: the head, then as many body bytes as its
+    /// `Content-Length` names, so a POST body sent in a later segment than
+    /// its head is not cut off.
+    async fn read_request(s: &mut tokio::net::TcpStream) -> String {
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let text = String::from_utf8_lossy(&raw).into_owned();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let len = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if raw.len() >= end + 4 + len {
+                    return text;
+                }
+            }
+            let n = s.read(&mut buf).await.unwrap();
+            if n == 0 {
+                return String::from_utf8_lossy(&raw).into_owned();
+            }
+            raw.extend_from_slice(&buf[..n]);
+        }
     }
 
     #[tokio::test]
@@ -494,5 +645,181 @@ mod tests {
                 "{base}"
             );
         }
+    }
+
+    // The tools probe's fixtures. colibri's source is not in this
+    // repository, so the `message` wording below is reconstructed from the
+    // cited lines as ADR 0047 and docs/inventory/inventory-colibri.md
+    // describe them, not copied: the envelope is `error_object`'s
+    // (c/openai_server.py:75-77 at ce370e8), the code `unsupported_parameter`
+    // and the param `tools`. The probe reads only `param` and whether the
+    // message names `COLI_TOOL_FALLBACK`, never the rest of the wording.
+
+    /// ce370e8, c/openai_server.py:1364-1367 (OLMoE refuses `tools` while
+    /// rendering, naming the fallback setting); Qwen3.6's :1423-1426 is the
+    /// same shape.
+    const TOOLS_REFUSED_OLMOE: &str = r#"{"error":{"message":"OLMoE has no tool-calling chat template; set COLI_TOOL_FALLBACK=1 to render tools as text.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
+
+    /// ce370e8, c/openai_server.py:1707-1708 (Inkling refuses `tools`, with
+    /// no fallback named).
+    const TOOLS_REFUSED_INKLING: &str = r#"{"error":{"message":"Inkling does not support tools.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
+
+    /// A chat completion cut at one token: ce370e8, c/openai_server.py:
+    /// 5169-5241 (the non-streaming reply), `finish_reason` `length`.
+    const TOOLS_ACCEPTED: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#;
+
+    /// Not colibri's: a hostile 500 whose body carries an ESC byte and a
+    /// marker word, to show neither reaches the reason. Envelope from
+    /// ce370e8, c/openai_server.py:75-77.
+    const TOOLS_HOSTILE_500: &str = "{\"error\":{\"message\":\"\x1b[2Jcanary-body-word\",\"type\":\"server_error\",\"param\":null,\"code\":\"internal_error\"}}";
+
+    #[tokio::test]
+    async fn colibri_tools_an_olmoe_style_400_is_refused_with_the_fallback_named() {
+        let (base, _h) = stub(vec![("400 Bad Request", Some(TOOLS_REFUSED_OLMOE))]).await;
+        assert_eq!(
+            probe_tools(&base, "olmoe", None).await.unwrap(),
+            ToolsProbe::Refused {
+                fallback_named: true
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_an_inkling_style_400_is_refused_with_no_fallback_named() {
+        // The risk: telling an Inkling user to set a variable that cannot
+        // help.
+        let (base, _h) = stub(vec![("400 Bad Request", Some(TOOLS_REFUSED_INKLING))]).await;
+        assert_eq!(
+            probe_tools(&base, "inkling", None).await.unwrap(),
+            ToolsProbe::Refused {
+                fallback_named: false
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_a_200_is_accepted() {
+        let (base, _h) = stub(vec![("200 OK", Some(TOOLS_ACCEPTED))]).await;
+        assert_eq!(
+            probe_tools(&base, "glm-5.2", None).await.unwrap(),
+            ToolsProbe::Accepted
+        );
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_a_500_is_not_verified_and_its_reason_quotes_no_body() {
+        // The risk: a server's bytes, escape sequences included, printed to
+        // the user's terminal as TRELLIS's own words.
+        let (base, _h) = stub(vec![("500 Internal Server Error", Some(TOOLS_HOSTILE_500))]).await;
+        let key = ApiKey::for_test(&format!("colibri-{}", std::process::id()), "COLI_API_KEY");
+        let ToolsProbe::NotVerified { reason } =
+            probe_tools(&base, "glm-5.2", Some(&key)).await.unwrap()
+        else {
+            panic!("a 500 must be NotVerified");
+        };
+        assert!(reason.contains("500"), "{reason}");
+        assert!(!reason.contains('\x1b'), "{reason:?}");
+        assert!(!reason.contains("canary-body-word"), "{reason}");
+        assert!(!reason.contains("internal_error"), "{reason}");
+        assert!(!reason.contains(key.expose()), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_a_malformed_status_line_is_not_verified_and_not_quoted() {
+        // The risk: the transport's parse error, which quotes the status
+        // line, passed on as the reason with the server's escape bytes.
+        let (base, _h) = stub(vec![("\x1b[2Jcanary-status-word", None)]).await;
+        let ToolsProbe::NotVerified { reason } = probe_tools(&base, "glm-5.2", None).await.unwrap()
+        else {
+            panic!("a reply with no status must be NotVerified");
+        };
+        assert!(!reason.contains('\x1b'), "{reason:?}");
+        assert!(!reason.contains("canary-status-word"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_a_400_about_another_param_is_not_verified() {
+        // The risk: any 400 read as a tools refusal, stopping a run that
+        // would have worked.
+        let (base, _h) = stub(vec![("400 Bad Request", Some(NOT_FOUND))]).await;
+        assert!(matches!(
+            probe_tools(&base, "glm-5.2", None).await.unwrap(),
+            ToolsProbe::NotVerified { .. }
+        ));
+    }
+
+    /// The raw request the stub received when probed from `stub + path`.
+    async fn probed_request(path: &str, key: Option<&ApiKey>) -> String {
+        let (stub_base, h) = stub(vec![("200 OK", Some(TOOLS_ACCEPTED))]).await;
+        probe_tools(&format!("{stub_base}{path}"), "glm-5.2", key)
+            .await
+            .unwrap();
+        let got = h.await.unwrap();
+        assert_eq!(got.len(), 1, "exactly one request");
+        got.into_iter().next().unwrap()
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_the_probe_goes_to_v1_chat_completions_from_a_v1_base_and_a_bare_one() {
+        // The risk: an `anthropic:` base (no `/v1`) probed at
+        // `/chat/completions`, or an openai-chat base at
+        // `/v1/v1/chat/completions`; colibri serves neither.
+        for path in ["/v1", ""] {
+            let raw = probed_request(path, None).await;
+            assert_eq!(
+                raw.lines().next().unwrap(),
+                "POST /v1/chat/completions HTTP/1.1",
+                "from base path `{path}`"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_the_body_asks_for_one_token_with_one_tool() {
+        // The risk: a probe that lets the model generate, and so outruns its
+        // 10 s bound, or that asks nothing about tools.
+        let raw = probed_request("/v1", None).await;
+        let body = raw.split_once("\r\n\r\n").unwrap().1;
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(v["max_tokens"], 1, "{body}");
+        assert_eq!(v["tools"].as_array().map(Vec::len), Some(1), "{body}");
+        assert_eq!(v["model"], "glm-5.2", "{body}");
+        let messages = v["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "{body}");
+        assert_eq!(messages[0]["role"], "user", "{body}");
+    }
+
+    #[tokio::test]
+    async fn colibri_tools_the_key_is_sent_only_when_given() {
+        let lower = probed_request("", None).await.to_ascii_lowercase();
+        assert!(
+            !lower.contains("authorization") && !lower.contains("x-api-key"),
+            "{lower}"
+        );
+        let value = format!("colibri-test-{}", std::process::id());
+        let key = ApiKey::for_test(&value, "COLI_API_KEY");
+        let raw = probed_request("", Some(&key)).await;
+        assert!(
+            raw.contains(&format!("\r\nAuthorization: Bearer {value}\r\n")),
+            "{raw}"
+        );
+    }
+
+    #[test]
+    fn colibri_tools_a_remote_base_is_refused_before_any_connection() {
+        // Polled once with no tokio runtime: a build that went on to send
+        // would panic in the request's timeout, which needs a runtime, and
+        // were that gone, in resolving the `.invalid` name on tokio's
+        // blocking pool, both before any packet leaves. So even a broken
+        // build cannot reach the network from this test. https, because
+        // `Endpoint::parse` already refuses plain http to a remote host and
+        // would hide a missing loopback check.
+        let fut = probe_tools("https://colibri.invalid:8000/v1", "glm-5.2", None);
+        let mut fut = std::pin::pin!(fut);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(r) = fut.as_mut().poll(&mut cx) else {
+            panic!("the remote check must finish before any I/O");
+        };
+        assert!(matches!(r, Err(RuntimeError::Config(_))), "{r:?}");
     }
 }
