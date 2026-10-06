@@ -246,10 +246,17 @@ Added 2026-10-06 (#329). This section adds no disposition and changes no row. Th
 | 20, 22–26 create, auto-create linked, retitle with link rewrite, reparent, link, delete | W-A as `trellis vault` subcommands; delete is a file removal (git is the undo; no OS trash). **Amended 2026-09-29 (#61):** 22, auto-create linked, is excluded, for ADR 0022 §7's reason: Apex's trigger is an editor autosave seeing a newly typed `[[X]]`, a command line has no such event, and doing it on `check --fix` would create a note for every unresolved link. `trellis vault new` is the explicit form. |
 | 21, 27–29 editor, copy/paste, drop import, undo | excluded [ui] |
 | 30 BM25 search | W-A (`trellis vault search`) and W-B (a `search_notes` tool) |
-| 31 workspaces / project create | W-A (`trellis vault init`); tabs excluded [ui] |
+| 31 workspaces / project create | W-A (`trellis vault init`); tabs excluded [ui]. **Amended 2026-10-06 (#359, re-inventory 2026-10-04):** Apex's project create (src-tauri/src/lib.rs:290-313) stays W-A as `trellis vault init`; tabs, recent projects, the folder rename and the location chooser are rows 44 to 47. |
 | 32–34 validation status, live sync, size warnings | W-A (`trellis vault check` with the Apex report line and size warnings); live sync excluded (no long-lived process) |
-| 35–37 writing skill, hierarchy prompt, AGENTS.md | W-A ships the writing contract as a built-in skill; the prompt is excluded [ui] |
+| 35–37 writing skill, hierarchy prompt, AGENTS.md | W-A ships the writing contract as a built-in skill; the prompt is excluded [ui]. **Amended 2026-10-06 (#359, re-inventory 2026-10-04):** the AGENTS.md item (Apex's AGENTS.md:1-60) is not W-A's: AGENTS.md reaches the model as a context file under ADR 0025, and trellis ships no Apex rules of its own (crates/trellis-cli/src/context_files.rs). |
 | 38–42 build, packaging, native, self-update | excluded [ui/desktop] |
+| 43 path safety for workspace files | built (W-A), shown by the a_symlinked tests in crates/trellis-vault (tests/parity.rs): a symlinked notes/, manifest.json, layout.json or dates.json is refused, as Apex refuses a symlinked notes/ (src-tauri/src/lib.rs:236-243) and its workspace metadata; see the ADR 0022 §1 and §3 amendments (#353). (re-inventory 2026-10-04) |
+| 44–47 workspace tabs, recent projects, project folder rename, project location chooser | excluded (#70): a command line opens one repository's vault, and row 31's `trellis vault init` is the built part (web/appShell.ts:1102-1222, 1346-1380, 1058-1131, 1382-1537). (re-inventory 2026-10-04) |
+| 48–49 paste plain text as a note, editor link rendering | excluded [ui], as rows 21, 27–29 (web/notes/noteComposer.ts:67-96, web/appShell.ts:179-298). (re-inventory 2026-10-04) |
+| 50 per-line date labels and the note date header | excluded [ui]; trellis vault dates prints each note's created day and matching line count (web/ui/dateDecorations.ts:1-281). (re-inventory 2026-10-04) |
+| 51 date tracking that never blocks Markdown | built (W-A), shown by the after_edit tests in crates/trellis-vault (src/dates.rs): a vault edit lands and exits 0 when dates.json cannot follow it; see the ADR 0022 §5 amendment (#354). (re-inventory 2026-10-04) |
+| 52 search result ranking layer | not built, per ADR 0022 §4, and porting it is ticketed: the library port and the switch of `trellis vault search` to it, which amends this row when it lands (web/searchResults.ts:1-255). (re-inventory 2026-10-04) |
+| 53–55 rope connect gesture, hub and PageRank scoring, workspace chrome | excluded [ui], as rows 15–19 (web/appShell.ts:5883-5920, web/labelVisibility.ts:19-234, web/appShell.ts:443-637). (re-inventory 2026-10-04) |
 
 ## Paperclip (`inventory-paperclip.md`)
 
@@ -428,6 +435,21 @@ From Apex §15–19, under the row "15–19 layout, canvas, labels, annotations"
 - Large-graph mode: excluded, [ui].
 - Label tiers: excluded, [ui].
 - Drawing freehand annotations on the canvas: excluded, [ui].
+
+From the Apex re-inventory of 2026-10-04 (#359), rows 44–50 and 53–55:
+
+- Workspace tabs (row 44–47): excluded (#70).
+- Recent projects (row 44–47): excluded (#70).
+- Project folder rename (row 44–47): excluded (#70).
+- Project location chooser (row 44–47): excluded (#70).
+- Paste plain text as a note (row 48–49): excluded, [ui].
+- Editor link rendering (row 48–49): excluded, [ui].
+- Per-line date labels and the note date header (row 50): excluded, [ui].
+- Rope connect gesture (row 53–55): excluded, [ui].
+- Hub and PageRank scoring (row 53–55): excluded, [ui].
+- Workspace chrome (row 53–55): excluded, [ui].
+
+A desktop surface adopted by a later ADR re-dispositions these rows.
 
 Building any item listed here needs an ADR amending ADR 0021.
 
