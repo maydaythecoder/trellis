@@ -3,8 +3,8 @@ use crate::plain;
 use crate::{config, doctor_extra, hosted};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use trellis_model::RuntimeError;
 use trellis_model::colibri::{self, Health, Identity};
-use trellis_model::{ApiKey, RuntimeError};
 
 /// What a constraint probe means for the run about to start.
 ///
@@ -170,7 +170,7 @@ struct ColibriSeen {
 /// colibri never changes where a key goes (ADR 0024 §3). A base that is not
 /// loopback is answered `NotLoopback` without a connection.
 async fn read_colibri(r: &hosted::Resolved) -> Result<ColibriSeen, RuntimeError> {
-    let key = ApiKey::from_env(&r.key_env);
+    let key = hosted::colibri_key(r);
     let identity = colibri::identify(&r.base, key.as_ref()).await?;
     let health = match identity {
         Identity::Identified { .. } => Some(colibri::health(&r.base, key.as_ref()).await),
@@ -383,7 +383,7 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 }) => notes.push(format!(
                     "This endpoint's /v1/models answered {status} to {}, so whether it is \
                      colibri is not known.",
-                    if ApiKey::from_env(&h.key_env).is_some() {
+                    if hosted::colibri_key(&h).is_some() {
                         "the key it was sent"
                     } else {
                         "a request without a key"
