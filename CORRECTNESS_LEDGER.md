@@ -1132,10 +1132,10 @@ killed (#248) by doctor_cmd::doctor_tests::coverage_is_available_only_when_the_t
 #248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with None
 #248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some(String::new())
 #248 | crates/trellis-cli/src/hosted.rs:413:5: replace requested_compaction_line -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/image_input.rs:127:19: replace > with == in read_one
-#248 | crates/trellis-cli/src/image_input.rs:127:19: replace > with >= in read_one
-#248 | crates/trellis-cli/src/image_input.rs:132:53: replace + with - in read_one
-#248 | crates/trellis-cli/src/image_input.rs:132:53: replace + with * in read_one
+killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:127:19: replace > with == in read_one
+killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:127:19: replace > with >= in read_one
+killed (#248) by image_input::tests::an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused | crates/trellis-cli/src/image_input.rs:132:53: replace + with - in read_one
+unexercisable (#248): take(MAX) and take(MAX + 1) differ only for a file that grows past the cap between the metadata check and the read, a race with no hook to drive it | crates/trellis-cli/src/image_input.rs:132:53: replace + with * in read_one
 #248 | crates/trellis-cli/src/install.rs:65:5: replace run -> Result<()> with Ok(())
 #248 | crates/trellis-cli/src/install.rs:224:51: replace && with || in install
 #248 | crates/trellis-cli/src/install.rs:338:79: replace || with && in split_spec
@@ -1410,10 +1410,10 @@ killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_
 killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with None
 killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some(String::new())
 killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some("xyzzy".into())
-#248 | crates/trellis-cli/src/templates.rs:64:13: delete field body from struct Parsed expression in parse
-#248 | crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
-#248 | crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
-#248 | crates/trellis-cli/src/templates.rs:357:24: replace && with || in braced
+killed (#248) by templates::tests::an_opening_fence_with_no_close_is_the_template_as_written | crates/trellis-cli/src/templates.rs:64:13: delete field body from struct Parsed expression in parse
+killed (#248) by templates::tests::an_empty_description_or_hint_is_as_if_unset | crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
+killed (#248) by templates::tests::an_empty_description_or_hint_is_as_if_unset | crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
+killed (#248) by templates::tests::a_signed_index_in_braces_is_not_a_placeholder | crates/trellis-cli/src/templates.rs:357:24: replace && with || in braced
 #248 | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
 #248 | crates/trellis-cli/src/user_config.rs:64:5: replace skill_dirs -> Result<Vec<PathBuf>> with Ok(vec![Default::default()])
 #248 | crates/trellis-cli/src/user_config.rs:99:5: replace prompt_dirs -> Result<Vec<PathBuf>> with Ok(vec![])
