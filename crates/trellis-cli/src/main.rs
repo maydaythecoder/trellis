@@ -177,10 +177,11 @@ enum Command {
         /// takes the cap from the backend's measured batching capacity and is
         /// 1 for an unmeasured one. Never derived from CPU count (S18).
         ///
-        /// Above 1, and `auto`, need `--target`. Above 1, each partition of
-        /// the plan runs in its own agent and worktree, and the merged union
-        /// is checked as a whole (#466); never more at once than the plan
-        /// has parallel partitions.
+        /// Above 1, and `auto`, need `--target`. With `--target`, each
+        /// partition of the plan runs in its own agent and worktree, and the
+        /// merged union is checked as a whole (#466); one at a time at 1
+        /// (#482), and never more at once than the plan has parallel
+        /// partitions.
         #[arg(long, default_value = "1")]
         agents: String,
         /// A symbol this run works on, resolved as `trellis radius` resolves
@@ -689,19 +690,13 @@ fn main() -> Result<()> {
                     .with_context(first_run::no_model)?,
             };
             // With no target the width is 1 (refused above otherwise), and
-            // the run is today's single-agent run with nothing added. Above
-            // 1, the plan's partitions run each in its own agent (#466).
+            // the run is today's single-agent run with nothing added. With
+            // targets, the plan's partitions run each in its own agent (#466),
+            // one at a time at width 1 (ADR 0045 §2, #482).
             let mut fanout = None;
             if !target.is_empty() {
                 let (n, why) = agents_for(&root, width, &target, &model, model_from_user)?;
-                if n > 1 {
-                    fanout = Some(run_cmd::Fanout::plan(&root, &target, n, why)?);
-                } else {
-                    let _ = writeln!(
-                        output::human(),
-                        "agents:   running partitions one at a time: {why}"
-                    );
-                }
+                fanout = Some(run_cmd::Fanout::plan(&root, &target, n, why)?);
             }
             let flag = match (approve, auto) {
                 (true, _) => Some(config::ControlMode::Approve),
