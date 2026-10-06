@@ -257,6 +257,42 @@ id, and the heartbeat adds its own note saying so.
   sandbox's job (ADR 0032, "Limits" and "What is not built"), not another
   environment check.
 
+*Amended 2026-10-06 (#341; Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation; PC-114):*
+**A person may block a task until a set time.** Paperclip lets an issue's
+assignee or the board set a one-shot re-check (ADR 0021, PC-114). Here the
+`blocked` reasons are `blockers`, `children`, `manual` and `question`,
+`reconcile` wakes only the first two, and nothing wakes a task at a time;
+routines and `work --every` (§7) create new tasks rather than re-run a
+waiting one. Not built: this amendment is the ADR for the flag #342 builds,
+and it builds nothing itself.
+
+- **The reason and the flags.** A new `blocked` reason, `until`, holds an
+  RFC 3339 instant in UTC. A person sets it with
+  `trellis queue set <id> --status blocked --reason until --at <instant>`.
+  No model tool sets the wait.
+- **The wake.** The first `Queue::reconcile` after the instant sets the
+  task to `todo`, once, whether that reconcile comes from a `work`
+  heartbeat or from a `queue` command that calls it (`queue set`, `queue
+  cancel`, `queue reject` and `queue import` do), so the task can be set to
+  `todo` while no `work` is running. The wake is written to the activity
+  log (§9) as the other wakes are. The task runs only when `work` claims
+  it, and is then claimable exactly as any `todo` task is.
+- **Refusals.** `--reason until` without `--at`, `--at` without `--reason
+  until`, and an `--at` that is not RFC 3339 are each refused with the task
+  file unchanged.
+- **Listing.** `queue list` prints `blocked until <instant>` on the task's
+  waiting line.
+- **On disk.** `blocked.reason` gains the value `until`, so a task file
+  written before the change parses unchanged. A binary from before the
+  change cannot parse a task blocked `until` (`Blocked` is tagged on
+  `reason` with no fallback variant), so its `queue list` shows the file as
+  unreadable and its `work` moves it to `failed/`, as recorded above for
+  the `question` reason.
+
+Reversed if routines and `work --every` are found to cover every wait
+people set in practice: then PC-114 stays excluded and #342 is closed
+unbuilt.
+
 ### 2. Changing a file that already exists
 
 Every rewrite goes through one of three paths. None of them renames a file.
