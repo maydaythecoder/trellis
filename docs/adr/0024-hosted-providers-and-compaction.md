@@ -176,6 +176,13 @@ notice is a user text block after the last result.
 **Tier.** `doctor` reports `Native` for a hosted spec, from the protocol,
 without a probe request: a probe would spend the user's money to learn what
 the protocol already states. Streaming is not built; replies are read whole.
+*Amended 2026-10-06 (#252), by ADR 0047 decision 4, for colibri only:* a
+loopback endpoint identified as colibri (`GET /v1/models` answering
+`owned_by: "colibri"`) is sent one tools probe before the snapshot, bounded
+at 10 s, since on loopback it spends a moment of the user's machine rather
+than money; a refusal stops the run, a 200 reports Native (probed), anything
+else Native (assumed). Every other hosted spec still claims tier 1 from the
+protocol without a probe.
 
 *Amended at implementation.* Decisions the text above left open:
 
@@ -482,6 +489,12 @@ repository may no longer name `key_env`.
 
   Neither protocol is sent `temperature`: reasoning models on both reject a
   non-default one.
+  *Amended 2026-10-06 (#252), by ADR 0047 decision 5, for colibri only:* a
+  loopback endpoint identified as colibri is sent `temperature: 0` and an
+  explicit thinking setting (openai-chat `enable_thinking: false` or the
+  configured `reasoning_effort`; Anthropic `thinking` `disabled` or
+  `enabled`), because colibri otherwise samples at 0.7. Every other
+  endpoint's body is unchanged byte for byte.
 
   *Amended at implementation.* A timeout is not retried (300 s per request;
   retrying one would multiply a stall), and neither is a refused connection.
@@ -582,6 +595,12 @@ without a budget against the same replies and compares outcomes.
   `model_input_limit_absent_is_today_s_behaviour`,
   `model_input_limit_replaces_the_hosted_default_even_above_it` and
   `model_input_limit_a_repository_cannot_raise_the_user_s`.
+  *Amended 2026-10-06 (#252), by ADR 0047 decision 6, for colibri only:* a
+  loopback endpoint identified as colibri with no `[model] context_bytes`
+  gets a default below the 400,000-byte hosted one, sized so the prompt
+  leaves the reply room in colibri's window (colibri clamps each reply to
+  the room the prompt leaves). COL-08 records the figure. An explicit value
+  still wins, larger or smaller; every other hosted spec keeps 400,000.
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
