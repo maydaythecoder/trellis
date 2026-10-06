@@ -1894,10 +1894,16 @@ fn log_does_not_offer_more_when_it_showed_everything() {
 /// loop — the banner, `/help`, `/status`, the coverage block — is reachable
 /// only through a real stdin, which is why none of it had a test.
 fn session_with(root: &Path, lines: &str) -> Output {
+    session_with_env(root, lines, &[])
+}
+
+/// [`session_with`], with `vars` added to the child's environment.
+fn session_with_env(root: &Path, lines: &str, vars: &[(&str, &Path)]) -> Output {
     use std::io::Write;
     use std::process::Stdio;
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .envs(vars.iter().copied())
         .arg("session")
         .current_dir(root)
         .env("NO_COLOR", "1")
@@ -2032,6 +2038,76 @@ fn an_unknown_command_is_refused_rather_than_run_as_a_task() {
         s.contains("/help"),
         "and it must say where the list is:\n{s}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn accept_reads_its_answer_from_the_next_line_of_input() {
+    // #248. The risk: the approval question reading end of input, or a
+    // key it never got, so `a` typed after `/accept` cancels instead.
+    let d = repo("session-accept-stdin");
+    let caller = d.join("app/caller.py");
+    let mut body = std::fs::read_to_string(&caller).unwrap();
+    body.push_str("# edited\n");
+    std::fs::write(&caller, body).unwrap();
+
+    let s = stdout(&session_with(&d, "/accept kept\na\n/exit\n"));
+    assert!(s.contains("accept> "), "{s}");
+    assert!(s.contains("committed 1 path(s)"), "{s}");
+    assert_eq!(git(&d, &["log", "-1", "--pretty=%s"]).trim(), "kept");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_session_keeps_its_history_outside_the_repository() {
+    // #248. The risk: no history file at all, which the unit tests allow
+    // for a machine with no HOME or LOCALAPPDATA.
+    let d = repo("session-history");
+    let data = scratch("session-history-data");
+    let out = session_with_env(
+        &d,
+        "/status\n/exit\n",
+        &[("LOCALAPPDATA", &data), ("XDG_DATA_HOME", &data)],
+    );
+    assert!(out.status.success(), "{}", combined(&out));
+    let saved: Vec<_> = std::fs::read_dir(data.join("trellis"))
+        .expect("the history directory was made")
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert!(
+        saved[0].to_string_lossy().ends_with(".history"),
+        "{saved:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&saved[0])
+            .unwrap()
+            .contains("/status"),
+        "the typed line was kept"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_runtime_that_is_not_listening_is_said_at_open_and_at_model() {
+    // #248. The risk: the banner, and `/model`, silent about a runtime
+    // nothing is listening on, so the first task is where the user finds
+    // out. Port 1 refuses at once.
+    let d = repo("session-unreachable");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[model]\nspec = \"llamacpp:http://127.0.0.1:1\"\n",
+    )
+    .unwrap();
+    let s = stdout(&session_with(
+        &d,
+        "/model llamacpp:http://127.0.0.1:1\n/exit\n",
+    ));
+    assert!(s.contains("NOT REACHABLE"), "the banner:\n{s}");
+    assert!(s.contains("not reachable yet"), "`/model`:\n{s}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

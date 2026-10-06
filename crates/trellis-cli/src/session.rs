@@ -2083,7 +2083,8 @@ def other():
             "def helper():\n    return 2\n",
         )
         .unwrap();
-        s.accept_with("a clean change", &mut || Some('a'), &mut Vec::new())
+        let mut out = Vec::new();
+        s.accept_with("a clean change", &mut || Some('a'), &mut out)
             .unwrap();
 
         let msg = head_message(d.path());
@@ -2092,6 +2093,9 @@ def other():
             !msg.contains("Coverage at approval"),
             "nothing was unknown, so nothing should be recorded as unknown:\n{msg}"
         );
+        // And the user is not told otherwise (#248).
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("gap recorded"), "{out}");
     }
 
     #[test]
@@ -2339,5 +2343,184 @@ def other():
             s.input_ended,
             "the input closed during the run, so the session ends"
         );
+    }
+
+    // #248: what the approval prompt prints, and the dispatch arms ---------
+
+    /// A committed repository whose `app/many.py` holds `n` calls the
+    /// resolver cannot bind, all in `many`, and whose `app/one.py` holds one
+    /// more, in `one`.
+    fn repo_with_unbound(n: usize) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("app")).unwrap();
+        let mut many = String::from("def many(thing):\n");
+        for i in 0..n {
+            many.push_str(&format!("    thing.m{i}()\n"));
+        }
+        std::fs::write(d.path().join("app/many.py"), many).unwrap();
+        std::fs::write(
+            d.path().join("app/one.py"),
+            "def one(thing):\n    return thing.run()\n",
+        )
+        .unwrap();
+        init_git(d.path());
+        d
+    }
+
+    /// Opens a session over `d`, appends a line to each of `files` (creating
+    /// any that is missing, which the index then never saw), and runs
+    /// `/accept` answering `keys` in turn. What it printed.
+    fn approve(d: &Path, files: &[&str], keys: &[char]) -> String {
+        let mut s = Session::open(d, None).unwrap();
+        for f in files {
+            let p = d.join(f);
+            let mut body = std::fs::read_to_string(&p).unwrap_or_default();
+            body.push_str("# edited\n");
+            std::fs::write(&p, body).unwrap();
+        }
+        let mut keys = keys.iter().copied();
+        let mut out = Vec::new();
+        s.accept_with("m", &mut || keys.next(), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn the_approval_prompt_names_unbound_calls_and_offers_the_choices() {
+        // The risk: the coverage block or its choices printing nothing, so
+        // the user is asked a one-letter question about a gap never shown;
+        // or the gap line silent on the case it exists for.
+        let d = repo_with_unbound(2);
+        let out = approve(d.path(), &["app/many.py"], &['a']);
+        assert!(out.contains("coverage: "), "{out}");
+        assert!(
+            out.contains("Any of them may call what you changed"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("not in the index"),
+            "every changed file was indexed: {out}"
+        );
+        assert!(
+            out.contains("  a  accept, with the gap recorded in the commit"),
+            "{out}"
+        );
+        assert!(out.contains("gap recorded in the commit message"), "{out}");
+    }
+
+    #[test]
+    fn the_approval_prompt_names_a_file_it_never_indexed_without_calling_it_unbound() {
+        // The risk: a file nothing is known about reported as unbound calls,
+        // or not named at all.
+        let d = repo_with_unbound(1);
+        let out = approve(d.path(), &["app/brand_new.py"], &['a']);
+        assert!(
+            out.contains("1 of them is not in the index, so nothing is known about it."),
+            "{out}"
+        );
+        assert!(!out.contains("Any of them may call"), "{out}");
+    }
+
+    #[test]
+    fn inspect_lists_each_site_by_line_and_says_what_the_list_is_not() {
+        let d = repo_with_unbound(2);
+        let out = approve(d.path(), &["app/many.py"], &['i']);
+        assert!(out.contains("  app/many.py:2  "), "{out}");
+        assert!(out.contains("  app/many.py:3  "), "{out}");
+        assert!(out.contains("in many"), "{out}");
+        assert!(
+            out.contains("calls the graph could not follow, not calls that are wrong"),
+            "{out}"
+        );
+        // Back at the question after inspecting.
+        assert_eq!(out.matches("  i  inspect the unresolved sites").count(), 2);
+    }
+
+    #[test]
+    fn inspect_shows_twenty_sites_and_counts_only_what_it_left_out() {
+        // The boundary: twenty fit, and a twenty-first is counted rather
+        // than dropped.
+        let d = repo_with_unbound(20);
+        let s = Session::open(d.path(), None).unwrap();
+        let twenty = trellis_index::doubt_in_files(&s.index, &["app/many.py".to_string()]);
+        assert_eq!(twenty.sites.len(), 20, "the fixture counts each call");
+        drop(s);
+        let out = approve(d.path(), &["app/many.py"], &['i']);
+        assert!(!out.contains("... and"), "{out}");
+
+        let d = repo_with_unbound(20);
+        let out = approve(d.path(), &["app/many.py", "app/one.py"], &['i']);
+        assert!(out.contains("  ... and 1 more"), "{out}");
+    }
+
+    #[test]
+    fn what_to_test_names_each_function_with_its_own_count() {
+        // The risk: the advice printed with every count at zero, which says
+        // there is nothing to test in a function that holds the gap.
+        let d = repo_with_unbound(2);
+        let out = approve(d.path(), &["app/many.py", "app/one.py"], &['t']);
+        assert!(
+            out.contains("  2 unresolved call(s)   app/many.py"),
+            "{out}"
+        );
+        assert!(out.contains("  1 unresolved call(s)   app/one.py"), "{out}");
+        assert!(out.find("app/many.py") < out.find("app/one.py"), "{out}");
+    }
+
+    #[test]
+    fn stdout_reports_every_byte_it_was_given() {
+        // `Stdout` is what a steered run writes through; a short count makes
+        // `write_all` repeat or fail.
+        use std::io::Write;
+        assert_eq!(Stdout.write(b"ab").unwrap(), 2);
+    }
+
+    #[test]
+    fn slash_model_alone_shows_the_model_and_changes_nothing() {
+        // The risk: the bare form parsed as an empty spec and refused.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.dispatch("/model").expect("shows the model");
+        assert!(s.model.is_none());
+        assert!(!s.model_from_user);
+    }
+
+    #[test]
+    fn slash_models_lists_rather_than_being_an_unknown_command() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.dispatch("/models").expect("lists");
+    }
+
+    #[test]
+    fn slash_skill_runs_the_task_with_the_skill_and_refuses_one_it_cannot_find() {
+        // The risk: `/skill name task` refused as having no task, or run
+        // with the skill dropped on the way, so the run goes ahead without
+        // the instructions the person named.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        let e = s
+            .dispatch("/skill no-such-skill-248 fix it")
+            .expect_err("a skill that is not there");
+        assert!(!e.to_string().contains("a skill and a task"), "{e:#}");
+        assert!(format!("{e:#}").contains("no-such-skill-248"), "{e:#}");
+        assert!(trellis_trail::query::all(d.path()).is_empty(), "no run");
+    }
+
+    #[test]
+    fn a_steered_run_carries_its_skill() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        let (typing, read) = crate::session_extra::scripted_stdin::stdin();
+        drop(typing);
+        let e = s
+            .run_steered(
+                "fix it",
+                vec!["no-such-skill-248".to_string()],
+                read,
+                crate::session_extra::scripted_stdin::Screen::default(),
+            )
+            .expect_err("a skill that is not there");
+        assert!(format!("{e:#}").contains("no-such-skill-248"), "{e:#}");
+        assert!(trellis_trail::query::all(d.path()).is_empty(), "no run");
     }
 }
