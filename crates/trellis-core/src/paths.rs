@@ -101,6 +101,63 @@ pub fn names_git_dir(rel: &str) -> bool {
 /// Only `NotFound` (or a parent that is a file) is absence.
 /// Whether the target is a file or a directory is the caller's to check.
 pub fn resolve_repo_input(root: &Path, path: &Path) -> Result<Option<PathBuf>, RepoInputError> {
+    Ok(resolve_inside(root, path)?.map(|(real, _)| real))
+}
+
+/// Where `rel`, a path the model names that need not exist yet, really
+/// lands: repository-relative and `/`-separated, through any link or
+/// junction on the way. Its nearest entry that exists is resolved by
+/// [`resolve_repo_input`]'s rule, and the part that does not exist yet is
+/// appended as written; the whole is then held to [`names_git_dir`] too.
+///
+/// The one rule for a model-named path (#441): `read_file`, `ls`, `grep`
+/// given a path and every writer ask this, and the whole-repository search
+/// asks [`resolve_repo_input`] of each entry it finds, which is this same
+/// rule on a path that exists. Before, the reads had a resolver of their
+/// own, which walked past a link to nothing that the search refused.
+///
+/// `Err` as [`resolve_repo_input`]'s: outside the repository, into `.git`,
+/// a link to nothing, a path that could not be looked at, or a root that
+/// could not be resolved. Callers word it for their own reader.
+pub fn resolve_repo_path(root: &Path, rel: &str) -> Result<String, RepoInputError> {
+    let mut at = root.join(rel);
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Some((_, inside)) = resolve_inside(root, &at)? {
+            let mut p = inside;
+            for t in tail.iter().rev() {
+                p.push(t);
+            }
+            let landed = p.to_string_lossy().replace('\\', "/");
+            if names_git_dir(&landed) {
+                return Err(RepoInputError::IntoGit {
+                    shown: shown(root, &root.join(rel)),
+                    inside: landed,
+                });
+            }
+            return Ok(landed);
+        }
+        // Absent: try the directory it would be created in.
+        match (at.file_name().map(|n| n.to_os_string()), at.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                at = parent.to_path_buf();
+            }
+            // Nothing exists above it, not even the root.
+            _ => {
+                return Err(RepoInputError::RootUnresolved {
+                    shown: shown(root, &root.join(rel)),
+                    root: root.display().to_string(),
+                    source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                });
+            }
+        }
+    }
+}
+
+/// [`resolve_repo_input`], with the canonical path's part under the
+/// canonical root alongside it.
+fn resolve_inside(root: &Path, path: &Path) -> Result<Option<(PathBuf, PathBuf)>, RepoInputError> {
     let shown = shown(root, path);
     if !present(std::fs::symlink_metadata(path).map(|_| ()), &shown)? {
         return Ok(None);
@@ -129,7 +186,8 @@ pub fn resolve_repo_input(root: &Path, path: &Path) -> Result<Option<PathBuf>, R
             inside: inside.display().to_string(),
         });
     }
-    Ok(Some(real))
+    let inside = inside.to_path_buf();
+    Ok(Some((real, inside)))
 }
 
 /// Why [`resolve_repo_input`] refused a path. Each message names the path as
