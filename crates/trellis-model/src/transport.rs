@@ -362,6 +362,24 @@ pub(crate) enum SendError {
     Config(String),
 }
 
+/// The error for a response that is not a success. A 401 or 403 carries
+/// its status and the key's variable and never the body, which may echo a
+/// masked form of the key (ADR 0024 §3); any other body is scrubbed of the
+/// key and cut to 400 characters.
+pub(crate) fn status_error(r: &Response, key: Option<&ApiKey>) -> RuntimeError {
+    if matches!(r.status, 401 | 403) {
+        return RuntimeError::Auth {
+            status: r.status,
+            source_var: key.map_or_else(|| "no key".to_string(), |k| k.source().to_string()),
+        };
+    }
+    let body = key.map_or_else(|| r.body.clone(), |k| k.scrub(&r.body));
+    RuntimeError::Http {
+        status: r.status,
+        body: body.chars().take(400).collect(),
+    }
+}
+
 /// A failed TCP connect as a `SendError`, `what` naming where it was going.
 ///
 /// The connect has no timeout of its own: it runs inside the request's
@@ -409,6 +427,39 @@ pub(crate) async fn post(
         req.push_str(v);
         req.push_str("\r\n");
     }
+    push_auth(&mut req, auth);
+    req.push_str("\r\n");
+    req.push_str(body);
+    send(ep, proxy, req.into_bytes(), timeout).await
+}
+
+/// Sends one GET and reads the whole response, under the same size cap
+/// and `timeout` as [`post`]. A redirect is returned as the response it
+/// is and never followed, so nothing is sent to a host the caller did not
+/// name.
+///
+/// Never through a proxy: its callers read loopback servers, which
+/// `proxy_for` never proxies. The key header is written only when `auth`
+/// is given.
+pub(crate) async fn get(
+    ep: &Endpoint,
+    path: &str,
+    auth: Option<(Auth, &ApiKey)>,
+    timeout: Duration,
+) -> Result<Response, SendError> {
+    let mut req = format!(
+        "GET {}{path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n",
+        ep.prefix,
+        ep.authority(),
+    );
+    push_auth(&mut req, auth);
+    req.push_str("\r\n");
+    send(ep, None, req.into_bytes(), timeout).await
+}
+
+/// Writes the key's header line. The one place a key goes into a request,
+/// for every method.
+fn push_auth(req: &mut String, auth: Option<(Auth, &ApiKey)>) {
     if let Some((how, key)) = auth {
         match how {
             Auth::Bearer => {
@@ -421,10 +472,16 @@ pub(crate) async fn post(
         req.push_str(key.expose());
         req.push_str("\r\n");
     }
-    req.push_str("\r\n");
-    req.push_str(body);
-    let bytes = req.into_bytes();
+}
 
+/// Connects (through `proxy` for https) and exchanges `bytes`, the whole
+/// request, within `timeout`.
+async fn send(
+    ep: &Endpoint,
+    proxy: Option<&Proxy>,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<Response, SendError> {
     let fut = async {
         let tcp = match proxy {
             // `proxy_for` returns one only for https, so the plain branch
