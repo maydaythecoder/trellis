@@ -11,7 +11,7 @@
 //! the call could go stale by the time the actor applied it.
 
 use crate::agent::ToolCall;
-use crate::governance::Governance;
+use crate::governance::{Governance, Refusal};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -106,14 +106,12 @@ impl GovernanceGate {
         }
     }
 
-    /// The rule, as written, that denies a write landing at `rel`, or
-    /// `None`. For a file a command changed in its throwaway clone, which
-    /// reaches the repository without an `edit` call for this gate to
-    /// check (ADR 0032).
+    /// Why a write landing at `rel` is refused, as the clause that follows
+    /// "`<path>` is ", or `None`. For a file a command changed in its
+    /// throwaway clone, which reaches the repository without an `edit` call
+    /// for this gate to check (ADR 0032).
     pub(crate) fn denies_write(&self, rel: &str) -> Option<String> {
-        self.governance
-            .denies_write_at(&self.root, rel)
-            .map(|r| r.as_written())
+        self.governance.denies_write_at(&self.root, rel).map(clause)
     }
 
     /// Why a write landing at `rel` is outside the profile's `allow_write`,
@@ -124,22 +122,42 @@ impl GovernanceGate {
     }
 }
 
+/// The clause that follows "`<path>` is " in a refusal, shared by the gate
+/// and a command's carry-back so the two cannot word one refusal apart.
+fn clause(refusal: Refusal<'_>) -> String {
+    match refusal {
+        Refusal::Rule(r) => format!(
+            "denied by the rule `{}` in .trellis/config.toml",
+            r.as_written()
+        ),
+        Refusal::Vault { source, notes_root } => format!(
+            "in the vault's notes root `{notes_root}`, set by [context] vault = \"{source}\" \
+             in .trellis/config.toml"
+        ),
+    }
+}
+
 impl ToolGate for GovernanceGate {
     fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
         let decision = match call {
             ToolCall::Edit { path, .. } | ToolCall::WriteFile { path, .. } => {
                 match self.governance.denies_write_at(&self.root, path) {
-                    Some(rule) => GateDecision::Deny {
+                    Some(refusal) => GateDecision::Deny {
                         reason: format!(
-                            concat!(
-                                "{} refused: `{}` is denied by the rule `{}` in ",
-                                ".trellis/config.toml. This is the repository's own rule, ",
-                                "not a guess — change the rule if the file really should be ",
-                                "editable."
-                            ),
+                            "{} refused: `{}` is {}. {}",
                             tool_name(call),
                             path,
-                            rule.as_written()
+                            clause(refusal),
+                            match refusal {
+                                Refusal::Rule(_) => concat!(
+                                    "This is the repository's own rule, not a guess — ",
+                                    "change the rule if the file really should be editable."
+                                ),
+                                Refusal::Vault { .. } => concat!(
+                                    "Model writes stay out of the vault (ADR 0049): a note is ",
+                                    "changed by a person, with `trellis vault` or an editor."
+                                ),
+                            }
                         ),
                     },
                     // The repository's rule first, so a path both rules
@@ -789,6 +807,72 @@ mod tests {
             old: "a".into(),
             new: "b".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn vault_notes_root_refuses_edit_and_write_file_at_the_gate() {
+        // The risk (ADR 0049 §4): a vault refusal worded as a `deny_write`
+        // rule, which sends the reader to a config line that does not exist.
+        let d = tempfile::tempdir().unwrap();
+        let g = Governance::new(&[]).with_vault("vault", "vault/");
+        let mut g = GovernanceGate::new(g, d.path());
+        for call in [
+            edit("vault/x.md"),
+            ToolCall::WriteFile {
+                path: "vault/x.md".into(),
+                content: "x\n".into(),
+            },
+        ] {
+            match g.check(&call).await {
+                GateDecision::Deny { reason } => {
+                    assert!(reason.contains("[context] vault"), "{reason}");
+                    assert!(!reason.contains("is denied by the rule"), "{reason}");
+                }
+                other => panic!("the vault must refuse {call:?}: {other:?}"),
+            }
+        }
+        // Every spelling of the same file, as `deny_write` holds for them.
+        let mut spellings = vec![".//vault/x.md", "vault\\sub\\y.md", "./vault/./x.md"];
+        if cfg!(any(windows, target_os = "macos")) {
+            spellings.push("Vault/X.md");
+        }
+        for p in spellings {
+            assert!(
+                matches!(g.check(&edit(p)).await, GateDecision::Deny { .. }),
+                "{p}"
+            );
+        }
+        // And the path a write lands on through a link or junction.
+        let Some(d) = repo_with_link_to_vendor() else {
+            eprintln!("skipped the link case: no link on this platform");
+            return;
+        };
+        let mut g = GovernanceGate::new(
+            Governance::new(&[]).with_vault("vendor", "vendor/"),
+            d.path(),
+        );
+        match g.check(&edit("lnk/new.md")).await {
+            GateDecision::Deny { reason } => {
+                assert!(reason.contains("[context] vault"), "{reason}")
+            }
+            other => panic!("a link into the vault must be refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vault_notes_root_is_worded_for_a_command_s_carry_back() {
+        // The same refusal reaches a `bash` command's carry-back through
+        // `denies_write`, and a `deny_write` rule's clause is unchanged.
+        let d = tempfile::tempdir().unwrap();
+        let g = GovernanceGate::new(Governance::new(&[]).with_vault("vault", "vault/"), d.path());
+        let clause = g.denies_write("vault/x.md").expect("refused");
+        assert!(clause.contains("[context] vault = \"vault\""), "{clause}");
+        assert!(!clause.contains("denied by the rule"), "{clause}");
+        let g = GovernanceGate::new(Governance::new(&["vendor/".into()]), d.path());
+        assert_eq!(
+            g.denies_write("vendor/a.py").as_deref(),
+            Some("denied by the rule `vendor/` in .trellis/config.toml")
+        );
     }
 
     #[tokio::test]
