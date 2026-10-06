@@ -159,6 +159,12 @@ pub struct Reply {
     pub prompt_tokens: Option<u64>,
     /// The assistant message to replay with this call's result.
     pub replay: Value,
+    /// How long colibri held the request in its admission queue, from its
+    /// `x-colibri-queue-wait-ms` header (ADR 0047 decision 8); `None` when
+    /// the header is absent or its value is not a non-negative integer.
+    /// Set by `HostedClient::send`, which has the headers; `parse_reply`
+    /// sees only the body and leaves it `None`.
+    pub queue_wait_ms: Option<u64>,
 }
 
 /// The thinking a request is sent with, given whether every assistant turn
@@ -411,6 +417,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 call,
                 tokens,
                 prompt_tokens,
+                queue_wait_ms: None,
                 replay: Value::Object(replay),
             })
         }
@@ -453,6 +460,7 @@ pub fn parse_reply(protocol: Protocol, v: &Value) -> Result<Reply, RuntimeError>
                 call,
                 tokens,
                 prompt_tokens,
+                queue_wait_ms: None,
                 replay: json!({ "role": "assistant", "content": content }),
             })
         }
@@ -504,6 +512,20 @@ fn retryable(status: u16) -> bool {
 
 /// How many attempts one model call gets, the first included.
 pub const MAX_ATTEMPTS: u32 = 4;
+
+/// colibri's `x-colibri-queue-wait-ms` value as a count of milliseconds.
+///
+/// The value is server input: only ASCII digits, after trimming, that fit a
+/// `u64` are read. A sign, a fraction, a unit or an overflow is `None`, not
+/// an error, so a malformed figure never fails a reply that is otherwise
+/// good. (`u64::from_str` alone would accept a leading `+`.)
+fn queue_wait_ms(value: Option<&str>) -> Option<u64> {
+    let v = value?.trim();
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse().ok()
+}
 
 /// The longest wait honoured from `Retry-After`. A provider asking for more
 /// is asking a run to sit idle for longer than a turn is worth.
@@ -801,7 +823,9 @@ impl HostedClient {
                             cut(&self.scrub(&r.body))
                         ))
                     })?;
-                    return parse_reply(self.protocol, &v);
+                    let mut reply = parse_reply(self.protocol, &v)?;
+                    reply.queue_wait_ms = queue_wait_ms(r.header("x-colibri-queue-wait-ms"));
+                    return Ok(reply);
                 }
                 Ok(r) if matches!(r.status, 401 | 403) => {
                     // Not the body: OpenAI's echoes a masked form of the key.
@@ -1692,6 +1716,70 @@ mod tests {
             other => panic!("expected the 404, got {other:?}"),
         }
         assert_eq!(h.await.unwrap().len(), 1);
+    }
+
+    const OPENAI_OK: &str = r#"{"choices":[{"message":{"role":"assistant","content":null,
+        "tool_calls":[{"id":"c","type":"function",
+        "function":{"name":"done","arguments":"{}"}}]}}]}"#;
+
+    /// What `send` puts in `queue_wait_ms` for each of `extras`, the extra
+    /// headers of a `200 OK` the stub answers each request with in turn.
+    async fn queue_waits(extras: Vec<&'static str>) -> Vec<Option<u64>> {
+        let n = extras.len();
+        let (base, h) = stub(
+            extras
+                .into_iter()
+                .map(|e| ("200 OK", e, OPENAI_OK))
+                .collect(),
+        )
+        .await;
+        let c = HostedClient::with_key(Protocol::OpenAiChat, &base, "m", "K", None).unwrap();
+        let mut got = Vec::new();
+        for _ in 0..n {
+            let r = c.send(&json!({})).await.expect("a 200 with a call");
+            got.push(r.queue_wait_ms);
+        }
+        assert_eq!(h.await.unwrap().len(), n);
+        got
+    }
+
+    #[tokio::test]
+    async fn colibri_queue_wait_header_is_read() {
+        // The risk (ADR 0047 decision 8): on a colibri server shared with
+        // other clients, time spent queued for admission is indistinguishable
+        // from time spent generating unless the reply carries the figure.
+        // Header names are case-insensitive (RFC 9110 §5.1).
+        assert_eq!(
+            queue_waits(vec![
+                "x-colibri-queue-wait-ms: 1234\r\n",
+                "X-Colibri-Queue-Wait-Ms: 0\r\n",
+                "X-COLIBRI-QUEUE-WAIT-MS:  42 \r\n",
+            ])
+            .await,
+            vec![Some(1234), Some(0), Some(42)]
+        );
+    }
+
+    #[tokio::test]
+    async fn colibri_queue_wait_header_absent_or_malformed_is_none() {
+        // The risk: the header is server input. A value that is not a plain
+        // non-negative integer must read as "not reported", never as a
+        // number it does not say, and never fail a reply that is otherwise
+        // good.
+        assert_eq!(
+            queue_waits(vec![
+                "",
+                "x-colibri-queue-wait-ms: -5\r\n",
+                "x-colibri-queue-wait-ms: +5\r\n",
+                "x-colibri-queue-wait-ms: 1.5\r\n",
+                "x-colibri-queue-wait-ms: 12ms\r\n",
+                "x-colibri-queue-wait-ms: abc\r\n",
+                "x-colibri-queue-wait-ms: \r\n",
+                "x-colibri-queue-wait-ms: 99999999999999999999999\r\n",
+            ])
+            .await,
+            vec![None; 8]
+        );
     }
 
     /// `c.send_via` where attempt `n` (from 1) fails with `fail(n)` when that
