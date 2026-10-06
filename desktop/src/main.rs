@@ -1,9 +1,12 @@
 //! The TRELLIS desktop interface (ADR 0048), before its window: start one
-//! `trellis rpc` child, ask for its state, print the reply, shut it down.
+//! `trellis rpc` child, ask for its state, and print each `view` event the
+//! child's lines produce and then the reply; shut the child down.
 //!
 //!     trellis-desktop --root <repo> [--trellis <path>]
 
 mod child;
+mod frames;
+mod state;
 
 use std::path::PathBuf;
 
@@ -37,10 +40,29 @@ fn main() {
     }
 }
 
+/// One `view` event: the panes `changed` names, as the page receives them.
+fn emit_view(s: &state::DesktopState, changed: state::Changed) {
+    println!(
+        "{}",
+        serde_json::json!({"type": "view", "panes": s.view(changed)})
+    );
+}
+
 fn run(trellis: &std::path::Path, root: &std::path::Path) -> std::io::Result<()> {
+    // The view starts clear, and the first event carries every pane, so the
+    // page has something to draw for each before any frame arrives.
+    let mut view = state::DesktopState::default();
+    let all = view.clear();
+    emit_view(&view, all);
     let mut c = child::Child::spawn(trellis, root)?;
     c.send(&serde_json::json!({"id": "desktop-1", "type": "get_state"}))?;
-    let reply = c.response_to("desktop-1")?;
+    // Every stdout line goes through the reducer, whatever it is.
+    let reply = c.response_to("desktop-1", |line| {
+        let changed = view.update(frames::parse_stdout(line));
+        if !changed.is_empty() {
+            emit_view(&view, changed);
+        }
+    })?;
     println!("{reply}");
     c.shutdown()?;
     Ok(())
