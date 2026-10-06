@@ -1263,16 +1263,16 @@ killed (#248) by session::tests::inspect_shows_twenty_sites_and_counts_only_what
 killed (#248) by session::tests::what_to_test_names_each_function_with_its_own_count | crates/trellis-cli/src/session.rs:975:9: replace Session::what_to_test with ()
 killed (#248) by session::tests::what_to_test_names_each_function_with_its_own_count | crates/trellis-cli/src/session.rs:979:74: replace += with *= in Session::what_to_test
 killed (#248) by tests/cli.rs a_session_keeps_its_history_outside_the_repository | crates/trellis-cli/src/session.rs:1075:5: replace history_path -> Option<PathBuf> with None
-#248 | crates/trellis-cli/src/tooling.rs:240:46: replace > with >= in prepare
-#248 | crates/trellis-cli/src/tooling.rs:250:29: replace > with >= in prepare
-#248 | crates/trellis-cli/src/tooling.rs:267:19: replace > with < in prepare
-#248 | crates/trellis-cli/src/tooling.rs:275:21: replace > with < in prepare
-#248 | crates/trellis-cli/src/tooling.rs:301:64: replace == with != in check_profile_tools
-#248 | crates/trellis-cli/src/tooling.rs:334:12: delete ! in Tooling::narrow_for_profile
-#248 | crates/trellis-cli/src/tooling.rs:334:35: replace == with != in Tooling::narrow_for_profile
-#248 | crates/trellis-cli/src/tooling.rs:371:38: replace match guard b.unattended with false in Tooling::line
-#248 | crates/trellis-cli/src/tooling.rs:372:38: replace match guard b.allow.is_empty() with false in Tooling::line
-#248 | crates/trellis-cli/src/tooling.rs:400:5: replace outcome_json -> serde_json::Value with Default::default()
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:240:46: replace > with >= in prepare
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:250:29: replace > with >= in prepare
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:267:19: replace > with < in prepare
+killed (#248) by tooling::run_tests::the_untrusted_line_counts_what_is_present_and_a_trusted_run_without_hooks_loads_none | crates/trellis-cli/src/tooling.rs:275:21: replace > with < in prepare
+killed (#248) by tooling::run_tests::a_profile_may_keep_a_declared_custom_tool_by_name_and_not_a_typo | crates/trellis-cli/src/tooling.rs:301:64: replace == with != in check_profile_tools
+killed (#248) by tooling::run_tests::a_profile_that_leaves_out_run_checks_is_told_it_was_kept | crates/trellis-cli/src/tooling.rs:334:12: delete ! in Tooling::narrow_for_profile
+killed (#248) by tooling::run_tests::a_profile_that_leaves_out_run_checks_is_told_it_was_kept | crates/trellis-cli/src/tooling.rs:334:35: replace == with != in Tooling::narrow_for_profile
+killed (#248) by tooling::run_tests::the_tools_line_names_auto_mode_s_bash_policy | crates/trellis-cli/src/tooling.rs:371:38: replace match guard b.unattended with false in Tooling::line
+killed (#248) by tooling::run_tests::the_tools_line_names_auto_mode_s_bash_policy | crates/trellis-cli/src/tooling.rs:372:38: replace match guard b.allow.is_empty() with false in Tooling::line
+killed (#248) by tooling::run_tests::after_run_is_told_whether_the_run_converged_and_why_not | crates/trellis-cli/src/tooling.rs:400:5: replace outcome_json -> serde_json::Value with Default::default()
 #248 | crates/trellis-cli/src/tui_bridge.rs:45:13: delete match arm "prompt_bytes" in <impl Visit for TurnFields>::record_u64
 #248 | crates/trellis-cli/src/tui_bridge.rs:56:13: delete match arm "message" in <impl Visit for TurnFields>::record_str
 #248 | crates/trellis-cli/src/tui_bridge.rs:78:13: delete match arm "check_kind" in <impl Visit for TurnFields>::record_debug
