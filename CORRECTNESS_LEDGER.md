@@ -1394,22 +1394,22 @@ killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_
 #248 | crates/trellis-cli/src/rpc.rs:802:21: replace match guard task.trim().is_empty() with false in Server::prompt
 #248 | crates/trellis-cli/src/rpc.rs:809:55: replace || with && in Server::prompt
 #248 | crates/trellis-cli/src/rpc.rs:1088:5: replace summary -> Value with Default::default()
-#248 | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
-#248 | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
-#248 | crates/trellis-cli/src/session_extra.rs:68:5: replace print_prompts with ()
-#248 | crates/trellis-cli/src/session_extra.rs:82:12: delete ! in print_prompts
-#248 | crates/trellis-cli/src/session_extra.rs:124:5: replace print_models with ()
-#248 | crates/trellis-cli/src/session_extra.rs:296:54: replace || with && in Reader::spawn
-#248 | crates/trellis-cli/src/session_extra.rs:296:47: replace || with && in Reader::spawn
-#248 | crates/trellis-cli/src/session_extra.rs:306:9: replace Reader::stop with ()
-#248 | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with true
-#248 | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with false
-#248 | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with true in Reader::drain_late
-#248 | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with false in Reader::drain_late
-#248 | crates/trellis-cli/src/session_extra.rs:317:28: delete ! in Reader::drain_late
-#248 | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with None
-#248 | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some(String::new())
-#248 | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some("xyzzy".into())
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with true in shell
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:30:18: replace match guard s.success() with false in shell
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:68:5: replace print_prompts with ()
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:82:12: delete ! in print_prompts
+killed (#248) by tests/cli.rs session_bang_says_only_a_failing_exit_and_prompts_and_models_print_their_lists | crates/trellis-cli/src/session_extra.rs:124:5: replace print_models with ()
+killed (#248) by session_extra::tests::the_reader_reads_nothing_after_end_of_input | crates/trellis-cli/src/session_extra.rs:296:54: replace || with && in Reader::spawn
+killed (#248) by session_extra::tests::the_reader_reads_nothing_after_end_of_input | crates/trellis-cli/src/session_extra.rs:296:47: replace || with && in Reader::spawn
+killed (#248) by session_extra::tests::a_stopped_reader_reads_no_line_after_the_one_in_flight | crates/trellis-cli/src/session_extra.rs:306:9: replace Reader::stop with ()
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with true
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:314:9: replace Reader::drain_late -> bool with false
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with true in Reader::drain_late
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:317:28: replace match guard !l.trim().is_empty() with false in Reader::drain_late
+killed (#248) by session_extra::tests::late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said | crates/trellis-cli/src/session_extra.rs:317:28: delete ! in Reader::drain_late
+killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with None
+killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some(String::new())
+killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_session_as_typed | crates/trellis-cli/src/session_extra.rs:330:9: replace Reader::next_line -> Option<String> with Some("xyzzy".into())
 #248 | crates/trellis-cli/src/templates.rs:64:13: delete field body from struct Parsed expression in parse
 #248 | crates/trellis-cli/src/templates.rs:85:30: replace match guard !v.is_empty() with true in parse
 #248 | crates/trellis-cli/src/templates.rs:86:32: replace match guard !v.is_empty() with true in parse
