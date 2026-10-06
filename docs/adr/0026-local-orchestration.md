@@ -306,7 +306,7 @@ builds nothing itself.
   by `trellis queue add --model <spec>` and parsed as `run --model` parses
   it. `work` runs such a task on that model, over its assignee profile's
   model and over `work --model`, and the run's trail records the model in
-  its provenance, as it records the model of every run.
+  its provenance, as it records the model that drove any run.
 - **The key rule.** A task file can arrive through `trellis queue import`,
   so the task's model is held to the rule ADR 0024 §3 applies to a
   profile's model: it counts as the repository's choice, and a hosted
