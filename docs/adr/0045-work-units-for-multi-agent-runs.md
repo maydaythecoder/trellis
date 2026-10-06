@@ -125,3 +125,5 @@ holds for runs above width 1: a scripted model has no measured capacity, so
 `agents_above_one_in_approve_mode_is_refused_before_the_snapshot` are
 served by a loopback llama.cpp stub that reports its slots. Test:
 `agents_explicit_on_a_non_batching_backend_runs_at_width_one_and_says_why`.
+
+*2026-10-06 (#267, recorded by #484):* "hosted providers, which batch but report no number" no longer holds for a colibri endpoint: #267 reads colibri's `kv_slots` from `/health`, and `probe_batching` counts more than one slot as measured continuous batching, so an explicit N keeps N there. Other hosted providers still report no number and run at width 1.
