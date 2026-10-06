@@ -382,6 +382,61 @@ fn a_task_that_names_a_model_runs_on_it_over_its_profile_and_work_model() {
 }
 
 #[test]
+fn process_agent_task_model_is_refused_at_queue_add_naming_the_profile() {
+    // ADR 0026 §1 (#458). The risk: a process agent runs its own command
+    // and no model is chosen for it, so a `--model` on its task was stored
+    // and silently never used, and the person believed it chose the model.
+    let d = process_fixture("proc-task-model-add", MAKES_A_FILE, PASSES);
+    let spec = scripted(&d, "converge.json");
+    let o = trellis(
+        &d,
+        &[
+            "queue",
+            "add",
+            "make a file",
+            "--assignee",
+            "maker",
+            "--model",
+            &spec,
+        ],
+    );
+    let s = combined(&o);
+    assert!(!o.status.success(), "{s}");
+    assert!(
+        s.contains("agent `maker` is a process agent") && s.contains("no model is chosen"),
+        "the refusal names the profile and why: {s}"
+    );
+    assert!(ids(&d, "pending").is_empty(), "no task file was written");
+    // The same task without `--model` is queued as before.
+    ok(&d, &["queue", "add", "make a file", "--assignee", "maker"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn process_agent_task_model_on_a_task_reassigned_to_one_runs_with_a_note() {
+    // ADR 0026 §1 (#458). A task can reach a process agent with a model
+    // after `queue add` (`queue set --assignee`, or `queue import`). The
+    // risk: it ran with the model silently ignored. It runs, and says so.
+    let d = process_fixture("proc-task-model-set", MAKES_A_FILE, PASSES);
+    let spec = scripted(&d, "stop.json");
+    let id = queued_id(&ok(&d, &["queue", "add", "make a file", "--model", &spec]));
+    ok(&d, &["queue", "set", &id, "--assignee", "maker"]);
+    let s = ok(&d, &["work"]);
+    assert!(
+        s.contains(&format!(
+            "model:    `{spec}` unused: agent `maker` is a process agent"
+        )),
+        "{s}"
+    );
+    assert!(
+        s.contains("CONVERGED") && !s.contains("NOT CONVERGED"),
+        "the process agent ran, not the task's model: {s}"
+    );
+    assert!(d.join("app/made.cfg").exists(), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_paused_agent_is_skipped_until_resumed() {
     let d = fixture(
         "pause",

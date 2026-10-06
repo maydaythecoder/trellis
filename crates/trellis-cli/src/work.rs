@@ -57,7 +57,8 @@ pub(crate) enum QueueAction {
         /// The model this task runs on, as `run --model`, over its
         /// assignee profile's and `work --model`. Counts as the
         /// repository's choice for keys: a hosted endpoint is sent a key
-        /// only if your own config names it (ADR 0024 §3).
+        /// only if your own config names it (ADR 0024 §3). Refused with an
+        /// `--assignee` that is a process agent, which uses no model.
         #[arg(long, value_name = "SPEC")]
         model: Option<String>,
         #[arg(long, value_parser = PRIORITIES, default_value = "medium")]
@@ -278,8 +279,16 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             }
             if let Some(a) = &assignee {
                 let profiles = load_profiles(root)?;
-                if !profiles.contains_key(a) {
+                let Some(p) = profiles.get(a) else {
                     anyhow::bail!("no agent `{a}` in .trellis/agents/");
+                };
+                // Stored, the model would never be used, and the person who
+                // typed it would believe it was (ADR 0026 §1, #458).
+                if model.is_some() && p.is_process() {
+                    anyhow::bail!(
+                        "agent `{a}` is a process agent: it runs its own command and no \
+                         model is chosen for it, so --model would never be used"
+                    );
                 }
             }
             let id = q.add_task(
@@ -1434,6 +1443,20 @@ impl Runner for CliRunner<'_> {
         };
         let service_actions = services.trail_actions();
         if let Some(p) = profile.as_ref().filter(|p| p.is_process()) {
+            // The human stream, not stdout: under `work --json` stdout
+            // carries JSONL only (ADR 0025 §4).
+            let mut out = crate::output::human();
+            // `queue add` refuses this pairing; a task reassigned or
+            // imported later still runs, and says its model is unused
+            // (ADR 0026 §1, #458).
+            if let Some(m) = &t.model {
+                let _ = writeln!(
+                    out,
+                    "model:    `{}` unused: agent `{}` is a process agent, which runs its own command",
+                    plain(m),
+                    p.name
+                );
+            }
             return crate::process_agent::run(
                 crate::process_agent::ProcessRun {
                     root: self.root,
@@ -1443,9 +1466,7 @@ impl Runner for CliRunner<'_> {
                     stop: &self.stop,
                     services: &service_actions,
                 },
-                // The human stream, not stdout: under `work --json` stdout
-                // carries JSONL only (ADR 0025 §4).
-                &mut crate::output::human(),
+                &mut out,
             );
         }
         // The task's own model, then the profile's, then `work --model` or
