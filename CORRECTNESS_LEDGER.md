@@ -1008,6 +1008,9 @@ user_config.rs 11, install.rs 15, rpc.rs 13, main.rs 41, doctor_extra.rs
 4 and config.rs 2 killed (110); 7 equivalent (main.rs 937, C-024; main.rs
 1090 x3 and 4040, display text only; config.rs 509; install.rs 636); 2
 not applicable (install.rs 224 and vault_cmd.rs 189, rewritten or moved).
+Four of those equivalents were wrong, since each changes what is printed
+(main.rs 1090 x3 never or always print "resuming at"; 4040 adds a zero
+"not queried" row); a later #248 commit killed them, as their lines say.
 Each killing test is named as it stands at HEAD; main.rs's code has since
 moved to run_cmd.rs and doctor_cmd.rs, where its tests are. Where the
 message named a group of tests and not one per mutant (graph_lines'
@@ -1058,9 +1061,9 @@ killed (#248) by tests/cli.rs run_refuses_a_skill_it_cannot_find_rather_than_run
 killed (#248) by tests/cli.rs log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are | crates/trellis-cli/src/main.rs:833:5: replace print_actions with ()
 killed (#248) by tests/cli.rs log_actions_lists_each_recorded_action_and_only_the_outcomes_there_are | crates/trellis-cli/src/main.rs:860:12: delete ! in print_actions
 equivalent (#248): ledger C-024; a `None` in that arm implies the task mentioned the module, so the guard cannot be false where it is reached | crates/trellis-cli/src/main.rs:937:21: replace match guard m.task_mentions with true in cmd_why
-equivalent (#248): display text only; the guard gates the "resuming at" line of `pull_model`'s progress output | crates/trellis-cli/src/main.rs:1090:13: replace > with == in pull_model
-equivalent (#248): display text only; the guard gates the "resuming at" line of `pull_model`'s progress output | crates/trellis-cli/src/main.rs:1090:13: replace > with < in pull_model
-equivalent (#248): display text only; the guard gates the "resuming at" line of `pull_model`'s progress output | crates/trellis-cli/src/main.rs:1090:13: replace > with >= in pull_model
+killed (#248) by tests/cli.rs pull_says_it_is_resuming_only_when_a_partial_download_is_staged | crates/trellis-cli/src/main.rs:1090:13: replace > with == in pull_model
+killed (#248) by tests/cli.rs pull_says_it_is_resuming_only_when_a_partial_download_is_staged | crates/trellis-cli/src/main.rs:1090:13: replace > with < in pull_model
+killed (#248) by tests/cli.rs pull_says_it_is_resuming_only_when_a_partial_download_is_staged | crates/trellis-cli/src/main.rs:1090:13: replace > with >= in pull_model
 killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1220:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::tokens_used -> u64 with 0
 killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1220:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::tokens_used -> u64 with 1
 killed (#248) by run_cmd::interrupt_tests::the_wrappers_a_run_drives_pass_the_driver_s_figures_through | crates/trellis-cli/src/main.rs:1224:9: replace <impl trellis_loop::Model for SeesDone<'_, M>>::prompt_bytes -> Option<usize> with None
@@ -1099,7 +1102,7 @@ killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_tu
 killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3563:41: replace > with == in record_trail
 killed (#248) by run_cmd::interrupt_tests::each_compaction_sits_under_its_own_turn_and_one_after_done_goes_last | crates/trellis-cli/src/main.rs:3563:41: replace > with >= in record_trail
 killed (#248) by session::tests::radius_takes_a_name_qualified_by_only_its_last_modules | crates/trellis-cli/src/main.rs:3722:17: replace || with && in resolve_symbol
-equivalent (#248): display text only; the guard gates a zero "not queried" row of the backstop report | crates/trellis-cli/src/main.rs:4040:22: replace > with >= in render_backstop
+killed (#248) by backstop_tests::backstop_lines_print_no_not_queried_row_when_every_site_was_queried | crates/trellis-cli/src/main.rs:4040:22: replace > with >= in render_backstop
 killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:39: replace && with || in graph_lines
 killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:30: replace == with != in graph_lines
 killed (#248) by doctor_cmd::init_tests::only_a_module_s_last_drawn_edge_closes_its_branch | crates/trellis-cli/src/main.rs:4192:26: replace + with * in graph_lines

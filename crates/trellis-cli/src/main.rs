@@ -1015,4 +1015,20 @@ mod backstop_tests {
             "backstop: pyright ran (version unknown)"
         );
     }
+
+    #[test]
+    fn backstop_lines_print_no_not_queried_row_when_every_site_was_queried() {
+        // #248: a "not queried 0" row would read as a figure to act on when
+        // there is none; the row is printed only for a count above zero.
+        let mut all_queried = report(BackstopStatus::Ran {
+            server: None,
+            stopped: None,
+        });
+        all_queried.not_queried = 0;
+        let lines = render_backstop(&all_queried);
+        assert!(
+            !lines.iter().any(|l| l.contains("not queried")),
+            "{lines:#?}"
+        );
+    }
 }
