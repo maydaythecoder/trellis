@@ -263,8 +263,8 @@ assignee or the board set a one-shot re-check (ADR 0021, PC-114). Here the
 `blocked` reasons are `blockers`, `children`, `manual` and `question`,
 `reconcile` wakes only the first two, and nothing wakes a task at a time;
 routines and `work --every` (§7) create new tasks rather than re-run a
-waiting one. Not built: this amendment is the ADR for the flag #342 builds,
-and it builds nothing itself.
+waiting one. ~~Not built: this amendment is the ADR for the flag #342 builds,
+and it builds nothing itself.~~ Built for #342.
 
 - **The reason and the flags.** A new `blocked` reason, `until`, holds an
   RFC 3339 instant in UTC. A person sets it with

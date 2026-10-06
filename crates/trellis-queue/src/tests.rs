@@ -766,6 +766,64 @@ fn a_waiting_parent_wakes_when_every_child_is_terminal_failed_included() {
     assert!(t.notes.last().unwrap().text.contains("woken"));
 }
 
+/// A pending task blocked until `at` (ADR 0026 §1, amended for #341).
+fn block_until(q: &Queue, at: &str) -> String {
+    let id = add(q, "later", |_| {});
+    let b = Blocked::until(at).unwrap();
+    q.edit(&id, |t, _| {
+        t.status = Some(Status::Blocked);
+        t.blocked = Some(b);
+        Ok(None)
+    })
+    .unwrap();
+    id
+}
+
+#[test]
+fn a_task_blocked_until_a_past_instant_wakes_to_todo() {
+    // The risk: a wait nothing ends. The first reconcile at or after the
+    // instant sets the task to todo, once, and the activity log says so as
+    // it does for the other wakes.
+    let (_d, q) = queue();
+    let at = "2026-10-06T12:00:00Z";
+    let id = block_until(&q, at);
+    let now = parse_iso(at).unwrap();
+    let w = q.reconcile_at(Actor::Work, now).unwrap();
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0].0, id);
+    let (_, t) = q.find(&id).unwrap();
+    assert_eq!(t.status, Some(Status::Todo));
+    assert_eq!(t.blocked, None);
+    assert!(t.notes.last().unwrap().text.contains("woken"));
+    let wakes = events(&q, "task.wake");
+    assert_eq!(wakes.len(), 1, "{wakes:?}");
+    assert_eq!(wakes[0].entity, format!("task:{id}"));
+    assert!(
+        q.reconcile_at(Actor::Work, now + 60).unwrap().is_empty(),
+        "woken once"
+    );
+    assert_eq!(q.claim_next().unwrap().unwrap().id, id);
+}
+
+#[test]
+fn a_task_blocked_until_a_future_instant_stays_blocked() {
+    // The risk: a wait that ends early, so the task runs before the time a
+    // person set. One second before the instant is still before it.
+    let (_d, q) = queue();
+    let at = "2026-10-06T12:00:00Z";
+    let id = block_until(&q, at);
+    let now = parse_iso(at).unwrap() - 1;
+    assert!(q.reconcile_at(Actor::Work, now).unwrap().is_empty());
+    let (_, t) = q.find(&id).unwrap();
+    assert_eq!(t.status, Some(Status::Blocked));
+    assert_eq!(t.blocked, Some(Blocked::Until { at: at.into() }));
+    assert!(events(&q, "task.wake").is_empty());
+    assert!(
+        q.claim_next().unwrap().is_none(),
+        "not claimable while waiting"
+    );
+}
+
 #[test]
 fn a_task_needing_approval_is_skipped_until_approved_and_rejection_cancels() {
     let (_d, q) = queue();

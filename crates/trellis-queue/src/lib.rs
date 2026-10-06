@@ -205,12 +205,45 @@ pub enum Blocked {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
     },
+    /// Waiting until `at`, an instant in UTC (`2026-10-06T12:00:00Z`) a
+    /// person set with `queue set --reason until --at`. Woken by the first
+    /// [`Queue::reconcile`] at or after it (ADR 0026 §1, amended for #341).
+    Until { at: String },
+}
+
+/// Seconds since the epoch for an RFC 3339 instant, or `None`. jiff reads
+/// the wider Temporal grammar, so the forms RFC 3339 does not have (basic
+/// format, no seconds, an hour-only offset, a `[zone]` suffix) are refused
+/// by shape before it reads the rest.
+fn rfc3339_secs(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let offset = matches!(b.last(), Some(b'Z' | b'z'))
+        || (n >= 6 && matches!(b[n - 6], b'+' | b'-') && b[n - 3] == b':');
+    let shaped = n >= 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && matches!(b[10], b'T' | b't' | b' ')
+        && b[13] == b':'
+        && b[16] == b':'
+        && offset
+        && !s.contains('[');
+    if !shaped {
+        return None;
+    }
+    s.parse::<jiff::Timestamp>().ok().map(|t| t.as_second())
 }
 
 /// How much of a question `queue list` shows on its waiting line.
 const QUESTION_SHOWN: usize = 120;
 
 impl Blocked {
+    /// A wait until `at`, an RFC 3339 instant in any offset, stored in UTC;
+    /// `None` if `at` is not RFC 3339.
+    pub fn until(at: &str) -> Option<Blocked> {
+        rfc3339_secs(at).map(|s| Blocked::Until { at: secs_to_iso(s) })
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Blocked::Blockers => "blocked until its blockers are done".into(),
@@ -228,6 +261,7 @@ impl Blocked {
                      <id> <text>`, then `trellis queue set <id> --status todo`"
                 )
             }
+            Blocked::Until { at } => format!("blocked until {}", plain(at)),
         }
     }
 }
@@ -1108,11 +1142,22 @@ impl Queue {
 
     /// Wakes tasks whose wait is over (ADR 0026 §1): a task `blocked` on
     /// blockers once every blocker is `done`, and one `blocked` on its
-    /// children once every direct child is terminal. Returns `(id, why)` for
-    /// each wake, each already logged.
+    /// children once every direct child is terminal, and one `blocked` until
+    /// an instant once that instant is reached. Returns `(id, why)` for each
+    /// wake, each already logged.
     ///
     /// A task someone else holds right now is left for the next reconcile.
     pub fn reconcile(&self, actor: Actor) -> Result<Vec<(String, String)>, QueueError> {
+        self.reconcile_at(actor, now_secs())
+    }
+
+    /// [`Queue::reconcile`] as of `now` (Unix seconds), the clock an
+    /// `until` wait is measured against.
+    pub fn reconcile_at(
+        &self,
+        actor: Actor,
+        now: i64,
+    ) -> Result<Vec<(String, String)>, QueueError> {
         let entries = self.list()?;
         let ix = Self::index_of(&entries);
         let mut woken = Vec::new();
@@ -1125,7 +1170,7 @@ impl Queue {
                 Some(Blocked::Blockers)
                     if !t.blockers.is_empty() && ix.unresolved(t).is_empty() =>
                 {
-                    "every blocker is done"
+                    "every blocker is done".to_string()
                 }
                 Some(Blocked::Children) => {
                     let kids = ix.children.get(&e.id).map(Vec::as_slice).unwrap_or(&[]);
@@ -1136,7 +1181,12 @@ impl Queue {
                     {
                         continue;
                     }
-                    "every sub-task is finished"
+                    "every sub-task is finished".to_string()
+                }
+                // An `at` that does not parse (a hand-edited file) never
+                // wakes; `queue list` shows it as written.
+                Some(Blocked::Until { at }) if rfc3339_secs(at).is_some_and(|s| s <= now) => {
+                    format!("its wait until {at} is over")
                 }
                 _ => continue,
             };
@@ -1148,8 +1198,11 @@ impl Queue {
             });
             match r {
                 Ok(_) => {
-                    self.log(Event::new(actor, "task.wake", format!("task:{}", e.id)).detail(why))?;
-                    woken.push((e.id.clone(), why.to_string()));
+                    self.log(
+                        Event::new(actor, "task.wake", format!("task:{}", e.id))
+                            .detail(why.clone()),
+                    )?;
+                    woken.push((e.id.clone(), why));
                 }
                 Err(QueueError::Claimed { .. } | QueueError::Locked(_)) => {}
                 Err(e) => return Err(e),
@@ -1466,8 +1519,8 @@ pub struct WorkOptions {
 
 /// Wakes, logged and printed. Failure to reconcile is reported and not
 /// fatal: a wake missed now is found on the next tick.
-fn reconcile_and_say(q: &Queue, out: &mut dyn Write) {
-    match q.reconcile(Actor::Work) {
+fn reconcile_and_say(q: &Queue, now: i64, out: &mut dyn Write) {
+    match q.reconcile_at(Actor::Work, now) {
         Ok(w) => {
             for (id, why) in w {
                 let _ = writeln!(out, "work:     {id} -> todo ({why})");
@@ -1595,7 +1648,7 @@ pub fn work(
         if let Some(profiles) = runner.profiles() {
             mention::wake_and_say(q, profiles, out);
         }
-        reconcile_and_say(q, out);
+        reconcile_and_say(q, runner.now(), out);
         let claimed = {
             let mut gate = |id: &str, t: &Task| runner.gate(id, t, out);
             q.claim_next_where(&mut gate)
