@@ -108,3 +108,20 @@ The decision above is built as written; nothing in it changed.
   agent asking at a time. A run with no target is the single-agent run,
   unchanged. Test:
   `agents_one_with_targets_runs_each_partition_through_the_partitioned_path`.
+
+## Amendment 2026-10-06: an explicit N asks the backend (#483)
+
+§3 judged only `auto` against the backend, so `--agents 3` on a backend
+that serves one request at a time ran three agents at once and said
+nothing. An explicit N above 1 now takes the same probe as `auto` and
+`trellis doctor` (`doctor_cmd::probe_batching`): measured continuous
+batching keeps N, and anything else (single slot, unmeasured, unknown, or a
+probe that failed) runs at width 1 through the partitioned path, with the
+`agents:` line saying why and what N would need. This is one more ceiling
+beside §4's plan, not a change to it. It applies to hosted providers too,
+which batch but report no number. The second Consequence above no longer
+holds for runs above width 1: a scripted model has no measured capacity, so
+`three_partition_run_converges_with_every_partitions_edit` and
+`agents_above_one_in_approve_mode_is_refused_before_the_snapshot` are
+served by a loopback llama.cpp stub that reports its slots. Test:
+`agents_explicit_on_a_non_batching_backend_runs_at_width_one_and_says_why`.
