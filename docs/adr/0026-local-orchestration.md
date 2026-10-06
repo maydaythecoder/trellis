@@ -525,6 +525,36 @@ so. `agents resume` on a profile paused in its file says to edit the file.
 **Subcommands:** `trellis agents list`, `show <name>`,
 `pause <name> [--reason]`, `resume <name>`.
 
+*Amended 2026-10-06 (#337), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**A profile may name a vault note as its memory.** Paperclip's
+persistent agent files (ADR 0021, PC-117) are a directory each agent keeps
+across tasks and sessions and writes itself. Here a profile's `instructions` file lives
+under `.trellis/`, and model writes never land in `.trellis/` (ADR 0023), so
+agent-writable files there are not an option; what one run learns reaches
+the next through the trail (ADR 0007) and vault notes (ADR 0017). The
+answer:
+
+- **The field.** A profile may set `memory = "<vault stem>"`. The note is
+  compiled through trellis-vault as standing context for every run of the
+  profile's tasks, as `--focus` is (ADR 0017), and a run edits it as a note
+  through the normal write path, so every change to it is in the diff a
+  person reviews.
+- **Not built.** This amendment builds no profile field; today a profile
+  has no `memory`. A separate ticket, filed after #337 closes, builds it
+  under the rules here.
+- **Where it is read from.** Only from the vault directory `[context]
+  vault` names, which is resolved through
+  `trellis_core::paths::resolve_repo_input` (crates/trellis-cli/src/config.rs)
+  and walked without following links, as CLAUDE.md requires of every
+  repository-supplied prompt input (ADR 0025).
+- **A vault under `.trellis/`.** If `[context] vault` is configured under
+  `.trellis/`, the note is readable and unwritable by a run, since model
+  writes never land there (ADR 0023).
+
+Reversed if a standing note cannot be added beside `--focus` without
+changing the compiled bytes for runs whose profile sets no `memory`: then a
+plain repository file read through `resolve_repo_input`.
+
 ### 5. Budgets in tokens
 
 For each profile, the ledger sums the tokens recorded in trails (§8) whose
