@@ -325,6 +325,50 @@ the precedence in `crates/trellis-cli/src/work.rs`, held by
 Reversed if the key rule cannot be held for task files that arrive through
 `queue import`: then a profile per model, and #346 is closed unbuilt.
 
+*Amended 2026-10-06 (#347), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**#57's mention wakes stay, and every run of a queued task is given the
+notes a person added since its last run.** Today a run sees a person's notes
+only when the task's last run ended on an `ask_human` question:
+`Task::answers_since_question` (crates/trellis-queue/src/lib.rs) anchors on
+the last `model` note and returns `None` without one, and `text()` in
+crates/trellis-cli/src/work.rs then gives the run the task's text alone. So
+`trellis queue note <id> "@reviewer check the error paths"` wakes the task
+for `reviewer` and the woken run never reads the sentence, and a person who
+notes a request on an `in_review` task and sets it back to `todo` gets a run
+that does not see it. Paperclip keeps comments as context for the assignee
+and, since #14577 ("Mentions in task comments are kept as context for the
+assignee; only explicit assignment and review requests start work"), no
+longer starts a run from a mention. Trellis keeps the wake and adds the
+context. Not built: this records the rule a later ticket (CLIP-03) builds
+to; `notes_seen` does not exist in the code today.
+
+- **What a run is given.** After the task's text, one fenced block holding
+  every note a person wrote with `trellis queue note` (actor `human`, with
+  a note id) after a marker, each attributed and indented as above. When
+  the last run asked, the block holds that question quoted as model output
+  with every `human` note after it, as this section already says. Notes by
+  the heartbeat, a routine or the model are left out, and the notes are
+  input to the run, never a verdict (ADR 0004).
+- **The marker.** A new task field, `notes_seen`: the number of notes the
+  task held when its last run was claimed. It is set by `Claim::finish` and
+  `Claim::ask` and by nothing else, so a run cut short and put back by
+  `Claim::release` leaves it, and the next run is shown the same notes. A
+  task file without the field (written before the change, or rewritten by
+  an older binary, which drops it) is read as if no run had been shown any
+  note.
+- **#189's limit reaches the prompt.** A child that removes
+  `TRELLIS_RUN_ID` and `TRELLIS_TASK_ID` on purpose can still write a note
+  as a person (above). Before this change such a note could wake a task;
+  after it, the note also reaches the next run's prompt.
+- **Mentions.** A trellis mention counts only in a person's `queue note`,
+  which refuses inside a run (#189), so the agent-to-agent dispatch
+  Paperclip withdrew in #14577 does not arise here. ADR 0021 rows 25 and 41
+  do not change.
+
+Reversed if a run is found writing a `human` note with an id by any route
+other than the deliberate one #189 names: then a person's note reaches a
+run only after a question, until the sandbox closes that route.
+
 ### 2. Changing a file that already exists
 
 Every rewrite goes through one of three paths. None of them renames a file.
