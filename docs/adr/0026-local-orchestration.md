@@ -321,6 +321,15 @@ the precedence in `crates/trellis-cli/src/work.rs`, held by
 - **What it does not add.** A routine's `[task]` cannot set the field.
   Thinking stays in `[model] thinking`; there is no thinking level per task.
   A task has no generated title: its text is its only name.
+- **A process agent's task.** *Amended 2026-10-06 (#458; the owner's
+  choice (a)):* a process agent (§11) runs its own command and no model is
+  chosen for it, so a task's model would be stored and never used. `queue
+  add --model` with an `--assignee` that is a process agent is refused,
+  naming the profile and why, and no task is written. A task that reaches
+  one with a model later (`queue set --assignee`, `queue import`) still
+  runs, and `work` prints `model: ... unused` naming the agent before the
+  command starts. Held by `process_agent_task_model_*`
+  (`tests/orchestration.rs`).
 
 Reversed if the key rule cannot be held for task files that arrive through
 `queue import`: then a profile per model, and #346 is closed unbuilt.
