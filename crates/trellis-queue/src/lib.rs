@@ -1612,8 +1612,17 @@ pub fn work(
                         "work:     nothing claimable; {} pending task(s) waiting:",
                         waiting.len()
                     );
+                    // One printed line per line of the reason, so a
+                    // multi-line one (the shared no-model message, #444)
+                    // reads as it does from `trellis run`; `plain()` still
+                    // escapes every other control character in each line.
                     for (id, why) in &waiting {
-                        let _ = writeln!(out, "          {id}: {}", plain(why));
+                        let mut lines = why.lines();
+                        let first = lines.next().unwrap_or("");
+                        let _ = writeln!(out, "          {id}: {}", plain(first));
+                        for l in lines {
+                            let _ = writeln!(out, "          {}", plain(l));
+                        }
                     }
                     said_waiting = true;
                 }
