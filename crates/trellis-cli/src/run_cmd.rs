@@ -148,7 +148,9 @@ impl Driver {
                      through the provider's own API (tier 1)"
                 );
             }
-            return Ok(Driver::Hosted(Box::new(hosted::build(&r, cfg)?)));
+            // The profile is off until `preflight` identifies colibri, which
+            // is after this; `cmd_run` rebuilds the driver then.
+            return Ok(Driver::Hosted(Box::new(hosted::build(&r, cfg, false)?)));
         }
         match spec {
             trellis_model::ModelSpec::Scripted(path) => {
@@ -879,6 +881,33 @@ fn run_body(
             e
         );
     }
+    // The same ordering for a hosted endpoint on this machine, which
+    // `reachable` never covered: asked whether it is colibri and, when it is,
+    // whether it serves the spec's model and takes tools (ADR 0047 decisions
+    // 3 and 4). Resolved again, as for `--image` above, so the read carries
+    // the key the driver's requests would and no other. Nothing remote is
+    // read.
+    let (colibri_line, colibri) = match &driver {
+        Driver::Hosted(_) => {
+            match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
+                Some(r) => match probe_rt.block_on(hosted::preflight(&r))? {
+                    Some(line) => (Some(line), Some(r)),
+                    None => (None, None),
+                },
+                None => (None, None),
+            }
+        }
+        Driver::Scripted(_) | Driver::Runtime(_) => (None, None),
+    };
+    // ADR 0047 decision 5: colibri's request profile, for the endpoint
+    // `preflight` just identified and no other, so no second read decides
+    // it. Rebuilt rather than switched on, since the driver holds its client;
+    // `--image` is carried over, and nothing else has been set on it yet.
+    if let Some(r) = &colibri {
+        driver = Driver::Hosted(Box::new(
+            hosted::build(r, &cfg, true)?.with_images(images.images.clone()),
+        ));
+    }
 
     // Whether the runtime actually honours the schema, rather than whether
     // its dialect name suggests it should.
@@ -937,6 +966,9 @@ fn run_body(
     // runtime that is not listening is noise ahead of the only line that
     // matters.
     let _ = writeln!(out, "model:    {}", driver.describe());
+    if let Some(line) = colibri_line {
+        let _ = writeln!(out, "runtime:  {line}");
+    }
     if let Driver::Runtime(m) = &driver
         && let Some(n) = hosted::thinking_ignored(&cfg, &format!("{:?}", m.dialect()))
     {
@@ -1016,6 +1048,7 @@ fn run_body(
                 tier4,
                 model_from_user,
                 model_source,
+                colibri: colibri.as_ref(),
                 fanout,
                 cfg: &cfg,
                 dial: &dial,
@@ -2056,6 +2089,9 @@ struct Partitioned<'a> {
     tier4: bool,
     model_from_user: bool,
     model_source: hosted::SpecSource,
+    /// The endpoint `preflight` identified as colibri, when it did, whose
+    /// drivers send its request profile (ADR 0047 decision 5).
+    colibri: Option<&'a hosted::Resolved>,
     fanout: &'a Fanout,
     cfg: &'a config::RepoConfig,
     dial: &'a config::Control,
@@ -2144,6 +2180,7 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
         tier4,
         model_from_user,
         model_source,
+        colibri,
         fanout,
         cfg,
         dial,
@@ -2168,15 +2205,18 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
     // nothing.
     let mut drivers = HashMap::new();
     for part in plan.in_order() {
-        let driver = Driver::build(
-            spec,
-            tier4,
-            &tooling.tools,
-            cfg,
-            model_from_user,
-            model_source,
-            Some(fanout.script_targets(part.id)),
-        )?;
+        let driver = match colibri {
+            Some(r) => Driver::Hosted(Box::new(hosted::build(r, cfg, true)?)),
+            None => Driver::build(
+                spec,
+                tier4,
+                &tooling.tools,
+                cfg,
+                model_from_user,
+                model_source,
+                Some(fanout.script_targets(part.id)),
+            )?,
+        };
         drivers.insert(part.id, driver);
     }
     let budget = cfg.budget();
