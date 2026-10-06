@@ -1063,10 +1063,8 @@ impl Orchestrator {
                 refused.push(why);
                 continue;
             }
-            if let Some(rule) = self.governance.denies_write(&rel) {
-                refused.push(format!(
-                    "`{rel}` is denied by the rule `{rule}` in .trellis/config.toml"
-                ));
+            if let Some(clause) = self.governance.denies_write(&rel) {
+                refused.push(format!("`{rel}` is {clause}"));
                 continue;
             }
             if let Some(why) = self.governance.outside_allow_write(&rel) {
