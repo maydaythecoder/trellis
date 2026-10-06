@@ -1030,3 +1030,16 @@ skipped links).
   tools use (`unsafe_repo_path`, now in `trellis-core`): no `:`, so `C:x`,
   which Windows resolves against drive C's current directory, is refused
   (`a_prompt_name_with_a_colon_is_refused`).
+- *Amended 2026-10-06 (#441, recorded by #484):* `resolve_repo_input`
+  is no longer the only predicate. A path the model names, which need not
+  exist yet, goes through `trellis_core::paths::resolve_repo_path`:
+  `read_file`, `ls` and `grep` given a path, and every writer, all through
+  `real_rel` in `trellis-loop`'s orchestrator. It resolves the nearest
+  entry that exists by the same rule (both share `resolve_inside`),
+  appends the part that does not exist as written, and holds the whole to
+  `names_git_dir`. `resolve_repo_input` stays the predicate for a path
+  that exists: the readers above, and the whole-repository search, which
+  asks it of each entry it finds. Before #441 the reads had a resolver of
+  their own, which walked past a link to nothing that the search refused.
+  Tests: `one_path_rule_read_file_refuses_what_the_whole_repository_search_hides`
+  and `one_path_rule_read_refusal_and_the_search_filter_agree_on_every_entry`.

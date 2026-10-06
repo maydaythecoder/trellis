@@ -190,7 +190,7 @@ Rows for items that `docs/inventory/inventory-pi.md` (pi 1.0.2) tags NEW. Dispos
 
 #### pi 1.0.2: changed upstream, disposition unchanged (2026-10-04)
 
-Added 2026-10-06 (#329). This section adds no disposition and changes no row. The pi 1.0.2 inventory tags 47 items CHANGED since 0.87.1; eight take a new or amended row from another ticket (1.2, 1.7, 2.1, 2.14, 2.17, 2.18, 9.4, 14.3); on 2026-10-06 those for 1.7, 2.14, 2.17 and 2.18 are written, and those for 1.2, 2.1, 9.4 and 14.3 are not yet. For each of the other 39 the upstream change leaves the pi row's reason standing, on the reason given here, so a disposition that was re-read against pi 1.0.2 can be told from one that was not. A row named here is as written in the table above; PI-03 is #323, PI-04 is #324, PI-05 is #325 and PI-11 is #328.
+Added 2026-10-06 (#329). This section adds no disposition and changes no row. The pi 1.0.2 inventory tags 47 items CHANGED since 0.87.1; eight take a new or amended row from another ticket (1.2, 1.7, 2.1, 2.14, 2.17, 2.18, 9.4, 14.3); on 2026-10-06 those for 1.7, 2.14, 2.17 and 2.18 are written, and those for 1.2, 2.1, 9.4 and 14.3 are not yet. For each of the other 39 the upstream change leaves the pi row's reason standing, on the reason given here, so a disposition that was re-read against pi 1.0.2 can be told from one that was not. A row named here is as written in the table above; PI-03 is #323, PI-04 is #324, PI-05 is #325 and PI-11 is #328. **Amended 2026-10-06 (#484):** the row 9.4 amendment is written: #319 wrote it later on 2026-10-06, in row "9.4–9.5 RPC" above (`get_commands` lists 19 commands). Those for 1.2, 2.1 and 14.3 are still not written.
 
 | Item (`inventory-pi.md`) | Why the disposition stands |
 |---|---|
