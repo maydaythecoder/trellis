@@ -185,6 +185,19 @@ mod tests {
     }
 
     #[test]
+    fn an_image_of_exactly_the_cap_is_read_whole_and_one_byte_more_is_refused() {
+        // The risk: an off-by-one at the cap that refuses an image the
+        // documented limit admits, reads it short, or reads one past it.
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.gif");
+        std::fs::write(&p, vec![b'x'; MAX_IMAGE_BYTES]).unwrap();
+        let (_, bytes) = read_one(d.path(), &p).unwrap();
+        assert_eq!(bytes.len(), MAX_IMAGE_BYTES);
+        std::fs::write(&p, vec![b'x'; MAX_IMAGE_BYTES + 1]).unwrap();
+        assert!(read_one(d.path(), &p).is_err());
+    }
+
+    #[test]
     fn images_whose_base64_exceeds_the_context_budget_are_refused_before_the_run() {
         let d = std::env::temp_dir().join(format!("trellis-image-b-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
