@@ -235,6 +235,14 @@ Before this, `new`, `rm` and `check --fix` read and rewrote whatever file
 the link named, including one outside the vault. `dates.json` was already
 refused this way (§5); `annotations.json` is still never opened.
 
+- *Added 2026-10-06 (#359):*
+  An unparseable layout.json is left untouched and reported
+  (`prune_layout`, crates/trellis-vault/src/edit.rs), so a delete keeps
+  every position the file held.
+  Apex instead replaces the file with only the patched keys
+  (`read_layout_file` reads it as an empty map, src-tauri/src/lib.rs:1443-1453,
+  and `write_layout_patch_blocking` writes that map back, lib.rs:447-474).
+
 *Amended in implementation:*
 
 - **`--no-parent`, not `--root`.** The binary's global `--root <PATH>` owns

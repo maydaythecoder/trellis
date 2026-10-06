@@ -1228,4 +1228,81 @@ mod run_tests {
         let why = super::require_trusted(&dir).unwrap_err();
         assert!(why.contains("changed since it was trusted"), "{why}");
     }
+
+    /// What a run said about its trusted `before_run` hook running `script`.
+    fn before_run_said(name: &str, script: &str) -> String {
+        let (dir, spec) = fixture(
+            name,
+            &format!("[hooks]\nbefore_run = {}\n", sh(script)),
+            EDIT_THEN_STOP,
+        );
+        trust(&dir);
+        run(&dir, &spec)
+    }
+
+    #[test]
+    fn before_run_is_reported_only_when_it_adds_context_and_its_failure_is_said() {
+        // #248. The risk: a hook's context added without a word, a hook
+        // that printed nothing reported as adding 0 B, or a failed hook
+        // passed over in silence.
+        let said = before_run_said("before-run-adds", "echo some context");
+        assert!(
+            said.contains("hook:     before_run added") && said.contains("B of context"),
+            "{said}"
+        );
+        let said = before_run_said("before-run-silent", "exit 0");
+        assert!(!said.contains("before_run added"), "{said}");
+        let said = before_run_said("before-run-fails", "exit 3");
+        assert!(
+            said.contains("hook:     before_run added nothing: "),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_custom_tool_s_write_to_an_ignored_file_is_undone_by_the_rollback() {
+        // #248. The writer guards are taken when bash, a custom tool or a
+        // hook is configured. The risk: a run with only a custom tool taken
+        // as having no writer, so an ignored file it creates (a
+        // `sitecustomize.py` the next check runs) survives the rollback.
+        // By absolute path, as the bash tests do: the writer the guard is for.
+        let (dir, spec) = fixture("custom-ignored", "", "");
+        let venv = dir.join(".venv");
+        let argv = if cfg!(windows) {
+            format!(
+                "['cmd', '/C', 'mkdir {} && echo x> {}']",
+                venv.display(),
+                venv.join("s.py").display()
+            )
+        } else {
+            format!(
+                "['sh', '-c', 'mkdir {} && echo x > {}']",
+                venv.display(),
+                venv.join("s.py").display()
+            )
+        };
+        std::fs::write(
+            dir.join(".trellis/config.toml"),
+            format!(
+                "[[tools.custom]]\nname = \"stamp\"\ndescription = \"Stamp.\"\n\
+                 command = {argv}\nschema = {{ type = \"object\" }}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join(".gitignore"), ".venv/\n").unwrap();
+        crate::testutil::git_commit_all(&dir, "a custom tool");
+        std::fs::write(
+            spec.strip_prefix("scripted:").unwrap(),
+            r#"{"steps":[{"tool":"stamp"},{"tool":"done","summary":"stamped"}]}"#,
+        )
+        .unwrap();
+        trust(&dir);
+        let said = run(&dir, &spec);
+        assert!(said.contains("NOT CONVERGED"), "{said}");
+        assert_eq!(actions(&trail(&dir))[0].0, "stamp", "{said}");
+        assert!(
+            !venv.join("s.py").exists(),
+            "an ignored file the custom tool created survived the rollback:\n{said}"
+        );
+    }
 }

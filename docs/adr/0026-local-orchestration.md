@@ -325,6 +325,50 @@ the precedence in `crates/trellis-cli/src/work.rs`, held by
 Reversed if the key rule cannot be held for task files that arrive through
 `queue import`: then a profile per model, and #346 is closed unbuilt.
 
+*Amended 2026-10-06 (#347), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**#57's mention wakes stay, and every run of a queued task is given the
+notes a person added since its last run.** Today a run sees a person's notes
+only when the task's last run ended on an `ask_human` question:
+`Task::answers_since_question` (crates/trellis-queue/src/lib.rs) anchors on
+the last `model` note and returns `None` without one, and `text()` in
+crates/trellis-cli/src/work.rs then gives the run the task's text alone. So
+`trellis queue note <id> "@reviewer check the error paths"` wakes the task
+for `reviewer` and the woken run never reads the sentence, and a person who
+notes a request on an `in_review` task and sets it back to `todo` gets a run
+that does not see it. Paperclip keeps comments as context for the assignee
+and, since #14577 ("Mentions in task comments are kept as context for the
+assignee; only explicit assignment and review requests start work"), no
+longer starts a run from a mention. Trellis keeps the wake and adds the
+context. Not built: this records the rule a later ticket (CLIP-03) builds
+to; `notes_seen` does not exist in the code today.
+
+- **What a run is given.** After the task's text, one fenced block holding
+  every note a person wrote with `trellis queue note` (actor `human`, with
+  a note id) after a marker, each attributed and indented as above. When
+  the last run asked, the block holds that question quoted as model output
+  with every `human` note after it, as this section already says. Notes by
+  the heartbeat, a routine or the model are left out, and the notes are
+  input to the run, never a verdict (ADR 0004).
+- **The marker.** A new task field, `notes_seen`: the number of notes the
+  task held when its last run was claimed. It is set by `Claim::finish` and
+  `Claim::ask` and by nothing else, so a run cut short and put back by
+  `Claim::release` leaves it, and the next run is shown the same notes. A
+  task file without the field (written before the change, or rewritten by
+  an older binary, which drops it) is read as if no run had been shown any
+  note.
+- **#189's limit reaches the prompt.** A child that removes
+  `TRELLIS_RUN_ID` and `TRELLIS_TASK_ID` on purpose can still write a note
+  as a person (above). Before this change such a note could wake a task;
+  after it, the note also reaches the next run's prompt.
+- **Mentions.** A trellis mention counts only in a person's `queue note`,
+  which refuses inside a run (#189), so the agent-to-agent dispatch
+  Paperclip withdrew in #14577 does not arise here. ADR 0021 rows 25 and 41
+  do not change.
+
+Reversed if a run is found writing a `human` note with an id by any route
+other than the deliberate one #189 names: then a person's note reaches a
+run only after a question, until the sandbox closes that route.
+
 ### 2. Changing a file that already exists
 
 Every rewrite goes through one of three paths. None of them renames a file.
@@ -975,6 +1019,42 @@ limits on unsandboxed writers matter most.
 - `trellis routines run <name>` fires the routine now. Concurrency still
   applies, as in Paperclip's manual run.
 
+*Amended 2026-10-06 (#348), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**A routine may skip a scheduled fire when no commit has landed.** A
+routine fires through its concurrency and catch-up policies alone
+(`routine::evaluate`), so a nightly "triage new failures" routine queues a
+task on a night when nothing changed, and the run spends tokens to find
+nothing. Paperclip's `require_external_activity` gate suppresses a
+scheduled fire when its activity log has nothing since the routine's last
+dispatched run apart from the routine's own records. In a repository the
+activity such a routine exists for is commits, which the activity log (§9)
+does not see. Not built: this records the rule a later ticket (CLIP-05)
+builds to; neither the key nor the state field exists in the code today.
+
+- **The key and the state.** A routine may set `activity_gate = "commits"`.
+  Its state gains a field `last_head`, written only when a scheduled fire
+  enqueues a task.
+- **A quiet fire.** A scheduled fire is quiet, and skipped, when HEAD
+  equals `last_head`, or when every path changed between them is under
+  `.trellis/runs/`. Trellis commits a trail there after every run (ADR
+  0007, `trellis_vcs::commit_paths`), so those commits do not count, or
+  each run of the routine's own task would count as activity.
+- **Failing open.** A `last_head` that is not a full hex object id is
+  treated as absent and never passed to git, where every spawn goes through
+  `trellis_vcs`. Any git error fires rather than skips.
+- **What is not gated.** `trellis routines run <name>` is not gated. A
+  routine without the key fires on its schedule alone, as today. The gate
+  does not read the queue's activity log.
+- **Older binaries.** `RoutineFile` has `deny_unknown_fields`, so a binary
+  from before the change refuses a routine that sets the key, and `work`
+  refuses to start while any routine is invalid (a running `work` keeps its
+  last good set of routines and says so).
+
+Reversed if routines that set the gate are found skipping fires that had
+new work, because that work arrives without a commit (an outside service's
+state, for example): those routines leave the key unset, and the gate is
+withdrawn only if no routine has a use for it.
+
 ### 8. What a trail now records
 
 `Factual` gains two optional fields. Each is omitted when it is `None`, the
@@ -1509,6 +1589,45 @@ above are kept for those writers. Containers or an OS sandbox, for network
 and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
 `trellis trust` prints one line stating the limit when it records trust for
 any of these writers.
+
+*Amended 2026-10-06 (#350), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**A process profile may drive an agent over the Agent Client Protocol.**
+Paperclip now drives Claude Code, Codex and Kimi through the Agent Client
+Protocol (ACP), one JSON-RPC protocol over stdio that many agents speak, so
+one client reaches them all without a wrapper per agent; ADR 0021 rows
+10–11 keep the per-agent adapters excluded. Paperclip's own runner protocol
+(PRP) belongs to its control plane and stays out (ADR 0021, PC-109). Not
+built: this note records the bounds the build is held to, and the build,
+with a new ADR that maps the protocol's messages inside these bounds, is a
+separate ticket.
+
+- **The profile.** A process profile may set `protocol = "acp"`. Trellis is
+  the ACP client.
+- **Where it runs.** The agent runs in the throwaway clone (ADR 0032) with
+  the scrubbed environment and only the variables its `pass_env` names (ADR
+  0024 §3), as every process profile does.
+- **No client capabilities.** Trellis advertises no `fs` or `terminal`
+  client capability. A request for one (`fs/read_text_file`,
+  `fs/write_text_file`, `terminal/create`) is refused and recorded in the
+  trail.
+- **Permission requests.** A `session/request_permission` goes to the
+  profile's `[control]` gate.
+- **The record.** The agent's messages and tool-call reports are recorded
+  in the trail as untrusted data (ADR 0007).
+- **Writes and convergence.** What the agent writes comes back through the
+  clone's carry-back under trellis's refusals (ADR 0032), and only trellis's
+  executed checks converge the run (ADR 0004).
+
+Asking permission is the agent's choice (Paperclip's own driver runs with
+`approve-all` unless told otherwise), so a tool call the agent does not ask
+about is held as a process profile's is today, by the clone and the
+carry-back. The protocol adds a record and a partial gate, not a new
+boundary.
+
+Reversed if the build finds an ACP agent that will not run without an `fs`
+or `terminal` client capability, or that ACP's permission flow cannot be
+held to the `[control]` gate: that agent stays on argv and stdin, and if no
+agent fits the bounds, no process profile speaks ACP.
 
 ### 12. Services
 
