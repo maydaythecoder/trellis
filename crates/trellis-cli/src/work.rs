@@ -86,6 +86,10 @@ pub(crate) enum QueueAction {
         assignee: Option<String>,
         #[arg(long, value_parser = PRIORITIES)]
         priority: Option<String>,
+        /// Only tasks whose id, text, labels or notes contain this,
+        /// ignoring case.
+        #[arg(long)]
+        text: Option<String>,
     },
     /// Change a task that is not running.
     Set {
@@ -131,6 +135,10 @@ pub(crate) enum QueueAction {
         id: String,
         #[arg(long)]
         reason: Option<String>,
+        /// Also cancel every pending descendant by `parent`, at any depth.
+        /// Refused if any of them is running.
+        #[arg(long)]
+        children: bool,
     },
     /// Approve a task that needs it, or a budget override request.
     Approve {
@@ -283,7 +291,14 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             label,
             assignee,
             priority,
+            text,
         } => {
+            // An empty needle matches every task, which would read as a
+            // search that found everything.
+            if text.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                anyhow::bail!("--text is empty: give the words to look for");
+            }
+            let text = text.map(|s| s.to_lowercase());
             let entries = q.list()?;
             let ix = Queue::index_of(&entries);
             let shown: Vec<&trellis_queue::Entry> = entries
@@ -300,6 +315,13 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
                             .as_deref()
                             .is_none_or(|a| t.assignee.as_deref() == Some(a))
                         && priority.as_deref().is_none_or(|p| t.priority.as_str() == p)
+                        && text.as_deref().is_none_or(|s| {
+                            std::iter::once(&e.id)
+                                .chain(std::iter::once(&t.task))
+                                .chain(&t.labels)
+                                .chain(t.notes.iter().map(|n| &n.text))
+                                .any(|h| h.to_lowercase().contains(s))
+                        })
                 })
                 .collect();
             if entries.is_empty() {
@@ -519,26 +541,85 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             println!("noted:    {id}");
             Ok(())
         }
-        QueueAction::Cancel { id, reason } => {
-            let (from, _) = q.edit(&id, |t, _| {
-                t.status = Some(Status::Cancelled);
-                t.blocked = None;
-                t.note(
-                    Actor::Human,
-                    match &reason {
-                        Some(r) => format!("cancelled: {r}"),
-                        None => "cancelled".into(),
-                    },
-                );
-                Ok(Some(State::Cancelled))
-            })?;
-            let mut e = Event::new(Actor::Human, "task.cancel", format!("task:{id}"));
-            if let Some(r) = &reason {
-                e = e.detail(r.clone());
+        QueueAction::Cancel {
+            id,
+            reason,
+            children,
+        } => {
+            if !children {
+                if let Some(from) = cancel_task(&q, &id, reason.as_deref(), None)? {
+                    println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
+                }
+                return reconcile(&q);
             }
-            q.log(e)?;
-            println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
-            reconcile(&q)
+            let id = id.strip_suffix(".json").unwrap_or(&id).to_string();
+            let ix = q.index()?;
+            // The subtree by `parent`, as `queue set` reads it. `seen` stops
+            // a parent loop, which `queue set --parent` does not refuse.
+            let mut seen = BTreeSet::from([id.clone()]);
+            let mut next = vec![id.clone()];
+            while let Some(p) = next.pop() {
+                for c in ix.children.get(&p).into_iter().flatten() {
+                    if seen.insert(c.clone()) {
+                        next.push(c.clone());
+                    }
+                }
+            }
+            seen.remove(&id);
+            let descendants: Vec<String> = seen.into_iter().collect();
+            // `Queue::edit` refuses a claimed task one at a time; refusing
+            // the whole command up front means it never stops half done
+            // because of a run the person could have seen.
+            let claimed: Vec<&str> = std::iter::once(&id)
+                .chain(&descendants)
+                .filter(|t| matches!(ix.by_id.get(*t), Some((State::Claimed, _))))
+                .map(String::as_str)
+                .collect();
+            if !claimed.is_empty() {
+                anyhow::bail!(
+                    "refused: claimed, so running until its run ends: {}. Nothing was \
+                     cancelled; retry when the runs end, or `trellis queue requeue` a claim \
+                     a crashed process left behind",
+                    claimed.join(", ")
+                );
+            }
+            if let Some(from) = cancel_task(&q, &id, reason.as_deref(), None)? {
+                println!("cancelled: {id} ({}/ -> cancelled/)", from.dir_name());
+            }
+            // Best-effort from here: the queue cannot hold every task at
+            // once, so a `work` tick may claim a descendant in between
+            // (ADR 0026 §3).
+            let mut missed = Vec::new();
+            for d in &descendants {
+                let Some((State::Pending, _)) = ix.by_id.get(d) else {
+                    let st = ix.by_id.get(d).map(|(s, st)| (s.dir_name(), st.as_str()));
+                    let (dir, st) = st.unwrap_or(("?", "?"));
+                    println!("left:      {d} ({dir}/, {st})");
+                    continue;
+                };
+                match cancel_task(&q, d, reason.as_deref(), Some(&id)) {
+                    Ok(Some(from)) => {
+                        println!("cancelled: {d} ({}/ -> cancelled/)", from.dir_name())
+                    }
+                    Ok(None) => {
+                        println!("not cancelled: {d} (left pending/ while this ran)");
+                        missed.push(d.as_str());
+                    }
+                    Err(QueueError::Claimed { .. }) => {
+                        println!("not cancelled: {d} (claimed while this ran)");
+                        missed.push(d.as_str());
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            reconcile(&q)?;
+            if !missed.is_empty() {
+                anyhow::bail!(
+                    "not cancelled, because each left pending/ while this ran: {}",
+                    missed.join(", ")
+                );
+            }
+            Ok(())
         }
         QueueAction::Approve { id, raise } => {
             if approval::is_request_id(&id) {
@@ -692,6 +773,52 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             reconcile(&q)
         }
     }
+}
+
+/// Cancels one task and logs it, as `queue cancel` always has. With `via`,
+/// the id a `--children` cancel was given: the task is one of its
+/// descendants, is cancelled only while still in pending/, and its log line
+/// names `via`. Returns the directory the task left, or `None` for a
+/// descendant no longer pending, which is left as it is.
+fn cancel_task(
+    q: &Queue,
+    id: &str,
+    reason: Option<&str>,
+    via: Option<&str>,
+) -> std::result::Result<Option<State>, QueueError> {
+    let mut moved = false;
+    let edited = q.edit(id, |t, s| {
+        if via.is_some() && s != State::Pending {
+            // A `work` run finished it after the command read the index.
+            moved = true;
+            return Err(QueueError::Invalid(format!("{id} left pending/")));
+        }
+        t.status = Some(Status::Cancelled);
+        t.blocked = None;
+        t.note(
+            Actor::Human,
+            match reason {
+                Some(r) => format!("cancelled: {r}"),
+                None => "cancelled".into(),
+            },
+        );
+        Ok(Some(State::Cancelled))
+    });
+    let (from, _) = match edited {
+        Err(_) if moved => return Ok(None),
+        r => r?,
+    };
+    let mut e = Event::new(Actor::Human, "task.cancel", format!("task:{id}"));
+    let detail = match (via, reason) {
+        (Some(v), Some(r)) => Some(format!("{r} (queue cancel {v} --children)")),
+        (Some(v), None) => Some(format!("queue cancel {v} --children")),
+        (None, r) => r.map(str::to_string),
+    };
+    if let Some(d) = detail {
+        e = e.detail(d);
+    }
+    q.log(e)?;
+    Ok(Some(from))
 }
 
 /// The note must exist and compile, exactly as the run will ask.
