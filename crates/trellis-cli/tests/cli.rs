@@ -2889,15 +2889,12 @@ fn model_path_names_a_real_location_under_the_data_directory() {
 
 #[test]
 fn pull_stops_before_the_network_when_the_weights_are_already_here() {
-    // The only branch of `pull` that can be tested without fetching half a
-    // gigabyte, and the one worth the most: it is what stops a re-run of
+    // The branch of `pull` worth the most: it is what stops a re-run of
     // `trellis model pull` from re-downloading a file that is already
     // complete. Inverting the comparison turns the guard into its opposite
     // and every repeat invocation becomes a fresh download.
     //
-    // Safe precisely because it returns *before* curl. Nothing else here is
-    // — see the ledger entry on why the rest of this function is triaged
-    // rather than tested.
+    // Safe precisely because it returns *before* curl.
     let d = repo("model-pull-present");
     let data = scratch("model-pull-data");
     let dir = models_dir_in(&data);
@@ -2922,6 +2919,46 @@ fn pull_stops_before_the_network_when_the_weights_are_already_here() {
     );
 
     let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn pull_says_it_is_resuming_only_when_a_partial_download_is_staged() {
+    // #248: on a slow link "resuming at" versus a silent restart is the
+    // difference between hours, and a line that claims a resume with
+    // nothing staged is as wrong as one missing. Neither case reaches
+    // curl: a file one byte longer than the pin is refused as too long
+    // before any fetch, whether it is staged or at the final name (which
+    // `pull` moves to the staging name first, after the line is printed).
+    let entry = trellis_model::catalog::find(trellis_model::DEFAULT).unwrap();
+    let d = repo("model-pull-resume");
+    for (staged, data) in [
+        (true, scratch("model-pull-resume-staged")),
+        (false, scratch("model-pull-resume-placed")),
+    ] {
+        let dir = models_dir_in(&data);
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = if staged {
+            trellis_model::pull::partial_name(entry.file)
+        } else {
+            entry.file.to_string()
+        };
+        let f = std::fs::File::create(dir.join(name)).unwrap();
+        f.set_len(entry.bytes + 1).unwrap();
+        drop(f);
+
+        let out = run_with_data_dir(&d, &data, &["model", "pull"]);
+        let s = combined(&out);
+        assert!(!out.status.success(), "{s}");
+        assert!(s.contains("from https://"), "{s}");
+        assert!(s.contains("the pinned file is"), "{s}");
+        assert_eq!(
+            stdout(&out).contains("resuming at"),
+            staged,
+            "staged: {staged}\n{s}"
+        );
+        let _ = std::fs::remove_dir_all(&data);
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 
