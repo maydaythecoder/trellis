@@ -1001,6 +1001,13 @@ killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | cra
 <details>
 <summary>trellis-cli: 407 survivors</summary>
 
+#248's first pass (`c0fc32f`) gave its 119 dispositions in that commit's
+message, not on these lines. The second pass marks its own here: each
+mutant was applied by hand to the code at its base, the named test run
+with `cargo test -p trellis-cli` and seen to fail, and the source restored;
+neither cargo-mutants nor the workspace suite was run. Line numbers are
+`989b2a2`'s; every work.rs mutant was still present, at a moved line.
+
 ```
 #248 | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 #248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
@@ -1274,76 +1281,76 @@ killed by a_manifest_entry_outside_the_vault_is_named_for_each_form (#246) | cra
 #248 | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with false in dates_cmd
 #248 | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with true in dates_cmd
 #248 | crates/trellis-cli/src/vault_cmd.rs:368:26: delete ! in dates_cmd
-#248 | crates/trellis-cli/src/work.rs:198:5: replace reconcile -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/work.rs:293:68: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:293:49: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:297:71: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:301:67: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:302:83: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:348:20: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:353:43: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:361:17: delete match arm (Some(Status::Blocked), Some("blockers")) in queue
-#248 | crates/trellis-cli/src/work.rs:362:17: delete match arm (Some(Status::Blocked), Some("children")) in queue
-#248 | crates/trellis-cli/src/work.rs:363:17: delete match arm (Some(Status::Blocked), Some(_)) in queue
-#248 | crates/trellis-cli/src/work.rs:366:37: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:373:22: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:376:20: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:388:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:394:43: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:414:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:420:45: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with true in queue
-#248 | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with false in queue
-#248 | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with true in queue
-#248 | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with false in queue
-#248 | crates/trellis-cli/src/work.rs:441:61: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:454:52: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:454:57: replace != with == in queue
-#248 | crates/trellis-cli/src/work.rs:454:34: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:464:21: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:463:21: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:461:29: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:462:21: replace && with || in queue
-#248 | crates/trellis-cli/src/work.rs:462:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:463:39: replace == with != in queue
-#248 | crates/trellis-cli/src/work.rs:464:24: delete ! in queue
-#248 | crates/trellis-cli/src/work.rs:616:34: replace > with == in queue
-#248 | crates/trellis-cli/src/work.rs:616:34: replace > with < in queue
-#248 | crates/trellis-cli/src/work.rs:616:34: replace > with >= in queue
-#248 | crates/trellis-cli/src/work.rs:716:19: replace > with == in list_line
-#248 | crates/trellis-cli/src/work.rs:716:19: replace > with < in list_line
-#248 | crates/trellis-cli/src/work.rs:716:19: replace > with >= in list_line
-#248 | crates/trellis-cli/src/work.rs:738:8: delete ! in list_line
-#248 | crates/trellis-cli/src/work.rs:744:8: delete ! in list_line
-#248 | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with String::new()
-#248 | crates/trellis-cli/src/work.rs:758:9: delete match arm 0..60 in ago
-#248 | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with "xyzzy".into()
-#248 | crates/trellis-cli/src/work.rs:759:9: delete match arm 60..3600 in ago
-#248 | crates/trellis-cli/src/work.rs:760:9: delete match arm 3600..86_400 in ago
-#248 | crates/trellis-cli/src/work.rs:784:21: replace == with != in work
-#248 | crates/trellis-cli/src/work.rs:861:5: replace listen_for_ctrl_c with ()
-#248 | crates/trellis-cli/src/work.rs:937:9: replace CliRunner<'_>::approve_mode -> bool with false
-#248 | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with true
-#248 | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with false
-#248 | crates/trellis-cli/src/work.rs:1024:33: replace > with == in <impl Runner for CliRunner<'_>>::tick
-#248 | crates/trellis-cli/src/work.rs:1024:33: replace > with < in <impl Runner for CliRunner<'_>>::tick
-#248 | crates/trellis-cli/src/work.rs:1024:33: replace > with >= in <impl Runner for CliRunner<'_>>::tick
-#248 | crates/trellis-cli/src/work.rs:1087:37: delete ! in <impl Runner for CliRunner<'_>>::gate
-#248 | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with None
-#248 | crates/trellis-cli/src/work.rs:1111:79: replace - with + in <impl Runner for CliRunner<'_>>::next_due
-#248 | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with Some(Default::default())
-#248 | crates/trellis-cli/src/work.rs:1111:79: replace - with / in <impl Runner for CliRunner<'_>>::next_due
-#248 | crates/trellis-cli/src/work.rs:1115:9: replace <impl Runner for CliRunner<'_>>::starting with ()
-#248 | crates/trellis-cli/src/work.rs:1119:9: replace <impl Runner for CliRunner<'_>>::liveness -> Option<&dyn trellis_queue::Liveness> with None
-#248 | crates/trellis-cli/src/work.rs:1196:34: replace && with || in <impl Runner for CliRunner<'_>>::run
-#248 | crates/trellis-cli/src/work.rs:1263:9: replace <impl Runner for CliRunner<'_>>::stop_requested -> bool with false
-#248 | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with true
-#248 | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with false
-#248 | crates/trellis-cli/src/work.rs:1267:36: replace + with - in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1268:30: replace < with == in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1268:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1268:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
-#248 | crates/trellis-cli/src/work.rs:1276:9: delete ! in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::queue_set_tests::a_change_that_ends_a_blocker_wakes_what_it_blocked | crates/trellis-cli/src/work.rs:198:5: replace reconcile -> Result<()> with Ok(())
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:293:68: replace && with || in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:293:49: replace && with || in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:297:71: replace == with != in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:301:67: replace == with != in queue
+killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:302:83: replace == with != in queue
+killed (#248) by work::queue_set_tests::an_assignee_must_be_a_profile_in_the_repository | crates/trellis-cli/src/work.rs:348:20: delete ! in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:353:43: replace != with == in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:361:17: delete match arm (Some(Status::Blocked), Some("blockers")) in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:362:17: delete match arm (Some(Status::Blocked), Some("children")) in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:363:17: delete match arm (Some(Status::Blocked), Some(_)) in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:366:37: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:373:22: replace == with != in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:376:20: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:388:24: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:394:43: replace != with == in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:414:24: delete ! in queue
+killed (#248) by work::queue_set_tests::labels_and_blockers_are_added_once_and_removed_by_name | crates/trellis-cli/src/work.rs:420:45: replace != with == in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with true in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:434:52: replace match guard t.blockers.is_empty() with false in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with true in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:441:52: replace match guard children == 0 with false in queue
+killed (#248) by work::queue_set_tests::a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason | crates/trellis-cli/src/work.rs:441:61: replace == with != in queue
+killed (#248) by work::queue_set_tests::a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does | crates/trellis-cli/src/work.rs:454:52: replace && with || in queue
+killed (#248) by work::queue_set_tests::a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does | crates/trellis-cli/src/work.rs:454:57: replace != with == in queue
+killed (#248) by work::queue_set_tests::a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does | crates/trellis-cli/src/work.rs:454:34: replace == with != in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:464:21: replace && with || in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:463:21: replace && with || in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:461:29: replace == with != in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:462:21: replace && with || in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:462:24: delete ! in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:463:39: replace == with != in queue
+killed (#248) by work::queue_set_tests::only_new_unfinished_blockers_on_a_todo_task_block_it | crates/trellis-cli/src/work.rs:464:24: delete ! in queue
+killed (#248) by tests/orchestration.rs export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none | crates/trellis-cli/src/work.rs:616:34: replace > with == in queue
+killed (#248) by tests/orchestration.rs export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none | crates/trellis-cli/src/work.rs:616:34: replace > with < in queue
+killed (#248) by tests/orchestration.rs export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none | crates/trellis-cli/src/work.rs:616:34: replace > with >= in queue
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:716:19: replace > with == in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:716:19: replace > with < in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:716:19: replace > with >= in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:738:8: delete ! in list_line
+killed (#248) by work::list_line_tests::attempts_blockers_and_notes_are_shown_when_there_are_any | crates/trellis-cli/src/work.rs:744:8: delete ! in list_line
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with String::new()
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:758:9: delete match arm 0..60 in ago
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:756:5: replace ago -> String with "xyzzy".into()
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:759:9: delete match arm 60..3600 in ago
+killed (#248) by work::list_line_tests::ages_are_in_the_largest_whole_unit | crates/trellis-cli/src/work.rs:760:9: delete match arm 3600..86_400 in ago
+killed (#248) by tests/orchestration.rs a_claim_records_where_it_was_made_under_release_and_only_there | crates/trellis-cli/src/work.rs:784:21: replace == with != in work
+unexercisable on Windows (#248): needs a Ctrl-C delivered to the `work` process, which a test can send only on unix (`kill -INT`, as tests/interrupt.rs does); a unix-only `work --every` + SIGINT test is the kill, not written here because it could not be seen failing on this host | crates/trellis-cli/src/work.rs:861:5: replace listen_for_ctrl_c with ()
+killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:937:9: replace CliRunner<'_>::approve_mode -> bool with false
+killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with true
+unexercisable by `cargo test` (#248): differs only when stdin and stdout are both a terminal, which needs a pty the suite does not have | crates/trellis-cli/src/work.rs:983:5: replace has_terminal -> bool with false
+killed (#248) by work::runner_tests::a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none | crates/trellis-cli/src/work.rs:1024:33: replace > with == in <impl Runner for CliRunner<'_>>::tick
+killed (#248) by work::runner_tests::a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none | crates/trellis-cli/src/work.rs:1024:33: replace > with < in <impl Runner for CliRunner<'_>>::tick
+killed (#248) by work::runner_tests::a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none | crates/trellis-cli/src/work.rs:1024:33: replace > with >= in <impl Runner for CliRunner<'_>>::tick
+killed (#248) by tests/orchestration.rs an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on | crates/trellis-cli/src/work.rs:1087:37: delete ! in <impl Runner for CliRunner<'_>>::gate
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with None
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1111:79: replace - with + in <impl Runner for CliRunner<'_>>::next_due
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1110:9: replace <impl Runner for CliRunner<'_>>::next_due -> Option<Duration> with Some(Default::default())
+killed (#248) by work::runner_tests::next_due_is_the_time_left_until_the_soonest_routine | crates/trellis-cli/src/work.rs:1111:79: replace - with / in <impl Runner for CliRunner<'_>>::next_due
+killed (#248) by work::runner_tests::the_runner_names_its_task_and_offers_a_process_probe | crates/trellis-cli/src/work.rs:1115:9: replace <impl Runner for CliRunner<'_>>::starting with ()
+killed (#248) by work::runner_tests::the_runner_names_its_task_and_offers_a_process_probe | crates/trellis-cli/src/work.rs:1119:9: replace <impl Runner for CliRunner<'_>>::liveness -> Option<&dyn trellis_queue::Liveness> with None
+killed (#248) by tests/queue.rs work_sends_no_key_to_an_endpoint_the_repository_chose (under the mutant the key reached the repository's port) | crates/trellis-cli/src/work.rs:1196:34: replace && with || in <impl Runner for CliRunner<'_>>::run
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1263:9: replace <impl Runner for CliRunner<'_>>::stop_requested -> bool with false
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with true
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1267:9: replace <impl Runner for CliRunner<'_>>::idle -> bool with false
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1267:36: replace + with - in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1268:30: replace < with == in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1268:30: replace < with > in <impl Runner for CliRunner<'_>>::idle
+equivalent (#248): at `now == until` the mutant runs one more pass that sleeps `min(100ms, 0)` and checks the flag again; the wait, the flag and the answer are the same | crates/trellis-cli/src/work.rs:1268:30: replace < with <= in <impl Runner for CliRunner<'_>>::idle
+killed (#248) by work::runner_tests::idle_waits_out_its_time_unless_stopped_and_says_which | crates/trellis-cli/src/work.rs:1276:9: delete ! in <impl Runner for CliRunner<'_>>::idle
 #248 | crates/trellis-cli/src/context_files.rs:86:52: replace == with != in user_skills_note
 #248 | crates/trellis-cli/src/context_files.rs:96:26: replace && with || in user_skills_note
 #248 | crates/trellis-cli/src/context_files.rs:103:18: replace > with >= in user_skills_note
