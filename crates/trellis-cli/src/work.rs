@@ -1180,11 +1180,14 @@ impl CliRunner<'_> {
         {
             text = format!("{}\n\n{text}", instructions.trim_end());
         }
-        // After the task: the question the last run ended on, quoted as
-        // that run's output, and the person's answer as their input
-        // (ADR 0026 §1). A task that never asked gets the text it always did.
-        if let Some(answers) = t.answers_since_question() {
-            text = format!("{text}\n\n{answers}");
+        // After the task, one fenced block (ADR 0026 §1, amended for #347):
+        // every note a person wrote with `queue note` since the task's last
+        // run was claimed, and, when that run asked, its question quoted as
+        // its model output with every person's note after it. All of it is
+        // input, never a verdict. A task with neither gets the text it
+        // always did.
+        if let Some(input) = t.input_since_last_run() {
+            text = format!("{text}\n\n{input}");
         }
         Ok(text)
     }
@@ -1956,6 +1959,42 @@ mod queue_set_tests {
 
     fn err(root: &Path, args: &[&str]) -> String {
         format!("{:#}", run(root, args).unwrap_err())
+    }
+
+    #[test]
+    fn rerun_input_reaches_a_task_set_back_to_todo_with_queue_set() {
+        // The risk the #347 amendment names: a person notes a request on a
+        // task whose run finished and sets it back to `todo`, and the run
+        // that claims it is given the task's text alone.
+        let (root, q) = repo("rerun-input");
+        let id = plain_task(&q, "retire the v1 endpoint");
+        q.claim(&id)
+            .unwrap()
+            .expect("claimable")
+            .finish(
+                State::Done,
+                trellis_queue::Outcome {
+                    run_id: None,
+                    exit: "converged".into(),
+                    finished_at: "2026-10-06T00:00:00Z".into(),
+                },
+            )
+            .unwrap();
+        run(&root, &["note", &id, "keep the redirect for a release"]).unwrap();
+        run(&root, &["set", &id, "--status", "todo"]).unwrap();
+
+        let c = q.claim(&id).unwrap().expect("claimable again");
+        let r = test_runner(&root, q.clone(), trusted);
+        let text = r.text(&c.task, None).unwrap();
+        let (task, block) = text.split_once("\n\n").unwrap();
+        assert_eq!(task, "retire the v1 endpoint");
+        assert!(block.starts_with("--- user input:"), "{text}");
+        assert!(
+            block.contains("    keep the redirect for a release"),
+            "{text}"
+        );
+        assert!(block.ends_with("--- end of user input ---"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
