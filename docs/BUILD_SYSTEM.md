@@ -146,6 +146,13 @@ SHA by hand.
 These are the only permanent branches; the legacy ones were deleted on
 2026-10-06, and ADR 0051 item 5 records their tips.
 
+`audit` reaches `dev` through an `audit → dev` pull request, and `dev`
+reaches `main` through a `dev → main` one. CI (`ci.yml`) runs on each of
+those pull requests and on a push to `main`, not on a push to `dev`: the
+`audit → dev` pull request has already run it on the tree `dev` receives,
+and a cancelled duplicate run on the `dev` push showed as failed checks on
+the `dev → main` pull request (#473; ADR 0051 item 4, amended by #477).
+
 The pre-push hook (`scripts/hooks/pre-push`,
 installed by `scripts/hooks/install.sh`; `scripts/checks/pre-push-selftest.sh`
 shows it firing) refuses every push to `main`, and to the deleted `v0.1-resolver` and `drain` so an old clone cannot re-create them, and of any `v*` tag (ADR 0051 item 3), from a clone that has
