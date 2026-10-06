@@ -117,6 +117,9 @@ pub(crate) struct RunExtras {
     /// transcript, and with it the loop's record of what was delivered.
     /// `None` everywhere else, and the run only forwards.
     pub steer_watch: Option<Arc<crate::rpc::SteeringPort>>,
+    /// `trellis run --agents N --target ...` with N above 1: the plan its
+    /// agents run, one per partition (#466). `None` for every other run.
+    pub fanout: Option<crate::run_cmd::Fanout>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -135,6 +138,7 @@ impl Default for RunExtras {
             done: None,
             images: Vec::new(),
             steer_watch: None,
+            fanout: None,
         }
     }
 }
