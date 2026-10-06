@@ -1429,13 +1429,13 @@ killed (#248) by session_extra::tests::the_line_in_flight_is_handed_to_the_sessi
 #248 | crates/trellis-cli/src/doctor_extra.rs:37:20: replace match guard f.is_file() with false in user_config_line
 #248 | crates/trellis-cli/src/doctor_extra.rs:118:14: replace > with < in trust_line_with
 #248 | crates/trellis-cli/src/doctor_extra.rs:132:17: replace > with < in trust_line_with
-#248 | crates/trellis-cli/src/doctor_extra.rs:208:13: replace && with || in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:205:13: replace && with || in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:204:9: delete ! in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:207:65: replace || with && in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:207:52: replace || with && in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:207:70: replace == with != in services_line
-#248 | crates/trellis-cli/src/doctor_extra.rs:249:8: delete ! in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:208:13: replace && with || in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:205:13: replace && with || in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:204:9: delete ! in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:207:65: replace || with && in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:207:52: replace || with && in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:207:70: replace == with != in services_line
+killed (#248) by doctor_extra::tests::a_live_service_runs_while_its_task_is_claimed_and_has_outlived_it_otherwise | crates/trellis-cli/src/doctor_extra.rs:249:8: delete ! in services_line
 ```
 
 </details>
