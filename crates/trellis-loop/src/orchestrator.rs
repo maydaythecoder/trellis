@@ -1521,38 +1521,33 @@ pub fn names_trellis_dir(rel: &str) -> bool {
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// `rel` as it really lands, through any link on the way: the canonical
-/// form of its nearest existing ancestor, relative to the canonical root,
-/// with the part that does not exist yet appended as written. `Err` when
-/// that ancestor is outside the repository: a committed link to `/etc` or
-/// to `~` is a path the string rules cannot see.
+/// `rel` as it really lands, through any link on the way, by the one rule
+/// for a model-named path (`trellis_core::paths::resolve_repo_path`, #441):
+/// the canonical form of its nearest existing entry, relative to the
+/// canonical root, with the part that does not exist yet appended as
+/// written. `Err` when it lands outside the repository or in `.git`, or
+/// passes through a link to nothing or an entry that cannot be looked at:
+/// a committed link to `/etc` or to `~` is a path the string rules cannot
+/// see. Worded for the model, which is not told where outside it lands.
 pub(crate) fn real_rel(root: &Path, rel: &str) -> Result<String, String> {
-    let Ok(real_root) = std::fs::canonicalize(root) else {
-        return Ok(rel.to_string());
-    };
-    let mut at = root.join(rel);
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(&at) {
-            let Ok(inside) = real.strip_prefix(&real_root) else {
-                return Err(format!(
-                    "`{rel}` leads outside the repository, through a link"
-                ));
-            };
-            let mut p = inside.to_path_buf();
-            for t in tail.iter().rev() {
-                p.push(t);
-            }
-            return Ok(p.to_string_lossy().replace('\\', "/"));
+    use trellis_core::paths::RepoInputError as E;
+    trellis_core::paths::resolve_repo_path(root, rel).map_err(|e| match e {
+        E::Outside { .. } => format!("`{rel}` leads outside the repository, through a link"),
+        E::IntoGit { .. } => format!("`{rel}` is inside .git"),
+        E::Dangling { .. } => format!(
+            "`{rel}` passes through a link that resolves to nothing, so where it lands \
+             cannot be checked"
+        ),
+        E::Uninspectable { source, .. } => {
+            format!(
+                "`{rel}` could not be looked at ({source}), so where it lands cannot be checked"
+            )
         }
-        match (at.file_name().map(|n| n.to_os_string()), at.parent()) {
-            (Some(name), Some(parent)) => {
-                tail.push(name);
-                at = parent.to_path_buf();
-            }
-            _ => return Ok(rel.to_string()),
-        }
-    }
+        E::RootUnresolved { source, .. } => format!(
+            "the repository root could not be resolved ({source}), so where `{rel}` lands \
+             cannot be checked"
+        ),
+    })
 }
 
 /// Why the model may not read or list `rel`, or `None`: a path outside the
