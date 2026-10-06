@@ -72,9 +72,18 @@ enum Driver {
 ///
 /// `Outcome` does not carry the summary, and the session's `/copy` wants it.
 /// Observing it on the way past keeps that inside the binary: the loop's
-/// types stay as they are, and every other method passes straight through,
-/// so the budget, the context figures and the compactions are the driver's
-/// own.
+/// types stay as they are, and every method the loop reads passes straight
+/// through, so the budget, the context figures, the compactions and the
+/// step's usage are the driver's own.
+///
+/// `prompt_tokens` and `requested_compactions` are not forwarded, and need
+/// not be (#487): the loop never calls them, and the trail reads them, with
+/// the compactions, from the concrete `Driver` after the run, around this
+/// wrapper (`prompt_tokens` and `driver.requested_compactions()` in
+/// `cmd_run`). A compaction asked for over RPC is acted on by the driver,
+/// through `Driver::compact_on_request`, not through this trait. A new read
+/// through the wrapper needs the method forwarded here and in
+/// `rpc::Watched`.
 struct SeesDone<'a, M> {
     inner: &'a mut M,
     done: &'a mut Option<String>,
