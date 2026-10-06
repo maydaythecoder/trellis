@@ -1590,6 +1590,45 @@ and home-directory isolation, remain deferred (ADR 0021, 1.6 and 13.3).
 `trellis trust` prints one line stating the limit when it records trust for
 any of these writers.
 
+*Amended 2026-10-06 (#350), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**A process profile may drive an agent over the Agent Client Protocol.**
+Paperclip now drives Claude Code, Codex and Kimi through the Agent Client
+Protocol (ACP), one JSON-RPC protocol over stdio that many agents speak, so
+one client reaches them all without a wrapper per agent; ADR 0021 rows
+10–11 keep the per-agent adapters excluded. Paperclip's own runner protocol
+(PRP) belongs to its control plane and stays out (ADR 0021, PC-109). Not
+built: this note records the bounds the build is held to, and the build,
+with a new ADR that maps the protocol's messages inside these bounds, is a
+separate ticket.
+
+- **The profile.** A process profile may set `protocol = "acp"`. Trellis is
+  the ACP client.
+- **Where it runs.** The agent runs in the throwaway clone (ADR 0032) with
+  the scrubbed environment and only the variables its `pass_env` names (ADR
+  0024 §3), as every process profile does.
+- **No client capabilities.** Trellis advertises no `fs` or `terminal`
+  client capability. A request for one (`fs/read_text_file`,
+  `fs/write_text_file`, `terminal/create`) is refused and recorded in the
+  trail.
+- **Permission requests.** A `session/request_permission` goes to the
+  profile's `[control]` gate.
+- **The record.** The agent's messages and tool-call reports are recorded
+  in the trail as untrusted data (ADR 0007).
+- **Writes and convergence.** What the agent writes comes back through the
+  clone's carry-back under trellis's refusals (ADR 0032), and only trellis's
+  executed checks converge the run (ADR 0004).
+
+Asking permission is the agent's choice (Paperclip's own driver runs with
+`approve-all` unless told otherwise), so a tool call the agent does not ask
+about is held as a process profile's is today, by the clone and the
+carry-back. The protocol adds a record and a partial gate, not a new
+boundary.
+
+Reversed if the build finds an ACP agent that will not run without an `fs`
+or `terminal` client capability, or that ACP's permission flow cannot be
+held to the `[control]` gate: that agent stays on argv and stdin, and if no
+agent fits the bounds, no process profile speaks ACP.
+
 ### 12. Services
 
 *Added for #60 (owner's decision of 2026-09-28, recorded on the issue).*
