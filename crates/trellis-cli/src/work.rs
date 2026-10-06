@@ -122,11 +122,16 @@ pub(crate) enum QueueAction {
         #[arg(long, value_parser = ["backlog", "todo", "in_review", "blocked", "done", "cancelled", "failed"])]
         status: Option<String>,
         /// With `--status blocked`: what it waits for.
-        #[arg(long, value_parser = ["blockers", "children", "manual"])]
+        #[arg(long, value_parser = ["blockers", "children", "manual", "until"])]
         reason: Option<String>,
         /// With `--reason manual`: what unblocks it.
         #[arg(long)]
         detail: Option<String>,
+        /// With `--reason until`: the RFC 3339 instant it waits for, such as
+        /// `2026-10-06T12:00:00Z`. Stored in UTC; the first reconcile at or
+        /// after it sets the task to `todo`.
+        #[arg(long, value_name = "INSTANT")]
+        at: Option<String>,
     },
     /// Append a note to a task.
     Note { id: String, text: String },
@@ -365,6 +370,7 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             status,
             reason,
             detail,
+            at,
         } => {
             if let Some(a) = &assignee
                 && !load_profiles(root)?.contains_key(a)
@@ -378,13 +384,26 @@ pub(crate) fn queue(root: &Path, action: QueueAction) -> Result<()> {
             if detail.is_some() && reason.as_deref() != Some("manual") {
                 anyhow::bail!("--detail goes with --reason manual");
             }
+            if at.is_some() && reason.as_deref() != Some("until") {
+                anyhow::bail!("--at goes with --reason until");
+            }
             let blocked = match (status, reason.as_deref()) {
                 (Some(Status::Blocked), None) => anyhow::bail!(
-                    "--status blocked needs --reason blockers|children|manual: a block \
+                    "--status blocked needs --reason blockers|children|manual|until: a block \
                      that names nothing to wait for routes to nobody"
                 ),
                 (Some(Status::Blocked), Some("blockers")) => Some(Blocked::Blockers),
                 (Some(Status::Blocked), Some("children")) => Some(Blocked::Children),
+                (Some(Status::Blocked), Some("until")) => {
+                    let at = at.as_deref().context(
+                        "--reason until needs --at <instant>, such as 2026-10-06T12:00:00Z",
+                    )?;
+                    Some(Blocked::until(at).with_context(|| {
+                        format!(
+                            "--at {at:?} is not an RFC 3339 instant, such as 2026-10-06T12:00:00Z"
+                        )
+                    })?)
+                }
                 (Some(Status::Blocked), Some(_)) => Some(Blocked::Manual {
                     detail: detail
                         .clone()

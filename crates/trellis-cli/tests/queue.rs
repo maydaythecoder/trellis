@@ -950,3 +950,96 @@ fn queue_list_text_empty_or_blank_is_refused_and_lists_nothing() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn queue_set_reason_until_refuses_a_missing_or_malformed_at() {
+    // The risk: a wait with no instant, or one read as some other instant
+    // than the person meant, would park a task that nothing wakes or wake
+    // it at the wrong time. Each is refused, naming `--at`, before the task
+    // file is touched.
+    let d = fixture("set-until-refused");
+    let id = add_id(&d, &["rename greet"]);
+    let before = task_json(&d, "pending", &id);
+    let set = |extra: &[&str]| {
+        let mut a = vec!["queue", "set", id.as_str()];
+        a.extend_from_slice(extra);
+        trellis(&d, &a)
+    };
+    let mut cases: Vec<Vec<&str>> = vec![
+        vec!["--status", "blocked", "--reason", "until"],
+        vec!["--at", "2999-01-01T00:00:00Z"],
+        vec![
+            "--status",
+            "blocked",
+            "--reason",
+            "manual",
+            "--detail",
+            "x",
+            "--at",
+            "2999-01-01T00:00:00Z",
+        ],
+    ];
+    for bad in [
+        "tomorrow",
+        "2999-01-01",
+        "2999-01-01T00:00:00",
+        "2999-01-01T00:00Z",
+        "29990101T000000Z",
+        "2999-01-01T00:00:00+01",
+        "2999-01-01T00:00:00Z[UTC]",
+        "",
+    ] {
+        cases.push(vec![
+            "--status", "blocked", "--reason", "until", "--at", bad,
+        ]);
+    }
+    for c in &cases {
+        let o = set(c);
+        let s = combined(&o);
+        assert!(!o.status.success(), "{c:?}: {s}");
+        assert!(s.contains("--at"), "{c:?}: the refusal names --at:\n{s}");
+        assert_eq!(
+            task_json(&d, "pending", &id),
+            before,
+            "{c:?}: task file unchanged"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queue_set_reason_until_is_listed_with_its_instant() {
+    // The risk: a waiting task whose list line does not say until when,
+    // so a person cannot tell a timed wait from a stuck one. The instant is
+    // stored and shown in UTC whatever offset it was given in.
+    let d = fixture("set-until-listed");
+    let id = add_id(&d, &["rename greet"]);
+    let o = trellis(
+        &d,
+        &[
+            "queue",
+            "set",
+            &id,
+            "--status",
+            "blocked",
+            "--reason",
+            "until",
+            "--at",
+            "2999-01-01T01:30:00+01:00",
+        ],
+    );
+    assert!(o.status.success(), "{}", combined(&o));
+    let t = task_json(&d, "pending", &id);
+    assert_eq!(t["status"], "blocked", "{t}");
+    assert_eq!(t["blocked"]["reason"], "until", "{t}");
+    assert_eq!(t["blocked"]["at"], "2999-01-01T00:30:00Z", "{t}");
+
+    let o = trellis(&d, &["queue", "list"]);
+    let s = combined(&o);
+    assert!(o.status.success(), "{s}");
+    assert!(
+        s.contains("waiting: blocked until 2999-01-01T00:30:00Z"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
