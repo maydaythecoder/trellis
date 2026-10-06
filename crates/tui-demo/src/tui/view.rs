@@ -3,7 +3,7 @@
 //! Every `Rect` is computed fresh from `frame.area()` each frame. Caching one
 //! is how a resize produces a layout drawn against the old size.
 
-use crate::tui::app::{AppState, EditStatus, Modal};
+use crate::tui::app::{AppState, Budget, EditStatus, Modal};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -477,10 +477,38 @@ fn render_budget(state: &AppState, area: Rect, frame: &mut Frame) {
         .gauge_style(Style::default().fg(Color::Cyan))
         .ratio(ratio)
         .label(format!(
-            "{iteration}  ·  {} B prompt  ·  {}s elapsed",
-            b.prompt_bytes, b.elapsed_secs
+            "{iteration}  ·  {} B prompt  ·  {}s elapsed{}",
+            b.prompt_bytes,
+            b.elapsed_secs,
+            turn_rate(&b)
         ));
     frame.render_widget(gauge, area);
+}
+
+/// The last turn's output rate and queue wait, as the budget line's tail.
+///
+/// So a slow turn can be told from a stuck one (#257). The rate is `coli
+/// chat`'s: output tokens over the call's wall time, less the queue wait the
+/// runtime reported separately (0 when it did not). The wall time still
+/// includes prompt processing, so this reads below the decode rate. Nothing
+/// is estimated: with no reported tokens the tail is empty, and with no model
+/// time left after the wait there is no rate to draw.
+fn turn_rate(b: &Budget) -> String {
+    let Some(tokens) = b.completion_tokens else {
+        return String::new();
+    };
+    let mut tail = String::new();
+    if let Some(model_ms) = b.model_ms {
+        let decoding_ms = model_ms.saturating_sub(b.queue_wait_ms.unwrap_or(0));
+        if decoding_ms > 0 {
+            let rate = tokens as f64 * 1000.0 / decoding_ms as f64;
+            tail.push_str(&format!("  ·  {tokens} tok, {rate:.1} tok/s"));
+        }
+    }
+    if let Some(queue_ms) = b.queue_wait_ms {
+        tail.push_str(&format!("  ·  queued {:.1} s", queue_ms as f64 / 1000.0));
+    }
+    tail
 }
 
 fn render_input(state: &AppState, offered: &[&str], area: Rect, frame: &mut Frame) {
@@ -579,6 +607,9 @@ mod tests {
             iteration: 2,
             prompt_bytes: 8400,
             elapsed_secs: 18,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
         });
         s
     }
@@ -644,6 +675,9 @@ mod tests {
             iteration: 3,
             prompt_bytes: 2435,
             elapsed_secs: 42,
+            completion_tokens: None,
+            model_ms: None,
+            queue_wait_ms: None,
         });
         s.update(Message::RunOutcome(
             "did not converge; worktree restored: true".into(),
@@ -690,6 +724,65 @@ mod tests {
             "against the run's own ceiling"
         );
         assert!(out.contains("18s elapsed"));
+    }
+
+    /// `populated()` after one turn that reported these, drawn wide enough
+    /// that the gauge's centred label is not clipped.
+    fn after_turn(tokens: Option<u64>, model_ms: Option<u64>, queue_ms: Option<u64>) -> String {
+        let mut s = populated();
+        s.update(Message::BudgetUpdated {
+            iteration: 3,
+            prompt_bytes: 8400,
+            elapsed_secs: 40,
+            completion_tokens: tokens,
+            model_ms,
+            queue_wait_ms: queue_ms,
+        });
+        drawn(&s, 140, 24)
+    }
+
+    #[test]
+    fn budget_line_rate_excludes_queue_wait() {
+        // The risk (#257): a rate over the whole call reads a turn that sat
+        // in colibri's queue as a slow decoder. 30 tokens over 25 s less a
+        // 10 s wait is 2.0 tok/s, not 1.2.
+        let out = after_turn(Some(30), Some(25_000), Some(10_000));
+        assert!(out.contains("30 tok, 2.0 tok/s"), "{out}");
+        assert!(out.contains("queued 10.0 s"), "{out}");
+    }
+
+    #[test]
+    fn budget_line_unknown_queue_wait_counts_as_zero_and_is_not_drawn() {
+        // The risk: an unreported wait drawn as "queued 0.0 s" claims the
+        // runtime said there was none.
+        let out = after_turn(Some(30), Some(20_000), None);
+        assert!(out.contains("30 tok, 1.5 tok/s"), "{out}");
+        assert!(!out.contains("queued"), "{out}");
+    }
+
+    #[test]
+    fn budget_line_without_reported_tokens_draws_no_rate_and_no_wait() {
+        // The risk: a runtime that reports no usage shown as "0 tok, 0.0
+        // tok/s", which reads as a stuck turn. Absent is drawn as absent.
+        let out = after_turn(None, Some(25_000), Some(10_000));
+        assert!(!out.contains("tok"), "{out}");
+        assert!(!out.contains("queued"), "{out}");
+        assert!(out.contains("iteration 3/40"), "the rest of the line stays");
+    }
+
+    #[test]
+    fn budget_line_with_no_model_time_left_draws_no_rate() {
+        // The risk: model_ms of 0, or a queue wait as long as the call,
+        // divides by zero (or by a negative after subtraction) and draws
+        // "inf" or a panic instead of nothing.
+        for (model_ms, queue_ms) in [(0, None), (10_000, Some(10_000)), (5_000, Some(9_000))] {
+            let out = after_turn(Some(30), Some(model_ms), queue_ms);
+            assert!(!out.contains("tok/s"), "{model_ms} {queue_ms:?}: {out}");
+            assert!(!out.contains("inf"), "{out}");
+        }
+        // And without a model time the tokens alone are no rate.
+        let out = after_turn(Some(30), None, None);
+        assert!(!out.contains("tok/s"), "{out}");
     }
 
     #[test]
