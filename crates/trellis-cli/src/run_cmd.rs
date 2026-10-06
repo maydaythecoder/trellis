@@ -107,6 +107,10 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
     fn compactions(&self) -> &[trellis_loop::Compacted] {
         self.inner.compactions()
     }
+
+    fn step_usage(&self) -> trellis_loop::StepUsage {
+        self.inner.step_usage()
+    }
 }
 
 impl Driver {
@@ -4151,6 +4155,28 @@ mod interrupt_tests {
         assert_eq!(m.prompt_bytes(), Some(4321));
         assert_eq!(m.compactions().len(), 1);
         assert_eq!(m.compactions()[0].elided_bytes, 50);
+    }
+
+    #[test]
+    fn sees_done_over_watched_forwards_step_usage() {
+        // The risk (#256): a wrapper answering the trait's default would
+        // leave every run's `turn` event without output tokens or queue
+        // wait, though the driver measured both.
+        use trellis_loop::Model;
+        let mut inner = crate::testutil::figures();
+        let mut watched = crate::rpc::Watched::new(&mut inner, None);
+        let mut done = None;
+        let m = SeesDone {
+            inner: &mut watched,
+            done: &mut done,
+        };
+        assert_eq!(
+            m.step_usage(),
+            trellis_loop::StepUsage {
+                completion_tokens: Some(13),
+                queue_wait_ms: Some(250),
+            }
+        );
     }
 
     #[test]

@@ -418,6 +418,10 @@ impl<M: trellis_loop::Model> trellis_loop::Model for Watched<'_, M> {
     fn requested_compactions(&self) -> &[trellis_loop::RequestedCompaction] {
         self.model.requested_compactions()
     }
+
+    fn step_usage(&self) -> trellis_loop::StepUsage {
+        self.model.step_usage()
+    }
 }
 
 /// The run of a chain in progress. A follow-up replaces it when it starts.
@@ -2066,6 +2070,23 @@ mod tests {
         assert_eq!(w.compactions()[0].elided_bytes, 50);
         assert_eq!(w.requested_compactions().len(), 1);
         assert_eq!(w.requested_compactions()[0].elided_bytes, 60);
+    }
+
+    #[test]
+    fn watched_forwards_step_usage() {
+        // The risk (#256): every RPC run drives its model through
+        // `Watched`, so a default answer here would drop the step's figures
+        // from every `turn` event a client is sent.
+        use trellis_loop::Model;
+        let mut inner = crate::testutil::figures();
+        let w = Watched::new(&mut inner, None);
+        assert_eq!(
+            w.step_usage(),
+            trellis_loop::StepUsage {
+                completion_tokens: Some(13),
+                queue_wait_ms: Some(250),
+            }
+        );
     }
 
     #[test]
