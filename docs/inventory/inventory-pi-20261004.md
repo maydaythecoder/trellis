@@ -2,6 +2,8 @@
 
 Re-inventory of pi against the previous `docs/inventory/inventory-pi.md` (pi-coding-agent 0.87.1) and the pi rows of ADR 0021.
 
+> **Note, 2026-10-05 (#439).** This is a dated record and is not rewritten. The current record of pi 1.0.2's capabilities is `docs/inventory/inventory-pi.md`, as rewritten by #320 (152dbbf) at the same upstream commit. The two disagree: its totals are 54 / 47 / 35 against this file's 51 / 50 / 35, and it tags 4.12, 4.20 and 8.4 UNCHANGED where this file tags them CHANGED. Where they differ, `inventory-pi.md` holds. `inventory-pi.md` records no TRELLIS status or disposition; dispositions are ADR 0021's.
+
 - **Upstream commit:** `200387122ca450d6387f033949423114a270b96c`, 2026-10-04 02:41 +0200, "Add [Unreleased] section for next cycle" (`git log -1` in the clone). The clone is depth 1, with one commit.
 - **Version:** all 13 packages are at 1.0.2, and the coding-agent `[Unreleased]` section is empty. Packages: agent, ai, chord, client, codemode, coding-agent, durable, evals, mcp, protocol, server, telemetry, tui. pi-client, pi-codemode and pi-mcp are not in the old inventory.
 - **Licence:** the root `LICENSE` is MIT (Copyright (c) 2025 Mario Zechner). 12 of 13 `package.json` files declare MIT, and `packages/evals` has no licence field. `packages/mcp/LICENSES/modelcontextprotocol-typescript-sdk.txt` is an MIT notice (Copyright (c) 2024 Anthropic, PBC) bundled with pi-mcp. Only its first lines were read.

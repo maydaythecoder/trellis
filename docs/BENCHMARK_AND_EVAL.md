@@ -899,20 +899,21 @@ never that its arguments refer to anything real.
 neither of which is the behaviour the loop is built around — read, change,
 verify.
 
-### 5.7 What two configurations establish
+### 5.7 What three configurations establish
 
-**The floor is still not located.** Two points, both below it:
+**The floor is still not located.** Three points, all below it:
 
 | Configuration | Repaired | Characteristic failure |
 |---|---|---|
 | Qwen2.5-0.5B-Instruct Q4_K_M | 0 / 20 | Schema-valid nonsense: placeholders as anchors, the path in every field |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M | 0 / 17 | Sound edits aimed at a path it cannot spell |
+| `qwen2.5:3b` Q4_K_M, Ollama 0.34.2 | 0 / 20 | Not characterised: §5.4's per-call audit does not cover this run. 16 of 20 ended on the no-progress stop (§5.2) |
 
-Two failing points bound the floor from below more tightly than one and still
+Three failing points bound the floor from below more tightly than one and still
 do not say where it is. A configuration that *passes* is the only thing that
-turns this into an interval, and neither of these is it.
+turns this into an interval, and none of these is it.
 
-What the pair does establish is that the two failures are **different in kind**,
+What the first two do establish is that the two failures are **different in kind**,
 which a single measurement could not have shown. The 0.5B cannot form a useful
 call; the 3B forms one and cannot address it. A harness improvement that fixed
 the first would do nothing for the second.
@@ -1010,8 +1011,9 @@ rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
 
 A measured recall figure — **done**, §2. A stated threshold with reasoning —
 **done**, §3. An ADR on whether a semantic backstop is needed — **done**,
-ADR 0012. A known model floor as a configuration — **partial**: two
-configurations are measured and both are below the floor, which bounds it from
-below without locating it. The two fail differently — one cannot form a useful
-call, the other forms one and cannot address it — which a single measurement
-could not have shown.
+ADR 0012. A known model floor as a configuration — **partial**: three
+configurations are measured (§5.2) and all are below the floor, which bounds it
+from below without locating it. The two candle configurations fail differently
+— one cannot form a useful call, the other forms one and cannot address it —
+which a single measurement could not have shown. The third, `qwen2.5:3b` on
+Ollama, has no per-call audit, so its failure is not characterised (§5.7).

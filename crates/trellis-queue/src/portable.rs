@@ -90,6 +90,20 @@ pub struct Exported {
     pub tasks: usize,
     /// Claimed tasks are in the middle of a run and are not exported.
     pub claimed_skipped: usize,
+    /// This checkout's run-time state, which export leaves behind (ADR 0026
+    /// §10), counted so the export can say so rather than drop it silently.
+    /// Overlays that carry something (a pause, a raise) of the exported
+    /// profiles.
+    pub overlays: usize,
+    /// Exported routines with a last-fired state here.
+    pub routine_states: usize,
+    /// Budget override requests, pending or decided.
+    pub approval_requests: usize,
+    pub activity_lines: usize,
+    /// Profiles paused by their overlay (`agents pause`, a budget hard stop)
+    /// and not by their file: the exported file does not say `paused`, so an
+    /// import elsewhere runs them.
+    pub paused_by_overlay: Vec<String>,
 }
 
 fn io(p: &Path) -> impl FnOnce(std::io::Error) -> QueueError + '_ {
@@ -141,6 +155,13 @@ pub fn export(root: &Path, q: &Queue, dest: &Path) -> Result<Exported, QueueErro
             &dest.join("agents").join(format!("{name}.toml")),
         )?;
         n.agents += 1;
+        let o = profile::overlay(q, name)?;
+        if o != profile::Overlay::default() {
+            n.overlays += 1;
+        }
+        if o.paused.is_some() && !p.file.paused {
+            n.paused_by_overlay.push(name.clone());
+        }
         if let Some(rel) = &p.file.instructions {
             let from = trellis.join(rel);
             if from.exists() {
@@ -153,7 +174,22 @@ pub fn export(root: &Path, q: &Queue, dest: &Path) -> Result<Exported, QueueErro
     for (name, path) in tomls(&trellis.join(routine::DIR))? {
         copy(&path, &dest.join("routines").join(format!("{name}.toml")))?;
         n.routines += 1;
+        if routine::state(q, &name)?.is_some() {
+            n.routine_states += 1;
+        }
     }
+    for which in ["pending", "approved", "rejected"] {
+        n.approval_requests += crate::approval::list(q, which)?.len();
+    }
+    let log = q.activity();
+    n.activity_lines = match std::fs::read(log.path()) {
+        Ok(b) => b
+            .split(|&c| c == b'\n')
+            .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+            .count(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(io(log.path())(e)),
+    };
     for s in State::ALL {
         for id in q.ids(s)? {
             if s == State::Claimed {
@@ -698,6 +734,97 @@ mod tests {
         let n = export(&root, &q, &d.path().join("out")).unwrap();
         assert_eq!((n.tasks, n.claimed_skipped), (0, 1));
         claim.release(false).unwrap();
+    }
+
+    #[test]
+    fn export_counts_a_pause_routine_state_and_request_it_leaves_behind() {
+        // The risk: a profile paused only by its overlay is exported as a
+        // file that does not say `paused`, so an import elsewhere runs it,
+        // and the export said nothing about the pause or the other runtime
+        // state it did not carry.
+        let (d, root, q) = setup();
+        for n in ["held", "stopped", "both"] {
+            std::fs::write(root.join(format!(".trellis/agents/{n}.toml")), "").unwrap();
+        }
+        std::fs::write(root.join(".trellis/agents/both.toml"), "paused = true\n").unwrap();
+        std::fs::write(root.join(".trellis/agents/idle.toml"), "").unwrap();
+        let pause = |by| profile::Pause {
+            by,
+            at: crate::iso_now(),
+            reason: None,
+            window: None,
+            month: None,
+        };
+        for (n, by) in [
+            ("held", profile::PausedBy::Human),
+            ("stopped", profile::PausedBy::Budget),
+            ("both", profile::PausedBy::Human),
+        ] {
+            profile::update_overlay(&q, n, |o| o.paused = Some(pause(by))).unwrap();
+        }
+        // An overlay emptied by an unpause carries nothing to leave behind.
+        profile::update_overlay(&q, "idle", |o| o.paused = None).unwrap();
+        std::fs::write(
+            root.join(".trellis/routines/nightly.toml"),
+            "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".trellis/routines/fresh.toml"),
+            "schedule = \"0 3 * * *\"\n[task]\ntext = \"y\"\n",
+        )
+        .unwrap();
+        let routines = routine::load_all(&root).unwrap();
+        routine::evaluate(&q, &routines["nightly"], 1_790_000_000).unwrap();
+        crate::approval::open_budget_request(
+            &q,
+            "stopped",
+            profile::Window::Monthly,
+            "2026-10",
+            120,
+            100,
+            Actor::Human,
+        )
+        .unwrap();
+        let lines = q.activity().tail(usize::MAX).unwrap().len();
+
+        let n = export(&root, &q, &d.path().join("out")).unwrap();
+        assert_eq!(
+            n.paused_by_overlay,
+            vec!["held".to_string(), "stopped".to_string()],
+            "`both` is paused by its file, which the export carries"
+        );
+        assert_eq!(
+            (
+                n.overlays,
+                n.routine_states,
+                n.approval_requests,
+                n.activity_lines
+            ),
+            (3, 1, 1, lines)
+        );
+        assert!(lines >= 1, "the request was logged");
+    }
+
+    #[test]
+    fn export_counts_nothing_left_behind_for_a_fresh_queue() {
+        let (d, root, q) = setup();
+        std::fs::write(root.join(".trellis/agents/rev.toml"), "").unwrap();
+        std::fs::write(
+            root.join(".trellis/routines/nightly.toml"),
+            "schedule = \"0 3 * * *\"\n[task]\ntext = \"x\"\n",
+        )
+        .unwrap();
+        let n = export(&root, &q, &d.path().join("out")).unwrap();
+        assert_eq!((n.agents, n.routines), (1, 1));
+        assert_eq!(
+            n,
+            Exported {
+                agents: 1,
+                routines: 1,
+                ..Exported::default()
+            }
+        );
     }
 
     #[test]
