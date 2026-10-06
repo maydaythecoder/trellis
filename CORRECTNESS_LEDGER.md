@@ -1273,9 +1273,9 @@ killed (#248) by tooling::run_tests::a_profile_that_leaves_out_run_checks_is_tol
 killed (#248) by tooling::run_tests::the_tools_line_names_auto_mode_s_bash_policy | crates/trellis-cli/src/tooling.rs:371:38: replace match guard b.unattended with false in Tooling::line
 killed (#248) by tooling::run_tests::the_tools_line_names_auto_mode_s_bash_policy | crates/trellis-cli/src/tooling.rs:372:38: replace match guard b.allow.is_empty() with false in Tooling::line
 killed (#248) by tooling::run_tests::after_run_is_told_whether_the_run_converged_and_why_not | crates/trellis-cli/src/tooling.rs:400:5: replace outcome_json -> serde_json::Value with Default::default()
-#248 | crates/trellis-cli/src/tui_bridge.rs:45:13: delete match arm "prompt_bytes" in <impl Visit for TurnFields>::record_u64
-#248 | crates/trellis-cli/src/tui_bridge.rs:56:13: delete match arm "message" in <impl Visit for TurnFields>::record_str
-#248 | crates/trellis-cli/src/tui_bridge.rs:78:13: delete match arm "check_kind" in <impl Visit for TurnFields>::record_debug
+killed (#248) by tui_bridge::tests::tui_bridge_budget_carries_the_runs_ceiling_and_its_elapsed_time (already in the suite, since #243) | crates/trellis-cli/src/tui_bridge.rs:45:13: delete match arm "prompt_bytes" in <impl Visit for TurnFields>::record_u64
+killed (#248) by tui_bridge::tests::a_warning_whose_message_is_a_plain_string_field_still_reaches_the_transcript | crates/trellis-cli/src/tui_bridge.rs:56:13: delete match arm "message" in <impl Visit for TurnFields>::record_str
+killed (#248) by tui_bridge::tests::a_check_kind_written_with_the_display_sigil_names_the_check | crates/trellis-cli/src/tui_bridge.rs:78:13: delete match arm "check_kind" in <impl Visit for TurnFields>::record_debug
 killed (#248) by tui_run::tests::a_model_the_person_chose_in_the_tui_is_not_refused_as_the_repository_s | crates/trellis-cli/src/tui_run.rs:334:17: delete field model_from_user from struct crate::RunSeeding expression in run_for_tui
 unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:40: replace || with && in run
 unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:8: delete ! in run
