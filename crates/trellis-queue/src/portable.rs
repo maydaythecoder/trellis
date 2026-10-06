@@ -775,7 +775,7 @@ mod tests {
         )
         .unwrap();
         let routines = routine::load_all(&root).unwrap();
-        routine::evaluate(&q, &routines["nightly"], 1_790_000_000).unwrap();
+        routine::evaluate(&q, &routines["nightly"], 1_790_000_000, &routine::NoGit).unwrap();
         crate::approval::open_budget_request(
             &q,
             "stopped",

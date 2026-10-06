@@ -1028,8 +1028,9 @@ nothing. Paperclip's `require_external_activity` gate suppresses a
 scheduled fire when its activity log has nothing since the routine's last
 dispatched run apart from the routine's own records. In a repository the
 activity such a routine exists for is commits, which the activity log (§9)
-does not see. Not built: this records the rule a later ticket (CLIP-05)
-builds to; neither the key nor the state field exists in the code today.
+does not see. ~~Not built: this records the rule a later ticket (CLIP-05)
+builds to; neither the key nor the state field exists in the code today.~~
+Built for #349.
 
 - **The key and the state.** A routine may set `activity_gate = "commits"`.
   Its state gains a field `last_head`, written only when a scheduled fire
