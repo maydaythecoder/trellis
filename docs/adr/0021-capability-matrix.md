@@ -46,7 +46,10 @@ wherever the two disagree. The items those sections name as not built are:
 
 - **W-A (0022):** auto-creating a note for a newly typed link (row 22).
   There is no typing event on a command line; `vault new` is the explicit
-  form.
+  form. Also row 35–37's writing skill as a skill in the binary (ADR 0022
+  §6). *Amended 2026-10-06 (#360): built in effect instead: Apex's own
+  SKILL.md loads unchanged from a repository or an installed package; row
+  35–37 says how.*
 - **W-B (0023):** per-item trust (one digest covers hooks, custom tools and
   bash together); tracking what bash writes in the worktree. (A
   configurable custom-tool timeout was listed here; #135 built it, and
@@ -248,7 +251,7 @@ Added 2026-10-06 (#329). This section adds no disposition and changes no row. Th
 | 30 BM25 search | W-A (`trellis vault search`) and W-B (a `search_notes` tool) |
 | 31 workspaces / project create | W-A (`trellis vault init`); tabs excluded [ui]. **Amended 2026-10-06 (#359, re-inventory 2026-10-04):** Apex's project create (src-tauri/src/lib.rs:290-313) stays W-A as `trellis vault init`; tabs, recent projects, the folder rename and the location chooser are rows 44 to 47. |
 | 32–34 validation status, live sync, size warnings | W-A (`trellis vault check` with the Apex report line and size warnings); live sync excluded (no long-lived process) |
-| 35–37 writing skill, hierarchy prompt, AGENTS.md | W-A ships the writing contract as a built-in skill; the prompt is excluded [ui]. **Amended 2026-10-06 (#359, re-inventory 2026-10-04):** the AGENTS.md item (Apex's AGENTS.md:1-60) is not W-A's: AGENTS.md reaches the model as a context file under ADR 0025, and trellis ships no Apex rules of its own (crates/trellis-cli/src/context_files.rs). |
+| 35–37 writing skill, hierarchy prompt, AGENTS.md | W-A ships the writing contract as a built-in skill; the prompt is excluded [ui]. **Amended 2026-10-06 (#359, re-inventory 2026-10-04):** the AGENTS.md item (Apex's AGENTS.md:1-60) is not W-A's: AGENTS.md reaches the model as a context file under ADR 0025, and trellis ships no Apex rules of its own (crates/trellis-cli/src/context_files.rs). The writing skill is built in effect (owner-directed, 2026-10-04): Apex's SKILL.md (skills/apex-notes-writing/SKILL.md at `f449644a`) loads unchanged when copied into `.trellis/skills/` or read from an installed package's `skills/` directory (ADR 0039 §10), held by the tests apex_s_writing_skill_loads_unchanged_from_the_repository and apex_s_writing_skill_loads_unchanged_from_an_installed_package in crates/trellis-loop/src/skills.rs (#360); as ADR 0022 §6 says, trellis carries no skill in its binary, and the row was settled as the session's choice under the owner's 2026-10-04 delegation. |
 | 38–42 build, packaging, native, self-update | excluded [ui/desktop] |
 | 43 path safety for workspace files | built (W-A), shown by the a_symlinked tests in crates/trellis-vault (tests/parity.rs): a symlinked notes/, manifest.json, layout.json or dates.json is refused, as Apex refuses a symlinked notes/ (src-tauri/src/lib.rs:236-243) and its workspace metadata; see the ADR 0022 §1 and §3 amendments (#353). (re-inventory 2026-10-04) |
 | 44–47 workspace tabs, recent projects, project folder rename, project location chooser | excluded (#70): a command line opens one repository's vault, and row 31's `trellis vault init` is the built part (web/appShell.ts:1102-1222, 1346-1380, 1058-1131, 1382-1537). (re-inventory 2026-10-04) |
