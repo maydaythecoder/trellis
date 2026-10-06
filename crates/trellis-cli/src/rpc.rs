@@ -1118,6 +1118,7 @@ impl Chain {
                 focus: self.focus.as_deref(),
                 profile: None,
                 model_from_user: self.model_from_user,
+                model_source: crate::hosted::SpecSource::Repository,
                 queued: false,
                 services: &[],
             },
