@@ -398,4 +398,26 @@ mod tests {
             assert!(unsafe_repo_path(ok).is_none(), "`{ok}` is ordinary");
         }
     }
+
+    #[test]
+    fn a_path_not_yet_made_is_judged_where_it_would_land() {
+        // The risk (#441): the reads' own resolver passed every path when
+        // the root could not be resolved, and a writer that asks without
+        // the spelling check first must still see a new file under a
+        // nested `.git` refused.
+        let d = scratch("landing");
+        std::fs::create_dir_all(d.0.join("src")).unwrap();
+        assert_eq!(
+            resolve_repo_path(&d.0, "src/new/a.py").unwrap(),
+            "src/new/a.py"
+        );
+        assert!(matches!(
+            resolve_repo_path(&d.0, "src/.git/new"),
+            Err(RepoInputError::IntoGit { .. })
+        ));
+        assert!(matches!(
+            resolve_repo_path(&d.0.join("no-such-root"), "a"),
+            Err(RepoInputError::RootUnresolved { .. })
+        ));
+    }
 }
