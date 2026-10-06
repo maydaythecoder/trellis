@@ -1975,10 +1975,18 @@ impl Fanout {
     /// to `agents` at once. Each target resolves as `radius` resolves it; an
     /// unknown or ambiguous one is refused (ADR 0045 §1).
     pub(crate) fn plan(root: &Path, targets: &[String], agents: u32, why: String) -> Result<Self> {
+        // A target named twice is one work unit, not two.
+        let mut unique: Vec<String> = Vec::with_capacity(targets.len());
+        for t in targets {
+            if !unique.contains(t) {
+                unique.push(t.clone());
+            }
+        }
+        let targets = unique;
         let index = trellis_index::build_cached(root);
         let mut units = Vec::with_capacity(targets.len());
         let mut resolved = Vec::with_capacity(targets.len());
-        for t in targets {
+        for t in &targets {
             let id = crate::index_cmd::resolve_symbol(&index, t)?;
             units.push(trellis_loop::partition::unit_for(&index, id));
             resolved.push((t.clone(), id));
@@ -2003,7 +2011,7 @@ impl Fanout {
         .unwrap_or(NonZeroUsize::MIN);
         Ok(Self {
             plan,
-            targets: targets.to_vec(),
+            targets,
             names,
             width,
             why,
