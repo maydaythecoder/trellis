@@ -1161,27 +1161,27 @@ neither cargo-mutants nor the workspace suite was run. Line numbers are
 #248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with true in agents
 #248 | crates/trellis-cli/src/orchestrate.rs:450:25: replace match guard !p.file.paused with false in agents
 #248 | crates/trellis-cli/src/orchestrate.rs:450:25: delete ! in agents
-#248 | crates/trellis-cli/src/process_agent.rs:135:51: replace || with && in Judge::governance
-#248 | crates/trellis-cli/src/process_agent.rs:401:8: delete ! in run
-#248 | crates/trellis-cli/src/process_agent.rs:414:62: replace && with || in run
-#248 | crates/trellis-cli/src/process_agent.rs:444:42: replace && with || in run
-#248 | crates/trellis-cli/src/process_agent.rs:505:13: delete match arm Ended::TimedOut in run
-#248 | crates/trellis-cli/src/process_agent.rs:506:13: delete match arm Ended::Interrupted in run
-#248 | crates/trellis-cli/src/process_agent.rs:507:18: replace match guard !git_changed.is_empty() with false in run
-#248 | crates/trellis-cli/src/process_agent.rs:514:18: replace match guard ignored_unread.is_some() with false in run
-#248 | crates/trellis-cli/src/process_agent.rs:523:18: replace match guard !denied.is_empty() with false in run
-#248 | crates/trellis-cli/src/process_agent.rs:572:9: delete match arm Ended::Interrupted in run
-#248 | crates/trellis-cli/src/process_agent.rs:640:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
-#248 | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with None
-#248 | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with Some(Default::default())
-#248 | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
-#248 | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
-#248 | crates/trellis-cli/src/process_agent.rs:659:9: replace Running::end with ()
-#248 | crates/trellis-cli/src/process_agent.rs:709:9: replace Running::take_stdin -> Option<std::fs::File> with None
-#248 | crates/trellis-cli/src/process_agent.rs:721:9: replace Running::end with ()
-#248 | crates/trellis-cli/src/process_agent.rs:731:9: replace Running::finish with ()
-#248 | crates/trellis-cli/src/process_agent.rs:815:24: delete ! in write_trail
-#248 | crates/trellis-cli/src/process_agent.rs:822:21: delete ! in write_trail
+killed (#248) by process_agent::tests::a_path_deny_write_refuses_is_refused_once_not_again_by_allow_write | crates/trellis-cli/src/process_agent.rs:135:51: replace || with && in Judge::governance
+killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:401:8: delete ! in run
+killed (#248) by process_agent::tests::a_change_that_cannot_be_read_or_rolled_back_is_not_restored | crates/trellis-cli/src/process_agent.rs:414:62: replace && with || in run
+killed (#248) by process_agent::tests::a_command_that_changed_nothing_is_not_audited | crates/trellis-cli/src/process_agent.rs:444:42: replace && with || in run
+killed (#248) by process_agent::tests::a_timed_out_command_says_it_timed_out | crates/trellis-cli/src/process_agent.rs:505:13: delete match arm Ended::TimedOut in run
+killed (#248) by process_agent::tests::an_interrupted_command_ends_as_interrupted_and_says_so | crates/trellis-cli/src/process_agent.rs:506:13: delete match arm Ended::Interrupted in run
+killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:507:18: replace match guard !git_changed.is_empty() with false in run
+unexercisable (#248): needs the ignored-file listing to fail after the command while `git diff` on the same repository succeeds (a broken index fails both, and returns earlier); no deterministic way found | crates/trellis-cli/src/process_agent.rs:514:18: replace match guard ignored_unread.is_some() with false in run
+killed (#248) by process_agent::tests::each_refusal_is_given_as_its_own_reason | crates/trellis-cli/src/process_agent.rs:523:18: replace match guard !denied.is_empty() with false in run
+killed (#248) by process_agent::tests::an_interrupted_command_ends_as_interrupted_and_says_so | crates/trellis-cli/src/process_agent.rs:572:9: delete match arm Ended::Interrupted in run
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:640:9: replace Running::spawn -> std::io::Result<Running> with Ok(Default::default())
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with None
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:644:9: replace Running::take_stdin -> Option<std::process::ChildStdin> with Some(Default::default())
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(None)
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:648:9: replace Running::try_wait -> std::io::Result<Option<std::process::ExitStatus>> with Ok(Some(Default::default()))
+not examined (#248): `#[cfg(unix)]` code, which cargo-mutants mutates but the Windows host it ran on never compiles, so it survives there by construction; the stdin, interrupt and timeout tests in process_agent::tests reach it on unix, not run there for this pass | crates/trellis-cli/src/process_agent.rs:659:9: replace Running::end with ()
+killed (#248) by process_agent::tests::the_task_text_reaches_the_command_on_stdin | crates/trellis-cli/src/process_agent.rs:709:9: replace Running::take_stdin -> Option<std::fs::File> with None
+equivalent (#248): `end` is `finish` and a bounded reap; the loop calls `finish` again as soon as it breaks, so the job is ended either way and only the reap of an already-killed process is lost | crates/trellis-cli/src/process_agent.rs:721:9: replace Running::end with ()
+killed (#248) by process_agent::tests::a_timed_out_command_is_ended_before_it_can_write_again | crates/trellis-cli/src/process_agent.rs:731:9: replace Running::finish with ()
+killed (#248) by process_agent::tests::the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files | crates/trellis-cli/src/process_agent.rs:815:24: delete ! in write_trail
+killed (#248) by process_agent::tests::the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files | crates/trellis-cli/src/process_agent.rs:822:21: delete ! in write_trail
 #248 | crates/trellis-cli/src/services.rs:40:34: replace * with +
 #248 | crates/trellis-cli/src/services.rs:256:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in create_fresh
 #248 | crates/trellis-cli/src/services.rs:277:9: replace Proc::spawn -> Result<(Proc, u32)> with Ok((Default::default(), 0))
