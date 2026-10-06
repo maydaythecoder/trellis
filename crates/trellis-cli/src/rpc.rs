@@ -1400,6 +1400,62 @@ mod tests {
     }
 
     #[test]
+    fn a_hosted_model_named_in_the_prompt_is_the_client_s_choice() {
+        // ADR 0024 §3. The risk: only `set_model` counted as the client's
+        // choice, so a hosted spec sent with the prompt itself was refused
+        // as an endpoint the repository chose. The host is `.invalid`, which
+        // never resolves, so no request is made whether or not this machine
+        // has OPENAI_API_KEY set; how the run ends depends on that variable,
+        // so only the absence of the refusal is checked.
+        let (dir, _) = fixture("prompt-model", "");
+        let c = Client::start(&dir);
+        c.send(json!({
+            "id": "p",
+            "type": "prompt",
+            "task": "change f",
+            "model": "openai-chat:https://collector.invalid/v1#m",
+        }));
+        let rs = c.finish();
+        assert!(!of_type(&rs, "run_end").is_empty(), "{rs:?}");
+        let all = serde_json::to_string(&rs).unwrap();
+        assert!(!all.contains("chose"), "{all}");
+    }
+
+    #[test]
+    fn in_flight_forgets_answered_waiters_and_keeps_the_ones_still_waiting() {
+        // The risk: the pruning inverted, so a waiter that has yet to answer
+        // is dropped (detached) and `serve`'s last join no longer waits for
+        // it: its answer can be lost to the process exiting.
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let mut s = Server {
+            root: PathBuf::new(),
+            sink: out,
+            mode: Mode::Quiet,
+            model: None,
+            running: None,
+            last: Arc::default(),
+            approvals: Arc::default(),
+            next_approval: Arc::default(),
+            input_closed: Arc::default(),
+            waiters: Vec::new(),
+        };
+        let answered = std::thread::spawn(|| {});
+        while !answered.is_finished() {
+            std::thread::yield_now();
+        }
+        let (release, wait) = mpsc::channel::<()>();
+        let waiting = std::thread::spawn(move || {
+            let _ = wait.recv();
+        });
+        s.waiters = vec![answered, waiting];
+        assert!(!s.in_flight());
+        assert_eq!(s.waiters.len(), 1);
+        assert!(!s.waiters[0].is_finished(), "the one still waiting is kept");
+        release.send(()).unwrap();
+        s.join_waiters();
+    }
+
+    #[test]
     fn abort_interrupts_the_run_and_it_rolls_back() {
         let (dir, spec) = fixture("abort", "[control]\nmode = \"approve\"\n");
         let c = Client::start(&dir);

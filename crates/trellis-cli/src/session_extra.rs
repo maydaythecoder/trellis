@@ -614,6 +614,67 @@ mod tests {
         );
     }
 
+    /// A reader over lines already sent, as the reading thread sends them.
+    fn reader_of(lines: Vec<Line>) -> Reader {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for l in lines {
+            tx.send(l).unwrap();
+        }
+        Reader {
+            lines: rx,
+            stop: Default::default(),
+        }
+    }
+
+    #[test]
+    fn late_lines_are_named_not_delivered_blank_ones_are_not_and_end_of_input_is_said() {
+        // The risk: a line typed at no prompt silently lost, a blank one
+        // reported, or end of input missed so the session reads a closed
+        // stdin again.
+        let mut out = Vec::new();
+        let ended = reader_of(vec![Some("late one\n".into()), Some("  \n".into()), None])
+            .drain_late(&mut out);
+        assert!(ended);
+        assert_eq!(String::from_utf8(out).unwrap(), "not delivered: late one\n");
+        let mut out = Vec::new();
+        assert!(!reader_of(vec![Some("\n".into())]).drain_late(&mut out));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn the_line_in_flight_is_handed_to_the_session_as_typed() {
+        // The risk: the line the person typed while the run ended is dropped
+        // or replaced, and the session acts on something else.
+        assert_eq!(
+            reader_of(vec![Some("/status\n".into())]).next_line(),
+            Some("/status\n".to_string())
+        );
+    }
+
+    #[test]
+    fn the_reader_reads_nothing_after_end_of_input() {
+        // The risk: a reader that keeps reading after end of input spins on
+        // a closed stdin and hands on lines from after it.
+        let mut script = vec![None, Some("after\n".to_string())].into_iter();
+        let mut r = Reader::spawn(Box::new(move || script.next().flatten())).unwrap();
+        assert_eq!(r.lines.blocking_recv(), Some(None), "end of input");
+        assert_eq!(r.lines.blocking_recv(), None, "and nothing after it");
+    }
+
+    #[test]
+    fn a_stopped_reader_reads_no_line_after_the_one_in_flight() {
+        // The risk (#116): a reader that goes on reading after the run ends
+        // is a second reader of stdin beside the line editor.
+        let (typing, read) = scripted_stdin::stdin();
+        let mut r = Reader::spawn(read).unwrap();
+        r.stop();
+        typing.send("in flight\n".into()).unwrap();
+        typing.send("for the line editor\n".into()).unwrap();
+        drop(typing);
+        assert_eq!(r.lines.blocking_recv(), Some(Some("in flight\n".into())));
+        assert_eq!(r.lines.blocking_recv(), None, "the thread has ended");
+    }
+
     #[test]
     fn a_shell_command_runs_in_the_repository_root() {
         let d = tempfile::tempdir().unwrap();

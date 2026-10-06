@@ -645,6 +645,8 @@ mod tests {
         // that can see the names will happily describe the contents.
         assert!(p.contains("NOT been shown the contents"), "{p}");
         assert!(p.contains("is complete for what was indexed"), "{p}");
+        // Every file fits, so none is said to be left out.
+        assert!(!p.contains("more, not listed"), "{p}");
     }
 
     #[test]
