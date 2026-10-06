@@ -232,6 +232,80 @@ backstop = \"pyright\"
     let _ = std::fs::remove_dir_all(&empty);
 }
 
+#[test]
+fn index_does_not_wait_two_minutes_on_a_backstop_server_that_never_answers_initialize() {
+    // #445: `trellis index --graph` went quiet for over two minutes and was
+    // stopped by hand. With `[index] backstop = "pyright"` and a server that
+    // starts but never answers `initialize`, the handshake was held to the
+    // 120 s meant for a first query's import analysis, then `finish` added
+    // up to 7 s: 125 s measured, with nothing printed after the coverage.
+    // The handshake now has its own bound, and the output names it.
+    let d = repo("index-silent-backstop");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        "[index]\nbackstop = \"pyright\"\n",
+    )
+    .unwrap();
+    // A `pyright-langserver` that reads its input to the end and writes
+    // nothing. It exits when trellis closes its stdin, so nothing outlives
+    // the test.
+    let bin = scratch("index-silent-backstop-bin");
+    if cfg!(windows) {
+        std::fs::write(
+            bin.join("pyright-langserver.cmd"),
+            "@\"%SystemRoot%\\System32\\sort.exe\" > nul\r\n",
+        )
+        .unwrap();
+    } else {
+        // No `exec`: `sh` must stay alive holding the stdout pipe, as
+        // cmd.exe does on Windows. With `exec cat > /dev/null` no process
+        // holds it, trellis reads end of stream at once and reports "the
+        // server exited", which is not the silent server this test is about.
+        let stub = bin.join("pyright-langserver");
+        std::fs::write(&stub, "#!/bin/sh\ncat > /dev/null\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["index", "--graph"])
+        .current_dir(&d)
+        .env("NO_COLOR", "1")
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let took = started.elapsed();
+
+    assert!(out.status.success(), "{}", combined(&out));
+    let s = stdout(&out);
+    assert!(
+        s.contains("backstop: pyright did not run (no answer to initialize within 20s)"),
+        "{s}"
+    );
+    assert!(s.contains("codebase graph"), "{s}");
+    // 20 s for the handshake and at most 7 s for `finish`; well under the
+    // 125 s it took before.
+    assert!(
+        took < std::time::Duration::from_secs(60),
+        "index waited {took:?} on a silent server"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
 // ---------------------------------------------------------------------------
 // radius
 // ---------------------------------------------------------------------------

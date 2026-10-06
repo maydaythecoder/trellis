@@ -210,6 +210,11 @@ impl Server {
     }
 }
 
+/// How long `initialize` may go unanswered. The handshake does no analysis
+/// (Pyright reads imports on the first query), so it needs only Node's
+/// start-up; 20 s is the bound trellis-cli's `liveness.rs` gives its probes.
+const INITIALIZE_BOUND: Duration = Duration::from_secs(20);
+
 /// The sites the backstop may be asked about: every call site whose edge the
 /// resolver left `Unresolved` or `Candidates`, in site order.
 pub fn doubt_sites(index: &Index) -> Vec<CallSiteId> {
@@ -869,6 +874,12 @@ impl Lsp {
     /// `name version`, when the server gave one.
     fn initialize(&mut self, root: &Path) -> Result<Option<String>, String> {
         let uri = path_to_uri(root);
+        // The handshake gets its own bound, not `Server::timeout`: that one
+        // is generous for a first query's import analysis, and a server
+        // that never answers `initialize` held `trellis index` silent for
+        // 125 s under it (#445).
+        let query_timeout = self.timeout;
+        self.timeout = query_timeout.min(INITIALIZE_BOUND);
         let result = self.request(
             "initialize",
             json!({
@@ -879,7 +890,9 @@ impl Lsp {
                     "textDocument": {"definition": {"linkSupport": false}},
                 },
             }),
-        )?;
+        );
+        self.timeout = query_timeout;
+        let result = result?;
         self.notify("initialized", json!({}))?;
         let info = result.get("serverInfo");
         let name = info.and_then(|i| i.get("name")).and_then(Value::as_str);
