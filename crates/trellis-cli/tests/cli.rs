@@ -4075,6 +4075,60 @@ fn vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// No raw ESC or carriage return reaches the terminal, and each shows as
+/// the escape that names it.
+fn assert_escaped(out: &str) {
+    assert!(!out.contains('\x1b'), "{out:?}");
+    assert!(!out.contains('\r'), "{out:?}");
+    assert!(out.contains("\\u{1b}"), "{out:?}");
+}
+
+#[test]
+fn vault_escapes_a_note_title_in_search_and_graph() {
+    // #461. The risk: a note is untrusted content (a cloned repository's
+    // vault), and a title holding ESC and a carriage return, printed raw,
+    // can recolour or overwrite the line a person reads. The frontmatter
+    // value is decoded as a JSON string, so `\u001b` and `\r` are the real
+    // characters by the time the title is printed.
+    let (d, _) = repo_with_vault("vault-escapes-title", "vault = \"notes\"\n");
+    std::fs::write(
+        d.join("notes/evil.md"),
+        "---\ntitle: \"Evil\\u001b[31m\\rForged\"\nparent: \"[[root]]\"\n---\nEVIL-BODY\n",
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["vault", "search", "EVIL-BODY"]));
+    assert!(s.contains("evil.md"), "{s:?}");
+    assert_escaped(&s);
+    assert!(s.contains("\\r"), "{s:?}");
+    for note in ["evil", "root"] {
+        let g = stdout(&run(&d, &["vault", "graph", note]));
+        assert!(g.contains("evil.md"), "{g:?}");
+        assert_escaped(&g);
+        assert!(g.contains("\\r"), "{g:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(unix)]
+#[test]
+fn vault_escapes_a_note_file_name_in_search_and_graph() {
+    // #461. The risk: the same forged terminal through a path rather than
+    // a title. Unix only: Windows refuses control characters in file names.
+    let (d, _) = repo_with_vault("vault-escapes-path", "vault = \"notes\"\n");
+    std::fs::write(
+        d.join("notes/es\x1b[31mc.md"),
+        "---\ntitle: \"Plain\"\nparent: \"[[root]]\"\n---\nPATH-BODY\n",
+    )
+    .unwrap();
+    let s = stdout(&run(&d, &["vault", "search", "PATH-BODY"]));
+    assert!(s.contains("Plain"), "{s:?}");
+    assert_escaped(&s);
+    let g = stdout(&run(&d, &["vault", "graph", "root"]));
+    assert!(g.contains("Plain"), "{g:?}");
+    assert_escaped(&g);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn vault_new_says_what_it_created() {
     // #248. The risk: an edit that reports nothing, so the person cannot
