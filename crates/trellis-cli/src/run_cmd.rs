@@ -879,6 +879,21 @@ fn run_body(
             e
         );
     }
+    // The same ordering for a hosted endpoint on this machine, which
+    // `reachable` never covered: asked whether it is colibri and, when it is,
+    // whether it serves the spec's model and takes tools (ADR 0047 decisions
+    // 3 and 4). Resolved again, as for `--image` above, so the read carries
+    // the key the driver's requests would and no other. Nothing remote is
+    // read.
+    let colibri_line = match &driver {
+        Driver::Hosted(_) => {
+            match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
+                Some(r) => probe_rt.block_on(hosted::preflight(&r))?,
+                None => None,
+            }
+        }
+        Driver::Scripted(_) | Driver::Runtime(_) => None,
+    };
 
     // Whether the runtime actually honours the schema, rather than whether
     // its dialect name suggests it should.
@@ -937,6 +952,9 @@ fn run_body(
     // runtime that is not listening is noise ahead of the only line that
     // matters.
     let _ = writeln!(out, "model:    {}", driver.describe());
+    if let Some(line) = colibri_line {
+        let _ = writeln!(out, "runtime:  {line}");
+    }
     if let Driver::Runtime(m) = &driver
         && let Some(n) = hosted::thinking_ignored(&cfg, &format!("{:?}", m.dialect()))
     {
