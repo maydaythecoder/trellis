@@ -965,7 +965,12 @@ fn run_body(
     // Printed after reachability, not before. Describing the tier of a
     // runtime that is not listening is noise ahead of the only line that
     // matters.
-    let _ = writeln!(out, "model:    {}", driver.describe());
+    //
+    // Every line below that echoes configuration goes through `plain`: a
+    // cloned repository chooses `[model] spec`, `[control]` and `[tools]`,
+    // and a control character in any of them would otherwise reach the
+    // terminal on the lines a person reads before the run starts (#492).
+    let _ = writeln!(out, "model:    {}", plain(&driver.describe()));
     if let Some(line) = colibri_line {
         let _ = writeln!(out, "runtime:  {line}");
     }
@@ -975,11 +980,11 @@ fn run_body(
         let _ = writeln!(out, "{n}");
     }
     for line in image_input::lines(&images) {
-        let _ = writeln!(out, "{line}");
+        let _ = writeln!(out, "{}", plain(&line));
     }
-    let _ = writeln!(out, "control:  {}", dial.describe());
+    let _ = writeln!(out, "control:  {}", plain(&dial.describe()));
     if let Some(line) = tooling.line(dial.mode) {
-        let _ = writeln!(out, "tools:    {line}");
+        let _ = writeln!(out, "tools:    {}", plain(&line));
     }
     if let Some(note) = schema_note {
         let _ = writeln!(out, "{note}");
@@ -990,7 +995,7 @@ fn run_body(
     let prior = if resume {
         match trellis_trail::latest(root)? {
             Some((path, trail)) => {
-                let _ = writeln!(out, "resumed:  {}", path.display());
+                let _ = writeln!(out, "resumed:  {}", plain(&path.display().to_string()));
                 let _ = writeln!(
                     out,
                     "          {} lines of prior context, fenced as data",
