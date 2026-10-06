@@ -49,7 +49,7 @@ pub use gate::{
     APPROVABLE_TOOLS, ApprovalGate, ApprovalRequest, BashPolicyGate, DECLINED, EditPreview,
     GateDecision, GateFuture, GovernanceGate, ToolGate, preview_edit, tool_name,
 };
-pub use governance::{Governance, Rule};
+pub use governance::{Governance, Refusal, Rule};
 pub use hooks::{
     BEFORE_RUN_CAP, DEFAULT_HOOK_TIMEOUT_S, DENY_EXIT, HookConfig, HookError, HookGate, Hooks,
     InputDecision, fence_before_run,
