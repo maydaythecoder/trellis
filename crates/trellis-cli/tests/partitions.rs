@@ -245,9 +245,14 @@ fn agents_auto_on_a_scripted_backend_runs_at_width_one_and_says_why() {
     let err = said(&o);
     assert!(err.contains("one at a time"), "{err}");
     assert!(err.contains("unknown"), "the reason is missing:\n{err}");
-    // Today's single-agent path ran: it snapshotted, and the script's edit
-    // stopped without a check, so it was rolled back.
-    assert!(err.contains("snapshot at"), "{err}");
+    // Since #482 width 1 runs the partitions one after another through the
+    // partitioned path (ADR 0045 §2), not one agent on the whole task. Each
+    // agent's edit stopped without a check, so nothing merged.
+    assert!(err.contains("3 partition(s)"), "{err}");
+    assert!(
+        !err.contains("snapshot at"),
+        "the single-agent path ran:\n{err}"
+    );
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert_eq!(
         std::fs::read_to_string(f.root.join("a.py")).unwrap(),
@@ -351,6 +356,70 @@ fn three_partition_run_converges_with_every_partitions_edit() {
         !work.exists() || std::fs::read_dir(&work).unwrap().next().is_none(),
         "a partition worktree was left behind"
     );
+}
+
+#[test]
+fn agents_one_with_targets_runs_each_partition_through_the_partitioned_path() {
+    // ADR 0045 §2 (#482): `--agents 1` with targets runs the plan's
+    // partitions one after another, each by its own agent in its own
+    // worktree, and the integrated check over the union. The risk: a width-1
+    // run that ignores its targets and runs one agent on the whole task, so
+    // a script that gives each target its own steps has nothing to play.
+    let script = serde_json::json!({"targets": {
+        "fa": section("a.py", "A_NEW"),
+        "fb": section("b.py", "B_NEW"),
+    }});
+    let f = fixture_with("one-targets", Some(CHECKS_PASS), &script.to_string());
+    let o = run(
+        &f,
+        &[
+            "run",
+            "change fa and fb",
+            "--model",
+            &f.spec,
+            "--agents",
+            "1",
+            "--target",
+            "fa",
+            "--target",
+            "fb",
+        ],
+    );
+    let out = said(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(
+        out.contains("CONVERGED") && !out.contains("NOT CONVERGED"),
+        "{out}"
+    );
+    assert!(out.contains("one at a time"), "{out}");
+    for (file, func, value) in [("a.py", "fa", "A_NEW"), ("b.py", "fb", "B_NEW")] {
+        assert_eq!(
+            std::fs::read_to_string(f.root.join(file)).unwrap(),
+            format!("def {func}():\n    return '{value}'\n"),
+            "{file} does not hold its partition's edit:\n{out}"
+        );
+    }
+    assert_eq!(git(&f.root, &["rev-parse", "HEAD~1"]), f.head, "{out}");
+    // The trail opens an action per partition, which only the partitioned
+    // path writes.
+    let trail = the_trail(&f.root);
+    let actions = trail["factual"]["actions"].as_array().unwrap();
+    let opened: Vec<&str> = actions
+        .iter()
+        .filter(|a| a["tool"] == "partition")
+        .map(|a| a["target"].as_str().unwrap())
+        .collect();
+    assert_eq!(opened.len(), 2, "{trail:#}");
+    assert!(
+        opened.iter().any(|t| t.contains("fa")) && opened.iter().any(|t| t.contains("fb")),
+        "{trail:#}"
+    );
+    let edited: std::collections::BTreeSet<&str> = actions
+        .iter()
+        .filter(|a| a["tool"] == "edit")
+        .map(|a| a["target"].as_str().unwrap())
+        .collect();
+    assert_eq!(edited, ["a.py", "b.py"].into(), "{trail:#}");
 }
 
 /// A type check that fails only when `a.py` holds `A_NEW` and `b.py` holds

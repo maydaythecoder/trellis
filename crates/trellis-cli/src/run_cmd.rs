@@ -708,9 +708,9 @@ fn run_body(
         }
         anyhow::bail!(
             "this repository's trusted code ({}) runs under a trust guard and writer guards \
-             that watch the repository root, and a multi-agent run works in one worktree per \
-             partition, where they would not watch it. Pass --agents 1, or run without the \
-             trusted configuration. Nothing was snapshotted.",
+             that watch the repository root, and a run with --target works in one worktree per \
+             partition, where they would not watch it. Pass --agents 1 without --target, or run \
+             without the trusted configuration. Nothing was snapshotted.",
             loaded.join(", ")
         );
     }
@@ -781,7 +781,7 @@ fn run_body(
     if extras.fanout.is_some() && !extras.images.is_empty() {
         anyhow::bail!(
             "--image goes to one agent's first message, and this run has one agent per \
-             partition; pass --agents 1 to send it. Nothing was snapshotted."
+             partition; pass --agents 1 without --target to send it. Nothing was snapshotted."
         );
     }
 
@@ -1954,9 +1954,9 @@ fn run_governance(
     Ok((rules, governance))
 }
 
-/// `trellis run --agents N --target <symbol>...` with N above 1 (ADR 0045,
-/// #466): the plan the targets make, which targets each partition holds,
-/// and how many partitions run at once.
+/// `trellis run --agents N --target <symbol>...` (ADR 0045, #466; N of 1
+/// since #482): the plan the targets make, which targets each partition
+/// holds, and how many partitions run at once.
 pub(crate) struct Fanout {
     plan: trellis_loop::partition::Plan,
     /// Every target, as the user typed it.
@@ -2104,7 +2104,8 @@ fn head_of(root: &Path) -> Result<String> {
 }
 
 /// A multi-agent run (#466): each partition of the plan by its own agent in
-/// its own worktree, then the integrated check over the merged union.
+/// its own worktree, then the integrated check over the merged union. At
+/// width 1 the partitions run one after another on the same path (#482).
 ///
 /// `Supervisor::run_integrated` owns the snapshot and the rollback; nothing
 /// here takes or restores one. Each partition's orchestrator has the run's
@@ -2181,10 +2182,16 @@ fn run_partitioned(p: Partitioned<'_>, out: &mut (dyn std::io::Write + Send)) ->
         },
         &mut *out,
     )?;
+    // At width 1 the partitions run one after another (ADR 0045 §2), and the
+    // line says so rather than "up to 1 at once" (#482).
+    let pace = match fanout.width.get() {
+        1 => "one at a time".to_string(),
+        n => format!("up to {n} at once"),
+    };
     let _ = writeln!(
         out,
-        "agents:   {count} partition(s), up to {} at once ({})",
-        fanout.width, fanout.why
+        "agents:   {count} partition(s), {pace} ({})",
+        fanout.why
     );
     for part in plan.in_order() {
         let _ = writeln!(
