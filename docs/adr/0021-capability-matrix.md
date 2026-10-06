@@ -181,6 +181,52 @@ Rows for items that `docs/inventory/inventory-pi.md` (pi 1.0.2) tags NEW. Dispos
 | 16.1-16.7 MCP client | excluded (#73, answered 2026-09-28: "Keep all excluded"; recorded by #323). Accepted (owner-directed): #73's answer holds for pi 1.0.2's client, the session's choice under the owner's 2026-10-04 delegation. pi 0.99.0 made an MCP client part of pi: stdio and streamable HTTP servers from `~/.pi/agent/mcp.json` and, after project trust, `.pi/mcp.json`; OAuth; resources; `/mcp` and `pi mcp`; exposure through codemode by default; and the standalone pi-mcp package. The reasons for keeping MCP out are about trellis's trust model and do not change because pi ships a client: a long-lived connection, remote tool schemas the model sees unreviewed, and credentials per server. 16.2 (OAuth and its credential file, `mcp-auth.json`) is excluded under ADR 0010 and #64, and 16.1's streamable HTTP servers are a networked component (brief Part 1). The supported way to reach one stdio MCP server is a `[[tools.custom]]` command (ADR 0023) declared under `.trellis/`: trusted by digest, gated by `[control]`, run in the throwaway clone with keys scrubbed (ADR 0032), returning text (crates/trellis-loop/src/registry.rs:176-191). The owner reopening #73 reverses this: stdio servers only, or streamable HTTP as well, needs a v2.0 brief line and an ADR amending Paperclip 72–75 and ADR 0023, and amends this row in place. |
 | 17.1-17.6 codemode, tool exposure and tool search | excluded (row 1.7, #63; recorded by #324). Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation. pi 0.99.0 added a codemode tool whose model-written JavaScript runs in a QuickJS sandbox and calls tools, with only the script's output reaching the model (17.1); a store that keeps small JSON values across calls (17.2); `models.classify()` and `models.generateImages()` in scripts (17.3); `tool_search`, which finds undeclared tools and declares the matches (17.4); exposure modes `direct`, `model-only`, `codemode`, `deferred` and `hidden` with namespaces (17.5); and `prepareLoadout` (17.6) (inventory 17.1-17.6: ca/docs/codemode.md:7, :30, :59; ca/docs/cli.md:170-172; ca/docs/extensions.md:152-164, :180; ca/CHANGELOG.md:175-176). A script that calls several tools is several calls in one turn, which row 1.7 excludes (#63), and codemode would add a JavaScript engine dependency. trellis's tool set is fixed: built once at run start, and a call outside it is refused (crates/trellis-loop/src/registry.rs:1-11), so 17.4-17.6, which change what the model is offered while a run is going, have no place to act. They keep a large tool list, mostly MCP servers, out of the prompt; with MCP excluded (row 16.1-16.7, #73) trellis's list is its 16 approvable built-ins (crates/trellis-loop/src/gate.rs:178) plus a repository's custom tools. 17.2 also needs state carried across calls on a session branch, and the session tree stays deferred (#50, declined 2026-09-28; rows 8.1–8.4). 17.3 is classification and image generation, excluded under row 2.14 (#66). The owner reversing #63 reverses this (an ADR superseding ADR 0005's one call per turn, as row 1.7 sets out), and so does reversing #73 so that a repository's tool list outgrows the prompt (deferred exposure with `tool_search` for custom tools, amending ADR 0023 and the registry's fixed set). |
 
+#### pi 1.0.2: changed upstream, disposition unchanged (2026-10-04)
+
+Added 2026-10-06 (#329). This section adds no disposition and changes no row. The pi 1.0.2 inventory tags 47 items CHANGED since 0.87.1; eight have a new or amended row elsewhere (1.2, 1.7, 2.1, 2.14, 2.17, 2.18, 9.4, 14.3). For each of the other 39 the upstream change leaves the pi row's reason standing, on the reason given here, so a disposition that was re-read against pi 1.0.2 can be told from one that was not. A row named here is as written in the table above; PI-03 is #323, PI-04 is #324, PI-05 is #325 and PI-11 is #328.
+
+| Item (`inventory-pi.md`) | Why the disposition stands |
+|---|---|
+| 1.4 Tool selection flags and defaultTools | `[tools] enable` and `disable` (`ToolsSection`, crates/trellis-cli/src/config.rs) do what pi's +name and -name entries do; `[tools]` comes from the repository alone and is not layered over the user file (ADR 0025 §7; `layer()` in crates/trellis-cli/src/user_config.rs), so pi's project-over-user merge of those entries has no counterpart; each run builds its tool set at start (crates/trellis-loop/src/registry.rs), so nothing needs `/reload` |
+| 1.5 Output truncation | the model-facing cap is unchanged (2,000-character tail, ADR 0019); the new 1 MiB structured result serves codemode (row 17.1-17.6, PI-04, #324) |
+| 1.9 Retries and backoff | upstream fixes only (0.99.2, 1.0.1); `retry_delay` (crates/trellis-model/src/hosted.rs) honours `Retry-After` in seconds or as an IMF-fixdate HTTP date (#149, ADR 0024 §4), and an unparsed value, the RFC 850 and asctime forms included, falls back to the 1, 2, 4 s backoff, as upstream's 0.99.2 fix does; the W-C bullet under "Where this stands" that lists a dated `Retry-After` as not built predates #149 |
+| 2.2 Login | stays excluded (ADR 0010, #64); the new login flows still store credentials |
+| 2.4 Cloud platforms | upstream fixes only; request signing stays deferred (#45) |
+| 2.6 models.json endpoints and overrides | `[[providers]] input_bytes` built (#162); typed classifier and image entries follow rows 2.17 and 2.18 (PI-05, #325); cache lifetimes and cost tables stay not built (row 2.6) |
+| 2.7 Model catalog overlay | built (crates/trellis-model/src/catalog.rs, `trellis model`); the new type filter serves classifier and image models, rows 2.17 and 2.18 (PI-05, #325) |
+| 2.8 Thinking levels | built for the levels the two spoken protocols carry (crates/trellis-model/src/hosted.rs); a run uses one `[model] thinking` throughout, so there is no per-message level to record |
+| 2.10 llama.cpp router | `trellis model pull` built (ADR 0044); router management stays deferred (#45); its new classifier listing follows row 2.17 (PI-05, #325) |
+| 2.11 Radius gateway | stays excluded, a networked service (ADR 0010, #65); its reach into login, MCP and sharing falls under the same clauses and #73 |
+| 2.12 Custom providers | `[[providers]]` built (ADR 0024 §2); code-defined providers need an in-process runtime trellis does not have (ADR 0023) |
+| 3.4 Sectioned system prompt | built (fenced sections, crates/trellis-loop/src/adapter.rs); the new mcp_servers section follows the MCP client (row 16.1-16.7, PI-03, #323) |
+| 4.1 Extension loading | processes exchanging JSON in place of an in-process runtime (row "4 extensions"); the new built-in extensions are MCP, llama.cpp, codemode and tool search (PI-03 #323, #45, PI-04 #324) |
+| 4.8 Tool events | built (`pre_tool` gates, `post_tool` observes; ADR 0023 §5); nested calls and MCP calls through them follow rows 4.23 (PI-04, #324) and 16.1-16.7 (PI-03, #323) |
+| 4.13 Tools and commands methods | the tool set is fixed at run start (crates/trellis-loop/src/registry.rs); exposure reporting follows row 17.1-17.6 (PI-04, #324) |
+| 4.16 Extension context | hooks get JSON on stdin (ADR 0023 §5); `executeTool` and `tools` follow row 4.23 (PI-04, #324) |
+| 4.18 Extension UI context | excluded, cosmetic, per the itemised list; desktop and web surfaces stay excluded (#70) |
+| 4.19 Tool definition fields | the new fields are items 4.24, 13.5, 17.5 and 17.6, recorded in rows "4.24 structured tool results" and "17.1-17.6 codemode, tool exposure and tool search" (PI-04, #324) and "13.5 tool annotations" (PI-11, #328) |
+| 6.1 Prompt templates | built, every substitution form including `${@:-d}` and `${@:N}` (crates/trellis-cli/src/templates.rs); `trellis run --prompt <name>` covers `--prompt-template` |
+| 8.1 Session tree storage | stays deferred (#50) |
+| 8.5 Auto-compaction | built, elision keyed to `[model] context_bytes` (ADR 0024 §5, ADR 0033); per-model limits are `[[providers]] input_bytes` (#162); routed-model windows follow virtual models (row 2.19, PI-05, #325) |
+| 8.8 Export and share | built, `trellis log --json` (crates/trellis-cli/src/log_cmd.rs); HTML stays excluded (#143) and share excluded (#65) |
+| 9.1 Interactive and print modes | built (`trellis run`, `trellis session`, `trellis tui`); `--export` renders a session as HTML, excluded (#143) |
+| 9.3 Event types | `--json` carries trellis's own tracing events and framing records, not pi's vocabulary (ADR 0025 §4) |
+| 9.6 SDK | built in effect (the crates are libraries); the new extension factories serve MCP, codemode and tool search (PI-03 #323, PI-04 #324) |
+| 10.1 Package commands | `trellis install` copies skills and prompt templates (ADR 0039), which declines packages that carry code |
+| 10.2 Package manifest and filters | only `skills/<name>/SKILL.md` and `prompts/<name>.md` are copied (crates/trellis-cli/src/install.rs; ADR 0039) |
+| 11.1 Fullscreen mode | excluded, cosmetic, per the itemised list; `trellis tui` is its own full-screen view |
+| 11.4 Themes | excluded, cosmetic, per the itemised list |
+| 11.7 Inline images | excluded, cosmetic, per the itemised list |
+| 12.1 Settings locations and layering | built (crates/trellis-cli/src/user_config.rs; ADR 0025 §7); the settings pi made user-only (MCP, trust, cache warming) each have their own row |
+| 12.2 Environment variables | `TRELLIS_CONFIG_DIR` and the platform fallbacks (crates/trellis-cli/src/user_config.rs); the pi variables added name features excluded or absent here |
+| 13.1 No sandbox and no per-call approval | trellis is stricter: the control dial (ADR 0018), `bash` off by default (ADR 0023 §3), the throwaway clone (ADR 0032) |
+| 13.2 Project trust | built (crates/trellis-cli/src/trust_cmd.rs, crates/trellis-loop/src/trust.rs; ADR 0023 §4); trust-gating `mcp.json` follows the MCP client (row 16.1-16.7, PI-03, #323) |
+| 14.1 Telemetry | `tracing` is the one telemetry path; no network telemetry (brief Part 1) |
+| 14.2 Agent-core hooks | built (crates/trellis-loop/src/orchestrator.rs and gate.rs); upstream's removal of the agent-core harness changes nothing here |
+| 15.1 chord | stays excluded with row 15 (#65) |
+| 15.2 pi-protocol | stays excluded with row 15 (#65) |
+| 15.3 pi-server and experimental client and server commands | stays excluded with row 15 (#65) |
+
 ## Apex (`inventory-apex.md`)
 
 | Items | Disposition |
