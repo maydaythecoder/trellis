@@ -162,7 +162,16 @@ pub(crate) struct ModelSection {
     /// input_bytes` or else `hosted::HOSTED_CONTEXT_BYTES`; those are
     /// applied when the driver is built, not here.
     pub context_bytes: Option<u64>,
+    /// Seconds one model request may take, for every runtime (ADR 0047 §9);
+    /// [`DEFAULT_MODEL_TIMEOUT_S`] when absent, and 0 is refused at load.
+    /// Read and layered here; the clients still use their fixed 300 s until
+    /// #266 applies it.
+    pub timeout_s: Option<u64>,
 }
+
+/// `[model] timeout_s` when unset: the fixed per-request timeout every
+/// client had before the key existed (ADR 0047 §9).
+pub(crate) const DEFAULT_MODEL_TIMEOUT_S: u64 = 300;
 
 /// Rules the loop obeys, read from the repository rather than configured per
 /// session. Enforced by the orchestrator; see `trellis_loop::governance`.
@@ -1203,6 +1212,17 @@ impl RepoConfig {
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
     }
 
+    /// `[model] timeout_s` as a `Duration`, [`DEFAULT_MODEL_TIMEOUT_S`]
+    /// when unset. A file that sets 0 never loads (`parse_checked`).
+    pub(crate) fn model_timeout(&self) -> Duration {
+        Duration::from_secs(
+            self.model
+                .as_ref()
+                .and_then(|m| m.timeout_s)
+                .unwrap_or(DEFAULT_MODEL_TIMEOUT_S),
+        )
+    }
+
     /// The `[[providers]]` entry called `name`.
     pub(crate) fn provider(&self, name: &str) -> Result<&ProviderSection> {
         let all = self.providers.as_deref().unwrap_or(&[]);
@@ -1257,6 +1277,27 @@ mod provider_tests {
         let c: RepoConfig = toml::from_str("[model]\nthinking = \"max\"\n").unwrap();
         assert!(c.thinking().is_err());
         assert_eq!(RepoConfig::default().context_bytes(), None);
+    }
+
+    #[test]
+    fn model_timeout_s_is_read_as_seconds() {
+        let c: RepoConfig = toml::from_str("[model]\ntimeout_s = 900\n").unwrap();
+        assert_eq!(c.model_timeout(), Duration::from_secs(900));
+    }
+
+    #[test]
+    fn model_timeout_s_unset_is_the_300_s_every_request_had_before() {
+        // The risk: a config written before the key existed changing how
+        // long a request may take. Absent, in a `[model]` section or with
+        // no section at all, is the fixed 300 s (ADR 0047 §9).
+        let older: RepoConfig =
+            toml::from_str("[model]\nspec = \"scripted:a.json\"\nthinking = \"high\"\n").unwrap();
+        assert_eq!(older.model(), Some("scripted:a.json".to_string()));
+        assert_eq!(older.model_timeout(), Duration::from_secs(300));
+        assert_eq!(
+            RepoConfig::default().model_timeout(),
+            Duration::from_secs(300)
+        );
     }
 
     #[test]

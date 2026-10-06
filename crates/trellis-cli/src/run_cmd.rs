@@ -76,9 +76,18 @@ enum Driver {
 ///
 /// `Outcome` does not carry the summary, and the session's `/copy` wants it.
 /// Observing it on the way past keeps that inside the binary: the loop's
-/// types stay as they are, and every other method passes straight through,
-/// so the budget, the context figures and the compactions are the driver's
-/// own.
+/// types stay as they are, and every method the loop reads passes straight
+/// through, so the budget, the context figures, the compactions and the
+/// step's usage are the driver's own.
+///
+/// `prompt_tokens` and `requested_compactions` are not forwarded, and need
+/// not be (#487): the loop never calls them, and the trail reads them, with
+/// the compactions, from the concrete `Driver` after the run, around this
+/// wrapper (`prompt_tokens` and `driver.requested_compactions()` in
+/// `cmd_run`). A compaction asked for over RPC is acted on by the driver,
+/// through `Driver::compact_on_request`, not through this trait. A new read
+/// through the wrapper needs the method forwarded here and in
+/// `rpc::Watched`.
 struct SeesDone<'a, M> {
     inner: &'a mut M,
     done: &'a mut Option<String>,
@@ -106,6 +115,10 @@ impl<M: trellis_loop::Model + Send> trellis_loop::Model for SeesDone<'_, M> {
 
     fn compactions(&self) -> &[trellis_loop::Compacted] {
         self.inner.compactions()
+    }
+
+    fn step_usage(&self) -> trellis_loop::StepUsage {
+        self.inner.step_usage()
     }
 }
 
@@ -160,7 +173,10 @@ impl Driver {
                 base,
                 model,
             } => {
-                let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?;
+                // `[model] timeout_s` bounds each request (ADR 0047 decision
+                // 9); the wall-clock budget still bounds the run (ADR 0008).
+                let client = trellis_model::RuntimeClient::new(base, *dialect, model.clone())?
+                    .with_timeout(cfg.model_timeout());
                 // Named rather than `new(client, !unconstrained)`: the flag is
                 // called --unconstrained, so a negated bool at the call site
                 // meant reading two negations to learn which tier runs.
@@ -4148,6 +4164,28 @@ mod interrupt_tests {
         assert_eq!(m.prompt_bytes(), Some(4321));
         assert_eq!(m.compactions().len(), 1);
         assert_eq!(m.compactions()[0].elided_bytes, 50);
+    }
+
+    #[test]
+    fn sees_done_over_watched_forwards_step_usage() {
+        // The risk (#256): a wrapper answering the trait's default would
+        // leave every run's `turn` event without output tokens or queue
+        // wait, though the driver measured both.
+        use trellis_loop::Model;
+        let mut inner = crate::testutil::figures();
+        let mut watched = crate::rpc::Watched::new(&mut inner, None);
+        let mut done = None;
+        let m = SeesDone {
+            inner: &mut watched,
+            done: &mut done,
+        };
+        assert_eq!(
+            m.step_usage(),
+            trellis_loop::StepUsage {
+                completion_tokens: Some(13),
+                queue_wait_ms: Some(250),
+            }
+        );
     }
 
     #[test]
