@@ -83,6 +83,16 @@ const COMMANDS: &[(&str, &str)] = &[
          (default 12)",
     ),
     (
+        "get_session_stats",
+        "prompt and completion tokens of this process's runs, per model, from their \
+         trails, read-only; never summed, null when a run did not report one",
+    ),
+    (
+        "get_last_assistant_text",
+        "the `done` summary of this process's last run that ended on `done`, read-only: \
+         {text}, null before one",
+    ),
+    (
         "vault_graph",
         "a note's lineage, children and links `trellis vault graph` prints, as data, \
          read-only: {note}",
@@ -93,6 +103,49 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("quit", "abort any run, wait for its rollback, exit"),
 ];
+
+/// The ids of the trails this process's runs wrote, in order, for
+/// `get_session_stats`. Pushed by `output::framed` before each `run_end`.
+type Ran = Arc<Mutex<Vec<String>>>;
+
+/// `get_session_stats`: `/status`'s per-model totals (#318), from the one
+/// function that counts them, over the trails of this process's runs.
+///
+/// Each trail is read when asked, as untrusted data (S10), as `trellis
+/// session` reads it for `/status`. One that does not read back is counted
+/// in `runs_not_counted` rather than left out unsaid, so the totals are not
+/// taken for whole. The model name is trail text; it leaves as a JSON
+/// string through `frame`, which escapes C1 as well.
+fn session_stats(root: &Path, ids: &[String]) -> Value {
+    let mut trails = Vec::new();
+    let mut unread = 0usize;
+    for id in ids {
+        let path = root
+            .join(".trellis")
+            .join("runs")
+            .join(format!("{id}.json"));
+        let read = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                trellis_trail::UntrustedTrail::from_json(&text).map_err(|e| e.to_string())
+            });
+        match read {
+            Ok(t) => trails.push(t),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "an rpc run's trail did not read back");
+                unread += 1;
+            }
+        }
+    }
+    let models: Vec<Value> = crate::session_extra::tokens_by_model(&trails)
+        .into_iter()
+        .map(|m| {
+            json!({"model": m.model, "prompt_tokens": m.prompt,
+                   "completion_tokens": m.completion})
+        })
+        .collect();
+    json!({"models": models, "runs_not_counted": unread})
+}
 
 /// Turns captured from the loop's `turn` events, for `get_messages`.
 static TURNS: LazyLock<Arc<Mutex<Vec<Value>>>> = LazyLock::new(Arc::default);
@@ -416,6 +469,10 @@ struct Server {
     model: Option<String>,
     running: Option<Running>,
     last: Arc<Mutex<Option<Value>>>,
+    ran: Ran,
+    /// One slot for every run: a run writes it only when it ended on
+    /// `done`, so it holds the most recent such summary, as `/copy`'s does.
+    done: output::DoneSlot,
     /// Open approval questions, by id, each holding its reply channel.
     approvals: Arc<Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     next_approval: Arc<AtomicU64>,
@@ -446,6 +503,8 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         model: None,
         running: None,
         last: Arc::default(),
+        ran: Arc::default(),
+        done: output::DoneSlot::default(),
         approvals: Arc::default(),
         next_approval: Arc::default(),
         input_closed: Arc::default(),
@@ -801,6 +860,26 @@ impl Server {
                 let turns = TURNS.lock().map(|t| t.clone()).unwrap_or_default();
                 self.respond(id, kind, Ok(json!({"messages": turns})));
             }
+            // Inline, as `get_state` is: a few small files, and nothing
+            // that could keep a waiting run's `approve` unread.
+            "get_session_stats" => {
+                let ids = self
+                    .ran
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                self.respond(id, kind, Ok(session_stats(&self.root, &ids)));
+            }
+            // Model output, sent as a string and never read as anything
+            // else (rule 10).
+            "get_last_assistant_text" => {
+                let text = self
+                    .done
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                self.respond(id, kind, Ok(json!({"text": text})));
+            }
             "set_model" => {
                 let r = match cmd.get("model").and_then(Value::as_str) {
                     Some(m) => check_spec(m).map(|()| {
@@ -993,6 +1072,8 @@ impl Server {
             approvals: self.approvals.clone(),
             next_approval: self.next_approval.clone(),
             last: self.last.clone(),
+            ran: self.ran.clone(),
+            done: self.done.clone(),
             input_closed: self.input_closed.clone(),
             abort: abort.clone(),
             current: current.clone(),
@@ -1036,6 +1117,8 @@ struct Chain {
     approvals: Arc<Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     next_approval: Arc<AtomicU64>,
     last: Arc<Mutex<Option<Value>>>,
+    ran: Ran,
+    done: output::DoneSlot,
     input_closed: Arc<AtomicBool>,
     /// One for the chain: an abort stops the run in flight and every
     /// follow-up behind it.
@@ -1168,10 +1251,15 @@ impl Chain {
             abort: Some(self.abort.clone()),
             compact: Some(cur.compact.clone()),
             label: None,
-            done: None,
+            // For `get_last_assistant_text`; the run leaves it as it was
+            // unless it ends on `done`.
+            done: Some(self.done.clone()),
             // `--image` is `trellis run`'s alone (ADR 0041).
             images: Vec::new(),
             steer_watch: Some(cur.steering.clone()),
+            // `--agents` above 1 is `trellis run`'s alone (#466).
+            fanout: None,
+            run_ids: Some(self.ran.clone()),
         };
         let r = crate::cmd_run_with(
             &self.root,
@@ -1503,6 +1591,8 @@ mod tests {
             model: None,
             running: None,
             last: Arc::default(),
+            ran: Arc::default(),
+            done: output::DoneSlot::default(),
             approvals: Arc::default(),
             next_approval: Arc::default(),
             input_closed: Arc::default(),
@@ -1814,6 +1904,21 @@ mod tests {
             COMMANDS.len()
         );
         assert_eq!(by("f")["success"], false, "nothing to abort");
+    }
+
+    #[test]
+    fn get_session_stats_names_a_trail_that_did_not_read_back() {
+        // The risk: a run whose trail is gone or edited into nonsense left
+        // out of the totals unsaid, so they read as the whole session's.
+        let d = tempfile::tempdir().unwrap();
+        let runs = d.path().join(".trellis/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(runs.join("edited.json"), "{ not a trail").unwrap();
+        let ids = ["edited".to_string(), "gone".to_string()];
+        assert_eq!(
+            session_stats(d.path(), &ids),
+            json!({"models": [], "runs_not_counted": 2})
+        );
     }
 
     #[test]
