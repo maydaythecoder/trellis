@@ -108,24 +108,26 @@ of them.
   the repository or into `.git` reaches a prompt. (ADR 0025)
 - **Only the user decides where a key is sent.** A repository may not name a
   `key_env`, and a hosted or loopback endpoint the repository chose is not
-  given a key unless the user's own config or `--model` names it.
-  (ADR 0024 §3)
+  given a key unless the user's own config or `--model` names it. (ADR 0024 §3)
 - **Model writes never land in `.trellis/` or `.git/`, and trusted code
   lives under `.trellis/`.** A hook or custom tool that names repository code
-  elsewhere is refused at `trellis trust`. (ADR 0023)
+  elsewhere is refused at `trellis trust`. (ADR 0023) Nor do they land in
+  the configured vault's notes root (ADR 0049), held at each writer by the
+  vault_notes_root_ tests in trellis-loop and, for runs and process agents,
+  by a_model_edit_into_the_vault_is_refused_and_named and
+  a_process_agent_s_write_into_the_vault_is_refused_and_named in trellis-cli.
 - **A pass stops counting once the tree changes.** So does a run whose HEAD
   moved, or whose trusted code or `.git/` changed during the run.
   (ADR 0004, 0009, 0023)
-- **Rollback is complete only for trellis's own writes.** `bash`, custom
-  tools, hooks and process agents run in a throwaway clone, and what they
-  changed there comes back under the refusals every writer meets, so
-  those are trellis's writes too (ADR 0032): tracked-file edits through
-  the orchestrator's write path for the first three, and edits, new files
-  and deletions through its own carry-back for a process agent. Against a
-  command that reaches the repository by absolute path it is best-effort,
-  and the ADRs list the known ways around it. Do not add another post-hoc
-  git check to close one more of those; the fix is isolation (ADR 0032,
-  "What is not built").
+- **Rollback is complete only for trellis's own writes.** `bash`, custom tools,
+  hooks and process agents run in a throwaway clone, and what they changed
+  there comes back under the refusals every writer meets, so those are
+  trellis's writes too (ADR 0032): tracked-file edits through the
+  orchestrator's write path for the first three, and edits, new files and
+  deletions through its own carry-back for a process agent. Against a command
+  that reaches the repository by absolute path it is best-effort, and the ADRs
+  list the known ways around it. Do not add another post-hoc git check to close
+  one more of those; the fix is isolation (ADR 0032, "What is not built").
 
 ## Rules that need an ADR to change
 

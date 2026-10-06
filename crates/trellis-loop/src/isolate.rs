@@ -795,6 +795,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vault_notes_root_is_enforced_where_a_command_s_clone_is_carried_back() {
+        // The risk (ADR 0049 §2-3): the vault refusal checked at the `edit`
+        // gate only, so a `bash` command, whose writes reach the repository
+        // through the carry-back, rewrote a note: the model writing its own
+        // future context (ADR 0022 §3).
+        let d = committed();
+        let root = d.path();
+        std::fs::create_dir_all(root.join("vault")).unwrap();
+        std::fs::write(root.join("vault/a.md"), "# a\n\nwritten by a person\n").unwrap();
+        git(root, &["add", "vault/a.md"]);
+        git(root, &["commit", "-qm", "a note"]);
+        let committed_note = std::fs::read(root.join("vault/a.md")).unwrap();
+        let mut shell = shell_argv("");
+        shell.pop();
+        let tools = ToolSet::build(ToolSelection {
+            bash: Some(BashSettings {
+                shell,
+                timeout: Duration::from_secs(60),
+                allow: Vec::new(),
+                unattended: true,
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let orch = Orchestrator::new(root, CheckConfig::default())
+            .with_governance(crate::governance::Governance::new(&[]).with_vault("vault", "vault/"))
+            .with_tools(tools)
+            .spawn()
+            .0;
+        let command = if cfg!(windows) {
+            "echo written by the model> vault\\a.md"
+        } else {
+            "echo 'written by the model' > vault/a.md"
+        };
+        let (said, _) = bash(&orch, command).await;
+        assert!(
+            said.contains("[context] vault = \"vault\""),
+            "the refusal names the setting: {said}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("vault/a.md")).unwrap(),
+            committed_note,
+            "not carried back: {said}"
+        );
+        assert!(orch.touched().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn isolated_clone_edit_carried_back_is_undone_by_rollback() {
         // The point of carrying back through the edit path: the change is
         // an ordinary edit to a tracked file, which ADR 0009's rollback
