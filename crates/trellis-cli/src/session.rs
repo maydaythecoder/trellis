@@ -51,6 +51,13 @@ pub(crate) struct Session {
     model_from_user: bool,
     /// Tasks run this session, for `/status`.
     tasks_run: u32,
+    /// The trail each run started in this session wrote, as read back right
+    /// after the run, for `/status`'s tokens lines (#318). Held in memory
+    /// only: nothing of it is written anywhere, and it ends with the session.
+    trails: Vec<trellis_trail::UntrustedTrail>,
+    /// Runs whose trail was written but did not read back, which `/status`
+    /// names rather than leaving out of the totals unsaid.
+    trails_unread: u32,
     /// `/name`: recorded as `Factual::label` in the trail of every run
     /// started afterwards. Never sent to the model.
     label: Option<String>,
@@ -137,6 +144,8 @@ impl Session {
             unconstrained: cfg.unconstrained(),
             model_from_user,
             tasks_run: 0,
+            trails: Vec::new(),
+            trails_unread: 0,
             label: None,
             last_done: None,
             clipboards: crate::session_extra::CLIPBOARDS,
@@ -684,38 +693,47 @@ impl Session {
         };
         self.tasks_run += 1;
         let done = crate::output::DoneSlot::default();
-        let outcome = crate::cmd_run_with(
-            &self.root,
-            task,
-            crate::ModelChoice {
-                spec: &model,
-                unconstrained: self.unconstrained,
-            },
-            // No resume, and no focus override: `[context] focus` applies.
-            crate::RunSeeding {
-                model_from_user: self.model_from_user,
-                ..crate::RunSeeding::default()
-            },
-            // `[control] mode` applies. In approve mode each listed call is
-            // asked about here, on the line, with the diff shown first.
-            crate::RunControl {
-                flag: None,
-                human,
-                steering,
-            },
-            // The session's own two, whatever the caller built the rest from.
-            crate::output::RunExtras {
-                label: self.label.clone(),
-                done: Some(done.clone()),
-                ..extras
-            },
-            out,
-        );
+        // The trail this run writes is the one whose name is new afterwards,
+        // found by the one rule for a run's id (`work::with_run_id`). A run
+        // refused before its snapshot writes none, and adds nothing to
+        // `/status`.
+        let (outcome, run_id) = crate::work::with_run_id(&self.root, || {
+            crate::cmd_run_with(
+                &self.root,
+                task,
+                crate::ModelChoice {
+                    spec: &model,
+                    unconstrained: self.unconstrained,
+                },
+                // No resume, and no focus override: `[context] focus` applies.
+                crate::RunSeeding {
+                    model_from_user: self.model_from_user,
+                    ..crate::RunSeeding::default()
+                },
+                // `[control] mode` applies. In approve mode each listed call is
+                // asked about here, on the line, with the diff shown first.
+                crate::RunControl {
+                    flag: None,
+                    human,
+                    steering,
+                },
+                // The session's own two, whatever the caller built the rest from.
+                crate::output::RunExtras {
+                    label: self.label.clone(),
+                    done: Some(done.clone()),
+                    ..extras
+                },
+                out,
+            )
+        });
         // Only replaced by a run that ended on `done`: a run that stopped
         // any other way has no summary, and the previous one is still the
         // most recent there is.
         if let Some(summary) = done.lock().ok().and_then(|mut d| d.take()) {
             self.last_done = Some(summary);
+        }
+        if let Some(id) = run_id {
+            self.keep_trail(&id);
         }
 
         // A run writes to the tree, so the session's index is now behind it.
@@ -1055,20 +1073,56 @@ impl Session {
         Ok(())
     }
 
+    /// Reads back the trail run `id` just wrote, for `/status`.
+    ///
+    /// Read as untrusted data, as every trail is (S10). One that will not
+    /// read is counted rather than dropped, so `/status` says its run is
+    /// missing from the totals instead of printing totals that look whole.
+    fn keep_trail(&mut self, id: &str) {
+        let path = self
+            .root
+            .join(".trellis")
+            .join("runs")
+            .join(format!("{id}.json"));
+        let read = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                trellis_trail::UntrustedTrail::from_json(&text).map_err(|e| e.to_string())
+            });
+        match read {
+            Ok(t) => self.trails.push(t),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "a session run's trail did not read back");
+                self.trails_unread += 1;
+            }
+        }
+    }
+
     fn status(&self) {
+        self.status_to(&mut std::io::stdout());
+    }
+
+    /// `/status`, writing to `out`.
+    fn status_to(&self, out: &mut dyn std::io::Write) {
         let c = &self.index.coverage;
-        println!("root     {}", self.root.display());
-        println!(
+        let _ = writeln!(out, "root     {}", self.root.display());
+        let _ = writeln!(
+            out,
             "index    {} files, {} non-excluded call sites, {} resolved",
             self.index.files.len(),
             c.total(),
             c.resolved
         );
         match &self.model {
-            Some(m) => println!("model    {m}"),
-            None => println!("model    none"),
+            Some(m) => {
+                let _ = writeln!(out, "model    {m}");
+            }
+            None => {
+                let _ = writeln!(out, "model    none");
+            }
         }
-        println!(
+        let _ = writeln!(
+            out,
             "tier     {}",
             if self.unconstrained {
                 "4 (validate and retry)"
@@ -1076,7 +1130,31 @@ impl Session {
                 "2 where supported"
             }
         );
-        println!("tasks    {} this session", self.tasks_run);
+        let _ = writeln!(out, "tasks    {} this session", self.tasks_run);
+        // #318, ADR 0025 §6: per model, prompt and completion apart, and an
+        // unreported figure said as unknown. The name is from a trail, so
+        // it goes through `plain`, as `trellis log` prints trail text.
+        let totals = crate::session_extra::tokens_by_model(&self.trails);
+        if totals.is_empty() && self.trails_unread == 0 {
+            let _ = writeln!(out, "tokens   none yet");
+        }
+        let figure = |n: Option<u64>| n.map_or("unknown".to_string(), |n| n.to_string());
+        for m in &totals {
+            let _ = writeln!(
+                out,
+                "tokens   {}: prompt {}, completion {}",
+                crate::plain(&m.model),
+                figure(m.prompt),
+                figure(m.completion)
+            );
+        }
+        if self.trails_unread > 0 {
+            let _ = writeln!(
+                out,
+                "tokens   {} run(s) not counted: the trail did not read back",
+                self.trails_unread
+            );
+        }
     }
 }
 
@@ -1175,7 +1253,7 @@ const HELP: &str = concat!(
     "  /model [spec]     set or show the model\n",
     "  /models           the catalog and the configured specs\n",
     "  /unconstrained    toggle tier 4 (no schema; can fail on format)\n",
-    "  /status           root, index, model, tier\n",
+    "  /status           root, index, model, tier, tokens\n",
     "  /exit             leave\n",
     "\n",
     "  @ path completion is available in `trellis tui` only; this line\n",
@@ -2532,5 +2610,135 @@ def other():
             .expect_err("a skill that is not there");
         assert!(format!("{e:#}").contains("no-such-skill-248"), "{e:#}");
         assert!(trellis_trail::query::all(d.path()).is_empty(), "no run");
+    }
+
+    // `/status` tokens (#318, ADR 0025 §6) ---------------------------------
+
+    /// A trail as a run of `model` would leave it, with the two figures it
+    /// reported (`None`: not reported, so the key is absent, as on disk).
+    fn trail_of(
+        model: &str,
+        prompt: Option<u64>,
+        completion: Option<u64>,
+    ) -> trellis_trail::UntrustedTrail {
+        let mut factual = serde_json::Map::new();
+        if let Some(p) = prompt {
+            factual.insert("prompt_tokens".into(), p.into());
+        }
+        if let Some(c) = completion {
+            factual.insert("tokens".into(), c.into());
+        }
+        let v = serde_json::json!({
+            "task": "t",
+            "provenance": {"trellis_version": "0", "model": model},
+            "factual": factual,
+        });
+        trellis_trail::UntrustedTrail::from_json(&v.to_string()).unwrap()
+    }
+
+    fn status_text(s: &Session) -> String {
+        let mut out = Vec::new();
+        s.status_to(&mut out);
+        String::from_utf8(out).unwrap()
+    }
+
+    fn tokens_lines(s: &Session) -> Vec<String> {
+        status_text(s)
+            .lines()
+            .filter(|l| l.starts_with("tokens   "))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn session_status_tokens_before_any_run_say_none_yet() {
+        // The risk: a fresh session printing `prompt 0, completion 0`,
+        // which claims a measurement where nothing ran.
+        let d = tempfile::tempdir().unwrap();
+        let s = session(d.path());
+        assert_eq!(tokens_lines(&s), vec!["tokens   none yet".to_string()]);
+        assert!(HELP.contains("/status           root, index, model, tier, tokens\n"));
+    }
+
+    #[test]
+    fn session_status_tokens_two_runs_on_one_model_are_summed_field_by_field() {
+        // The risk: the two figures added into one, or one run's figures
+        // replacing the other's rather than adding to them.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.trails
+            .push(trail_of("llamacpp:http://h:1", Some(100), Some(10)));
+        s.trails
+            .push(trail_of("llamacpp:http://h:1", Some(200), Some(20)));
+        assert_eq!(
+            tokens_lines(&s),
+            vec!["tokens   llamacpp:http://h:1: prompt 300, completion 30".to_string()]
+        );
+        assert!(!status_text(&s).contains("330"), "never their sum");
+    }
+
+    #[test]
+    fn session_status_tokens_two_models_listed_apart_and_an_unreported_prompt_is_unknown() {
+        // The risk: two models merged into one line, or a run that did not
+        // report its prompt figure counted as 0, so the total reads exact
+        // and too low.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.trails
+            .push(trail_of("llamacpp:http://a:1", Some(100), Some(10)));
+        s.trails
+            .push(trail_of("ollama:http://b:2", Some(50), Some(5)));
+        s.trails
+            .push(trail_of("llamacpp:http://a:1", None, Some(7)));
+        assert_eq!(
+            tokens_lines(&s),
+            vec![
+                "tokens   llamacpp:http://a:1: prompt unknown, completion 17".to_string(),
+                "tokens   ollama:http://b:2: prompt 50, completion 5".to_string(),
+            ]
+        );
+        // And the same for completion.
+        let mut s = session(d.path());
+        s.trails.push(trail_of("m", Some(1), Some(2)));
+        s.trails.push(trail_of("m", Some(3), None));
+        assert_eq!(
+            tokens_lines(&s),
+            vec!["tokens   m: prompt 4, completion unknown".to_string()]
+        );
+    }
+
+    #[test]
+    fn session_status_tokens_model_name_from_a_trail_prints_escaped() {
+        // The risk: a trail edited to hold a terminal escape in its model
+        // name, replayed at the terminal of whoever types `/status`.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = session(d.path());
+        s.trails
+            .push(trail_of("evil\u{1b}[2Kmodel", Some(1), Some(2)));
+        let out = status_text(&s);
+        assert!(
+            !out.contains('\u{1b}'),
+            "a raw ESC reached the terminal: {out:?}"
+        );
+        assert!(out.contains("evil\\u{1b}[2Kmodel"), "{out}");
+    }
+
+    #[test]
+    fn session_status_tokens_count_the_trail_a_session_run_wrote() {
+        // The risk: the totals reading nothing a real run wrote, so every
+        // other test here passes on trails no run ever hands the session.
+        // A scripted run reports neither figure, so both are unknown.
+        let d = tempfile::tempdir().unwrap();
+        let mut s = with_template(d.path());
+        s.dispatch("/fixit \"app/m.py\"").expect("runs");
+        assert_eq!(s.trails.len(), 1, "the run's trail was read back");
+        let model = s.model.as_ref().unwrap().to_string();
+        assert_eq!(
+            tokens_lines(&s),
+            vec![format!(
+                "tokens   {}: prompt unknown, completion unknown",
+                crate::plain(&model)
+            )]
+        );
     }
 }
