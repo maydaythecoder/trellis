@@ -221,8 +221,11 @@ fn colibri_batching(h: &Health) -> trellis_model::BatchingCapability {
 /// whether the spec names it. colibri answers 404 `model_not_found` to any
 /// request naming another id (ADR 0047 finding 3).
 fn colibri_runtime(base: &str, spec_model: &str, served: &str) -> String {
+    // Compared as sent, escaped only for display: an escaped id must not
+    // match one holding the byte it spells.
+    let matches = served == spec_model;
     let (served, spec_model) = (plain(served), plain(spec_model));
-    if served == spec_model {
+    if matches {
         format!("colibri at {base}, serving `{served}`; the spec's model matches it")
     } else {
         format!(

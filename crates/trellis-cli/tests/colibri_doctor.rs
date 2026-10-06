@@ -116,7 +116,9 @@ fn repo(name: &str, config: Option<&str>) -> PathBuf {
 /// `trellis doctor <args>` in `root`, with no user config and no key in
 /// the environment unless `key` sets `OPENAI_API_KEY`.
 fn doctor(root: &Path, args: &[&str], key: Option<&str>) -> Output {
-    let user = scratch("no-user-config");
+    // Never created or removed: tests run in parallel, and a missing
+    // directory is a user config that is not there.
+    let user = std::env::temp_dir().join("trellis-colibri-no-user-config");
     let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
     c.arg("--root")
         .arg(root)
