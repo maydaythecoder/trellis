@@ -851,6 +851,22 @@ mod doctor_tests {
         assert!(lines.contains("--root"), "{lines}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn coverage_is_available_only_when_the_test_runner_offers_cov() {
+        // #248. The risk: `doctor` reporting a coverage plugin it never
+        // asked for, or missing one that is there. The runner's `--help` is
+        // what is read; `echo` stands in for a runner and prints its text.
+        let runner = |text: &str| -> Vec<String> {
+            if cfg!(windows) {
+                vec!["cmd".into(), "/C".into(), format!("echo {text}")]
+            } else {
+                vec!["sh".into(), "-c".into(), format!("echo {text}")]
+            }
+        };
+        assert!(coverage_available(&runner("--cov=PATH")));
+        assert!(!coverage_available(&runner("no plugin here")));
+    }
 }
 
 #[cfg(test)]
