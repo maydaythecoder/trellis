@@ -63,6 +63,8 @@ import sys
 import time
 from pathlib import Path
 
+from compare_floor import comparable_key
+
 TRELLIS = str(Path("target/release/trellis.exe").resolve())
 
 
@@ -238,6 +240,13 @@ def main() -> int:
     git(corpus, "add", "-A")
     git(corpus, "commit", "-qm", "floor config")
     base = head(corpus)
+    budget = {"max_iterations": a.max_iterations,
+              "max_wall_clock_s": a.max_wall_clock_s}
+    # Recorded before the first task, against the binary and task file this
+    # run uses: `compare_floor.py` refuses to set this report beside one whose
+    # task set, checker, budget or limit differ (#344).
+    comparable = comparable_key(Path(a.tasks), " ".join(checker), budget,
+                                a.limit, Path(TRELLIS))
     print(f"base {base[:12]}  checker {' '.join(checker[:2])}...  "
           f"budget {a.max_iterations} iters / {a.max_wall_clock_s}s")
 
@@ -330,8 +339,8 @@ def main() -> int:
         "configuration": a.model,
         "corpus": corpus.name,
         "checker": " ".join(checker),
-        "budget": {"max_iterations": a.max_iterations,
-                   "max_wall_clock_s": a.max_wall_clock_s},
+        "budget": budget,
+        "comparable": comparable,
         "tasks_attempted": len(ran),
         "outcomes": tally,
         "check_recovery": {
