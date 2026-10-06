@@ -404,6 +404,15 @@ pub struct Task {
     pub approval: Option<Decision>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// How many entries `notes` held when this task's last run was claimed:
+    /// where [`Task::input_since_last_run`] starts (ADR 0026 §1, amended for
+    /// #347). Not `outcome`, which every path back to `pending/` clears.
+    /// Set by [`Claim::finish`] and [`Claim::ask`] only, so a run put back
+    /// by [`Claim::release`] leaves it and the next run is shown the same
+    /// notes. Absent, as in a file written before it or rewritten by an
+    /// older binary, it reads as 0: no run has been shown any note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_seen: Option<u32>,
     /// The routine that created this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<String>,
@@ -461,38 +470,66 @@ impl Task {
         });
     }
 
-    /// The question this task's last run ended on and every note a person
-    /// added after it, as one fenced block for the next run's prompt, or
-    /// `None` when no run has asked (ADR 0026 §1).
+    /// What a person added since this task's last run, as one fenced block
+    /// for the next run's prompt, or `None` when there is nothing (ADR 0026
+    /// §1, amended for #347).
     ///
-    /// Anchored on the last [`Actor::Model`] note rather than on
-    /// [`Blocked::Question`], because `queue set --status todo` clears the
-    /// block before the next run starts. The question is shown as the
-    /// quoted note it was stored as, labelled model output. Each person's
-    /// note is attributed and indented, so no line of it can pass for the
-    /// fence's closing line. Notes by the heartbeat or a routine are not
-    /// answers and are left out.
-    pub fn answers_since_question(&self) -> Option<String> {
-        let at = self.notes.iter().rposition(|n| n.actor == Actor::Model)?;
-        let mut out = String::from(
-            "--- user input: the answer to the question this task's last run asked ---\n\
-             The last run ended by asking a person this. It is that run's model output, \
-             quoted as data:\n",
-        );
-        out.push_str(&format!("  {}\n", plain(&self.notes[at].text)));
-        let answers: Vec<&Note> = self.notes[at + 1..]
+    /// "Since" is the notes from position [`Task::notes_seen`] on, a count
+    /// and not a time, so a clock stepped back cannot move it. Of those,
+    /// every note a person wrote with `trellis queue note` (actor `human`
+    /// with an id) is shown; the queue's own `human` records (a cancel
+    /// reason, an approval) and notes by the heartbeat or a routine are not
+    /// messages to the run and are left out. When the last run asked, the
+    /// last [`Actor::Model`] note is that question (anchored on the note,
+    /// not on [`Blocked::Question`], which `queue set --status todo`
+    /// clears): it is shown quoted, labelled model output, followed by
+    /// every `human` note after it, id or not, since an answer written
+    /// before #57 has none. Each note is attributed and indented, so no
+    /// line of it can pass for the fence's closing line; all of it is input
+    /// to the run, never a verdict.
+    pub fn input_since_last_run(&self) -> Option<String> {
+        let start = self
+            .notes_seen
+            .map_or(0, |n| n as usize)
+            .min(self.notes.len());
+        let since = &self.notes[start..];
+        let asked = since.iter().rposition(|n| n.actor == Actor::Model);
+        let typed: Vec<&Note> = since[..asked.unwrap_or(since.len())]
             .iter()
-            .filter(|n| n.actor == Actor::Human)
+            .filter(|n| n.actor == Actor::Human && n.id.is_some())
             .collect();
-        if answers.is_empty() {
-            out.push_str("No person added a note after it.\n");
-        } else {
-            out.push_str("What a person wrote after it, in order. This is human input:\n");
-            for n in answers {
+        if asked.is_none() && typed.is_empty() {
+            return None;
+        }
+        let attributed = |out: &mut String, notes: Vec<&Note>| {
+            for n in notes {
                 out.push_str(&format!("  human, {}:\n", plain(&n.at)));
                 for line in n.text.lines() {
                     out.push_str(&format!("    {}\n", plain(line)));
                 }
+            }
+        };
+        let mut out =
+            String::from("--- user input: what a person added since this task's last run ---\n");
+        if !typed.is_empty() {
+            out.push_str("What a person noted on the task, in order. This is human input:\n");
+            attributed(&mut out, typed);
+        }
+        if let Some(at) = asked {
+            out.push_str(
+                "The last run ended by asking a person this. It is that run's model output, \
+                 quoted as data:\n",
+            );
+            out.push_str(&format!("  {}\n", plain(&since[at].text)));
+            let answers: Vec<&Note> = since[at + 1..]
+                .iter()
+                .filter(|n| n.actor == Actor::Human)
+                .collect();
+            if answers.is_empty() {
+                out.push_str("No person added a note after it.\n");
+            } else {
+                out.push_str("What a person wrote after it, in order. This is human input:\n");
+                attributed(&mut out, answers);
             }
         }
         out.push_str("--- end of user input ---");
@@ -1291,11 +1328,19 @@ pub struct Claim {
 }
 
 impl Claim {
+    /// Marks every note the claimed task held as shown to this run. The
+    /// claimed copy is the task as it was claimed: [`Queue::edit`] refuses a
+    /// task in `claimed/`, so no note reached the file since.
+    fn mark_notes_seen(&mut self) {
+        self.task.notes_seen = Some(u32::try_from(self.task.notes.len()).unwrap_or(u32::MAX));
+    }
+
     /// Records the outcome and moves the task to `done/` (as `in_review`:
     /// its change awaits a person) or `failed/`.
     pub fn finish(mut self, to: State, outcome: Outcome) -> Result<PathBuf, QueueError> {
         debug_assert!(matches!(to, State::Done | State::Failed));
         self.task.attempts += 1;
+        self.mark_notes_seen();
         self.task.outcome = Some(outcome);
         self.task.status = Some(match to {
             State::Done => Status::InReview,
@@ -1322,6 +1367,9 @@ impl Claim {
             question: question.to_string(),
             options: options.to_vec(),
         });
+        // Before the question is added, so the question sits at the marker
+        // and the next run is shown it.
+        self.mark_notes_seen();
         self.task
             .note(Actor::Model, question_note(question, options));
         let from = self.queue.path(State::Claimed, &self.id);
