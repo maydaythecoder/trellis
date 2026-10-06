@@ -1017,6 +1017,17 @@ found. A side finding, not a survivor: `queue list --priority` alone still
 lists unreadable task files, which `--status`, `--label` and `--assignee`
 hide.
 
+The third pass marks its own the same way, over session.rs (40 lines),
+the 29 main.rs lines the first pass left (that code now lives in
+run_cmd.rs, doctor_cmd.rs and index_cmd.rs), and vault_cmd.rs (18, beside
+the first pass's no-longer-applicable 189). session.rs: 32 killed, 1
+equivalent, 2 no longer applicable (the line arithmetic moved to
+`run_cmd::line_of`), 5 unexercisable (a terminal, which a pipe never is).
+main.rs: 23 killed, 1 equivalent, 5 unexercisable (a terminal, a Ctrl-C,
+a rollback that fails, an ERROR event on demand). vault_cmd.rs: 18 killed.
+Two were already killed by a test in the suite at this pass's base; those
+lines say so. No bug was found.
+
 ```
 unexercisable (#248): differs only for ERROR-level events (an empty RUST_LOG parsed as a directive is ERROR everywhere), and trellis's three are not reachable on demand: an orchestrator task gone, or a failed rollback of an interrupted plan | crates/trellis-cli/src/main.rs:401:18: replace match guard s.trim().is_empty() with false in main
 #248 | crates/trellis-cli/src/main.rs:507:8: delete ! in main
@@ -1271,25 +1282,25 @@ killed (#248) by tests/cli.rs a_session_keeps_its_history_outside_the_repository
 #248 | crates/trellis-cli/src/tui_run.rs:408:43: delete ! in run
 #248 | crates/trellis-cli/src/tui_run.rs:435:9: delete match arm Some("scripted") in run
 #248 | crates/trellis-cli/src/tui_run.rs:515:24: delete ! in run
-#248 | crates/trellis-cli/src/vault_cmd.rs:159:5: replace file_days -> FileDays with Default::default()
-#248 | crates/trellis-cli/src/vault_cmd.rs:171:5: replace print_outcome -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/vault_cmd.rs:187:5: replace check -> Result<()> with Ok(())
+killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:159:5: replace file_days -> FileDays with Default::default()
+killed (#248) by tests/cli.rs vault_new_says_what_it_created | crates/trellis-cli/src/vault_cmd.rs:171:5: replace print_outcome -> Result<()> with Ok(())
+killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:187:5: replace check -> Result<()> with Ok(())
 #248 | crates/trellis-cli/src/vault_cmd.rs:189:8: delete ! in check
-#248 | crates/trellis-cli/src/vault_cmd.rs:197:8: delete ! in check
-#248 | crates/trellis-cli/src/vault_cmd.rs:216:16: delete ! in check
-#248 | crates/trellis-cli/src/vault_cmd.rs:228:5: replace search -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/vault_cmd.rs:230:8: delete ! in search
-#248 | crates/trellis-cli/src/vault_cmd.rs:232:15: delete ! in search
-#248 | crates/trellis-cli/src/vault_cmd.rs:246:5: replace graph -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/vault_cmd.rs:303:8: delete ! in graph
-#248 | crates/trellis-cli/src/vault_cmd.rs:310:5: replace mentions -> bool with true
-#248 | crates/trellis-cli/src/vault_cmd.rs:310:5: replace mentions -> bool with false
-#248 | crates/trellis-cli/src/vault_cmd.rs:311:85: replace == with != in mentions
-#248 | crates/trellis-cli/src/vault_cmd.rs:313:36: replace == with != in mentions
-#248 | crates/trellis-cli/src/vault_cmd.rs:363:5: replace dates_cmd -> Result<()> with Ok(())
-#248 | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with false in dates_cmd
-#248 | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with true in dates_cmd
-#248 | crates/trellis-cli/src/vault_cmd.rs:368:26: delete ! in dates_cmd
+killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:197:8: delete ! in check
+killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:216:16: delete ! in check
+killed (#248) by tests/cli.rs vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault | crates/trellis-cli/src/vault_cmd.rs:228:5: replace search -> Result<()> with Ok(())
+killed (#248) by tests/cli.rs vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault | crates/trellis-cli/src/vault_cmd.rs:230:8: delete ! in search
+killed (#248) by tests/cli.rs vault_search_finds_a_body_word_and_reports_no_reduction_on_a_small_vault | crates/trellis-cli/src/vault_cmd.rs:232:15: delete ! in search
+killed (#248) by tests/cli.rs vault_graph_lists_a_note_s_own_issues_and_no_other_note_s | crates/trellis-cli/src/vault_cmd.rs:246:5: replace graph -> Result<()> with Ok(())
+killed (#248) by tests/cli.rs vault_graph_lists_a_note_s_own_issues_and_no_other_note_s | crates/trellis-cli/src/vault_cmd.rs:303:8: delete ! in graph
+killed (#248) by tests/cli.rs vault_graph_lists_a_note_s_own_issues_and_no_other_note_s | crates/trellis-cli/src/vault_cmd.rs:310:5: replace mentions -> bool with true
+killed (#248) by tests/cli.rs vault_graph_lists_a_note_s_own_issues_and_no_other_note_s | crates/trellis-cli/src/vault_cmd.rs:310:5: replace mentions -> bool with false
+killed (#248) by tests/cli.rs vault_graph_lists_a_note_s_own_issues_and_no_other_note_s | crates/trellis-cli/src/vault_cmd.rs:311:85: replace == with != in mentions
+killed (#248) by tests/cli.rs vault_graph_lists_a_note_s_own_issues_and_no_other_note_s | crates/trellis-cli/src/vault_cmd.rs:313:36: replace == with != in mentions
+killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:363:5: replace dates_cmd -> Result<()> with Ok(())
+killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with false in dates_cmd
+killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:368:26: replace match guard !seed with true in dates_cmd
+killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:368:26: delete ! in dates_cmd
 killed (#248) by work::queue_set_tests::a_change_that_ends_a_blocker_wakes_what_it_blocked | crates/trellis-cli/src/work.rs:198:5: replace reconcile -> Result<()> with Ok(())
 killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:293:68: replace && with || in queue
 killed (#248) by tests/orchestration.rs queue_list_filters_show_only_their_tasks_and_no_unreadable_file | crates/trellis-cli/src/work.rs:293:49: replace && with || in queue
