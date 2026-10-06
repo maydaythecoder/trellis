@@ -882,3 +882,290 @@ fn write_trail(root: &Path, t: TrailInput<'_>, out: &mut dyn Write) -> Option<St
         }
     }
 }
+
+/// #248: the reasons and records a process run gives, driven directly
+/// rather than through `work`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHECKS: &str =
+        "[checks]\ntypecheck = [\"git\", \"--version\"]\ntests = [\"git\", \"--version\"]\n";
+
+    /// A committed, trusted repository whose checks pass, with `extra`
+    /// files beside the config.
+    fn repo(name: &str, config: &str, extra: &[(&str, &str)]) -> PathBuf {
+        let root = crate::testutil::scratch(name);
+        crate::testutil::git_init(&root);
+        std::fs::create_dir_all(root.join(".trellis")).unwrap();
+        std::fs::write(root.join(".trellis/config.toml"), config).unwrap();
+        for (path, body) in extra {
+            let p = root.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        crate::testutil::git_commit_all(&root, "fixture");
+        crate::testutil::trust(&root);
+        root
+    }
+
+    fn profile(command: &str, timeout_s: u64) -> Profile {
+        trellis_queue::profile::parse(
+            "p",
+            &format!("command = {command}\ntimeout_s = {timeout_s}\n"),
+        )
+        .unwrap()
+    }
+
+    fn go(root: &Path, p: &Profile, text: &str, stop: bool) -> (RunEnd, String) {
+        let stop = AtomicBool::new(stop);
+        let mut out = Vec::new();
+        let end = run(
+            ProcessRun {
+                root,
+                profile: p,
+                task_id: "t1",
+                text,
+                stop: &stop,
+                services: &[],
+            },
+            &mut out,
+        );
+        (end, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    /// A command that waits about 30 seconds and changes nothing.
+    fn sleeps() -> &'static str {
+        if cfg!(windows) {
+            "['cmd', '/C', 'ping -n 30 127.0.0.1 >NUL']"
+        } else {
+            "['sh', '-c', 'sleep 30']"
+        }
+    }
+
+    fn trail(root: &Path, end: &RunEnd) -> serde_json::Value {
+        let id = match end {
+            RunEnd::Converged { run_id }
+            | RunEnd::RolledBack { run_id }
+            | RunEnd::NotRestored { run_id }
+            | RunEnd::Interrupted { run_id, .. } => run_id.clone(),
+            other => panic!("no trail: {other:?}"),
+        }
+        .expect("a trail was written");
+        let text =
+            std::fs::read_to_string(root.join(".trellis/runs").join(format!("{id}.json"))).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn an_interrupted_command_ends_as_interrupted_and_says_so() {
+        // The risk: Ctrl-C during a process agent reported as "changed
+        // nothing" and ended as an ordinary rollback, so `work` went on to
+        // the next task instead of stopping.
+        let root = repo("proc-interrupted", CHECKS, &[]);
+        let (end, s) = go(&root, &profile(sleeps(), 60), "x", true);
+        assert!(
+            matches!(end, RunEnd::Interrupted { restored: true, .. }),
+            "{end:?}\n{s}"
+        );
+        assert!(s.contains("NOT CONVERGED (interrupted)"), "{s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_timed_out_command_says_it_timed_out() {
+        let root = repo("proc-timeout", CHECKS, &[]);
+        let (end, s) = go(&root, &profile(sleeps(), 1), "x", false);
+        assert!(matches!(end, RunEnd::RolledBack { .. }), "{end:?}\n{s}");
+        assert!(
+            s.contains("NOT CONVERGED (not converged: timed out)"),
+            "{s}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_timed_out_command_is_ended_before_it_can_write_again() {
+        // The risk: a command past its timeout left running while the run
+        // is judged and rolled back, so what it writes next lands after
+        // the comparison. Its late write goes outside the repository,
+        // where no rollback would remove it.
+        let root = repo("proc-late-write", CHECKS, &[]);
+        let late = root.with_extension("late");
+        let _ = std::fs::remove_file(&late);
+        let cmd = if cfg!(windows) {
+            format!(
+                "['cmd', '/C', 'ping -n 3 127.0.0.1 >NUL & echo late> {}']",
+                late.display()
+            )
+        } else {
+            format!("['sh', '-c', 'sleep 2; echo late > {}']", late.display())
+        };
+        let (_, s) = go(&root, &profile(&cmd, 1), "x", false);
+        assert!(s.contains("timed out"), "{s}");
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!late.exists(), "the command wrote after its timeout:\n{s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_task_text_reaches_the_command_on_stdin() {
+        // The risk: the command started with no task, so a process agent
+        // ran blind, or hung on a pipe nobody wrote.
+        let root = repo("proc-stdin", CHECKS, &[("app/keep.txt", "")]);
+        let copy = if cfg!(windows) {
+            r"['cmd', '/C', 'more > app\task.txt']"
+        } else {
+            "['sh', '-c', 'cat > app/task.txt']"
+        };
+        let (end, s) = go(&root, &profile(copy, 20), "rename greet", false);
+        assert!(matches!(end, RunEnd::Converged { .. }), "{end:?}\n{s}");
+        let got = std::fs::read_to_string(root.join("app/task.txt")).unwrap();
+        assert!(got.contains("rename greet"), "{got:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_command_that_changed_nothing_is_not_audited() {
+        // The risk: the governance audit run over an empty change, and
+        // recorded in the trail as a check of a run with nothing to check.
+        let rule =
+            "name = \"no b = c\"\nrank = \"non-negotiable\"\nforbid = { pattern = \"b = c\" }\n";
+        let root = repo(
+            "proc-unchanged-audit",
+            CHECKS,
+            &[(".trellis/governance/no-c.toml", rule)],
+        );
+        let (end, s) = go(&root, &profile(r#"["git", "--version"]"#, 20), "x", false);
+        assert!(s.contains("changed nothing"), "{s}");
+        let t = trail(&root, &end);
+        assert_eq!(t["factual"]["check_outcomes"], serde_json::json!([]), "{s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_path_deny_write_refuses_is_refused_once_not_again_by_allow_write() {
+        // The risk: one write reported twice, for the repository's rule
+        // and again for the profile's scope, which judges only what the
+        // repository's rules let through.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".trellis")).unwrap();
+        std::fs::write(
+            d.path().join(".trellis/config.toml"),
+            "[governance]\ndeny_write = [\"secret/\"]\n",
+        )
+        .unwrap();
+        let p = trellis_queue::profile::parse("p", "command = [\"x\"]\nallow_write = [\"app/\"]\n")
+            .unwrap();
+        let judge = Judge::load(d.path(), &p).unwrap();
+        for path in ["secret/key.txt", ".trellis/config.toml", "lib/x.rs"] {
+            let (denied, _) = judge.governance(d.path(), &[path.to_string()]);
+            assert_eq!(denied.len(), 1, "{path}: {denied:?}");
+        }
+    }
+
+    #[test]
+    fn the_trail_says_whether_the_command_wrote_and_what_it_did_to_ignored_files() {
+        let root = repo("proc-trail-actions", CHECKS, &[]);
+        let head = crate::testutil::git_stdout(&root, &["rev-parse", "HEAD"]);
+        let argv = ["x".to_string()];
+        let write = |task: &str, touched: &[String], ignored: &IgnoredChanges| {
+            let mut out = Vec::new();
+            let id = write_trail(
+                &root,
+                TrailInput {
+                    task,
+                    base: head.trim(),
+                    argv: &argv,
+                    profile: "p",
+                    touched,
+                    exit_text: "exited 0 after 0s",
+                    ignored,
+                    verdicts: Vec::new(),
+                    services: &[],
+                },
+                &mut out,
+            );
+            trail(&root, &RunEnd::RolledBack { run_id: id })["factual"]["actions"].clone()
+        };
+        let a = write(
+            "wrote",
+            &["app/x.py".to_string()],
+            &IgnoredChanges::default(),
+        );
+        assert_eq!(a.as_array().unwrap().len(), 1, "{a}");
+        assert_eq!(a[0]["wrote"], true, "{a}");
+
+        let ignored = IgnoredChanges {
+            created: vec!["build/out.o".into()],
+            ..IgnoredChanges::default()
+        };
+        let a = write("ignored only", &[], &ignored);
+        assert_eq!(a.as_array().unwrap().len(), 2, "{a}");
+        assert_eq!(a[0]["wrote"], false, "{a}");
+        assert_eq!(a[1]["target"], "files git ignores", "{a}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `git config --file <root>/<rel> a.b c`: a write by absolute path,
+    /// with no shell, as the orchestration tests make one.
+    fn writes_in_repo(root: &Path, rel: &str) -> String {
+        let at = root.join(rel).display().to_string().replace('\\', "/");
+        format!(r#"["git", "config", "--file", "{at}", "a.b", "c"]"#)
+    }
+
+    #[test]
+    fn each_refusal_is_given_as_its_own_reason() {
+        // The risk: a run refused for writing under `.git/` or where
+        // `deny_write` says not, reported as "changed nothing" or "a check
+        // failed", which sends the person after the wrong cause; and an
+        // ignored write left unsaid.
+        let root = repo("proc-why-git", CHECKS, &[]);
+        let (_, s) = go(
+            &root,
+            &profile(&writes_in_repo(&root, ".git/config"), 20),
+            "x",
+            false,
+        );
+        assert!(s.contains("the command changed files under .git/"), "{s}");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let denied = format!("{CHECKS}[governance]\ndeny_write = [\"app/\"]\n");
+        let root = repo("proc-why-deny", &denied, &[("app/keep.txt", "")]);
+        let make = r#"["git", "config", "--file", "app/made.cfg", "a.b", "c"]"#;
+        let (_, s) = go(&root, &profile(make, 20), "x", false);
+        assert!(s.contains("[governance] deny_write refuses"), "{s}");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = repo("proc-why-ignored", CHECKS, &[(".gitignore", "*.log\n")]);
+        let (_, s) = go(
+            &root,
+            &profile(&writes_in_repo(&root, "out.log"), 20),
+            "x",
+            false,
+        );
+        assert!(
+            s.contains("ignored:  the command changed files git ignores"),
+            "{s}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_change_that_cannot_be_read_or_rolled_back_is_not_restored() {
+        // The risk: a command that broke the index, so neither its change
+        // nor the rollback could be read, reported as a plain error, and
+        // `work` going on to the next task on a tree nobody restored.
+        let root = repo("proc-broken-index", CHECKS, &[]);
+        // By absolute path: the clone stops a relative write (ADR 0032).
+        let index = root.join(".git").join("index").display().to_string();
+        let cmd = if cfg!(windows) {
+            format!("['cmd', '/C', 'echo broken> {index}']")
+        } else {
+            format!("['sh', '-c', 'echo broken > {index}']")
+        };
+        let (end, s) = go(&root, &profile(&cmd, 20), "x", false);
+        assert!(matches!(end, RunEnd::NotRestored { .. }), "{end:?}\n{s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
