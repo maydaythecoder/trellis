@@ -1,6 +1,6 @@
 # ADR 0045 — Work units for `trellis run --agents N` are named targets
 
-**Status:** Accepted. Not built (#101 builds it).
+**Status:** Accepted. Built by #465, #466 and #482 (see the amendment below).
 **Date:** 2026-10-04
 **Decided by:** the owner, on #211 (option a), via the session.
 **Holds:** CLAUDE.md rules 5, 6 and 9 unchanged: no agent judges another,
@@ -65,3 +65,63 @@ second half needs its own measurement, so (c) reduces to (a) plus a ticket.
   multi-agent test drives `trellis run` with scripted models and no runtime.
 - A user must know which symbols a task touches. `trellis partitions` and
   `trellis radius` are how they find out, and both already exist.
+
+## Amendment 2026-10-06: built (#465, #466, #482)
+
+The decision above is built as written; nothing in it changed.
+
+- **#465: flags and refusals, all before the snapshot.** `trellis run` parses
+  `--agents N|auto` and repeatable `--target` (§1, §3). With no target, any
+  width but 1 is refused naming `--target` and `trellis partitions` (§2); `0`
+  and anything not a number or `auto` are refused naming the accepted values
+  (§3); an unknown or ambiguous target is refused as `radius` refuses it
+  (§1); `auto` on a backend with no measured capacity is 1 and says why
+  (S18). Tests in crates/trellis-cli/tests/partitions.rs:
+  `agents_above_one_without_target_is_refused_naming_target_and_partitions`,
+  `agents_zero_is_refused_naming_the_accepted_values`,
+  `agents_that_is_not_a_number_is_refused_naming_the_accepted_values`,
+  `agents_with_an_unknown_target_is_refused_before_the_snapshot`,
+  `agents_auto_on_a_scripted_backend_runs_at_width_one_and_says_why`.
+- **#466: the plan's partitions run through `Supervisor::run_integrated`.**
+  `run_partitioned` (crates/trellis-cli/src/run_cmd.rs) gives each partition
+  its own agent, worktree and share of the one budget (rule 9), the run's
+  governance (the vault's notes root included, ADR 0049), and checks the
+  merged union as a whole (§4, ADR 0042). `run_integrated` alone takes the
+  snapshot and the rollback. Refused before the snapshot: approve mode above
+  width 1, trusted repository code (its guards watch the root), and
+  `--image`. Option (a)'s scripted model gives each target its own steps
+  through a `targets` section (crates/trellis-loop/src/scripted.rs, tested by
+  `an_agent_plays_its_targets_section_and_falls_back_to_steps`,
+  `a_section_for_a_symbol_the_run_was_not_given_is_refused`,
+  `two_sections_for_one_agent_are_refused_rather_than_one_dropped` and
+  `a_bad_step_in_a_section_is_refused_naming_the_section`). Tests in
+  partitions.rs: `three_partition_run_converges_with_every_partitions_edit`,
+  `induced_collision_fails_the_integrated_check_rolls_back_and_records_a_gap`,
+  `agents_above_one_in_approve_mode_is_refused_before_the_snapshot`,
+  `agents_above_one_with_trusted_repository_code_is_refused_before_the_snapshot`,
+  `a_partitions_edit_into_the_vault_is_refused_and_named`.
+- **#482: width 1 with targets.** Until #482, `--agents 1 --target ...` (and
+  `auto` resolving to 1) printed that partitions run one at a time and then
+  ran one agent on the whole task, without the targets. It now runs the
+  partitions one after another through the same `run_partitioned` path, as
+  §2 says, with every refusal above; at width 1 approve mode is allowed, one
+  agent asking at a time. A run with no target is the single-agent run,
+  unchanged. Test:
+  `agents_one_with_targets_runs_each_partition_through_the_partitioned_path`.
+
+## Amendment 2026-10-06: an explicit N asks the backend (#483)
+
+§3 judged only `auto` against the backend, so `--agents 3` on a backend
+that serves one request at a time ran three agents at once and said
+nothing. An explicit N above 1 now takes the same probe as `auto` and
+`trellis doctor` (`doctor_cmd::probe_batching`): measured continuous
+batching keeps N, and anything else (single slot, unmeasured, unknown, or a
+probe that failed) runs at width 1 through the partitioned path, with the
+`agents:` line saying why and what N would need. This is one more ceiling
+beside §4's plan, not a change to it. It applies to hosted providers too,
+which batch but report no number. The second Consequence above no longer
+holds for runs above width 1: a scripted model has no measured capacity, so
+`three_partition_run_converges_with_every_partitions_edit` and
+`agents_above_one_in_approve_mode_is_refused_before_the_snapshot` are
+served by a loopback llama.cpp stub that reports its slots. Test:
+`agents_explicit_on_a_non_batching_backend_runs_at_width_one_and_says_why`.

@@ -1172,6 +1172,8 @@ impl Chain {
             // `--image` is `trellis run`'s alone (ADR 0041).
             images: Vec::new(),
             steer_watch: Some(cur.steering.clone()),
+            // `--agents` above 1 is `trellis run`'s alone (#466).
+            fanout: None,
         };
         let r = crate::cmd_run_with(
             &self.root,
