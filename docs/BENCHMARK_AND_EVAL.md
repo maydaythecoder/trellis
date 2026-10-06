@@ -597,6 +597,21 @@ two rows were measured, which is why they show none — the cost columns are
 comparable only within a harness version, the `repaired` column across all of
 them.
 
+**Floor reports are compared only through `docs/bench/compare_floor.py`**
+(#344). `run_floor.py` writes a `comparable` block into each report:
+`tasks_sha256` (the task file), `checker`, `budget`, `limit` (the `--limit`
+that cut the task set), `trellis_sha256` (the binary that ran) and
+`trellis_version` (its `--version`). Only `configuration` and
+`trellis_sha256` may differ; they are the axes a comparison is for, and the
+binary's `--version` is printed beside its hash. If `tasks_sha256`, `checker`,
+`budget` or `limit` differ, the script exits 1 naming each field and prints no
+figure. It prints each report's figures in its own column and never combines
+them, and it shows wall-clock only when every report ran the same binary.
+Every report committed before #344, including the four rows above, has no
+`comparable` block and is refused by name, so this table is not
+`compare_floor.py` output. `scripts/checks/floor-compare-selftest.sh` holds the
+script to its four cases.
+
 `errors_after == errors_before` on all 20 tasks of the first row.
 
 The Ollama row is `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`
