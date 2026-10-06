@@ -111,3 +111,67 @@ fn a_note_tool_with_no_vault_refuses_before_the_snapshot() {
     assert!(all.contains("[context] vault"), "{all}");
     assert!(!all.contains("snapshot at"), "{all}");
 }
+
+/// The edit the vault tests script: a note's body rewritten, then done.
+const EDITS_A_NOTE: &str = r#"{"tool":"edit","path":"vault/retries.md","old":"Backoff doubles.","new":"Backoff triples."},{"tool":"done","summary":"edited the note"}"#;
+
+/// The trail of the one run in `d`.
+fn only_trail(d: &Path, all: &str) -> String {
+    std::fs::read_dir(d.join(".trellis/runs"))
+        .unwrap_or_else(|_| panic!("no trail: {all}"))
+        .flatten()
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .next()
+        .unwrap_or_else(|| panic!("no trail: {all}"))
+}
+
+#[test]
+fn a_model_edit_into_the_vault_is_refused_and_named() {
+    // The risk (ADR 0049): a note is prompt input to later runs, so a model
+    // that rewrites one writes its own future context with no check behind
+    // it. `edit` reaches the vault unless the run refuses it, and a
+    // refusal that does not name `[context] vault` sends the reader looking
+    // for a `deny_write` rule that does not exist.
+    let d = repo("vault-edit", "[context]\nvault = \"vault\"\n");
+    let before = std::fs::read(d.join("vault/retries.md")).unwrap();
+    let spec = script(&d, EDITS_A_NOTE);
+    let (_, all) = trellis(&d, &["run", "edit the note", "--model", &spec]);
+    assert!(all.contains("snapshot at"), "{all}");
+    let trail = only_trail(&d, &all);
+    assert!(trail.contains("edit refused"), "{trail}");
+    assert!(trail.contains("[context] vault"), "{trail}");
+    assert_eq!(
+        std::fs::read(d.join("vault/retries.md")).unwrap(),
+        before,
+        "the note is byte-identical after the run: {all}"
+    );
+}
+
+#[test]
+fn without_a_vault_a_vault_directory_is_an_ordinary_path() {
+    // The refusal follows the setting, not a directory's name: with no
+    // `[context] vault`, `vault/` is any other path and nothing about the
+    // run mentions a vault.
+    let d = repo("vault-none", "");
+    let spec = script(&d, EDITS_A_NOTE);
+    let (_, all) = trellis(&d, &["run", "edit the note", "--model", &spec]);
+    assert!(all.contains("snapshot at"), "{all}");
+    let trail = only_trail(&d, &all);
+    assert!(!trail.contains("[context] vault"), "{trail}");
+    assert!(!trail.contains("edit refused"), "{trail}");
+}
+
+#[test]
+fn a_vault_at_the_repository_root_stops_the_run_before_the_snapshot() {
+    // `[context] vault = "."` with no `notes/` at the root makes the notes
+    // root the whole repository, so the refusal would refuse every write
+    // the task needs (ADR 0049 §5). Said before the snapshot, naming the
+    // setting, rather than a run that can change nothing.
+    let d = repo("vault-root", "[context]\nvault = \".\"\n");
+    let spec = script(&d, EDITS_A_NOTE);
+    let (ok, all) = trellis(&d, &["run", "edit the note", "--model", &spec]);
+    assert!(!ok, "{all}");
+    assert!(all.contains("[context] vault"), "{all}");
+    assert!(all.contains("is the repository root"), "{all}");
+    assert!(!all.contains("snapshot at"), "{all}");
+}

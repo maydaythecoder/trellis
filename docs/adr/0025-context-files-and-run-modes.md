@@ -216,9 +216,12 @@ on stderr.
   - `get_radius {symbol}` (*added 2026-10-05, #293; see "get_radius"
     below*)
   - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
+  - `vault_search {query, limit?}` and `vault_graph {note}` (*added
+    2026-10-06, #295; see "vault_search and vault_graph" below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
-  `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th, and
-  `get_queue`, the 15th, are trellis's own, not pi's)
+  `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th,
+  `get_queue`, the 15th, and `vault_search` and `vault_graph`, the 16th and
+  17th, are trellis's own, not pi's)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -444,6 +447,55 @@ on stderr.
     The non-repository answer is
     `get_queue_outside_a_repository_answers_the_queue_s_own_error` in
     `rpc.rs`.
+- *Added 2026-10-06 (#295), owner-directed: the session's choice under the owner's 2026-10-04 delegation (ADR 0048 §10).*
+  **`vault_search {query, limit?}`** and **`vault_graph {note}`** answer
+  with what `trellis vault search` and `trellis vault graph <note>` print
+  (ADR 0022), as data, so an rpc client never parses human output (ADR 0048
+  §2). Both are read-only: every vault write stays a `trellis vault`
+  command, the write path #70 (ADR 0021) names.
+  - The vault is the repository's `[context] vault`, as for `trellis vault`
+    without `--vault`; neither takes a directory. Vault notes are
+    repository files shown as data (ADR 0017): strings are given as stored,
+    the CLI escapes control characters for the terminal, and JSON escapes
+    its own.
+  - `vault_search` takes its hits and its reduced-mode flags from the
+    function `trellis vault search` prints from (`vault_cmd::search_hits`:
+    `Vault::open`, the index built in memory, `search_results`), so the two
+    cannot rank a query differently. `limit` defaults to 12, as the CLI's
+    `--limit` does; one that is not a non-negative integer, or a missing
+    `query`, is refused by name. `data` is `{hits, mode}`: `hits` the hits
+    in the CLI's order, each `{path, title, score}`, empty when nothing
+    matches; `mode` is `{body, trigrams}`, `body` false exactly when the
+    CLI prints that search was reduced to titles and paths, and `trigrams`
+    false when it prints that fuzzy search was reduced, or when the body
+    was dropped too, since Apex drops trigrams with it (`Mode::for_vault`).
+  - `vault_graph` takes what it answers from the function `trellis vault
+    graph` prints from (`vault_cmd::graph_view`: `edit::Session::open`,
+    which is `Vault::open` plus `Graph::build`). The note is resolved as
+    the CLI resolves it; a missing `note` is refused by name. `data` is
+    `{note, depth, lineage, unresolved_parent, children, refs_out, refs_in,
+    issues}`: `note` is `{path, title}`; `depth` is null where the CLI
+    prints none; `lineage` the paths in its order; `unresolved_parent` the
+    parent target it prints as not resolving, else null; `children` each
+    `{path, title}`; `refs_out` and `refs_in` each `{path, title, weight}`;
+    and `issues` the lines it prints under `issues:`, empty when it prints
+    none.
+  - With no vault configured, or a note that is missing or ambiguous,
+    either answers `success` false with the message the CLI prints.
+  - Each runs on its own thread, through `respond_on`, as `get_codebase`
+    does, so it is answered while a run is in flight, including one waiting
+    on an approval, and `quit` joins it before answering.
+  - Evidence: `rpc_vault_search_returns_what_vault_search_prints` and
+    `rpc_vault_graph_returns_what_vault_graph_prints` in `tests/modes.rs`,
+    through the binary over stdio, over a committed vault with a parent, a
+    child, and a note under a missing parent linked both ways with the
+    child: with no run in flight each answers and afterwards `git status
+    --porcelain` prints nothing; it is answered while an approve-mode run
+    waits on its question, before that run's `run_end`; one followed by
+    `quit` is answered before the `quit` response; and the answer equals
+    what `trellis vault search retry` or `trellis vault graph child` prints,
+    scores to the four decimals printed. Each also checks the no-vault
+    message, and `vault_graph` the missing-note message, against the CLI's.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
