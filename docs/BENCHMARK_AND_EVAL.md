@@ -597,6 +597,21 @@ two rows were measured, which is why they show none — the cost columns are
 comparable only within a harness version, the `repaired` column across all of
 them.
 
+**Floor reports are compared only through `docs/bench/compare_floor.py`**
+(#344). `run_floor.py` writes a `comparable` block into each report:
+`tasks_sha256` (the task file), `checker`, `budget`, `limit` (the `--limit`
+that cut the task set), `trellis_sha256` (the binary that ran) and
+`trellis_version` (its `--version`). Only `configuration` and
+`trellis_sha256` may differ; they are the axes a comparison is for, and the
+binary's `--version` is printed beside its hash. If `tasks_sha256`, `checker`,
+`budget` or `limit` differ, the script exits 1 naming each field and prints no
+figure. It prints each report's figures in its own column and never combines
+them, and it shows wall-clock only when every report ran the same binary.
+Every report committed before #344, including the four rows above, has no
+`comparable` block and is refused by name, so this table is not
+`compare_floor.py` output. `scripts/checks/floor-compare-selftest.sh` holds the
+script to its four cases.
+
 `errors_after == errors_before` on all 20 tasks of the first row.
 
 The Ollama row is `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`
@@ -754,9 +769,9 @@ kept.
 | 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
 | 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 (ADR 0028) |
 | Floor as a configuration | Three configurations (§5.2), all below the floor | Reported as a lower bound, not a floor |
-| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; the three runs in §5.2 are re-scored below. #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
+| Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; three of §5.2's four runs (the two 0.5B runs and the Coder-3B run) are re-scored below; the `qwen2.5:3b` Ollama run is not (§5.7). #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
 | Metric 5, run-to-run variance | **Waived for temperature-0 configurations only** (ADR 0028) | Nothing varies at temperature 0. A configuration sampled above 0 still needs the five repetitions per task designed above |
-| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. Neither measured configuration repaired a task |
+| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. None of the three measured configurations (§5.2, §5.7) repaired a task |
 
 #### Metric 3: the per-call audit of the runs in §5.2
 
