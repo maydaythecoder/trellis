@@ -194,11 +194,14 @@ check_tree() {
   fi
 
   # deny-copy
-  local root_deny desk_deny
+  # Gated on the reads succeeding, not on content: an empty desktop/deny.toml
+  # is a copy missing every root line, not one with nothing to check.
+  local root_deny desk_deny read_ok=0
   root_deny=$(tr -d '\r' < "$d/deny.toml") \
     && desk_deny=$(tr -d '\r' < "$d/desktop/deny.toml") \
+    && read_ok=1 \
     || { echo "FAIL [deny-copy]: cannot read deny.toml or desktop/deny.toml"; bad=1; }
-  if [ -n "${desk_deny:-}" ]; then
+  if [ "$read_ok" -eq 1 ]; then
     out=$(printf '%s\n' "$desk_deny" | awk '
       /^# desktop-only: begin$/ { if (open) print NR ": a second begin before an end"; open = 1; next }
       /^# desktop-only: end$/   { if (!open) print NR ": an end with no begin"; open = 0; next }
@@ -286,6 +289,8 @@ plant() {
       printf 'unused-allowed-license = "allow"\n' >> "$d/desktop/deny.toml" ;;
     deny-unclosed-marker)
       printf '# desktop-only: begin\n' >> "$d/desktop/deny.toml" ;;
+    deny-empty-file)
+      : > "$d/desktop/deny.toml" ;;
     audit-toml-desktop)
       printf '[advisories]\nignore = []\n' > "$d/desktop/audit.toml" ;;
     audit-toml-cargo)
@@ -333,6 +338,7 @@ CASES=(
   'deny-missing-line|deny-copy'
   'deny-extra-line|deny-copy'
   'deny-unclosed-marker|deny-copy'
+  'deny-empty-file|deny-copy'
   'audit-toml-desktop|audit-toml'
   'audit-toml-cargo|audit-toml'
 )
