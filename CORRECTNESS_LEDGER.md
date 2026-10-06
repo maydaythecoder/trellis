@@ -1276,12 +1276,12 @@ killed (#248) by tooling::run_tests::after_run_is_told_whether_the_run_converged
 #248 | crates/trellis-cli/src/tui_bridge.rs:45:13: delete match arm "prompt_bytes" in <impl Visit for TurnFields>::record_u64
 #248 | crates/trellis-cli/src/tui_bridge.rs:56:13: delete match arm "message" in <impl Visit for TurnFields>::record_str
 #248 | crates/trellis-cli/src/tui_bridge.rs:78:13: delete match arm "check_kind" in <impl Visit for TurnFields>::record_debug
-#248 | crates/trellis-cli/src/tui_run.rs:334:17: delete field model_from_user from struct crate::RunSeeding expression in run_for_tui
-#248 | crates/trellis-cli/src/tui_run.rs:408:40: replace || with && in run
-#248 | crates/trellis-cli/src/tui_run.rs:408:8: delete ! in run
-#248 | crates/trellis-cli/src/tui_run.rs:408:43: delete ! in run
-#248 | crates/trellis-cli/src/tui_run.rs:435:9: delete match arm Some("scripted") in run
-#248 | crates/trellis-cli/src/tui_run.rs:515:24: delete ! in run
+killed (#248) by tui_run::tests::a_model_the_person_chose_in_the_tui_is_not_refused_as_the_repository_s | crates/trellis-cli/src/tui_run.rs:334:17: delete field model_from_user from struct crate::RunSeeding expression in run_for_tui
+unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:40: replace || with && in run
+unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:8: delete ! in run
+unexercisable (#248): differs only with exactly one of stdin and stdout a terminal; every test here runs both as pipes, where the mutant and the original both refuse, and a terminal needs a pty | crates/trellis-cli/src/tui_run.rs:408:43: delete ! in run
+unexercisable (#248): the status bar's first label, set only after `run` has found a terminal on both ends, which no test here has (a pty) | crates/trellis-cli/src/tui_run.rs:435:9: delete match arm Some("scripted") in run
+unexercisable (#248): inside `run`'s task driver, reached only after the terminal check, which no test here passes (a pty) | crates/trellis-cli/src/tui_run.rs:515:24: delete ! in run
 killed (#248) by tests/cli.rs vault_dates_says_there_is_no_file_and_seed_makes_one_dated_from_the_files | crates/trellis-cli/src/vault_cmd.rs:159:5: replace file_days -> FileDays with Default::default()
 killed (#248) by tests/cli.rs vault_new_says_what_it_created | crates/trellis-cli/src/vault_cmd.rs:171:5: replace print_outcome -> Result<()> with Ok(())
 killed (#248) by tests/cli.rs vault_check_lists_issues_only_when_there_are_some_and_names_the_fix_for_a_refusal | crates/trellis-cli/src/vault_cmd.rs:187:5: replace check -> Result<()> with Ok(())
