@@ -100,6 +100,17 @@ impl Judge {
             .collect();
         deny.extend(trellis_checks::governance::deny_write_paths(&rules));
         let mut deny = trellis_loop::Governance::new(&deny);
+        // The vault's notes root, as a model run refuses it (ADR 0049 §2):
+        // this command's writes reach the repository with no `edit` call.
+        // Asked only when a vault is set, so a `[context] focus` with none,
+        // which only a model run's prompt uses, is not this judge's error.
+        if cfg.context.as_ref().is_some_and(|c| c.vault.is_some())
+            && let Some(v) = cfg.vault(root, None).map_err(|e| format!("{e:#}"))?
+        {
+            let (source, notes_root) =
+                crate::run_cmd::vault_notes_root(root, &v).map_err(|e| format!("{e:#}"))?;
+            deny = deny.with_vault(&source, &notes_root);
+        }
         if let Some(allow) = &profile.file.allow_write {
             deny = deny.with_allow_write(&profile.name, allow);
         }
@@ -523,8 +534,8 @@ pub(crate) fn run(p: ProcessRun<'_>, out: &mut dyn Write) -> RunEnd {
                  rules that judge it"
             }
             _ if !denied.is_empty() => {
-                "not converged: the command wrote where [governance] deny_write refuses, \
-                 or outside the agent's allow_write"
+                "not converged: the command wrote where [governance] deny_write refuses \
+                 (or [context] vault does), or outside the agent's allow_write"
             }
             _ if !back.refused.is_empty() => {
                 "not converged: part of what the command changed in its clone could not be \
