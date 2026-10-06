@@ -1860,3 +1860,422 @@ mod mention_wake_cli_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+/// #248: what `queue set` writes to the task file, and what it refuses,
+/// read from the file rather than from what is printed.
+#[cfg(test)]
+mod queue_set_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        action: QueueAction,
+    }
+
+    /// `trellis queue <args>`, parsed as the binary parses it.
+    fn run(root: &Path, args: &[&str]) -> Result<()> {
+        let cli = Cli::try_parse_from(std::iter::once("queue").chain(args.iter().copied()))?;
+        queue(root, cli.action)
+    }
+
+    fn repo(name: &str) -> (PathBuf, Queue) {
+        let root = crate::testutil::scratch(name);
+        crate::testutil::git_init(&root);
+        let q = Queue::for_repo(&root).unwrap();
+        (root, q)
+    }
+
+    fn add(q: &Queue, new: NewTask) -> String {
+        q.add_task(new, Actor::Human).unwrap()
+    }
+
+    fn plain_task(q: &Queue, text: &str) -> String {
+        add(
+            q,
+            NewTask {
+                task: text.into(),
+                ..NewTask::default()
+            },
+        )
+    }
+
+    /// A task moved by hand to `status` with a recorded outcome, as a run
+    /// leaves one.
+    fn finished(q: &Queue, text: &str, status: Status) -> String {
+        let id = plain_task(q, text);
+        q.edit(&id, |t, _| {
+            t.status = Some(status);
+            t.outcome = Some(trellis_queue::Outcome {
+                run_id: Some("r1".into()),
+                exit: "converged".into(),
+                finished_at: "2026-10-06T00:00:00Z".into(),
+            });
+            Ok(Some(status.home()))
+        })
+        .unwrap();
+        id
+    }
+
+    fn err(root: &Path, args: &[&str]) -> String {
+        format!("{:#}", run(root, args).unwrap_err())
+    }
+
+    #[test]
+    fn labels_and_blockers_are_added_once_and_removed_by_name() {
+        // The risk: `--label` or `--blocked-by` adding nothing, or a
+        // duplicate on a repeat; `--unlabel`/`--unblock` removing every
+        // other entry instead of the named one; a real blocker refused as
+        // the task itself or as unknown.
+        let (root, q) = repo("set-labels");
+        let a = plain_task(&q, "a");
+        let b = plain_task(&q, "b");
+        run(&root, &["set", &b, "--label", "x", "--label", "y"]).unwrap();
+        run(&root, &["set", &b, "--label", "x"]).unwrap();
+        assert_eq!(q.find(&b).unwrap().1.labels, ["x", "y"]);
+        run(&root, &["set", &b, "--unlabel", "x"]).unwrap();
+        assert_eq!(q.find(&b).unwrap().1.labels, ["y"]);
+
+        run(&root, &["set", &b, "--blocked-by", &a]).unwrap();
+        run(&root, &["set", &b, "--blocked-by", &a]).unwrap();
+        assert_eq!(q.find(&b).unwrap().1.blockers, [a.as_str()]);
+        let c = plain_task(&q, "c");
+        run(&root, &["set", &b, "--blocked-by", &c]).unwrap();
+        run(&root, &["set", &b, "--unblock", &a]).unwrap();
+        assert_eq!(q.find(&b).unwrap().1.blockers, [c.as_str()]);
+
+        assert!(
+            err(&root, &["set", &b, "--blocked-by", &b]).contains("cannot depend on"),
+            "a task blocked by itself"
+        );
+        assert!(err(&root, &["set", &b, "--parent", "nope"]).contains("nope"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_assignee_must_be_a_profile_in_the_repository() {
+        let (root, q) = repo("set-assignee");
+        std::fs::create_dir_all(root.join(".trellis/agents")).unwrap();
+        std::fs::write(root.join(".trellis/agents/rev.toml"), "").unwrap();
+        let a = plain_task(&q, "a");
+        run(&root, &["set", &a, "--assignee", "rev"]).unwrap();
+        assert_eq!(q.find(&a).unwrap().1.assignee.as_deref(), Some("rev"));
+        assert!(err(&root, &["set", &a, "--assignee", "ghost"]).contains("no agent `ghost`"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_block_is_set_only_with_a_reason_that_holds_and_keeps_that_reason() {
+        // The risk: a block whose reason is dropped (it then routes to
+        // nobody), or one refused when its reason holds, or accepted when
+        // it does not: blockers with none, children with none, manual with
+        // a blank detail.
+        let (root, q) = repo("set-blocked");
+        let a = plain_task(&q, "a");
+        let b = add(
+            &q,
+            NewTask {
+                task: "b".into(),
+                blockers: vec![a.clone()],
+                ..NewTask::default()
+            },
+        );
+        let _child = add(
+            &q,
+            NewTask {
+                task: "child".into(),
+                parent: Some(a.clone()),
+                ..NewTask::default()
+            },
+        );
+        let d = plain_task(&q, "d");
+        let blocked = |id: &str| {
+            let (_, t) = q.find(id).unwrap();
+            assert_eq!(t.status, Some(Status::Blocked), "{id}");
+            t.blocked
+        };
+
+        assert!(err(&root, &["set", &d, "--reason", "manual"]).contains("goes with --status"));
+        run(
+            &root,
+            &["set", &b, "--status", "blocked", "--reason", "blockers"],
+        )
+        .unwrap();
+        assert_eq!(blocked(&b), Some(Blocked::Blockers));
+        run(
+            &root,
+            &["set", &a, "--status", "blocked", "--reason", "children"],
+        )
+        .unwrap();
+        assert_eq!(blocked(&a), Some(Blocked::Children));
+        run(
+            &root,
+            &[
+                "set",
+                &d,
+                "--status",
+                "blocked",
+                "--reason",
+                "manual",
+                "--detail",
+                "vendor fix",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            blocked(&d),
+            Some(Blocked::Manual {
+                detail: "vendor fix".into()
+            })
+        );
+
+        let e = plain_task(&q, "e");
+        let refused = |args: &[&str], why: &str| {
+            let mut all = vec!["set", e.as_str(), "--status", "blocked", "--reason"];
+            all.extend_from_slice(args);
+            let msg = err(&root, &all);
+            assert!(msg.contains(why), "{args:?}: {msg}");
+            let (s, t) = q.find(&e).unwrap();
+            assert_eq!(t.status_in(s), Status::Todo, "{args:?}");
+        };
+        refused(&["blockers"], "has no blockers");
+        refused(&["children"], "no task names this one");
+        refused(&["manual", "--detail", "  "], "needs --detail");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_status_back_to_pending_clears_the_old_outcome_and_no_other_move_does() {
+        // The risk: a requeued task carrying the last attempt's outcome,
+        // read as this attempt's; or an outcome erased by a move that
+        // keeps the task finished.
+        let (root, q) = repo("set-outcome");
+        let f = finished(&q, "f", Status::Failed);
+        run(&root, &["set", &f, "--status", "todo"]).unwrap();
+        let (s, t) = q.find(&f).unwrap();
+        assert_eq!((s, t.outcome), (State::Pending, None));
+
+        let g = finished(&q, "g", Status::Done);
+        run(&root, &["set", &g, "--status", "failed"]).unwrap();
+        let (s, t) = q.find(&g).unwrap();
+        assert_eq!(s, State::Failed);
+        assert!(t.outcome.is_some(), "kept: the task is still finished");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_new_unfinished_blockers_on_a_todo_task_block_it() {
+        // The risk: a todo task given a blocker that is not done stays in
+        // todo, unclaimable and saying nothing; or a task is blocked by a
+        // blocker already done, by an edit that adds none, or out of
+        // backlog.
+        let (root, q) = repo("set-auto-block");
+        let open = plain_task(&q, "open");
+        let done = finished(&q, "done", Status::Done);
+        let status = |id: &str| {
+            let (s, t) = q.find(id).unwrap();
+            t.status_in(s)
+        };
+
+        let t1 = plain_task(&q, "t1");
+        run(&root, &["set", &t1, "--blocked-by", &open]).unwrap();
+        assert_eq!(status(&t1), Status::Blocked);
+        assert_eq!(q.find(&t1).unwrap().1.blocked, Some(Blocked::Blockers));
+
+        let t2 = plain_task(&q, "t2");
+        run(&root, &["set", &t2, "--blocked-by", &done]).unwrap();
+        assert_eq!(status(&t2), Status::Todo, "its blocker is done");
+
+        let t3 = add(
+            &q,
+            NewTask {
+                task: "t3".into(),
+                backlog: true,
+                ..NewTask::default()
+            },
+        );
+        run(&root, &["set", &t3, "--blocked-by", &open]).unwrap();
+        assert_eq!(status(&t3), Status::Backlog);
+
+        // In todo by a person's choice with a blocker still open: an edit
+        // that adds no blocker leaves that choice alone.
+        let t4 = plain_task(&q, "t4");
+        run(&root, &["set", &t4, "--blocked-by", &open]).unwrap();
+        run(&root, &["set", &t4, "--status", "todo"]).unwrap();
+        assert_eq!(status(&t4), Status::Todo);
+        run(&root, &["set", &t4, "--priority", "high"]).unwrap();
+        assert_eq!(status(&t4), Status::Todo);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_change_that_ends_a_blocker_wakes_what_it_blocked() {
+        // The risk: `queue set --status done` on a blocker left the task it
+        // blocked waiting until the next `work` tick, which may be never.
+        let (root, q) = repo("set-wakes");
+        let a = plain_task(&q, "a");
+        let b = add(
+            &q,
+            NewTask {
+                task: "b".into(),
+                blockers: vec![a.clone()],
+                ..NewTask::default()
+            },
+        );
+        assert_eq!(q.find(&b).unwrap().1.status, Some(Status::Blocked));
+        run(&root, &["set", &a, "--status", "done"]).unwrap();
+        let (s, t) = q.find(&b).unwrap();
+        assert_eq!(t.status_in(s), Status::Todo);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// #248: what `queue list` prints for one task, and the age beside it.
+#[cfg(test)]
+mod list_line_tests {
+    use super::*;
+
+    fn entry(t: trellis_queue::Task) -> trellis_queue::Entry {
+        trellis_queue::Entry {
+            id: "t1".into(),
+            state: State::Pending,
+            task: Ok(t),
+            age: Some(Duration::from_secs(5)),
+        }
+    }
+
+    #[test]
+    fn attempts_blockers_and_notes_are_shown_when_there_are_any() {
+        let mut t = trellis_queue::Task {
+            task: "x".into(),
+            attempts: 2,
+            blockers: vec!["b1".into()],
+            ..Default::default()
+        };
+        t.note(Actor::Human, "look");
+        let e = entry(t);
+        let line = list_line(&e, &Queue::index_of(std::slice::from_ref(&e)));
+        for part in [", attempts 2", "[blocked by b1]", "[1 note(s)]"] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
+
+        let e = entry(trellis_queue::Task {
+            task: "x".into(),
+            ..Default::default()
+        });
+        let line = list_line(&e, &Queue::index_of(std::slice::from_ref(&e)));
+        for part in ["attempts", "blocked by", "note(s)"] {
+            assert!(!line.contains(part), "{part}: {line}");
+        }
+    }
+
+    #[test]
+    fn ages_are_in_the_largest_whole_unit() {
+        for (secs, want) in [
+            (0, "0s"),
+            (59, "59s"),
+            (60, "1m"),
+            (3599, "59m"),
+            (3600, "1h"),
+            (86_399, "23h"),
+            (86_400, "1d"),
+            (2 * 86_400 + 5, "2d"),
+        ] {
+            assert_eq!(ago(Duration::from_secs(secs)), want, "{secs}");
+        }
+    }
+}
+
+/// #248: the heartbeat's runner, apart from `run`.
+#[cfg(test)]
+mod runner_tests {
+    use super::*;
+
+    fn with_routine(name: &str, text: &str) -> PathBuf {
+        let root = crate::testutil::scratch(name);
+        std::fs::create_dir_all(root.join(".trellis/routines")).unwrap();
+        std::fs::write(root.join(".trellis/routines/nightly.toml"), text).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_tick_says_how_many_fires_it_dropped_and_says_nothing_when_none() {
+        let root = with_routine(
+            "tick-missed",
+            "schedule = \"0 3 * * *\"\n[task]\ntext = \"triage\"\n",
+        );
+        let q = Queue::at(root.join("queue"));
+        let set = load_routines(&root, &BTreeMap::new()).unwrap();
+        // Armed a week ago: seven 03:00 fires since, the newest run and six
+        // dropped under the default catch-up.
+        routine::evaluate(&q, &set["nightly"], trellis_queue::now_secs() - 7 * 86_400).unwrap();
+        let mut r = test_runner(&root, q.clone(), trusted);
+        let mut out = Vec::new();
+        r.tick(&q, &mut out);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("nightly dropped 6 missed fire(s)"), "{s}");
+
+        let mut out = Vec::new();
+        r.tick(&q, &mut out);
+        let s = String::from_utf8(out).unwrap();
+        assert!(!s.contains("dropped"), "nothing was missed: {s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn next_due_is_the_time_left_until_the_soonest_routine() {
+        // The risk: `work --every` waking at once, never, or after the
+        // wrong interval, instead of when the next routine is due.
+        let root = with_routine(
+            "next-due",
+            "schedule = \"0 0 1 1 *\"\n[task]\ntext = \"yearly\"\n",
+        );
+        let mut r = test_runner(&root, Queue::at(root.join("queue")), trusted);
+        r.routines = load_routines(&root, &BTreeMap::new()).unwrap();
+        let now = trellis_queue::now_secs();
+        let y = &r.routines["nightly"];
+        let want = y.cron.next_after(now, &y.tz).unwrap() - now;
+        let got = r.next_due().expect("a routine is due some time").as_secs() as i64;
+        assert!((got - want).abs() <= 2, "{got} vs {want}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_runner_names_its_task_and_offers_a_process_probe() {
+        // The risk: a process agent given an empty `TRELLIS_TASK_ID`, and
+        // `stale_claims = "release"` that never releases, for want of a
+        // probe.
+        let root = crate::testutil::scratch("runner-probe");
+        crate::testutil::git_init(&root);
+        let q = Queue::for_repo(&root).unwrap();
+        let mut r = test_runner(&root, q.clone(), trusted);
+        r.starting("t-1");
+        assert_eq!(r.current.as_deref(), Some("t-1"));
+        let mut out = Vec::new();
+        let opts = WorkOptions {
+            stale_claims: trellis_queue::StaleClaims::Release,
+            ..WorkOptions::default()
+        };
+        trellis_queue::work(&q, &mut r, opts, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(!s.contains("no process probe"), "{s}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn idle_waits_out_its_time_unless_stopped_and_says_which() {
+        // The risk: `work --every` spinning without waiting, or not
+        // noticing Ctrl-C until the whole wait is over.
+        let d = tempfile::tempdir().unwrap();
+        let mut r = test_runner(d.path(), Queue::at(d.path().join("queue")), trusted);
+        let t0 = Instant::now();
+        assert!(r.idle(Duration::from_millis(300)), "not stopped");
+        assert!(t0.elapsed() >= Duration::from_millis(300));
+
+        r.stop.store(true, Ordering::SeqCst);
+        let t0 = Instant::now();
+        assert!(!r.idle(Duration::from_secs(10)), "stopped");
+        assert!(t0.elapsed() < Duration::from_secs(5));
+    }
+}

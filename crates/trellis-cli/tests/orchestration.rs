@@ -1786,3 +1786,137 @@ fn export_then_import_with_dry_run_and_rename() {
     let _ = std::fs::remove_dir_all(&e);
     let _ = std::fs::remove_dir_all(out.parent().unwrap());
 }
+
+#[test]
+fn queue_list_filters_show_only_their_tasks_and_no_unreadable_file() {
+    // #248. The risk: a filter that shows what it should hide, or a task
+    // file nobody can read listed under a filter it cannot match.
+    let d = fixture("list-filters", &[(".trellis/agents/rev.toml", "")]);
+    let a = queued_id(&ok(
+        &d,
+        &[
+            "queue",
+            "add",
+            "alpha",
+            "--priority",
+            "high",
+            "--assignee",
+            "rev",
+        ],
+    ));
+    let b = queued_id(&ok(&d, &["queue", "add", "beta", "--backlog"]));
+    std::fs::write(
+        d.join(".git/trellis/queue/pending/zzz-broken.json"),
+        "{not json",
+    )
+    .unwrap();
+    let list = |args: &[&str]| {
+        let mut all = vec!["queue", "list"];
+        all.extend_from_slice(args);
+        ok(&d, &all)
+    };
+    let s = list(&[]);
+    assert!(
+        s.contains(&a) && s.contains(&b) && s.contains("unreadable"),
+        "{s}"
+    );
+    for (args, shown, hidden) in [
+        (&["--status", "backlog"][..], &b, &a),
+        (&["--assignee", "rev"][..], &a, &b),
+        (&["--priority", "high"][..], &a, &b),
+    ] {
+        let s = list(args);
+        assert!(
+            s.contains(shown.as_str()) && !s.contains(hidden.as_str()),
+            "{args:?}: {s}"
+        );
+    }
+    for args in [&["--status", "todo"][..], &["--label", "x"][..]] {
+        let s = list(args);
+        assert!(!s.contains("unreadable"), "{args:?}: {s}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn export_says_how_many_claimed_tasks_it_left_out_and_nothing_when_none() {
+    // #248. The risk: a task mid-run silently missing from an export, or
+    // a "0 claimed task(s)" line on every export that left nothing out.
+    let d = fixture("export-claimed", &[]);
+    let id = queued_id(&ok(&d, &["queue", "add", "held"]));
+    let out = scratch("export-claimed-out");
+    let s = ok(&d, &["queue", "export", out.join("a").to_str().unwrap()]);
+    assert!(!s.contains("claimed task(s)"), "{s}");
+    let q = d.join(".git/trellis/queue");
+    std::fs::create_dir_all(q.join("claimed")).unwrap();
+    let file = format!("{id}.json");
+    std::fs::rename(q.join("pending").join(&file), q.join("claimed").join(&file)).unwrap();
+    let s = ok(&d, &["queue", "export", out.join("b").to_str().unwrap()]);
+    assert!(s.contains("1 claimed task(s) not exported"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn an_approve_mode_agent_waits_when_work_has_no_terminal_to_ask_on() {
+    // #248, ADR 0020 §5. The risk: a profile in approve mode run by a
+    // heartbeat nobody is watching, where every approval it asks for goes
+    // unanswered. The test's stdin and stdout are not a terminal.
+    let d = fixture(
+        "approve-no-tty",
+        &[(
+            ".trellis/agents/rev.toml",
+            "model = \"scripted:{ROOT}/converge.json\"\n[control]\nmode = \"approve\"\n",
+        )],
+    );
+    let id = queued_id(&ok(
+        &d,
+        &["queue", "add", "change the greeting", "--assignee", "rev"],
+    ));
+    let s = ok(&d, &["work", "--once"]);
+    assert!(
+        s.contains("agent `rev` is in approve mode, and `work` has no terminal to ask on"),
+        "{s}"
+    );
+    assert_eq!(ids(&d, "pending"), vec![id]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_claim_records_where_it_was_made_under_release_and_only_there() {
+    // #248, ADR 0020 §5. The risk: claims under the default policy
+    // recording a host nothing reads, or claims under "release" recording
+    // none, so a dead holder's claim is never released. The process agent
+    // prints its own claim file, found by `TRELLIS_TASK_ID`, while it
+    // holds the claim.
+    let cmd = per_os(
+        &in_repo(r"type .git\trellis\queue\claimed\%TRELLIS_TASK_ID%.json"),
+        &in_repo("cat .git/trellis/queue/claimed/$TRELLIS_TASK_ID.json"),
+    );
+    let d = process_fixture("claimant", &cmd, PASSES);
+    ok(
+        &d,
+        &["queue", "add", "show the claim", "--assignee", "maker"],
+    );
+    let s = ok(&d, &["work", "--once"]);
+    assert!(s.contains("claimed_by_pid"), "the claim was printed: {s}");
+    assert!(!s.contains("claimed_host"), "{s}");
+
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!(
+            "[checks]\ntypecheck = {PASSES}\ntests = [\"git\", \"--version\"]\n\
+             [work]\nstale_claims = \"release\"\n"
+        ),
+    )
+    .unwrap();
+    git(&d, &["commit", "-qam", "release"]);
+    ok(&d, &["trust"]);
+    ok(
+        &d,
+        &["queue", "add", "show it again", "--assignee", "maker"],
+    );
+    let s = ok(&d, &["work", "--once"]);
+    assert!(s.contains("claimed_host"), "{s}");
+    let _ = std::fs::remove_dir_all(&d);
+}
