@@ -692,7 +692,8 @@ fn main() -> Result<()> {
             // With no target the width is 1 (refused above otherwise), and
             // the run is today's single-agent run with nothing added. With
             // targets, the plan's partitions run each in its own agent (#466),
-            // one at a time at width 1 (ADR 0045 §2, #482).
+            // one at a time at width 1 (ADR 0045 §2, #482), which is also the
+            // width of any N on a backend not measured to batch (#483).
             let mut fanout = None;
             if !target.is_empty() {
                 let (n, why) = agents_for(&root, width, &target, &model, model_from_user)?;
@@ -885,37 +886,66 @@ fn agents_for(
         index_cmd::resolve_symbol(&index, t)?;
     }
     let (n, why) = match width {
-        Agents::Count(n) => (n, format!("--agents is {n}")),
+        Agents::Count(1) => (1, "--agents is 1".to_string()),
+        // An explicit N asks the backend as `auto` does (exit gate item 10,
+        // #483): N agents on a runtime that serves one request at a time is
+        // slower than one after another, and a user who typed N would not
+        // know why. Only measured continuous batching keeps N.
+        Agents::Count(n) => match batching(root, spec, from_user)? {
+            (cap, why) if cap.supports_multi_agent() => (n, format!("--agents is {n}; {why}")),
+            (_, why) => (
+                1,
+                format!(
+                    "--agents {n} is 1 because {why}; {n} at once needs a backend measured to \
+                     batch continuously, such as llama.cpp started with --parallel {n}"
+                ),
+            ),
+        },
         Agents::Auto => {
-            use trellis_model::BatchingCapability as B;
-            let parsed: trellis_model::ModelSpec = spec.parse()?;
-            let cfg = config::RepoConfig::load(root)?;
-            let (cap, why) = match doctor_cmd::probe_batching(&parsed, &cfg, from_user) {
-                Ok(cap @ B::Continuous { .. }) => {
-                    (cap, "the runtime reports that many slots".into())
-                }
-                Ok(cap @ B::SingleStream) => (cap, "the runtime reports a single slot".into()),
-                Ok(cap @ B::ContinuousUnmeasured) => (
-                    cap,
-                    "the backend batches continuously but does not report how much".into(),
-                ),
-                Ok(cap @ B::Unknown) => (
-                    cap,
-                    "the backend's batching capability is unknown (a scripted model has none)"
-                        .into(),
-                ),
-                Err(e) => (
-                    B::Unknown,
-                    format!(
-                        "the runtime's slot count could not be read ({e}), so its capability is unknown"
-                    ),
-                ),
-            };
+            let (cap, why) = batching(root, spec, from_user)?;
             let n = cap.auto_agents();
             (n, format!("--agents auto is {n} because {why}"))
         }
     };
     Ok((n, why))
+}
+
+/// The backend's batching capability, by the probe `doctor` uses, with why it
+/// is that. Reads the runtime and writes nothing; the probe's own timeout
+/// bounds it. A slot count that could not be read is `Unknown`, said so.
+fn batching(
+    root: &Path,
+    spec: &str,
+    from_user: bool,
+) -> Result<(trellis_model::BatchingCapability, String)> {
+    use trellis_model::BatchingCapability as B;
+    let parsed: trellis_model::ModelSpec = spec.parse()?;
+    let cfg = config::RepoConfig::load(root)?;
+    Ok(match doctor_cmd::probe_batching(&parsed, &cfg, from_user) {
+        Ok(
+            cap @ B::Continuous {
+                measured_concurrency,
+            },
+        ) => (
+            cap,
+            format!("the runtime reports {measured_concurrency} slots"),
+        ),
+        Ok(cap @ B::SingleStream) => (cap, "the runtime reports a single slot".into()),
+        Ok(cap @ B::ContinuousUnmeasured) => (
+            cap,
+            "the backend batches continuously but does not report how much".into(),
+        ),
+        Ok(cap @ B::Unknown) => (
+            cap,
+            "the backend's batching capability is unknown (a scripted model has none)".into(),
+        ),
+        Err(e) => (
+            B::Unknown,
+            format!(
+                "the runtime's slot count could not be read ({e}), so its capability is unknown"
+            ),
+        ),
+    })
 }
 
 /// The repository root, walking up from the working directory.

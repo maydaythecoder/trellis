@@ -157,8 +157,8 @@ fn batching_note(b: trellis_model::BatchingCapability) -> Option<&'static str> {
         BatchingCapability::ContinuousUnmeasured => Some(concat!(
             "This runtime batches continuously, so multi-agent mode is supported ",
             "in principle. The concurrency it will grant is its scheduler's ",
-            "decision and is not reported, so `--agents auto` runs one agent. ",
-            "Pass `--agents N` with `--target` to run up to N at once. "
+            "decision and is not reported, so `--agents` runs one agent, ",
+            "whatever N it is given. "
         )),
         BatchingCapability::Continuous { .. } | BatchingCapability::Unknown => None,
     }

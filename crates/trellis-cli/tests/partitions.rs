@@ -287,25 +287,137 @@ fn the_trail(root: &Path) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(&runs[0]).unwrap()).unwrap()
 }
 
+/// One HTTP request off `s`, whole: the head and as much body as its
+/// `Content-Length` says. Empty when the client sent nothing, as `cmd_run`'s
+/// check that a runtime is listening does.
+fn read_request(s: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 16384];
+    loop {
+        let n = s.read(&mut buf).unwrap_or(0);
+        raw.extend_from_slice(&buf[..n]);
+        let text = String::from_utf8_lossy(&raw).to_string();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if body.len() >= len {
+                break;
+            }
+        }
+        if n == 0 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&raw).into_owned()
+}
+
+/// A llama.cpp server on a loopback port that reports `slots` slots, so the
+/// probe `--agents` makes (#483) measures continuous batching, and plays
+/// `steps[target]` to the agent whose task names `target`, one step per
+/// completion. A partition's prompt carries `Yours works on: <targets>.`
+/// (`run_cmd::partition_task`), which is how a request is told apart. A
+/// `GET` of `/models` is answered 404 as by a server that is not colibri
+/// (ADR 0047 decision 3). Each connection is served on its own thread, so
+/// agents running at once are answered at once.
+fn llamacpp_with_slots(
+    slots: u32,
+    steps: std::collections::HashMap<&'static str, Vec<serde_json::Value>>,
+) -> String {
+    use std::io::Write;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let played = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        &'static str,
+        usize,
+    >::new()));
+    let steps = std::sync::Arc::new(steps);
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let (played, steps) = (played.clone(), steps.clone());
+            std::thread::spawn(move || {
+                let request = read_request(&mut s);
+                if request.is_empty() {
+                    return;
+                }
+                let first = request.lines().next().unwrap_or_default().to_string();
+                let (status, body) = if first.starts_with("GET /props") {
+                    ("200 OK", format!("{{\"total_slots\":{slots}}}"))
+                } else if first.starts_with("POST /completion") {
+                    let target = steps
+                        .keys()
+                        .copied()
+                        .find(|t| request.contains(&format!("Yours works on: {t}.")));
+                    match target {
+                        Some(t) => {
+                            let mut played = played.lock().unwrap();
+                            let i = played.entry(t).or_default();
+                            let step = steps[t].get(*i).cloned().unwrap_or_else(
+                                || serde_json::json!({"tool": "done", "summary": "out of steps"}),
+                            );
+                            *i += 1;
+                            let content = serde_json::json!({"content": step.to_string(),
+                                "tokens_predicted": 3, "tokens_evaluated": 10});
+                            ("200 OK", content.to_string())
+                        }
+                        None => ("404 Not Found", "{}".to_string()),
+                    }
+                } else {
+                    ("404 Not Found", "{}".to_string())
+                };
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            });
+        }
+    });
+    format!("llamacpp:http://{addr}")
+}
+
 #[test]
 fn three_partition_run_converges_with_every_partitions_edit() {
     // #466: three targets nothing connects are three parallel partitions,
     // each run by its own agent in its own worktree; the union lands in the
     // root only after the integrated check passed on it (ADR 0042). The
     // risk: a run that converges with one partition's edit, or none.
-    let script = serde_json::json!({"targets": {
-        "fa": section("a.py", "A_NEW"),
-        "fb": section("b.py", "B_NEW"),
-        "fc": section("c.py", "C_NEW"),
-    }});
-    let f = fixture_with("three", Some(CHECKS_PASS), &script.to_string());
+    //
+    // Since #483 an explicit `--agents 3` keeps 3 only on a backend measured
+    // to batch, which a scripted model is not, so the agents here are served
+    // by a llama.cpp stub reporting three slots.
+    let steps = |file: &str, value: &str| section(file, value)["steps"].as_array().unwrap().clone();
+    let model = llamacpp_with_slots(
+        3,
+        [
+            ("fa", steps("a.py", "A_NEW")),
+            ("fb", steps("b.py", "B_NEW")),
+            ("fc", steps("c.py", "C_NEW")),
+        ]
+        .into(),
+    );
+    let f = fixture_with(
+        "three",
+        Some(CHECKS_PASS),
+        r#"{"steps":[{"tool":"done","summary":"unused"}]}"#,
+    );
     let o = run(
         &f,
         &[
             "run",
             "change fa, fb and fc",
             "--model",
-            &f.spec,
+            &model,
+            "--unconstrained",
             "--agents",
             "3",
             "--target",
@@ -320,6 +432,11 @@ fn three_partition_run_converges_with_every_partitions_edit() {
     assert_eq!(o.status.code(), Some(0), "{out}");
     assert!(
         out.contains("CONVERGED") && !out.contains("NOT CONVERGED"),
+        "{out}"
+    );
+    // At width 3, measured, not degraded to one at a time.
+    assert!(
+        out.contains("up to 3 at once (--agents is 3; the runtime reports 3 slots)"),
         "{out}"
     );
     for (file, func, value) in [
@@ -422,6 +539,76 @@ fn agents_one_with_targets_runs_each_partition_through_the_partitioned_path() {
     assert_eq!(edited, ["a.py", "b.py"].into(), "{trail:#}");
 }
 
+#[test]
+fn agents_explicit_on_a_non_batching_backend_runs_at_width_one_and_says_why() {
+    // Exit gate item 10 (#483): `--agents 3` on a backend not measured to
+    // batch would put three agents on a runtime that serves one request at
+    // a time, slower than one after another and with nothing said. The
+    // risk: the explicit number trusted where `auto` is not, or the run
+    // degraded without the user told why or what N would need.
+    let script = serde_json::json!({"targets": {
+        "fa": section("a.py", "A_NEW"),
+        "fb": section("b.py", "B_NEW"),
+        "fc": section("c.py", "C_NEW"),
+    }});
+    let f = fixture_with("explicit", Some(CHECKS_PASS), &script.to_string());
+    let o = run(
+        &f,
+        &[
+            "run",
+            "change fa, fb and fc",
+            "--model",
+            &f.spec,
+            "--agents",
+            "3",
+            "--target",
+            "fa",
+            "--target",
+            "fb",
+            "--target",
+            "fc",
+        ],
+    );
+    let out = said(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(
+        out.contains("CONVERGED") && !out.contains("NOT CONVERGED"),
+        "{out}"
+    );
+    // Said on the `agents:` line, which comes before the base the run is
+    // snapshotted at: why it runs sequentially, and what 3 would need.
+    let agents = out
+        .lines()
+        .find(|l| l.starts_with("agents:"))
+        .unwrap_or_else(|| panic!("no agents line:\n{out}"));
+    assert!(agents.contains("one at a time"), "{agents}");
+    assert!(agents.contains("--agents 3"), "{agents}");
+    assert!(
+        agents.contains("unknown"),
+        "the reason is missing: {agents}"
+    );
+    assert!(
+        agents.contains("measured") && agents.contains("--parallel 3"),
+        "what 3 would need is missing: {agents}"
+    );
+    assert!(
+        out.find("agents:") < out.find("base:"),
+        "said after the base:\n{out}"
+    );
+    for (file, func, value) in [
+        ("a.py", "fa", "A_NEW"),
+        ("b.py", "fb", "B_NEW"),
+        ("c.py", "fc", "C_NEW"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(f.root.join(file)).unwrap(),
+            format!("def {func}():\n    return '{value}'\n"),
+            "{file} does not hold its partition's edit:\n{out}"
+        );
+    }
+    assert_eq!(git(&f.root, &["rev-parse", "HEAD~1"]), f.head, "{out}");
+}
+
 /// A type check that fails only when `a.py` holds `A_NEW` and `b.py` holds
 /// `B_NEW`, naming both files, as `integrate.rs`'s collision checker does:
 /// each partition's own run of it passes, and only the union fails.
@@ -508,6 +695,9 @@ fn induced_collision_fails_the_integrated_check_rolls_back_and_records_a_gap() {
 fn agents_above_one_in_approve_mode_is_refused_before_the_snapshot() {
     // Agents running at once would put questions about edits in different
     // worktrees to one person at once; refused, not interleaved (#466).
+    // Two at once needs a backend measured to batch (#483): on a scripted
+    // one the run is one at a time, where approve mode is allowed.
+    let model = llamacpp_with_slots(2, std::collections::HashMap::new());
     let f = fixture_with(
         "approve",
         Some(CHECKS_PASS),
@@ -519,7 +709,7 @@ fn agents_above_one_in_approve_mode_is_refused_before_the_snapshot() {
             "run",
             "change fa and fb",
             "--model",
-            &f.spec,
+            &model,
             "--agents",
             "2",
             "--target",
