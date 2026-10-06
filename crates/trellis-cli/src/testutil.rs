@@ -132,8 +132,9 @@ pub(crate) struct Figures {
     requested: Vec<trellis_loop::RequestedCompaction>,
 }
 
-/// [`Figures`]: 7 tokens, 4,321 prompt bytes, one compaction eliding 50 B
-/// and one requested compaction eliding 60 B.
+/// [`Figures`]: 7 tokens, 4,321 prompt bytes, one compaction eliding 50 B,
+/// one requested compaction eliding 60 B, and a last step of 13 output
+/// tokens queued 250 ms.
 pub(crate) fn figures() -> Figures {
     Figures {
         compactions: vec![trellis_loop::Compacted {
@@ -173,5 +174,11 @@ impl trellis_loop::Model for Figures {
     }
     fn requested_compactions(&self) -> &[trellis_loop::RequestedCompaction] {
         &self.requested
+    }
+    fn step_usage(&self) -> trellis_loop::StepUsage {
+        trellis_loop::StepUsage {
+            completion_tokens: Some(13),
+            queue_wait_ms: Some(250),
+        }
     }
 }
