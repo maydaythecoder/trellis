@@ -21,7 +21,9 @@ architect.
 - A branch whose gates all exit 0 merges into `audit` with
   `git merge --no-ff`. Conflicts are resolved on `audit`, never on `dev`.
 - `audit` is promoted into `dev` once its gates pass: `git merge --ff-only`
-  where `dev` has not moved, `--no-ff` otherwise.
+  where `dev` has not moved, `--no-ff` otherwise, through an `audit → dev`
+  pull request whose CI is green. CI does not run on a push to `dev`
+  (#477), so a direct push would reach `dev` unchecked.
 - `dev` reaches `main` only through the owner's pull request. Never push to
   `main`, `v0.1-resolver` or `drain`, never push a `v*` tag (it starts the
   release workflow; tagging is the owner's), never force-push, never
