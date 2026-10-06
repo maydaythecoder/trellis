@@ -257,6 +257,68 @@ id, and the heartbeat adds its own note saying so.
   sandbox's job (ADR 0032, "Limits" and "What is not built"), not another
   environment check.
 
+*Amended 2026-10-06 (#341; Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation; PC-114):*
+**A person may block a task until a set time.** Paperclip lets an issue's
+assignee or the board set a one-shot re-check (ADR 0021, PC-114). Here the
+`blocked` reasons are `blockers`, `children`, `manual` and `question`,
+`reconcile` wakes only the first two, and nothing wakes a task at a time;
+routines and `work --every` (§7) create new tasks rather than re-run a
+waiting one. Not built: this amendment is the ADR for the flag #342 builds,
+and it builds nothing itself.
+
+- **The reason and the flags.** A new `blocked` reason, `until`, holds an
+  RFC 3339 instant in UTC. A person sets it with
+  `trellis queue set <id> --status blocked --reason until --at <instant>`.
+  No model tool sets the wait.
+- **The wake.** The first `Queue::reconcile` after the instant sets the
+  task to `todo`, once, whether that reconcile comes from a `work`
+  heartbeat or from a `queue` command that calls it (`queue set`, `queue
+  cancel`, `queue reject` and `queue import` do), so the task can be set to
+  `todo` while no `work` is running. The wake is written to the activity
+  log (§9) as the other wakes are. The task runs only when `work` claims
+  it, and is then claimable exactly as any `todo` task is.
+- **Refusals.** `--reason until` without `--at`, `--at` without `--reason
+  until`, and an `--at` that is not RFC 3339 are each refused with the task
+  file unchanged.
+- **Listing.** `queue list` prints `blocked until <instant>` on the task's
+  waiting line.
+- **On disk.** `blocked.reason` gains the value `until`, so a task file
+  written before the change parses unchanged. A binary from before the
+  change cannot parse a task blocked `until` (`Blocked` is tagged on
+  `reason` with no fallback variant), so its `queue list` shows the file as
+  unreadable and its `work` moves it to `failed/`, as recorded above for
+  the `question` reason.
+
+Reversed if routines and `work --every` are found to cover every wait
+people set in practice: then PC-114 stays excluded and #342 is closed
+unbuilt.
+
+*Amended 2026-10-06 (#345; Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation; PC-138):*
+**A queued task may name its own model.** Paperclip's task composer picks
+the model per message and keeps it as a per-issue override (ADR 0021,
+PC-138). Here the model is chosen per run (`run --model`, the session's
+`/model`), per profile (`model`, §4) or for a whole heartbeat (`work
+--model`, else `[model] spec`), and `Task` has no model field. Not built:
+this amendment is the ADR for `queue add --model`, which #346 builds, and it
+builds nothing itself.
+
+- **The field and the flag.** A task gains an optional `model` field, set
+  by `trellis queue add --model <spec>` and parsed as `run --model` parses
+  it. `work` runs such a task on that model, over its assignee profile's
+  model and over `work --model`, and the run's trail records the model in
+  its provenance, as it records the model that drove any run.
+- **The key rule.** A task file can arrive through `trellis queue import`,
+  so the task's model is held to the rule ADR 0024 §3 applies to a
+  profile's model: it counts as the repository's choice, and a hosted
+  endpoint it names is sent a key only when the user's own config names
+  that endpoint.
+- **What it does not add.** A routine's `[task]` cannot set the field.
+  Thinking stays in `[model] thinking`; there is no thinking level per task.
+  A task has no generated title: its text is its only name.
+
+Reversed if the key rule cannot be held for task files that arrive through
+`queue import`: then a profile per model, and #346 is closed unbuilt.
+
 ### 2. Changing a file that already exists
 
 Every rewrite goes through one of three paths. None of them renames a file.
@@ -524,6 +586,36 @@ so. `agents resume` on a profile paused in its file says to edit the file.
 
 **Subcommands:** `trellis agents list`, `show <name>`,
 `pause <name> [--reason]`, `resume <name>`.
+
+*Amended 2026-10-06 (#337), Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation.*
+**A profile may name a vault note as its memory.** Paperclip's
+persistent agent files (ADR 0021, PC-117) are a directory each agent keeps
+across tasks and sessions and writes itself. Here a profile's `instructions` file lives
+under `.trellis/`, and model writes never land in `.trellis/` (ADR 0023), so
+agent-writable files there are not an option; what one run learns reaches
+the next through the trail (ADR 0007) and vault notes (ADR 0017). The
+answer:
+
+- **The field.** A profile may set `memory = "<vault stem>"`. The note is
+  compiled through trellis-vault as standing context for every run of the
+  profile's tasks, as `--focus` is (ADR 0017), and a run edits it as a note
+  through the normal write path, so every change to it is in the diff a
+  person reviews.
+- **Not built.** This amendment builds no profile field; today a profile
+  has no `memory`. A separate ticket, filed after #337 closes, builds it
+  under the rules here.
+- **Where it is read from.** Only from the vault directory `[context]
+  vault` names, which is resolved through
+  `trellis_core::paths::resolve_repo_input` (crates/trellis-cli/src/config.rs)
+  and walked without following links, as CLAUDE.md requires of every
+  repository-supplied prompt input (ADR 0025).
+- **A vault under `.trellis/`.** If `[context] vault` is configured under
+  `.trellis/`, the note is readable and unwritable by a run, since model
+  writes never land there (ADR 0023).
+
+Reversed if a standing note cannot be added beside `--focus` without
+changing the compiled bytes for runs whose profile sets no `memory`: then a
+plain repository file read through `resolve_repo_input`.
 
 ### 5. Budgets in tokens
 
