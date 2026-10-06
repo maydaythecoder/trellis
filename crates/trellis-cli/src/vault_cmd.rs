@@ -15,7 +15,7 @@ use clap::Subcommand;
 use std::path::{Path, PathBuf};
 use trellis_vault::dates::{self, FileDays, State};
 use trellis_vault::edit::{self, Outcome};
-use trellis_vault::search::Index;
+use trellis_vault::search::{Index, search_results};
 use trellis_vault::{Graph, Issue, Vault};
 
 #[derive(clap::Args)]
@@ -42,7 +42,9 @@ pub(crate) enum VaultAction {
         #[arg(long)]
         fix: bool,
     },
-    /// BM25 over title, path and body, with a trigram fallback.
+    /// Apex's search-box ranking: BM25 over title, path and body with a
+    /// trigram fallback, plus exact, prefix, substring and subsequence
+    /// matches on title, filename and path.
     Search {
         #[arg(required = true)]
         query: Vec<String>,
@@ -222,21 +224,35 @@ fn check(dir: &Path, fix: bool) -> Result<()> {
 }
 
 fn search(dir: &Path, query: &str, limit: usize) -> Result<()> {
-    let v = Vault::open(dir)?;
-    let idx = Index::build(&v);
-    if !idx.mode.include_body {
-        println!("search reduced to titles and paths: the vault is over Apex's body-index limits");
-    } else if !idx.mode.include_trigrams {
-        println!("fuzzy search reduced: the vault is over Apex's trigram limit");
-    }
-    let hits = idx.search(query, limit);
-    if hits.is_empty() {
-        println!("no matches for \"{query}\"");
-    }
-    for h in hits {
-        println!("{:>8.4}  {}  \"{}\"", h.score, h.path, h.title);
+    for l in search_lines(dir, query, limit)? {
+        println!("{l}");
     }
     Ok(())
+}
+
+/// What `trellis vault search` prints, one string per line.
+fn search_lines(dir: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
+    let v = Vault::open(dir)?;
+    let idx = Index::build(&v);
+    let mut lines = Vec::new();
+    if !idx.mode.include_body {
+        lines.push(
+            "search reduced to titles and paths: the vault is over Apex's body-index limits"
+                .to_string(),
+        );
+    } else if !idx.mode.include_trigrams {
+        lines.push("fuzzy search reduced: the vault is over Apex's trigram limit".to_string());
+    }
+    // `searchResults.ts`, the order Apex's search box shows, not the
+    // index's own (ADR 0022 §4).
+    let hits = search_results(&v, &idx, query, limit);
+    if hits.is_empty() {
+        lines.push(format!("no matches for \"{query}\""));
+    }
+    for h in hits {
+        lines.push(format!("{:>8.4}  {}  \"{}\"", h.score, h.path, h.title));
+    }
+    Ok(lines)
 }
 
 fn graph(dir: &Path, arg: &str) -> Result<()> {
@@ -555,6 +571,68 @@ mod tests {
         std::fs::write(d.path().join("dates.json"), "{\"version\":2}").unwrap();
         let e = compile_for_run(d.path(), "task-a", true).unwrap_err();
         assert!(e.to_string().contains("does not validate"), "{e}");
+    }
+
+    fn vault_of(notes: &[(&str, &str, &str)]) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        for (path, title, body) in notes {
+            std::fs::write(
+                d.path().join(path),
+                format!("---\ntitle: \"{title}\"\n---\n{body}\n"),
+            )
+            .unwrap();
+        }
+        d
+    }
+
+    /// The position of the first printed line naming `path`.
+    fn line_of(lines: &[String], path: &str) -> Option<usize> {
+        lines
+            .iter()
+            .position(|l| l.contains(&format!("  {path}  ")))
+    }
+
+    /// The risk: the command ranking with the index alone, which never
+    /// finds a note whose title holds the query only as a subsequence,
+    /// where Apex's search box does (`searchResults.ts`).
+    #[test]
+    fn vault_search_finds_a_subsequence_only_title_match() {
+        let d = vault_of(&[
+            ("retry-policy.md", "Retry policy", "Backoff doubles."),
+            ("other.md", "Other", "Nothing here."),
+        ]);
+        let v = Vault::open(d.path()).unwrap();
+        assert!(
+            Index::build(&v).search("rtp", 12).is_empty(),
+            "the index alone must not find it, or this test proves nothing"
+        );
+        let lines = search_lines(d.path(), "rtp", 12).unwrap();
+        assert!(line_of(&lines, "retry-policy.md").is_some(), "{lines:?}");
+    }
+
+    /// The risk: the command printing the index's order, where a body that
+    /// repeats the query outranks a note whose title is the query.
+    #[test]
+    fn vault_search_ranks_an_exact_title_first() {
+        let d = vault_of(&[
+            ("retry.md", "Retry", "Backoff doubles."),
+            (
+                "policy.md",
+                "Retry policy",
+                &"retry retry retry retry retry retry retry retry. ".repeat(4),
+            ),
+        ]);
+        let v = Vault::open(d.path()).unwrap();
+        let hits = Index::build(&v).search("retry", 12);
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["policy.md", "retry.md"],
+            "the index must rank B first, or this test proves nothing"
+        );
+        let lines = search_lines(d.path(), "retry", 12).unwrap();
+        let (a, b) = (line_of(&lines, "retry.md"), line_of(&lines, "policy.md"));
+        assert!(a.is_some() && b.is_some() && a < b, "{lines:?}");
     }
 
     #[test]
