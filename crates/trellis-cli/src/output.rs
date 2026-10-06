@@ -124,6 +124,11 @@ pub(crate) struct RunExtras {
     /// (#319). `framed` pushes the run's id before it writes `run_end`, so
     /// a client that has read `run_end` and asks finds the run counted.
     pub run_ids: Option<Arc<Mutex<Vec<String>>>>,
+    /// Set by `framed` just before it writes `run_end`, for RPC (#495): a
+    /// `prompt` read after that is not refused as a run in progress but
+    /// waits out the run thread's tail. Set before, as `run_ids` is pushed
+    /// before, so a client that has read `run_end` finds it set.
+    pub run_ended: Option<Arc<AtomicBool>>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
@@ -144,6 +149,7 @@ impl Default for RunExtras {
             steer_watch: None,
             fanout: None,
             run_ids: None,
+            run_ended: None,
         }
     }
 }
@@ -176,6 +182,9 @@ pub(crate) fn framed(
         ids.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(id.clone());
+    }
+    if let Some(ended) = &extras.run_ended {
+        ended.store(true, Ordering::SeqCst);
     }
     frame(
         sink,
