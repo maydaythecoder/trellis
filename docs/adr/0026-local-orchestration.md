@@ -293,6 +293,32 @@ Reversed if routines and `work --every` are found to cover every wait
 people set in practice: then PC-114 stays excluded and #342 is closed
 unbuilt.
 
+*Amended 2026-10-06 (#345; Accepted (owner-directed): the session's choice under the owner's 2026-10-04 delegation; PC-138):*
+**A queued task may name its own model.** Paperclip's task composer picks
+the model per message and keeps it as a per-issue override (ADR 0021,
+PC-138). Here the model is chosen per run (`run --model`, the session's
+`/model`), per profile (`model`, §4) or for a whole heartbeat (`work
+--model`, else `[model] spec`), and `Task` has no model field. Not built:
+this amendment is the ADR for `queue add --model`, which #346 builds, and it
+builds nothing itself.
+
+- **The field and the flag.** A task gains an optional `model` field, set
+  by `trellis queue add --model <spec>` and parsed as `run --model` parses
+  it. `work` runs such a task on that model, over its assignee profile's
+  model and over `work --model`, and the run's trail records the model in
+  its provenance, as it records the model of every run.
+- **The key rule.** A task file can arrive through `trellis queue import`,
+  so the task's model is held to the rule ADR 0024 §3 applies to a
+  profile's model: it counts as the repository's choice, and a hosted
+  endpoint it names is sent a key only when the user's own config names
+  that endpoint.
+- **What it does not add.** A routine's `[task]` cannot set the field.
+  Thinking stays in `[model] thinking`; there is no thinking level per task.
+  A task has no generated title: its text is its only name.
+
+Reversed if the key rule cannot be held for task files that arrive through
+`queue import`: then a profile per model, and #346 is closed unbuilt.
+
 ### 2. Changing a file that already exists
 
 Every rewrite goes through one of three paths. None of them renames a file.
