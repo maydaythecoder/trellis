@@ -22,11 +22,25 @@
 
 use crate::agent::ToolCall;
 use crate::exec::{self, OUTPUT_CAP, Spec};
-use crate::gate::{GateDecision, GateFuture, ToolGate};
+use crate::gate::{GateDecision, GateFuture, ToolGate, read_only};
 use crate::registry::call_json;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// The call as a `pre_tool` or `post_tool` hook sees it: [`call_json`]
+/// plus, for a built-in, `read_only` from gate.rs's table (ADR 0023 §5,
+/// #328). Added here and not in `call_json`, which also builds the hosted
+/// transcript's tool arguments, where the key would be an argument no
+/// schema declares. A custom tool's object holds the repository's own
+/// argument names, so it gets no key that could collide with one.
+fn hook_call_json(call: &ToolCall) -> serde_json::Value {
+    let mut v = call_json(call);
+    if let (Some(r), serde_json::Value::Object(m)) = (read_only(call), &mut v) {
+        m.insert("read_only".into(), serde_json::Value::Bool(r));
+    }
+    v
+}
 
 /// Where one hook runs.
 #[derive(Clone, Copy)]
@@ -285,7 +299,7 @@ impl Hooks {
         let Some(argv) = &self.cfg.post_tool else {
             return;
         };
-        let input = serde_json::json!({ "call": call_json(call), "result": result });
+        let input = serde_json::json!({ "call": hook_call_json(call), "result": result });
         match self
             .call(argv, input.to_string().into_bytes(), Place::Clone(dir))
             .await
@@ -511,7 +525,7 @@ pub struct HookGate {
 impl ToolGate for HookGate {
     fn check<'a>(&'a mut self, call: &'a ToolCall) -> GateFuture<'a> {
         Box::pin(async move {
-            let input = call_json(call).to_string().into_bytes();
+            let input = hook_call_json(call).to_string().into_bytes();
             let ran = match &self.place {
                 Some(Ok(dir)) => self.hooks.call(&self.argv, input, Place::Clone(dir)).await,
                 Some(Err(why)) => Err(HookError::NotIsolated(why.clone())),
