@@ -1,8 +1,8 @@
 # ADR 0047 — colibri as a TRELLIS model runtime
 
-**Status:** Proposed.
-**Date:** 2026-10-04
-**Decided by:** pending; the owner, on COL-01 (#252).
+**Status:** Accepted (owner-directed), under the owner's delegation of 2026-10-04.
+**Date:** 2026-10-04; accepted 2026-10-06.
+**Decided by:** the owner, who accepted it on COL-01 (#252) on 2026-10-06 as that ticket specifies. Each answer below that was once a question to the owner is the session's choice under the owner's 2026-10-04 delegation, recorded by the ticket the decision names.
 **Reference:** colibri (github.com/JustVugg/colibri) v1.12.1 at ce370e8 (ce370e87d7b623d7759b52ec2007d75fc5b0e87e, 2026-09-25), Apache-2.0, inventoried in docs/inventory/inventory-colibri.md as COL-ENG-01 to COL-ENG-107. The code was read, not run: no colibri server was started for this ADR.
 **Amends:** ADR 0024 §2 (tier 1 claimed with no probe), §4 (no `temperature`) and §5 (the hosted default byte budget), each only for a loopback endpoint identified as colibri; then ADR 0028 (its statement that the hosted adapter sends no temperature), for that endpoint only.
 **Holds:** ADR 0013 (no inference code in TRELLIS; tier 3 not built). ADR 0024 §3 (where a key is sent) is unchanged. ADR 0004 (only trellis-checks produces a `Verdict`). The ten rules in CLAUDE.md are unchanged. No crate dependency is added.
@@ -52,7 +52,9 @@ TRELLIS reaches a runtime through a spec (`crates/trellis-model/src/spec.rs`) an
    - Tier 1: `openai-chat:http://127.0.0.1:8000/v1#<model-id>`, or `provider:<name>#<model-id>` with a `[[providers]]` entry in the user's own config. Setting `key_env = "COLI_API_KEY"` there means a user's `OPENAI_API_KEY` is not sent to colibri; ADR 0024 §3 sends a set variable to a loopback endpoint the user named.
    - `anthropic:http://127.0.0.1:8000#<model-id>` also works, without image input.
    - `vllm:http://127.0.0.1:8000#<model-id>` gives tier 4 only, with an untemplated prompt, and doctor says so.
-   - No `colibri:` scheme is added, subject to COL-01's question to the owner.
+   - No `colibri:` scheme is added.
+
+   **Delegated answer (spec form):** (a), recorded by COL-01 (#252) on 2026-10-06. A colibri server is reached by the existing `openai-chat:<base>/v1#<model-id>` spec or a `provider:` entry, and identified from `GET /v1/models` (`owned_by: "colibri"`, decision 3); no `colibri:` scheme is added. It adds no spec scheme, no key variable and no CLI surface, and what identification turns on never changes where a key is sent. It would be reversed by a reported run in which a server that is not colibri answered `owned_by: "colibri"` and the profile it then received changed that run's outcome; a `colibri:` scheme the user writes would then replace identification.
 
 3. **colibri is identified, not assumed.** For a loopback base only, TRELLIS reads `GET /v1/models` at the endpoint's origin, and `owned_by: "colibri"` identifies the server. This is the server's own claim, so:
    - it turns on only behaviour that is harmless if the claim is false (decisions 4 to 6);
@@ -76,7 +78,7 @@ TRELLIS reaches a runtime through a spec (`crates/trellis-model/src/spec.rs`) an
 
    Every other endpoint's body is unchanged byte for byte. Temperature 0 is what tiers 2 and 4 already send, and ADR 0028 waives repetitions only at 0.
 
-6. **The byte budget leaves room for the reply (amends ADR 0024 §5).** An identified colibri endpoint with no `[model] context_bytes` gets a default below the hosted one (`HOSTED_CONTEXT_BYTES`), sized so that the prompt leaves the reply room in colibri's window: colibri clamps each reply to the room the prompt leaves (c/colibri.c:9387-9413), so a prompt that fills the window leaves a turn no room for its tool call. The figure is the owner's answer on COL-08, recorded by that ticket. An explicit value wins, larger or smaller. doctor states that colibri does not report its window.
+6. **The byte budget leaves room for the reply (amends ADR 0024 §5).** An identified colibri endpoint with no `[model] context_bytes` gets a default below the hosted one (`HOSTED_CONTEXT_BYTES`), sized so that the prompt leaves the reply room in colibri's window: colibri clamps each reply to the room the prompt leaves (c/colibri.c:9387-9413), so a prompt that fills the window leaves a turn no room for its tool call. COL-08 records the figure, the session's choice under the owner's 2026-10-04 delegation. An explicit value wins, larger or smaller. doctor states that colibri does not report its window.
 
 7. **doctor reports what colibri reports, labelled as colibri's report:**
    - runtime colibri, the served id, and whether the spec matches it;
@@ -92,30 +94,30 @@ TRELLIS reaches a runtime through a spec (`crates/trellis-model/src/spec.rs`) an
    - `/metrics` is not read: its counters are server-wide and cannot be charged to one run on a shared server.
    - Nothing here is a cost in money.
 
-9. **The per-request timeout becomes configurable**, for the tier-1 and runtime clients alike and still bounded by the run's wall-clock budget, in the form COL-06 asks the owner about (proposed: `[model] timeout_s`, default 300 s).
+9. **The per-request timeout becomes configurable**, for the tier-1 and runtime clients alike and still bounded by the run's wall-clock budget, in the form COL-06 records (proposed: `[model] timeout_s`, default 300 s), the session's choice under the owner's 2026-10-04 delegation.
 
-10. **Streaming is not built by this ADR.** #151 stands until the floor run (decision 12) reports the model-call time per turn; COL-13 asks the owner. If streaming is built after that, it covers loopback colibri only, with an idle timeout reset by colibri's 10 s keepalives, and the loop still acts only on a complete tool call.
+10. **Streaming is not built by this ADR.** #151 stands until the floor run (decision 12) reports the model-call time per turn; COL-18 records the answer, the session's choice under the owner's 2026-10-04 delegation. If streaming is built after that, it covers loopback colibri only, with an idle timeout reset by colibri's 10 s keepalives, and the loop still acts only on a complete tool call.
 
 11. **`trellis model pull` does not fetch colibri containers.** The catalogue stays one pinned GGUF file per entry (ADR 0044); colibri downloads, converts and verifies its own shards.
 
-12. **One colibri configuration is measured against the floor** (BENCHMARK_AND_EVAL.md §5) at tier 1 and temperature 0. It is reported as model × container precision × colibri version × backend, with the serve command, machine and cache state beside it. COL-12 asks the owner which configuration.
+12. **One colibri configuration is measured against the floor** (BENCHMARK_AND_EVAL.md §5) at tier 1 and temperature 0. It is reported as model × container precision × colibri version × backend, with the serve command, machine and cache state beside it. The model is Qwen3.8-Flash-Next; COL-12 measures it and records the configuration, the session's choice under the owner's 2026-10-04 delegation.
 
 13. **Not adopted now:**
     - `/v1/brio` for `trellis ask`: the current classifier is measured on colibri first, and a score would only choose a code path, never become a `Verdict`.
     - A runtime record in the trail: colibri does not report the settings that would make one worth a format change.
 
-    Both are put to the owner on COL-15.
+    COL-15 and COL-16 record the answers, the session's choice under the owner's 2026-10-04 delegation.
 
 ## Alternatives rejected
 
-- **A `colibri:` scheme.** It would be explicit in the trail's spec string, but it grows the spec surface and needs a key variable of its own. Identification gives the same request profile with no new surface. It is put to the owner on COL-01.
+- **A `colibri:` scheme.** It would be explicit in the trail's spec string, but it grows the spec surface and needs a key variable of its own. Identification gives the same request profile with no new surface. Rejected by decision 2's delegated answer (a) (#252).
 - **A static table of colibri's families**, keyed by default model id. The operator's `--model-id` breaks the key, and the table would claim tool support and a context window the server never stated. The probe asks the server.
 - **A probe that costs nothing**, sending `tools` together with `n: 2` (rendering refuses `tools` before `generation_options` refuses `n`). It depends on the order of colibri's validation, which can change without notice, and such a change would become a false Native claim on every family.
 - **Tier 2 through `response_format`.** colibri's grammar never constrains sampling (finding 1). Asking upstream for a constraining mode buys little where native tools already work.
 - **Tier 3 through colibri's segment or edge ABI** (why decision 1 links neither). Linking a C ABI needs a C toolchain. The build machine has none (docs/adr/0013-inference-path.md:39), TRELLIS takes on no C++ toolchain dependency until tier 3 is built (docs/adr/0013-inference-path.md:113), neither reopen trigger for tier 3 has fired (:123), and when tier 3 is built ADR 0013 §2 prefers candle (:81). Logits are not what is missing. The edge ABI is version 2 (`COLI_EDGE_ABI_VERSION 2u`, c/edge_runtime.h:26), and `coli_edge_logits` (:192) returns the complete row-major vocabulary logits (docs/edge-runtime.md:77-82), the access a tier-3 mask needs. colibri is the case ADR 0013 keeps tier 3 for, a runtime exposing logits without guided decoding (:155-158), since its grammar never constrains sampling (c/grammar.h:10-12). So the two ABIs are a candidate tier-3 substrate if a reopen trigger fires.
 - **Temperature 0 for every loopback tier-1 endpoint.** A loopback proxy in front of a hosted reasoning model would forward it and draw the 400 that ADR 0024 §4 avoids.
 - **Supervising `coli serve` from TRELLIS.** TRELLIS starts no runtime for any dialect, and a model load of minutes inside `trellis run` would turn a refused connection into a hung one.
-- **The local byte budget (`LOCAL_CONTEXT_BYTES`, 14,336 bytes) as colibri's default.** It is sized to the whole 4,096-token window, so a prompt held to it can leave a turn no room for its tool call (COL-08).
+- **ADR 0033's local byte budget (14,336 bytes) as colibri's default.** It is sized to the whole 4,096-token window, so a prompt held to it can leave a turn no room for its tool call (COL-08).
 
 ## Consequences
 
@@ -126,7 +128,7 @@ TRELLIS reaches a runtime through a spec (`crates/trellis-model/src/spec.rs`) an
 
 ## What is not built
 
-- Everything above: this ADR is Proposed, and COL-01 is the owner's acceptance.
+- Everything above: this ADR is accepted (COL-01, #252) and not built; each behaviour waits for its own ticket in story S14.
 - Streaming (decision 10), a `/v1/brio` client, a runtime record in the trail, and colibri weights in the catalogue.
 - Version, family and context window: colibri does not expose them, so TRELLIS does not report them.
 - **A `cache_slot` on requests to colibri** (COL-ENG-29, COL-UI-15). TRELLIS sends none (crates/trellis-model/src/hosted.rs:194-277, `request_body` and `openai_body`), and colibri pins such a request anyway. When `kv_slots` > 1 it hashes the leading system messages and the first user message to a slot (`conversation_cache_slot`, c/openai_server.py:2910-2938, applied to chat and Anthropic requests at :4870-4876 and :5297-5303), so every turn of one conversation lands on one slot and reuses that slot's cached prefix. colibri's docs/api.md:380-382 still says an omitted `cache_slot` keeps slot 0; that is out of date against the code, which has hashed since colibri's #634. TRELLIS runs one agent per run (`--agents` other than 1 is refused, crates/trellis-cli/src/main.rs:658-661; ADR 0045 is accepted and not built, #101). A run therefore sends one conversation, the hash already keeps it on one slot, and a `cache_slot` would change nothing.
