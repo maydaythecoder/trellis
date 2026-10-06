@@ -1,12 +1,16 @@
 #!/bin/sh
 # Local stand-in for branch protection (GitHub refuses protection on a
 # private repository without Pro). `main` is the launch branch and moves only
-# when the owner merges a pull request from `dev` on GitHub; `v0.1-resolver`
-# is the legacy default branch and `drain` the legacy integration branch, both
-# frozen. A `v*` tag is a release: pushing one starts release.yml, and that is
-# the owner's act. This clone never pushes to any of them: no create, no
-# update, no force-push, no deletion. Ticket and feature branches merge into
-# `audit`, which is promoted into `dev` (ADR 0051, amending 0036).
+# when the owner merges a pull request from `dev` on GitHub. A `v*` tag is a
+# release: pushing one starts release.yml, and that is the owner's act.
+# `v0.1-resolver` and `drain`, the legacy default and integration branches,
+# were deleted on 2026-10-06 (ADR 0051 item 5) and are still refused: a clone
+# fetched before then keeps them as local and remote-tracking branches, and a
+# `git push origin drain` from it would re-create, under a name ADRs and
+# issues cite, a branch nothing reads. This clone never pushes to any of
+# them: no create, no update, no force-push, no deletion. Ticket and feature
+# branches merge into `audit`, which is promoted into `dev` (ADR 0051,
+# amending 0036).
 # Bypass deliberately with --no-verify.
 while read local_ref local_sha remote_ref remote_sha; do
   name=${remote_ref#refs/heads/}
@@ -15,7 +19,7 @@ while read local_ref local_sha remote_ref remote_sha; do
     refs/heads/main)
       reason="merge through a pull request on GitHub" ;;
     refs/heads/drain|refs/heads/v0.1-resolver)
-      reason="$name is frozen; cut ticket branches from dev (ADR 0051)" ;;
+      reason="$name was deleted on 2026-10-06; cut ticket branches from dev (ADR 0051)" ;;
     refs/tags/v*)
       reason="a release tag is the owner's act; it starts release.yml" ;;
     *)
