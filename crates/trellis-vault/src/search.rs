@@ -7,7 +7,7 @@
 //! of the folded (NFKD, marks stripped, lowercased) strings.
 
 use crate::js;
-use crate::reader::Vault;
+use crate::reader::{Note, Vault};
 use crate::refs::fold;
 use std::collections::HashMap;
 
@@ -94,6 +94,12 @@ fn trigrams(value: &str) -> Vec<String> {
     out
 }
 
+/// `parseNote`'s searchText: the lowercased `title path raw`. The index and
+/// the result layer both read it, as Apex's do.
+fn search_text(n: &Note) -> String {
+    format!("{} {} {}", n.title, n.path, n.raw).to_lowercase()
+}
+
 struct Doc {
     path: String,
     title: String,
@@ -133,7 +139,7 @@ impl Index {
         let mut inverted: HashMap<String, Vec<(usize, f64)>> = HashMap::new();
         let mut trigram_docs: HashMap<String, Vec<usize>> = HashMap::new();
         for (id, n) in vault.notes.iter().enumerate() {
-            let search_text = format!("{} {} {}", n.title, n.path, n.raw).to_lowercase();
+            let search_text = search_text(n);
             let mut fields: Vec<(&str, f64)> = vec![(&n.title, 3.0), (&n.path, 1.4)];
             if mode.include_body {
                 fields.push((&search_text, 1.0));
@@ -231,7 +237,7 @@ impl Index {
         ranked(hits, 0.0, limit)
     }
 
-    fn trigram(&self, query: &str, limit: usize) -> Vec<Hit> {
+    fn trigram(&self, query: &str, limit: usize, min: f64) -> Vec<Hit> {
         let q = trigrams(query);
         if q.is_empty() || self.docs.is_empty() {
             return Vec::new();
@@ -257,20 +263,33 @@ impl Index {
                 self.hit(id, s, 0.0, s)
             })
             .collect();
-        ranked(hits, MIN_TRIGRAM_SCORE, limit)
+        ranked(hits, min, limit)
     }
 
     /// `SearchIndex.search` with its defaults: BM25, and when that yields
     /// fewer than `limit` hits, trigram hits folded in at 0.35 of their
     /// score.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
+        self.search_with(query, limit, false, MIN_TRIGRAM_SCORE)
+    }
+
+    /// `SearchIndex.search` with `alwaysIncludeTrigram` and
+    /// `minTrigramScore` as given; `minScore` 0 and the trigram fallback on,
+    /// as both callers pass them.
+    fn search_with(
+        &self,
+        query: &str,
+        limit: usize,
+        always_trigram: bool,
+        min_trigram: f64,
+    ) -> Vec<Hit> {
         let limit = limit.max(1);
         let bm25 = self.bm25(query, limit);
-        if !self.mode.include_trigrams || bm25.len() >= limit {
+        if !self.mode.include_trigrams || (bm25.len() >= limit && !always_trigram) {
             return bm25;
         }
         let mut merged = bm25;
-        for t in self.trigram(query, limit) {
+        for t in self.trigram(query, limit, min_trigram) {
             match merged.iter_mut().find(|h| h.path == t.path) {
                 Some(h) => {
                     h.trigram = h.trigram.max(t.trigram);
@@ -300,6 +319,250 @@ fn ranked(mut hits: Vec<Hit>, min: f64, limit: usize) -> Vec<Hit> {
     });
     hits.truncate(limit);
     hits
+}
+
+/// `searchResults.ts`'s floor on a trigram hit; the index's own is 0.18.
+const LAYER_MIN_TRIGRAM_SCORE: f64 = 0.12;
+/// `DEFAULT_RESULT_LIMIT`, what `positiveInteger` gives a limit of 0.
+const DEFAULT_RESULT_LIMIT: usize = 12;
+
+/// One result of [`search_results`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ranked {
+    pub path: String,
+    pub title: String,
+    pub score: f64,
+}
+
+/// `searchResults.ts#buildSearchResults`: the order Apex's search box shows,
+/// which is not the index's. An empty query lists notes by title. Otherwise
+/// each index hit scores `score*12 + bm25*4 + trigram*18` (trigrams always
+/// merged, at 0.12 or more), each note scores exact, prefix, substring,
+/// all-token and subsequence matches on its title, filename, path and, when
+/// the index has the body, searchText, and a note keeps the higher of the
+/// two.
+///
+/// `includeBody` is the index's [`Mode`], as `updateSearchResults` takes it
+/// from `searchIndexOptionsForMetrics`. Positions and lengths are UTF-16
+/// code units, as JavaScript's `indexOf` and `length` are. The title-then-path
+/// tie break is approximated as [`Index::search`]'s is.
+pub fn search_results(vault: &Vault, index: &Index, query: &str, limit: usize) -> Vec<Ranked> {
+    let limit = if limit == 0 {
+        DEFAULT_RESULT_LIMIT
+    } else {
+        limit
+    };
+    // `normalizeNotes`: parsed notes always carry searchText, so the
+    // `title path body` fallback never applies.
+    let notes: Vec<&Note> = vault.notes.iter().filter(|n| !n.path.is_empty()).collect();
+    let query = js::trim(&fold(query)).to_string();
+
+    if query.is_empty() {
+        let mut out: Vec<Ranked> = notes
+            .iter()
+            .map(|n| Ranked {
+                path: n.path.clone(),
+                title: title_of(&n.title, &n.path),
+                score: 0.0,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            js::cmp(&fold(&a.title), &fold(&b.title))
+                .then_with(|| js::cmp(&fold(&a.path), &fold(&b.path)))
+        });
+        out.truncate(limit);
+        return out;
+    }
+
+    let tokens: Vec<Vec<u16>> = fold(&query)
+        .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.encode_utf16().collect())
+        .collect();
+    // A map in insertion order: a better score replaces the entry in place,
+    // as `Map.set` on an existing key does.
+    let mut results: Vec<Ranked> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    let mut add = |path: &str, title: &str, score: f64| {
+        if path.is_empty() || score <= 0.0 {
+            return;
+        }
+        match at.get(path) {
+            Some(&i) => {
+                if score > results[i].score {
+                    results[i].title = title_of(title, path);
+                    results[i].score = score;
+                }
+            }
+            None => {
+                at.insert(path.to_string(), results.len());
+                results.push(Ranked {
+                    path: path.to_string(),
+                    title: title_of(title, path),
+                    score,
+                });
+            }
+        }
+    };
+
+    let wanted = limit.saturating_mul(4).max(notes.len());
+    for h in index.search_with(&query, wanted, true, LAYER_MIN_TRIGRAM_SCORE) {
+        add(
+            &h.path,
+            &h.title,
+            h.score * 12.0 + h.bm25 * 4.0 + h.trigram * 18.0,
+        );
+    }
+    let include_body = index.mode.include_body;
+    for n in notes {
+        let text = if include_body {
+            search_text(n)
+        } else {
+            String::new()
+        };
+        add(
+            &n.path,
+            &n.title,
+            score_note(
+                &title_of(&n.title, &n.path),
+                &n.path,
+                &text,
+                &query,
+                &tokens,
+            ),
+        );
+    }
+
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| js::cmp(&fold(&a.title), &fold(&b.title)))
+            .then_with(|| js::cmp(&fold(&a.path), &fold(&b.path)))
+    });
+    results.truncate(limit);
+    results
+}
+
+/// `getCandidateTitle`: the title, else the last path segment, else the path.
+fn title_of(title: &str, path: &str) -> String {
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    last_segment(path).to_string()
+}
+
+/// `path.split("/").pop() || path`.
+fn last_segment(path: &str) -> &str {
+    match path.rsplit('/').next() {
+        Some(s) if !s.is_empty() => s,
+        _ => path,
+    }
+}
+
+/// `compact`: folded, with everything but `[a-z0-9]` removed.
+fn compact(value: &str) -> String {
+    fold(value)
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .collect()
+}
+
+fn utf16(value: &str) -> Vec<u16> {
+    value.encode_utf16().collect()
+}
+
+/// `String.prototype.indexOf` over UTF-16 code units.
+fn index_of(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+    let from = from.min(hay.len());
+    if needle.is_empty() {
+        return Some(from);
+    }
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| i + from)
+}
+
+/// `scoreNote`. `search_text` is empty when the body is not indexed.
+fn score_note(title: &str, path: &str, search_text: &str, query: &str, tokens: &[Vec<u16>]) -> f64 {
+    let title = fold(title);
+    let file_name = fold(last_segment(path));
+    let path = fold(path);
+    let search_text = fold(search_text);
+    let compact_query = compact(query);
+    let q = utf16(query);
+
+    let mut score = 0.0;
+    score += score_field(&utf16(&title), &q, query, tokens, 120.0);
+    score += score_field(&utf16(&file_name), &q, query, tokens, 86.0);
+    score += score_field(&utf16(&path), &q, query, tokens, 58.0);
+    score += score_field(&utf16(&search_text), &q, query, tokens, 24.0);
+
+    if !compact_query.is_empty() {
+        if compact(&title) == compact_query {
+            score += 26.0;
+        }
+        if compact(&file_name).starts_with(&compact_query) {
+            score += 14.0;
+        }
+    }
+    score
+}
+
+/// `scoreField`: exact, prefix, substring, all tokens, then subsequence.
+fn score_field(value: &[u16], q: &[u16], query: &str, tokens: &[Vec<u16>], weight: f64) -> f64 {
+    if value.is_empty() || q.is_empty() {
+        return 0.0;
+    }
+    if value == q {
+        return weight;
+    }
+    if value.starts_with(q) {
+        return weight * 0.86;
+    }
+    let length = value.len().max(1) as f64;
+    if let Some(index) = index_of(value, q, 0) {
+        let boost = (1.0 - index as f64 / length).max(0.0);
+        return weight * (0.58 + boost * 0.16);
+    }
+    let found: Vec<Option<usize>> = tokens.iter().map(|t| index_of(value, t, 0)).collect();
+    if !tokens.is_empty() && found.iter().all(Option::is_some) {
+        let first = found.iter().flatten().copied().min().unwrap_or(0);
+        let boost = (1.0 - first as f64 / length).max(0.0);
+        return weight * (0.34 + boost * 0.12);
+    }
+    let fuzzy = subsequence(value, query);
+    if fuzzy > 0.0 {
+        weight * fuzzy * 0.22
+    } else {
+        0.0
+    }
+}
+
+/// `subsequenceScore`: the query's characters in order, scored by how
+/// tightly and how early they fall.
+fn subsequence(value: &[u16], query: &str) -> f64 {
+    let query_len = query.encode_utf16().count();
+    if value.is_empty() || query_len < 2 {
+        return 0.0;
+    }
+    let mut position = 0;
+    let mut first: Option<usize> = None;
+    let mut buf = [0u16; 2];
+    // `for…of` walks code points; `position` advances one code unit past
+    // each match, as `next + 1` does.
+    for c in query.chars() {
+        let Some(next) = index_of(value, c.encode_utf16(&mut buf), position) else {
+            return 0.0;
+        };
+        first.get_or_insert(next);
+        position = next + 1;
+    }
+    let first = first.unwrap_or(0);
+    let spread = position.saturating_sub(first).max(1) as f64;
+    let tightness = query_len as f64 / spread;
+    let start = (1.0 - first as f64 / value.len().max(1) as f64).max(0.0);
+    (tightness * 0.75 + start * 0.25).min(1.0)
 }
 
 #[cfg(test)]
@@ -377,6 +640,145 @@ mod tests {
                 ("sub/gamma.md", "1.2229965")
             ])
         );
+    }
+
+    // Vectors from Apex's unmodified `web/searchResults.ts`,
+    // `web/searchIndex.ts` and `web/notes/noteParser.ts` at f449644a under
+    // Node v25.6.0 (ADR 0022, "Evidence"). Each note went through
+    // `parseNote(path, raw)` first, and the same parsed notes went into both
+    // `createSearchIndex` and `buildSearchResults`. Plain `{path, title,
+    // body}` objects were not used: `normalizeNotes` would then build
+    // searchText as `title path body`, where Apex's notes carry `title path
+    // raw`, as `Index::build` does. Scores are `toFixed(7)`.
+    //   full:    createSearchIndex(notes, {includeBody: true, includeTrigrams: true}),
+    //            buildSearchResults(notes, index, q, {limit: 12, includeBody: true})
+    //   reduced: the same notes plus big.md (2 MiB, a large note),
+    //            createSearchIndex(notes, {includeBody: false, includeTrigrams: false}),
+    //            buildSearchResults(notes, index, q, {limit: 12, includeBody: false})
+    fn layer_notes() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "alpha.md",
+                "---\ntitle: \"Alpha Plan\"\nparent: null\n---\n\nThe rollout plan.\n",
+            ),
+            (
+                "beta.md",
+                "---\ntitle: \"Beta\"\nparent: \"[[alpha]]\"\n---\n\nNothing about plans. Café notes.\n",
+            ),
+            (
+                "notes/alphabet-soup.md",
+                "---\ntitle: \"Alphabet Soup\"\nparent: null\n---\n\nMentions a zeppelin once.\n",
+            ),
+            ("review.md", "# Weekly Review\n\nReview the alpha plan.\n"),
+            (
+                "sub/gamma.md",
+                "---\ntitle: \"Gamma Rollout\"\nparent: null\n---\n\nplan plan plan\n",
+            ),
+            ("z.md", "zeta"),
+        ]
+    }
+
+    fn layer(v: &Vault, q: &str) -> Vec<(String, String)> {
+        let idx = Index::build(v);
+        search_results(v, &idx, q, 12)
+            .iter()
+            .map(|r| (r.path.clone(), format!("{:.7}", r.score)))
+            .collect()
+    }
+
+    #[test]
+    fn search_results_match_apex_vectors() {
+        // `trellis vault search` and Apex's search box must put the same
+        // note first for the same query; a human who learned the vault in
+        // one goes to the wrong note in the other otherwise.
+        let full = vault(&layer_notes());
+        assert!(Index::build(&full).mode.include_body);
+        let browse = [
+            "alpha.md",
+            "notes/alphabet-soup.md",
+            "beta.md",
+            "sub/gamma.md",
+            "review.md",
+            "z.md",
+        ];
+        let zero: Vec<(&str, &str)> = browse.iter().map(|p| (*p, "0.0000000")).collect();
+        assert_eq!(layer(&full, ""), pairs(&zero));
+        assert_eq!(
+            layer(&full, "Alpha Plan"),
+            pairs(&[
+                ("alpha.md", "166.6400000"),
+                ("review.md", "34.7142895"),
+                ("sub/gamma.md", "19.8908155"),
+                ("beta.md", "13.5754044"),
+                ("notes/alphabet-soup.md", "1.8939130"),
+            ])
+        );
+        assert_eq!(
+            layer(&full, "alph"),
+            pairs(&[
+                ("alpha.md", "261.6800000"),
+                ("notes/alphabet-soup.md", "252.1890909"),
+                ("beta.md", "15.9478652"),
+                ("review.md", "14.6400000"),
+            ])
+        );
+        assert_eq!(
+            layer(&full, "rollout plan"),
+            pairs(&[
+                ("sub/gamma.md", "53.1076700"),
+                ("alpha.md", "47.5471184"),
+                ("review.md", "14.7453801"),
+            ])
+        );
+        // g-m-r-l in order in "gamma rollout": no token, substring or
+        // trigram matches it.
+        assert_eq!(
+            layer(&full, "gmrl"),
+            pairs(&[("sub/gamma.md", "18.4800000")])
+        );
+        // "zeppelin" is only in alphabet-soup's body.
+        assert_eq!(
+            layer(&full, "zeppelin"),
+            pairs(&[("notes/alphabet-soup.md", "31.3363878")])
+        );
+
+        let big = "x".repeat(2 * 1024 * 1024);
+        let mut notes = layer_notes();
+        notes.push(("big.md", &big));
+        let reduced = vault(&notes);
+        assert!(!Index::build(&reduced).mode.include_body);
+        let browse = [
+            "alpha.md",
+            "notes/alphabet-soup.md",
+            "beta.md",
+            "big.md",
+            "sub/gamma.md",
+            "review.md",
+            "z.md",
+        ];
+        let zero: Vec<(&str, &str)> = browse.iter().map(|p| (*p, "0.0000000")).collect();
+        assert_eq!(layer(&reduced, ""), pairs(&zero));
+        assert_eq!(
+            layer(&reduced, "Alpha Plan"),
+            pairs(&[("alpha.md", "146.0000000")])
+        );
+        assert_eq!(
+            layer(&reduced, "alph"),
+            pairs(&[
+                ("alpha.md", "241.0400000"),
+                ("notes/alphabet-soup.md", "231.5490909"),
+            ])
+        );
+        assert_eq!(
+            layer(&reduced, "rollout plan"),
+            pairs(&[("alpha.md", "41.4060333"), ("sub/gamma.md", "39.1821798")])
+        );
+        assert_eq!(
+            layer(&reduced, "gmrl"),
+            pairs(&[("sub/gamma.md", "15.4000000")])
+        );
+        // Without the body nothing scores the one note that says it.
+        assert!(layer(&reduced, "zeppelin").is_empty());
     }
 
     fn sized(notes: &[(&str, u64)]) -> Vault {
