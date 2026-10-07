@@ -132,7 +132,10 @@ impl Session {
         let model_from_user = model.is_some();
         let model = match model.or_else(|| cfg.model()) {
             Some(spec) => Some(spec.parse().with_context(|| {
-                format!("`{spec}` was given as the model but is not a usable spec")
+                format!(
+                    "`{}` was given as the model but is not a usable spec",
+                    crate::plain(&spec)
+                )
             })?),
             None => None,
         };

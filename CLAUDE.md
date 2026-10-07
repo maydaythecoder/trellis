@@ -6,7 +6,8 @@ Conventions for this repository. Read before changing anything.
 
 TRELLIS: a Rust agent harness for Python repositories. It builds a call graph of
 first-party code, drives an agent loop against it, verifies changes with the
-repo's own type checker and test suite, and commits a decision trail.
+repo's own type checker and test suite, and commits a decision trail. Two
+planned rpc clients: a Tauri desktop and a Go/Bubble Tea TUI (ADR 0048, 0052).
 
 `docs/BRIEF.md` is the specification. `docs/MISSION.md` is the short version.
 
@@ -25,12 +26,11 @@ cargo run -p trellis-cli -- doctor         # probe tier, batching, tooling
 cargo run -p trellis-tickets -- new --title <t> --body-file <p> --dry-run   # file a ticket (ADR 0040)
 ```
 
-Every other command, with the ADR that added it, is in `docs/COMMANDS.md`.
-The CLI surface is fixed by brief 4.12 and grows only by an owner-directed
-ADR. `qa/run-guards.py` runs whichever `trellis` is on PATH: put
-`target/debug` first. The resolver's measurement rules (the recall number,
-receiver typing) load from `.claude/rules/index-soundness.md` whenever
-`crates/trellis-index/` is touched.
+Every other command, with the ADR that added it, is in `docs/COMMANDS.md`. The
+CLI surface is fixed by brief 4.12 and grows only by an owner-directed ADR.
+`qa/run-guards.py` runs whichever `trellis` is on PATH: put `target/debug` first.
+The resolver's measurement rules (the recall number, receiver typing) load from
+`.claude/rules/index-soundness.md` whenever `crates/trellis-index/` is touched.
 
 Agent-driven work goes through the gates in `scripts/gates/`
 (`scripts/gates/run-all.sh [<issue>]`) and the orchestrator
