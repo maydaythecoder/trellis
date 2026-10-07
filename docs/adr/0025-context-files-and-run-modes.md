@@ -664,6 +664,11 @@ on stderr.
   `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`
   and `rpc_approve_mode_asks_on_the_stream_while_input_stays_open` for
   `steer delivered` and `approval_request`, all in `tests/modes.rs`.
+  *Amended 2026-10-07 (#501): it also lists, per command under
+  `rpc.responses`, the fields of a response's `data`: for `classify`,
+  `intent` always, `answer` only when `intent` is `"question"`, and the two
+  `intent` values. Held by
+  `rpc_classify_reply_carries_every_field_the_contract_lists`.*
 
 ### 6. Session additions
 
