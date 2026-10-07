@@ -1,5 +1,5 @@
 {
-  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\". A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
+  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\". A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another. A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
   "rpc": {
     "events": {
       "turn": {
@@ -38,6 +38,26 @@
       "approval_request": {
         "always": ["type", "id", "question", "detail"],
         "optional": {}
+      }
+    },
+    "responses": {
+      "classify": {
+        "always": ["intent"],
+        "question_only": ["answer"],
+        "intent_values": ["question", "task"]
+      },
+      "list_paths": {
+        "always": ["paths"]
+      }
+    },
+    "commands": {
+      "get_state": {
+        "data": {
+          "always": ["tier"],
+          "null_when": {
+            "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
+          }
+        }
       }
     }
   },
