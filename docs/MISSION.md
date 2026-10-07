@@ -40,7 +40,7 @@ aims reads as a list of claims.
 | 5 | **The trail is durable.** Committed, agent-readable, in the repo | **Delivered**, with provenance and a SHA-256 over the factual half |
 | 6 | **It runs on your hardware**, on quantized open weights, without native tool calling | **Not demonstrated.** Two configurations measured, both below the floor: 0.5B repaired 0 of 20, Coder-3B 0 of 17. The harness drives them correctly; neither can do the work |
 | 7 | **Cost and wall-clock are bounded and visible** | **Delivered.** Budgets enforce and divide across partitions; iterations, wall clock and context fill are recorded per run |
-| 8 | **Two clients of `trellis rpc`, one engine** (v1.x): a Tauri desktop that renders a whole run, and a Go/Bubble Tea TUI that replaces the ratatui TUI at parity | **Not delivered.** Recorded in ADR 0052 (Proposed, #500); neither client is built, and the ratatui TUI is still the one that ships |
+| 8 | **Two clients of `trellis rpc`, one engine** (v1.x): a Tauri desktop that renders a whole run, and a Go/Bubble Tea TUI that replaces the ratatui TUI at parity | **Not delivered.** Recorded in ADR 0052 (Accepted 2026-10-07, #500); neither client is built, and the ratatui TUI is still the one that ships |
 
 Goal 6 is the one to read twice. Every mechanism it needs exists and is
 tested — constrained decoding, the adapter tiers, the loop, the rollback — and
@@ -54,6 +54,11 @@ it is the difference between "supported" and "demonstrated".
 Any language but Python. Repos without a test suite. Cross-repo analysis. Any
 surface beyond the CLI. Any networked component. Multi-user anything. Running
 while the machine is asleep.
+
+*2026-10-07 (#515), "Any surface beyond the CLI" amended by ADR 0052:* the
+Tauri desktop and the Go TUI, both clients of `trellis rpc`, are goal 8 (v1.x)
+and no longer non-goals. A web surface and any networked component remain
+non-goals.
 
 ## Positioning
 

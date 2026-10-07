@@ -128,8 +128,10 @@ fn render_status(state: &AppState, area: Rect, frame: &mut Frame) {
         ),
         Span::raw("  tier "),
         Span::styled(
+            // The word for a tier nothing has reported, as `get_state` says
+            // it (#519); a label never repeats the `tier ` written above.
             if state.tier.is_empty() {
-                "—".to_string()
+                "unknown".to_string()
             } else {
                 state.tier.clone()
             },
@@ -1063,5 +1065,26 @@ mod tests {
             (0..w).any(|x| buf[(x, 0)].symbol() == "a"),
             "the border and title are still drawn"
         );
+    }
+
+    // ---- #519: the status bar's tier, one `tier` word, one vocabulary ----
+
+    #[test]
+    fn tier_status_bar_writes_the_word_once_before_the_label() {
+        // #519: a hosted label began `tier 1, …` and the bar wrote `tier `
+        // before it, so it read `tier tier 1, …`. A label begins with its
+        // tier number; the word is the bar's.
+        let s = AppState::with_model("m".into(), "1, native tool calls".into());
+        let out = drawn(&s, 120, 30);
+        assert!(out.contains("tier 1, native tool calls"), "{out}");
+        assert!(!out.contains("tier tier"), "{out}");
+    }
+
+    #[test]
+    fn tier_status_bar_with_no_label_says_unknown() {
+        // A tier nothing has reported is `unknown`, the word `get_state`'s
+        // vocabulary uses for it, not a dash a client cannot match.
+        let out = drawn(&AppState::default(), 120, 30);
+        assert!(out.contains("tier unknown"), "{out}");
     }
 }
