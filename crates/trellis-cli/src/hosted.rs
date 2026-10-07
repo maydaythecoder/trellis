@@ -6,8 +6,9 @@
 //! it is read from the environment inside `HostedClient::new`, and, for the
 //! reads that ask a loopback endpoint whether it is colibri (ADR 0047), by
 //! `colibri_key` here, under the same rule and held only for those reads
-//! (the run's `preflight`, `doctor`'s, and `ask`'s identification). No other
-//! caller holds it.
+//! (`colibri_tier`, which the run and the TUI's status bar call, `doctor`'s
+//! reads and tools probe, and `ask`'s identification). No other caller holds
+//! it.
 
 use crate::config::RepoConfig;
 use crate::plain;
