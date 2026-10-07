@@ -296,8 +296,9 @@ impl SteeringPort {
         let mut st = self.state();
         let Some(tx) = &st.tx else {
             // Only between a run's end and the thread moving on (the next
-            // follow-up, or finishing), when a `prompt` is still refused,
-            // so neither message tells the client to send one now.
+            // follow-up, or finishing). A `prompt` read then waits for that
+            // and starts unless a follow-up did (#495), but neither message
+            // says so: the client sent this one to the run that ended.
             return Err(match what {
                 Steering::Steer(_) => "the run has just ended; nothing was delivered".into(),
                 Steering::FollowUp(_) => {
@@ -453,6 +454,10 @@ struct Running {
     abort: Arc<output::Abort>,
     /// Set by the run's thread as it finishes, after `leftover`.
     done: Arc<AtomicBool>,
+    /// Set just before a run in the chain writes `run_end`, cleared before
+    /// a follow-up starts: a `prompt` read while it is set waits for the
+    /// thread instead of being refused (#495).
+    ended: Arc<AtomicBool>,
     current: Arc<Mutex<Current>>,
     /// What was sent and never delivered when the chain stopped on an
     /// abort, in the order it was received, for `abort`'s answer.
@@ -820,6 +825,29 @@ impl Server {
         }));
     }
 
+    /// For a `prompt` read while `in_flight` was true: whether the slot is
+    /// free once the run's thread has finished its tail.
+    ///
+    /// Before `run_end` it is not, at once. After it the thread has only
+    /// its cleanup and the follow-up check left, none of which waits on
+    /// this reader, so it waits for one of two outcomes: the thread
+    /// finished with nothing queued (free; it has been joined, so the new
+    /// run is the only one), or a follow-up started (not free: it was
+    /// queued first, and runs first).
+    fn free_after_run_end(&mut self) -> bool {
+        loop {
+            match &self.running {
+                None => return true,
+                Some(r) if !r.ended.load(Ordering::SeqCst) => return false,
+                Some(_) => {}
+            }
+            if !self.in_flight() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     fn in_flight(&mut self) -> bool {
         self.waiters.retain(|w| !w.is_finished());
         match &self.running {
@@ -1017,7 +1045,7 @@ impl Server {
     /// here, so a bad request is refused rather than accepted and failed; the
     /// worktree is `cmd_run`'s to check, and its refusal arrives as `run_end`.
     fn prompt(&mut self, cmd: &Value, id: Option<&str>) -> Result<(), String> {
-        if self.in_flight() {
+        if self.in_flight() && !self.free_after_run_end() {
             return Err("a run is in progress; one at a time (abort it, or wait)".into());
         }
         let text = |k: &str| cmd.get(k).and_then(Value::as_str).map(str::to_string);
@@ -1070,6 +1098,7 @@ impl Server {
 
         let abort = Arc::new(output::Abort::default());
         let done = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
         let current = Arc::new(Mutex::new(Current::new(id.map(str::to_string))));
         let leftover: Arc<Mutex<Vec<Value>>> = Arc::default();
         let chain = Chain {
@@ -1083,6 +1112,7 @@ impl Server {
             done: self.done.clone(),
             input_closed: self.input_closed.clone(),
             abort: abort.clone(),
+            ended: ended.clone(),
             current: current.clone(),
             model,
             model_from_user,
@@ -1103,6 +1133,7 @@ impl Server {
             thread,
             abort,
             done,
+            ended,
             current,
             leftover,
         });
@@ -1130,6 +1161,8 @@ struct Chain {
     /// One for the chain: an abort stops the run in flight and every
     /// follow-up behind it.
     abort: Arc<output::Abort>,
+    /// `Running::ended`.
+    ended: Arc<AtomicBool>,
     current: Arc<Mutex<Current>>,
     model: String,
     model_from_user: bool,
@@ -1165,6 +1198,9 @@ impl Chain {
             // The first run's `Current` was made with the `prompt`, so a
             // `steer` read before this thread got here still reaches it.
             if started {
+                // Before the run is replaced, so a `prompt` waiting on this
+                // thread sees a run in flight from here on.
+                self.ended.store(false, Ordering::SeqCst);
                 *self.current.lock().unwrap_or_else(PoisonError::into_inner) =
                     Current::new(id.clone());
             }
@@ -1267,6 +1303,7 @@ impl Chain {
             // `--agents` above 1 is `trellis run`'s alone (#466).
             fanout: None,
             run_ids: Some(self.ran.clone()),
+            run_ended: Some(self.ended.clone()),
         };
         let r = crate::cmd_run_with(
             &self.root,
@@ -1296,6 +1333,7 @@ impl Chain {
             before,
             &mut human,
         );
+        cleanup_delay();
         let _ = fwd.join();
         // A `compact` still waiting will get no model request to act on.
         cur.compact
@@ -1310,6 +1348,24 @@ impl Chain {
         }
     }
 }
+
+/// A test seam (#495): widens the window between a run's `run_end` and
+/// its thread finishing, as a loaded machine does, so `tests/modes.rs`
+/// can send a `prompt` inside it through the binary. `cfg(test)` is not
+/// set on the binary those tests spawn, hence `debug_assertions`; a
+/// release build has no such read.
+#[cfg(debug_assertions)]
+fn cleanup_delay() {
+    let ms = std::env::var("TRELLIS_TEST_RPC_CLEANUP_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    if let Some(ms) = ms {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn cleanup_delay() {}
 
 fn respond_on(sink: &Sink, id: Option<&str>, command: &str, result: Result<Value, String>) {
     let mut v = json!({"type": "response", "command": command});
