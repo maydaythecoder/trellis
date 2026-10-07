@@ -56,6 +56,14 @@ pub struct Turn {
     pub unresolved: Option<u64>,
     /// Absent when the driver sent no prompt (a scripted run).
     pub prompt_bytes: Option<u64>,
+    /// The wall time of the step's model call, queue wait included.
+    pub model_ms: Option<u64>,
+    /// The output tokens of the replies the step read; absent when any of
+    /// them reported none.
+    pub completion_tokens: Option<u64>,
+    /// colibri's queue waits summed; absent unless every reply carried the
+    /// `x-colibri-queue-wait-ms` header.
+    pub queue_wait_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +166,9 @@ pub fn parse_stdout(line: &str) -> Frame {
                 candidates: u(f, "candidates"),
                 unresolved: u(f, "unresolved"),
                 prompt_bytes: u(f, "prompt_bytes"),
+                model_ms: u(f, "model_ms"),
+                completion_tokens: u(f, "completion_tokens"),
+                queue_wait_ms: u(f, "queue_wait_ms"),
             }),
             _ => Frame::Ignored,
         },

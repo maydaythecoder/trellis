@@ -436,7 +436,7 @@ fn colibri_doctor_tier_refused_is_unavailable_naming_the_vllm_spec_and_the_fallb
     let d = repo("tier-refused", None);
     let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
     let tier = line(&s, "tier:");
-    assert!(tier.contains("tier 1 unavailable"), "{s}");
+    assert!(tier.starts_with("tier:       1, unavailable"), "{s}");
     assert!(!tier.contains("Native"), "{s}");
     assert!(s.contains(&format!("vllm:{base}#glm-5.2")), "{s}");
     assert!(s.contains("COLI_TOOL_FALLBACK=1"), "{s}");
@@ -453,7 +453,10 @@ fn colibri_doctor_tier_refused_without_a_named_fallback_never_names_one() {
     );
     let d = repo("tier-refused-inkling", None);
     let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
-    assert!(line(&s, "tier:").contains("tier 1 unavailable"), "{s}");
+    assert!(
+        line(&s, "tier:").starts_with("tier:       1, unavailable"),
+        "{s}"
+    );
     assert!(s.contains(&format!("vllm:{base}#glm-5.2")), "{s}");
     assert!(!s.contains("COLI_TOOL_FALLBACK"), "{s}");
 }

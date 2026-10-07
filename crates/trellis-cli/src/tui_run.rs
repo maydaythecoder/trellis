@@ -83,13 +83,22 @@ impl std::io::Write for TranscriptSink {
     }
 }
 
+/// The status bar's label for a hosted spec whose key a run would refuse to
+/// send: nothing was sent, so nothing about the endpoint is known.
+const KEY_REFUSED_LABEL: &str =
+    "1, refused: a run would not send this endpoint the key (ADR 0024 §3)";
+
+/// The status bar's label while the probe below is still asking: no tier
+/// is known yet, which the vocabulary's `unknown` says (#519).
+const PROBING_LABEL: &str = "unknown, probing…";
+
 /// The tier label for the status bar, from what the runtime actually does.
 ///
 /// Three answers, and the third is why this returns a label rather than a
 /// tier: a probe that could not run has not established that the schema is
-/// ignored, only that nothing is known. Saying `?` is the difference between
-/// an unverified claim and a false one — the same distinction `trellis run`
-/// draws in its banner, kept in step here deliberately.
+/// ignored, only that nothing is known. Saying `unknown` is the difference
+/// between an unverified claim and a false one — the same distinction
+/// `trellis run` draws in its banner, kept in step here deliberately.
 ///
 /// A hosted spec is resolved as a run resolves it (`hosted::resolve`, with
 /// the repository's config and whether the user chose the spec), so a key
@@ -103,16 +112,12 @@ async fn tier_from_probe(
 ) -> String {
     match crate::hosted::resolve(spec, cfg, model_from_user) {
         // Nothing was sent: the refusal is the run's, before any request.
-        Err(_) => {
-            return "tier 1 refused: a run would not send this endpoint the key \
-                    (ADR 0024 §3)"
-                .to_string();
-        }
+        Err(_) => return KEY_REFUSED_LABEL.to_string(),
         Ok(Some(r)) => {
             return match crate::hosted::colibri_tier(&r).await {
                 Ok(t) => t.label(),
                 // What stops a run before its snapshot: nothing is known.
-                Err(_) => "?".to_string(),
+                Err(_) => "unknown".to_string(),
             };
         }
         Ok(None) => {}
@@ -126,7 +131,7 @@ async fn tier_from_probe(
         return "scripted".to_string();
     };
     let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, model.clone()) else {
-        return "?".to_string();
+        return "unknown".to_string();
     };
     let probed = client.probe_constraint().await.map_err(|e| e.to_string());
     crate::doctor_cmd::runtime_tier_label(&probed).to_string()
@@ -459,7 +464,7 @@ pub(crate) fn run(
     let spec_label = spec.clone();
     let tier_label = match spec.split(':').next() {
         Some("scripted") => "scripted".to_string(),
-        _ => "probing…".to_string(),
+        _ => PROBING_LABEL.to_string(),
     };
 
     // Once, at startup. A file created during the session is not offered
@@ -741,7 +746,7 @@ mod tests {
             .parse()
             .expect("a loopback spec parses");
         let cfg = crate::config::RepoConfig::default();
-        assert_eq!(tier_from_probe(&spec, &cfg, true).await, "?");
+        assert_eq!(tier_from_probe(&spec, &cfg, true).await, "unknown");
     }
 
     #[tokio::test]
@@ -772,7 +777,7 @@ mod tests {
         let stub = colibri_stub::start("glm-5.2", "colibri", colibri_stub::accepted());
         assert_eq!(
             colibri_label(&stub, "glm-5.2").await,
-            "tier 1, colibri glm-5.2, tools probed"
+            "1, colibri glm-5.2, tools probed"
         );
         assert_eq!(stub.probes(), 1, "{:?}", stub.requests());
     }
@@ -783,7 +788,7 @@ mod tests {
         let stub = colibri_stub::start("olmoe", "colibri", colibri_stub::refused());
         assert_eq!(
             colibri_label(&stub, "olmoe").await,
-            "tier 1 unavailable: colibri olmoe refuses tools"
+            "1, unavailable: colibri olmoe refuses tools"
         );
     }
 
@@ -793,7 +798,7 @@ mod tests {
         let stub = colibri_stub::start("glm-5.2", "colibri", colibri_stub::not_verified());
         assert_eq!(
             colibri_label(&stub, "glm-5.2").await,
-            "tier 1, colibri glm-5.2, tools assumed"
+            "1, colibri glm-5.2, tools assumed"
         );
     }
 
@@ -805,7 +810,7 @@ mod tests {
         let stub = colibri_stub::start("glm-5.2", "vllm", colibri_stub::accepted());
         assert_eq!(
             colibri_label(&stub, "glm-5.2").await,
-            "tier 1, native tool calls"
+            "1, native tool calls"
         );
         assert_eq!(stub.probes(), 0, "{:?}", stub.requests());
     }
@@ -819,7 +824,7 @@ mod tests {
         let stub = colibri_stub::start(id, "colibri", colibri_stub::accepted());
         let label = colibri_label(&stub, id).await;
         assert!(!label.contains('\x1b'), "{label:?}");
-        assert_eq!(label, r"tier 1, colibri glm\u{1b}[2Kfake, tools probed");
+        assert_eq!(label, r"1, colibri glm\u{1b}[2Kfake, tools probed");
     }
 
     #[tokio::test]
@@ -838,7 +843,7 @@ mod tests {
         .unwrap();
         let spec: trellis_model::ModelSpec = "provider:coli#glm-5.2".parse().unwrap();
         let label = tier_from_probe(&spec, &cfg, false).await;
-        assert!(label.starts_with("tier 1 refused"), "{label}");
+        assert!(label.starts_with("1, refused"), "{label}");
         assert_eq!(
             l.accept().map(|_| ()).map_err(|e| e.kind()),
             Err(std::io::ErrorKind::WouldBlock),
@@ -846,9 +851,103 @@ mod tests {
         );
     }
 
+    // ---- #519: one tier-label vocabulary for the bar and get_state ----
+
+    /// Whether `label` has a shape `client_contract.json` documents for
+    /// `get_state`'s `tier`. Read from the contract, so the two cannot drift.
+    fn has_documented_shape(label: &str) -> bool {
+        let c: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/client_contract.json"
+        )))
+        .expect("the contract is JSON");
+        let shapes = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+        let heads: Vec<&str> = shapes["heads"]
+            .as_array()
+            .expect("the contract lists the label heads")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let sep = shapes["detail_separator"]
+            .as_str()
+            .expect("the contract names the separator");
+        let head = label.split_once(sep).map_or(
+            label,
+            |(h, detail)| {
+                if detail.is_empty() { "" } else { h }
+            },
+        );
+        heads.contains(&head)
+    }
+
+    #[tokio::test]
+    async fn tier_label_vocabulary_every_backend_s_label_has_a_documented_shape() {
+        // The risk: the Go TUI (#511) and the desktop reading `get_state`'s
+        // tier by its head, while one backend writes `tier 1, …`, another
+        // `2` and a third `?`, and the ratatui bar, which writes `tier `
+        // itself, reads `tier tier 1, …`. Every producer, by name.
+        use crate::hosted::ColibriTier;
+        let id = || "glm-5.2".to_string();
+        let mut labels = vec![
+            ("hosted, not colibri", ColibriTier::NotColibri.label()),
+            ("colibri probed", ColibriTier::Probed { id: id() }.label()),
+            (
+                "colibri assumed",
+                ColibriTier::Assumed {
+                    id: id(),
+                    reason: "HTTP 500".into(),
+                }
+                .label(),
+            ),
+            (
+                "colibri refused",
+                ColibriTier::Refused {
+                    id: id(),
+                    origin: "http://127.0.0.1:8000".into(),
+                    fallback_named: true,
+                }
+                .label(),
+            ),
+            ("key refused", KEY_REFUSED_LABEL.to_string()),
+            ("probing", PROBING_LABEL.to_string()),
+        ];
+        for probed in [Ok(true), Ok(false), Err("connection refused".to_string())] {
+            labels.push((
+                "runtime",
+                crate::doctor_cmd::runtime_tier_label(&probed).to_string(),
+            ));
+        }
+        let cfg = crate::config::RepoConfig::default();
+        let unreachable: trellis_model::ModelSpec = "vllm:http://127.0.0.1:1".parse().unwrap();
+        labels.push((
+            "unreachable runtime",
+            tier_from_probe(&unreachable, &cfg, true).await,
+        ));
+        let scripted: trellis_model::ModelSpec = "scripted:/tmp/x.json".parse().unwrap();
+        labels.push(("scripted", tier_from_probe(&scripted, &cfg, true).await));
+
+        let bad: Vec<_> = labels
+            .iter()
+            .filter(|(_, l)| !has_documented_shape(l) || l.starts_with("tier"))
+            .collect();
+        assert!(bad.is_empty(), "labels outside the vocabulary: {bad:?}");
+    }
+
+    #[test]
+    fn tier_label_vocabulary_shape_check_refuses_what_the_contract_does_not_list() {
+        // The check above is only as good as this one: it must not pass a
+        // doubled word, an unknown head or a bare separator.
+        for ok in ["2", "1, native tool calls", "unknown", "scripted"] {
+            assert!(has_documented_shape(ok), "{ok}");
+        }
+        for bad in ["tier 1, native tool calls", "?", "probing…", "1, ", "two"] {
+            assert!(!has_documented_shape(bad), "{bad}");
+        }
+    }
+
     #[test]
     fn the_status_bar_takes_the_tier_the_probe_reports() {
-        let mut s = AppState::with_model("m".into(), "probing…".into());
+        let mut s = AppState::with_model("m".into(), "unknown, probing…".into());
         s.update(Message::TierKnown("4, no schema".into()));
         assert_eq!(s.tier, "4, no schema");
     }
