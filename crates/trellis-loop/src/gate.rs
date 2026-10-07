@@ -430,7 +430,12 @@ pub(crate) fn label(call: &ToolCall) -> String {
         ToolCall::ReadFile { path } => format!("read_file {path}"),
         ToolCall::Edit { path, .. } => format!("edit {path}"),
         ToolCall::RunChecks { paths, kinds } => {
-            let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+            // As sent in `kinds`: this label is also the line an elided
+            // turn becomes in the model's prompt (#544).
+            let kinds: Vec<&str> = kinds
+                .iter()
+                .map(|k| crate::wire::check_kind_name(*k))
+                .collect();
             if paths.is_empty() {
                 format!("run_checks {} on the whole repository", kinds.join("+"))
             } else {

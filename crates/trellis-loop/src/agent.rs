@@ -1568,9 +1568,11 @@ fn render(call: &ToolCall, r: &ToolResult, sites: &[RadiusSite]) -> (String, Opt
         }
         ToolResult::Checks(v) => {
             let d = v.detail();
+            // The kind as the model sends it in `kinds`, not its Debug
+            // form (#544).
             format!(
-                "{:?}: {}\ncommand: {}{}{}\n{}",
-                d.kind,
+                "{}: {}\ncommand: {}{}{}\n{}",
+                crate::wire::check_kind_name(d.kind),
                 if v.passed() { "passed" } else { "FAILED" },
                 d.command,
                 scope_note(call),
@@ -1649,7 +1651,7 @@ fn unrun_note(call: &ToolCall, ran: trellis_checks::CheckKind) -> String {
     let after = kinds.iter().position(|k| *k == ran).map_or(0, |i| i + 1);
     let skipped: Vec<String> = kinds[after.min(kinds.len())..]
         .iter()
-        .map(|k| format!("{k:?}"))
+        .map(|k| crate::wire::check_kind_name(*k).to_string())
         .collect();
     if skipped.is_empty() {
         String::new()
@@ -2922,7 +2924,7 @@ rank = \"non-negotiable\"
         };
         let note = unrun_note(&call, CheckKind::Typecheck);
         assert!(note.contains("NOT RUN"), "{note}");
-        assert!(note.contains("Tests"), "{note}");
+        assert!(note.contains("tests"), "{note}");
     }
 
     #[test]
