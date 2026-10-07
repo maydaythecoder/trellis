@@ -111,7 +111,9 @@ colibri never changes that (ADR 0047 decision 3). The rule as
   it is set, and no key when it is not. So a user with `OPENAI_API_KEY` set
   sends that key to colibri. Against a colibri started with a key, an unset
   `OPENAI_API_KEY` means no key is sent: `/v1/models` answers 401 and the run
-  stops before its snapshot, naming the unset variable.
+  stops before its snapshot, naming the unset variable. `anthropic:` works the
+  same way with `ANTHROPIC_API_KEY` (`Protocol::default_key_env`,
+  crates/trellis-model/src/hosted.rs).
 - **The same spec from the repository's `[model] spec`.** A repository-chosen
   endpoint on this machine is used only while its key variable is unset, and
   then gets no key. With `OPENAI_API_KEY` set it is refused before any request,
