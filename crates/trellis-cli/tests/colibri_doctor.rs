@@ -669,3 +669,42 @@ fn colibri_context_doctor_names_an_explicit_context_bytes_as_the_run_s_budget() 
     assert!(c.contains("30000 bytes"), "{c}");
     assert!(!c.contains("25,088"), "{c}");
 }
+
+#[test]
+fn doctor_key_note_says_a_keyless_loopback_run_goes_ahead_and_a_keyless_https_run_refuses() {
+    // #533: the note said every keyless run refuses, but a key is required
+    // only over https (ADR 0024 §3, amended at implementation); a keyless
+    // run against a loopback server goes ahead with no key.
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let d = repo("key-note", None);
+    let local = ok(&doctor(
+        &d,
+        &[
+            "--model",
+            &chat(&format!("http://127.0.0.1:{port}"), "glm-5.2"),
+        ],
+        None,
+    ));
+    let note = line(&local, "key:");
+    assert!(note.contains("OPENAI_API_KEY is not set"), "{note}");
+    assert!(note.contains("goes ahead with no key"), "{note}");
+    assert!(!note.contains("refuses"), "{note}");
+
+    // Never connected to: an https endpoint is only read by a run.
+    let remote = ok(&doctor(
+        &d,
+        &["--model", "openai-chat:https://api.example.test/v1#m"],
+        None,
+    ));
+    let note = line(&remote, "key:");
+    assert!(
+        note.contains(
+            "OPENAI_API_KEY is NOT set, so a run against this endpoint refuses before its snapshot"
+        ),
+        "{note}"
+    );
+    assert!(!note.contains("goes ahead"), "{note}");
+}

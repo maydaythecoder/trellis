@@ -2853,6 +2853,81 @@ fn exactly_one_catalogue_entry_is_marked_the_default() {
 }
 
 #[test]
+fn the_model_listing_says_where_colibri_weights_come_from() {
+    // ADR 0047 decision 11: the catalogue holds one pinned GGUF file per
+    // entry, so colibri's multi-shard containers are not in it. Someone
+    // looking for them in `trellis model` would otherwise find nothing and
+    // no hint, and might fetch shards by hand without the per-shard SHA-256
+    // checks colibri's own tooling makes. One line, so the listing stays a
+    // listing.
+    let d = repo("model-runtime-note");
+    let data = scratch("model-runtime-note-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+
+    let s = stdout(&run_with_data_dir(&d, &data, &["model"]));
+    let lines: Vec<&str> = s.lines().filter(|l| l.contains("colibri")).collect();
+    assert_eq!(lines.len(), 1, "exactly one line names colibri:\n{s}");
+    let line = lines[0];
+    for needle in [
+        "not in this catalogue",
+        "coli convert",
+        "coli mirror verify",
+        "docs/runtimes/colibri.md",
+    ] {
+        assert!(
+            line.contains(needle),
+            "the colibri line must say `{needle}`:\n{line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn pull_a_colibri_family_names_colibris_tooling_and_other_names_keep_the_generic_error() {
+    // ADR 0047 decision 11: `model pull` does not fetch colibri containers.
+    // Someone who types a colibri family there should learn where its
+    // weights come from, not read a catalogue list that never had it; and a
+    // name that is neither must still get the error that lists the
+    // catalogue, so a typo of a catalogue entry is not sent to colibri.
+    let d = repo("model-pull-colibri");
+    let data = scratch("model-pull-colibri-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+
+    let out = run_with_data_dir(&d, &data, &["model", "pull", "Kimi K3"]);
+    assert!(!out.status.success(), "a colibri family must not pull");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let lines: Vec<&str> = err.lines().filter(|l| l.contains("colibri")).collect();
+    assert_eq!(lines.len(), 1, "exactly one line names colibri:\n{err}");
+    for needle in [
+        "coli convert",
+        "coli mirror verify",
+        "docs/runtimes/colibri.md",
+    ] {
+        assert!(
+            lines[0].contains(needle),
+            "the refusal must say `{needle}`:\n{err}"
+        );
+    }
+    assert!(!err.contains("Known:"), "not the generic error:\n{err}");
+
+    let out = run_with_data_dir(&d, &data, &["model", "pull", "no-such-model"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("no model named `no-such-model`") && err.contains("Known:"),
+        "an unrelated name keeps the generic error:\n{err}"
+    );
+    assert!(
+        !err.contains("colibri"),
+        "and is not sent to colibri:\n{err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn model_path_names_a_real_location_under_the_data_directory() {
     // `trellis model path` exists so a user can put the file there
     // themselves — over a link the downloader cannot use, or from a copy on
