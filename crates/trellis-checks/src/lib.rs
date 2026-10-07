@@ -10,7 +10,7 @@ pub mod governance;
 mod tree_state;
 mod verdict;
 
-pub use verdict::{AuditMode, CheckDetail, CheckKind, Verdict};
+pub use verdict::{AuditMode, CheckDetail, CheckKind, Verdict, check_kind_name};
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
