@@ -45,6 +45,9 @@
         "always": ["intent"],
         "question_only": ["answer"],
         "intent_values": ["question", "task"]
+      },
+      "list_paths": {
+        "always": ["paths"]
       }
     },
     "commands": {

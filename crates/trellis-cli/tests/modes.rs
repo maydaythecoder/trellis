@@ -1840,6 +1840,188 @@ fn rpc_vault_graph_returns_what_vault_graph_prints() {
     );
 }
 
+/// The `paths` of a successful `list_paths` answer, each a JSON string.
+fn listed(answer: &Value) -> Vec<String> {
+    assert_eq!(answer["command"], "list_paths", "{answer}");
+    assert_eq!(answer["success"], true, "{answer}");
+    answer["data"]["paths"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`paths` is an array: {answer}"))
+        .iter()
+        .map(|p| p.as_str().expect("each path is a JSON string").to_string())
+        .collect()
+}
+
+#[test]
+fn rpc_list_paths_never_lists_an_ignored_file() {
+    // The risks: a client offering a `.gitignore`d `.env` or build output
+    // for `@` completion, to be typed into a task a model reads; a client
+    // listing paths itself, outside `trellis_vcs` (ADR 0023); `.git`
+    // internals offered; a read that writes; and a listing that blocks the
+    // reader while a run waits on its approval.
+    let f = fixture("rpc-list-paths-ignored");
+    // Ignored paths that share the tracked `a.py`'s prefix, so a listing
+    // that walked the disk would offer them beside it.
+    std::fs::write(f.root.join(".gitignore"), "a.env\na_build/\n").unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "ignore rules"]);
+    std::fs::write(f.root.join("a.env"), "not for a prompt\n").unwrap();
+    std::fs::create_dir_all(f.root.join("a_build")).unwrap();
+    std::fs::write(f.root.join("a_build/out.py"), "z = 3\n").unwrap();
+
+    // Not an empty prefix here: the approve-mode run inside commits its
+    // trail, a tracked path an empty prefix would rightly list next time.
+    let data = answered_three_ways(
+        &f,
+        &serde_json::json!({"type": "list_paths", "prefix": "a"}),
+    );
+    assert_eq!(
+        data,
+        serde_json::json!({"paths": ["a.py"]}),
+        "tracked only, ignored left out"
+    );
+
+    // An empty prefix is allowed. An untracked file no rule ignores is
+    // offered, as the TUI offers it; an ignored one is not, even asked for
+    // by name.
+    std::fs::write(f.root.join("untracked.py"), "y = 2\n").unwrap();
+    let got = answer(
+        &f,
+        serde_json::json!({"id": "u", "type": "list_paths", "prefix": ""}),
+    );
+    let paths = listed(&got);
+    assert!(paths.iter().any(|p| p == "untracked.py"), "{paths:?}");
+    assert!(paths.iter().any(|p| p == ".gitignore"), "{paths:?}");
+    assert!(!paths.iter().any(|p| p == "a.env"), "{paths:?}");
+    assert!(!paths.iter().any(|p| p.starts_with("a_build")), "{paths:?}");
+    assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{paths:?}");
+    for prefix in ["a.env", "a_build/", ".git/"] {
+        let got = answer(
+            &f,
+            serde_json::json!({"id": "n", "type": "list_paths", "prefix": prefix}),
+        );
+        assert!(listed(&got).is_empty(), "{prefix}: {got}");
+    }
+}
+
+#[test]
+fn rpc_list_paths_gives_at_most_ten_shortest_first() {
+    // The risks: a client flooded with every path in a large repository;
+    // an order that differs from the TUI's (shortest first, then by bytes),
+    // so the first completion offered is not the same file; and a prefix
+    // read as "contains", offering `lib/m.py` for `m`.
+    let f = fixture("rpc-list-paths-ten");
+    std::fs::create_dir_all(f.root.join("m")).unwrap();
+    std::fs::create_dir_all(f.root.join("lib")).unwrap();
+    for p in [
+        "m/ccccc.py",
+        "m/bbbb.py",
+        "m/aaaa.py",
+        "m/zzz.py",
+        "m/abc.py",
+        "m/aaa.py",
+        "m/ba.py",
+        "m/ab.py",
+        "m/aa.py",
+        "m/z.py",
+        "m/b.py",
+        "m/a.py",
+        "m/1.py",
+        "mm.py",
+        "lib/m.py",
+    ] {
+        std::fs::write(f.root.join(p), "x = 1\n").unwrap();
+    }
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "many"]);
+
+    let got = answer(
+        &f,
+        serde_json::json!({"id": "m", "type": "list_paths", "prefix": "m"}),
+    );
+    assert_eq!(
+        listed(&got),
+        [
+            "mm.py", "m/1.py", "m/a.py", "m/b.py", "m/z.py", "m/aa.py", "m/ab.py", "m/ba.py",
+            "m/aaa.py", "m/abc.py",
+        ],
+        "at most 10, shortest first, then by bytes"
+    );
+    let got = answer(
+        &f,
+        serde_json::json!({"id": "ma", "type": "list_paths", "prefix": "m/a"}),
+    );
+    assert_eq!(
+        listed(&got),
+        [
+            "m/a.py",
+            "m/aa.py",
+            "m/ab.py",
+            "m/aaa.py",
+            "m/abc.py",
+            "m/aaaa.py"
+        ]
+    );
+}
+
+#[test]
+fn rpc_list_paths_refuses_a_prefix_that_is_not_a_relative_path_start() {
+    // The risks: a prefix from the client reaching outside the repository,
+    // or carrying a control character into a listing a client renders. The
+    // prefix only filters git's listing, so neither could read a file; it
+    // is refused anyway, by name, so a client learns its input was wrong
+    // rather than seeing an empty list.
+    let f = fixture("rpc-list-paths-refused");
+    let cases: Vec<(Value, &str)> = vec![
+        (Value::Null, "is required"),
+        (Value::from(7), "is required"),
+        (Value::from(".."), "`..`"),
+        (Value::from("../a"), "`..`"),
+        (Value::from("a/../b"), "`..`"),
+        (Value::from("a\\..\\b"), "`..`"),
+        (Value::from("/etc"), "absolute"),
+        (Value::from("\\x"), "absolute"),
+        (Value::from("C:/x"), "absolute"),
+        (Value::from("a\u{7}b"), "control character"),
+        (Value::from("a\nb"), "control character"),
+        (Value::from("a\u{9b}b"), "control character"),
+    ];
+    let mut rpc = Rpc::start(trellis(&f));
+    for (n, (prefix, _)) in cases.iter().enumerate() {
+        let mut cmd = serde_json::json!({"id": n.to_string(), "type": "list_paths"});
+        if !prefix.is_null() {
+            cmd["prefix"] = prefix.clone();
+        }
+        rpc.send(cmd);
+    }
+    for (n, (prefix, rule)) in cases.iter().enumerate() {
+        let got = rpc.next(|v| v["id"] == n.to_string().as_str());
+        assert_eq!(got["command"], "list_paths", "{got}");
+        assert_eq!(got["success"], false, "{prefix}: {got}");
+        let e = got["error"].as_str().unwrap();
+        assert!(e.contains("prefix") && e.contains(rule), "{prefix}: {e}");
+    }
+    rpc.finish();
+}
+
+#[test]
+fn rpc_list_paths_reply_carries_every_field_the_contract_lists() {
+    // The risk: a field a client reads from `list_paths` renamed or dropped
+    // with nothing failing (ADR 0048 §6), including `paths` left out when
+    // nothing matches rather than given as an empty list.
+    let f = fixture("rpc-list-paths-contract");
+    let always = &contract()["rpc"]["responses"]["list_paths"]["always"];
+    for prefix in ["a", "nothing-matches"] {
+        let got = answer(
+            &f,
+            serde_json::json!({"id": "c", "type": "list_paths", "prefix": prefix}),
+        );
+        assert_eq!(got["success"], true, "{got}");
+        let gaps = missing(&got["data"], always, "list_paths");
+        assert!(gaps.is_empty(), "{prefix}: {gaps:?} in {got}");
+    }
+}
+
 /// An OpenAI-protocol tool call that reports both token figures.
 fn openai_call_with_usage(name: &str, args: Value, prompt: u64, completion: u64) -> String {
     serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,
