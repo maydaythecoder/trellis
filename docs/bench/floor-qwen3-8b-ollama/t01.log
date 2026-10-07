@@ -1,0 +1,33 @@
+model:    VllmOpenAi, tier 4, no schema; the reply is validated after â€” degradation: malformed tool calls are retried, not prevented; slower, and a run can fail on format alone
+control:  auto
+schema:   sent and ignored by this runtime, so it is not enforced. Running
+          unconstrained; malformed calls are retried rather than prevented.
+snapshot at 06946aa18fec0563946743e294949a223a161843
+repo:     0 write rule(s), skills: 1 listed, 0 omitted (cap), user skills: 1 from the user's own directories (not gated on repository trust)
+files:    451 first-party Python file(s) named to the model
+[2m2026-10-07T15:18:52.643791Z[0m [32m INFO[0m [1mrun_seeded[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/config.py; fix it [3mresumed[0m[2m=[0mfalse [3mrules[0m[2m=[0m0[1m}[0m[2m:[0m run budget [3mmax_iterations[0m[2m=[0m8
+[2m2026-10-07T15:19:04.914590Z[0m [32m INFO[0m [1mrun_seeded[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/config.py; fix it [3mresumed[0m[2m=[0mfalse [3mrules[0m[2m=[0m0[1m}[0m[2m:[0m turn [3mturn[0m[2m=[0m1 [3mcall[0m[2m=[0mrun_checks [Typecheck] src/poetry/config/config.py [3mverdict[0m[2m=[0mSome(false) [3mcheck_kind[0m[2m=[0m"Typecheck" [3mobservation[0m[2m=[0mTypecheck: FAILED
+command: mypy --ignore-missing-imports --no-error-summary --no-color-output --hide-error-context --follow-imports=silent --no-incremental src/poetry/config/config.py
+src\poetry\config\config.py:338: error: "Config" has no attribute "_get_environment_repositories_typo"; maybe "_get_environment_repositories"?  [attr-defined] [3mprompt_bytes[0m[2m=[0m9754 [3mmodel_ms[0m[2m=[0m11608
+[2m2026-10-07T15:19:25.846165Z[0m [32m INFO[0m [1mrun_seeded[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/config.py; fix it [3mresumed[0m[2m=[0mfalse [3mrules[0m[2m=[0m0[1m}[0m[2m:[0m turn [3mturn[0m[2m=[0m2 [3mcall[0m[2m=[0medit src/poetry/config/config.py [3mverdict[0m[2m=[0mNone [3mcheck_kind[0m[2m=[0m"" [3mobservation[0m[2m=[0medited src/poetry/config/config.py (applied: true, bytes 10761..10790) [3mprompt_bytes[0m[2m=[0m10193 [3mmodel_ms[0m[2m=[0m20892
+[2m2026-10-07T15:19:31.252816Z[0m [32m INFO[0m [1mrun_seeded[0m[1m{[0m[3mtask[0m[2m=[0ma type check is failing in src/poetry/config/config.py; fix it [3mresumed[0m[2m=[0mfalse [3mrules[0m[2m=[0m0[1m}[0m[2m:[0m turn [3mturn[0m[2m=[0m3 [3mcall[0m[2m=[0mrun_checks [Typecheck] src/poetry/config/config.py [3mverdict[0m[2m=[0mSome(true) [3mcheck_kind[0m[2m=[0m"Typecheck" [3mobservation[0m[2m=[0mTypecheck: passed
+command: mypy --ignore-missing-imports --no-error-summary --no-color-output --hide-error-context --follow-imports=silent --no-incremental src/poetry/config/config.py [3mprompt_bytes[0m[2m=[0m10413 [3mmodel_ms[0m[2m=[0m4695
+
+   1. RunChecks { paths: ["src/poetry/config/config.py"], kinds: [Typecheck] } check FAILED
+   2. Edit { path: "src/poetry/config/config.py", old: "_get_environment_repositories_typo", new: "_get_environment_repositories" } 
+   3. RunChecks { paths: ["src/poetry/config/config.py"], kinds: [Typecheck] } check passed
+
+why the check failed:
+  Typecheck: FAILED
+  command: mypy --ignore-missing-imports --no-error-summary --no-color-output --hide-error-context --follow-imports=silent --no-incremental src/poetry/config/config.py
+  src\poetry\config\config.py:338: error: "Config" has no attribute "_get_environment_repositories_typo"; maybe "_get_environment_repositories"?  [attr-defined]
+
+files written: src/poetry/config/config.py
+context:  9754 B first prompt, 10413 B peak over 3 turns (1.1x)
+
+CONVERGED after 3 iterations, 1 checks passed.
+trail:    C:\w\r144\.bench\poetry-2.5.0\.trellis/runs/20261007-151849-889-a-type-check-is-failing-in-src-poetry-config-con.json
+coverage: 22 call sites in the 1 file bound to nothing (MethodDispatchUntyped 20, DynamicAttribute 1, and 1 more)
+          Any of them may call what changed. The checks ran on what the graph could see.
+Changes are left in the working tree for you to review. Nothing is committed:
+acceptance is yours, and the trail records the run as unapproved until you give it.

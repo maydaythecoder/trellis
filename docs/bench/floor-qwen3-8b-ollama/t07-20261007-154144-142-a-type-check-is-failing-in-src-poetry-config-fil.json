@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "run_id": "20261007-154144-142-a-type-check-is-failing-in-src-poetry-config-fil",
+  "task": "a type check is failing in src/poetry/config/file_config_source.py; fix it",
+  "base_commit": "8108a9dd917c5ce837638e09830ab498b3f41833",
+  "started_at": "2026-10-07T15:41:44Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9766,
+      "peak_prompt_bytes": 12866,
+      "turns_measured": 5
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/file_config_source.py",
+        "outcome": "error: edit anchor not found in src/poetry/config/file_config_source.py. `old` must be text copied from the file, not r…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "edit",
+        "target": "src/poetry/config/file_config_source.py",
+        "outcome": "error: edit anchor occurs 3 times in src/poetry/config/file_config_source.py; it must occur exactly once so the edit is…",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "compaction",
+        "target": "turns 1-2",
+        "outcome": "elided 3636 B of observations; request 12784 B, budget 14336 B",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "edit",
+        "target": "src/poetry/config/file_config_source.py",
+        "outcome": "error: edit anchor occurs 3 times in src/poetry/config/file_config_source.py; it must occur exactly once so the edit is…",
+        "wrote": false
+      },
+      {
+        "turn": 6,
+        "tool": "compaction",
+        "target": "turns 1-4",
+        "outcome": "elided 7338 B of observations; request 12702 B, budget 14336 B",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 12155,
+    "prompt_tokens": 31736
+  },
+  "factual_sha256": "07322887947838f1c0836578d19b0d1cb165a5ce1b9481554f33e4c77412ac5c",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
