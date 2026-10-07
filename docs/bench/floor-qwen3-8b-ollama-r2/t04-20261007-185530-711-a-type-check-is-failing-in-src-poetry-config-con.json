@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "run_id": "20261007-185530-711-a-type-check-is-failing-in-src-poetry-config-con",
+  "task": "a type check is failing in src/poetry/config/config_source.py; fix it",
+  "base_commit": "b2c4ef471f2ba3ca09b7e615b54cf37b1bde07ef",
+  "started_at": "2026-10-07T18:55:30Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/config/config_source.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9761,
+      "peak_prompt_bytes": 10513,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/config_source.py",
+        "outcome": "edited src/poetry/config/config_source.py (applied: true, bytes 1596..1610)",
+        "wrote": true
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 1266,
+    "prompt_tokens": 8222
+  },
+  "factual_sha256": "7d6be0088f80a6110f6bdaf317837ad4d915935a18ac94b3f009308530920a0b",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
