@@ -708,6 +708,20 @@ on stderr.
   `intent` always, `answer` only when `intent` is `"question"`, and the two
   `intent` values. Held by
   `rpc_classify_reply_carries_every_field_the_contract_lists`.*
+  *Amended 2026-10-07 (#312): the `turn` event's fields fall into five
+  lists: `always`; `model_call_only` (`model_ms`, the wall time of the
+  model call, absent on the governance audit's turn at convergence, which
+  calls no model); `blast_radius_only`; `prompt_driver_only` (`prompt_bytes`
+  and `completion_tokens`, the latter absent when a reply the step read
+  reported no output tokens); and `response_header_only` (`queue_wait_ms`,
+  colibri's `x-colibri-queue-wait-ms` summed, present only when every reply
+  carried it). Under `absent_when` the contract says when a listed field is
+  still left off, the governance audit's turn among them: it carries none
+  of `model_ms`, `prompt_bytes` or `completion_tokens`. A figure trellis did
+  not measure is absent, never 0. Held by
+  `rpc_stream_carries_every_field_the_desktop_reads`,
+  `rpc_turn_carries_queue_wait_from_the_reply_header` and
+  `rpc_every_turn_through_the_governance_audit_keeps_the_contract`.*
 
 ### 6. Session additions
 
