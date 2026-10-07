@@ -7,7 +7,8 @@
 //! reads that ask a loopback endpoint whether it is colibri (ADR 0047), by
 //! `colibri_key` here, under the same rule and held only for those reads
 //! (`colibri_tier`, which the run and the TUI's status bar call, `doctor`'s
-//! reads and tools probe, and `ask`'s identification). No other caller holds
+//! reads and tools probe, `ask`'s identification, and the run's
+//! `self_report`). No other caller holds
 //! it.
 
 use crate::config::RepoConfig;
@@ -306,6 +307,22 @@ fn origin_of(base: &str) -> Option<String> {
 /// smallest supported window in bytes (ADR 0033).
 pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
 
+/// `[model] context_bytes` for an endpoint [`preflight`] identified as
+/// colibri whose configuration sets none (ADR 0047 decision 6, recorded by
+/// #271).
+///
+/// colibri does not report its window over HTTP, and clamps each reply to
+/// the room the prompt leaves in it, so the hosted default would let the
+/// prompt fill the window and leave a turn no room for its tool call. An
+/// 8,192-token window, the default of five families and the one doctor's
+/// `context:` line names (COL-09's runtime page is to ask `--ctx` for
+/// it), less a 1,024-token reply reserve (`coli run`'s
+/// `default_max_output`, TRELLIS's choice of reserve), at ADR 0033's 3.5
+/// bytes per token. That ratio was measured on
+/// no colibri tokenizer: a figure below it from COL-12 recomputes this.
+pub(crate) const COLIBRI_CONTEXT_BYTES: usize = 25_088;
+const _: () = assert!(COLIBRI_CONTEXT_BYTES == (8_192 - 1_024) * 7 / 2);
+
 /// The byte budget a local runtime's prompt is held to (ADR 0033): `[model]
 /// context_bytes` when set, larger or smaller, else
 /// [`trellis_loop::LOCAL_CONTEXT_BYTES`].
@@ -327,14 +344,16 @@ pub(crate) fn runtime_context_bytes(cfg: &RepoConfig) -> usize {
 /// model's own limit is refused by the endpoint however large the run's
 /// budget, so only the smaller of two ceilings is one. With one of them, that
 /// one, larger or smaller than [`HOSTED_CONTEXT_BYTES`]. With neither,
-/// [`HOSTED_CONTEXT_BYTES`].
+/// [`HOSTED_CONTEXT_BYTES`], or [`COLIBRI_CONTEXT_BYTES`] when `colibri`:
+/// true only for an endpoint [`preflight`] identified as colibri, so no
+/// other endpoint's budget changes.
 ///
 /// A spec that names no `[[providers]]` entry (`openai:<url>#<model>`) has
 /// no per-model limit. Which file's entry supplies the limit is settled by
 /// layering: on a name both files define the user's entry wins whole, so a
 /// repository cannot raise a limit the user set (ADR 0024 §3), and under
 /// the minimum its `context_bytes` can only lower one.
-pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usize> {
+pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<usize> {
     let limit = match &r.provider {
         Some(name) => cfg
             .provider(name)?
@@ -345,16 +364,21 @@ pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usi
     };
     Ok(match (cfg.context_bytes(), limit) {
         (Some(c), Some(l)) => c.min(l),
-        (c, l) => c.or(l).unwrap_or(HOSTED_CONTEXT_BYTES),
+        (c, l) => c.or(l).unwrap_or(if colibri {
+            COLIBRI_CONTEXT_BYTES
+        } else {
+            HOSTED_CONTEXT_BYTES
+        }),
     })
 }
 
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
 /// plain-http remote, or a build without TLS.
 ///
-/// `colibri` sends colibri's request profile (ADR 0047 decision 5), and is
-/// true only for an endpoint [`preflight`] identified as colibri: every
-/// other endpoint's body stays byte for byte as it was.
+/// `colibri` sends colibri's request profile (ADR 0047 decision 5) and
+/// gives it colibri's default budget (decision 6), and is true only for an
+/// endpoint [`preflight`] identified as colibri: every other endpoint's body
+/// and budget stay as they were.
 pub(crate) fn build(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<HostedModel> {
     // `main` registers every configured `key_env`; this covers a caller that
     // reached a provider some other way. Registering twice is harmless.
@@ -371,7 +395,7 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<Hos
         .with_colibri_profile(colibri)
         // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
         .with_timeout(cfg.model_timeout());
-    let budget = hosted_context_bytes(r, cfg)?;
+    let budget = hosted_context_bytes(r, cfg, colibri)?;
     Ok(HostedModel::new(client).with_context_bytes(Some(budget)))
 }
 
@@ -665,6 +689,45 @@ pub(crate) fn preflight(r: &Resolved, tier: &ColibriTier) -> Result<Option<Strin
             },
         ),
     }
+}
+
+/// The most of a served id the self-report carries. colibri's id is a model
+/// name; the read is capped only at the transport's response size.
+const SELF_REPORT_ID_CHARS: usize = 200;
+
+/// Logs what colibri says about itself, once per run, for an endpoint
+/// [`preflight`] let go ahead (ADR 0047 decision 13): one `GET /health`
+/// carrying [`colibri_key`]'s key, then the `runtime identified` event.
+/// Never in the trail: colibri does not report the settings that change
+/// its output, so a trail record of it would look more complete than it is.
+///
+/// Nothing here stops a run. A `/health` that fails, is not colibri's
+/// shape, or does not answer within `colibri::READ_TIMEOUT` reported no
+/// slots or tiers, which is what a liveness-only answer reports too, so
+/// every such outcome leaves those fields off the event.
+pub(crate) async fn self_report(r: &Resolved, tier: &ColibriTier) {
+    let id = match tier {
+        ColibriTier::Probed { id } | ColibriTier::Assumed { id, .. } => id,
+        ColibriTier::NotColibri | ColibriTier::Refused { .. } => return,
+    };
+    let health = colibri::health(&r.base, colibri_key(r).as_ref()).await.ok();
+    log_self_report(id, health.as_ref());
+}
+
+/// The `runtime identified` event. Every value is the server's: the id is
+/// cut to [`SELF_REPORT_ID_CHARS`] and passed through [`plain`], and a
+/// count colibri did not report is absent, never 0.
+fn log_self_report(id: &str, health: Option<&colibri::Health>) {
+    let tiers = health.and_then(|h| h.tiers.as_ref());
+    tracing::info!(
+        runtime = "colibri",
+        served = %plain(&id.chars().take(SELF_REPORT_ID_CHARS).collect::<String>()),
+        kv_slots = health.and_then(|h| h.kv_slots),
+        tiers_vram = tiers.map(|t| t.vram),
+        tiers_ram = tiers.map(|t| t.ram),
+        tiers_disk = tiers.map(|t| t.disk),
+        "runtime identified"
+    );
 }
 
 /// Said only where colibri's own message names `COLI_TOOL_FALLBACK`:
@@ -1232,6 +1295,17 @@ mod tests {
         cfg: &RepoConfig,
         provider: Option<&str>,
     ) -> (Vec<String>, Vec<Compacted>, usize) {
+        hosted_run_as(cfg, provider, false)
+    }
+
+    /// [`hosted_run_via`] with the driver `build` makes for an endpoint
+    /// `preflight` identified as colibri when `colibri` is set, as `trellis
+    /// run` rebuilds it then.
+    fn hosted_run_as(
+        cfg: &RepoConfig,
+        provider: Option<&str>,
+        colibri: bool,
+    ) -> (Vec<String>, Vec<Compacted>, usize) {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("app")).unwrap();
         for i in 0..FILES {
@@ -1249,7 +1323,7 @@ mod tests {
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: provider.map(str::to_string),
         };
-        let mut m = build(&r, cfg, false).unwrap();
+        let mut m = build(&r, cfg, colibri).unwrap();
         let checks = trellis_checks::CheckConfig {
             typecheck: if cfg!(windows) {
                 vec!["cmd".into(), "/C".into(), "exit 0".into()]
@@ -1340,6 +1414,111 @@ mod tests {
         assert!(largest <= 100_000, "{largest} bytes sent");
     }
 
+    // ---- ADR 0047 decision 6 (#271): colibri's budget leaves the reply room ----
+
+    #[test]
+    fn colibri_context_default_holds_an_identified_colibri_run_to_25088_bytes() {
+        // The risk: an identified colibri endpoint given the 400,000-byte
+        // hosted default, so the prompt grows until it fills colibri's
+        // window and colibri clamps the reply to the little room left.
+        let (bodies, events, observed) = hosted_run_as(&RepoConfig::default(), None, true);
+        assert!(observed > 25_088, "{observed} bytes read");
+        held_to(25_088, &bodies, &events);
+    }
+
+    /// Every compaction of a run was to `budget`, and every request was
+    /// held to it until only the newest observation was left unelided.
+    ///
+    /// This workload's 221 turns outgrow a budget this small on their calls
+    /// and elision lines alone, which ADR 0024 §5 never elides; past that
+    /// point a hosted request is sent over it, said by `fits: false`, and
+    /// the endpoint's own refusal is what the overflow retry answers.
+    fn held_to(budget: usize, bodies: &[String], events: &[Compacted]) {
+        assert!(!events.is_empty(), "the transcript outgrew the budget");
+        assert!(events.iter().all(|e| e.budget == budget), "{events:?}");
+        let first_over = events.iter().find(|e| !e.fits);
+        // Turn n's request is the stub's n-th body.
+        let held = first_over.map_or(bodies.len(), |e| e.turn as usize - 1);
+        assert!(held > 50, "held for {held} turns only: {events:?}");
+        let largest = bodies[..held].iter().map(String::len).max().unwrap();
+        assert!(largest <= budget, "{largest} bytes sent");
+        assert!(
+            events
+                .iter()
+                .filter(|e| !e.fits)
+                .all(|e| e.elided_turns == e.turn as usize - 2),
+            "over the budget with an observation left to elide: {events:?}"
+        );
+    }
+
+    /// A loopback openai-chat spec for model `m` through `provider`.
+    fn loopback(provider: Option<&str>) -> Resolved {
+        Resolved {
+            protocol: Protocol::OpenAiChat,
+            base: "http://127.0.0.1:1/v1".into(),
+            model: "m".into(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: provider.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn colibri_context_an_explicit_context_bytes_wins_above_or_below_the_default() {
+        // The risk: colibri's default clamping a user's larger value, which
+        // a server started with a larger `--ctx` has room for, or replacing
+        // a smaller one, which ADR 0033's 4,096-token minimum is reached by.
+        let above: RepoConfig = toml::from_str("[model]\ncontext_bytes = 30000\n").unwrap();
+        assert_eq!(
+            hosted_context_bytes(&loopback(None), &above, true).unwrap(),
+            30_000
+        );
+        let below: RepoConfig = toml::from_str("[model]\ncontext_bytes = 10000\n").unwrap();
+        assert_eq!(
+            hosted_context_bytes(&loopback(None), &below, true).unwrap(),
+            10_000
+        );
+        // And through the driver a colibri run is built with.
+        let (bodies, events, _) = hosted_run_as(&above, None, true);
+        held_to(30_000, &bodies, &events);
+    }
+
+    #[test]
+    fn colibri_context_an_endpoint_not_identified_keeps_the_hosted_default() {
+        // The risk: the smaller budget reaching an endpoint `preflight` did
+        // not identify as colibri, eliding runs that fit before.
+        assert_eq!(
+            hosted_context_bytes(&loopback(None), &RepoConfig::default(), false).unwrap(),
+            400_000
+        );
+        assert_eq!(
+            hosted_context_bytes(&loopback(None), &RepoConfig::default(), true).unwrap(),
+            25_088
+        );
+        let (_, events, _) = hosted_run_as(&RepoConfig::default(), None, false);
+        assert!(!events.is_empty(), "the transcript outgrew the default");
+        assert!(
+            events.iter().all(|e| e.budget == 400_000 && e.fits),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn colibri_context_a_model_input_limit_still_applies_to_colibri() {
+        // The risk: the colibri default replacing a `[[providers]]
+        // input_bytes` the user set for the model, which is a ceiling of its
+        // own (ADR 0024 §5, #162), larger or smaller.
+        let small = with_provider("", "input_bytes = { m = 12000 }\n");
+        assert_eq!(
+            hosted_context_bytes(&loopback(Some("p")), &small, true).unwrap(),
+            12_000
+        );
+        let large = with_provider("", "input_bytes = { m = 60000 }\n");
+        assert_eq!(
+            hosted_context_bytes(&loopback(Some("p")), &large, true).unwrap(),
+            60_000
+        );
+    }
+
     /// A `[[providers]]` entry `p` (loopback, no key), with `extra` appended
     /// to it, after whatever `before` puts at the top of the file.
     fn with_provider(before: &str, extra: &str) -> RepoConfig {
@@ -1402,7 +1581,7 @@ context_bytes = {set}
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: Some("p".into()),
         };
-        assert_eq!(hosted_context_bytes(&r, &cfg).unwrap(), 100_000);
+        assert_eq!(hosted_context_bytes(&r, &cfg, false).unwrap(), 100_000);
     }
 
     #[test]
@@ -1422,19 +1601,19 @@ context_bytes = {set}
         let plain = with_provider("", "");
         assert!(plain.provider("p").unwrap().input_bytes.is_empty());
         assert_eq!(
-            hosted_context_bytes(&r(Some("p")), &plain).unwrap(),
+            hosted_context_bytes(&r(Some("p")), &plain, false).unwrap(),
             HOSTED_CONTEXT_BYTES
         );
         let explicit = with_provider("[model]\ncontext_bytes = 1000000\n", "");
         assert_eq!(
-            hosted_context_bytes(&r(Some("p")), &explicit).unwrap(),
+            hosted_context_bytes(&r(Some("p")), &explicit, false).unwrap(),
             1_000_000
         );
         // A spec naming no entry has no per-model limit, whatever the
         // entries say.
         let other = with_provider("", "input_bytes = { m = 100000 }\n");
         assert_eq!(
-            hosted_context_bytes(&r(None), &other).unwrap(),
+            hosted_context_bytes(&r(None), &other, false).unwrap(),
             HOSTED_CONTEXT_BYTES
         );
 
@@ -1494,7 +1673,7 @@ context_bytes = {set}
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: Some("p".into()),
         };
-        assert_eq!(hosted_context_bytes(&r, &cfg).unwrap(), 100_000);
+        assert_eq!(hosted_context_bytes(&r, &cfg, false).unwrap(), 100_000);
     }
 
     // ---- #248: survivors of the trellis-cli mutation run ----
@@ -1629,6 +1808,46 @@ context_bytes = {set}
         );
         assert_eq!(stub.probes(), 2, "{:?}", stub.requests());
         assert_eq!(stub.model_reads(), 3, "{:?}", stub.requests());
+    }
+
+    /// The `runtime identified` event as the human layer prints it (main.rs
+    /// builds it the same way, minus the filter).
+    fn printed_self_report(id: &str) -> String {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || log_self_report(id, None));
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn runtime_self_report_a_served_id_with_an_esc_byte_is_printed_escaped() {
+        // The risk: a server's id repainting the terminal the run's log is
+        // read in. A run reaches the event only with a served id equal to
+        // the spec's model, which since #499 cannot hold a control byte, so
+        // this is the event's own guard, tested where it can be reached.
+        let out = printed_self_report("glm\u{1b}[2J");
+        assert!(out.contains("runtime identified"), "{out:?}");
+        assert!(out.contains("glm\\u{1b}[2J"), "{out:?}");
+        assert!(!out.contains('\x1b'), "{out:?}");
+        // Bounded: a megabyte of id is not a megabyte of log.
+        let out = printed_self_report(&"a".repeat(1 << 20));
+        assert!(out.len() < 1024, "{} bytes", out.len());
     }
 }
 
