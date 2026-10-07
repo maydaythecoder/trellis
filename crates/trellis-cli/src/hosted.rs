@@ -7,7 +7,8 @@
 //! reads that ask a loopback endpoint whether it is colibri (ADR 0047), by
 //! `colibri_key` here, under the same rule and held only for those reads
 //! (`colibri_tier`, which the run and the TUI's status bar call, `doctor`'s
-//! reads and tools probe, and `ask`'s identification). No other caller holds
+//! reads and tools probe, `ask`'s identification, and the run's
+//! `self_report`). No other caller holds
 //! it.
 
 use crate::config::RepoConfig;
@@ -665,6 +666,45 @@ pub(crate) fn preflight(r: &Resolved, tier: &ColibriTier) -> Result<Option<Strin
             },
         ),
     }
+}
+
+/// The most of a served id the self-report carries. colibri's id is a model
+/// name; the read is capped only at the transport's response size.
+const SELF_REPORT_ID_CHARS: usize = 200;
+
+/// Logs what colibri says about itself, once per run, for an endpoint
+/// [`preflight`] let go ahead (ADR 0047 decision 13): one `GET /health`
+/// carrying [`colibri_key`]'s key, then the `runtime identified` event.
+/// Never in the trail: colibri does not report the settings that change
+/// its output, so a trail record of it would look more complete than it is.
+///
+/// Nothing here stops a run. A `/health` that fails, is not colibri's
+/// shape, or does not answer within `colibri::READ_TIMEOUT` reported no
+/// slots or tiers, which is what a liveness-only answer reports too, so
+/// every such outcome leaves those fields off the event.
+pub(crate) async fn self_report(r: &Resolved, tier: &ColibriTier) {
+    let id = match tier {
+        ColibriTier::Probed { id } | ColibriTier::Assumed { id, .. } => id,
+        ColibriTier::NotColibri | ColibriTier::Refused { .. } => return,
+    };
+    let health = colibri::health(&r.base, colibri_key(r).as_ref()).await.ok();
+    log_self_report(id, health.as_ref());
+}
+
+/// The `runtime identified` event. Every value is the server's: the id is
+/// cut to [`SELF_REPORT_ID_CHARS`] and passed through [`plain`], and a
+/// count colibri did not report is absent, never 0.
+fn log_self_report(id: &str, health: Option<&colibri::Health>) {
+    let tiers = health.and_then(|h| h.tiers.as_ref());
+    tracing::info!(
+        runtime = "colibri",
+        served = %plain(&id.chars().take(SELF_REPORT_ID_CHARS).collect::<String>()),
+        kv_slots = health.and_then(|h| h.kv_slots),
+        tiers_vram = tiers.map(|t| t.vram),
+        tiers_ram = tiers.map(|t| t.ram),
+        tiers_disk = tiers.map(|t| t.disk),
+        "runtime identified"
+    );
 }
 
 /// Said only where colibri's own message names `COLI_TOOL_FALLBACK`:
@@ -1629,6 +1669,46 @@ context_bytes = {set}
         );
         assert_eq!(stub.probes(), 2, "{:?}", stub.requests());
         assert_eq!(stub.model_reads(), 3, "{:?}", stub.requests());
+    }
+
+    /// The `runtime identified` event as the human layer prints it (main.rs
+    /// builds it the same way, minus the filter).
+    fn printed_self_report(id: &str) -> String {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || log_self_report(id, None));
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn runtime_self_report_a_served_id_with_an_esc_byte_is_printed_escaped() {
+        // The risk: a server's id repainting the terminal the run's log is
+        // read in. A run reaches the event only with a served id equal to
+        // the spec's model, which since #499 cannot hold a control byte, so
+        // this is the event's own guard, tested where it can be reached.
+        let out = printed_self_report("glm\u{1b}[2J");
+        assert!(out.contains("runtime identified"), "{out:?}");
+        assert!(out.contains("glm\\u{1b}[2J"), "{out:?}");
+        assert!(!out.contains('\x1b'), "{out:?}");
+        // Bounded: a megabyte of id is not a megabyte of log.
+        let out = printed_self_report(&"a".repeat(1 << 20));
+        assert!(out.len() < 1024, "{} bytes", out.len());
     }
 }
 
