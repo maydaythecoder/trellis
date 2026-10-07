@@ -46,6 +46,16 @@
         "question_only": ["answer"],
         "intent_values": ["question", "task"]
       }
+    },
+    "commands": {
+      "get_state": {
+        "data": {
+          "always": ["tier"],
+          "null_when": {
+            "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
+          }
+        }
+      }
     }
   },
   "log_json": {
