@@ -606,6 +606,13 @@ without a budget against the same replies and compares outcomes.
   leaves the reply room in colibri's window (colibri clamps each reply to
   the room the prompt leaves). COL-08 records the figure. An explicit value
   still wins, larger or smaller; every other hosted spec keeps 400,000.
+  *Amended 2026-10-07 by ADR 0047 decision 6 (#271):* the figure is
+  **25,088 bytes** (`COLIBRI_CONTEXT_BYTES`,
+  `crates/trellis-cli/src/hosted.rs`), (8,192 - 1,024) tokens at 3.5 bytes
+  per token, for an endpoint the run's `preflight` identified as colibri
+  and no other. `--image`, counted against the hosted budget before
+  identification, is counted again against this one once colibri is
+  identified, still before the snapshot (#527).
 - **Recorded.** Each compaction is an action in the trail's factual section
   (tool `compaction`, under the turn whose request was compacted, target
   `turns 1-k`, outcome the byte counts) and a `context:` line on the run's
