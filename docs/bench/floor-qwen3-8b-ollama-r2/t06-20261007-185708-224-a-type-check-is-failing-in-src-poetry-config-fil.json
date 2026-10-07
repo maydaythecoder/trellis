@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "run_id": "20261007-185708-224-a-type-check-is-failing-in-src-poetry-config-fil",
+  "task": "a type check is failing in src/poetry/config/file_config_source.py; fix it",
+  "base_commit": "5d47a7c3362a0de9484c9f3bb62d54d957805cff",
+  "started_at": "2026-10-07T18:57:08Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/config/file_config_source.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9766,
+      "peak_prompt_bytes": 12067,
+      "turns_measured": 8
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "blast_radius",
+        "target": "secure_typo",
+        "outcome": "error: no first-party definition matches `secure_typo`; only definitions inside the repository root are indexed",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "edit",
+        "target": "src/poetry/config/file_config_source.py",
+        "outcome": "edited src/poetry/config/file_config_source.py (applied: true, bytes 1392..1403)",
+        "wrote": true
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 5,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 6,
+        "tool": "blast_radius",
+        "target": "secure_type",
+        "outcome": "error: no first-party definition matches `secure_type`; only definitions inside the repository root are indexed",
+        "wrote": false
+      },
+      {
+        "turn": 7,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 8,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 11678,
+    "prompt_tokens": 29628
+  },
+  "factual_sha256": "284f6a297f81352d3a92f7e895eccb60d498ea37601867d0651b69bbc03350a2",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
