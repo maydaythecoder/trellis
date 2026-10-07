@@ -488,11 +488,50 @@ fn models_404() -> String {
     )
 }
 
+/// Reads one HTTP request from `s`, by its `Content-Length`: the whole of
+/// it as text, and its body.
+fn read_request(s: &mut std::net::TcpStream) -> (String, String) {
+    use std::io::Read;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .ok();
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 16384];
+    let body = loop {
+        let n = s.read(&mut buf).unwrap_or(0);
+        raw.extend_from_slice(&buf[..n]);
+        let text = String::from_utf8_lossy(&raw).to_string();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let len: usize = head
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length").then_some(v)
+                })
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if body.len() >= len || n == 0 {
+                break body.to_string();
+            }
+        } else if n == 0 {
+            break String::new();
+        }
+    };
+    (String::from_utf8_lossy(&raw).to_string(), body)
+}
+
 /// Serves `replies` in order as an OpenAI-protocol endpoint on a loopback
 /// port, returning each request body it received. A `GET` of `/models` is
 /// answered 404 and neither takes a reply nor is returned.
 fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
-    use std::io::Read;
+    provider_stub_with_headers(replies, "")
+}
+
+/// [`provider_stub`], with `headers` (each line ending `\r\n`) added to
+/// every reply's response head.
+fn provider_stub_with_headers(
+    replies: Vec<String>,
+    headers: &'static str,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     let h = std::thread::spawn(move || {
@@ -500,37 +539,14 @@ fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<S
         let mut replies = replies.into_iter().peekable();
         while let Some(r) = replies.peek() {
             let Ok((mut s, _)) = l.accept() else { break };
-            s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
-                .ok();
-            let mut raw = Vec::new();
-            let mut buf = [0u8; 16384];
-            let body = loop {
-                let n = s.read(&mut buf).unwrap_or(0);
-                raw.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&raw).to_string();
-                if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                    let len: usize = head
-                        .lines()
-                        .find_map(|l| {
-                            let (k, v) = l.split_once(':')?;
-                            k.eq_ignore_ascii_case("content-length").then_some(v)
-                        })
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
-                    if body.len() >= len || n == 0 {
-                        break body.to_string();
-                    }
-                } else if n == 0 {
-                    break String::new();
-                }
-            };
-            if is_models_get(&String::from_utf8_lossy(&raw)) {
+            let (raw, body) = read_request(&mut s);
+            if is_models_get(&raw) {
                 s.write_all(models_404().as_bytes()).ok();
                 continue;
             }
             got.push(body);
             let out = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\n\r\n{r}",
                 r.len()
             );
             s.write_all(out.as_bytes()).ok();
@@ -2366,6 +2382,13 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
             &turn["always"],
             &format!("turn {} ({})", t["turn"], t["call"]),
         ));
+        // No turn of this run is the governance audit: each called the
+        // model.
+        gaps.extend(missing(
+            t,
+            &turn["model_call_only"],
+            &format!("turn {} ({})", t["turn"], t["call"]),
+        ));
         if let Some(v) = t.get("verdict")
             && !v.as_str().is_some_and(|v| verdicts.contains(&v))
         {
@@ -2412,6 +2435,160 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     );
     // The run took the path the fixture is built for, so the turns above
     // are the ones meant.
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}");
+}
+
+#[test]
+fn rpc_turn_carries_queue_wait_from_the_reply_header() {
+    // The risk (#312): colibri's queue wait, read from a response header
+    // and not the body, is dropped between the adapter and the stream, so
+    // a client draws a queued turn as a slow model. The fields come from
+    // the contract's header category, so a field added there is held here.
+    let c = contract();
+    let header_only = &c["rpc"]["events"]["turn"]["response_header_only"];
+    let f = fixture("rpc-queue-wait");
+    let (base, server) = provider_stub_with_headers(
+        vec![
+            openai_call("c1", "read_file", serde_json::json!({"path": "a.py"})),
+            openai_call("c2", "done", serde_json::json!({"summary": "read it"})),
+        ],
+        "x-colibri-queue-wait-ms: 1500\r\n",
+    );
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_QUEUE_WAIT_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "read a.py",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 2, "{records:?}");
+
+    let turns: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    assert!(!turns.is_empty(), "no turn event: {records:?}");
+    let mut gaps: Vec<String> = Vec::new();
+    for t in &turns {
+        gaps.extend(missing(
+            t,
+            header_only,
+            &format!("turn {} ({})", t["turn"], t["call"]),
+        ));
+    }
+    assert!(
+        gaps.is_empty(),
+        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+    for t in &turns {
+        assert_eq!(t["queue_wait_ms"], 1500, "{t}");
+    }
+    // The run took the stub's path, so the turns above are its replies'.
+    assert!(
+        turns.iter().any(|t| t["call"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("read_file "))),
+        "{turns:?}"
+    );
+}
+
+#[test]
+fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
+    // The risk: the contract promises a field on every turn that one kind
+    // of turn never carries. The governance audit at convergence is a turn
+    // event the loop sends without calling the model (trellis-loop
+    // agent.rs), so a field from the model call listed as `always` is a
+    // promise a client watching a governed run sees broken. Every turn is
+    // held to `always`; the turns that called the model to the categories
+    // a provider run fills too.
+    let c = contract();
+    let turn = &c["rpc"]["events"]["turn"];
+    let f = fixture("rpc-governance-contract");
+    std::fs::create_dir_all(f.root.join(".trellis/governance")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/governance/no-vendor.toml"),
+        "name = \"Vendored code is not ours to edit\"\nrank = \"non-negotiable\"\n\
+         description = \"Changes go upstream.\"\ndeny-write = { paths = [\"vendor/\"] }\n",
+    )
+    .unwrap();
+    commit_passing_checks(&f);
+    let (base, server) = provider_stub(vec![
+        openai_call(
+            "c1",
+            "run_checks",
+            serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+        ),
+        openai_call("c2", "done", serde_json::json!({"summary": "checked it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_GOVERNANCE_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "check f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 2, "{records:?}");
+
+    let turns: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    let is_audit = |t: &Value| t["check_kind"] == "Governance";
+    assert!(
+        turns.iter().any(|t| is_audit(t)),
+        "the run reached no governance audit: {records:?}"
+    );
+    assert!(
+        turns.iter().any(|t| !is_audit(t)),
+        "no turn called the model: {records:?}"
+    );
+    let label = |t: &Value| format!("turn {} ({}, {})", t["turn"], t["call"], t["check_kind"]);
+    let gaps: Vec<String> = turns
+        .iter()
+        .flat_map(|t| missing(t, &turn["always"], &label(t)))
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "a turn lacks what tests/client_contract.json lists as always present: {gaps:?}\n{records:?}"
+    );
+    let gaps: Vec<String> = turns
+        .iter()
+        .filter(|t| !is_audit(t))
+        .flat_map(|t| {
+            let mut g = missing(t, &turn["model_call_only"], &label(t));
+            g.extend(missing(t, &turn["prompt_driver_only"], &label(t)));
+            g
+        })
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "a turn that called the model lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
     let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
     assert_eq!(end["outcome"], "converged", "{end}");
 }
@@ -2468,8 +2645,15 @@ fn classify_against_stub(
     name: &str,
     replies: Vec<String>,
 ) -> (Fixture, Rpc, std::thread::JoinHandle<Vec<String>>) {
-    let f = fixture(name);
     let (base, server) = provider_stub(replies);
+    let (f, rpc) = rpc_on_stub(name, &base);
+    (f, rpc, server)
+}
+
+/// A `trellis rpc` whose model, chosen with `set_model`, is the
+/// OpenAI-protocol endpoint at `base`.
+fn rpc_on_stub(name: &str, base: &str) -> (Fixture, Rpc) {
+    let f = fixture(name);
     // A variable nobody sets: a loopback endpoint is then used with no key.
     let key_env = "TRELLIS_TEST_RPC_CLASSIFY_KEY";
     std::fs::write(
@@ -2486,7 +2670,84 @@ fn classify_against_stub(
     rpc.send(serde_json::json!({"id": "m", "type": "set_model", "model": "provider:stub#m"}));
     let m = rpc.next(|v| v["id"] == "m");
     assert_eq!(m["success"], true, "{m}");
-    (f, rpc, server)
+    (f, rpc)
+}
+
+/// How a request [`holding_stub`] held open ended.
+#[derive(Debug, PartialEq)]
+enum Held {
+    /// The client closed the connection.
+    Closed,
+    /// The test sent a reply, and it was written.
+    Released,
+    /// Neither, within 60 s.
+    TimedOut,
+}
+
+/// An OpenAI-protocol endpoint on a loopback port that answers `/models`
+/// 404 and holds the first other request open: `arrived` gets the request's
+/// body when it has been read, and the request ends when the client closes
+/// it or a reply is sent on `release`. As a model does that is slow to
+/// answer, up to `[model] timeout_s`.
+struct HoldingStub {
+    base: String,
+    arrived: std::sync::mpsc::Receiver<String>,
+    release: std::sync::mpsc::Sender<String>,
+    thread: std::thread::JoinHandle<Held>,
+}
+
+fn holding_stub() -> HoldingStub {
+    use std::io::Read;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let (arrived_tx, arrived) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel::<String>();
+    let thread = std::thread::spawn(move || {
+        let mut s = loop {
+            let Ok((mut s, _)) = l.accept() else {
+                return Held::TimedOut;
+            };
+            let (raw, body) = read_request(&mut s);
+            if is_models_get(&raw) {
+                s.write_all(models_404().as_bytes()).ok();
+                continue;
+            }
+            arrived_tx.send(body).ok();
+            break s;
+        };
+        s.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .ok();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut buf = [0u8; 1024];
+        while std::time::Instant::now() < until {
+            if let Ok(r) = release_rx.try_recv() {
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                    r.len()
+                );
+                s.write_all(out.as_bytes()).ok();
+                return Held::Released;
+            }
+            match s.read(&mut buf) {
+                Ok(0) => return Held::Closed,
+                Ok(_) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                // A reset is the client closing too.
+                Err(_) => return Held::Closed,
+            }
+        }
+        Held::TimedOut
+    });
+    HoldingStub {
+        base,
+        arrived,
+        release,
+        thread,
+    }
 }
 
 /// No run started: no framing of one, no trail directory, a clean worktree.
@@ -2578,6 +2839,92 @@ fn rpc_classify_is_refused_while_a_run_is_in_flight() {
     let records = rpc.finish();
     let starts = records.iter().filter(|r| r["type"] == "run_start").count();
     assert_eq!(starts, 1, "only the first prompt ran: {records:?}");
+}
+
+#[test]
+fn rpc_classify_quit_while_the_model_is_slow_exits_and_drops_the_request() {
+    // The risk (#518): a classify asked on the reader thread leaves `quit`
+    // unread until the model answers, up to `[model] timeout_s` (300 s by
+    // default), and a client that sends `quit` and never kills (ADR 0048
+    // §2) freezes for that long. `quit` must end the process promptly,
+    // close the model request, and write no answer to it.
+    let stub = holding_stub();
+    let (_f, mut rpc) = rpc_on_stub("rpc-classify-quit", &stub.base);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "what is f?"}));
+    stub.arrived
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the classify request reached the model");
+    let asked = std::time::Instant::now();
+    rpc.send(serde_json::json!({"id": "q", "type": "quit"}));
+    let exited = loop {
+        if let Some(status) = rpc.child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if asked.elapsed() > std::time::Duration::from_secs(5) {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let Some(status) = exited else {
+        // By its handle, so the test does not leave it holding the stub.
+        rpc.child.kill().ok();
+        rpc.child.wait().ok();
+        panic!("`quit` did not end the process within 5 s of being sent");
+    };
+    assert!(status.success(), "{status}");
+    rpc.reader.join().unwrap();
+    let records: Vec<Value> = rpc.seen.into_iter().chain(rpc.rx.try_iter()).collect();
+    let q = records
+        .iter()
+        .find(|r| r["id"] == "q")
+        .expect("quit answered");
+    assert_eq!(q["success"], true, "{q}");
+    assert!(
+        !records.iter().any(|r| r["id"] == "c"),
+        "the dropped classify was answered: {records:?}"
+    );
+    assert_eq!(stub.thread.join().unwrap(), Held::Closed);
+}
+
+#[test]
+fn rpc_classify_refuses_prompt_steer_and_classify_while_one_is_pending() {
+    // The risk (#518): off the reader thread, a classify no longer holds
+    // every other command back, so a `prompt` read meanwhile could start a
+    // run, or a second classify a second model request, racing it. Each is
+    // refused as during an in-flight run, in its words, while the server
+    // still answers what touches no model (`get_state`).
+    let stub = holding_stub();
+    let (f, mut rpc) = rpc_on_stub("rpc-classify-pending", &stub.base);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "what is f?"}));
+    stub.arrived
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the classify request reached the model");
+    rpc.send(serde_json::json!({"id": "s", "type": "get_state"}));
+    let s = rpc.next(|v| v["type"] == "response" && v["id"] == "s");
+    assert_eq!(s["success"], true, "{s}");
+    let busy = [
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}),
+        serde_json::json!({"id": "st", "type": "steer", "message": "stop"}),
+        serde_json::json!({"id": "c2", "type": "classify", "text": "hello"}),
+    ];
+    for cmd in busy {
+        let id = cmd["id"].as_str().unwrap().to_string();
+        rpc.send(cmd);
+        let r = rpc.next(|v| v["type"] == "response" && v["id"] == id.as_str());
+        assert_eq!(r["success"], false, "{r}");
+        assert_eq!(
+            r["error"], "a run is in progress; one at a time (abort it, or wait)",
+            "{r}"
+        );
+    }
+    stub.release.send(openai_text("f returns 1")).unwrap();
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["success"], true, "{c}");
+    assert_eq!(c["data"]["intent"], "question", "{c}");
+    assert_eq!(c["data"]["answer"], "f returns 1", "{c}");
+    let records = rpc.finish();
+    nothing_ran(&f, &records);
+    assert_eq!(stub.thread.join().unwrap(), Held::Released);
 }
 
 #[test]
@@ -2804,7 +3151,7 @@ fn rpc_get_state_tier_after_a_hosted_run_is_tier_1_from_the_protocol() {
     rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
     rpc.wait_idle();
     let after = state(&mut rpc, "s");
-    assert_eq!(after["tier"], "tier 1, native tool calls", "{after}");
+    assert_eq!(after["tier"], "1, native tool calls", "{after}");
     rpc.finish();
     assert_eq!(server.join().unwrap().len(), 1);
 }
@@ -2891,7 +3238,7 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     rpc.wait_idle();
     let after = state(&mut rpc, "s");
     assert_eq!(
-        after["tier"], "tier 1 unavailable: colibri glm-5.2 refuses tools",
+        after["tier"], "1, unavailable: colibri glm-5.2 refuses tools",
         "{after}"
     );
     rpc.finish();

@@ -572,6 +572,17 @@ impl Running {
     }
 }
 
+/// A `classify` being asked, on its own thread (#518).
+struct Classifying {
+    thread: std::thread::JoinHandle<()>,
+    /// Set by the thread once the model has answered, before it writes the
+    /// response, so a command read after that response is not refused while
+    /// the thread finishes the write.
+    answered: Arc<AtomicBool>,
+    /// Sent by `quit`: the request is dropped and nothing is written.
+    cancel: tokio::sync::oneshot::Sender<()>,
+}
+
 struct Server {
     root: PathBuf,
     sink: Sink,
@@ -579,6 +590,9 @@ struct Server {
     /// Set by `set_model`; falls back to `[model] spec`.
     model: Option<String>,
     running: Option<Running>,
+    /// Holds the slot a run holds while it is pending: no run starts, and
+    /// no second model request is made, until it is answered or dropped.
+    classifying: Option<Classifying>,
     last: Arc<Mutex<Option<Value>>>,
     ran: Ran,
     /// One slot for every run: a run writes it only when it ended on
@@ -617,6 +631,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         mode,
         model: None,
         running: None,
+        classifying: None,
         last: Arc::default(),
         ran: Arc::default(),
         done: output::DoneSlot::default(),
@@ -678,6 +693,10 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
     }
     if let Some(r) = s.running.take() {
         let _ = r.thread.join();
+    }
+    // Answered, as a run is finished: `cancel` lives until after the join.
+    if let Some(c) = s.classifying.take() {
+        let _ = c.thread.join();
     }
     s.join_waiters();
     match broke {
@@ -882,6 +901,12 @@ impl Server {
     /// `success: false`. A follow-up is answered at once: accepted, as a
     /// `prompt` is, and its own run's `run_start` and `run_end` carry its id.
     fn steer(&mut self, cmd: &Value, id: Option<&str>, kind: &str) {
+        // A steer is user text for a model request, and a pending classify
+        // holds the slot one would go to: refused as a `prompt` is (#518).
+        if kind == "steer" && self.classify_pending() {
+            self.respond(id, kind, Err(ONE_AT_A_TIME.into()));
+            return;
+        }
         if !self.in_flight() {
             self.respond(id, kind, Err("no run in flight".into()));
             return;
@@ -972,6 +997,31 @@ impl Server {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// Whether a `classify` is waiting on its model. Once it has its answer
+    /// it is not: the thread has only the response to write, and is joined.
+    fn classify_pending(&mut self) -> bool {
+        match &self.classifying {
+            None => false,
+            Some(c) if !c.thread.is_finished() && !c.answered.load(Ordering::SeqCst) => true,
+            Some(_) => {
+                if let Some(c) = self.classifying.take() {
+                    let _ = c.thread.join();
+                }
+                false
+            }
+        }
+    }
+
+    /// The one gate a `prompt` and a `classify` pass: refused while a run
+    /// is in flight (after #495's wait past `run_end`) or a classify is
+    /// pending, so one model user holds the slot at a time.
+    fn one_at_a_time(&mut self) -> Result<(), String> {
+        if self.classify_pending() || (self.in_flight() && !self.free_after_run_end()) {
+            return Err(ONE_AT_A_TIME.into());
+        }
+        Ok(())
     }
 
     fn in_flight(&mut self) -> bool {
@@ -1091,6 +1141,14 @@ impl Server {
                 self.respond(id, kind, listed.map_err(|e| format!("{e:#}")));
             }
             "quit" => {
+                // Dropped, not waited for: the model may take `[model]
+                // timeout_s` to answer, and a client that sends `quit` does
+                // not kill (ADR 0048 §2). The join is the thread leaving its
+                // `select`; it writes nothing.
+                if let Some(c) = self.classifying.take() {
+                    let _ = c.cancel.send(());
+                    let _ = c.thread.join();
+                }
                 self.abort_run();
                 if let Some(r) = self.running.take() {
                     let _ = r.thread.join();
@@ -1109,8 +1167,9 @@ impl Server {
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
             "classify" => {
-                let r = self.classify(cmd);
-                self.respond(id, kind, r);
+                if let Err(e) = self.classify(cmd, id) {
+                    self.respond(id, kind, Err(e));
+                }
             }
             other => self.respond(
                 id,
@@ -1169,18 +1228,23 @@ impl Server {
     /// when `set_model` named it, so a key goes only where `prompt` would
     /// send it (ADR 0024 §3; `ask::classify` resolves through `hosted`).
     ///
-    /// Refused while a run is in flight, by `prompt`'s test and in its words:
-    /// an answer then could be read as one about the run. Answered on this
-    /// thread rather than a waiter's, so no `prompt` can start a run while
-    /// it is asked; the request is bounded by `[model] timeout_s`. `text` is
-    /// the client's and goes to the model as data; the answer is model text
-    /// and goes back as a JSON string through `frame`, never as a record.
-    fn classify(&mut self, cmd: &Value) -> Result<Value, String> {
-        if self.in_flight() && !self.free_after_run_end() {
-            return Err(ONE_AT_A_TIME.into());
-        }
+    /// Refused while a run is in flight, by `prompt`'s gate and in its words:
+    /// an answer then could be read as one about the run. Asked on its own
+    /// thread (#518), so the reader still reads `quit`; while it is pending
+    /// it holds that same gate, so no `prompt`, `steer` or second `classify`
+    /// can put a model request beside it. `quit` drops it unanswered; end of
+    /// input waits for its answer. The request is bounded by `[model]
+    /// timeout_s`. `text` is the client's and goes to the model as data; the
+    /// answer is model text and goes back as a JSON string through `frame`,
+    /// never as a record.
+    ///
+    /// Everything cheap is checked here, as `prompt` checks it, and an
+    /// error is returned for the caller to answer; once the thread starts,
+    /// it answers.
+    fn classify(&mut self, cmd: &Value, id: Option<&str>) -> Result<(), String> {
+        self.one_at_a_time()?;
         let text = match cmd.get("text").and_then(Value::as_str) {
-            Some(t) if !t.trim().is_empty() => t,
+            Some(t) if !t.trim().is_empty() => t.to_string(),
             _ => {
                 return Err(
                     "classify needs {\"text\": \"<text>\"}, a string and not an empty one".into(),
@@ -1194,24 +1258,49 @@ impl Server {
         // With `?`, as the TUI loads it: a default in its place would refuse
         // the user's own provider as the repository's choice.
         let cfg = config::RepoConfig::load(&self.root).map_err(|e| format!("{e:#}"))?;
-        let files = trellis_index::discover_relative(&self.root);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("starting the runtime to ask the model: {e}"))?;
-        match rt.block_on(crate::ask::classify(
-            &spec,
-            text,
-            &files,
-            &cfg,
-            model_from_user,
-        )) {
-            Ok(crate::ask::Intent::Answer(answer)) => {
-                Ok(json!({"intent": "question", "answer": answer}))
-            }
-            Ok(crate::ask::Intent::Task) => Ok(json!({"intent": "task"})),
-            Err(e) => Err(format!("{e:#}")),
-        }
+        let answered = Arc::new(AtomicBool::new(false));
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        let done = answered.clone();
+        let thread = std::thread::spawn(move || {
+            let files = trellis_index::discover_relative(&root);
+            let asked = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("starting the runtime to ask the model: {e}"))
+                .map(|rt| {
+                    let ask = crate::ask::classify(&spec, &text, &files, &cfg, model_from_user);
+                    let asked = rt.block_on(async {
+                        tokio::select! {
+                            r = ask => Some(r),
+                            // `quit`; or the sender dropped, which only
+                            // follows a join, so never while it is asked.
+                            _ = cancelled => None,
+                        }
+                    });
+                    // Nothing the dropped request left behind is waited on.
+                    rt.shutdown_background();
+                    asked
+                });
+            let result = match asked {
+                // Dropped by `quit`: no answer, whole or partial, is written.
+                Ok(None) => return,
+                Ok(Some(Ok(crate::ask::Intent::Answer(answer)))) => {
+                    Ok(json!({"intent": "question", "answer": answer}))
+                }
+                Ok(Some(Ok(crate::ask::Intent::Task))) => Ok(json!({"intent": "task"})),
+                Ok(Some(Err(e))) => Err(format!("{e:#}")),
+                Err(e) => Err(e),
+            };
+            done.store(true, Ordering::SeqCst);
+            respond_on(&sink, id.as_deref(), "classify", result);
+        });
+        self.classifying = Some(Classifying {
+            thread,
+            answered,
+            cancel,
+        });
+        Ok(())
     }
 
     fn approve(&self, cmd: &Value, id: Option<&str>) -> Result<Value, String> {
@@ -1233,9 +1322,7 @@ impl Server {
     /// here, so a bad request is refused rather than accepted and failed; the
     /// worktree is `cmd_run`'s to check, and its refusal arrives as `run_end`.
     fn prompt(&mut self, cmd: &Value, id: Option<&str>) -> Result<(), String> {
-        if self.in_flight() && !self.free_after_run_end() {
-            return Err(ONE_AT_A_TIME.into());
-        }
+        self.one_at_a_time()?;
         let text = |k: &str| cmd.get(k).and_then(Value::as_str).map(str::to_string);
         let task = text("task").unwrap_or_default();
         let task = match text("prompt") {
@@ -1849,6 +1936,7 @@ mod tests {
             mode: Mode::Quiet,
             model: None,
             running: None,
+            classifying: None,
             last: Arc::default(),
             ran: Arc::default(),
             done: output::DoneSlot::default(),
