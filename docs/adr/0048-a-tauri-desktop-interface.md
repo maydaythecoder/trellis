@@ -114,6 +114,11 @@ The root `deny.toml` is unchanged.
 The TUI stays the product interface under Q-19 (#16). The desktop shows what
 trellis reports and computes no verdict (ADR 0004). It shows radius as three
 counts, never a ratio (CLAUDE.md rule 3).
+*2026-10-07 (#515), amended by ADR 0052, accepted 2026-10-07:* the product
+interface under Q-19 is the Go TUI (`tui/`) once it reaches parity and the
+launch handoff ships (T8, #514), with the ratatui TUI as the fallback for one
+release. Until then the ratatui TUI stays the product interface. The desktop
+rules in this section are unchanged.
 
 ### 9. A desktop that exits mid-run
 

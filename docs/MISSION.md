@@ -55,6 +55,11 @@ Any language but Python. Repos without a test suite. Cross-repo analysis. Any
 surface beyond the CLI. Any networked component. Multi-user anything. Running
 while the machine is asleep.
 
+*2026-10-07 (#515), "Any surface beyond the CLI" amended by ADR 0052:* the
+Tauri desktop and the Go TUI, both clients of `trellis rpc`, are goal 8 (v1.x)
+and no longer non-goals. A web surface and any networked component remain
+non-goals.
+
 ## Positioning
 
 ### The index is not a moat, and this document will not pretend otherwise
