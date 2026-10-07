@@ -190,6 +190,12 @@ The adapter's prompt opens with a role sentence, then a protocol:
   by `log_json_carries_every_trail_field_the_desktop_reads` in
   `tests/modes.rs`, through the binary, which names each always-present
   path the line does not carry.
+- *Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+  2026-10-07): `overview` joins the `--json` commands, which are now `run`,
+  `work`, `log` and `overview`. `trellis [--root <repo>] --json overview`
+  prints one JSON object, with C1 controls escaped as `log --json` escapes
+  them, and runs with or without a repository (ADR 0050 section 3, amended).
+  Accepted, not built (#558).*
 
 ### 5. `trellis rpc`
 
@@ -759,6 +765,19 @@ on stderr.
   `rpc_stream_carries_every_field_the_desktop_reads`,
   `rpc_turn_carries_queue_wait_from_the_reply_header` and
   `rpc_every_turn_through_the_governance_audit_keeps_the_contract`.*
+- *Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+  2026-10-07): the desktop's four read-only views (ADR 0048 §10, amended)
+  read these sources. Graph: `get_codebase` with `path`. Run: the stream's
+  frames, `get_state` (its `tier`) and the last trail. Cross-repo: the
+  `overview`'s `recent` (§4, amended). Board: `get_queue` with `blockers`
+  and `parent`, and PR and CI state read live from the user's own `gh` CLI
+  when it is installed and logged in (owner, 2026-10-07); trellis still
+  opens no socket itself: `gh` is a child process started through
+  `secrets::scrub` like every other, read-only (`gh pr list`, `gh run
+  list`), with a bounded wait, and when `gh` is absent or not logged in the
+  board says so. `get_codebase` and `get_radius` refuse a root with no
+  `.git` entry. Accepted, not built (#559 for `path`, `blockers`, `parent`
+  and the refusal; #558 for `recent` and the `gh` state).*
 
 ### 6. Session additions
 

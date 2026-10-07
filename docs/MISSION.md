@@ -60,6 +60,11 @@ Tauri desktop and the Go TUI, both clients of `trellis rpc`, are goal 8 (v1.x)
 and no longer non-goals. A web surface and any networked component remain
 non-goals.
 
+*2026-10-07 (#557), "Cross-repo analysis" read by the owner's decision of
+2026-10-07:* the non-goal does not cover listing recent repositories with
+each one's last outcome, which `trellis overview` and the desktop show as a
+launcher list (ADR 0021 rows 44–47). Accepted, not built (#558).
+
 ## Positioning
 
 ### The index is not a moat, and this document will not pretend otherwise
