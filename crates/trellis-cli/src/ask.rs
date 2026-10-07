@@ -17,6 +17,7 @@
 
 use crate::config::RepoConfig;
 use anyhow::{Context, Result};
+use trellis_model::colibri::{self, Identity};
 use trellis_model::{Conversation, HostedClient, ModelSpec, RuntimeClient};
 
 /// The marker the model returns instead of an answer when the input is work.
@@ -258,7 +259,15 @@ pub(crate) async fn classify(
 /// Resolved exactly as a run resolves the spec, so the refusal of a
 /// repository-chosen endpoint happens here as well, before any request
 /// (ADR 0024 §3). The key is read from the user's environment inside
-/// `HostedClient::new`, as for a run, and this function never holds it.
+/// `HostedClient::new`, as for a run, and for the identification read by
+/// `hosted::colibri_key` under the same rule; this function holds it only
+/// for that read.
+///
+/// A loopback endpoint is first asked whether it is colibri (ADR 0047
+/// decision 3), and one identified as colibri is sent its request profile
+/// (decision 5). Anything else that read returns, a failure included, sends
+/// the classification as it was sent before: the call's own failure, if
+/// there is one, is the one reported.
 async fn ask_hosted(
     spec: &ModelSpec,
     prompt: &str,
@@ -277,6 +286,12 @@ async fn ask_hosted(
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .context(BUILDING_CLIENT)?
         .with_timeout(cfg.model_timeout());
+    // Remote bases are not read (`NotLoopback`).
+    let identified = matches!(
+        colibri::identify(&r.base, crate::hosted::colibri_key(&r).as_ref()).await,
+        Ok(Identity::Identified { .. })
+    );
+    let client = client.with_colibri_profile(identified);
     let reply = client
         .send(&text_only_body(&client, prompt))
         .await
