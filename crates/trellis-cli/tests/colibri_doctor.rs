@@ -624,6 +624,7 @@ fn doctor_tier_lines_on_colibri_begin_with_a_head_the_status_bar_contract_docume
             assert_eq!(head, want, "{kind}: {t:?}");
         }
     }
+}
 
 /// The `context:` line about the model's window, not the one about the
 /// repository's context files, which doctor prints under the same label.
