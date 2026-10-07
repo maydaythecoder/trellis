@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "run_id": "20261007-192519-835-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/cache/list.py; fix it",
+  "base_commit": "ae8d0986fe0bba1e2f5d2aaf514edd8a946824bd",
+  "started_at": "2026-10-07T19:25:19Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9768,
+      "peak_prompt_bytes": 10581,
+      "turns_measured": 4
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/cache/list.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "blast_radius",
+        "target": "list",
+        "outcome": "error: `list` matches 2 definitions; qualify it further",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "blast_radius",
+        "target": "list",
+        "outcome": "error: `list` matches 2 definitions; qualify it further",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "blast_radius",
+        "target": "list",
+        "outcome": "error: `list` matches 2 definitions; qualify it further",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 3624,
+    "prompt_tokens": 11060
+  },
+  "factual_sha256": "182ade4274bdd7b9c2f9229fb1a55295510299cfd2a697f5ade65b7a87f34078",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
