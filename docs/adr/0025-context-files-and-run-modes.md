@@ -257,7 +257,16 @@ on stderr.
   so a client learns whether the id was live.
 - **One run at a time.** A `prompt` while a run is in flight is refused.
   `success: true` on `prompt` means the run was accepted, not that it
-  finished; `run_end` says how it finished.
+  finished; `run_end` says how it finished. *Amended 2026-10-06 (#495): a
+  `prompt` sent once `run_end` has been read is accepted when no follow-up
+  is queued. `run_end` is written from the run's thread, which still has
+  its cleanup to do; a `prompt` read after it waits for that thread to
+  finish and is then started, so it is never refused as in progress and
+  two runs never overlap. When a follow-up is queued, the follow-up starts
+  first and the `prompt` is refused as before. Evidence:
+  `rpc_a_prompt_right_after_run_end_is_accepted_and_runs` in
+  `tests/modes.rs`, which holds the cleanup open through a debug-build
+  test seam and failed before (refused, "a run is in progress").*
 - **Approve mode works.** The run gets `Human::Channel`. Each gated call is
   sent as `{"type":"approval_request","id":"approval-N","question","detail"}`,
   and only `"yes": true` approves (ADR 0018, only an explicit yes counts).
