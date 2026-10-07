@@ -254,9 +254,12 @@ fn colibri_runtime(base: &str, spec_model: &str, served: &str) -> String {
 /// large its window is and the user is the one who knows its `--ctx`.
 fn colibri_context_line(budget: usize) -> String {
     let source = if budget == hosted::COLIBRI_CONTEXT_BYTES {
-        "25,088 bytes, which fits a window of 8,192 tokens with 1,024 left for the reply \
-         at 3.5 bytes per token"
-            .to_string()
+        format!(
+            "{},{:03} bytes, which fits a window of 8,192 tokens with 1,024 left for the reply \
+             at 3.5 bytes per token",
+            budget / 1000,
+            budget % 1000
+        )
     } else {
         format!("{budget} bytes, from [model] context_bytes or the model's input_bytes")
     };
