@@ -39,6 +39,11 @@
         "always": ["type", "id", "question", "detail"],
         "optional": {}
       }
+    },
+    "responses": {
+      "list_paths": {
+        "always": ["paths"]
+      }
     }
   },
   "log_json": {
