@@ -9,8 +9,10 @@ in section 2 recorded on #500. The plan came from a research-and-design pass
 over ADR 0048, ADR 0050, ADR 0025, ADR 0021, `desktop/`, `crates/tui-demo`,
 `tui_bridge.rs`, `tui_run.rs`, `ci.yml`, `release.yml` and the gates.
 **Holds:** CLAUDE.md's ten rules unchanged; the Rust core is the only engine;
-ADR 0025 §5 is the only way a client drives trellis; ADR 0048 sections 1 and
-3 to 10 apply to both clients unchanged.
+ADR 0025 §5 is the only way a client drives trellis; ADR 0048 sections 3, 4,
+6, 8, 9 and 10 apply to both clients unchanged, and its sections 1, 5 and 7
+stay the desktop's (`tui/` has its own counterparts in sections 3 and 5
+below).
 **Amends (each pending acceptance):** ADR 0048 (its Context list and section
 5: the Go toolchain is an accepted cost and Node is still refused; section 2:
 a client may show stderr in a capped pane); ADR 0021 row 11; ADR 0050
@@ -168,7 +170,8 @@ Go.** Two copies of the question-or-task rule would drift.
 ## What would reverse it
 
 - The owner declines it on #500: it stays unaccepted, nothing is built on it,
-  and the three amendment lines it added are struck.
+  and the amendment lines it added to ADR 0048, ADR 0021 and ADR 0050 are
+  struck.
 - The Go TUI does not reach parity: the handoff (decision 2.2) does not ship,
   `tui/` is deleted, and ratatui stays the product interface.
 - A Charm-set vulnerability or licence finding with no fixed release: the
