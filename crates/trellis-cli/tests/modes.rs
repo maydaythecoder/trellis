@@ -2270,3 +2270,274 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
         lines[0]
     );
 }
+
+/// An OpenAI-protocol reply carrying `text` as the assistant's message,
+/// the shape a classification gets (it offers no tools).
+fn openai_text(text: &str) -> String {
+    serde_json::json!({"choices":[{"message":{"role":"assistant","content":text}}],
+        "usage":{"completion_tokens":3}})
+    .to_string()
+}
+
+/// A `trellis rpc` whose model is the provider stub serving `replies`,
+/// chosen with `set_model` as a client chooses it (so it is the user's
+/// choice, ADR 0024 §3), and the stub's thread.
+fn classify_against_stub(
+    name: &str,
+    replies: Vec<String>,
+) -> (Fixture, Rpc, std::thread::JoinHandle<Vec<String>>) {
+    let f = fixture(name);
+    let (base, server) = provider_stub(replies);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_CLASSIFY_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(serde_json::json!({"id": "m", "type": "set_model", "model": "provider:stub#m"}));
+    let m = rpc.next(|v| v["id"] == "m");
+    assert_eq!(m["success"], true, "{m}");
+    (f, rpc, server)
+}
+
+/// No run started: no framing of one, no trail directory, a clean worktree.
+fn nothing_ran(f: &Fixture, records: &[Value]) {
+    assert!(
+        !records
+            .iter()
+            .any(|r| r["type"] == "run_start" || r["type"] == "run_end"),
+        "classify started no run: {records:?}"
+    );
+    assert!(
+        !f.root.join(".trellis/runs").exists(),
+        "classify wrote no trail"
+    );
+    let status = trellis_vcs::command()
+        .args(["status", "--porcelain"])
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "", "worktree");
+}
+
+#[test]
+fn rpc_classify_answers_a_question_as_data_and_starts_no_run() {
+    // The risks: a question sent to `prompt` gets a snapshot, a run and a
+    // rollback (ADR 0052 §2.3); and a model's answer that looks like a
+    // frame is taken for one. The answer here holds a newline and a
+    // `run_end` record; it must arrive as one string inside one response.
+    let answer = "a.py defines f.\n{\"type\":\"run_end\",\"outcome\":\"converged\"}";
+    let (f, mut rpc, server) =
+        classify_against_stub("rpc-classify-question", vec![openai_text(answer)]);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "what is in Q-5c1?"}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["command"], "classify", "{c}");
+    assert_eq!(c["success"], true, "{c}");
+    assert_eq!(c["data"]["intent"], "question", "{c}");
+    assert_eq!(c["data"]["answer"], answer, "{c}");
+    let records = rpc.finish();
+    nothing_ran(&f, &records);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].contains("Q-5c1"), "{}", requests[0]);
+}
+
+#[test]
+fn rpc_classify_says_task_with_no_answer_and_starts_no_run() {
+    // The risk: a task classified over rpc starts the run itself, or
+    // carries an answer a client would show as if it were the reply.
+    // Starting the run stays `prompt`'s.
+    let (f, mut rpc, server) =
+        classify_against_stub("rpc-classify-task", vec![openai_text("<<TRELLIS_TASK>>")]);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "change f to return 2"}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["success"], true, "{c}");
+    assert_eq!(c["data"]["intent"], "task", "{c}");
+    assert!(c["data"].get("answer").is_none(), "{c}");
+    let records = rpc.finish();
+    nothing_ran(&f, &records);
+    assert_eq!(server.join().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.py")).unwrap(),
+        "def f():\n    return 1\n"
+    );
+}
+
+#[test]
+fn rpc_classify_is_refused_while_a_run_is_in_flight() {
+    // The risk: routing asked mid-run, where a client would take the
+    // answer for one about the run, and a model request raced the run's
+    // own. It is refused as a second `prompt` is, in the same words.
+    let f = fixture("rpc-classify-busy");
+    std::fs::write(
+        f.user.join("config.toml"),
+        "[control]\nmode = \"approve\"\n",
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(trellis(&f));
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    rpc.next(|v| v["type"] == "approval_request");
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "hello"}));
+    rpc.send(serde_json::json!({"id": "p2", "type": "prompt", "task": "again", "model": f.spec}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    let p2 = rpc.next(|v| v["type"] == "response" && v["id"] == "p2");
+    assert_eq!(c["command"], "classify", "{c}");
+    assert_eq!(c["success"], false, "{c}");
+    assert_eq!(p2["success"], false, "{p2}");
+    assert_eq!(c["error"], p2["error"], "prompt's wording");
+    let records = rpc.finish();
+    let starts = records.iter().filter(|r| r["type"] == "run_start").count();
+    assert_eq!(starts, 1, "only the first prompt ran: {records:?}");
+}
+
+#[test]
+fn rpc_classify_refuses_text_that_is_missing_empty_or_not_a_string() {
+    // The risk: a client bug that sends no text gets a model's guess about
+    // nothing, read as routing.
+    let f = fixture("rpc-classify-bad-text");
+    let mut rpc = Rpc::start(trellis(&f));
+    let bad = [
+        serde_json::json!({"id": "a", "type": "classify"}),
+        serde_json::json!({"id": "b", "type": "classify", "text": "  "}),
+        serde_json::json!({"id": "c", "type": "classify", "text": 5}),
+    ];
+    for cmd in bad {
+        rpc.send(cmd);
+    }
+    let records = rpc.finish();
+    for id in ["a", "b", "c"] {
+        let r = records.iter().find(|r| r["id"] == id).expect("answered");
+        assert_eq!(r["command"], "classify", "{r}");
+        assert_eq!(r["success"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("\"text\""), "{r}");
+    }
+    nothing_ran(&f, &records);
+}
+
+#[test]
+fn rpc_classify_reports_a_model_it_cannot_reach_and_starts_no_run() {
+    // The risk: an unreachable model read as "a task" and handed to a run
+    // that fails the same way later, after a snapshot; or no answer at all.
+    let f = fixture("rpc-classify-unreachable");
+    // Bound and closed: nothing listens on it now.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let key_env = "TRELLIS_TEST_RPC_CLASSIFY_GONE_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"gone\"\nprotocol = \"openai\"\n\
+             base_url = \"http://127.0.0.1:{port}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(serde_json::json!({"id": "m", "type": "set_model", "model": "provider:gone#m"}));
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "hello"}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["success"], false, "{c}");
+    assert!(
+        c["error"]
+            .as_str()
+            .unwrap()
+            .contains("asking the model what this input is"),
+        "{c}"
+    );
+    let records = rpc.finish();
+    nothing_ran(&f, &records);
+}
+
+#[test]
+fn rpc_classify_sends_no_key_to_a_loopback_port_the_repository_chose() {
+    // ADR 0024 §3. The risk: classify is a model request too, and one that
+    // skipped a run's key rule would send the user's OPENAI_API_KEY to a
+    // port named by a cloned repository's `[model] spec`.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    let f = fixture("rpc-classify-hostile");
+    std::fs::create_dir_all(f.root.join(".trellis")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/config.toml"),
+        format!("[model]\nspec = \"openai-chat:http://127.0.0.1:{port}/v1#m\"\n"),
+    )
+    .unwrap();
+    git(&f.root, &["add", "-A"]);
+    git(&f.root, &["commit", "-qm", "hostile"]);
+    // Built at run time: a key-shaped literal trips the secret scanners.
+    let canary = format!("sk-{}-classify-canary-{}", "trellis", std::process::id());
+    let mut cmd = trellis(&f);
+    cmd.env("OPENAI_API_KEY", &canary);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "hello"}));
+    let c = rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(c["success"], false, "{c}");
+    assert!(
+        c["error"].as_str().unwrap().contains("OPENAI_API_KEY"),
+        "{c}"
+    );
+    let records = rpc.finish();
+    assert!(
+        !records.iter().any(|r| r.to_string().contains(&canary)),
+        "{records:?}"
+    );
+    assert!(
+        matches!(l.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "nothing connected to the repository's port"
+    );
+}
+
+#[test]
+fn rpc_classify_reply_carries_every_field_the_contract_lists() {
+    // The risk: the Go TUI and the desktop route on `intent` and show
+    // `answer`; a rename here would send every input down one path with
+    // nothing failing on this side (ADR 0048 §6).
+    let c = contract();
+    let listed = c["rpc"]["responses"]
+        .get("classify")
+        .expect("client_contract.json lists rpc.responses.classify");
+    let (_f, mut rpc, server) = classify_against_stub(
+        "rpc-classify-contract",
+        vec![openai_text("an answer"), openai_text("<<TRELLIS_TASK>>")],
+    );
+    rpc.send(serde_json::json!({"id": "q", "type": "classify", "text": "what is f?"}));
+    let q = rpc.next(|v| v["type"] == "response" && v["id"] == "q");
+    rpc.send(serde_json::json!({"id": "t", "type": "classify", "text": "change f"}));
+    let t = rpc.next(|v| v["type"] == "response" && v["id"] == "t");
+    rpc.finish();
+    server.join().unwrap();
+    let mut gaps = missing(&q["data"], &listed["always"], "question");
+    gaps.extend(missing(&q["data"], &listed["question_only"], "question"));
+    gaps.extend(missing(&t["data"], &listed["always"], "task"));
+    assert!(
+        gaps.is_empty(),
+        "the classify reply lacks what tests/client_contract.json lists: {gaps:?}\n{q}\n{t}"
+    );
+    assert_eq!(q["data"]["intent"], "question", "{q}");
+    assert_eq!(t["data"]["intent"], "task", "{t}");
+    let values = names(&listed["intent_values"]);
+    for r in [&q, &t] {
+        assert!(
+            r["data"]["intent"]
+                .as_str()
+                .is_some_and(|i| values.contains(&i)),
+            "intent not one of {values:?}: {r}"
+        );
+    }
+    for field in names(&listed["question_only"]) {
+        assert!(t["data"].get(field).is_none(), "task carries {field}: {t}");
+    }
+}
