@@ -2193,7 +2193,7 @@ mod tests {
 
     /// Whether `word` occurs in `text` as a whole identifier, so `Edit`
     /// is not found inside `Edited` and `Ls` not inside `Lsp`.
-    fn has_word(text: &str, word: &str) -> bool {
+    pub(super) fn has_word(text: &str, word: &str) -> bool {
         let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
         text.match_indices(word).any(|(at, _)| {
             let before = text[..at].chars().next_back();
@@ -2668,11 +2668,61 @@ mod compaction_and_hosted_tests {
         };
         let p = c.fit(&t, |k| completion_prompt(&t, k), String::len);
         assert!(
-            p.contains("elided: run_checks Typecheck on a.py, 4000 bytes"),
+            p.contains("elided: run_checks typecheck on a.py, 4000 bytes"),
             "{p}"
         );
         assert_eq!(before, snapshot(&t));
         assert_eq!(t.last_check_passed(), passed);
+    }
+
+    #[tokio::test]
+    async fn prompt_names_check_kinds_as_they_are_sent_after_a_failure_and_an_elision() {
+        // #541 renamed the calls in the step history; the check kinds stayed
+        // in Debug form. A failing check read `Typecheck: FAILED` and an
+        // elided one `run_checks Typecheck on ...`, while `kinds` takes
+        // `"typecheck"` — the same copyable mismatch qwen3:8b copied for
+        // `RunChecks`. The observations here come from the loop's own
+        // rendering of executed checks, not from strings typed in the test.
+        let d = repo();
+        let (orch, _j) = Orchestrator::new(d.path(), checker(1)).spawn();
+        let mut m = crate::scripted::ScriptedModel::from_json(
+            r#"{"steps":[
+                {"tool":"run_checks","paths":["app/util.py"],"kinds":["typecheck"]},
+                {"tool":"run_checks","paths":["app/util.py"],"kinds":["typecheck","tests"]}
+            ]}"#,
+        )
+        .unwrap();
+        let b = Budget {
+            max_iterations: 2,
+            ..Budget::default()
+        };
+        let (_, t) = crate::agent::run("fix it", &mut m, &orch, &b).await;
+        assert_eq!(t.turns.len(), 2, "two check turns: {:?}", t.turns);
+        assert!(
+            t.turns.iter().all(|x| x.verdict_passed == Some(false)),
+            "both checks fail: {:?}",
+            t.turns
+        );
+
+        // The oldest turn elided, the newest shown in full: what a runtime-
+        // tier model is sent once a budget has started folding history.
+        let prompt = completion_prompt(&t, 1);
+        for kind in crate::wire::CHECK_KINDS {
+            let debug = format!("{kind:?}");
+            assert!(
+                !super::tests::has_word(&prompt, &debug),
+                "the model is shown `{debug}` but must send `{}`:\n{prompt}",
+                crate::wire::check_kind_name(kind)
+            );
+        }
+        // A prompt that dropped the note or the observation would pass the
+        // check above; both must be there, under the name that is sent.
+        assert!(
+            prompt.contains("elided: run_checks typecheck on app/util.py"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("typecheck: FAILED"), "{prompt}");
+        assert!(prompt.contains("NOT RUN: tests"), "{prompt}");
     }
 
     #[test]
