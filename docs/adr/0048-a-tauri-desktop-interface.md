@@ -56,6 +56,10 @@ JSON on stdout.
 *Amended 2026-10-06 (#500), by ADR 0052, accepted 2026-10-07:* a
 `trellis rpc` client may show trellis's stderr to the user in a pane capped
 in size, as human text. It still never reads stderr as data.
+*Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+2026-10-07):* a fourth spawn, `trellis [--root <repo>] --json overview`
+(ADR 0050 section 3, amended), read as one JSON object on stdout, with
+`--root` only when the desktop has a root. Accepted, not built (#558, #296).
 
 ### 3. Children, environment and keys
 
@@ -87,6 +91,14 @@ Go toolchain is an accepted cost, for `tui/` only (the Go TUI, a second
 `trellis rpc` client), pinned by a go.dev tarball and its SHA-256. This
 narrows the Context's refusal of a toolchain on every build machine to
 JavaScript: Node, npm and a bundler are still refused, here and in `tui/`.
+*Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+2026-10-07, given with the approval of #560), for sections 2 and 5:* after
+launch the desktop asks which model to use, with the user's configured spec
+preselected and the local runtimes `first_run` finds (ADR 0050 section 2)
+listed, and prompt input (the composer, Send and steering) stays disabled
+until a model is chosen in that window. A spec the user saves is written to
+the user's own config, never `.trellis/config.toml` (ADR 0024 §3); section
+4 on hosted specs is unchanged. Accepted, not built (#564).
 
 ### 6. The client contract
 
@@ -119,6 +131,11 @@ interface under Q-19 is the Go TUI (`tui/`) once it reaches parity and the
 launch handoff ships (T8, #514), with the ratatui TUI as the fallback for one
 release. Until then the ratatui TUI stays the product interface. The desktop
 rules in this section are unchanged.
+*Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+2026-10-07):* the desktop is the default surface of bare `trellis` (ADR
+0050 section 1, amended); the TUI stays the product interface under Q-19,
+under `--tui` and `trellis tui`, as the line above says. The desktop rules
+in this section are unchanged. Accepted, not built (#561).
 
 ### 9. A desktop that exits mid-run
 
@@ -136,6 +153,23 @@ ADR 0025 §5 by its own dated amendment, answers from its own thread as
 `work` and `log`, and section 2's three spawns stay three. No rpc command the
 desktop sends writes the vault or the queue; every write it causes goes
 through `prompt`, and so through the orchestrator, as #70 requires.
+*Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+2026-10-07):* `overview` joins ADR 0025 §4's `--json` commands, so they are
+`run`, `work`, `log` and `overview`, and section 2's three spawns are four;
+`index`, `radius`, `queue` and `vault` still have no `--json`. The desktop
+shows four read-only views, each from these sources:
+- graph: `get_codebase` with `path`;
+- run: the stream's frames, `get_state` (its `tier`) and the last trail;
+- cross-repo: the overview's `recent`;
+- board: `get_queue` with `blockers` and `parent`, and PR and CI state read
+  live from the user's own `gh` CLI when it is installed and logged in
+  (owner, 2026-10-07). trellis still opens no socket itself: `gh` is a child
+  process started through `secrets::scrub` like every other, read-only
+  (`gh pr list`, `gh run list`), with a bounded wait; when `gh` is absent or
+  not logged in, the board says so.
+
+`get_codebase` and `get_radius` refuse a root with no `.git` entry. Nothing
+here writes. Accepted, not built (#558, #559, #296).
 
 ## Alternatives rejected
 
