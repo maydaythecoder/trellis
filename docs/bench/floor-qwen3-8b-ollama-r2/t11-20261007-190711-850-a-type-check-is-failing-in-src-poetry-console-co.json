@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "run_id": "20261007-190711-850-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/add.py; fix it",
+  "base_commit": "9d776984da274e1baec2dddba8519e65bae6826b",
+  "started_at": "2026-10-07T19:07:11Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9761,
+      "peak_prompt_bytes": 13056,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/add.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/add.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/commands/add.py. `old` must be text copied from the file, not recons…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/add.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 46540,
+    "prompt_tokens": 24036
+  },
+  "factual_sha256": "68b1749a90ce00338b90d78b2ae6c7769cad03132e86c410d42e43a28ac4f377",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
