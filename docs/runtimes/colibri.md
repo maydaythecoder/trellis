@@ -12,6 +12,50 @@ appear. No colibri server has been run against TRELLIS (ADR 0047, What is not
 built): every TRELLIS behaviour here is tested against stubs that answer with
 bodies transcribed from colibri's source.
 
+## Weights
+
+TRELLIS fetches no colibri weights. Its catalogue is one pinned GGUF file per
+entry (ADR 0044), and a colibri container is a set of shards of 20 GB to
+1.6 TB (inventory, open question 6) that colibri downloads, converts and
+verifies itself (ADR 0047 decision 11). `trellis model` says so under its
+listing, and `trellis model pull` given one of the nine family names below
+(as ADR 0047's table spells them, any case) refuses with a line pointing here.
+You run colibri's own commands:
+
+```text
+coli convert
+coli mirror verify
+coli doctor --deep
+coli info
+```
+
+- **Convert: `coli convert`** (COL-ENG-14). A resumable FP8 to int4
+  conversion, taking `--repo`, `--ebits`, `--io-bits`, `--xbits`,
+  `--group-size` and `--no-mtp`, with per-family converters and repackers
+  behind it; colibri's family registry names each family's converter
+  (COL-ENG-55). Two families start from other forms: Kimi K3 runs native
+  MXFP4 from HF shards (COL-ENG-49), and OLMoE is imported from GGUF
+  (COL-ENG-54, COL-ENG-60).
+- **Verify: `coli mirror verify`** (COL-ENG-13). `coli mirror` plans, stages
+  and verifies a usage-ranked partial mirror, checking SHA-256 and writing a
+  receipt; its flags are `--mirror`, `--source-dir`, `--usage`, `--budget-gib`
+  and `--reserve-gib`.
+- **Check: `coli doctor --deep`** (COL-ENG-11) reads headers, shards, tensors,
+  the index and the mirror; `coli info` (COL-ENG-08) reports a container's
+  geometry, shards, RAM and disk.
+- **What a container is:** safetensors read by range, with format codes, stamps
+  and a container declaration (COL-ENG-58; colibri's docs/FORMATS.md).
+
+`coli serve --model <model>` then loads it (below).
+
+Not recorded in the inventory or ADR 0047, so not stated here: the `--repo`
+value or a full command line for any family; which command does the download
+(ADR 0047 says colibri downloads, not which subcommand); which flags each
+`coli mirror` step takes; and what the SHA-256 is checked against. Weight
+licences per family were not verified, except that colibri's README says Z.ai
+releases GLM-5.2 under MIT (inventory, Licence). None of these commands was
+run for TRELLIS.
+
 ## Start the server
 
 ```sh
