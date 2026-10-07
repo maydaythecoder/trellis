@@ -356,6 +356,82 @@ https://github.com/maydaythecoder/trellis --token <token> --name trellis-win
 --labels self-hosted,Windows,X64 --unattended` as the new account, before
 running the scripts.
 
+### Mutation testing on CI (#248)
+
+`.github/workflows/mutants.yml` runs cargo-mutants with the whole workspace
+suite against each mutant. These are the flags `WORKSPACE_TESTS=1
+scripts/mutate-by-crate.sh` uses: `-p <crate> --test-workspace true
+--timeout 300 -j 1`. It runs on `workflow_dispatch` only, never on a push or
+a pull request. It uses the same runner variables as `ci.yml` and the same
+pins: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
+`--locked`, and `--locked` on every cargo command it runs. It uploads
+`mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n]`,
+kept for 30 days. The job limit is 360 minutes, GitHub's limit for hosted
+runners. A shard that reaches the step's 345-minute limit still uploads the
+outcomes it has.
+
+GitHub dispatches a workflow by name only when the file is on the default
+branch (`main`). `--ref` picks the branch whose head is tested. Run it only
+when the runners are idle: the Linux leg holds the runner `ci.yml` needs.
+
+```
+gh workflow run mutants.yml -f crate=trellis-cli                      # whole crate, one job
+gh workflow run mutants.yml --ref dev -f crate=trellis-cli -f shard=0/10
+gh workflow run mutants.yml -f crate=trellis-cli -f os=windows -f shard=0/10
+gh run list --workflow mutants.yml
+gh run download <run-id>                                              # mutants-…/caught.txt, missed.txt, timeout.txt, unviable.txt
+```
+
+trellis-cli has about 1,500 viable mutants, and each one runs the full suite,
+which takes about 46 seconds warm, plus each mutant's build. One job cannot run them
+all in 6 hours. Dispatch shard `0/10` first and read its wall time, then size
+`n` for the other shards. Every shard of one run must use the same `n`, or the
+shards do not split the mutants between them. Dispatch the next shard after
+the previous one finishes. A job that waits more than 24 hours for a
+self-hosted runner is cancelled.
+
+`os=linux` (the default) reaches the `#[cfg(unix)]` code. The 22 `not
+examined (#248)` lines need it. `os=windows` is the host #248's survivor
+list came from. cargo-mutants mutates source text whatever its `cfg`, so a
+mutant in code one leg does not compile is reported missed on that leg by
+construction. That is how the 22 unix-only lines survived on Windows. A
+mutant is confirmed caught when the leg that compiles its code catches it.
+
+To check #248's kills, compare each mutant by its function and mutation
+text, ignoring `file:line:col`, as the ledger's trellis-cli comparison does.
+The main.rs split moved code between files, so line numbers no longer match.
+Concatenate the shards' `missed.txt` first. Then:
+
+```
+strip() { sed -E 's/^.*crates\/trellis-cli\/src\/[^:]+:[0-9]+:[0-9]+: //' | sort -u; }
+grep -E '^killed \(#248\)' CORRECTNESS_LEDGER.md | strip > ledger-killed.txt
+grep -E '^(not examined|unix-only) \(#248\)' CORRECTNESS_LEDGER.md | strip > ledger-unix.txt
+cat */missed.txt | strip > missed-now.txt
+comm -12 ledger-killed.txt missed-now.txt      # a kill the run does not confirm
+comm -12 ledger-unix.txt missed-now.txt        # Linux leg: a unix-only mutant still alive
+```
+
+The 352 `killed` lines strip to 300 distinct texts, because the same
+mutation recurs at different lines of one function. A match means "look at
+that line", not "refuted". Read the full lines in `missed.txt` before you
+decide. Run the first `comm` once per leg. A line that appears in one leg's
+list and in the other leg's `caught.txt` is code the first leg does not
+compile (`#[cfg(windows)]` on Linux, `#[cfg(unix)]` on Windows). It is not an
+unconfirmed kill. A line that appears in both legs' lists is an unconfirmed
+kill. The kills are confirmed when there are none. The second
+`comm` applies to the Linux leg only, since those 22 mutants survive on
+Windows by construction. On Linux it should list only the 5 `probe_ps`
+mutants. That code runs only on macOS and BSD, so this workflow cannot reach
+it.
+Check `timeout.txt` too. A timeout is neither caught nor missed, so a ledger
+kill that shows up there is unconfirmed, not refuted. The script's rule that
+more than two timeouts makes a run unusable applies to a mutation score. It
+does not apply to this check, which reads one mutant at a time. trellis-cli
+always has a dozen mutants that make a loop never end. A line marked
+`equivalent` or `unexercisable` is expected in `missed.txt`. Record the run in
+the ledger's #248 paragraph: its commit, the shards and the counts. #248
+closes when the run confirms the kills (owner, 2026-10-06).
+
 ## CI without GitHub
 
 `py -3 scripts/ci-local.py [--ref <commit>] [--job <name>]... [--keep-going]`
