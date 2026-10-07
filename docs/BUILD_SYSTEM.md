@@ -159,6 +159,30 @@ shows it firing) refuses every push to `main`, and to the deleted `v0.1-resolver
 installed it (GitHub branch protection needs Pro on a private repository;
 ADR 0036 records the gap and the ruleset to apply later).
 
+### Versions and releases (#386)
+
+The version is `[workspace.package].version` in `Cargo.toml`, which every
+crate inherits, and `version` in `desktop/Cargo.toml`; the two stay equal.
+`CHANGELOG.md` records what each version holds. A release:
+
+1. **Bump on `dev`**, through a ticket branch and `audit` like any change:
+   set both versions to `X.Y.Z`; refresh the three locks with
+   `cargo update -w --offline`, `cargo update -w --offline --manifest-path
+   desktop/Cargo.toml` and `cargo metadata --format-version 1 --offline
+   --manifest-path fuzz/Cargo.toml` (each changes only the trellis packages'
+   `version` lines; a diff with anything else is wrong); move
+   `CHANGELOG.md`'s `## [Unreleased]` entries under a new `## [X.Y.Z]`.
+2. **The owner merges** the `dev → main` pull request.
+3. **The owner tags `vX.Y.Z` on `main`** and pushes the tag. The pre-push
+   hook refuses `v*` tags on purpose (ADR 0051 item 3): the push is the
+   owner's act, not an agent's.
+4. `release.yml` builds and tests every platform, then its `publish` job
+   refuses unless the tag is `vX.Y.Z`, its commit is an ancestor of
+   `origin/main` and the Linux binary's `--version` is `trellis X.Y.Z`. Only
+   then does it create the GitHub release with one archive per target and a
+   `SHA256SUMS` over them. `publish` is the only job in any workflow with
+   `contents: write`.
+
 ## Where a person is needed
 
 Only where the decision is theirs, not where the work is hard:
