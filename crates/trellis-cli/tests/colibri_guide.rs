@@ -66,7 +66,10 @@ fn colibri_guide_offers_inkling_no_tool_fallback() {
     // The risk: the table telling an Inkling user to restart with a setting
     // colibri does not accept for that family.
     let text = guide();
-    let rows: Vec<&str> = text.lines().filter(|l| l.starts_with("| Inkling")).collect();
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("| Inkling"))
+        .collect();
     assert_eq!(rows.len(), 1, "expected one `| Inkling` row: {rows:?}");
     assert!(
         !rows[0].contains("COLI_TOOL_FALLBACK"),
