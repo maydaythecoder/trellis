@@ -2853,6 +2853,37 @@ fn exactly_one_catalogue_entry_is_marked_the_default() {
 }
 
 #[test]
+fn the_model_listing_says_where_colibri_weights_come_from() {
+    // ADR 0047 decision 11: the catalogue holds one pinned GGUF file per
+    // entry, so colibri's multi-shard containers are not in it. Someone
+    // looking for them in `trellis model` would otherwise find nothing and
+    // no hint, and might fetch shards by hand without the per-shard SHA-256
+    // checks colibri's own tooling makes. One line, so the listing stays a
+    // listing.
+    let d = repo("model-runtime-note");
+    let data = scratch("model-runtime-note-data");
+    std::fs::create_dir_all(models_dir_in(&data)).unwrap();
+
+    let s = stdout(&run_with_data_dir(&d, &data, &["model"]));
+    let lines: Vec<&str> = s.lines().filter(|l| l.contains("colibri")).collect();
+    assert_eq!(lines.len(), 1, "exactly one line names colibri:\n{s}");
+    let line = lines[0];
+    for needle in [
+        "not in this catalogue",
+        "coli convert",
+        "coli mirror verify",
+        "docs/runtimes/colibri.md",
+    ] {
+        assert!(
+            line.contains(needle),
+            "the colibri line must say `{needle}`:\n{line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn model_path_names_a_real_location_under_the_data_directory() {
     // `trellis model path` exists so a user can put the file there
     // themselves — over a link the downloader cannot use, or from a copy on

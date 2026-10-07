@@ -93,6 +93,18 @@ fn list_models() -> Result<()> {
             "Apache-2.0 or MIT, so the\ndefault is usable for commercial work."
         )
     );
+    // ADR 0047 decision 11: a colibri container is a directory of shards,
+    // not one pinned file, and colibri already resumes and checks each
+    // shard's SHA-256. Printed as text for the user to run, never run here.
+    println!();
+    println!(
+        "{}",
+        concat!(
+            "colibri containers are not in this catalogue: colibri fetches and ",
+            "verifies them itself (`coli convert`, `coli mirror verify`); see ",
+            "docs/runtimes/colibri.md."
+        )
+    );
     Ok(())
 }
 
