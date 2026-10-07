@@ -34,13 +34,13 @@ pub(crate) fn schema_report(probed: &Result<bool, String>) -> (bool, String) {
 
 /// The status bar's tier label for a runtime spec, from the same schema
 /// probe [`schema_report`] reads, so the TUI's label, the run's and rpc's
-/// `get_state` cannot disagree about it. A probe that could not run is `?`:
-/// nothing is known, which is not the same as tier 2.
+/// `get_state` cannot disagree about it. A probe that could not run is
+/// `unknown`: nothing is known, which is not the same as tier 2.
 pub(crate) fn runtime_tier_label(probed: &Result<bool, String>) -> &'static str {
     match probed {
         Ok(true) => "2",
         Ok(false) => "4, no schema",
-        Err(_) => "?",
+        Err(_) => "unknown",
     }
 }
 
@@ -309,7 +309,7 @@ fn colibri_tier_report(tier: &Result<hosted::ColibriTier>) -> (String, Option<St
             let (id, origin) = (plain(id), plain(origin));
             (
                 format!(
-                    "tier:       tier 1 unavailable: colibri refuses tools for `{id}` (HTTP 400, \
+                    "tier:       1, unavailable: colibri refuses tools for `{id}` (HTTP 400, \
                      param `tools`); tier 4 is `vllm:{origin}#{id}`"
                 ),
                 Some(format!(

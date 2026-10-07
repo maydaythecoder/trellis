@@ -152,7 +152,7 @@ Two clients of `trellis rpc` (ADR 0025 §5), with the Rust core as the only
 engine: the Tauri desktop (ADR 0048) rendering a whole run, and a Go/Bubble
 Tea TUI in `tui/` that replaces the ratatui TUI once it reaches parity.
 Recorded in [ADR 0052](adr/0052-two-rpc-clients-and-go-for-the-tui.md),
-Proposed until the owner accepts it on #500; MISSION.md goal 8.
+Accepted by the owner on #500 (2026-10-07); MISSION.md goal 8.
 
 **Gate:** the desktop's test from the reducer's view to the page's render
 functions covers every pane (N11), and the desktop job builds the window on
@@ -164,4 +164,9 @@ macOS runner exists. The ticket plan, by wave, is ADR 0052's last section.
 ## v2.0 — each needing its own brief
 
 More languages. Cloud execution. Shared environments. Messaging and scheduling.
-Desktop and web surfaces. MCP exposure. Template sharing. Multi-user.
+Web surfaces. MCP exposure. Template sharing. Multi-user.
+
+*2026-10-07 (#515), amended by ADR 0052:* "Desktop" left this list. The
+desktop is a v1.x client of `trellis rpc`; see "v1.x — Clients" above and
+[ADR 0052](adr/0052-two-rpc-clients-and-go-for-the-tui.md). Web surfaces stay
+in v2.0.
