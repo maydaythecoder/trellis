@@ -553,10 +553,14 @@ fn colibri_run_a_probe_left_unanswered_is_closed_within_15_s_and_the_run_continu
 }
 
 #[test]
-fn colibri_run_a_served_id_with_an_esc_byte_is_escaped_in_the_runtime_line() {
-    // The risk: a server's id repainting the user's terminal.
+fn colibri_run_a_spec_whose_model_carries_an_esc_byte_is_refused_before_any_read() {
+    // The risk: a server's id repainting the user's terminal. A served id
+    // reaches the runtime line only when it equals the spec's model, and
+    // since #499 a spec carrying a control byte is refused at parse, so
+    // that line cannot hold one; the mismatch message, where the served id
+    // need not match, is covered below.
     let id = "glm\u{1b}[2J";
-    let (base, _log) = stub(
+    let (base, log) = stub(
         reply("200 OK", &models_colibri(id)),
         reply("200 OK", TOOLS_ACCEPTED),
     );
@@ -568,19 +572,10 @@ fn colibri_run_a_served_id_with_an_esc_byte_is_escaped_in_the_runtime_line() {
         "",
     );
     let r = run(&d, None, None, &[]);
-    went_ahead(&r);
-    assert!(
-        r.stdout
-            .contains("runtime:  colibri, model glm\\u{1b}[2J, tools probed"),
-        "{}",
-        r.stdout
-    );
-    let runtime = r
-        .stdout
-        .lines()
-        .find(|l| l.starts_with("runtime:"))
-        .unwrap();
-    assert!(!runtime.contains('\x1b'), "{runtime:?}");
+    refused(&d, &r);
+    assert!(r.all.contains("control character U+001B"), "{}", r.all);
+    assert!(!r.all.contains('\x1b'), "{:?}", r.all);
+    assert!(requests(&log).is_empty(), "the endpoint was never read");
 }
 
 #[test]

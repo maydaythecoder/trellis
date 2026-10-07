@@ -146,6 +146,21 @@ for trellis's own GitHub issues (new, triage, ready, sweep, scan, index), so
 the `trellis` CLI that brief 4.12 fixes does not grow. Recorded in
 [ADR 0040](adr/0040-ticketing-tool.md); built by #76-#81.
 
+## v1.x — Clients
+
+Two clients of `trellis rpc` (ADR 0025 §5), with the Rust core as the only
+engine: the Tauri desktop (ADR 0048) rendering a whole run, and a Go/Bubble
+Tea TUI in `tui/` that replaces the ratatui TUI once it reaches parity.
+Recorded in [ADR 0052](adr/0052-two-rpc-clients-and-go-for-the-tui.md),
+Proposed until the owner accepts it on #500; MISSION.md goal 8.
+
+**Gate:** the desktop's test from the reducer's view to the page's render
+functions covers every pane (N11), and the desktop job builds the window on
+both runners; every rule in `tui/PARITY.md` maps to a Go test passing on both
+runners, the launch handoff ships with its ratatui fallback, and one release
+later `crates/tui-demo` is gone. Releases are Windows and Linux only until a
+macOS runner exists. The ticket plan, by wave, is ADR 0052's last section.
+
 ## v2.0 — each needing its own brief
 
 More languages. Cloud execution. Shared environments. Messaging and scheduling.
