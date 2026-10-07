@@ -78,6 +78,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "the tasks `trellis queue list` prints, as data, read-only; claims nothing",
     ),
     (
+        "list_paths",
+        "the paths `@` completion offers that start with {prefix}, read-only: at most 10, \
+         shortest first; tracked or untracked, never ignored",
+    ),
+    (
         "vault_search",
         "the hits `trellis vault search` prints, as data, read-only: {query, limit?} \
          (default 12)",
@@ -145,6 +150,92 @@ fn session_stats(root: &Path, ids: &[String]) -> Value {
         })
         .collect();
     json!({"models": models, "runs_not_counted": unread})
+}
+
+/// The paths `@` completion may offer: what git lists as tracked, plus
+/// untracked files that no ignore rule covers. The TUI and `list_paths`
+/// both ask this, so a client never lists paths itself.
+///
+/// Asked of git rather than walked from disk, so a `.gitignore`d file — a
+/// `.env`, a build directory, a virtualenv — is never offered to be typed
+/// into a task that a model will read. `-z` because without it git quotes a
+/// path with unusual bytes, and a quoted path inserted into a task names a
+/// file that does not exist.
+pub(crate) fn at_file_paths(root: &Path) -> Result<Vec<String>> {
+    let out = trellis_vcs::command()
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .current_dir(root)
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "listing repository paths exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut paths: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        // A path that is not UTF-8 cannot be typed into a task faithfully,
+        // so it is left out rather than offered with its bytes replaced.
+        .filter_map(|p| std::str::from_utf8(p).ok().map(str::to_string))
+        .collect();
+    // `--cached` lists a file once per conflict stage during a merge.
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// How many paths `list_paths` answers with: the TUI's `@` list length.
+const LIST_PATHS_LIMIT: usize = 10;
+
+/// `list_paths`'s `prefix`, refused unless it can only be the start of a
+/// repository-relative path. It only filters git's listing, so no prefix
+/// could read a file; it is refused anyway, by the rule it breaks, so a
+/// client learns its input was wrong rather than seeing an empty list.
+/// Both separators are checked, whatever the platform, since the client
+/// may not share it.
+fn path_prefix(cmd: &Value) -> Result<&str, String> {
+    let Some(prefix) = cmd.get("prefix").and_then(Value::as_str) else {
+        return Err(
+            "`prefix` is required, as a string: the start of a repository-relative \
+                    path, \"\" for any"
+                .into(),
+        );
+    };
+    if prefix.chars().any(char::is_control) {
+        return Err("`prefix` holds a control character; a repository path does not".into());
+    }
+    let bytes = prefix.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if prefix.starts_with(['/', '\\']) || drive {
+        return Err("`prefix` is absolute; it is the start of a repository-relative path".into());
+    }
+    if prefix.split(['/', '\\']).any(|c| c == "..") {
+        return Err(
+            "`prefix` holds a `..` component; it names paths inside the repository only".into(),
+        );
+    }
+    Ok(prefix)
+}
+
+/// The first `LIST_PATHS_LIMIT` of `paths` that start with `prefix`,
+/// shortest first and then by bytes, the order the TUI offers them in.
+fn starting_with(paths: Vec<String>, prefix: &str) -> Vec<String> {
+    let mut hits: Vec<String> = paths
+        .into_iter()
+        .filter(|p| p.starts_with(prefix))
+        .collect();
+    hits.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    hits.truncate(LIST_PATHS_LIMIT);
+    hits
 }
 
 /// Turns captured from the loop's `turn` events, for `get_messages`.
@@ -691,6 +782,28 @@ impl Server {
         }));
     }
 
+    /// `list_paths`: the paths `@` completion offers that start with
+    /// `prefix`, from `at_file_paths`, so ignored files are never listed and
+    /// git is spawned only through `trellis_vcs` (ADR 0023); nothing is
+    /// written. Answered from another thread, as `get_queue` is, so a
+    /// waiting run's `approve` or `abort` is still read at once.
+    fn list_paths(&mut self, cmd: &Value, id: Option<&str>) {
+        let prefix = match path_prefix(cmd) {
+            Ok(p) => p.to_string(),
+            Err(e) => {
+                self.respond(id, "list_paths", Err(e));
+                return;
+            }
+        };
+        let (sink, id, root) = (self.sink.clone(), id.map(str::to_string), self.root.clone());
+        self.waiters.push(std::thread::spawn(move || {
+            let result = at_file_paths(&root)
+                .map(|paths| json!({"paths": starting_with(paths, &prefix)}))
+                .map_err(|e| format!("{e:#}"));
+            respond_on(&sink, id.as_deref(), "list_paths", result);
+        }));
+    }
+
     /// `vault_search`: the hits `trellis vault search` prints, from the same
     /// function, as data; nothing is written. Every vault write stays a
     /// `trellis vault` command (#70). Answered from another thread, as
@@ -977,6 +1090,7 @@ impl Server {
             "get_codebase" => self.get_codebase(cmd, id),
             "get_radius" => self.get_radius(cmd, id),
             "get_queue" => self.get_queue(id),
+            "list_paths" => self.list_paths(cmd, id),
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
             other => self.respond(
@@ -2195,5 +2309,54 @@ mod tests {
         assert_eq!(last["id"], "p", "{state}");
         assert!(last.get("type").is_none(), "{state}");
         c.finish();
+    }
+
+    #[test]
+    fn at_file_paths_lists_tracked_and_untracked_but_never_ignored() {
+        // An ignored file is the one most likely to hold something that
+        // should not be typed into a task a model reads: `.env`, a build
+        // output, a virtualenv.
+        let d = crate::testutil::scratch("at-file-paths");
+        crate::testutil::git_init(&d);
+        std::fs::write(
+            d.join(".gitignore"),
+            "secret.env
+build/
+",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("tracked.py"),
+            "x = 1
+",
+        )
+        .unwrap();
+        crate::testutil::git_commit_all(&d, "base");
+        std::fs::write(
+            d.join("untracked.py"),
+            "y = 2
+",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("secret.env"),
+            "not for a prompt
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(d.join("build")).unwrap();
+        std::fs::write(
+            d.join("build/out.py"),
+            "z = 3
+",
+        )
+        .unwrap();
+
+        let paths = at_file_paths(&d).expect("a repository lists");
+        assert!(paths.iter().any(|p| p == "tracked.py"), "{paths:?}");
+        assert!(paths.iter().any(|p| p == "untracked.py"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p == "secret.env"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.starts_with("build/")), "{paths:?}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

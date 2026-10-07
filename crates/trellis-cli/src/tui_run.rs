@@ -381,46 +381,6 @@ fn run_for_tui(
     report_outcome(tx, outcome);
 }
 
-/// The paths `@` completion may offer: what git lists as tracked, plus
-/// untracked files that no ignore rule covers.
-///
-/// Asked of git rather than walked from disk, so a `.gitignore`d file — a
-/// `.env`, a build directory, a virtualenv — is never offered to be typed
-/// into a task that a model will read. `-z` because without it git quotes a
-/// path with unusual bytes, and a quoted path inserted into a task names a
-/// file that does not exist.
-fn at_file_paths(root: &Path) -> Result<Vec<String>> {
-    let out = trellis_vcs::command()
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .current_dir(root)
-        .output()?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "listing repository paths exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let mut paths: Vec<String> = out
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        // A path that is not UTF-8 cannot be typed into a task faithfully,
-        // so it is left out rather than offered with its bytes replaced.
-        .filter_map(|p| std::str::from_utf8(p).ok().map(str::to_string))
-        .collect();
-    // `--cached` lists a file once per conflict stage during a merge.
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
-}
-
 /// `model_from_user`: the spec came from `--model`, not `[model] spec`
 /// (ADR 0024 §3).
 pub(crate) fn run(
@@ -490,7 +450,7 @@ pub(crate) fn run(
     // Once, at startup. A file created during the session is not offered
     // until the next one; re-listing per keystroke would put a process spawn
     // behind every letter typed.
-    let at_paths = at_file_paths(root);
+    let at_paths = crate::rpc::at_file_paths(root);
 
     // What a hosted spec is resolved against before the classifier sends the
     // key anywhere (ADR 0024 §3). Loaded with `?`, as `Session::open` loads
@@ -723,55 +683,6 @@ mod tests {
         let d = crate::testutil::scratch("tui-bad-spec");
         let e = run(&d, None, Some("nonsense".into()), true).expect_err("refused");
         assert!(format!("{e}").contains("is not a model spec"), "{e}");
-    }
-
-    #[test]
-    fn at_file_paths_lists_tracked_and_untracked_but_never_ignored() {
-        // An ignored file is the one most likely to hold something that
-        // should not be typed into a task a model reads: `.env`, a build
-        // output, a virtualenv.
-        let d = crate::testutil::scratch("at-file-paths");
-        crate::testutil::git_init(&d);
-        std::fs::write(
-            d.join(".gitignore"),
-            "secret.env
-build/
-",
-        )
-        .unwrap();
-        std::fs::write(
-            d.join("tracked.py"),
-            "x = 1
-",
-        )
-        .unwrap();
-        crate::testutil::git_commit_all(&d, "base");
-        std::fs::write(
-            d.join("untracked.py"),
-            "y = 2
-",
-        )
-        .unwrap();
-        std::fs::write(
-            d.join("secret.env"),
-            "not for a prompt
-",
-        )
-        .unwrap();
-        std::fs::create_dir_all(d.join("build")).unwrap();
-        std::fs::write(
-            d.join("build/out.py"),
-            "z = 3
-",
-        )
-        .unwrap();
-
-        let paths = at_file_paths(&d).expect("a repository lists");
-        assert!(paths.iter().any(|p| p == "tracked.py"), "{paths:?}");
-        assert!(paths.iter().any(|p| p == "untracked.py"), "{paths:?}");
-        assert!(!paths.iter().any(|p| p == "secret.env"), "{paths:?}");
-        assert!(!paths.iter().any(|p| p.starts_with("build/")), "{paths:?}");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Drains a channel through the same `update` the running interface
