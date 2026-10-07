@@ -840,7 +840,9 @@ fn run_body(
         // spec, the config and the environment, and `refuse_unless_hosted`
         // above means it names a hosted model.
         let budget = match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
-            Some(r) => hosted::hosted_context_bytes(&r, &cfg)?,
+            // Not yet identified as colibri: `preflight` reads the endpoint
+            // below, so this is the hosted budget (ADR 0047 decision 6).
+            Some(r) => hosted::hosted_context_bytes(&r, &cfg, false)?,
             None => anyhow::bail!(
                 "--image: `{model_spec}` passed the hosted-model check but does not \
                  resolve to a hosted model; nothing was snapshotted"
