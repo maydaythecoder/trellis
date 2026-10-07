@@ -137,7 +137,7 @@ a real one, and three need measurement rather than code.
 | 3 | A real change to human approval, complete trail, grounded checks | **Partial.** Done end to end on poetry with a scripted model (`wedge-20260920.md`): defect, blast radius, failing check, edit, passing check, human `git commit`, trail, cold resume. Never with a model making the judgments |
 | 4 | Induced mid-run failure returns the repo to its exact pre-run state | **Yes, at seven injection points**, up from one — including a real SIGINT delivered mid-run and a dead orchestrator, the two `04-v1.0-harness.md` calls usually missed. Recovery-path failure handled: a rollback that cannot finish is loud, names the worktree, gives the commands, and no longer swallows the trail. `docs/bench/rollback-20260920.md` |
 | 5 | Resumption works | **Yes**, demonstrated cold on the benchmark repo |
-| + | Acceptable operation on a local open-weight model at or above the floor, **via constrained tool calling** | **No, and the floor is not located via constrained tool calling.** Under tier 2 (constrained), two configurations measured, both below it: 0.5B 0/20, Coder-3B 0/17; no generation across either run was off-schema. A floor is located only at tier 4, which is not constrained tool calling: `qwen3:8b` Q4_K_M on Ollama 0.15.6, `ValidateAndRetry`, repaired 5/20 (`docs/bench/floor-qwen3-8b-ollama.json`, #144), and 14 of its 20 tasks ended on tool-call format. What is missing is a model that passes at a constrained tier |
+| + | Acceptable operation on a local open-weight model at or above the floor, **via constrained tool calling** | **No, and the floor is not located via constrained tool calling.** Under tier 2 (constrained), both configurations measured are below it: 0.5B 0/20, Coder-3B 0/17; no generation across either run was off-schema. A floor is located only at tier 4, which is not constrained tool calling: `qwen3:8b` Q4_K_M on Ollama 0.15.6, `ValidateAndRetry`, repaired 5/20 (`docs/bench/floor-qwen3-8b-ollama.json`, #144), and 14 of its 20 tasks ended on tool-call format. What is missing is a model that passes at a constrained tier |
 
 Conditions 3 and the plus-row are the same fact twice: no model has been found
 that can drive this under constrained tool calling (one drives some floor tasks
@@ -1225,8 +1225,10 @@ Two are not, and they are the two a reader would most reasonably assume:**
   nothing maps tests to call sites, so `Verified` is always 0.
 - **Goal 6, "runs on quantized open weights".** Every mechanism exists and is
   tested, and the A/B established the harness is not what holds those models
-  back — but two configurations are measured and both are below the floor
-  (0.5B repaired 0 of 20, Coder-3B 0 of 17). Supported and demonstrated are
+  back — but of four configurations measured, three are below the floor
+  (0.5B repaired 0 of 20, Coder-3B 0 of 17, `qwen2.5:3b`/Ollama 0 of 20), and
+  the one that repairs, `qwen3:8b` Q4_K_M on Ollama (5 of 20, #144), does so
+  at tier 4, not under constrained decoding. Supported and demonstrated are
   different words.
 
 Each goal now carries its state, and goal 6 carries the distinction
@@ -1631,7 +1633,8 @@ model would be adjudicating the rules it is being held to.
 The shape that would be honest: a non-negotiable failure where the model's own
 summary names a second rule it could not satisfy, escalated verbatim and
 attributed, with the harness declining to rule on it. That needs a model
-capable of saying so, and both measured configurations are below the floor. Left
+capable of saying so, and no measured configuration passes at a constrained
+tier (one repairs 5 of 20 at tier 4, #144). Left
 open rather than built against nothing and tested with a fixture that agrees.
 
 ### What running the wedge found
@@ -1660,7 +1663,7 @@ support, in the document a reader consults to find out.
 
 | Gate item | State |
 |---|---|
-| One real change on the **benchmark repo**, task to verified diff to approval | **No.** Demonstrated with a scripted model on a demo repository. Never on poetry, never with a real model — both measured configurations are below the floor |
+| One real change on the **benchmark repo**, task to verified diff to approval | **No.** Demonstrated with a scripted model on a demo repository. Never on poetry, never with a real model — no measured configuration passes at a constrained tier; `qwen3:8b` on Ollama repaired 5 of 20 floor tasks at tier 4 (#144), which is not this item's change to approval |
 | Induced mid-run failure rolls back, verified in CI | **Yes.** `rollback_after_an_induced_panic_returns_the_repo_to_its_prior_state`, plus a named `rollback-gate` job |
 | `Verdict` unforgeable — **a compile-fail test proves it** | **Yes**, as of 2026-09-20. Was an assertion checked by reading the source; now three forgery attempts with committed compiler output |
 | `ToolResult` has no pass variant | **Yes** |
@@ -1928,13 +1931,20 @@ name the test that would fail if it were reverted.
   both read. Four live instances, all moved to `concat!`, and three tests now
   assert the rendered strings carry no double space.
 
-## The S7 floor: two configurations, both below it
+## The S7 floor: four configurations, one located at tier 4
+
+Four configurations are measured. The first two, on candle at tier 2, are
+below: this section. The third, `qwen2.5:3b` Q4_K_M on Ollama, is below too
+(0 of 20). The fourth, `qwen3:8b` Q4_K_M on Ollama 0.15.6 at tier 4
+(ValidateAndRetry), repaired 5 of 20 (#144): a floor located for that
+configuration, not under constrained decoding. The third and fourth are in
+`BENCHMARK_AND_EVAL.md` §5.2 and §5.7.
 
 **Qwen2.5-0.5B-Instruct Q4_K_M, candle on CPU, tier 2**, 20 verified tasks on
 poetry 2.5.0. Full write-up and every deviation from the designed protocol in
 `BENCHMARK_AND_EVAL.md` §5.
 
-Both configurations' logs were searched for the chunked-reply client bug
+Both candle configurations' logs were searched for the chunked-reply client bug
 (#229): no logged run of either ended on it (§5.9, which gives the grep and
 the per-directory counts). Coder-3B's t18 and t19 have no log, so for them it
 is unknown; neither is in the figures below.
@@ -1969,8 +1979,9 @@ I ruled out the harness before recording that: the tokenizer round-trips
 `src/poetry/config/config.py` exactly, so the string the model produced is the
 string it meant to produce.
 
-**Two endpoints, no interval.** A floor is located by a configuration that
-*passes*, and neither of these does. Nothing here licenses "the floor is above
+**Two endpoints, no interval** — from these two. A floor is located by a
+configuration that *passes*, and neither of these does; #144's `qwen3:8b`
+gives one at tier 4, not under constrained decoding (§5.7). Nothing here licenses "the floor is above
 3B" — a 3B tuned for tool use, or the same 3B under tier 3 where a grammar
 could constrain the path against the real tree, are both untested. What the two
 runs jointly establish is narrower and still worth having: at this scale the
