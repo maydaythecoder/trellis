@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "run_id": "20261007-160447-763-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/check.py; fix it",
+  "base_commit": "a03801fd23a0427fa909ae146ee827c176f898bb",
+  "started_at": "2026-10-07T16:04:47Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9763,
+      "peak_prompt_bytes": 10461,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/check.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/check.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/commands/check.py. `old` must be text copied from the file, not reco…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 17051,
+    "prompt_tokens": 18566
+  },
+  "factual_sha256": "055543edeb4951a749173d3b143f26bf826f94ba5da0334d656f65145d721d99",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

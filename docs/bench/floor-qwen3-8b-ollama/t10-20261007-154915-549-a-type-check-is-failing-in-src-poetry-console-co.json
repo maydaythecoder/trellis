@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "run_id": "20261007-154915-549-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/about.py; fix it",
+  "base_commit": "46a72747ad10f8a0be6d22fdb2a80deb2cc698c9",
+  "started_at": "2026-10-07T15:49:15Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/console/commands/about.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": true
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9763,
+      "peak_prompt_bytes": 11349,
+      "turns_measured": 4
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/about.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/about.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/commands/about.py. `old` must be text copied from the file, not reco…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/about.py",
+        "outcome": "edited src/poetry/console/commands/about.py (applied: true, bytes 685..695)",
+        "wrote": true
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/about.py",
+        "outcome": "Typecheck: passed",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 2791,
+    "prompt_tokens": 14459
+  },
+  "factual_sha256": "d4e1dd31970205d6cad77b1e9173702144bd151216fac72ae5cd027d27efe87d",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
