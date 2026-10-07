@@ -225,6 +225,8 @@ fn colibri_runtime(base: &str, spec_model: &str, served: &str) -> String {
     // match one holding the byte it spells.
     let matches = served == spec_model;
     let (served, spec_model) = (plain(served), plain(spec_model));
+    // A `[[providers]] base_url` is the repository's text too (#499).
+    let base = plain(base);
     if matches {
         format!("colibri at {base}, serving `{served}`; the spec's model matches it")
     } else {
