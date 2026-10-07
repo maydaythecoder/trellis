@@ -77,12 +77,26 @@ pub enum SpecError {
          `anthropic:https://api.anthropic.com#claude-opus-5`"
     )]
     HostedNeedsModel(String),
+
+    /// The code point, not the spec: the spec is what holds the escape.
+    #[error(
+        "the model spec contains the control character U+{0:04X}; a spec is printed, so one \
+         carrying a terminal escape is refused rather than repeated"
+    )]
+    ControlCharacter(u32),
 }
 
 impl FromStr for ModelSpec {
     type Err = SpecError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // First, so no other refusal below quotes it (#499). A repository's
+        // `[model] spec` is untrusted and is printed by refusals, banners and
+        // the trail; ESC ... BEL in it is a terminal escape. No spec form
+        // needs a C0, DEL or C1 character, a tab or newline included.
+        if let Some(c) = s.chars().find(|c| c.is_control()) {
+            return Err(SpecError::ControlCharacter(u32::from(c)));
+        }
         let (kind, rest) = s
             .split_once(':')
             .ok_or_else(|| SpecError::NoScheme(s.to_string()))?;
@@ -311,6 +325,29 @@ mod tests {
             "openai-chat:#m",
         ] {
             assert!(s.parse::<ModelSpec>().is_err(), "{s}");
+        }
+    }
+
+    #[test]
+    fn a_spec_with_control_characters_is_refused_without_echoing_them() {
+        // #499. The risk: a cloned repository's `[model] spec` carrying a
+        // terminal escape (an OSC 52 clipboard write) printed raw by a
+        // refusal that quotes the spec or its base. Refused at the spec,
+        // whatever later prints it, and the refusal names the character
+        // rather than repeating it.
+        for s in [
+            "openai-chat:\u{1b}]52;c;dHJlbGxpcw==\u{7}#m",
+            "openai-chat:https://api.openai.com/v1\u{1b}[2J#gpt-5",
+            "anthropic:https://api.anthropic.com#claude\u{7}",
+            "provider:groq\t#m",
+            "provider:groq#m\n",
+            "vllm:http://127.0.0.1:8000\u{9b}2J",
+            "scripted:/tmp/x\u{7f}.json",
+            "\u{1b}]0;t\u{7}",
+        ] {
+            let e = s.parse::<ModelSpec>().unwrap_err().to_string();
+            assert!(!e.chars().any(char::is_control), "{s:?} echoed: {e:?}");
+            assert!(e.contains("control character"), "{s:?}: {e}");
         }
     }
 

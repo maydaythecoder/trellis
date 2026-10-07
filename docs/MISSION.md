@@ -26,9 +26,10 @@ on your machine.
 
 ## Goal state, and which of it is delivered
 
-Seven goals. **Five are delivered, two are not**, and the two that are not are
-the ones a reader would most reasonably assume from the paragraphs above. A
-mission that lists only its aims reads as a list of claims.
+Eight goals. **Five are delivered, three are not.** Two of the three, goals 3
+and 6, are the ones a reader would most reasonably assume from the paragraphs
+above; goal 8 was set on 2026-10-06 for v1.x. A mission that lists only its
+aims reads as a list of claims.
 
 | | Goal | State |
 |---|---|---|
@@ -39,6 +40,7 @@ mission that lists only its aims reads as a list of claims.
 | 5 | **The trail is durable.** Committed, agent-readable, in the repo | **Delivered**, with provenance and a SHA-256 over the factual half |
 | 6 | **It runs on your hardware**, on quantized open weights, without native tool calling | **Not demonstrated.** Two configurations measured, both below the floor: 0.5B repaired 0 of 20, Coder-3B 0 of 17. The harness drives them correctly; neither can do the work |
 | 7 | **Cost and wall-clock are bounded and visible** | **Delivered.** Budgets enforce and divide across partitions; iterations, wall clock and context fill are recorded per run |
+| 8 | **Two clients of `trellis rpc`, one engine** (v1.x): a Tauri desktop that renders a whole run, and a Go/Bubble Tea TUI that replaces the ratatui TUI at parity | **Not delivered.** Recorded in ADR 0052 (Proposed, #500); neither client is built, and the ratatui TUI is still the one that ships |
 
 Goal 6 is the one to read twice. Every mechanism it needs exists and is
 tested — constrained decoding, the adapter tiers, the loop, the rollback — and
