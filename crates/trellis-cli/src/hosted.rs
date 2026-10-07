@@ -447,13 +447,23 @@ pub(crate) fn doctor(r: &Resolved, read: bool) -> (String, String, Vec<String>) 
             .unwrap_or_default()
     );
     let mut notes = vec![
-        match std::env::var(&r.key_env) {
-            Ok(v) if !v.trim().is_empty() => format!("key: from {}, set", r.key_env),
-            _ => format!(
-                "key: {} is NOT set, so a run against this endpoint refuses before its \
-                 snapshot. Keys are read from the environment only (ADR 0024).",
-                r.key_env
-            ),
+        match ApiKey::from_env(&r.key_env) {
+            Some(_) => format!("key: from {}, set", r.key_env),
+            // The run's own call (`build`), so the note cannot disagree with
+            // what the run does: https needs a key, loopback http does not
+            // (ADR 0024 §3). No request is sent by building the client.
+            None => match HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env) {
+                Ok(_) => format!(
+                    "key: {} is not set, so a run against this endpoint goes ahead with no \
+                     key. Keys are read from the environment only (ADR 0024).",
+                    r.key_env
+                ),
+                Err(_) => format!(
+                    "key: {} is NOT set, so a run against this endpoint refuses before its \
+                     snapshot. Keys are read from the environment only (ADR 0024).",
+                    r.key_env
+                ),
+            },
         },
         if read {
             "This endpoint is on this machine, so its `/v1/models` was read to ask whether \
