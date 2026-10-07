@@ -796,9 +796,9 @@ pub fn call_json(call: &ToolCall) -> Value {
             json!({ "tool": "edit", "path": path, "old": old, "new": new })
         }
         ToolCall::RunChecks { paths, kinds } => {
-            let kinds: Vec<String> = kinds
+            let kinds: Vec<&str> = kinds
                 .iter()
-                .map(|k| format!("{k:?}").to_ascii_lowercase())
+                .map(|k| crate::wire::check_kind_name(*k))
                 .collect();
             json!({ "tool": "run_checks", "paths": paths, "kinds": kinds })
         }

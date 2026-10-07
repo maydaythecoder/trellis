@@ -32,6 +32,17 @@ pub struct RecordedCheck {
     pub passed: bool,
 }
 
+/// A recorded check kind as the model sends it in `kinds` (`typecheck`), for
+/// the resume fence. The trail stores `CheckKind`'s serde spelling
+/// (`Typecheck`) and keeps it; shown that, a model can copy it into `kinds`
+/// (#544, #547). A kind no `CheckKind` reads as is shown as stored.
+fn sent_name(stored: &str) -> &str {
+    match serde_json::from_value(serde_json::Value::String(stored.into())) {
+        Ok(kind) => trellis_checks::check_kind_name(kind),
+        Err(_) => stored,
+    }
+}
+
 /// The two shapes a check has on disk: flat, as this type writes it, and
 /// nested, as a serialized `Verdict` is (`{passed, detail: {kind, ..}}`),
 /// which is what a process agent's trail carries (ADR 0026 §11).
@@ -297,7 +308,7 @@ impl UntrustedTrail {
         for c in &self.factual.checks {
             out.push(format!(
                 "recorded check [{}]: {} (trail says {})",
-                c.kind,
+                sent_name(&c.kind),
                 c.command,
                 if c.passed { "passed" } else { "failed" }
             ));
@@ -305,7 +316,7 @@ impl UntrustedTrail {
         for c in &self.factual.check_outcomes {
             out.push(format!(
                 "recorded check [{}]: trail says {}",
-                c.kind,
+                sent_name(&c.kind),
                 if c.passed { "passed" } else { "failed" }
             ));
         }
@@ -494,6 +505,34 @@ mod tests {
             checks.iter().all(|l| l.contains("trail says")),
             "a recorded outcome is a claim about a file on disk, never about the code as it stands now: {checks:?}"
         );
+    }
+
+    #[test]
+    fn resume_fence_names_check_kinds_as_they_are_sent_not_as_the_trail_stores_them() {
+        // The fence reaches the model's prompt. Shown `[Typecheck]`, a model
+        // can copy it into `kinds`, which takes `typecheck` (#544). The trail
+        // keeps its own spelling: the same record must still serialize as
+        // `Typecheck`, so trail files do not change.
+        let json = r#"{
+          "task": "fix the return type",
+          "factual": {
+            "checks": [
+              {"kind": "Typecheck", "command": "mypy app", "exit_code": 1, "passed": false}
+            ],
+            "check_outcomes": [{"kind": "Typecheck", "passed": true}]
+          }
+        }"#;
+        let t = UntrustedTrail::from_json(json).unwrap();
+        let fence = t.context_lines().join("\n");
+        assert_eq!(
+            fence.matches("recorded check [typecheck]").count(),
+            2,
+            "{fence}"
+        );
+        assert!(!fence.contains("Typecheck"), "{fence}");
+
+        let stored = serde_json::to_string(&t.factual.check_outcomes[0]).unwrap();
+        assert_eq!(stored, r#"{"kind":"Typecheck","passed":true}"#);
     }
 
     #[test]
