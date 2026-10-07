@@ -65,6 +65,25 @@ allow = [
 # would let it into the binary's tree unreviewed.
 exceptions = [
     { crate = "libfuzzer-sys", allow = ["NCSA"] },
+# desktop-only: begin
+    # MPL-2.0 (ADR 0048 section 7), file-level copyleft: it binds edits to
+    # these crates' own files, not the binary that links them. Each ends
+    # when Tauri stops reaching it; `cargo tree -i <crate>` printed, for
+    # desktop/Cargo.lock on 2026-10-07 (#289):
+    #
+    # cssparser 0.37 <- dom_query 0.28 <- tauri-utils 2.10 <- tauri 2.12.
+    # tauri-utils reads the page's HTML with it, at build time and run time.
+    { crate = "cssparser", allow = ["MPL-2.0"] },
+    # cssparser-macros 0.7 <- cssparser 0.37 <- dom_query <- tauri-utils.
+    { crate = "cssparser-macros", allow = ["MPL-2.0"] },
+    # dtoa-short 0.3 <- cssparser 0.37 <- dom_query <- tauri-utils.
+    { crate = "dtoa-short", allow = ["MPL-2.0"] },
+    # selectors 0.38 <- dom_query 0.28 <- tauri-utils 2.10 <- tauri 2.12.
+    { crate = "selectors", allow = ["MPL-2.0"] },
+    # option-ext 0.2 <- dirs-sys 0.5 <- dirs 7 <- tauri 2.12, tauri-build
+    # 2.7 and wry 0.57: Tauri's lookup of the platform's app directories.
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+# desktop-only: end
 ]
 
 [[licenses.clarify]]
@@ -92,6 +111,18 @@ ignore = [
     # acceptable the moment TRELLIS supports a target without native atomics,
     # which no roadmap item proposes.
     "RUSTSEC-2023-0089",
+# desktop-only: begin
+    # RUSTSEC-2024-0370 (ADR 0048 section 7) — proc-macro-error is
+    # unmaintained, not vulnerable.
+    #
+    # Chain (x86_64-unknown-linux-gnu only): proc-macro-error 1.0.4 <-
+    # glib-macros 0.18.5 <- glib 0.18.5 <- gtk 0.18.2 <- muda 0.20, tao 0.37
+    # and tauri 2.12.1. A proc macro, run at build time, never linked into
+    # the binary. Tauri's Linux backend requires gtk ^0.18, so no lock
+    # update clears it; it ends when Tauri moves to gtk-rs 0.19 or later,
+    # whose macros use proc-macro-error2.
+    "RUSTSEC-2024-0370",
+# desktop-only: end
 ]
 
 [bans]
