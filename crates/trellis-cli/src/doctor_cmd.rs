@@ -249,6 +249,23 @@ fn colibri_runtime(base: &str, spec_model: &str, served: &str) -> String {
     }
 }
 
+/// The `context:` line for an identified colibri: the budget a run holds
+/// its prompt to (ADR 0047 decision 6), since colibri does not say how
+/// large its window is and the user is the one who knows its `--ctx`.
+fn colibri_context_line(budget: usize) -> String {
+    let source = if budget == hosted::COLIBRI_CONTEXT_BYTES {
+        "25,088 bytes, which fits a window of 8,192 tokens with 1,024 left for the reply \
+         at 3.5 bytes per token"
+            .to_string()
+    } else {
+        format!("{budget} bytes, from [model] context_bytes or the model's input_bytes")
+    };
+    format!(
+        "context:    colibri does not report its window; runs use {source}. \
+         Set [model] context_bytes to fit the --ctx colibri was started with"
+    )
+}
+
 /// `doctor`'s lines for what colibri's `/health` reported, each marked as
 /// colibri's own report (ADR 0047 decision 7). Every string is the
 /// server's, so each goes through [`plain`].
@@ -419,6 +436,9 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 }) => {
                     runtime = colibri_runtime(&h.base, &h.model, id);
                     colibri_lines.push("version:    not reported over HTTP".to_string());
+                    colibri_lines.push(colibri_context_line(hosted::hosted_context_bytes(
+                        &h, &repo_cfg, true,
+                    )?));
                     match health {
                         Some(Ok(hl)) => {
                             colibri_lines.extend(colibri_health_lines(hl));

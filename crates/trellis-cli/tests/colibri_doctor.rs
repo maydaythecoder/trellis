@@ -545,3 +545,47 @@ fn colibri_doctor_tier_403_without_a_key_says_none_was_sent() {
         "{note}"
     );
 }
+
+/// The `context:` line about the model's window, not the one about the
+/// repository's context files, which doctor prints under the same label.
+fn budget_line(s: &str) -> &str {
+    s.lines()
+        .find(|l| l.starts_with("context:") && l.contains("window"))
+        .unwrap_or_else(|| panic!("no `context:` line about the window in:\n{s}"))
+}
+
+#[test]
+fn colibri_context_doctor_says_colibri_does_not_report_its_window_and_names_the_budget() {
+    // The risk: a user whose colibri was started with a small `--ctx` told
+    // nothing about the budget a run will hold the prompt to, so the first
+    // they learn of it is colibri refusing a prompt or cutting a reply
+    // (ADR 0047 decision 6).
+    let (base, _) = colibri();
+    let d = repo("context", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let c = budget_line(&s);
+    assert!(c.contains("colibri does not report its window"), "{c}");
+    assert!(c.contains("25,088 bytes"), "{c}");
+    assert!(
+        c.contains("8,192 tokens") && c.contains("1,024 left for the reply"),
+        "{c}"
+    );
+    assert!(c.contains("3.5 bytes per token"), "{c}");
+    assert!(
+        c.contains("[model] context_bytes") && c.contains("--ctx"),
+        "{c}"
+    );
+}
+
+#[test]
+fn colibri_context_doctor_names_an_explicit_context_bytes_as_the_run_s_budget() {
+    // The risk: doctor printing the default when the user's own value is
+    // what the run will use.
+    let (base, _) = colibri();
+    let d = repo("context-set", Some("[model]\ncontext_bytes = 30000\n"));
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let c = budget_line(&s);
+    assert!(c.contains("colibri does not report its window"), "{c}");
+    assert!(c.contains("30000 bytes"), "{c}");
+    assert!(!c.contains("25,088"), "{c}");
+}
