@@ -108,7 +108,32 @@ fn list_models() -> Result<()> {
     Ok(())
 }
 
+/// The nine families colibri serves, spelled as ADR 0047's table spells them
+/// (and the "nine families" table in docs/runtimes/colibri.md).
+const COLIBRI_FAMILIES: [&str; 9] = [
+    "GLM-5.2/5.3",
+    "GLM-5.3-Flash",
+    "Kimi K3",
+    "DeepSeek V4 Flash",
+    "DeepSeek V4.1 Flash",
+    "Qwen3.8-Flash-Next",
+    "Qwen3.6-35B-A3B",
+    "Inkling",
+    "OLMoE",
+];
+
 fn pull_model(name: Option<&str>) -> Result<()> {
+    // ADR 0047 decision 11: a colibri container is a directory of shards
+    // that colibri fetches and checks itself, so a family name gets
+    // colibri's tooling rather than a catalogue list that never had it.
+    // Case is ignored so the served id the guide uses (`qwen3.8-flash-next`)
+    // matches too.
+    if let Some(f) = name.and_then(|n| COLIBRI_FAMILIES.iter().find(|f| f.eq_ignore_ascii_case(n)))
+    {
+        anyhow::bail!(
+            "{f} is a colibri family, and `trellis model pull` does not fetch colibri containers: get it with colibri's own tooling (`coli convert`, `coli mirror verify`); see docs/runtimes/colibri.md, Weights."
+        );
+    }
     let e = resolve(name)?;
     let dir = models_dir()?;
     std::fs::create_dir_all(&dir)?;
