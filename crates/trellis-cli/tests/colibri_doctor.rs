@@ -545,3 +545,127 @@ fn colibri_doctor_tier_403_without_a_key_says_none_was_sent() {
         "{note}"
     );
 }
+
+#[test]
+fn doctor_tier_lines_on_colibri_begin_with_a_head_the_status_bar_contract_documents() {
+    // #523. The risk: the status bar says `1, colibri glm-5.2, tools
+    // probed` while doctor says `Native (probed) — …` about the same
+    // server, so the one place a person checks the tier speaks a different
+    // vocabulary from the bar and from `get_state`. Every tier doctor can
+    // report for colibri, by name.
+    let c: serde_json::Value =
+        serde_json::from_str(include_str!("client_contract.json")).expect("the contract is JSON");
+    let shape = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+    let sep = shape["detail_separator"]
+        .as_str()
+        .expect("the contract names the separator");
+    let heads: Vec<&str> = shape["heads"]
+        .as_array()
+        .expect("the contract lists the label heads")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let post_500 = ("500 Internal Server Error", r#"{"error":"x"}"#.to_string());
+    let cases = [
+        ("colibri probed", chat(&colibri().0, "glm-5.2"), "1"),
+        (
+            "colibri assumed",
+            chat(
+                &stub_with(ok200(MODELS_COLIBRI), HEALTH_FULL.into(), post_500).0,
+                "glm-5.2",
+            ),
+            "1",
+        ),
+        (
+            "colibri refused",
+            chat(
+                &stub_with(
+                    ok200(MODELS_COLIBRI),
+                    HEALTH_FULL.into(),
+                    ("400 Bad Request", TOOLS_REFUSED_OLMOE.into()),
+                )
+                .0,
+                "glm-5.2",
+            ),
+            "1",
+        ),
+        (
+            "owned by another",
+            chat(
+                &stub(
+                    MODELS_COLIBRI.replace(r#""owned_by":"colibri""#, r#""owned_by":"vllm""#),
+                    HEALTH_FULL.into(),
+                )
+                .0,
+                "glm-5.2",
+            ),
+            "1",
+        ),
+        (
+            "vllm spec on colibri",
+            format!("vllm:{}#glm-5.2", colibri().0),
+            "4",
+        ),
+    ];
+    let d = repo("tier-lines", None);
+    for (kind, spec, want) in cases {
+        let s = ok(&doctor(&d, &["--model", &spec], None));
+        let tiers: Vec<&str> = s.lines().filter(|l| l.starts_with("tier:")).collect();
+        assert!(!tiers.is_empty(), "{kind}: no tier line\n{s}");
+        for t in tiers {
+            let body = t["tier:".len()..].trim_start();
+            let (head, detail) = body
+                .split_once(sep)
+                .unwrap_or_else(|| panic!("{kind}: no `{sep}` after a head: {t:?}"));
+            assert!(
+                heads.contains(&head) && !detail.trim().is_empty(),
+                "{kind}: {t:?} does not begin with a documented head"
+            );
+            assert_eq!(head, want, "{kind}: {t:?}");
+        }
+    }
+}
+
+/// The `context:` line about the model's window, not the one about the
+/// repository's context files, which doctor prints under the same label.
+fn budget_line(s: &str) -> &str {
+    s.lines()
+        .find(|l| l.starts_with("context:") && l.contains("window"))
+        .unwrap_or_else(|| panic!("no `context:` line about the window in:\n{s}"))
+}
+
+#[test]
+fn colibri_context_doctor_says_colibri_does_not_report_its_window_and_names_the_budget() {
+    // The risk: a user whose colibri was started with a small `--ctx` told
+    // nothing about the budget a run will hold the prompt to, so the first
+    // they learn of it is colibri refusing a prompt or cutting a reply
+    // (ADR 0047 decision 6).
+    let (base, _) = colibri();
+    let d = repo("context", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let c = budget_line(&s);
+    assert!(c.contains("colibri does not report its window"), "{c}");
+    assert!(c.contains("25,088 bytes"), "{c}");
+    assert!(
+        c.contains("8,192 tokens") && c.contains("1,024 left for the reply"),
+        "{c}"
+    );
+    assert!(c.contains("3.5 bytes per token"), "{c}");
+    assert!(
+        c.contains("[model] context_bytes") && c.contains("--ctx"),
+        "{c}"
+    );
+}
+
+#[test]
+fn colibri_context_doctor_names_an_explicit_context_bytes_as_the_run_s_budget() {
+    // The risk: doctor printing the default when the user's own value is
+    // what the run will use.
+    let (base, _) = colibri();
+    let d = repo("context-set", Some("[model]\ncontext_bytes = 30000\n"));
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let c = budget_line(&s);
+    assert!(c.contains("colibri does not report its window"), "{c}");
+    assert!(c.contains("30000 bytes"), "{c}");
+    assert!(!c.contains("25,088"), "{c}");
+}

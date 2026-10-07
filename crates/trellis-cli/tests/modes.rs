@@ -2928,6 +2928,65 @@ fn rpc_classify_refuses_prompt_steer_and_classify_while_one_is_pending() {
 }
 
 #[test]
+fn rpc_classify_abort_drops_the_request_and_frees_the_slot() {
+    // The risk (#522): a pending classify refuses `prompt` with "(abort
+    // it, or wait)", but `abort` answered "no run in progress", so the
+    // only way out short of waiting up to `[model] timeout_s` was `quit`,
+    // which ends the session. `abort` must close the model request, write
+    // no answer to it, and leave the next `prompt` accepted.
+    let stub = holding_stub();
+    let (f, mut rpc) = rpc_on_stub("rpc-classify-abort", &stub.base);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "what is f?"}));
+    stub.arrived
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the classify request reached the model");
+    rpc.send(serde_json::json!({"id": "a", "type": "abort"}));
+    let a = rpc.next(|v| v["type"] == "response" && v["id"] == "a");
+    assert_eq!(a["command"], "abort", "{a}");
+    assert_eq!(a["success"], true, "{a}");
+    assert_eq!(stub.thread.join().unwrap(), Held::Closed);
+    rpc.send(serde_json::json!({"id": "p", "type": "prompt", "task": "change f", "model": f.spec}));
+    let p = rpc.next(|v| v["type"] == "response" && v["id"] == "p");
+    assert_eq!(p["success"], true, "{p}");
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    let records = rpc.finish();
+    assert!(
+        !records.iter().any(|r| r["id"] == "c"),
+        "the aborted classify was answered: {records:?}"
+    );
+}
+
+#[test]
+fn rpc_get_state_classifying_is_true_while_one_is_pending_and_false_after() {
+    // The risk (#522): with a classify pending, `get_state` said only
+    // `running: false`, so a client could not show the session busy while
+    // `prompt` was being refused.
+    let c = contract();
+    assert!(
+        names(&c["rpc"]["commands"]["get_state"]["data"]["always"]).contains(&"classifying"),
+        "the contract does not list get_state's classifying"
+    );
+    let stub = holding_stub();
+    let (_f, mut rpc) = rpc_on_stub("rpc-classify-state", &stub.base);
+    assert_eq!(state(&mut rpc, "s0")["classifying"], false);
+    rpc.send(serde_json::json!({"id": "c", "type": "classify", "text": "what is f?"}));
+    stub.arrived
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the classify request reached the model");
+    let during = state(&mut rpc, "s1");
+    assert_eq!(during["classifying"], true, "{during}");
+    assert_eq!(
+        during["running"], false,
+        "a classify is not a run: {during}"
+    );
+    stub.release.send(openai_text("f returns 1")).unwrap();
+    rpc.next(|v| v["type"] == "response" && v["id"] == "c");
+    assert_eq!(state(&mut rpc, "s2")["classifying"], false);
+    rpc.finish();
+    assert_eq!(stub.thread.join().unwrap(), Held::Released);
+}
+
+#[test]
 fn rpc_classify_refuses_text_that_is_missing_empty_or_not_a_string() {
     // The risk: a client bug that sends no text gets a model's guess about
     // nothing, read as routing.
