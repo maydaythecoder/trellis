@@ -15,7 +15,7 @@ Severity: **critical** kills the product claim · **high** breaks a goal state �
 | S4 | Grounding contract erodes | critical | likely | patched structurally |
 | S5 | Single-owner orchestrator serializes; small context windows | high | likely | measurement pending |
 | S6 | Degradation UX undesigned | critical | certain | ADR 0014 landed, Q-6 open |
-| S7 | Model floor unknown | critical | certain | three configurations measured (BENCHMARK_AND_EVAL.md §5.2), all below the floor |
+| S7 | Model floor unknown | critical | certain | four configurations measured (BENCHMARK_AND_EVAL.md §5.2); the floor is located only at tier 4 (`qwen3:8b` Q4_K_M on Ollama repaired 5 of 20), not under constrained decoding (§5.7) |
 | S8 | Budgets uncalibrated; cost profile inverts | medium | certain | instrumented, uncalibrated |
 | S9 | Scale unvalidated | medium | likely | partially measured |
 | S10 | Trail is an injection and propagation surface | high | possible | patched structurally |
