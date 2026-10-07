@@ -1054,23 +1054,26 @@ fn repo_lines(root: &Path, cfg: &config::RepoConfig) -> Vec<String> {
 ///
 /// The milestone document's mockup shows `Floor  above measured minimum ✓`.
 /// **TRELLIS cannot know that**, and saying it would be the exact failure S7
-/// exists to prevent. A floor is an interval located by a configuration that
-/// *passes*; three have been measured and all are below it, so there is no
-/// minimum to be above. The honest line says so and points at the evidence.
+/// exists to prevent. A floor is located by a configuration that *passes*;
+/// four have been measured and only one, at tier 4 (not under constrained
+/// decoding), repaired any task, so whether *this* model is above it is
+/// unknown. The honest line says what was measured and points at the
+/// evidence.
 fn floor_line(model_configured: bool) -> String {
     if model_configured {
         concat!(
-            "floor:      unknown for this model. The S7 floor is not located: three ",
-            "configurations\n            have been measured (0.5B, Coder-3B, qwen2.5:3b/Ollama) ",
-            "and all failed every task,\n            so there is no measured minimum to be above. ",
-            "See BENCHMARK_AND_EVAL.md §5."
+            "floor:      unknown for this model. Four configurations measured for S7: three ",
+            "repaired no task,\n            and the floor is located only at tier 4 (qwen3:8b ",
+            "Q4_K_M via ollama repaired 5/20),\n            not under constrained decoding. ",
+            "See BENCHMARK_AND_EVAL.md §5.7."
         )
         .to_string()
     } else {
         concat!(
-            "floor:      not applicable without --model. The S7 floor is not located ",
-            "either:\n            three configurations measured, all below it. See ",
-            "BENCHMARK_AND_EVAL.md §5."
+            "floor:      not applicable without --model. Four configurations measured for S7: ",
+            "the floor is\n            located only at tier 4 (qwen3:8b Q4_K_M via ollama ",
+            "repaired 5/20), not under\n            constrained decoding. See ",
+            "BENCHMARK_AND_EVAL.md §5.7."
         )
         .to_string()
     }
@@ -1221,17 +1224,20 @@ mod doctor_tests {
     }
 
     /// The mockup's `Floor  above measured minimum ✓` is a claim TRELLIS
-    /// cannot make. A floor is located by a configuration that *passes*; three
-    /// have been measured and all failed every task, so there is no minimum
-    /// to be above. Printing the tick would be the exact failure S7 exists to
-    /// prevent.
+    /// cannot make. A floor is located by a configuration that *passes*; of
+    /// four measured, only one did, at tier 4 and not under constrained
+    /// decoding, so there is no minimum this model is known to be above.
+    /// Printing the tick would be the exact failure S7 exists to prevent.
     #[test]
     fn the_floor_line_never_claims_a_minimum_that_was_never_located() {
         for configured in [true, false] {
             let line = floor_line(configured);
+            // The wrap differs between the two branches; compare the words.
+            let words = line.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(
-                line.contains("not located"),
-                "the floor is an interval and neither endpoint passes: {line}"
+                words.contains("located only at tier 4")
+                    && words.contains("not under constrained decoding"),
+                "the floor is located only at tier 4, not under constraint: {line}"
             );
             assert!(
                 !line.contains("above measured minimum"),
