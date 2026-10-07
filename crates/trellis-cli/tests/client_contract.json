@@ -1,11 +1,16 @@
 {
-  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\". A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another. A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
+  "about": "The rpc and log --json fields a client may rely on (ADR 0048 section 6, ADR 0025 sections 4 and 5), held by tests in tests/modes.rs. An event's fields are under its \"fields\" object, beside \"message\": those always present, those present only in the case a list is named for (a blast_radius turn, a prompt-sending driver, a response header the endpoint sent), and, under \"absent_when\", when a listed field is still left off. A figure trellis did not measure is absent, never 0. A response's data, per command, is under \"responses\": the fields always in it, and those present only for one value of another. A response's id is the id its command was sent with, and a run's run_start and run_end carry the id of the prompt that started it. Fields not listed here are unversioned.",
   "rpc": {
     "events": {
       "turn": {
-        "always": ["turn", "call", "verdict", "check_kind", "observation"],
+        "always": ["turn", "call", "verdict", "check_kind", "observation", "model_ms"],
         "blast_radius_only": ["resolved", "candidates", "unresolved"],
-        "prompt_driver_only": ["prompt_bytes"],
+        "prompt_driver_only": ["prompt_bytes", "completion_tokens"],
+        "response_header_only": ["queue_wait_ms"],
+        "absent_when": {
+          "completion_tokens": "a reply the step read reported no output tokens; the provider stub's replies all report them",
+          "queue_wait_ms": "a reply the step read carried no x-colibri-queue-wait-ms header"
+        },
         "verdict_values": ["None", "Some(true)", "Some(false)"]
       },
       "run budget": {

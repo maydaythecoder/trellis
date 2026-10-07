@@ -8,10 +8,11 @@
 //! way.
 //!
 //! What it shows is what trellis reported (ADR 0048 §8): radius is three
-//! counts and never a ratio (CLAUDE.md rule 3); the budget is iterations and
-//! prompt bytes, as the TUI's has been since #243, because no rpc event
-//! carries a token count; and a figure trellis did not report is `null` in
-//! the view, never 0. Every string in the view is trellis- or model-supplied
+//! counts and never a ratio (CLAUDE.md rule 3); the budget is iterations,
+//! the last turn's prompt in bytes (no per-turn prompt token count reaches
+//! the stream) and its reply in output tokens, with the TUI's rate and queue
+//! wait (#312); and a figure trellis did not report is `null` in the view,
+//! never 0. Every string in the view is trellis- or model-supplied
 //! text, which the page writes through `textContent` only (ADR 0007, S10).
 
 use crate::frames::{ApprovalRequest, Frame, RunEnd, Turn};
@@ -112,6 +113,9 @@ struct Action {
     /// Whether the turn changed the tree: an applied `edit`, or a
     /// `write_file` that created its file.
     wrote: bool,
+    /// The turn's own figures, `None` when it reported none.
+    prompt_bytes: Option<u64>,
+    completion_tokens: Option<u64>,
 }
 
 /// A check that ran: its kind and whether it passed.
@@ -140,6 +144,34 @@ struct Budget {
     /// The latest turn's prompt size; `None` for a turn that reported none
     /// (a scripted run), not 0.
     prompt_bytes: Option<u64>,
+    /// The latest turn's figures, as it reported them: never summed across
+    /// turns, and `None` when unreported.
+    completion_tokens: Option<u64>,
+    model_ms: Option<u64>,
+    queue_wait_ms: Option<u64>,
+}
+
+impl Budget {
+    /// The last turn's output rate and queue wait as text, by COL-11's rule
+    /// (`crates/tui-demo/src/tui/view.rs`'s `turn_rate`), so the desktop and
+    /// the TUI never disagree: output tokens over the model call's wall time
+    /// less the queue wait (0 when unreported), and the wait, each in
+    /// seconds to one decimal place. Nothing is estimated: without output
+    /// tokens there is neither, and with no model time left after the wait
+    /// there is no rate.
+    fn rate_and_queue(&self) -> (Option<String>, Option<String>) {
+        let Some(tokens) = self.completion_tokens else {
+            return (None, None);
+        };
+        let rate = self.model_ms.and_then(|model_ms| {
+            let decoding_ms = model_ms.saturating_sub(self.queue_wait_ms.unwrap_or(0));
+            (decoding_ms > 0).then(|| format!("{:.1}", tokens as f64 * 1000.0 / decoding_ms as f64))
+        });
+        let queued = self
+            .queue_wait_ms
+            .map(|ms| format!("{:.1}", ms as f64 / 1000.0));
+        (rate, queued)
+    }
 }
 
 /// The desktop's run panes.
@@ -248,7 +280,11 @@ impl DesktopState {
             Pane::Actions => Value::Array(
                 self.actions
                     .iter()
-                    .map(|a| json!({"tool": a.tool, "target": a.target, "wrote": a.wrote}))
+                    .map(|a| {
+                        json!({"tool": a.tool, "target": a.target, "wrote": a.wrote,
+                               "prompt_bytes": a.prompt_bytes,
+                               "completion_tokens": a.completion_tokens})
+                    })
                     .collect(),
             ),
             Pane::Edits => json!(self.edits),
@@ -268,11 +304,19 @@ impl DesktopState {
                 }),
                 None => Value::Null,
             },
-            Pane::Budget => json!({
-                "turn": self.budget.turn,
-                "max_turns": self.budget.max_turns,
-                "prompt_bytes": self.budget.prompt_bytes,
-            }),
+            Pane::Budget => {
+                let (rate, queued) = self.budget.rate_and_queue();
+                json!({
+                    "turn": self.budget.turn,
+                    "max_turns": self.budget.max_turns,
+                    "prompt_bytes": self.budget.prompt_bytes,
+                    "completion_tokens": self.budget.completion_tokens,
+                    "model_ms": self.budget.model_ms,
+                    "queue_wait_ms": self.budget.queue_wait_ms,
+                    "tokens_per_second": rate,
+                    "queued_seconds": queued,
+                })
+            }
             Pane::Approvals => Value::Array(
                 self.approvals
                     .iter()
@@ -330,6 +374,8 @@ impl DesktopState {
             tool: parts.next().unwrap_or_default().to_string(),
             target: parts.next().unwrap_or_default().to_string(),
             wrote,
+            prompt_bytes: t.prompt_bytes,
+            completion_tokens: t.completion_tokens,
         });
         if wrote && let Some(path) = t.call.split_whitespace().nth(1) {
             self.edits.push(path.to_string());
@@ -358,6 +404,9 @@ impl DesktopState {
 
         self.budget.turn = Some(t.turn);
         self.budget.prompt_bytes = t.prompt_bytes;
+        self.budget.completion_tokens = t.completion_tokens;
+        self.budget.model_ms = t.model_ms;
+        self.budget.queue_wait_ms = t.queue_wait_ms;
         c
     }
 
@@ -436,7 +485,8 @@ mod tests {
         let v = all(&s);
         assert_eq!(
             v["actions"],
-            json!([{"tool": "read_file", "target": "app/core.py", "wrote": false}])
+            json!([{"tool": "read_file", "target": "app/core.py", "wrote": false,
+                    "prompt_bytes": null, "completion_tokens": null}])
         );
         assert_eq!(
             v["transcript"],
@@ -620,7 +670,9 @@ mod tests {
         let v = all(&s);
         assert_eq!(
             v["budget"],
-            json!({"turn": 1, "max_turns": 40, "prompt_bytes": 9800})
+            json!({"turn": 1, "max_turns": 40, "prompt_bytes": 9800,
+                   "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
+                   "tokens_per_second": null, "queued_seconds": null})
         );
 
         // A scripted turn: no prompt was sent, so no size is reported.
@@ -637,12 +689,118 @@ mod tests {
             v["budget"]["prompt_bytes"].is_null(),
             "unreported, not 0: {v}"
         );
+        // The prompt is in bytes: no per-turn prompt token count reaches
+        // the stream, so the only token figures are the reply's (#312).
         let mut ks = Vec::new();
         keys(&v["budget"], &mut ks);
-        assert!(
-            ks.iter().all(|k| !k.contains("token")),
-            "no rpc event carries a token count: {ks:?}"
+        let tokens: Vec<&String> = ks.iter().filter(|k| k.contains("token")).collect();
+        assert_eq!(
+            tokens,
+            ["completion_tokens", "tokens_per_second"],
+            "a prompt figure labelled tokens: {ks:?}"
         );
+    }
+
+    /// The budget view after one provider turn reporting `usage`'s fields.
+    fn budget_after(usage: Value) -> Value {
+        let mut s = DesktopState::default();
+        let mut f = json!({"turn": 1, "call": "read_file a.py", "verdict": "None",
+                           "check_kind": "", "observation": "", "prompt_bytes": 900});
+        f.as_object_mut()
+            .unwrap()
+            .extend(usage.as_object().unwrap().clone());
+        feed(&mut s, &turn(f));
+        all(&s)["budget"].clone()
+    }
+
+    #[test]
+    fn turn_usage_rate_excludes_queue_wait() {
+        // The risk (#257, COL-11): a rate over the whole call reads a turn
+        // that sat in colibri's queue as a slow model. 30 tokens in 25 s
+        // with 10 s queued is 2.0 tok/s, not 1.2, the figures the TUI's
+        // `budget_line_rate_excludes_queue_wait` shows.
+        let b = budget_after(
+            json!({"completion_tokens": 30, "model_ms": 25000, "queue_wait_ms": 10000}),
+        );
+        assert_eq!(b["completion_tokens"], 30, "{b}");
+        assert_eq!(b["model_ms"], 25000, "{b}");
+        assert_eq!(b["queue_wait_ms"], 10000, "{b}");
+        assert_eq!(b["tokens_per_second"], "2.0", "{b}");
+        assert_eq!(b["queued_seconds"], "10.0", "{b}");
+    }
+
+    #[test]
+    fn turn_usage_unknown_queue_wait_counts_as_zero_and_shows_nothing() {
+        // The risk: an unreported wait shown as "queued 0.0 s" claims the
+        // runtime said the turn never queued.
+        let b = budget_after(json!({"completion_tokens": 30, "model_ms": 15000}));
+        assert_eq!(b["tokens_per_second"], "2.0", "{b}");
+        assert!(b["queue_wait_ms"].is_null(), "{b}");
+        assert!(b["queued_seconds"].is_null(), "{b}");
+    }
+
+    #[test]
+    fn turn_usage_rate_needs_model_time_beyond_the_queue_wait() {
+        // The risk: a call that was all queue divides by zero, or draws an
+        // infinite rate, where there is no rate to draw.
+        let b = budget_after(
+            json!({"completion_tokens": 30, "model_ms": 10000, "queue_wait_ms": 10000}),
+        );
+        assert!(b["tokens_per_second"].is_null(), "{b}");
+        assert_eq!(b["queued_seconds"], "10.0", "{b}");
+    }
+
+    #[test]
+    fn turn_usage_without_output_tokens_has_no_rate() {
+        // The risk: a provider that reported no output tokens drawn as
+        // "0 tok, 0.0 tok/s", which reads as a stuck turn. Absent is null.
+        let b = budget_after(json!({"model_ms": 25000, "queue_wait_ms": 10000}));
+        assert!(b["completion_tokens"].is_null(), "{b}");
+        assert!(b["tokens_per_second"].is_null(), "{b}");
+        assert!(b["queued_seconds"].is_null(), "{b}");
+        assert_eq!(b["model_ms"], 25000, "the call's time was reported: {b}");
+    }
+
+    #[test]
+    fn turn_usage_is_per_turn_and_never_summed() {
+        // The risk: the budget adds turns' output tokens into a run total
+        // nobody reported, or an action shows another turn's figure.
+        let mut s = DesktopState::default();
+        feed(
+            &mut s,
+            &turn(
+                json!({"turn": 1, "call": "read_file a.py", "verdict": "None",
+                         "check_kind": "", "observation": "", "prompt_bytes": 900,
+                         "completion_tokens": 3, "model_ms": 1000}),
+            ),
+        );
+        feed(
+            &mut s,
+            &turn(json!({"turn": 2, "call": "done ok", "verdict": "None",
+                         "check_kind": "", "observation": "", "prompt_bytes": 1200,
+                         "completion_tokens": 5, "model_ms": 1000})),
+        );
+        let v = all(&s);
+        assert_eq!(v["budget"]["completion_tokens"], 5, "{v}");
+        assert_eq!(v["budget"]["prompt_bytes"], 1200, "{v}");
+        let per_action: Vec<(Value, Value)> = v["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["prompt_bytes"].clone(), a["completion_tokens"].clone()))
+            .collect();
+        assert_eq!(
+            per_action,
+            [(json!(900), json!(3)), (json!(1200), json!(5))],
+            "{v}"
+        );
+        let mut ks = Vec::new();
+        keys(&v, &mut ks);
+        let bad: Vec<&String> = ks
+            .iter()
+            .filter(|k| k.contains("total") || k.contains("sum"))
+            .collect();
+        assert!(bad.is_empty(), "the view sums turns: {bad:?} in {v}");
     }
 
     #[test]
@@ -684,7 +842,9 @@ mod tests {
         assert_eq!(v["radius"], Value::Null);
         assert_eq!(
             v["budget"],
-            json!({"turn": null, "max_turns": null, "prompt_bytes": null})
+            json!({"turn": null, "max_turns": null, "prompt_bytes": null,
+                   "completion_tokens": null, "model_ms": null, "queue_wait_ms": null,
+                   "tokens_per_second": null, "queued_seconds": null})
         );
         assert_eq!(v["approvals"], json!([]));
         assert_eq!(v["outcome"], Value::Null);
@@ -827,8 +987,9 @@ mod tests {
             return vals.last().cloned().expect("a non-empty value list");
         }
         match field {
-            "turn" | "resolved" | "candidates" | "unresolved" | "prompt_bytes"
-            | "max_iterations" | "after_step" | "version" | "exit" => {
+            "turn" | "resolved" | "candidates" | "unresolved" | "prompt_bytes" | "model_ms"
+            | "completion_tokens" | "queue_wait_ms" | "max_iterations" | "after_step"
+            | "version" | "exit" => {
                 *n += 1;
                 json!(*n)
             }
