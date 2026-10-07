@@ -164,4 +164,9 @@ macOS runner exists. The ticket plan, by wave, is ADR 0052's last section.
 ## v2.0 — each needing its own brief
 
 More languages. Cloud execution. Shared environments. Messaging and scheduling.
-Desktop and web surfaces. MCP exposure. Template sharing. Multi-user.
+Web surfaces. MCP exposure. Template sharing. Multi-user.
+
+*2026-10-07 (#515), amended by ADR 0052:* "Desktop" left this list. The
+desktop is a v1.x client of `trellis rpc`; see "v1.x — Clients" above and
+[ADR 0052](adr/0052-two-rpc-clients-and-go-for-the-tui.md). Web surfaces stay
+in v2.0.
