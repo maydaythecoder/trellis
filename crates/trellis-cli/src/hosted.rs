@@ -315,8 +315,8 @@ pub(crate) const HOSTED_CONTEXT_BYTES: usize = 400_000;
 /// the room the prompt leaves in it, so the hosted default would let the
 /// prompt fill the window and leave a turn no room for its tool call. An
 /// 8,192-token window, the default of five families and the one doctor's
-/// `context:` line names (COL-09's runtime page is to ask `--ctx` for
-/// it), less a 1,024-token reply reserve (`coli run`'s
+/// `context:` line names (docs/runtimes/colibri.md asks `--ctx` for it),
+/// less a 1,024-token reply reserve (`coli run`'s
 /// `default_max_output`, TRELLIS's choice of reserve), at ADR 0033's 3.5
 /// bytes per token. That ratio was measured on
 /// no colibri tokenizer: a figure below it from COL-12 recomputes this.
