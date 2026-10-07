@@ -1,7 +1,7 @@
 # ADR 0052 — Two `trellis rpc` clients: a rendering Tauri desktop, and a Go TUI that replaces ratatui
 
-**Status:** Proposed. The owner accepts it on #500 (G7); until then nothing
-below is built on.
+**Status:** Accepted (owner-directed). The owner accepted it on #500 (G7)
+on 2026-10-07.
 **Date:** 2026-10-06
 **Decided by:** the owner, 2026-10-06, in session ("have a fully rendering
 tauri desktop option and a tui using go and bubble tea"), with the decisions
@@ -13,7 +13,7 @@ ADR 0025 §5 is the only way a client drives trellis; ADR 0048 sections 3, 4,
 6, 8, 9 and 10 apply to both clients unchanged, and its sections 1, 5 and 7
 stay the desktop's (`tui/` has its own counterparts in sections 3 and 5
 below).
-**Amends (each pending acceptance):** ADR 0048 (its Context list and section
+**Amends:** ADR 0048 (its Context list and section
 5: the Go toolchain is an accepted cost and Node is still refused; section 2:
 a client may show stderr in a capped pane); ADR 0021 row 11; ADR 0050
 section 1 (bare `trellis` hands off at parity).
@@ -206,3 +206,7 @@ ADR is accepted. `∥` marks tickets that can run in parallel.
 - **Wave 6, launch switch:** T8, the handoff and its ADR 0050 amendment.
   risk:high (G7).
 - **Wave 7, retire the Rust TUI:** T9, one release after T8. risk:high (G7).
+
+## Amendment 2026-10-07: keys for the TUI's own rpc child (#514)
+
+TRELLIS scrubs provider-key variables from every child it starts (`tests/child_env.rs`), but `trellis-tui` starts its own `trellis rpc`, which needs the user's keys for hosted models. Owner decision (#514): the handoff from `trellis` to the sibling `trellis-tui` passes the environment unchanged, as one named exception held by a test. Every other child stays scrubbed.
