@@ -37,7 +37,7 @@ desktop (ADR 0048); `--web` serves the desktop's page on 127.0.0.1 (section
 5). They are the only flags this adds. At most one of the three is accepted,
 and one given with a subcommand is refused naming both. Without a terminal
 (a pipe, a redirect, CI) bare `trellis` keeps today's behaviour.
-*Amended 2026-10-06 (#500), proposed by ADR 0052, pending acceptance:* once
+*Amended 2026-10-06 (#500), by ADR 0052, accepted 2026-10-07:* once
 the Go TUI reaches parity (ADR 0052 section 7), bare `trellis` and `--tui`
 keep first-run (section 2) and the start screen (section 3), then hand off
 to `trellis-tui`, the sibling of `current_exe()`, falling back to the
