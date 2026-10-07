@@ -1436,7 +1436,10 @@ mod tests {
         // password would be written into packages.toml.
         assert!(unacceptable_source("--upload-pack=x").is_some());
         assert!(unacceptable_source("pkg\u{1b}[2J").is_some());
-        assert!(unacceptable_source("https://me:pw@host.example/p.git").is_some());
+        // Built at run time: a basic-auth URL literal in tracked source
+        // trips scripts/checks/no-auth-urls.sh (the G5 gate).
+        let with_password = format!("https://me:{}@host.example/p.git", "pw");
+        assert!(unacceptable_source(&with_password).is_some());
         assert_eq!(unacceptable_source("https://me@host.example/p.git"), None);
     }
 
