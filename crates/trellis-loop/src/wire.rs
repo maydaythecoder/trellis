@@ -132,23 +132,9 @@ pub(crate) const CHECK_KINDS: [CheckKind; 4] = [
     CheckKind::Governance,
 ];
 
-/// The name a check kind is sent by in `kinds`, and so the only spelling of
-/// it the model may be shown: a call, an observation, an elided note.
-///
-/// One table, read by the parser above and by everything that renders a
-/// kind for the model. `CheckKind`'s own serde spelling (`Typecheck`) is the
-/// trail's on-disk form and stays as it is; its Debug form is the same
-/// word, and a model shown `Typecheck: FAILED` can copy it, as qwen3:8b
-/// copied `RunChecks` (#541, #544). The match is exhaustive, so a new kind
-/// cannot be added without a name here.
-pub(crate) fn check_kind_name(kind: CheckKind) -> &'static str {
-    match kind {
-        CheckKind::Typecheck => "typecheck",
-        CheckKind::Tests => "tests",
-        CheckKind::Import => "import",
-        CheckKind::Governance => "governance",
-    }
-}
+/// The name a check kind is sent by in `kinds`. Defined beside `CheckKind`
+/// so the trail's resume fence reads the same table (#547).
+pub(crate) use trellis_checks::check_kind_name;
 
 fn default_kinds() -> Vec<String> {
     vec!["typecheck".into()]

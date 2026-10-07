@@ -2320,8 +2320,8 @@ rank = \"non-negotiable\"
             source: ".trellis/runs/20260919-000000-000-earlier.json".into(),
             lines: vec![
                 "previous task: fix the type error".into(),
-                "recorded check [Typecheck]: mypy (trail says passed)".into(),
-                "recorded check [Tests]: pytest -q (trail says passed)".into(),
+                "recorded check [typecheck]: mypy (trail says passed)".into(),
+                "recorded check [tests]: pytest -q (trail says passed)".into(),
             ],
         };
 
