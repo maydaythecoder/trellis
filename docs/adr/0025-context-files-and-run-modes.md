@@ -691,6 +691,16 @@ on stderr.
     it. `quit` drops the request (its connection closes), writes no answer
     to it, whole or partial, and exits; end of input waits for the answer,
     so `printf '{"type":"classify",…}\n' | trellis rpc` still prints one.*
+    *Amended 2026-10-07 (#522): the refusal offers "abort it", so `abort`
+    now reaches a pending classify: it drops the request as `quit` does
+    (the connection closes, no answer to it is written, whole or partial)
+    and answers `success` true with `undelivered: []`, after which the next
+    `prompt` is accepted; if the model had already answered, that answer
+    stands and `abort` says "no run in progress". `get_state` carries
+    `classifying`, true while one is pending (`running` stays false: it is
+    not a run), listed in `tests/client_contract.json`. Evidence, each
+    failing before: `rpc_classify_abort_drops_the_request_and_frees_the_slot`
+    and `rpc_get_state_classifying_is_true_while_one_is_pending_and_false_after`.*
   - Evidence, in `tests/modes.rs` through the binary over stdio against
     the provider stub, each failing before ("unknown command `classify`"):
     `rpc_classify_answers_a_question_as_data_and_starts_no_run` (an answer

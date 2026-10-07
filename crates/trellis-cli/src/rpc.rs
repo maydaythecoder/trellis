@@ -37,10 +37,13 @@ const COMMANDS: &[(&str, &str)] = &[
         "prompt",
         "run a task as `trellis run` does: {task, focus?, prompt?, args?, skill?, model?, control?}",
     ),
-    ("abort", "interrupt the run in flight; it rolls back"),
+    (
+        "abort",
+        "interrupt the run in flight; it rolls back. Or drop a pending classify, unanswered",
+    ),
     (
         "get_state",
-        "whether a run is in flight, the model, the last run",
+        "whether a run is in flight or a classify pending, the model, the last run",
     ),
     ("get_messages", "the current or last run's turns"),
     ("set_model", "the model for later prompts: {model}"),
@@ -111,7 +114,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
-    ("quit", "abort any run, wait for its rollback, exit"),
+    (
+        "quit",
+        "abort any run, wait for its rollback, drop any pending classify, exit",
+    ),
 ];
 
 /// The ids of the trails this process's runs wrote, in order, for
@@ -579,7 +585,8 @@ struct Classifying {
     /// response, so a command read after that response is not refused while
     /// the thread finishes the write.
     answered: Arc<AtomicBool>,
-    /// Sent by `quit`: the request is dropped and nothing is written.
+    /// Sent by `quit` or `abort`: the request is dropped and nothing is
+    /// written.
     cancel: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -952,6 +959,23 @@ impl Server {
     /// it can still deliver a steer to a request, and an answer given before
     /// then could name as undelivered a steer the model was sent.
     fn abort(&mut self, id: Option<&str>) {
+        // A pending classify holds the slot `prompt` is refused for, in
+        // words that offer `abort` (#522). It is dropped as `quit` drops
+        // it; no steer can have reached it, so none is undelivered.
+        if self.classify_pending()
+            && let Some(c) = self.classifying.take()
+        {
+            let _ = c.cancel.send(());
+            let _ = c.thread.join();
+            // The model answered before the cancel was seen, and that
+            // answer was written: there was nothing left to abort.
+            if c.answered.load(Ordering::SeqCst) {
+                self.respond(id, "abort", Err("no run in progress".into()));
+            } else {
+                self.respond(id, "abort", Ok(json!({"undelivered": []})));
+            }
+            return;
+        }
         if !self.in_flight() {
             self.respond(id, "abort", Err("no run in progress".into()));
             return;
@@ -1059,6 +1083,8 @@ impl Server {
                     .unwrap_or_default();
                 let data = json!({
                     "running": running,
+                    // Not a run, but it holds the slot `prompt` needs (#522).
+                    "classifying": self.classify_pending(),
                     "run_request_id": self.running.as_ref().and_then(|r| r.current().id),
                     "model": self.model(None).ok(),
                     "root": self.root.display().to_string(),
@@ -1232,11 +1258,11 @@ impl Server {
     /// an answer then could be read as one about the run. Asked on its own
     /// thread (#518), so the reader still reads `quit`; while it is pending
     /// it holds that same gate, so no `prompt`, `steer` or second `classify`
-    /// can put a model request beside it. `quit` drops it unanswered; end of
-    /// input waits for its answer. The request is bounded by `[model]
-    /// timeout_s`. `text` is the client's and goes to the model as data; the
-    /// answer is model text and goes back as a JSON string through `frame`,
-    /// never as a record.
+    /// can put a model request beside it. `abort` and `quit` drop it
+    /// unanswered (#522); end of input waits for its answer. The request is
+    /// bounded by `[model] timeout_s`. `text` is the client's and goes to
+    /// the model as data; the answer is model text and goes back as a JSON
+    /// string through `frame`, never as a record.
     ///
     /// Everything cheap is checked here, as `prompt` checks it, and an
     /// error is returned for the caller to answer; once the thread starts,

@@ -61,7 +61,7 @@
     "commands": {
       "get_state": {
         "data": {
-          "always": ["tier"],
+          "always": ["tier", "classifying"],
           "null_when": {
             "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
           },
