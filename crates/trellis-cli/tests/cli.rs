@@ -4051,12 +4051,14 @@ fn doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency() {
 }
 
 #[test]
-fn banner_escapes_esc_and_a_c1_control_in_the_repository_model_spec() {
+fn a_repository_model_spec_with_esc_and_a_c1_control_never_reaches_the_banner() {
     // #492. The risk: a cloned repository chooses `[model] spec`, and the
     // banner's `model:` line echoed its model id raw, so ESC or a C1 CSI in
     // it could repaint the line a person reads before the run starts. TOML
     // decodes `\u001b` and `\u009b` to the real characters, which a command
-    // line cannot be relied on to carry.
+    // line cannot be relied on to carry. Since #499 such a spec is refused
+    // at parse, before any banner, and the refusal names the character
+    // without repeating it.
     let d = repo("banner-escapes-spec");
     let base = llamacpp_with_slots(1).replace("llamacpp:", "");
     std::fs::create_dir_all(d.join(".trellis")).unwrap();
@@ -4068,15 +4070,10 @@ fn banner_escapes_esc_and_a_c1_control_in_the_repository_model_spec() {
     git(&d, &["add", "-A"]);
     git(&d, &["commit", "-qm", "spec with controls"]);
     let out = run(&d, &["run", "make greet louder"]);
-    let said = stdout(&out);
-    let model = said
-        .lines()
-        .find(|l| l.starts_with("model:"))
-        .unwrap_or_else(|| panic!("no model: line in {}", combined(&out)));
-    assert!(
-        model.contains("model glm\\u{1b}[2J\\u{9b}31m,"),
-        "{model:?}"
-    );
+    let said = combined(&out);
+    assert!(!out.status.success(), "{said:?}");
+    assert!(said.contains("control character U+001B"), "{said:?}");
+    assert!(!said.contains("snapshot at"), "{said:?}");
     assert!(!said.contains('\x1b'), "{said:?}");
     assert!(!said.contains('\u{9b}'), "{said:?}");
     let _ = std::fs::remove_dir_all(&d);

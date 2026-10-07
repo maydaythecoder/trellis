@@ -500,6 +500,320 @@ fn a_repository_that_names_the_key_variable_is_refused_at_load() {
 }
 
 // ---------------------------------------------------------------------------
+// Control characters in a spec or an endpoint base (#499)
+//
+// The repository's `[model] spec` and `[[providers]] base_url` are
+// untrusted. A base carrying ESC ... BEL printed raw is a terminal escape
+// (an OSC 52 clipboard write here) from a cloned repository. The spec is
+// refused at parse; a `base_url` is not a spec, so every place that prints
+// one escapes it. `plain` writes ESC as `\u{1b}` and BEL as `\u{7}`.
+// ---------------------------------------------------------------------------
+
+/// An OSC 52 clipboard write, as TOML escapes so the config file holds the
+/// raw bytes once parsed.
+const OSC52_TOML: &str = r"\u001b]52;c;dHJlbGxpcw==\u0007";
+
+/// The check `repo` writes, for a hostile config that must get past the
+/// run's own preconditions to reach the line under test.
+fn check_line() -> &'static str {
+    if cfg!(windows) {
+        "[checks]\ntypecheck = [\"cmd\", \"/C\", \"exit 0\"]\n"
+    } else {
+        "[checks]\ntypecheck = [\"sh\", \"-c\", \"exit 0\"]\n"
+    }
+}
+
+/// A repository `[[providers]]` entry `x` at `base` (TOML-escaped), named
+/// by the repository's own `[model] spec`. It names no `key_env`, so its
+/// key is OPENAI_API_KEY.
+fn hostile_provider(base: &str) -> String {
+    format!(
+        "{}[model]\nspec = \"provider:x#m\"\n[[providers]]\nname = \"x\"\n\
+         protocol = \"openai\"\nbase_url = \"{base}\"\n",
+        check_line()
+    )
+}
+
+/// `trellis <args>` in `d` with the user's (empty) config beside it, and
+/// OPENAI_API_KEY set to the canary or removed.
+fn control_run(d: &Path, args: &[&str], key: bool) -> (bool, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    c.arg("--root")
+        .arg(d)
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user_dir(d))
+        .env_remove(KEY_ENV)
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("TRELLIS_RUN_ID")
+        .env_remove("TRELLIS_TASK_ID");
+    if key {
+        c.env("OPENAI_API_KEY", canary());
+    } else {
+        c.env_remove("OPENAI_API_KEY");
+    }
+    let out = c.output().unwrap();
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// Nothing raw reached the terminal, and `marker` (the escaped form, or
+/// the refusal's own words) did.
+fn escaped(all: &str, marker: &str) {
+    assert!(
+        !all.contains('\u{1b}') && !all.contains('\u{7}'),
+        "a raw ESC or BEL reached the terminal: {all:?}"
+    );
+    assert!(all.contains(marker), "expected {marker:?} in {all:?}");
+    assert!(!all.contains(canary()), "{all:?}");
+}
+
+/// A loopback server that answers a `GET` of `/models` with `models` and
+/// any other request with `other`, each `(status line tail, body)`. `None`
+/// reads the request and never answers, until the client gives up.
+type Canned = Option<(&'static str, String)>;
+
+fn preflight_stub(models: Canned, other: Canned) -> String {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let (models, other) = (models.clone(), other.clone());
+            std::thread::spawn(move || {
+                s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+                    .ok();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 16384];
+                loop {
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    let done = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("Content-Length: "))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        body.len() >= len
+                    });
+                    if done || n == 0 {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&raw).into_owned();
+                let answer = if is_models_get(&request) {
+                    models
+                } else {
+                    other
+                };
+                match answer {
+                    Some((status, body)) => {
+                        let out = format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\n\r\n{body}",
+                            body.len()
+                        );
+                        s.write_all(out.as_bytes()).ok();
+                    }
+                    None => while s.read(&mut buf).is_ok_and(|n| n > 0) {},
+                }
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// colibri's `/v1/models` serving `id` (c/openai_server.py:3885-3886 at
+/// ce370e8, as in `colibri_run.rs`).
+fn models_colibri(id: &str) -> String {
+    serde_json::json!({"object":"list","data":[{"id":id,"object":"model",
+        "created":1758800000,"owned_by":"colibri"}]})
+    .to_string()
+}
+
+#[test]
+fn a_spec_with_control_characters_in_the_repository_is_refused_with_nothing_raw_on_stderr() {
+    // #499. The issue's own example: an `openai-chat:` spec whose base is
+    // an OSC 52 clipboard write. It used to reach stderr whole, through
+    // the refusal that names a base it cannot check.
+    let d = hostile(
+        "control-spec",
+        &format!("[model]\nspec = \"openai-chat:{OSC52_TOML}#m\"\n"),
+    );
+    let (ok, all) = control_run(&d, &["run", "anything"], true);
+    assert!(!ok, "{all}");
+    escaped(&all, "control character");
+    assert!(!all.contains("snapshot at"), "{all}");
+}
+
+#[test]
+fn a_spec_with_control_characters_in_the_repository_is_refused_by_the_session_without_echoing_it() {
+    // #499. The session reads the repository's `[model] spec` at start and
+    // wrapped a parse failure in a line quoting the spec whole.
+    use std::process::Stdio;
+    let d = hostile(
+        "control-session",
+        &format!("[model]\nspec = \"openai-chat:https://collector.invalid/v1{OSC52_TOML}#m\"\n"),
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("--root")
+        .arg(&d)
+        .arg("session")
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user_dir(&d))
+        .env_remove("OPENAI_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"/exit\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "{all}");
+    escaped(&all, "control character");
+}
+
+#[test]
+fn a_spec_with_control_characters_in_a_provider_base_is_escaped_when_the_host_is_refused() {
+    // #499. `[[providers]] base_url` is not a spec, so the spec's refusal
+    // does not cover it: `allowed()`'s two refusals print the base, or its
+    // origin, which holds whatever the authority held.
+    let d = hostile(
+        "control-not-http",
+        &hostile_provider(&format!("ftp://collector.invalid/{OSC52_TOML}")),
+    );
+    let (ok, all) = control_run(&d, &["run", "anything"], true);
+    assert!(!ok, "{all}");
+    escaped(
+        &all,
+        r"ftp://collector.invalid/\u{1b}]52;c;dHJlbGxpcw==\u{7}",
+    );
+
+    let d = hostile(
+        "control-host",
+        &hostile_provider(&format!("https://collector.invalid{OSC52_TOML}/v1")),
+    );
+    let (ok, all) = control_run(&d, &["run", "anything"], true);
+    assert!(!ok, "{all}");
+    // The origin is lowercased, the escape with it.
+    escaped(&all, r"collector.invalid\u{1b}]52;c;dhjlbgxpcw==\u{7}:443");
+    assert!(all.contains("OPENAI_API_KEY"), "{all}");
+}
+
+#[test]
+fn a_spec_with_control_characters_in_the_user_s_base_is_escaped_when_the_client_refuses_it() {
+    // #499. The tier-1 client's own refusal (plain http to a host that is
+    // not this machine) quotes the base; `build` passed it on whole.
+    // A comment so the config differs from `repo`'s and `hostile` has a
+    // change to commit.
+    let d = hostile("control-build", &format!("# #499\n{}", check_line()));
+    std::fs::write(
+        user_dir(&d).join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"http://collector.invalid/v1{OSC52_TOML}\"\n"
+        ),
+    )
+    .unwrap();
+    let (ok, all) = control_run(&d, &["run", "anything", "--model", "provider:stub#m"], true);
+    assert!(!ok, "{all}");
+    escaped(&all, r"collector.invalid/v1\u{1b}]52;c;dHJlbGxpcw==\u{7}");
+    assert!(all.contains("plain http"), "{all}");
+}
+
+#[test]
+fn a_spec_with_control_characters_in_a_loopback_base_is_escaped_in_every_preflight_refusal() {
+    // #499. A repository may name a loopback endpoint when no key would be
+    // sent (ADR 0024 §3), and the run's colibri preflight (#268) printed
+    // its base raw in four refusals. The control bytes are in the path,
+    // which the identification read does not send.
+    let tools_400 = r#"{"error":{"message":"no tools.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
+    let unauthorized = r#"{"error":{"message":"no","type":"authentication_error","param":null,"code":"invalid_api_key"}}"#;
+    for (name, models, other, words) in [
+        (
+            "control-401",
+            Some(("401 Unauthorized", unauthorized.to_string())),
+            None,
+            "answered HTTP 401",
+        ),
+        (
+            "control-mismatch",
+            Some(("200 OK", models_colibri("other"))),
+            None,
+            "serves `other`",
+        ),
+        (
+            "control-tools",
+            Some(("200 OK", models_colibri("m"))),
+            Some(("400 Bad Request", tools_400.to_string())),
+            "refused tools",
+        ),
+        // Held for colibri::READ_TIMEOUT (10 s).
+        ("control-timeout", None, None, "did not answer"),
+    ] {
+        let base = preflight_stub(models, other);
+        let d = hostile(name, &hostile_provider(&format!("{base}/v1{OSC52_TOML}")));
+        let (ok, all) = control_run(&d, &["run", "anything"], false);
+        assert!(!ok, "{name}: {all}");
+        assert!(all.contains(words), "{name}: {all}");
+        escaped(&all, r"/v1\u{1b}]52;c;dHJlbGxpcw==\u{7}");
+        assert!(!all.contains("snapshot at"), "{name}: {all}");
+    }
+}
+
+#[test]
+fn a_spec_with_control_characters_in_a_loopback_base_is_escaped_in_the_banner_and_doctor() {
+    // #499. Not refusals: the run banner's `model:` line and doctor's
+    // runtime line name the same base when nothing stops the run.
+    let (base, _server) = stub(vec![openai("c1", "done", r#"{"summary":"checked"}"#)]);
+    let d = hostile(
+        "control-banner",
+        &hostile_provider(&format!("{base}/v1{OSC52_TOML}")),
+    );
+    let (_, all) = control_run(&d, &["run", "anything"], false);
+    assert!(all.contains("snapshot at"), "the run started: {all}");
+    escaped(&all, r"/v1\u{1b}]52;c;dHJlbGxpcw==\u{7}");
+
+    let base = preflight_stub(Some(("404 Not Found", models_404_body())), None);
+    let d = hostile(
+        "control-doctor",
+        &hostile_provider(&format!("{base}/v1{OSC52_TOML}")),
+    );
+    let (_, all) = control_run(&d, &["doctor"], false);
+    assert!(all.contains("not colibri"), "{all}");
+    escaped(&all, r"/v1\u{1b}]52;c;dHJlbGxpcw==\u{7}");
+
+    let base = preflight_stub(
+        Some(("200 OK", models_colibri("m"))),
+        Some(("404 Not Found", models_404_body())),
+    );
+    let d = hostile(
+        "control-doctor-colibri",
+        &hostile_provider(&format!("{base}/v1{OSC52_TOML}")),
+    );
+    let (_, all) = control_run(&d, &["doctor"], false);
+    assert!(all.contains("colibri at"), "{all}");
+    escaped(&all, r"/v1\u{1b}]52;c;dHJlbGxpcw==\u{7}");
+}
+
+/// [`models_404`]'s body alone.
+fn models_404_body() -> String {
+    r#"{"error":{"message":"not found","type":"not_found_error"}}"#.to_string()
+}
+
+// ---------------------------------------------------------------------------
 // The intent classifier on a hosted spec (#41, ADR 0024 §2 as amended)
 // ---------------------------------------------------------------------------
 
