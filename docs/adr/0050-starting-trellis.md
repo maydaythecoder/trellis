@@ -43,6 +43,18 @@ keep first-run (section 2) and the start screen (section 3), then hand off
 to `trellis-tui`, the sibling of `current_exe()`, falling back to the
 ratatui TUI when it is missing, for one release. The switch itself is its
 own ticket and its own dated line here.
+*Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+2026-10-07):* bare `trellis` at a terminal starts `trellis-desktop`
+detached, with `--root` only when it found a root, prints the overview
+(section 3, amended) and exits. Outside a repository, with a desktop found
+and a display, it skips the start screen; inside one with no model
+configured, first-run (section 2) runs in the terminal first. `--tui` and
+`trellis tui` keep the TUI; `--dsk` opens the desktop only. With no desktop
+found, a spawn that fails, or no display, it says so on one stderr line,
+prints the overview and falls back to the start screen, then the TUI. With
+no terminal, behaviour is unchanged. The 2026-10-06 handoff line above is
+restated for `--tui` and `trellis tui` only: they, not bare `trellis`, hand
+off to `trellis-tui` at parity. Accepted, not built (#561).
 
 ### 2. A first run with no model
 
@@ -63,6 +75,16 @@ most ten, and an offer to run `git init` in the current directory after an
 explicit yes, through `trellis_vcs`. Every other command keeps today's
 refusal. No command walks a tree that is not a repository: the reason
 `root_from` refuses (a home directory indexed by accident) stands.
+*Amended 2026-10-07 (#557), owner-directed (the owner's decision of
+2026-10-07):* `trellis overview` (and `trellis [--root <repo>] --json
+overview`) runs with or without a repository and prints once: the start
+screen's recent repositories, each with its last run's outcome; and, for
+the current root, its last run, its codebase and its board. The overview
+never indexes: the codebase comes from `.trellis/index.bin` only when that
+cache is current, and is otherwise reported as not indexed or stale, never
+built or saved. A root with no `.git` entry (the `current_dir()` fallback
+from a home directory) is treated as no root, and nothing under it is read,
+so the reason `root_from` refuses stands. Accepted, not built (#558).
 
 ### 4. Case in subcommand names
 
