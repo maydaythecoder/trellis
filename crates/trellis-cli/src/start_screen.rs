@@ -3,7 +3,8 @@
 //! Bare `trellis` in a home directory, or in a directory of repositories,
 //! used to refuse with "cannot determine the repository root", and the
 //! person had to know where to go next. This lists the repositories trellis
-//! last resolved a root in and offers `git init` in the current directory.
+//! last resolved a root in, takes a typed path inside a repository, and
+//! offers `git init` in the current directory.
 //! Every other command keeps the refusal: nothing here walks a tree that is
 //! not a repository, and the reason `root_from` refuses (a home directory
 //! indexed by accident) stands.
@@ -63,6 +64,10 @@ fn read(file: &Path) -> Result<Vec<String>> {
 
 /// Put `root` first in the list at `file`: deduplicated, at most [`MAX`].
 ///
+/// Entries that are no longer a repository are dropped before the cap, so
+/// deleted agent worktrees and demo directories never push a live
+/// repository off the end of the list.
+///
 /// A root that is not valid UTF-8 is not recorded, since the file is JSON
 /// text. Written beside the file under this process's id and renamed over
 /// it, so two trellis processes recording at once each leave a whole file.
@@ -73,7 +78,7 @@ pub(crate) fn record(file: &Path, root: &Path) -> Result<()> {
         return Ok(());
     };
     let mut list = read(file)?;
-    list.retain(|r| *r != root);
+    list.retain(|r| *r != root && is_repository(Path::new(r)));
     list.insert(0, root);
     list.truncate(MAX);
     let text = serde_json::to_string_pretty(&Recent {
@@ -98,14 +103,19 @@ pub(crate) fn listed(file: &Path) -> Result<Vec<PathBuf>> {
     Ok(read(file)?
         .into_iter()
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && p.join(".git").exists())
+        .filter(|p| is_repository(p))
         .take(MAX)
         .collect())
 }
 
-/// The screen: `recent` numbered, then the `git init` offer for `cwd`.
-/// Returns the root to open, or `None` when the person quits (`q` or end of
-/// input). `git init` runs only after an explicit `y`.
+/// What `record` keeps and `listed` shows: an absolute path with a `.git`.
+fn is_repository(p: &Path) -> bool {
+    p.is_absolute() && p.join(".git").exists()
+}
+
+/// The screen: `recent` numbered, a typed path, then the `git init` offer
+/// for `cwd`. Returns the root to open, or `None` when the person quits (`q`
+/// or end of input). `git init` runs only after an explicit `y`.
 pub(crate) fn screen(
     recent: &[PathBuf],
     cwd: &Path,
@@ -122,6 +132,7 @@ pub(crate) fn screen(
             writeln!(out, "  {}. {}", i + 1, plain(&r.display().to_string()))?;
         }
     }
+    writeln!(out, "  or type the path of a repository")?;
     writeln!(out, "  i. run `git init` here, in {here}")?;
     let numbers = match recent.len() {
         0 => String::new(),
@@ -129,7 +140,7 @@ pub(crate) fn screen(
         n => format!("1 to {n}, "),
     };
     loop {
-        write!(out, "Choose {numbers}i, or q to quit: ")?;
+        write!(out, "Choose {numbers}a path, i, or q to quit: ")?;
         out.flush()?;
         let Some(t) = answer(input)? else {
             return Ok(None);
@@ -150,8 +161,52 @@ pub(crate) fn screen(
         }
         match t.parse::<usize>() {
             Ok(n) if (1..=recent.len()).contains(&n) => return Ok(Some(recent[n - 1].clone())),
-            _ => writeln!(out, "That is not one of the choices.")?,
+            Ok(_) => writeln!(out, "That is not one of the choices.")?,
+            Err(_) if t.is_empty() => writeln!(out, "That is not one of the choices.")?,
+            Err(_) => {
+                let path = typed(&t, cwd, home().as_deref());
+                let shown = plain(&path.display().to_string());
+                if !path.exists() {
+                    writeln!(out, "{shown} does not exist.")?;
+                    continue;
+                }
+                // `root_from` is the walk every command uses: up from the
+                // path to the first `.git`, never into the tree (ADR 0050 §3).
+                match crate::root_from(&path) {
+                    Some(root) => return Ok(Some(root)),
+                    None => writeln!(out, "{shown} is not inside a git repository.")?,
+                }
+            }
         }
+    }
+}
+
+/// A typed answer as a path: a leading `~` is `home`, and a relative path
+/// is taken from `cwd`, where the person is standing.
+fn typed(t: &str, cwd: &Path, home: Option<&Path>) -> PathBuf {
+    let rest = if t == "~" {
+        Some("")
+    } else {
+        t.strip_prefix("~/").or_else(|| t.strip_prefix("~\\"))
+    };
+    match (rest, home) {
+        (Some(rest), Some(h)) => h.join(rest),
+        _ => cwd.join(t),
+    }
+}
+
+/// The home directory: `USERPROFILE` on Windows, else `HOME`, as
+/// `user_config` reads it. An empty variable counts as unset.
+fn home() -> Option<PathBuf> {
+    let get = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    if cfg!(windows) {
+        get("USERPROFILE").or_else(|| get("HOME"))
+    } else {
+        get("HOME")
     }
 }
 
@@ -267,6 +322,86 @@ mod tests {
         let got = screen(&[], cwd.path(), &mut "i\ny\n".as_bytes(), &mut Vec::new()).unwrap();
         assert_eq!(got.as_deref(), Some(cwd.path()));
         assert!(cwd.path().join(".git").exists());
+    }
+
+    #[test]
+    fn start_screen_record_prunes_deleted_repositories_before_capping() {
+        // The risk (the owner's first run): agent worktrees and demo
+        // directories, since deleted, fill the list, and recording one more
+        // root pushes the person's real repository off the end. The start
+        // screen then lists nothing at all.
+        let user = tempfile::tempdir().unwrap();
+        let file = user.path().join("recent.json");
+        let base = tempfile::tempdir().unwrap();
+        let repos: Vec<PathBuf> = (0..MAX)
+            .map(|i| repo_at(base.path(), &format!("r{i}")))
+            .collect();
+        for r in &repos {
+            record(&file, r).unwrap();
+        }
+        // r0, recorded first, is the oldest and the one left alive.
+        for r in &repos[1..] {
+            std::fs::remove_dir_all(r).unwrap();
+        }
+        let new = repo_at(base.path(), "new");
+        record(&file, &new).unwrap();
+        assert_eq!(listed(&file).unwrap(), vec![new, repos[0].clone()]);
+    }
+
+    #[test]
+    fn start_screen_typed_path_opens_the_enclosing_root_and_refuses_one_outside() {
+        // The risk: with nothing listed the screen offers only `git init`
+        // or quit, a dead end for anyone not wanting a repository in their
+        // home directory; or a typed path outside a repository is accepted
+        // and its tree walked.
+        let base = tempfile::tempdir().unwrap();
+        let above: Vec<_> = base
+            .path()
+            .ancestors()
+            .filter(|a| a.join(".git").exists())
+            .collect();
+        assert!(
+            above.is_empty(),
+            "the temp directory is in a repository: {above:?}"
+        );
+        let repo = repo_at(base.path(), "repo");
+        let deep = repo.join("src").join("deep");
+        std::fs::create_dir_all(&deep).unwrap();
+        let outside = base.path().join("plain");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let input = format!("{}\n{}\n", outside.display(), deep.display());
+        let mut shown = Vec::new();
+        let got = screen(&[], base.path(), &mut input.as_bytes(), &mut shown).unwrap();
+        assert_eq!(got, Some(repo));
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(
+            shown.contains("or type the path of a repository"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!(
+                "{} is not inside a git repository.",
+                outside.display()
+            )),
+            "{shown}"
+        );
+        // It asked again after the refusal: the prompt appears twice.
+        assert_eq!(shown.matches("or q to quit: ").count(), 2, "{shown}");
+        assert!(!outside.join(".git").exists());
+    }
+
+    #[test]
+    fn start_screen_typed_path_expands_a_leading_tilde() {
+        // The risk: `~/code/x` is read as a directory named `~` under the
+        // working directory, and the person's repository is refused.
+        let cwd = Path::new("/w");
+        let home = Path::new("/h");
+        assert_eq!(typed("~", cwd, Some(home)), home.join(""));
+        assert_eq!(typed("~/a/b", cwd, Some(home)), home.join("a/b"));
+        assert_eq!(typed("a/~", cwd, Some(home)), cwd.join("a/~"));
+        assert_eq!(typed("~x", cwd, Some(home)), cwd.join("~x"));
+        assert_eq!(typed("~/a", cwd, None), cwd.join("~/a"));
     }
 
     #[test]
