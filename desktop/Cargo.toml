@@ -12,17 +12,18 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 
-# Tauri is pinned exactly: its tree is audited as resolved (desktop/deny.toml),
-# so a new release reaches it only by an edit here and a fresh audit (#289).
-# tauri 2.12 and tauri-build 2.7 are the newest 2.x releases whose
-# rust-version (1.90) the pinned toolchain (1.93) meets; 3.0 needs 1.95.
+# Caret requirements, as at the root; the committed Cargo.lock is the pin
+# and desktop/deny.toml audits it as resolved, so a Tauri update is its own
+# lock commit that passes cargo deny and cargo audit. tauri 2.12 and
+# tauri-build 2.7 are the newest 2.x lines whose rust-version (1.90) the
+# pinned toolchain (1.93) meets; 3.0 needs 1.95.
 [dependencies]
-tauri = "=2.12.1"
+tauri = "2.12"
 serde = "1"
 serde_json = "1"
 
 [build-dependencies]
-tauri-build = "=2.7.1"
+tauri-build = "2.7"
 
 [lints.rust]
 unsafe_code = "forbid"
