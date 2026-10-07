@@ -124,6 +124,32 @@ fn ask_human(question: String, options: Vec<String>) -> Result<Step, String> {
     Ok(Step::Call(ToolCall::AskHuman { question, options }))
 }
 
+/// Every check kind, in the order the protocol lists them.
+pub(crate) const CHECK_KINDS: [CheckKind; 4] = [
+    CheckKind::Typecheck,
+    CheckKind::Tests,
+    CheckKind::Import,
+    CheckKind::Governance,
+];
+
+/// The name a check kind is sent by in `kinds`, and so the only spelling of
+/// it the model may be shown: a call, an observation, an elided note.
+///
+/// One table, read by the parser above and by everything that renders a
+/// kind for the model. `CheckKind`'s own serde spelling (`Typecheck`) is the
+/// trail's on-disk form and stays as it is; its Debug form is the same
+/// word, and a model shown `Typecheck: FAILED` can copy it, as qwen3:8b
+/// copied `RunChecks` (#541, #544). The match is exhaustive, so a new kind
+/// cannot be added without a name here.
+pub(crate) fn check_kind_name(kind: CheckKind) -> &'static str {
+    match kind {
+        CheckKind::Typecheck => "typecheck",
+        CheckKind::Tests => "tests",
+        CheckKind::Import => "import",
+        CheckKind::Governance => "governance",
+    }
+}
+
 fn default_kinds() -> Vec<String> {
     vec!["typecheck".into()]
 }
@@ -147,14 +173,16 @@ impl ToolCallWire {
             ToolCallWire::RunChecks { paths, kinds } => {
                 let kinds = kinds
                     .iter()
-                    .map(|k| match k.to_ascii_lowercase().as_str() {
-                        "typecheck" => Ok(CheckKind::Typecheck),
-                        "tests" => Ok(CheckKind::Tests),
-                        "import" => Ok(CheckKind::Import),
-                        "governance" => Ok(CheckKind::Governance),
-                        other => Err(format!(
-                            "unknown check kind `{other}`; expected typecheck, tests, import or governance"
-                        )),
+                    .map(|k| {
+                        let k = k.to_ascii_lowercase();
+                        CHECK_KINDS
+                            .into_iter()
+                            .find(|c| check_kind_name(*c) == k)
+                            .ok_or_else(|| {
+                                format!(
+                                    "unknown check kind `{k}`; expected typecheck, tests, import or governance"
+                                )
+                            })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Step::Call(ToolCall::RunChecks { paths, kinds })
