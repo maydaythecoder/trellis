@@ -485,6 +485,10 @@ struct Server {
     /// One slot for every run: a run writes it only when it ended on
     /// `done`, so it holds the most recent such summary, as `/copy`'s does.
     done: output::DoneSlot,
+    /// The tier the last run decided, as the TUI's status bar labels it,
+    /// for `get_state` (#269). `None` until a run has decided one: nothing
+    /// here guesses a tier from the spec.
+    tier: output::TierSlot,
     /// Open approval questions, by id, each holding its reply channel.
     approvals: Arc<Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     next_approval: Arc<AtomicU64>,
@@ -517,6 +521,7 @@ pub(crate) fn serve(root: &Path, input: impl BufRead, sink: Sink, mode: Mode) ->
         last: Arc::default(),
         ran: Arc::default(),
         done: output::DoneSlot::default(),
+        tier: output::TierSlot::default(),
         approvals: Arc::default(),
         next_approval: Arc::default(),
         input_closed: Arc::default(),
@@ -888,6 +893,8 @@ impl Server {
                     "root": self.root.display().to_string(),
                     "last_run": self.last.lock().ok().and_then(|l| l.clone()),
                     "pending_approvals": pending,
+                    // The run's own decision, null before one (#269).
+                    "tier": self.tier.lock().ok().and_then(|t| t.clone()),
                 });
                 self.respond(id, kind, Ok(data));
             }
@@ -1110,6 +1117,7 @@ impl Server {
             last: self.last.clone(),
             ran: self.ran.clone(),
             done: self.done.clone(),
+            tier: self.tier.clone(),
             input_closed: self.input_closed.clone(),
             abort: abort.clone(),
             ended: ended.clone(),
@@ -1157,6 +1165,7 @@ struct Chain {
     last: Arc<Mutex<Option<Value>>>,
     ran: Ran,
     done: output::DoneSlot,
+    tier: output::TierSlot,
     input_closed: Arc<AtomicBool>,
     /// One for the chain: an abort stops the run in flight and every
     /// follow-up behind it.
@@ -1304,7 +1313,13 @@ impl Chain {
             fanout: None,
             run_ids: Some(self.ran.clone()),
             run_ended: Some(self.ended.clone()),
+            tier: Some(self.tier.clone()),
         };
+        // Cleared first, so a run that stops before it decides a tier
+        // leaves none, rather than the last run's for another model.
+        if let Ok(mut t) = self.tier.lock() {
+            *t = None;
+        }
         let r = crate::cmd_run_with(
             &self.root,
             task,
@@ -1656,6 +1671,7 @@ mod tests {
             last: Arc::default(),
             ran: Arc::default(),
             done: output::DoneSlot::default(),
+            tier: output::TierSlot::default(),
             approvals: Arc::default(),
             next_approval: Arc::default(),
             input_closed: Arc::default(),

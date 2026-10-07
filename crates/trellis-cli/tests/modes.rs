@@ -2270,3 +2270,177 @@ fn log_json_carries_every_trail_field_the_desktop_reads() {
         lines[0]
     );
 }
+
+// ---- #269: `get_state` carries the tier the run decided ----
+
+/// `get_state`'s data, asked as `id`.
+fn state(rpc: &mut Rpc, id: &str) -> Value {
+    rpc.send(serde_json::json!({"id": id, "type": "get_state"}));
+    let got = rpc.next(|v| v["id"] == id);
+    assert_eq!(got["success"], true, "{got}");
+    got["data"].clone()
+}
+
+/// Writes a user `[[providers]]` entry named `name` at `base`, whose key
+/// variable nobody sets: a loopback endpoint is then used with no key.
+fn user_provider(f: &Fixture, name: &str, base: &str) -> &'static str {
+    let key_env = "TRELLIS_TEST_RPC_TIER_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"{name}\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    key_env
+}
+
+#[test]
+fn rpc_get_state_tier_is_null_before_any_run_and_then_the_run_s_own() {
+    // The risks: the Go TUI's status bar (#511) reading a tier that is not
+    // there, or one guessed from the spec before any run decided it.
+    let c = contract();
+    let f = fixture("rpc-tier-before");
+    let mut rpc = Rpc::start(trellis(&f));
+    let before = state(&mut rpc, "s0");
+    let gaps = missing(
+        &before,
+        &c["rpc"]["commands"]["get_state"]["data"]["always"],
+        "get_state",
+    );
+    assert!(
+        gaps.is_empty(),
+        "get_state lacks what tests/client_contract.json lists: {gaps:?}\n{before}"
+    );
+    assert!(
+        names(&c["rpc"]["commands"]["get_state"]["data"]["always"]).contains(&"tier"),
+        "the contract does not list get_state's tier"
+    );
+    assert_eq!(before["tier"], Value::Null, "{before}");
+
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": f.spec}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    rpc.wait_idle();
+    let after = state(&mut rpc, "s1");
+    assert_eq!(after["tier"], "scripted", "{after}");
+    rpc.finish();
+}
+
+#[test]
+fn rpc_get_state_tier_after_a_hosted_run_is_tier_1_from_the_protocol() {
+    // A loopback server that is not colibri (its /v1/models is a 404) is
+    // sent no probe, and its tier is the protocol's, as the status bar says.
+    let f = fixture("rpc-tier-native");
+    let (base, server) = provider_stub(vec![openai_call(
+        "c1",
+        "done",
+        serde_json::json!({"summary": "nothing to do"}),
+    )]);
+    let key_env = user_provider(&f, "stub", &base);
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:stub#m"}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    rpc.wait_idle();
+    let after = state(&mut rpc, "s");
+    assert_eq!(after["tier"], "tier 1, native tool calls", "{after}");
+    rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+/// A loopback stub that answers as colibri serving `glm-5.2` whose template
+/// refuses tools (ce370e8, c/openai_server.py:1364-1367 and :3885-3886, as
+/// `tests/colibri_run.rs` has them), until the test process ends; and how
+/// many tools probes it got.
+fn colibri_refusing_stub() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::Read;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = probes.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .ok();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 16384];
+            loop {
+                let n = s.read(&mut buf).unwrap_or(0);
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length").then_some(v)
+                        })
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if body.len() >= len {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let (status, body) = if is_models_get(&String::from_utf8_lossy(&raw)) {
+                (
+                    "200 OK",
+                    r#"{"object":"list","data":[{"id":"glm-5.2","object":"model","created":1758800000,"owned_by":"colibri"}]}"#,
+                )
+            } else {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (
+                    "400 Bad Request",
+                    r#"{"error":{"message":"OLMoE has no tool-calling chat template; set COLI_TOOL_FALLBACK=1 to render tools as text.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#,
+                )
+            };
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (format!("http://{addr}"), probes)
+}
+
+#[test]
+fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
+    // The risk: get_state's tier re-guessed from the spec (tier 1, from the
+    // protocol) while the run it reports on found colibri refusing tools and
+    // stopped before its snapshot (ADR 0047 decision 4).
+    let f = fixture("rpc-tier-colibri");
+    let (base, probes) = colibri_refusing_stub();
+    let key_env = user_provider(&f, "coli", &format!("{base}/v1"));
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": "provider:coli#glm-5.2"}),
+    );
+    let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    assert_eq!(end["outcome"], "error", "{end}");
+    rpc.wait_idle();
+    let after = state(&mut rpc, "s");
+    assert_eq!(
+        after["tier"], "tier 1 unavailable: colibri glm-5.2 refuses tools",
+        "{after}"
+    );
+    rpc.finish();
+    assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

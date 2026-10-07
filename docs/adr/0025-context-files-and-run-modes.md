@@ -853,7 +853,15 @@ Each item is tested unless it says otherwise.
   sees which way its answer was read.
 - **`get_state`** returns `running`, `run_request_id`, `model` (the
   `set_model` value, else `[model] spec`), `root`, `last_run` (the `run_end`
-  fields without `type`) and `pending_approvals`.
+  fields without `type`) and `pending_approvals`. *Amended 2026-10-07
+  (#269, for the Go TUI's status bar, ADR 0052): and `tier`, the label the
+  TUI's status bar shows, written by the run where it decides its tier
+  (after colibri's identification and tools probe for a hosted spec, ADR
+  0047 decision 4; after the schema probe for a runtime). It is `null`
+  until a run of the process has decided one, and a run that stops before
+  deciding leaves it `null`; nothing guesses it from the spec. Listed in
+  `tests/client_contract.json`; evidence: the `rpc_get_state_tier_` tests
+  in `crates/trellis-cli/tests/modes.rs`.*
 - **Key order in a record is not part of the format.** `serde_json` writes
   keys in insertion order in one build and alphabetically in another,
   depending on which features cargo unifies (a test build differs from a
