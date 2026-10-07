@@ -1,0 +1,167 @@
+name: Mutants
+
+# Mutation testing with the whole workspace suite, run by hand (#248).
+#
+# #248's Done-when asks for a `WORKSPACE_TESTS=1` cargo-mutants run of
+# trellis-cli at a commit after the issue, to show the kills its passes
+# recorded in CORRECTNESS_LEDGER.md. The owner decided on 2026-10-06 to run it
+# here, dispatched by hand when the runners are idle, instead of on the
+# owner's machine, where two whole-workspace runs were stopped for memory.
+#
+# `workflow_dispatch` only. A run is hours long on a runner every ci.yml job
+# also needs, so it must never start on a push or a pull request.
+# docs/BUILD_SYSTEM.md, "Mutation testing on CI", says how to dispatch it and
+# how to read its output against the ledger.
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: "Crate to mutate (-p); the whole workspace suite runs against each mutant"
+        required: true
+        default: trellis-cli
+        type: string
+      shard:
+        description: "Optional k/n, e.g. 0/10 (k counts from 0); keep n the same across dispatches or the shards do not partition the mutants"
+        required: false
+        default: ""
+        type: string
+      os:
+        description: "linux reaches the #[cfg(unix)] mutants; windows is the host #248's survivor list came from"
+        required: true
+        default: linux
+        type: choice
+        options: [linux, windows]
+
+# A second dispatch of the same shard queues behind the first; neither is
+# cancelled, since a cancelled run throws away hours of verdicts.
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.os }}-${{ inputs.crate }}-${{ inputs.shard }}
+  cancel-in-progress: false
+
+# Nothing here writes to the repository; the results leave as an artifact.
+permissions:
+  contents: read
+
+# Pinned as in ci.yml: actions by commit SHA with the tag in a comment, every
+# checkout without persisted credentials, and cargo-mutants by version with
+# --locked (#215).
+#
+# No `RUSTFLAGS: "-D warnings"` as ci.yml has. scripts/mutate-by-crate.sh,
+# which produced every earlier mutants result, ran without it, and with it a
+# mutant that only adds a warning (an unused variable) fails to build and is
+# reported unviable instead of caught or missed, so the two would not compare.
+# Cleared rather than left unset so a runner environment cannot set it.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: ""
+
+jobs:
+  mutants:
+    # Self-hosted when the repository variables name runners, as in ci.yml
+    # (#157); their `.env` gives the job its own CARGO_HOME and RUSTUP_HOME,
+    # so the cargo-mutants install below lands there and not in the owner's
+    # (#158). rust-cache is not used: a self-hosted runner keeps its target
+    # directory, and on one its cleanup deleted the owner's toolchain (#158).
+    runs-on: ${{ fromJSON(inputs.os == 'windows' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
+    # 360 minutes. GitHub fails a job on a GitHub-hosted runner at 6 hours and
+    # one on a self-hosted runner at 5 days. The ceiling is the hosted one
+    # either way, so the workflow behaves the same if the runner variables
+    # are deleted, and so one dispatch cannot hold the runner ci.yml needs for
+    # longer than a working session. A job that waits more than 24 hours for
+    # a self-hosted runner is cancelled, which is why there is no matrix of
+    # shards here: queued behind each other on the one runner, the later ones
+    # would be cancelled before they started. trellis-cli's ~1,500 viable
+    # mutants at the full suite each do not fit in 6 hours; the `shard` input
+    # splits them across dispatches.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The index asserts byte spans, and the workspace suite runs them;
+      # Windows git would rewrite line endings on checkout (A-21).
+      - name: Pin line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head, resolved 2026-09-30
+        with:
+          toolchain: "1.93.0"
+
+      # 27.1.0 is the version every recorded mutants run used
+      # (docs/bench/mutants-by-crate/README.md), so a new release cannot
+      # change which mutants are generated or how they are named. An
+      # install of the same version already in the runner's CARGO_HOME is a
+      # no-op.
+      - name: Install cargo-mutants (pinned)
+        shell: bash
+        run: cargo install --locked cargo-mutants --version 27.1.0
+
+      # The inputs reach the shell through env and are checked before use,
+      # never through an expression in `run:`.
+      - name: Check the inputs and name the artifact
+        id: inputs
+        shell: bash
+        env:
+          CRATE: ${{ inputs.crate }}
+          SHARD: ${{ inputs.shard }}
+          OS: ${{ inputs.os }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$CRATE" | grep -Eqx '[A-Za-z0-9_-]+'; then
+            echo "::error::crate '$CRATE' is not a package name"
+            exit 1
+          fi
+          # The commit is in the name: a dispatch picks a branch, not a commit.
+          name="mutants-$CRATE-$OS-${GITHUB_SHA:0:7}"
+          if [ -n "$SHARD" ]; then
+            if ! printf '%s\n' "$SHARD" | grep -Eqx '[0-9]+/[0-9]+'; then
+              echo "::error::shard '$SHARD' is not k/n"
+              exit 1
+            fi
+            k=${SHARD%/*}; n=${SHARD#*/}
+            if [ "$n" -lt 1 ] || [ "$k" -ge "$n" ]; then
+              echo "::error::shard '$SHARD' needs 0 <= k < n"
+              exit 1
+            fi
+            name="$name-shard-$k-of-$n"
+          fi
+          echo "artifact=$name" >> "$GITHUB_OUTPUT"
+
+      # The flags are scripts/mutate-by-crate.sh's under WORKSPACE_TESTS=1,
+      # which is how #248 asks for the run to be made: mutate one crate, run
+      # the whole workspace suite against each mutant (a mutant another
+      # crate's tests kill is not a gap), -j 1 and a 300-second limit
+      # (docs/bench/mutants-by-crate-ws/README.md: at -j 4 every mutant timed
+      # out on git and temp-directory contention). Inlined rather than calling
+      # the script, which takes no shard and keeps only the four .txt files.
+      # --cargo-arg=--locked reaches every cargo build and test cargo-mutants
+      # runs, so each mutant builds what Cargo.lock records.
+      #
+      # Exit 2 is survivors, 3 timeouts, 4 a failing baseline: the step goes
+      # red on any, and the upload below runs anyway. Its own limit sits under
+      # the job's so a long shard stops here, with outcomes written so far,
+      # and the upload still has time to run.
+      - name: cargo mutants (whole workspace suite per mutant)
+        shell: bash
+        timeout-minutes: 345
+        env:
+          CRATE: ${{ inputs.crate }}
+          SHARD: ${{ inputs.shard }}
+        run: |
+          set -euo pipefail
+          rm -rf mutants.out mutants.out.old
+          args=(-p "$CRATE" --test-workspace true --timeout 300 --no-shuffle -j 1 --cargo-arg=--locked)
+          if [ -n "$SHARD" ]; then args+=(--shard "$SHARD"); fi
+          cargo mutants "${args[@]}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.inputs.outcome == 'success'
+        with:
+          name: ${{ steps.inputs.outputs.artifact }}
+          path: mutants.out/
+          if-no-files-found: error
+          # The ledger is the durable record; this is the evidence it is
+          # written from, kept long enough to compare every shard.
+          retention-days: 30
