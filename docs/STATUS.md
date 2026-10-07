@@ -30,6 +30,14 @@ below, each audited against the code rather than against the milestone prose.
 | 19 | Factual claims cited; unverifiable ones flagged | **Done** | `OPEN_QUESTIONS.md`, final section |
 | 20 | No marketing language anywhere | **Done** | — |
 
+## Clients: recorded 2026-10-06, not built
+
+ADR 0052 (#500) records the owner's goal of two `trellis rpc` clients, a Tauri
+desktop that renders a whole run and a Go/Bubble Tea TUI that replaces the
+ratatui TUI at parity. It is **Proposed**, pending the owner's acceptance on
+#500, and nothing in it is built: the ratatui TUI is still the one that ships.
+MISSION.md goal 8 reads "Not delivered".
+
 ## The measurement (resolves S1's reach; S16 fired, then averted)
 
 Benchmark: poetry 2.5.0 sdist, SHA-256 in `01-v0.1-measure.md` §2.
