@@ -673,7 +673,24 @@ on stderr.
     answers `success` false with the failure's chain.
   - Answered on the reader thread, not a waiter's: no run can be in flight
     when it is asked, and none can start until it is answered. The request
-    is bounded by `[model] timeout_s` (ADR 0047 decision 9).
+    is bounded by `[model] timeout_s` (ADR 0047 decision 9). *Amended
+    2026-10-07 (#518): that held every command back while the model was
+    asked, `quit` included, so a client that sends `quit` and never kills
+    (ADR 0048 §2) froze for up to `[model] timeout_s` (300 s by default).
+    It is now asked on its own thread, as #292–#295's and `list_paths`'
+    read-only commands are, and keeps its exclusion through the gate
+    `prompt` passes, not a second lock: while it is pending, `prompt`,
+    `steer` and a second `classify` are refused in `prompt`'s words, "a run
+    is in progress; one at a time (abort it, or wait)", so one run at a
+    time still holds and no second model request races it. Once the model
+    has answered it no longer holds the gate, so a command sent on reading
+    its response is not refused. Commands that start no model request,
+    `get_state` among them, are answered meanwhile; `follow_up`, `compact`
+    and `abort` answer "no run in flight" or "no run in progress", as with
+    nothing running, since a classify is not a run: `abort` does not reach
+    it. `quit` drops the request (its connection closes), writes no answer
+    to it, whole or partial, and exits; end of input waits for the answer,
+    so `printf '{"type":"classify",…}\n' | trellis rpc` still prints one.*
   - Evidence, in `tests/modes.rs` through the binary over stdio against
     the provider stub, each failing before ("unknown command `classify`"):
     `rpc_classify_answers_a_question_as_data_and_starts_no_run` (an answer
@@ -684,6 +701,16 @@ on stderr.
     `rpc_classify_reports_a_model_it_cannot_reach_and_starts_no_run`,
     `rpc_classify_sends_no_key_to_a_loopback_port_the_repository_chose`
     and `rpc_classify_reply_carries_every_field_the_contract_lists`.
+    *Added 2026-10-07 (#518), each failing before against a stub that holds
+    the request open:
+    `rpc_classify_quit_while_the_model_is_slow_exits_and_drops_the_request`
+    (the process exits within 5 s of `quit`, the stub sees the connection
+    close, and no response carries the classify's id; before, `quit` was
+    unread at 5 s) and
+    `rpc_classify_refuses_prompt_steer_and_classify_while_one_is_pending`
+    (`get_state` answered, the three refused in `prompt`'s words, then the
+    held classify answered and no run started; before, nothing after the
+    classify was answered within 60 s).*
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
