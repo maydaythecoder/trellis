@@ -64,6 +64,11 @@
           "always": ["tier"],
           "null_when": {
             "tier": "no run of this rpc process has decided its tier yet, or the last run stopped before deciding one; never guessed from the spec"
+          },
+          "tier_label": {
+            "heads": ["1", "2", "3", "4", "unknown", "scripted"],
+            "detail_separator": ", ",
+            "shape": "<head>, or <head><detail_separator><detail>. A digit head is the adapter tier; unknown means nothing has established one; scripted means no model is called. <detail> is prose for a person (e.g. \"native tool calls\", \"no schema\", \"unavailable: colibri olmoe refuses tools\"), not a further format. A label never begins with the word tier: a status bar writes `tier ` before it."
           }
         }
       }

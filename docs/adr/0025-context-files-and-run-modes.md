@@ -960,7 +960,17 @@ Each item is tested unless it says otherwise.
   until a run of the process has decided one, and a run that stops before
   deciding leaves it `null`; nothing guesses it from the spec. Listed in
   `tests/client_contract.json`; evidence: the `rpc_get_state_tier_` tests
-  in `crates/trellis-cli/tests/modes.rs`.*
+  in `crates/trellis-cli/tests/modes.rs`.* *Amended 2026-10-07 (#519): the
+  label has one vocabulary, the same in the ratatui status bar and
+  `get_state`: a head (`1` to `4`, `unknown` or `scripted`), alone or
+  followed by `, ` and prose for a person, e.g. `1, native tool calls`,
+  `1, unavailable: colibri olmoe refuses tools`, `2`, `4, no schema`.
+  It never begins with the word `tier`, which the bar writes before it;
+  hosted labels began `tier 1` (the bar read `tier tier 1, …`) and a
+  runtime whose probe could not run was `?`. `client_contract.json`'s
+  `commands.get_state.data.tier_label` lists the heads and the separator;
+  evidence: the `tier_label_vocabulary_` tests in
+  `crates/trellis-cli/src/tui_run.rs`.*
 - **Key order in a record is not part of the format.** `serde_json` writes
   keys in insertion order in one build and alphabetically in another,
   depending on which features cargo unifies (a test build differs from a
