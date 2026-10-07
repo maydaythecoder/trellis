@@ -118,6 +118,16 @@ impl BatchingCapability {
     }
 }
 
+/// The tier's number, the head of a tier label.
+fn head(t: AdapterTier) -> &'static str {
+    match t {
+        AdapterTier::Native => "1",
+        AdapterTier::RuntimeConstrained => "2",
+        AdapterTier::HarnessConstrained => "3",
+        AdapterTier::ValidateAndRetry => "4",
+    }
+}
+
 /// What `trellis doctor` found.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Probe {
@@ -158,9 +168,13 @@ impl Probe {
         let mut out = vec![
             format!("model:      {}", self.model_id),
             format!("runtime:    {}", self.runtime),
+            // Headed by the status bar's tier-label vocabulary
+            // (trellis-cli's tests/client_contract.json, `get_state`'s
+            // `tier_label`), so the bar's `4, no schema` and this line read
+            // as the same answer (#523).
             match self.tier {
-                Some(t) => format!("tier:       {t:?} — {}", t.degradation()),
-                None => "tier:       not probed; pass --model to find out".to_string(),
+                Some(t) => format!("tier:       {}, {t:?} — {}", head(t), t.degradation()),
+                None => "tier:       unknown, not probed; pass --model to find out".to_string(),
             },
         ];
 
@@ -252,6 +266,8 @@ mod tests {
             .find(|l| l.starts_with("tier:"))
             .expect("a tier line");
         assert!(tier.contains("not probed"), "{tier}");
+        // The status bar's head for "nothing has established a tier" (#523).
+        assert!(tier.starts_with("tier:       unknown, "), "{tier}");
         assert!(
             !tier.contains("ValidateAndRetry") && !tier.contains("RuntimeConstrained"),
             "no tier may be named before one has been measured: {tier}"
@@ -271,6 +287,8 @@ mod tests {
             .find(|l| l.starts_with("tier:"))
             .expect("a tier line");
         assert!(tier.contains("ValidateAndRetry"), "{tier}");
+        // Headed by the tier's number, as the status bar heads it (#523).
+        assert!(tier.starts_with("tier:       4, "), "{tier}");
         assert!(
             tier.contains("format"),
             "a tier must arrive with what it costs: {tier}"

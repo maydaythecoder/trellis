@@ -295,10 +295,13 @@ fn colibri_tier_report(tier: &Result<hosted::ColibriTier>) -> (String, Option<St
     let native = AdapterTier::Native.degradation();
     match tier {
         Ok(hosted::ColibriTier::Probed { .. }) => {
-            (format!("tier:       Native (probed) — {native}"), None)
+            (format!("tier:       1, Native (probed) — {native}"), None)
         }
         Ok(hosted::ColibriTier::Assumed { reason, .. }) => (
-            format!("tier:       Native (assumed: {}) — {native}", plain(reason)),
+            format!(
+                "tier:       1, Native (assumed: {}) — {native}",
+                plain(reason)
+            ),
             None,
         ),
         Ok(hosted::ColibriTier::Refused {
@@ -323,12 +326,12 @@ fn colibri_tier_report(tier: &Result<hosted::ColibriTier>) -> (String, Option<St
         }
         // Called for an identified server only, so not reached; the
         // protocol's own line if it were.
-        Ok(hosted::ColibriTier::NotColibri) => (format!("tier:       Native — {native}"), None),
+        Ok(hosted::ColibriTier::NotColibri) => (format!("tier:       1, Native — {native}"), None),
         // A probe that could not be sent leaves tier 1 assumed, as its other
         // non-answers do.
         Err(e) => (
             format!(
-                "tier:       Native (assumed: {}) — {native}",
+                "tier:       1, Native (assumed: {}) — {native}",
                 plain(&e.to_string())
             ),
             None,

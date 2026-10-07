@@ -3987,6 +3987,11 @@ fn a_converged_run_names_the_ignored_files_it_changed_and_says_nothing_when_none
 /// every other request with an empty completion. Serves until the process
 /// ends.
 fn llamacpp_with_slots(slots: u32) -> String {
+    llamacpp_answering(slots, "")
+}
+
+/// [`llamacpp_with_slots`], answering every completion with `content`.
+fn llamacpp_answering(slots: u32, content: &'static str) -> String {
     use std::io::{Read, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -4019,7 +4024,7 @@ fn llamacpp_with_slots(slots: u32) -> String {
             let body = if request.starts_with("GET /props") {
                 format!("{{\"total_slots\":{slots}}}")
             } else {
-                r#"{"content":""}"#.to_string()
+                serde_json::json!({ "content": content }).to_string()
             };
             let _ = s.write_all(
                 format!(
@@ -4046,6 +4051,89 @@ fn doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency() {
     assert!(
         two.contains("batching:   continuous, measured concurrency 2"),
         "{two}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The head `line` (a doctor `tier:` line) begins with, when it is one of
+/// the heads `tests/client_contract.json` documents for `get_state`'s tier
+/// label, followed by the documented separator and some explanation.
+fn documented_tier_head(line: &str) -> Option<String> {
+    let c: serde_json::Value =
+        serde_json::from_str(include_str!("client_contract.json")).expect("the contract is JSON");
+    let shape = &c["rpc"]["commands"]["get_state"]["data"]["tier_label"];
+    let sep = shape["detail_separator"]
+        .as_str()
+        .expect("the contract names the separator");
+    let body = line.strip_prefix("tier:")?.trim_start();
+    let (head, detail) = body.split_once(sep)?;
+    let listed = shape["heads"]
+        .as_array()
+        .expect("the contract lists the label heads")
+        .iter()
+        .any(|h| h.as_str() == Some(head));
+    (listed && !detail.trim().is_empty()).then(|| head.to_string())
+}
+
+#[test]
+fn doctor_tier_lines_begin_with_a_head_the_status_bar_contract_documents() {
+    // #523. The risk: the status bar and `get_state` say `4, no schema`
+    // while doctor, where a person goes to find out why, says
+    // `ValidateAndRetry — …` about the same runtime, and a reader (or a
+    // client reading by head) cannot tell the two are the same answer.
+    // Every backend kind doctor can be pointed at here, by name; colibri's
+    // own lines are checked in tests/colibri_doctor.rs.
+    let d = repo("doctor-tier-lines");
+    let slots = llamacpp_with_slots(1);
+    let base = slots.trim_start_matches("llamacpp:").to_string();
+    let cases: Vec<(&str, Vec<String>, &str)> = vec![
+        ("no --model", vec![], "unknown"),
+        ("llama.cpp, schema ignored", vec![slots.clone()], "4"),
+        (
+            "llama.cpp, schema honoured",
+            vec![llamacpp_answering(2, r#"{"trellis_probe_ok":true}"#)],
+            "2",
+        ),
+        (
+            "runtime that cannot be reached",
+            vec!["llamacpp:http://127.0.0.1:1".into()],
+            "unknown",
+        ),
+        (
+            "hosted, not colibri",
+            vec![format!("openai-chat:{base}/v1#m")],
+            "1",
+        ),
+    ];
+    for (kind, spec, want) in cases {
+        let mut args = vec!["doctor"];
+        if let Some(s) = spec.first() {
+            args.extend(["--model", s.as_str()]);
+        }
+        let out = run(&d, &args);
+        let s = stdout(&out);
+        let tiers: Vec<&str> = s.lines().filter(|l| l.starts_with("tier:")).collect();
+        assert!(
+            !tiers.is_empty(),
+            "{kind}: no tier line\n{}",
+            combined(&out)
+        );
+        for t in tiers {
+            assert_eq!(
+                documented_tier_head(t).as_deref(),
+                Some(want),
+                "{kind}: {t:?} does not begin with the head `{want}, `"
+            );
+        }
+    }
+    // A scripted spec has no runtime to probe, and doctor refuses it rather
+    // than print a tier line outside the vocabulary.
+    let out = run(&d, &["doctor", "--model", "scripted:/tmp/x.json"]);
+    assert!(!out.status.success(), "{}", combined(&out));
+    assert!(
+        !stdout(&out).lines().any(|l| l.starts_with("tier:")),
+        "{}",
+        combined(&out)
     );
     let _ = std::fs::remove_dir_all(&d);
 }
