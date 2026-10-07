@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "run_id": "20261007-154625-571-a-type-check-is-failing-in-src-poetry-console-ap",
+  "task": "a type check is failing in src/poetry/console/application.py; fix it",
+  "base_commit": "2a50c4b21a790469604b703ef1677b8247c3d10a",
+  "started_at": "2026-10-07T15:46:25Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9760,
+      "peak_prompt_bytes": 11715,
+      "turns_measured": 4
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/application.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "blast_radius",
+        "target": "BaseApplication",
+        "outcome": "error: no first-party definition matches `BaseApplication`; only definitions inside the repository root are indexed",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/application.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 4,
+        "tool": "edit",
+        "target": "src/poetry/console/application.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/application.py. `old` must be text copied from the file, not reconst…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 6924,
+    "prompt_tokens": 26406
+  },
+  "factual_sha256": "4e03d4206d23282afd05e1a6409a88e29b2ec71fdd6c9a9ed3e621d60f51caa5",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

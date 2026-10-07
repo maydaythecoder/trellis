@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "run_id": "20261007-155639-971-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/build.py; fix it",
+  "base_commit": "92a3da5648cf3cbf71ef42af7cbb8aa827403aa6",
+  "started_at": "2026-10-07T15:56:39Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/console/commands/build.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": true
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9763,
+      "peak_prompt_bytes": 10458,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/build.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/build.py",
+        "outcome": "edited src/poetry/console/commands/build.py (applied: true, bytes 2787..2813)",
+        "wrote": true
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/build.py",
+        "outcome": "Typecheck: passed",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 1566,
+    "prompt_tokens": 11074
+  },
+  "factual_sha256": "12b2713649b4cacd9892b1b282a768d102dbd5407dae762dfada8eb1ec7f0b94",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

@@ -528,7 +528,7 @@ before committing to Pyright, and record the result in an ADR.
 
 ## 5. Model floor spike (S7)
 
-**Measured, three configurations, 2026-09-20 to 2026-09-30 (§5.2).** The design below is unchanged;
+**Measured, four configurations, 2026-09-20 to 2026-10-07 (§5.2).** The design below is unchanged;
 what follows it is what was actually run, what it establishes, and what it
 does not.
 
@@ -590,6 +590,7 @@ question.
 | the same | with the two §5.3 fixes | **0 / 9** | — | 9 | 0 | — |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M, candle CPU, tier 2 | with the no-progress stop | **0 / 17** | 14 | 3 | 0 | ~150 |
 | `qwen2.5:3b` Q4_K_M, Ollama 0.34.2, `/v1/completions` | debug build at `6a2c6b9`: #229's chunked-reply decode and #228's 14,336-byte prompt budget | **0 / 20** | 16 | 2 | 2 | 15.1 |
+| `qwen3:8b` Q4_K_M, Ollama 0.15.6 (server), `/v1/completions`, tier 4 | release build at `a9d32c9`, budget 8 iterations / 1800 s | **5 / 20** | 0 | 0 | 14 | 158.2 |
 
 The Coder-3B row is 17 tasks, not 20: the host stopped the job for memory pressure
 with three outstanding. See §5.6. `no-progress` did not exist when the first
@@ -607,12 +608,22 @@ binary's `--version` is printed beside its hash. If `tasks_sha256`, `checker`,
 `budget` or `limit` differ, the script exits 1 naming each field and prints no
 figure. It prints each report's figures in its own column and never combines
 them, and it shows wall-clock only when every report ran the same binary.
-Every report committed before #344, including the four rows above, has no
+Every report committed before #344, including the first four rows above, has no
 `comparable` block and is refused by name, so this table is not
 `compare_floor.py` output. `scripts/checks/floor-compare-selftest.sh` holds the
 script to its four cases.
 
 `errors_after == errors_before` on all 20 tasks of the first row.
+
+The `qwen3:8b` row is `docs/bench/floor-qwen3-8b-ollama.json` and its
+directory (#144), described in §5.7. Its 20 tasks are 5 `repaired`, 14
+`format-failure` and 1 `no-recovery`; the table has no `no-recovery` column,
+so that one is stated here. It is t03, and its outcome was set by the
+runtime, not the model: Ollama answered `HTTP 500 … CUDA error`. Its median is
+the report's `wall_clock_s.median` (the upper middle value, as for the rows
+above); the conventional median of the 20 `seconds` is 154.05. It is the
+first report in this table with a `comparable` block, and the only one with
+`model_ms` figures (median 9,800 ms, p90 30,586 ms, over 68 timed turns).
 
 The Ollama row is `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`
 and its `.json` report (#228, c049a0d): the re-run §5.9 called for of the
@@ -768,10 +779,10 @@ kept.
 |---|---|---|
 | 20–30 changes from poetry's git history, gold diff per task | 20 synthetic mutations on the poetry tree, each verified to move the checker | The corpus is a hash-pinned sdist carrying no `.git`, and the network could not reach GitHub. Grading is on check-recovery, which `floor_tasks.json`'s own protocol specifies, so no gold diff is required |
 | 5 repetitions per task per configuration | 1 | Decoding is greedy at temperature 0, so repetitions are byte-identical — and were observed to be, across four tasks that share a file and therefore share a prompt. A configuration sampled at non-zero temperature still needs the 5 (ADR 0028) |
-| Floor as a configuration | Three configurations (§5.2), all below the floor | Reported as a lower bound, not a floor |
+| Floor as a configuration | Four configurations (§5.2): three below the floor, and `qwen3:8b` on Ollama at tier 4, 5 of 20 repaired (§5.7) | An interval between configurations, located only at tier 4 (§5.7) |
 | Metric 3, argument correctness against a gold trace | **Replaced** by a per-call argument audit (ADR 0028), computed by `docs/bench/metric3_audit.py`; three of §5.2's four runs (the two 0.5B runs and the Coder-3B run) are re-scored below; the `qwen2.5:3b` Ollama run is not (§5.7). #144's trails are next | No gold trace, per the first row. The audit counts, per task, the calls whose `path` exists and the `edit` calls whose `old` anchor is in the file |
 | Metric 5, run-to-run variance | **Waived for temperature-0 configurations only** (ADR 0028) | Nothing varies at temperature 0. A configuration sampled above 0 still needs the five repetitions per task designed above |
-| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. None of the three measured configurations (§5.2, §5.7) repaired a task |
+| Metric 6, context degradation at 25/50/75% fill | **Kept; pending** (ADR 0028) — measured on the first configuration that repairs a task (#144 or later) | Needs a configuration that succeeds at low fill, so degradation has something to degrade from. None of the first three measured configurations (§5.2, §5.7) repaired a task; `qwen3:8b` on Ollama (#144, §5.7) repaired 5 of 20, so it is the configuration to measure from, not yet measured |
 
 #### Metric 3: the per-call audit of the runs in §5.2
 
@@ -914,19 +925,83 @@ never that its arguments refer to anything real.
 neither of which is the behaviour the loop is built around — read, change,
 verify.
 
-### 5.7 What three configurations establish
+### 5.7 What four configurations establish
 
-**The floor is still not located.** Three points, all below it:
+**A floor is located for one configuration, at tier 4, not under constrained
+decoding.** Three points below it and one that repairs tasks:
 
 | Configuration | Repaired | Characteristic failure |
 |---|---|---|
 | Qwen2.5-0.5B-Instruct Q4_K_M | 0 / 20 | Schema-valid nonsense: placeholders as anchors, the path in every field |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M | 0 / 17 | Sound edits aimed at a path it cannot spell |
 | `qwen2.5:3b` Q4_K_M, Ollama 0.34.2 | 0 / 20 | Not characterised: §5.4's per-call audit does not cover this run. 16 of 20 ended on the no-progress stop (§5.2) |
+| `qwen3:8b` Q4_K_M, Ollama 0.15.6, tier 4 | **5 / 20** | Tool-call format: 14 of 20 ended with no valid tool call after the adapter's retries (below) |
 
-Three failing points bound the floor from below more tightly than one and still
-do not say where it is. A configuration that *passes* is the only thing that
-turns this into an interval, and none of these is it.
+Until #144 three failing points bounded the floor from below and did not say
+where it is. `qwen3:8b` is the first configuration that repairs a task, so for
+the S7 task set the floor now has an upper end: somewhere above the three
+failing configurations and at or below this one. Two qualifications go with
+that. The configurations are not one axis: the first two ran at tier 2
+(grammar-constrained) on candle, the last two at tier 4 (validate and retry)
+on Ollama, so this is an interval between configurations, not a parameter
+count. And this configuration passes **without** constrained tool calling,
+so it does not by itself meet the v1.0 plus-row, which asks for operation
+"via constrained tool calling" (`STATUS.md`).
+
+#### The fourth configuration: `qwen3:8b` on Ollama (#144)
+
+Report `docs/bench/floor-qwen3-8b-ollama.json`; per-task logs, `--log-json`
+event files and trails in `docs/bench/floor-qwen3-8b-ollama/`.
+
+| | |
+|---|---|
+| Model | `qwen3:8b`, 8.2B parameters, manifest digest `500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41`, weights blob `sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f`, pulled for this run |
+| Quantization | **Q4_K_M**, read from `ollama show qwen3:8b` (`quantization Q4_K_M`) and `/api/show` (`quantization_level`) |
+| Runtime | Ollama **0.15.6** as the server reports it at `/api/version` (the `ollama` CLI on the host is 0.34.2; the configuration is the server). `ollama ps` during the run: `100% GPU`, `CONTEXT 4096`. Spec `vllm:http://127.0.0.1:11434#qwen3:8b`, so `/v1/completions` at temperature 0 |
+| Tier | `trellis doctor --model vllm:http://127.0.0.1:11434#qwen3:8b`: `tier: 4, ValidateAndRetry — malformed tool calls are retried, not prevented`; "The runtime ignored the schema, so output is NOT constrained" |
+| Checker | the task set's mypy string plus `--no-incremental`, **mypy 2.3.1 (compiled: yes)**, already on `PATH` (not installed by #144); `python` on `PATH` is 3.11.15 |
+| Corpus | poetry 2.5.0, the CRLF tree as unpacked from the sdist pinned in §1 (`e73b8738…81336f`), copied fresh for this run |
+| Harness | `run_floor.py` at commit **`a9d32c9`**, default budget (8 iterations, 1800 s wall clock, no `--model-timeout-s`), release `trellis.exe` built `--locked` at that commit, SHA-256 `92d9c8e7…a0670c` (the report's `comparable.trellis_sha256`) |
+| Date | 2026-10-07, 20 of 20 tasks, 4,170.7 s total |
+| Prompt | `repo:` line: 1 user skill from the operator's own directory, as in #170's run |
+
+```
+repaired           5 / 20     t01 t05 t08 t10 t13
+format-failure    14
+no-recovery        1          t03, runtime HTTP 500 (CUDA error)
+check-recovery     5 / 20     (report's check_recovery: repaired 5, attempted 20)
+median s/task    158.2        (report's wall_clock_s.median)
+model_ms         median 9,800, p90 30,586, over 68 timed turns
+```
+
+Every repaired task took the loop's intended path: a failing `run_checks` on
+the named file, one or two `edit`s, a passing `run_checks`, in 3 or 4
+iterations and 32–62 s. Each was re-checked by the script's reference
+checker, back to its baseline count.
+
+**The 14 format failures are the finding.** Each is the adapter's
+`no valid tool call after 4 attempts`, and the last problem it recorded was:
+
+| Last problem | Tasks |
+|---|---|
+| unknown tool `Edit` or `RunChecks` (the tools are `edit`, `run_checks`, …) | 8: t02, t04, t07, t09, t12, t14, t16, t19 |
+| a tool call needs a string `tool` field | 4: t06, t11, t15, t17 |
+| no JSON object in output | 1: t00 |
+| not JSON (`key must be a string`) | 1: t18 |
+
+The CamelCase names are the ones the run's own turn listing prints
+(`RunChecks { paths: … }`); whether they reach the model through the prompt
+is not established here and is not claimed. Five logs (t00, t02, t03, t17,
+t18) also record a retry for an empty reply after the model spent its whole
+token budget reasoning (qwen3's thinking), the adapter retrying with a larger
+budget (8,192, then 16,384 tokens). Not one run produced a format failure on its first turn: every
+task's first call was a valid `run_checks`. This is consistent with #147's
+finding (8 of 8 tier-4 runs of the same model stopped on tool-call format),
+and does not isolate the cause any more than that did.
+
+`errors_after` never exceeded `errors_before`: no task was made worse.
+Not covered by §5.4's per-call audit (metric 3), which has not been run over
+these trails. Metric 6 now has a configuration that repairs at low fill.
 
 What the first two do establish is that the two failures are **different in kind**,
 which a single measurement could not have shown. The 0.5B cannot form a useful
@@ -1026,9 +1101,11 @@ rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
 
 A measured recall figure — **done**, §2. A stated threshold with reasoning —
 **done**, §3. An ADR on whether a semantic backstop is needed — **done**,
-ADR 0012. A known model floor as a configuration — **partial**: three
-configurations are measured (§5.2) and all are below the floor, which bounds it
-from below without locating it. The two candle configurations fail differently
+ADR 0012. A known model floor as a configuration — **partial**: four
+configurations are measured (§5.2). Three are below the floor; the fourth,
+`qwen3:8b` Q4_K_M on Ollama 0.15.6, repaired 5 of 20 at tier 4
+(`docs/bench/floor-qwen3-8b-ollama.json`), which locates a floor for that
+configuration but not under constrained decoding (§5.7). The two candle configurations fail differently
 — one cannot form a useful call, the other forms one and cannot address it —
 which a single measurement could not have shown. The third, `qwen2.5:3b` on
 Ollama, has no per-call audit, so its failure is not characterised (§5.7).
