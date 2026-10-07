@@ -90,14 +90,32 @@ impl std::io::Write for TranscriptSink {
 /// ignored, only that nothing is known. Saying `?` is the difference between
 /// an unverified claim and a false one — the same distinction `trellis run`
 /// draws in its banner, kept in step here deliberately.
-async fn tier_from_probe(spec: &trellis_model::ModelSpec) -> String {
-    // Tier 1 is the protocol; nothing to probe, and "scripted" would be
-    // untrue (ADR 0024).
-    if matches!(
-        spec,
-        trellis_model::ModelSpec::Hosted { .. } | trellis_model::ModelSpec::Provider { .. }
-    ) {
-        return "tier 1, native tool calls".to_string();
+///
+/// A hosted spec is resolved as a run resolves it (`hosted::resolve`, with
+/// the repository's config and whether the user chose the spec), so a key
+/// goes only where a run would send it (ADR 0024 §3), and its tier comes
+/// from `hosted::colibri_tier`, the run's own identification and tools
+/// probe (ADR 0047 decision 4), whose answer is kept for the process.
+async fn tier_from_probe(
+    spec: &trellis_model::ModelSpec,
+    cfg: &crate::config::RepoConfig,
+    model_from_user: bool,
+) -> String {
+    match crate::hosted::resolve(spec, cfg, model_from_user) {
+        // Nothing was sent: the refusal is the run's, before any request.
+        Err(_) => {
+            return "tier 1 refused: a run would not send this endpoint the key \
+                    (ADR 0024 §3)"
+                .to_string();
+        }
+        Ok(Some(r)) => {
+            return match crate::hosted::colibri_tier(&r).await {
+                Ok(t) => t.label(),
+                // What stops a run before its snapshot: nothing is known.
+                Err(_) => "?".to_string(),
+            };
+        }
+        Ok(None) => {}
     }
     let trellis_model::ModelSpec::Runtime {
         dialect,
@@ -110,11 +128,8 @@ async fn tier_from_probe(spec: &trellis_model::ModelSpec) -> String {
     let Ok(client) = trellis_model::RuntimeClient::new(base, *dialect, model.clone()) else {
         return "?".to_string();
     };
-    match client.probe_constraint().await {
-        Ok(true) => "2".to_string(),
-        Ok(false) => "4, no schema".to_string(),
-        Err(_) => "?".to_string(),
-    }
+    let probed = client.probe_constraint().await.map_err(|e| e.to_string());
+    crate::doctor_cmd::runtime_tier_label(&probed).to_string()
 }
 
 /// What the interface is told when a run ends, whatever way it ended.
@@ -497,6 +512,9 @@ pub(crate) fn run(
     // it: a default in its place would refuse the user's own provider as the
     // repository's choice and name the wrong cause.
     let ask_cfg = crate::config::RepoConfig::load(root)?;
+    // The status bar's probe resolves the spec against the same file, on a
+    // task of its own.
+    let tier_cfg = crate::config::RepoConfig::load(root)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -536,7 +554,7 @@ pub(crate) fn run(
             let tx = tx.clone();
             let spec = spec_for_ask.clone();
             async move {
-                let label = tier_from_probe(&spec).await;
+                let label = tier_from_probe(&spec, &tier_cfg, model_from_user).await;
                 let _ = tx.send(tui::message::Message::TierKnown(label)).await;
             }
         });
@@ -811,13 +829,110 @@ build/
         let spec: trellis_model::ModelSpec = "vllm:http://127.0.0.1:1"
             .parse()
             .expect("a loopback spec parses");
-        assert_eq!(tier_from_probe(&spec).await, "?");
+        let cfg = crate::config::RepoConfig::default();
+        assert_eq!(tier_from_probe(&spec, &cfg, true).await, "?");
     }
 
     #[tokio::test]
     async fn a_scripted_model_is_labelled_as_one_without_asking_anything() {
         let spec: trellis_model::ModelSpec = "scripted:/tmp/x.json".parse().unwrap();
-        assert_eq!(tier_from_probe(&spec).await, "scripted");
+        let cfg = crate::config::RepoConfig::default();
+        assert_eq!(tier_from_probe(&spec, &cfg, true).await, "scripted");
+    }
+
+    // ---- #269: the status bar's tier for a colibri endpoint (ADR 0047) ----
+
+    /// The tier label for an `openai-chat` spec naming `id` at `stub`, as
+    /// the user's own `--model`.
+    async fn colibri_label(stub: &crate::hosted::colibri_stub::Stub, id: &str) -> String {
+        let spec = trellis_model::ModelSpec::Hosted {
+            protocol: trellis_model::Protocol::OpenAiChat,
+            base: format!("{}/v1", stub.base),
+            model: id.to_string(),
+        };
+        tier_from_probe(&spec, &crate::config::RepoConfig::default(), true).await
+    }
+
+    #[tokio::test]
+    async fn tier_label_colibri_accepted_says_tools_probed() {
+        // The risk: the label claiming tier 1 from the protocol alone, as it
+        // did, while the run beneath it probed and found otherwise.
+        use crate::hosted::colibri_stub;
+        let stub = colibri_stub::start("glm-5.2", "colibri", colibri_stub::accepted());
+        assert_eq!(
+            colibri_label(&stub, "glm-5.2").await,
+            "tier 1, colibri glm-5.2, tools probed"
+        );
+        assert_eq!(stub.probes(), 1, "{:?}", stub.requests());
+    }
+
+    #[tokio::test]
+    async fn tier_label_colibri_refused_says_tier_1_unavailable() {
+        use crate::hosted::colibri_stub;
+        let stub = colibri_stub::start("olmoe", "colibri", colibri_stub::refused());
+        assert_eq!(
+            colibri_label(&stub, "olmoe").await,
+            "tier 1 unavailable: colibri olmoe refuses tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn tier_label_colibri_not_verified_says_tools_assumed() {
+        use crate::hosted::colibri_stub;
+        let stub = colibri_stub::start("glm-5.2", "colibri", colibri_stub::not_verified());
+        assert_eq!(
+            colibri_label(&stub, "glm-5.2").await,
+            "tier 1, colibri glm-5.2, tools assumed"
+        );
+    }
+
+    #[tokio::test]
+    async fn tier_label_colibri_not_identified_keeps_native_tool_calls() {
+        // A server that is not colibri is sent no probe and keeps the label
+        // the protocol gives it.
+        use crate::hosted::colibri_stub;
+        let stub = colibri_stub::start("glm-5.2", "vllm", colibri_stub::accepted());
+        assert_eq!(
+            colibri_label(&stub, "glm-5.2").await,
+            "tier 1, native tool calls"
+        );
+        assert_eq!(stub.probes(), 0, "{:?}", stub.requests());
+    }
+
+    #[tokio::test]
+    async fn tier_label_colibri_escapes_an_esc_byte_in_the_served_id() {
+        // The risk: a server's id repainting the status bar. The view's
+        // escape test covers the transcript, not this line.
+        use crate::hosted::colibri_stub;
+        let id = "glm\u{1b}[2Kfake";
+        let stub = colibri_stub::start(id, "colibri", colibri_stub::accepted());
+        let label = colibri_label(&stub, id).await;
+        assert!(!label.contains('\x1b'), "{label:?}");
+        assert_eq!(label, r"tier 1, colibri glm\u{1b}[2Kfake, tools probed");
+    }
+
+    #[tokio::test]
+    async fn tier_label_colibri_repository_spec_with_key_set_sends_nothing() {
+        // The risk (ADR 0024 §3): the status bar sending a key to an
+        // endpoint the repository chose, which a run would refuse. `PATH`
+        // stands in for the key's variable because it is set in every test
+        // process, and the process environment is not changed here.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let addr = l.local_addr().unwrap();
+        let cfg: crate::config::RepoConfig = toml::from_str(&format!(
+            "[[providers]]\nname = \"coli\"\nprotocol = \"openai\"\n\
+             base_url = \"http://{addr}/v1\"\nkey_env = \"PATH\"\n"
+        ))
+        .unwrap();
+        let spec: trellis_model::ModelSpec = "provider:coli#glm-5.2".parse().unwrap();
+        let label = tier_from_probe(&spec, &cfg, false).await;
+        assert!(label.starts_with("tier 1 refused"), "{label}");
+        assert_eq!(
+            l.accept().map(|_| ()).map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::WouldBlock),
+            "the endpoint was connected to"
+        );
     }
 
     #[test]

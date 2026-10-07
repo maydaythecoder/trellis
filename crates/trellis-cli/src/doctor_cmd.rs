@@ -32,6 +32,18 @@ pub(crate) fn schema_report(probed: &Result<bool, String>) -> (bool, String) {
     }
 }
 
+/// The status bar's tier label for a runtime spec, from the same schema
+/// probe [`schema_report`] reads, so the TUI's label, the run's and rpc's
+/// `get_state` cannot disagree about it. A probe that could not run is `?`:
+/// nothing is known, which is not the same as tier 2.
+pub(crate) fn runtime_tier_label(probed: &Result<bool, String>) -> &'static str {
+    match probed {
+        Ok(true) => "2",
+        Ok(false) => "4, no schema",
+        Err(_) => "?",
+    }
+}
+
 /// The codebase graph for `root`, as lines, for a caller with no stdout.
 ///
 /// Builds the index rather than reading the cache: the interface offers this
@@ -274,6 +286,56 @@ fn colibri_health_lines(h: &Health) -> Vec<String> {
     out
 }
 
+/// `doctor`'s `tier:` line for an identified colibri, from the tools probe
+/// the run and the TUI's status bar read too (ADR 0047 decisions 4 and 7),
+/// and a note when tier 1 is unavailable. Every string the server supplied
+/// is passed through [`plain`].
+fn colibri_tier_report(tier: &Result<hosted::ColibriTier>) -> (String, Option<String>) {
+    use trellis_model::AdapterTier;
+    let native = AdapterTier::Native.degradation();
+    match tier {
+        Ok(hosted::ColibriTier::Probed { .. }) => {
+            (format!("tier:       Native (probed) — {native}"), None)
+        }
+        Ok(hosted::ColibriTier::Assumed { reason, .. }) => (
+            format!("tier:       Native (assumed: {}) — {native}", plain(reason)),
+            None,
+        ),
+        Ok(hosted::ColibriTier::Refused {
+            id,
+            origin,
+            fallback_named,
+        }) => {
+            let (id, origin) = (plain(id), plain(origin));
+            (
+                format!(
+                    "tier:       tier 1 unavailable: colibri refuses tools for `{id}` (HTTP 400, \
+                     param `tools`); tier 4 is `vllm:{origin}#{id}`"
+                ),
+                Some(format!(
+                    "colibri refused the tools probe for `{id}`: this model's chat template \
+                     cannot render tools, so a tier-1 run against it is refused before its \
+                     snapshot (ADR 0047 decision 4).{} Tier 4 runs without tools or a chat \
+                     template, the reply validated after: --model vllm:{origin}#{id}",
+                    hosted::fallback_sentence(*fallback_named)
+                )),
+            )
+        }
+        // Called for an identified server only, so not reached; the
+        // protocol's own line if it were.
+        Ok(hosted::ColibriTier::NotColibri) => (format!("tier:       Native — {native}"), None),
+        // A probe that could not be sent leaves tier 1 assumed, as its other
+        // non-answers do.
+        Err(e) => (
+            format!(
+                "tier:       Native (assumed: {}) — {native}",
+                plain(&e.to_string())
+            ),
+            None,
+        ),
+    }
+}
+
 /// The note for a `vllm:` spec on a server identified as colibri.
 fn colibri_vllm_note(base: &str, served: &str) -> String {
     format!(
@@ -325,6 +387,9 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     let mut colibri_lines: Vec<String> = Vec::new();
     // A hosted endpoint's batching, from the same read as its colibri lines.
     let mut hosted_seen: Option<Result<BatchingCapability, String>> = None;
+    // colibri's tier, from the tools probe, in place of the `tier:` line the
+    // protocol alone would give (ADR 0047 decision 4).
+    let mut colibri_tier_line: Option<String> = None;
 
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
@@ -371,6 +436,12 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                         )),
                         None => {}
                     }
+                    // The served id, which is what colibri answers for; a
+                    // spec naming another is reported on the runtime line.
+                    let (line, note) =
+                        colibri_tier_report(&rt.block_on(hosted::probed_tier(&h, id.clone())));
+                    colibri_tier_line = Some(line);
+                    notes.extend(note);
                 }
                 Ok(ColibriSeen {
                     identity: Identity::NotColibri { owned_by },
@@ -383,12 +454,13 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                     identity: Identity::Unauthorized { status },
                     ..
                 }) => notes.push(format!(
-                    "This endpoint's /v1/models answered {status} to {}, so whether it is \
-                     colibri is not known.",
+                    "This endpoint's /v1/models answered HTTP {status} to {}, so whether it is \
+                     colibri is not known: colibri started with a key lists its model only to \
+                     an authenticated request.",
                     if hosted::colibri_key(&h).is_some() {
-                        "the key it was sent"
+                        format!("a request sent with the key from {}", h.key_env)
                     } else {
-                        "a request without a key"
+                        format!("a request without a key ({} is not set)", h.key_env)
                     }
                 )),
                 Ok(ColibriSeen {
@@ -514,6 +586,11 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         .position(|l| l.starts_with("batching:"))
         .map_or(lines.len(), |i| i + 1);
     lines.splice(at..at, colibri_lines);
+    if let Some(t) = colibri_tier_line
+        && let Some(l) = lines.iter_mut().find(|l| l.starts_with("tier:"))
+    {
+        *l = t;
+    }
     for line in lines {
         println!("{line}");
     }

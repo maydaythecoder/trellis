@@ -405,11 +405,12 @@ pub(crate) fn thinking_ignored(cfg: &RepoConfig, what: &str) -> Option<String> {
 
 /// `doctor`'s model, runtime and notes for a hosted spec.
 ///
-/// No completion is requested. Tier 1 is what the protocol is, not something
-/// a probe discovers, and a probe would spend the key's quota to learn it.
-/// `read` is whether doctor read the endpoint's `/v1/models` to ask whether
-/// it is colibri, which it does for a loopback base only (ADR 0047
-/// decision 3).
+/// No completion is requested of a remote endpoint. Tier 1 is what the
+/// protocol is, not something a probe discovers, and a probe would spend the
+/// key's quota to learn it. `read` is whether doctor read the endpoint's
+/// `/v1/models` to ask whether it is colibri, which it does for a loopback
+/// base only (ADR 0047 decision 3); colibri alone is then sent the tools
+/// probe (decision 4).
 pub(crate) fn doctor(r: &Resolved, read: bool) -> (String, String, Vec<String>) {
     let runtime = format!(
         "{} at {}{}",
@@ -430,9 +431,11 @@ pub(crate) fn doctor(r: &Resolved, read: bool) -> (String, String, Vec<String>) 
             ),
         },
         if read {
-            "No completion was requested: tier 1 is the protocol's own tool calling. This \
-             endpoint is on this machine, so its `/v1/models` (and colibri's `/health`) \
-             was read to ask whether it is colibri (ADR 0047 decision 3)."
+            "This endpoint is on this machine, so its `/v1/models` was read to ask whether \
+             it is colibri (ADR 0047 decision 3). colibri is also read at `/health` and sent \
+             one chat request carrying one tool and `max_tokens: 1`, to ask whether its \
+             model takes tools (decision 4); any other server is sent no completion, since \
+             tier 1 is the protocol's own tool calling."
                 .to_string()
         } else {
             "No request was sent: tier 1 is the protocol's own tool calling, and a probe \
@@ -466,19 +469,83 @@ fn probed() -> &'static Mutex<HashMap<(String, String), ToolsProbe>> {
     P.get_or_init(Default::default)
 }
 
-/// A run's checks of a loopback hosted endpoint, before its snapshot (ADR
-/// 0047 decisions 3 and 4): is it colibri, does it serve the spec's model,
-/// and does that model's template take tools.
+/// colibri's answer to the one tools probe for `id` at `r`'s origin (ADR
+/// 0047 decision 4), sent at most once per origin and served id in this
+/// process and kept for it: the run, `doctor` and the TUI's status bar all
+/// ask through this, so whichever asks second reads the first one's answer.
+/// The key is [`colibri_key`]'s.
+async fn tools_probe(r: &Resolved, id: &str) -> Result<ToolsProbe> {
+    let origin = origin_of(&r.base).unwrap_or_else(|| r.base.clone());
+    let memo = (origin, id.to_string());
+    let cached = probed().lock().ok().and_then(|m| m.get(&memo).cloned());
+    if let Some(p) = cached {
+        return Ok(p);
+    }
+    let p = colibri::probe_tools(&r.base, id, colibri_key(r).as_ref())
+        .await
+        .map_err(|e| anyhow!("{}", plain(&e.to_string())))?;
+    if let Ok(mut m) = probed().lock() {
+        m.insert(memo, p.clone());
+    }
+    Ok(p)
+}
+
+/// What a hosted endpoint's identification and tools probe settled about
+/// its tier (ADR 0047 decisions 3 and 4). Decided once, by
+/// [`colibri_tier`], for the run, the TUI's status bar and rpc's
+/// `get_state`; `doctor` reads the same probe through [`tools_probe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ColibriTier {
+    /// Not colibri, or not on this machine: tier 1 is the protocol's own
+    /// tool calling, as before ADR 0047.
+    NotColibri,
+    /// colibri accepted the probe's tools.
+    Probed { id: String },
+    /// colibri's answer to the probe settled nothing; `reason` is
+    /// TRELLIS's, never the body.
+    Assumed { id: String, reason: String },
+    /// colibri refused tools for this model (a 400 whose `param` is
+    /// `tools`). `origin` is raw, for the tier-4 spec.
+    Refused {
+        id: String,
+        origin: String,
+        fallback_named: bool,
+    },
+}
+
+/// The status bar's label for a hosted spec whose tier is not colibri's.
+pub(crate) const NATIVE_LABEL: &str = "tier 1, native tool calls";
+
+impl ColibriTier {
+    /// The tier label the TUI's status bar shows and rpc's `get_state`
+    /// carries. A served id passes through [`plain`] here, before it leaves
+    /// trellis-cli.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            ColibriTier::NotColibri => NATIVE_LABEL.to_string(),
+            ColibriTier::Probed { id } => format!("tier 1, colibri {}, tools probed", plain(id)),
+            ColibriTier::Assumed { id, .. } => {
+                format!("tier 1, colibri {}, tools assumed", plain(id))
+            }
+            ColibriTier::Refused { id, .. } => {
+                format!("tier 1 unavailable: colibri {} refuses tools", plain(id))
+            }
+        }
+    }
+}
+
+/// Is `r` colibri, does it serve the spec's model, and does that model's
+/// template take tools (ADR 0047 decisions 3 and 4)? The one place a tier
+/// for a hosted spec is decided.
 ///
-/// `Ok(None)` when the base is not this machine (nothing is read) or the
-/// server is not colibri: the run goes on as it always has. `Ok(Some(_))` is
-/// the run's `runtime:` line for an identified colibri, and is returned for
-/// nothing else, so it is also the identification the request profile is
-/// turned on by (decision 5). `Err` stops the run before its snapshot. Every
+/// `Ok(NotColibri)` when the base is not this machine (nothing is read) or
+/// the server is not colibri. `Err` is what stops a run before its
+/// snapshot: a refused connection, no answer, a 401 or 403, or a served id
+/// that is not the spec's. A tools refusal is an answer, not an error: the
+/// run refuses on it in [`preflight`], and the status bar says it. Every
 /// read is bounded by `colibri::READ_TIMEOUT`, and every string the server
-/// supplied passes through [`plain`].
-pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
-    const NOT_STARTED: &str = "Nothing was snapshotted: the run did not start.";
+/// supplied passes through [`plain`] before it is put in an error.
+pub(crate) async fn colibri_tier(r: &Resolved) -> Result<ColibriTier> {
     let key = colibri_key(r);
     let id = match colibri::identify(&r.base, key.as_ref()).await {
         Ok(Identity::Identified { id }) => id,
@@ -487,7 +554,9 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
         // that is not a JSON model list), is run as today: refusing it would
         // stop runs that work now.
         Ok(Identity::NotLoopback | Identity::NotColibri { .. } | Identity::Absent { .. })
-        | Err(RuntimeError::Http { .. } | RuntimeError::Shape(_)) => return Ok(None),
+        | Err(RuntimeError::Http { .. } | RuntimeError::Shape(_)) => {
+            return Ok(ColibriTier::NotColibri);
+        }
         // Status and variable only: the body is the server's.
         Ok(Identity::Unauthorized { status }) => anyhow::bail!(
             "{} answered HTTP {status} when asked whether it is colibri (GET /v1/models), {}. \
@@ -531,44 +600,59 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
             plain(&r.model)
         );
     }
-    let origin = origin_of(&r.base).unwrap_or_else(|| r.base.clone());
-    let memo = (origin.clone(), id.clone());
-    let cached = probed().lock().ok().and_then(|m| m.get(&memo).cloned());
-    let probe = match cached {
-        Some(p) => p,
-        None => {
-            let p = colibri::probe_tools(&r.base, &id, key.as_ref())
-                .await
-                .map_err(|e| anyhow!("{}", plain(&e.to_string())))?;
-            if let Ok(mut m) = probed().lock() {
-                m.insert(memo, p.clone());
-            }
-            p
+    probed_tier(r, id).await
+}
+
+/// The tier of `r`, already identified as colibri serving `id`, from the
+/// one tools probe ([`tools_probe`]). [`colibri_tier`]'s last step, and
+/// `doctor`'s, which has identified the server itself.
+pub(crate) async fn probed_tier(r: &Resolved, id: String) -> Result<ColibriTier> {
+    Ok(match tools_probe(r, &id).await? {
+        ToolsProbe::Accepted => ColibriTier::Probed { id },
+        ToolsProbe::NotVerified { reason } => ColibriTier::Assumed { id, reason },
+        ToolsProbe::Refused { fallback_named } => ColibriTier::Refused {
+            id,
+            origin: origin_of(&r.base).unwrap_or_else(|| r.base.clone()),
+            fallback_named,
+        },
+    })
+}
+
+/// What a refused run, and `doctor`, say when it would stop it.
+const NOT_STARTED: &str = "Nothing was snapshotted: the run did not start.";
+
+/// A run's checks of a loopback hosted endpoint, before its snapshot, on
+/// the tier [`colibri_tier`] decided.
+///
+/// `Ok(None)` when the server is not colibri: the run goes on as it always
+/// has. `Ok(Some(_))` is the run's `runtime:` line for an identified
+/// colibri, and is returned for nothing else, so it is also the
+/// identification the request profile is turned on by (decision 5). `Err`
+/// stops the run before its snapshot: colibri refused tools.
+pub(crate) fn preflight(r: &Resolved, tier: &ColibriTier) -> Result<Option<String>> {
+    match tier {
+        ColibriTier::NotColibri => Ok(None),
+        ColibriTier::Probed { id } => {
+            Ok(Some(format!("colibri, model {}, tools probed", plain(id))))
         }
-    };
-    match probe {
-        ToolsProbe::Accepted => Ok(Some(format!("colibri, model {}, tools probed", plain(&id)))),
-        ToolsProbe::NotVerified { reason } => Ok(Some(format!(
+        ColibriTier::Assumed { id, reason } => Ok(Some(format!(
             "colibri, model {}, tools not verified: {reason}",
-            plain(&id)
+            plain(id)
         ))),
-        ToolsProbe::Refused { fallback_named } => anyhow::bail!(
+        ColibriTier::Refused {
+            id,
+            origin,
+            fallback_named,
+        } => anyhow::bail!(
             "colibri at {} refused tools for `{id}` (HTTP 400, param `tools`): this model's chat \
              template cannot render them, so tier 1 cannot run against it (ADR 0047 decision \
              4).{fallback} Tier 4 runs without tools or a chat template, the reply validated \
              after: --model vllm:{origin}#{id}.{keyed} {NOT_STARTED}",
             plain(&r.base),
-            id = plain(&id),
-            // The memo key above stays raw; this is the display.
-            origin = plain(&origin),
-            // Only where colibri's own message names it: Inkling has none.
-            fallback = if fallback_named {
-                " colibri's message names COLI_TOOL_FALLBACK=1: restarted with it, colibri \
-                 renders tools as text."
-            } else {
-                ""
-            },
-            keyed = match &key {
+            id = plain(id),
+            origin = plain(origin),
+            fallback = fallback_sentence(*fallback_named),
+            keyed = match colibri_key(r) {
                 Some(_) => format!(
                     " This run sent the key from {}, and a vllm: spec sends none, so tier 4 \
                      needs a colibri started without a key.",
@@ -577,6 +661,17 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
                 None => String::new(),
             },
         ),
+    }
+}
+
+/// Said only where colibri's own message names `COLI_TOOL_FALLBACK`:
+/// Inkling has none.
+pub(crate) fn fallback_sentence(fallback_named: bool) -> &'static str {
+    if fallback_named {
+        " colibri's message names COLI_TOOL_FALLBACK=1: restarted with it, colibri \
+         renders tools as text."
+    } else {
+        ""
     }
 }
 
@@ -1493,5 +1588,182 @@ context_bytes = {set}
             "context:  compacted 1 time(s) on request over rpc; from turn 4 on, the \
              observations of turns 1-3 were elided (900 B)"
         );
+    }
+
+    // ---- ADR 0047 decision 4: one tools probe per origin and served id ----
+
+    #[tokio::test]
+    async fn colibri_probe_is_sent_once_per_origin_and_served_id() {
+        // The risk: the status bar and the run each sending their own probe,
+        // or a TUI session sending one per task, where decision 4 allows one
+        // per origin and served id in a process; or the memo keyed on the
+        // origin alone, so a server restarted with another model is never
+        // asked about it.
+        let stub = colibri_stub::start("glm-5.2", "colibri", colibri_stub::accepted());
+        let r = |model: &str| Resolved {
+            protocol: Protocol::OpenAiChat,
+            base: format!("{}/v1", stub.base),
+            model: model.to_string(),
+            key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
+            provider: None,
+        };
+        let probed = |id: &str| ColibriTier::Probed { id: id.to_string() };
+        assert_eq!(
+            colibri_tier(&r("glm-5.2")).await.unwrap(),
+            probed("glm-5.2")
+        );
+        assert_eq!(
+            colibri_tier(&r("glm-5.2")).await.unwrap(),
+            probed("glm-5.2")
+        );
+        assert_eq!(stub.probes(), 1, "{:?}", stub.requests());
+        // The same origin, restarted with another model: identified afresh
+        // (one GET each time), and probed once more for the new id.
+        stub.serve("kimi-k3");
+        assert_eq!(
+            colibri_tier(&r("kimi-k3")).await.unwrap(),
+            probed("kimi-k3")
+        );
+        assert_eq!(stub.probes(), 2, "{:?}", stub.requests());
+        assert_eq!(stub.model_reads(), 3, "{:?}", stub.requests());
+    }
+}
+
+/// A loopback server answering as colibri does, for the binary's unit tests
+/// (here and in `tui_run`). Bodies as `tests/colibri_run.rs` transcribes
+/// them from colibri's source at ce370e8; nothing connects anywhere but
+/// 127.0.0.1.
+#[cfg(test)]
+pub(crate) mod colibri_stub {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    /// ce370e8, c/openai_server.py:1364-1367 (OLMoE refuses `tools` while
+    /// rendering, naming the fallback setting).
+    pub(crate) const REFUSED_OLMOE: &str = r#"{"error":{"message":"OLMoE has no tool-calling chat template; set COLI_TOOL_FALLBACK=1 to render tools as text.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
+
+    /// ce370e8, c/openai_server.py:5169-5241, cut at one token.
+    const ACCEPTED: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1758800000,"model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"I"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}"#;
+
+    /// How the stub answers the tools probe: a status line and a body.
+    pub(crate) type Probe = (&'static str, String);
+
+    pub(crate) fn accepted() -> Probe {
+        ("200 OK", ACCEPTED.to_string())
+    }
+
+    pub(crate) fn refused() -> Probe {
+        ("400 Bad Request", REFUSED_OLMOE.to_string())
+    }
+
+    pub(crate) fn not_verified() -> Probe {
+        (
+            "500 Internal Server Error",
+            r#"{"error":"boom"}"#.to_string(),
+        )
+    }
+
+    pub(crate) struct Stub {
+        /// `http://127.0.0.1:<port>`.
+        pub(crate) base: String,
+        served: Arc<Mutex<String>>,
+        got: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Stub {
+        /// From now on, `/v1/models` lists `id`: a server restarted with
+        /// another model.
+        pub(crate) fn serve(&self, id: &str) {
+            *self.served.lock().unwrap() = id.to_string();
+        }
+
+        /// Every request so far, raw.
+        pub(crate) fn requests(&self) -> Vec<String> {
+            self.got.lock().unwrap().clone()
+        }
+
+        /// How many tools probes (POSTs) arrived.
+        pub(crate) fn probes(&self) -> usize {
+            self.requests()
+                .iter()
+                .filter(|r| r.starts_with("POST "))
+                .count()
+        }
+
+        /// How many identification reads (`GET /v1/models`) arrived.
+        pub(crate) fn model_reads(&self) -> usize {
+            self.requests()
+                .iter()
+                .filter(|r| r.starts_with("GET /v1/models "))
+                .count()
+        }
+    }
+
+    /// Lists `served` at `/v1/models` as owned by `owned_by`, and answers
+    /// every POST with `probe`, until the test process ends.
+    pub(crate) fn start(served: &str, owned_by: &str, probe: Probe) -> Stub {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let served = Arc::new(Mutex::new(served.to_string()));
+        let got: Arc<Mutex<Vec<String>>> = Arc::default();
+        let owned_by = owned_by.to_string();
+        let (s2, g2) = (served.clone(), got.clone());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { break };
+                s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .ok();
+                let raw = read_request(&mut s);
+                let (status, body) = if raw.starts_with("GET /v1/models ") {
+                    let id = s2.lock().unwrap().clone();
+                    (
+                        "200 OK",
+                        serde_json::json!({"object":"list","data":[{"id":id,
+                            "object":"model","created":1758800000,"owned_by":owned_by}]})
+                        .to_string(),
+                    )
+                } else if raw.starts_with("POST ") {
+                    (probe.0, probe.1.clone())
+                } else {
+                    ("404 Not Found", r#"{"error":"not found"}"#.to_string())
+                };
+                g2.lock().unwrap().push(raw);
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        Stub { base, served, got }
+    }
+
+    fn read_request(s: &mut std::net::TcpStream) -> String {
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 16384];
+        loop {
+            let n = s.read(&mut buf).unwrap_or(0);
+            raw.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length").then_some(v)
+                    })
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= len {
+                    return text;
+                }
+            }
+            if n == 0 {
+                return text;
+            }
+        }
     }
 }
