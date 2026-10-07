@@ -14,8 +14,8 @@ What `main` holds when the owner tags it `v0.1.0`: PR #1 (the v0.1 resolver,
 agent loop, rollback, governance, trail and resume, plus the capabilities
 inherited from pi, Apex and Paperclip under ADRs 0021-0026), the four
 squashed drain runs (PRs #155, #188, #193, #214; tagged `v0.1` at
-`747df54`), and dev-to-main batches 1-23, the last of which carries #495 and
-this entry (#386). `v0.1` predates this version scheme: the workspace said
+`747df54`), and every dev-to-main batch through the one that carries #495
+and this entry (#386). `v0.1` predates this version scheme: the workspace said
 0.0.1 then, and `release.yml`'s `publish` job would refuse it. What is and is
 not done, item by item, is in `docs/STATUS.md`.
 
@@ -142,7 +142,8 @@ not done, item by item, is in `docs/STATUS.md`.
   runtime request log, such as colibri's (#258).
 - ADR 0021 gains rows for pi 1.0.2's new capabilities, and row 12.3 says
   doctor's loopback read is on request (#322); stale lines after #441,
-  #319, #467, #482, #483, #266 and #267 brought up to date (#484).
+  #319, #467, #482, #483, #266 and #267 brought up to date, and
+  `gate-checked.sh --self-test` run in the lint gate (#484).
 
 ### Build, CI and security
 
@@ -152,7 +153,8 @@ not done, item by item, is in `docs/STATUS.md`.
   credentials, `--locked` everywhere (#215); the pinned toolchain installed
   (#385); a timeout on every job and one CI run per commit (#381, #477); every
   promotion toward `main` checked (#426); the desktop built, linted, tested
-  and audited (#297, #384, #290).
+  and audited on Windows and Linux (#297, #384, #290), without Tauri's
+  Linux prerequisites, which arrive with Tauri itself (#289).
 - Supply chain: cargo-deny and cargo-audit in CI (#14); gitleaks over each
   change's commits (#236); fuzz targets (#95, #97) with a current
   `fuzz/Cargo.lock` (#197); the unused `git2` dependency removed (#424).
