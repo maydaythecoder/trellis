@@ -98,6 +98,11 @@ const COMMANDS: &[(&str, &str)] = &[
          read-only: {note}",
     ),
     (
+        "classify",
+        "whether {text} is a question or a task, by the rule the TUI routes on; starts no \
+         run: {intent}, and {answer} when it is a question",
+    ),
+    (
         "get_commands",
         "this list, the prompt templates and the skills",
     ),
@@ -205,6 +210,9 @@ impl<S: tracing::Subscriber> Layer<S> for TurnCapture {
 /// What a `steer` still waiting is answered once its run has ended: the
 /// loop will read the channel no more.
 const STEER_ENDED: &str = "the run ended before its next model request; not delivered";
+
+/// What `prompt` and `classify` are refused with while a run is in flight.
+const ONE_AT_A_TIME: &str = "a run is in progress; one at a time (abort it, or wait)";
 
 /// One run's steering channel, and the server's own record of it.
 ///
@@ -979,6 +987,10 @@ impl Server {
             "get_queue" => self.get_queue(id),
             "vault_search" => self.vault_search(cmd, id),
             "vault_graph" => self.vault_graph(cmd, id),
+            "classify" => {
+                let r = self.classify(cmd);
+                self.respond(id, kind, r);
+            }
             other => self.respond(
                 id,
                 if other.is_empty() { "unknown" } else { other },
@@ -1026,6 +1038,61 @@ impl Server {
             .ok_or_else(|| "no model: pass \"model\", use set_model, or set [model] spec".into())
     }
 
+    /// `classify`: whether `text` is a question or a task, by `ask::classify`,
+    /// the rule the TUI routes on, so every client routes by one rule (ADR
+    /// 0052 §2.3). It starts no run and writes nothing; a task is only named,
+    /// and starting it stays `prompt`'s.
+    ///
+    /// The model is resolved as `prompt` resolves one with no `model` field:
+    /// `set_model`'s, else `[model] spec`, and it is the user's choice only
+    /// when `set_model` named it, so a key goes only where `prompt` would
+    /// send it (ADR 0024 §3; `ask::classify` resolves through `hosted`).
+    ///
+    /// Refused while a run is in flight, by `prompt`'s test and in its words:
+    /// an answer then could be read as one about the run. Answered on this
+    /// thread rather than a waiter's, so no `prompt` can start a run while
+    /// it is asked; the request is bounded by `[model] timeout_s`. `text` is
+    /// the client's and goes to the model as data; the answer is model text
+    /// and goes back as a JSON string through `frame`, never as a record.
+    fn classify(&mut self, cmd: &Value) -> Result<Value, String> {
+        if self.in_flight() && !self.free_after_run_end() {
+            return Err(ONE_AT_A_TIME.into());
+        }
+        let text = match cmd.get("text").and_then(Value::as_str) {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => {
+                return Err(
+                    "classify needs {\"text\": \"<text>\"}, a string and not an empty one".into(),
+                );
+            }
+        };
+        let model_from_user = self.model.is_some();
+        let model = self.model(None)?;
+        check_spec(&model)?;
+        let spec: trellis_model::ModelSpec = model.parse().map_err(|e| format!("{e}"))?;
+        // With `?`, as the TUI loads it: a default in its place would refuse
+        // the user's own provider as the repository's choice.
+        let cfg = config::RepoConfig::load(&self.root).map_err(|e| format!("{e:#}"))?;
+        let files = trellis_index::discover_relative(&self.root);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("starting the runtime to ask the model: {e}"))?;
+        match rt.block_on(crate::ask::classify(
+            &spec,
+            text,
+            &files,
+            &cfg,
+            model_from_user,
+        )) {
+            Ok(crate::ask::Intent::Answer(answer)) => {
+                Ok(json!({"intent": "question", "answer": answer}))
+            }
+            Ok(crate::ask::Intent::Task) => Ok(json!({"intent": "task"})),
+            Err(e) => Err(format!("{e:#}")),
+        }
+    }
+
     fn approve(&self, cmd: &Value, id: Option<&str>) -> Result<Value, String> {
         let id = id.ok_or("approve needs the approval request's \"id\"")?;
         // Only JSON `true` approves, as only `y` or `yes` does on a terminal
@@ -1046,7 +1113,7 @@ impl Server {
     /// worktree is `cmd_run`'s to check, and its refusal arrives as `run_end`.
     fn prompt(&mut self, cmd: &Value, id: Option<&str>) -> Result<(), String> {
         if self.in_flight() && !self.free_after_run_end() {
-            return Err("a run is in progress; one at a time (abort it, or wait)".into());
+            return Err(ONE_AT_A_TIME.into());
         }
         let text = |k: &str| cmd.get(k).and_then(Value::as_str).map(str::to_string);
         let task = text("task").unwrap_or_default();

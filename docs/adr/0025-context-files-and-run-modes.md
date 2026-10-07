@@ -220,11 +220,14 @@ on stderr.
     2026-10-06, #295; see "vault_search and vault_graph" below*)
   - `get_session_stats` and `get_last_assistant_text` (*added 2026-10-06,
     #319; see "get_session_stats and get_last_assistant_text" below*)
+  - `classify {text}` (*added 2026-10-07, #501, ADR 0052; see "classify"
+    below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
   `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th,
   `get_queue`, the 15th, and `vault_search` and `vault_graph`, the 16th and
   17th, are trellis's own, not pi's; 14 since `get_session_stats` and
-  `get_last_assistant_text`, pi's, which make `get_commands` list 19. Each
+  `get_last_assistant_text`, pi's, which make `get_commands` list 19;
+  `classify`, trellis's own, makes it list 20. Each
   of pi 1.0.2's 33 is in the table under "get_session_stats and
   get_last_assistant_text" below, built or not built, with its reason.)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
@@ -604,6 +607,44 @@ on stderr.
     | `get_last_assistant_text` | built | #319, above |
     | `set_session_name` | not built | deferred (ADR 0021 8.1–8.4) |
     | `get_commands` | built | lists this protocol's commands, the prompt templates and the skills |
+- *Added 2026-10-07 (#501), on ADR 0052 §2.3, accepted by the owner on
+  #500.* **`classify {text}`** says whether `text` is a question or a task,
+  by `ask::classify`, the rule `trellis tui` routes typed input on. It
+  exists so the Go TUI and the desktop route by the same rule from the same
+  code (ADR 0052: routing stays in Rust, one home for the rule): without
+  it a client's only path was `prompt`, and `hello` got a snapshot, a run
+  and a rollback. It is read-only: it starts no run, writes no trail and
+  touches no file; a task is only named, and starting it stays `prompt`'s.
+  - `data` is `{intent: "question", answer}` or `{intent: "task"}`, with no
+    `answer` on a task; `tests/client_contract.json` lists both under
+    `rpc.responses.classify`. The answer is model text, sent as a JSON
+    string through `frame` and never as a record of its own; `text` is the
+    client's and reaches the model as data in the classification prompt
+    (rule 10).
+  - The model is the one a `prompt` with no `model` field would use:
+    `set_model`'s, else `[model] spec`, and it is the user's choice only
+    when `set_model` named it. A hosted spec is resolved through
+    `hosted::resolve` as for a run, so a key goes only where `prompt` would
+    send it and a repository-chosen endpoint is refused before any request
+    (ADR 0024 §3, unchanged). A scripted model answers `task`, as in the TUI.
+  - Refused while a run is in flight, by `prompt`'s test (#495's wait
+    after `run_end` included) and in its words, "a run is in progress; one
+    at a time (abort it, or wait)". A missing, empty or non-string `text`
+    is refused by name. A model that cannot be reached, or that refuses,
+    answers `success` false with the failure's chain.
+  - Answered on the reader thread, not a waiter's: no run can be in flight
+    when it is asked, and none can start until it is answered. The request
+    is bounded by `[model] timeout_s` (ADR 0047 decision 9).
+  - Evidence, in `tests/modes.rs` through the binary over stdio against
+    the provider stub, each failing before ("unknown command `classify`"):
+    `rpc_classify_answers_a_question_as_data_and_starts_no_run` (an answer
+    holding a newline and a `run_end`-shaped line arrives as one string),
+    `rpc_classify_says_task_with_no_answer_and_starts_no_run`,
+    `rpc_classify_is_refused_while_a_run_is_in_flight`,
+    `rpc_classify_refuses_text_that_is_missing_empty_or_not_a_string`,
+    `rpc_classify_reports_a_model_it_cannot_reach_and_starts_no_run`,
+    `rpc_classify_sends_no_key_to_a_loopback_port_the_repository_chose`
+    and `rpc_classify_reply_carries_every_field_the_contract_lists`.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
