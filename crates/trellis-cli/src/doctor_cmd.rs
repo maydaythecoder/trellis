@@ -249,6 +249,26 @@ fn colibri_runtime(base: &str, spec_model: &str, served: &str) -> String {
     }
 }
 
+/// The `context:` line for an identified colibri: the budget a run holds
+/// its prompt to (ADR 0047 decision 6), since colibri does not say how
+/// large its window is and the user is the one who knows its `--ctx`.
+fn colibri_context_line(budget: usize) -> String {
+    let source = if budget == hosted::COLIBRI_CONTEXT_BYTES {
+        format!(
+            "{},{:03} bytes, which fits a window of 8,192 tokens with 1,024 left for the reply \
+             at 3.5 bytes per token",
+            budget / 1000,
+            budget % 1000
+        )
+    } else {
+        format!("{budget} bytes, from [model] context_bytes or the model's input_bytes")
+    };
+    format!(
+        "context:    colibri does not report its window; runs use {source}. \
+         Set [model] context_bytes to fit the --ctx colibri was started with"
+    )
+}
+
 /// `doctor`'s lines for what colibri's `/health` reported, each marked as
 /// colibri's own report (ADR 0047 decision 7). Every string is the
 /// server's, so each goes through [`plain`].
@@ -295,10 +315,13 @@ fn colibri_tier_report(tier: &Result<hosted::ColibriTier>) -> (String, Option<St
     let native = AdapterTier::Native.degradation();
     match tier {
         Ok(hosted::ColibriTier::Probed { .. }) => {
-            (format!("tier:       Native (probed) — {native}"), None)
+            (format!("tier:       1, Native (probed) — {native}"), None)
         }
         Ok(hosted::ColibriTier::Assumed { reason, .. }) => (
-            format!("tier:       Native (assumed: {}) — {native}", plain(reason)),
+            format!(
+                "tier:       1, Native (assumed: {}) — {native}",
+                plain(reason)
+            ),
             None,
         ),
         Ok(hosted::ColibriTier::Refused {
@@ -323,16 +346,33 @@ fn colibri_tier_report(tier: &Result<hosted::ColibriTier>) -> (String, Option<St
         }
         // Called for an identified server only, so not reached; the
         // protocol's own line if it were.
-        Ok(hosted::ColibriTier::NotColibri) => (format!("tier:       Native — {native}"), None),
+        Ok(hosted::ColibriTier::NotColibri) => (format!("tier:       1, Native — {native}"), None),
         // A probe that could not be sent leaves tier 1 assumed, as its other
         // non-answers do.
         Err(e) => (
             format!(
-                "tier:       Native (assumed: {}) — {native}",
+                "tier:       1, Native (assumed: {}) — {native}",
                 plain(&e.to_string())
             ),
             None,
         ),
+    }
+}
+
+/// `doctor`'s `tier:` line when `--model` was given and the constraint probe
+/// got no answer. `Probe::report`'s unprobed line says "pass --model", which
+/// sends a person who already did back to that step (#526). An unreachable
+/// runtime is named with its endpoint, passed through [`plain`] because it
+/// can come from repository config, and the likely fix; any other failure
+/// points at the note that carries it.
+fn unprobed_tier_line(e: &RuntimeError) -> String {
+    match e {
+        RuntimeError::Connect { base, .. } => format!(
+            "tier:       unknown, the probe could not reach the runtime at {}; start it, or \
+             check the port",
+            plain(base)
+        ),
+        _ => "tier:       unknown, the probe did not complete; see the note below".to_string(),
     }
 }
 
@@ -387,9 +427,12 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     let mut colibri_lines: Vec<String> = Vec::new();
     // A hosted endpoint's batching, from the same read as its colibri lines.
     let mut hosted_seen: Option<Result<BatchingCapability, String>> = None;
-    // colibri's tier, from the tools probe, in place of the `tier:` line the
-    // protocol alone would give (ADR 0047 decision 4).
-    let mut colibri_tier_line: Option<String> = None;
+    // A `tier:` line in place of the one `Probe::report` would give: colibri's
+    // tier, from the tools probe, rather than the protocol's alone (ADR 0047
+    // decision 4); or why a probe that `--model` asked for got no answer,
+    // where the report's own line would tell the person to pass `--model`
+    // (#526).
+    let mut tier_line: Option<String> = None;
 
     if let Some(spec) = model_spec {
         let spec: trellis_model::ModelSpec = spec.parse()?;
@@ -419,6 +462,9 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                 }) => {
                     runtime = colibri_runtime(&h.base, &h.model, id);
                     colibri_lines.push("version:    not reported over HTTP".to_string());
+                    colibri_lines.push(colibri_context_line(hosted::hosted_context_bytes(
+                        &h, &repo_cfg, true,
+                    )?));
                     match health {
                         Some(Ok(hl)) => {
                             colibri_lines.extend(colibri_health_lines(hl));
@@ -440,7 +486,7 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                     // spec naming another is reported on the runtime line.
                     let (line, note) =
                         colibri_tier_report(&rt.block_on(hosted::probed_tier(&h, id.clone())));
-                    colibri_tier_line = Some(line);
+                    tier_line = Some(line);
                     notes.extend(note);
                 }
                 Ok(ColibriSeen {
@@ -546,7 +592,15 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
                         .into(),
                     );
                     }
-                    Err(e) => notes.push(format!("Could not probe the runtime: {e}")),
+                    Err(e) => {
+                        tier_line = Some(unprobed_tier_line(&e));
+                        // `e` names the endpoint, which can come from
+                        // repository config.
+                        notes.push(format!(
+                            "Could not probe the runtime: {}",
+                            plain(&e.to_string())
+                        ));
+                    }
                 }
             });
         }
@@ -586,7 +640,7 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
         .position(|l| l.starts_with("batching:"))
         .map_or(lines.len(), |i| i + 1);
     lines.splice(at..at, colibri_lines);
-    if let Some(t) = colibri_tier_line
+    if let Some(t) = tier_line
         && let Some(l) = lines.iter_mut().find(|l| l.starts_with("tier:"))
     {
         *l = t;
