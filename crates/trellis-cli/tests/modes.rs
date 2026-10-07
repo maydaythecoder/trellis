@@ -523,6 +523,15 @@ fn read_request(s: &mut std::net::TcpStream) -> (String, String) {
 /// port, returning each request body it received. A `GET` of `/models` is
 /// answered 404 and neither takes a reply nor is returned.
 fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    provider_stub_with_headers(replies, "")
+}
+
+/// [`provider_stub`], with `headers` (each line ending `\r\n`) added to
+/// every reply's response head.
+fn provider_stub_with_headers(
+    replies: Vec<String>,
+    headers: &'static str,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     let h = std::thread::spawn(move || {
@@ -537,7 +546,7 @@ fn provider_stub(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<S
             }
             got.push(body);
             let out = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{r}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\n\r\n{r}",
                 r.len()
             );
             s.write_all(out.as_bytes()).ok();
@@ -2373,6 +2382,13 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
             &turn["always"],
             &format!("turn {} ({})", t["turn"], t["call"]),
         ));
+        // No turn of this run is the governance audit: each called the
+        // model.
+        gaps.extend(missing(
+            t,
+            &turn["model_call_only"],
+            &format!("turn {} ({})", t["turn"], t["call"]),
+        ));
         if let Some(v) = t.get("verdict")
             && !v.as_str().is_some_and(|v| verdicts.contains(&v))
         {
@@ -2419,6 +2435,160 @@ fn rpc_stream_carries_every_field_the_desktop_reads() {
     );
     // The run took the path the fixture is built for, so the turns above
     // are the ones meant.
+    let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
+    assert_eq!(end["outcome"], "converged", "{end}");
+}
+
+#[test]
+fn rpc_turn_carries_queue_wait_from_the_reply_header() {
+    // The risk (#312): colibri's queue wait, read from a response header
+    // and not the body, is dropped between the adapter and the stream, so
+    // a client draws a queued turn as a slow model. The fields come from
+    // the contract's header category, so a field added there is held here.
+    let c = contract();
+    let header_only = &c["rpc"]["events"]["turn"]["response_header_only"];
+    let f = fixture("rpc-queue-wait");
+    let (base, server) = provider_stub_with_headers(
+        vec![
+            openai_call("c1", "read_file", serde_json::json!({"path": "a.py"})),
+            openai_call("c2", "done", serde_json::json!({"summary": "read it"})),
+        ],
+        "x-colibri-queue-wait-ms: 1500\r\n",
+    );
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_QUEUE_WAIT_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "read a.py",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 2, "{records:?}");
+
+    let turns: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    assert!(!turns.is_empty(), "no turn event: {records:?}");
+    let mut gaps: Vec<String> = Vec::new();
+    for t in &turns {
+        gaps.extend(missing(
+            t,
+            header_only,
+            &format!("turn {} ({})", t["turn"], t["call"]),
+        ));
+    }
+    assert!(
+        gaps.is_empty(),
+        "the stream lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
+    for t in &turns {
+        assert_eq!(t["queue_wait_ms"], 1500, "{t}");
+    }
+    // The run took the stub's path, so the turns above are its replies'.
+    assert!(
+        turns.iter().any(|t| t["call"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("read_file "))),
+        "{turns:?}"
+    );
+}
+
+#[test]
+fn rpc_every_turn_through_the_governance_audit_keeps_the_contract() {
+    // The risk: the contract promises a field on every turn that one kind
+    // of turn never carries. The governance audit at convergence is a turn
+    // event the loop sends without calling the model (trellis-loop
+    // agent.rs), so a field from the model call listed as `always` is a
+    // promise a client watching a governed run sees broken. Every turn is
+    // held to `always`; the turns that called the model to the categories
+    // a provider run fills too.
+    let c = contract();
+    let turn = &c["rpc"]["events"]["turn"];
+    let f = fixture("rpc-governance-contract");
+    std::fs::create_dir_all(f.root.join(".trellis/governance")).unwrap();
+    std::fs::write(
+        f.root.join(".trellis/governance/no-vendor.toml"),
+        "name = \"Vendored code is not ours to edit\"\nrank = \"non-negotiable\"\n\
+         description = \"Changes go upstream.\"\ndeny-write = { paths = [\"vendor/\"] }\n",
+    )
+    .unwrap();
+    commit_passing_checks(&f);
+    let (base, server) = provider_stub(vec![
+        openai_call(
+            "c1",
+            "run_checks",
+            serde_json::json!({"paths": ["a.py"], "kinds": ["typecheck", "tests"]}),
+        ),
+        openai_call("c2", "done", serde_json::json!({"summary": "checked it"})),
+    ]);
+    // A variable nobody sets: a loopback endpoint is then used with no key.
+    let key_env = "TRELLIS_TEST_RPC_GOVERNANCE_KEY";
+    std::fs::write(
+        f.user.join("config.toml"),
+        format!(
+            "[[providers]]\nname = \"stub\"\nprotocol = \"openai\"\n\
+             base_url = \"{base}\"\nkey_env = \"{key_env}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut cmd = trellis(&f);
+    cmd.env_remove(key_env);
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "check f",
+                           "model": "provider:stub#m"}),
+    );
+    let records = rpc.finish();
+    assert_eq!(server.join().unwrap().len(), 2, "{records:?}");
+
+    let turns: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["fields"]["message"] == "turn")
+        .map(|r| &r["fields"])
+        .collect();
+    let is_audit = |t: &Value| t["check_kind"] == "Governance";
+    assert!(
+        turns.iter().any(|t| is_audit(t)),
+        "the run reached no governance audit: {records:?}"
+    );
+    assert!(
+        turns.iter().any(|t| !is_audit(t)),
+        "no turn called the model: {records:?}"
+    );
+    let label = |t: &Value| format!("turn {} ({}, {})", t["turn"], t["call"], t["check_kind"]);
+    let gaps: Vec<String> = turns
+        .iter()
+        .flat_map(|t| missing(t, &turn["always"], &label(t)))
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "a turn lacks what tests/client_contract.json lists as always present: {gaps:?}\n{records:?}"
+    );
+    let gaps: Vec<String> = turns
+        .iter()
+        .filter(|t| !is_audit(t))
+        .flat_map(|t| {
+            let mut g = missing(t, &turn["model_call_only"], &label(t));
+            g.extend(missing(t, &turn["prompt_driver_only"], &label(t)));
+            g
+        })
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "a turn that called the model lacks what tests/client_contract.json lists: {gaps:?}\n{records:?}"
+    );
     let end = records.iter().find(|r| r["type"] == "run_end").unwrap();
     assert_eq!(end["outcome"], "converged", "{end}");
 }
@@ -2981,7 +3151,7 @@ fn rpc_get_state_tier_after_a_hosted_run_is_tier_1_from_the_protocol() {
     rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
     rpc.wait_idle();
     let after = state(&mut rpc, "s");
-    assert_eq!(after["tier"], "tier 1, native tool calls", "{after}");
+    assert_eq!(after["tier"], "1, native tool calls", "{after}");
     rpc.finish();
     assert_eq!(server.join().unwrap().len(), 1);
 }
@@ -3068,7 +3238,7 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     rpc.wait_idle();
     let after = state(&mut rpc, "s");
     assert_eq!(
-        after["tier"], "tier 1 unavailable: colibri glm-5.2 refuses tools",
+        after["tier"], "1, unavailable: colibri glm-5.2 refuses tools",
         "{after}"
     );
     rpc.finish();
