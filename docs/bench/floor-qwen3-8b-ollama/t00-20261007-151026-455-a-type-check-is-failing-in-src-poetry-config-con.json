@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "run_id": "20261007-151026-455-a-type-check-is-failing-in-src-poetry-config-con",
+  "task": "a type check is failing in src/poetry/config/config.py; fix it",
+  "base_commit": "386c7fb98fa107eec678aefc24db74797a4118ed",
+  "started_at": "2026-10-07T15:10:26Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9754,
+      "peak_prompt_bytes": 10149,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/config.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "blast_radius",
+        "target": "Config",
+        "outcome": "error: `Config` matches 2 definitions; qualify it further",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 30841,
+    "prompt_tokens": 16386
+  },
+  "factual_sha256": "43a1ac7fe35d6da49731dfef626dd6a5f3b0b7426d264e7e98e4bcad24d51f65",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

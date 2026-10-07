@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "run_id": "20261007-155719-975-a-type-check-is-failing-in-src-poetry-console-co",
+  "task": "a type check is failing in src/poetry/console/commands/cache/clear.py; fix it",
+  "base_commit": "df98fce4a3d9260242da121598a9009584de180f",
+  "started_at": "2026-10-07T15:57:19Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9769,
+      "peak_prompt_bytes": 12873,
+      "turns_measured": 3
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/cache/clear.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/console/commands/cache/clear.py",
+        "outcome": "error: edit anchor not found in src/poetry/console/commands/cache/clear.py. `old` must be text copied from the file, no…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/console/commands/cache/clear.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 4359,
+    "prompt_tokens": 23260
+  },
+  "factual_sha256": "9389ea7154b1d6483f05fe0832c242de671594e4eb6e181438c29a9d99e55070",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
