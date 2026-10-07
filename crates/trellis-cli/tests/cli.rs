@@ -4139,6 +4139,35 @@ fn doctor_tier_lines_begin_with_a_head_the_status_bar_contract_documents() {
 }
 
 #[test]
+fn doctor_unreachable_runtime_says_it_could_not_be_reached_not_pass_model() {
+    // #526. The risk: a person who passed `--model` is told to "pass
+    // --model to find out" when the runtime is down or on another port, so
+    // the advice sends them back to the step they already took instead of
+    // to the runtime. A port bound and released is closed on loopback, so
+    // the connection is refused at once.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let d = repo("doctor-unreachable-runtime");
+    let out = run(
+        &d,
+        &["doctor", "--model", &format!("llamacpp:http://{addr}")],
+    );
+    let s = stdout(&out);
+    let tier = s
+        .lines()
+        .find(|l| l.starts_with("tier:"))
+        .unwrap_or_else(|| panic!("no tier line\n{}", combined(&out)));
+    assert!(tier.starts_with("tier:       unknown, "), "{tier}");
+    assert!(tier.contains("could not reach the runtime"), "{tier}");
+    assert!(tier.contains(&addr.to_string()), "{tier}");
+    assert!(tier.contains("start it, or check the port"), "{tier}");
+    assert!(!tier.contains("pass --model"), "{tier}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_repository_model_spec_with_esc_and_a_c1_control_never_reaches_the_banner() {
     // #492. The risk: a cloned repository chooses `[model] spec`, and the
     // banner's `model:` line echoed its model id raw, so ESC or a C1 CSI in
