@@ -55,12 +55,14 @@ out of the figures rather than counted as 0.
 Usage:
   python docs/bench/run_floor.py <corpus> <tasks.json> <model-spec> <out.json>
                                  [--limit N] [--max-iterations N]
+                                 [--max-wall-clock-s N] [--model-timeout-s N]
   py -3 docs/bench/run_floor.py --self-test
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import math
@@ -237,6 +239,66 @@ def model_ms_figures(logs: list[str]) -> dict:
     }
 
 
+def positive_int(text: str) -> int:
+    n = int(text)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
+    return n
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("corpus", nargs="?")
+    ap.add_argument("tasks", nargs="?")
+    ap.add_argument("model", nargs="?")
+    ap.add_argument("out", nargs="?")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--max-iterations", type=int, default=8)
+    ap.add_argument("--max-wall-clock-s", type=int, default=1800)
+    # `[model] timeout_s` for every run. Absent, the config has no `[model]`
+    # table and trellis's own default applies, exactly as before #273.
+    ap.add_argument("--model-timeout-s", type=positive_int, default=None)
+    ap.add_argument("--self-test", action="store_true")
+    return ap
+
+
+def config_text(checker: list[str], a: argparse.Namespace) -> str:
+    """The corpus's `.trellis/config.toml`."""
+    text = (
+        # The checker is the task set's, verbatim, so the loop and the scoring
+        # ask the same oracle the same question.
+        "[checks]\ntypecheck = {}\n".format(json.dumps(checker))
+        + 'tests = ["python", "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"]\n'
+        + 'python = "python"\n\n'
+        # A tight budget, because an exhausted budget is itself a result and a
+        # slow model must not turn the measurement into an overnight job. The
+        # ceiling is ~2x the shortest honest path (check, read, edit, check),
+        # so a capable model has room and a looping one is cut off. The loop
+        # grants exactly one further turn on exhaustion.
+        + f"[budget]\nmax_iterations = {a.max_iterations}\n"
+        + f"max_wall_clock_s = {a.max_wall_clock_s}\nregime = \"local\"\n"
+    )
+    if a.model_timeout_s is not None:
+        text += f"\n[model]\ntimeout_s = {a.model_timeout_s}\n"
+    return text
+
+
+def harness_wait_s(a: argparse.Namespace) -> int:
+    """How long one `trellis run` process gets before this script ends it.
+
+    The loop checks the wall-clock budget only before a model call and grants
+    one more turn once it is spent, so a run can outlast its budget by two
+    model calls of up to `timeout_s` each. A wait shorter than that ends runs
+    trellis would still finish, and `classify` reports them as `error`. The
+    900 s margin is the one used before #273, kept so a run without the flag
+    gets the same wait it always did.
+    """
+    wait = a.max_wall_clock_s + 900
+    if a.model_timeout_s is not None:
+        wait += 2 * a.model_timeout_s
+    return wait
+
+
 # --- self-test ---------------------------------------------------------------
 
 # The shape `--log-json` writes: one tracing event per line, its fields under
@@ -268,20 +330,58 @@ def self_test() -> int:
         if got != want:
             print(f"FAIL ({label}): expected {want}")
             failed = 1
+
+    # The config text and the harness wait, driven through the real flags. The
+    # no-flag text is frozen as the literal this script wrote before #273, so
+    # the committed floor runs are still reproduced by the same commands.
+    checker = ["mypy", "--no-incremental"]
+    before_273 = (
+        '[checks]\ntypecheck = ["mypy", "--no-incremental"]\n'
+        'tests = ["python", "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"]\n'
+        'python = "python"\n\n'
+        '[budget]\nmax_iterations = 8\nmax_wall_clock_s = 3600\nregime = "local"\n'
+    )
+    runs = [
+        # A run can outlast its wall-clock budget by two model calls of up to
+        # `timeout_s` each, so the wait must cover both or the harness ends a
+        # run trellis would still finish.
+        ("--model-timeout-s 1200", ["--model-timeout-s", "1200", "--max-wall-clock-s", "3600"],
+         before_273 + "\n[model]\ntimeout_s = 1200\n", 6900, 1200),
+        ("no timeout flag", ["--max-wall-clock-s", "3600"], before_273, 4500, None),
+    ]
+    for label, argv, want_text, want_wait, want_timeout in runs:
+        a = build_parser().parse_args(argv)
+        text, wait = config_text(checker, a), harness_wait_s(a)
+        print(f"-- {label}: wait {wait}s, model_timeout_s {a.model_timeout_s}")
+        if text != want_text:
+            print(f"FAIL ({label}): config text {text!r}, expected {want_text!r}")
+            failed = 1
+        if wait != want_wait or a.model_timeout_s != want_timeout:
+            print(f"FAIL ({label}): expected wait {want_wait}s, "
+                  f"model_timeout_s {want_timeout}")
+            failed = 1
+
+    # Below 1 is refused at parse time, before the corpus is touched, and the
+    # message names the flag.
+    for bad in ("0", "-5"):
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                build_parser().parse_args(["--model-timeout-s", bad])
+            refused = False
+        except SystemExit:
+            refused = True
+        print(f"-- --model-timeout-s {bad}: refused={refused}")
+        if not refused or "--model-timeout-s" not in err.getvalue():
+            print(f"FAIL (--model-timeout-s {bad}): expected a refusal naming "
+                  f"the flag, got {err.getvalue()!r}")
+            failed = 1
     print("OK: run_floor self-test" if not failed else "FAIL: run_floor self-test")
     return failed
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("corpus", nargs="?")
-    ap.add_argument("tasks", nargs="?")
-    ap.add_argument("model", nargs="?")
-    ap.add_argument("out", nargs="?")
-    ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--max-iterations", type=int, default=8)
-    ap.add_argument("--max-wall-clock-s", type=int, default=1800)
-    ap.add_argument("--self-test", action="store_true")
+    ap = build_parser()
     a = ap.parse_args()
     if a.self_test:
         return self_test()
@@ -305,26 +405,15 @@ def main() -> int:
     ensure_repo(corpus)
     cfg = corpus / ".trellis" / "config.toml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        # The checker is the task set's, verbatim, so the loop and the scoring
-        # ask the same oracle the same question.
-        "[checks]\ntypecheck = {}\n".format(json.dumps(checker))
-        + 'tests = ["python", "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"]\n'
-        + 'python = "python"\n\n'
-        # A tight budget, because an exhausted budget is itself a result and a
-        # slow model must not turn the measurement into an overnight job. The
-        # ceiling is ~2x the shortest honest path (check, read, edit, check),
-        # so a capable model has room and a looping one is cut off. The loop
-        # grants exactly one further turn on exhaustion.
-        + f"[budget]\nmax_iterations = {a.max_iterations}\n"
-        + f"max_wall_clock_s = {a.max_wall_clock_s}\nregime = \"local\"\n",
-        encoding="utf-8",
-    )
+    cfg.write_text(config_text(checker, a), encoding="utf-8")
     git(corpus, "add", "-A")
     git(corpus, "commit", "-qm", "floor config")
     base = head(corpus)
+    # The model timeout is part of the comparability key: a run allowed 1200 s
+    # per call can finish tasks one cut off at 300 s cannot.
     budget = {"max_iterations": a.max_iterations,
-              "max_wall_clock_s": a.max_wall_clock_s}
+              "max_wall_clock_s": a.max_wall_clock_s,
+              "model_timeout_s": a.model_timeout_s}
     # Recorded before the first task, against the binary and task file this
     # run uses: `compare_floor.py` refuses to set this report beside one whose
     # task set, checker, budget or limit differ (#344).
@@ -371,7 +460,7 @@ def main() -> int:
                 [TRELLIS, "--log-json", str(events), "run", "--root", str(corpus),
                  "--model", a.model,
                  f"a type check is failing in {task['file']}; fix it"],
-                capture_output=True, text=True, timeout=a.max_wall_clock_s + 900,
+                capture_output=True, text=True, timeout=harness_wait_s(a),
             )
             out, code = p.stdout + p.stderr, p.returncode
         except subprocess.TimeoutExpired as e:
