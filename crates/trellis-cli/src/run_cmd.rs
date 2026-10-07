@@ -1,4 +1,4 @@
-use crate::doctor_cmd::schema_report;
+use crate::doctor_cmd::{runtime_tier_label, schema_report};
 use crate::plain;
 use crate::{
     config, context_files, hosted, image_input, output, rpc, tooling, user_config, vault_cmd,
@@ -599,6 +599,17 @@ pub(crate) fn vault_notes_root(root: &Path, v: &config::VaultSetting) -> Result<
     Ok((v.source.clone(), rel.join("/")))
 }
 
+/// Leaves the tier this run decided where its caller asked for it (rpc's
+/// `get_state`, #269): the label the TUI's status bar shows, written at the
+/// point the run settles it and nowhere else.
+fn record_tier(extras: &output::RunExtras, label: String) {
+    if let Some(slot) = &extras.tier
+        && let Ok(mut t) = slot.lock()
+    {
+        *t = Some(label);
+    }
+}
+
 /// The body of a run; see `cmd_run`.
 fn run_body(
     root: &Path,
@@ -890,10 +901,17 @@ fn run_body(
     let (colibri_line, colibri) = match &driver {
         Driver::Hosted(_) => {
             match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
-                Some(r) => match probe_rt.block_on(hosted::preflight(&r))? {
-                    Some(line) => (Some(line), Some(r)),
-                    None => (None, None),
-                },
+                Some(r) => {
+                    let tier = probe_rt.block_on(hosted::colibri_tier(&r))?;
+                    // Before `preflight` can refuse on it: a tools refusal
+                    // is the tier this run decided, and rpc's `get_state`
+                    // reports it (#269).
+                    record_tier(extras, tier.label());
+                    match hosted::preflight(&r, &tier)? {
+                        Some(line) => (Some(line), Some(r)),
+                        None => (None, None),
+                    }
+                }
                 None => (None, None),
             }
         }
@@ -947,7 +965,17 @@ fn run_body(
             )?;
             tier4 = true;
         }
+        record_tier(extras, runtime_tier_label(&probed).to_string());
         schema_note = Some(note);
+    }
+    // The tiers decided without a probe: a scripted model has none, and
+    // `--unconstrained` is tier 4 by the flag.
+    match &driver {
+        Driver::Scripted(_) => record_tier(extras, "scripted".to_string()),
+        Driver::Runtime(_) if unconstrained => {
+            record_tier(extras, runtime_tier_label(&Ok(false)).to_string());
+        }
+        Driver::Runtime(_) | Driver::Hosted(_) => {}
     }
     // A budgeted profile's ledger counts only measured spend, so a hosted
     // reply with no usage figure ends its run instead of spending what

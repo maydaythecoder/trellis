@@ -29,10 +29,37 @@ fn canary() -> String {
     format!("sk-{}-colibri-canary-{}", "trellis", std::process::id())
 }
 
+/// ce370e8, c/openai_server.py:1364-1367 (OLMoE refuses `tools` while
+/// rendering, naming the fallback setting), as `tests/colibri_run.rs` has it.
+const TOOLS_REFUSED_OLMOE: &str = r#"{"error":{"message":"OLMoE has no tool-calling chat template; set COLI_TOOL_FALLBACK=1 to render tools as text.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
+
+/// ce370e8, c/openai_server.py:1707-1708 (Inkling, no fallback named).
+const TOOLS_REFUSED_INKLING: &str = r#"{"error":{"message":"Inkling does not support tools.","type":"invalid_request_error","param":"tools","code":"unsupported_parameter"}}"#;
+
+/// ce370e8, c/openai_server.py:4190-4193 (`require_auth`).
+const UNAUTHORIZED: &str = r#"{"error":{"message":"Invalid or missing API key.","type":"authentication_error","param":null,"code":"invalid_api_key"}}"#;
+
+/// A status line and a body.
+type Answer = (&'static str, String);
+
+fn ok200(body: &str) -> Answer {
+    ("200 OK", body.to_string())
+}
+
 /// A loopback stub answering `GET /v1/models` with `models`, `GET /health`
 /// with `health`, and any POST with an empty completion, on every
 /// connection until the test process ends; and the raw requests it got.
 fn stub(models: String, health: String) -> (String, Arc<Mutex<Vec<String>>>) {
+    stub_with(
+        ok200(&models),
+        health,
+        ok200(r#"{"choices":[{"text":""}]}"#),
+    )
+}
+
+/// [`stub`], with the status of the `/v1/models` answer and the answer to a
+/// POST (the tools probe) given.
+fn stub_with(models: Answer, health: String, post: Answer) -> (String, Arc<Mutex<Vec<String>>>) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     let got = Arc::new(Mutex::new(Vec::new()));
@@ -63,17 +90,17 @@ fn stub(models: String, health: String) -> (String, Arc<Mutex<Vec<String>>>) {
                 }
             }
             let request = String::from_utf8_lossy(&raw).into_owned();
-            let body = if request.starts_with("GET /v1/models ") {
+            let (status, body) = if request.starts_with("GET /v1/models ") {
                 models.clone()
             } else if request.starts_with("GET /health ") {
-                health.clone()
+                ok200(&health)
             } else {
-                r#"{"choices":[{"text":""}]}"#.to_string()
+                post.clone()
             };
             seen.lock().unwrap().push(request);
             let _ = s.write_all(
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
                     body.len()
                 )
                 .as_bytes(),
@@ -308,7 +335,10 @@ fn colibri_doctor_sends_no_key_to_a_loopback_spec_the_repository_chose() {
         .filter(|r| r.starts_with("GET /v1/models ") || r.starts_with("GET /health "))
         .collect();
     assert_eq!(reads.len(), 2, "{got:?}");
-    for r in reads {
+    // The tools probe (#269) carries no key either.
+    let probes: Vec<&String> = got.iter().filter(|r| r.starts_with("POST ")).collect();
+    assert_eq!(probes.len(), 1, "{got:?}");
+    for r in reads.into_iter().chain(probes) {
         let lower = r.to_ascii_lowercase();
         assert!(
             !lower.contains("authorization") && !lower.contains("x-api-key"),
@@ -371,5 +401,144 @@ fn colibri_doctor_says_a_server_owned_by_another_is_not_colibri() {
     assert!(
         line(&s, "batching:").contains("concurrency not reported"),
         "{s}"
+    );
+}
+
+// ---- #269: the tier from colibri's tools probe (ADR 0047 decision 4) ----
+
+#[test]
+fn colibri_doctor_tier_is_native_probed_when_colibri_accepts_tools() {
+    // The risk: doctor claiming tier 1 from the protocol without asking, as
+    // it did, for a family that may refuse tools.
+    let (base, got) = colibri();
+    let d = repo("tier-probed", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    assert!(line(&s, "tier:").contains("Native (probed)"), "{s}");
+    let got = got.lock().unwrap().clone();
+    let probes: Vec<&String> = got.iter().filter(|r| r.starts_with("POST ")).collect();
+    assert_eq!(probes.len(), 1, "{got:?}");
+    assert!(
+        probes[0].starts_with("POST /v1/chat/completions ")
+            && probes[0].contains(r#""max_tokens":1"#)
+            && probes[0].contains(r#""tools""#),
+        "{}",
+        probes[0]
+    );
+}
+
+#[test]
+fn colibri_doctor_tier_refused_is_unavailable_naming_the_vllm_spec_and_the_fallback() {
+    let (base, _) = stub_with(
+        ok200(MODELS_COLIBRI),
+        HEALTH_FULL.into(),
+        ("400 Bad Request", TOOLS_REFUSED_OLMOE.into()),
+    );
+    let d = repo("tier-refused", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let tier = line(&s, "tier:");
+    assert!(tier.contains("tier 1 unavailable"), "{s}");
+    assert!(!tier.contains("Native"), "{s}");
+    assert!(s.contains(&format!("vllm:{base}#glm-5.2")), "{s}");
+    assert!(s.contains("COLI_TOOL_FALLBACK=1"), "{s}");
+}
+
+#[test]
+fn colibri_doctor_tier_refused_without_a_named_fallback_never_names_one() {
+    // Inkling has no fallback: naming one sends the user to restart colibri
+    // with a setting that changes nothing.
+    let (base, _) = stub_with(
+        ok200(MODELS_COLIBRI),
+        HEALTH_FULL.into(),
+        ("400 Bad Request", TOOLS_REFUSED_INKLING.into()),
+    );
+    let d = repo("tier-refused-inkling", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    assert!(line(&s, "tier:").contains("tier 1 unavailable"), "{s}");
+    assert!(s.contains(&format!("vllm:{base}#glm-5.2")), "{s}");
+    assert!(!s.contains("COLI_TOOL_FALLBACK"), "{s}");
+}
+
+#[test]
+fn colibri_doctor_tier_not_verified_is_native_assumed_with_the_reason() {
+    let (base, _) = stub_with(
+        ok200(MODELS_COLIBRI),
+        HEALTH_FULL.into(),
+        (
+            "500 Internal Server Error",
+            r#"{"error":"canary-body-word"}"#.into(),
+        ),
+    );
+    let d = repo("tier-assumed", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    assert!(
+        line(&s, "tier:").contains("Native (assumed: HTTP 500)"),
+        "{s}"
+    );
+    // The reason is TRELLIS's, never the server's body.
+    assert!(!s.contains("canary-body-word"), "{s}");
+}
+
+#[test]
+fn colibri_doctor_tier_of_a_server_that_is_not_colibri_sends_no_probe() {
+    let (base, got) = stub(
+        MODELS_COLIBRI.replace(r#""owned_by":"colibri""#, r#""owned_by":"vllm""#),
+        HEALTH_FULL.into(),
+    );
+    let d = repo("tier-not-colibri", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let tier = line(&s, "tier:");
+    assert!(tier.contains("Native") && !tier.contains("probed"), "{s}");
+    let got = got.lock().unwrap().clone();
+    assert!(!got.iter().any(|r| r.starts_with("POST ")), "{got:?}");
+}
+
+#[test]
+fn colibri_doctor_tier_401_names_the_status_the_authenticated_listing_and_the_key_s_variable() {
+    let (base, got) = stub_with(
+        ("401 Unauthorized", UNAUTHORIZED.into()),
+        HEALTH_LIVENESS.into(),
+        ok200("{}"),
+    );
+    let d = repo("tier-401", None);
+    let key = canary();
+    let o = doctor(&d, &["--model", &chat(&base, "glm-5.2")], Some(&key));
+    let s = ok(&o);
+    let note = s
+        .lines()
+        .find(|l| l.contains("/v1/models answered"))
+        .unwrap_or_else(|| panic!("no identification note:\n{s}"));
+    assert!(note.contains("HTTP 401"), "{note}");
+    assert!(
+        note.contains("lists its model only to an authenticated request"),
+        "{note}"
+    );
+    assert!(note.contains("the key from OPENAI_API_KEY"), "{note}");
+    assert!(!s.contains(&key), "{s}");
+    // Not identified, so not probed.
+    let got = got.lock().unwrap().clone();
+    assert!(!got.iter().any(|r| r.starts_with("POST ")), "{got:?}");
+}
+
+#[test]
+fn colibri_doctor_tier_403_without_a_key_says_none_was_sent() {
+    let (base, _) = stub_with(
+        ("403 Forbidden", UNAUTHORIZED.into()),
+        HEALTH_LIVENESS.into(),
+        ok200("{}"),
+    );
+    let d = repo("tier-403", None);
+    let s = ok(&doctor(&d, &["--model", &chat(&base, "glm-5.2")], None));
+    let note = s
+        .lines()
+        .find(|l| l.contains("/v1/models answered"))
+        .unwrap_or_else(|| panic!("no identification note:\n{s}"));
+    assert!(note.contains("HTTP 403"), "{note}");
+    assert!(
+        note.contains("lists its model only to an authenticated request"),
+        "{note}"
+    );
+    assert!(
+        note.contains("without a key (OPENAI_API_KEY is not set)"),
+        "{note}"
     );
 }

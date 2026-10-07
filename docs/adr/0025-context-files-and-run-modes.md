@@ -216,17 +216,24 @@ on stderr.
   - `get_radius {symbol}` (*added 2026-10-05, #293; see "get_radius"
     below*)
   - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
+  - `list_paths {prefix}` (*added 2026-10-07, #502, ADR 0052; see
+    "list_paths" below*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
   - `get_session_stats` and `get_last_assistant_text` (*added 2026-10-06,
     #319; see "get_session_stats and get_last_assistant_text" below*)
+  - `classify {text}` (*added 2026-10-07, #501, ADR 0052; see "classify"
+    below*)
 - **Why these 9 of pi's 33:** (10 since `compact`, 12 since `steer` and
   `follow_up`; `get_codebase`, the 13th, `get_radius`, the 14th,
   `get_queue`, the 15th, and `vault_search` and `vault_graph`, the 16th and
   17th, are trellis's own, not pi's; 14 since `get_session_stats` and
-  `get_last_assistant_text`, pi's, which make `get_commands` list 19. Each
+  `get_last_assistant_text`, pi's, which make `get_commands` list 19;
+  `classify`, trellis's own, makes it list 20. Each
   of pi 1.0.2's 33 is in the table under "get_session_stats and
-  get_last_assistant_text" below, built or not built, with its reason.)
+  get_last_assistant_text" below, built or not built, with its reason.
+  `list_paths`, trellis's own, adds one more to what `get_commands` lists
+  (#502).)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -519,6 +526,41 @@ on stderr.
     what `trellis vault search retry` or `trellis vault graph child` prints,
     scores to the four decimals printed. Each also checks the no-vault
     message, and `vault_graph` the missing-note message, against the CLI's.
+- *Added 2026-10-07 (#502), on ADR 0052 (its ticket plan's R4), accepted by
+  the owner on #500.* **`list_paths {prefix}`** answers with the paths `@`
+  completion offers, so the Go TUI and the desktop never list a
+  repository's files themselves: a client that ran `git ls-files` would
+  bypass ADR 0023's guards (a planted `core.fsmonitor`) and could offer a
+  `.gitignore`d `.env` to be typed into a task a model reads. Read-only:
+  `git ls-files` writes nothing, and no run starts.
+  - The listing is `rpc::at_file_paths`, the one the TUI's `@` completion
+    asks, moved out of `tui_run.rs` so it outlives that file (ADR 0052 §7):
+    `git ls-files --cached --others --exclude-standard -z` through
+    `trellis_vcs::command()`, so tracked files and untracked files no ignore
+    rule covers, never an ignored file and never `.git`'s internals.
+    `.trellis/` files appear only as git lists them, as tracked trails do.
+  - `data` is `{paths}`: at most 10 repository-relative paths that start
+    with `prefix`, byte for byte, shortest first and then by bytes, the
+    order the TUI offers them in; empty when none match.
+    `tests/client_contract.json` lists `paths` under
+    `rpc.responses.list_paths`. Each path is a JSON string through `frame`.
+  - `prefix` is the client's, and only filters the listing, so it cannot
+    reach a file outside the repository. It is still refused by the rule it
+    breaks: missing or not a string; holding a control character (C0, DEL
+    or C1); absolute (a leading `/` or `\`, or a drive letter); or holding
+    a `..` component, by either separator. An empty `prefix` is allowed.
+  - It runs on its own thread, through `respond_on`, as `get_queue` does,
+    so it is answered while a run waits on an approval, and `quit` joins it
+    before answering.
+  - Evidence, in `tests/modes.rs` through the binary over stdio, each
+    failing before ("unknown command `list_paths`"):
+    `rpc_list_paths_never_lists_an_ignored_file` (with the three-ways
+    check: clean worktree after, answered mid-run, answered before `quit`),
+    `rpc_list_paths_gives_at_most_ten_shortest_first`,
+    `rpc_list_paths_refuses_a_prefix_that_is_not_a_relative_path_start`
+    and `rpc_list_paths_reply_carries_every_field_the_contract_lists`; and
+    `rpc::tests::at_file_paths_lists_tracked_and_untracked_but_never_ignored`,
+    moved from `tui_run.rs` unchanged.
 - *Added 2026-10-06 (#319). Accepted (owner-directed): the session's choice
   under the owner's 2026-10-04 delegation (ADR 0048 §10).*
   **`get_session_stats`** and **`get_last_assistant_text`** give a front end
@@ -604,6 +646,44 @@ on stderr.
     | `get_last_assistant_text` | built | #319, above |
     | `set_session_name` | not built | deferred (ADR 0021 8.1–8.4) |
     | `get_commands` | built | lists this protocol's commands, the prompt templates and the skills |
+- *Added 2026-10-07 (#501), on ADR 0052 §2.3, accepted by the owner on
+  #500.* **`classify {text}`** says whether `text` is a question or a task,
+  by `ask::classify`, the rule `trellis tui` routes typed input on. It
+  exists so the Go TUI and the desktop route by the same rule from the same
+  code (ADR 0052: routing stays in Rust, one home for the rule): without
+  it a client's only path was `prompt`, and `hello` got a snapshot, a run
+  and a rollback. It is read-only: it starts no run, writes no trail and
+  touches no file; a task is only named, and starting it stays `prompt`'s.
+  - `data` is `{intent: "question", answer}` or `{intent: "task"}`, with no
+    `answer` on a task; `tests/client_contract.json` lists both under
+    `rpc.responses.classify`. The answer is model text, sent as a JSON
+    string through `frame` and never as a record of its own; `text` is the
+    client's and reaches the model as data in the classification prompt
+    (rule 10).
+  - The model is the one a `prompt` with no `model` field would use:
+    `set_model`'s, else `[model] spec`, and it is the user's choice only
+    when `set_model` named it. A hosted spec is resolved through
+    `hosted::resolve` as for a run, so a key goes only where `prompt` would
+    send it and a repository-chosen endpoint is refused before any request
+    (ADR 0024 §3, unchanged). A scripted model answers `task`, as in the TUI.
+  - Refused while a run is in flight, by `prompt`'s test (#495's wait
+    after `run_end` included) and in its words, "a run is in progress; one
+    at a time (abort it, or wait)". A missing, empty or non-string `text`
+    is refused by name. A model that cannot be reached, or that refuses,
+    answers `success` false with the failure's chain.
+  - Answered on the reader thread, not a waiter's: no run can be in flight
+    when it is asked, and none can start until it is answered. The request
+    is bounded by `[model] timeout_s` (ADR 0047 decision 9).
+  - Evidence, in `tests/modes.rs` through the binary over stdio against
+    the provider stub, each failing before ("unknown command `classify`"):
+    `rpc_classify_answers_a_question_as_data_and_starts_no_run` (an answer
+    holding a newline and a `run_end`-shaped line arrives as one string),
+    `rpc_classify_says_task_with_no_answer_and_starts_no_run`,
+    `rpc_classify_is_refused_while_a_run_is_in_flight`,
+    `rpc_classify_refuses_text_that_is_missing_empty_or_not_a_string`,
+    `rpc_classify_reports_a_model_it_cannot_reach_and_starts_no_run`,
+    `rpc_classify_sends_no_key_to_a_loopback_port_the_repository_chose`
+    and `rpc_classify_reply_carries_every_field_the_contract_lists`.
 - **`get_messages`** returns the current or last run's turns, as captured
   from the loop's `turn` tracing events: the same event path `tui_bridge`
   reads. It holds the event fields, including the six-line observation
@@ -623,6 +703,11 @@ on stderr.
   `rpc_steer_reaches_the_next_model_request_and_cannot_converge_the_run`
   and `rpc_approve_mode_asks_on_the_stream_while_input_stays_open` for
   `steer delivered` and `approval_request`, all in `tests/modes.rs`.
+  *Amended 2026-10-07 (#501): it also lists, per command under
+  `rpc.responses`, the fields of a response's `data`: for `classify`,
+  `intent` always, `answer` only when `intent` is `"question"`, and the two
+  `intent` values. Held by
+  `rpc_classify_reply_carries_every_field_the_contract_lists`.*
 
 ### 6. Session additions
 
@@ -853,7 +938,15 @@ Each item is tested unless it says otherwise.
   sees which way its answer was read.
 - **`get_state`** returns `running`, `run_request_id`, `model` (the
   `set_model` value, else `[model] spec`), `root`, `last_run` (the `run_end`
-  fields without `type`) and `pending_approvals`.
+  fields without `type`) and `pending_approvals`. *Amended 2026-10-07
+  (#269, for the Go TUI's status bar, ADR 0052): and `tier`, the label the
+  TUI's status bar shows, written by the run where it decides its tier
+  (after colibri's identification and tools probe for a hosted spec, ADR
+  0047 decision 4; after the schema probe for a runtime). It is `null`
+  until a run of the process has decided one, and a run that stops before
+  deciding leaves it `null`; nothing guesses it from the spec. Listed in
+  `tests/client_contract.json`; evidence: the `rpc_get_state_tier_` tests
+  in `crates/trellis-cli/tests/modes.rs`.*
 - **Key order in a record is not part of the format.** `serde_json` writes
   keys in insertion order in one build and alphabetically in another,
   depending on which features cargo unifies (a test build differs from a

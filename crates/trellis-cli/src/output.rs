@@ -129,11 +129,20 @@ pub(crate) struct RunExtras {
     /// waits out the run thread's tail. Set before, as `run_ids` is pushed
     /// before, so a client that has read `run_end` finds it set.
     pub run_ended: Option<Arc<AtomicBool>>,
+    /// Where the run leaves the tier it decided, as the TUI's status bar
+    /// labels it, for rpc's `get_state` (#269). Written where the run
+    /// settles its tier (after `colibri_tier` for a hosted spec, after the
+    /// schema probe for a runtime), and left as it was by a run that stopped
+    /// before it did. `None` everywhere but rpc.
+    pub tier: Option<TierSlot>,
 }
 
 /// The shared cell `RunExtras::done` writes into. `Arc<Mutex<_>>` because
 /// `rpc` builds its extras on a thread of its own.
 pub(crate) type DoneSlot = Arc<Mutex<Option<String>>>;
+
+/// The shared cell `RunExtras::tier` writes into, for the same reason.
+pub(crate) type TierSlot = Arc<Mutex<Option<String>>>;
 
 impl Default for RunExtras {
     fn default() -> Self {
@@ -150,6 +159,7 @@ impl Default for RunExtras {
             fanout: None,
             run_ids: None,
             run_ended: None,
+            tier: None,
         }
     }
 }
