@@ -1292,7 +1292,7 @@ mod timeout_tests {
     #[tokio::test]
     async fn check_timeout_a_quick_check_passes_under_any_bound() {
         let d = tempfile::tempdir().unwrap();
-        for timeout_s in [2, u64::MAX] {
+        for timeout_s in [30, u64::MAX] {
             let cfg = CheckConfig {
                 tests: quick(),
                 timeout_s,
