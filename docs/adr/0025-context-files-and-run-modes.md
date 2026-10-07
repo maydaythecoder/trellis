@@ -216,6 +216,8 @@ on stderr.
   - `get_radius {symbol}` (*added 2026-10-05, #293; see "get_radius"
     below*)
   - `get_queue` (*added 2026-10-05, #294; see "get_queue" below*)
+  - `list_paths {prefix}` (*added 2026-10-07, #502, ADR 0052; see
+    "list_paths" below*)
   - `vault_search {query, limit?}` and `vault_graph {note}` (*added
     2026-10-06, #295; see "vault_search and vault_graph" below*)
   - `get_session_stats` and `get_last_assistant_text` (*added 2026-10-06,
@@ -229,7 +231,9 @@ on stderr.
   `get_last_assistant_text`, pi's, which make `get_commands` list 19;
   `classify`, trellis's own, makes it list 20. Each
   of pi 1.0.2's 33 is in the table under "get_session_stats and
-  get_last_assistant_text" below, built or not built, with its reason.)
+  get_last_assistant_text" below, built or not built, with its reason.
+  `list_paths`, trellis's own, adds one more to what `get_commands` lists
+  (#502).)
   - `steer`, `follow_up` and `clear_queue` need mid-run input (ADR 0021
     1.2, deferred). *Amended 2026-09-29 (#114): `steer` and `follow_up`
     are built, on the owner's decision of 2026-09-28 recorded there; see
@@ -522,6 +526,41 @@ on stderr.
     what `trellis vault search retry` or `trellis vault graph child` prints,
     scores to the four decimals printed. Each also checks the no-vault
     message, and `vault_graph` the missing-note message, against the CLI's.
+- *Added 2026-10-07 (#502), on ADR 0052 (its ticket plan's R4), accepted by
+  the owner on #500.* **`list_paths {prefix}`** answers with the paths `@`
+  completion offers, so the Go TUI and the desktop never list a
+  repository's files themselves: a client that ran `git ls-files` would
+  bypass ADR 0023's guards (a planted `core.fsmonitor`) and could offer a
+  `.gitignore`d `.env` to be typed into a task a model reads. Read-only:
+  `git ls-files` writes nothing, and no run starts.
+  - The listing is `rpc::at_file_paths`, the one the TUI's `@` completion
+    asks, moved out of `tui_run.rs` so it outlives that file (ADR 0052 §7):
+    `git ls-files --cached --others --exclude-standard -z` through
+    `trellis_vcs::command()`, so tracked files and untracked files no ignore
+    rule covers, never an ignored file and never `.git`'s internals.
+    `.trellis/` files appear only as git lists them, as tracked trails do.
+  - `data` is `{paths}`: at most 10 repository-relative paths that start
+    with `prefix`, byte for byte, shortest first and then by bytes, the
+    order the TUI offers them in; empty when none match.
+    `tests/client_contract.json` lists `paths` under
+    `rpc.responses.list_paths`. Each path is a JSON string through `frame`.
+  - `prefix` is the client's, and only filters the listing, so it cannot
+    reach a file outside the repository. It is still refused by the rule it
+    breaks: missing or not a string; holding a control character (C0, DEL
+    or C1); absolute (a leading `/` or `\`, or a drive letter); or holding
+    a `..` component, by either separator. An empty `prefix` is allowed.
+  - It runs on its own thread, through `respond_on`, as `get_queue` does,
+    so it is answered while a run waits on an approval, and `quit` joins it
+    before answering.
+  - Evidence, in `tests/modes.rs` through the binary over stdio, each
+    failing before ("unknown command `list_paths`"):
+    `rpc_list_paths_never_lists_an_ignored_file` (with the three-ways
+    check: clean worktree after, answered mid-run, answered before `quit`),
+    `rpc_list_paths_gives_at_most_ten_shortest_first`,
+    `rpc_list_paths_refuses_a_prefix_that_is_not_a_relative_path_start`
+    and `rpc_list_paths_reply_carries_every_field_the_contract_lists`; and
+    `rpc::tests::at_file_paths_lists_tracked_and_untracked_but_never_ignored`,
+    moved from `tui_run.rs` unchanged.
 - *Added 2026-10-06 (#319). Accepted (owner-directed): the session's choice
   under the owner's 2026-10-04 delegation (ADR 0048 §10).*
   **`get_session_stats`** and **`get_last_assistant_text`** give a front end
