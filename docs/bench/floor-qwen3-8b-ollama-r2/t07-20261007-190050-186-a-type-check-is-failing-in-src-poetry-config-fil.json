@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "run_id": "20261007-190050-186-a-type-check-is-failing-in-src-poetry-config-fil",
+  "task": "a type check is failing in src/poetry/config/file_config_source.py; fix it",
+  "base_commit": "67ae9035ec3f73c0bca88560e3818a2568e97089",
+  "started_at": "2026-10-07T19:00:50Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 100,
+      "reached_ambiguous": 24,
+      "widest_unbound_in_touched_files": 794,
+      "radius_queries": 1,
+      "summarised": 124
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9766,
+      "peak_prompt_bytes": 10246,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/file_config_source.py",
+        "outcome": "typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "blast_radius",
+        "target": "split_key",
+        "outcome": "124 call sites reach this symbol: 100 resolved, 24 ambiguous.",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 6010,
+    "prompt_tokens": 21365
+  },
+  "factual_sha256": "3a5806b00e54fd25c86715596a0f4c28bbc04d483ddbaac3b6a905935e27561e",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
