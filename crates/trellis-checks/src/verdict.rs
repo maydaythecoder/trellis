@@ -39,6 +39,27 @@ pub enum CheckKind {
     Governance,
 }
 
+/// The name a check kind is sent by in `kinds`, and so the only spelling of
+/// it the model may be shown: a call, an observation, an elided note, a
+/// resumed run's recorded checks.
+///
+/// One table, read by the loop's parser and by everything that renders a
+/// kind for the model, in the loop and in the trail's resume fence. It lives
+/// here, beside `CheckKind`, because both of those crates depend on this one
+/// and neither on the other. `CheckKind`'s own serde spelling (`Typecheck`)
+/// is the trail's on-disk form and stays as it is; its Debug form is the
+/// same word, and a model shown `Typecheck: FAILED` can copy it, as qwen3:8b
+/// copied `RunChecks` (#541, #544, #547). The match is exhaustive, so a new
+/// kind cannot be added without a name here.
+pub fn check_kind_name(kind: CheckKind) -> &'static str {
+    match kind {
+        CheckKind::Typecheck => "typecheck",
+        CheckKind::Tests => "tests",
+        CheckKind::Import => "import",
+        CheckKind::Governance => "governance",
+    }
+}
+
 /// The executed check's own account of what happened.
 ///
 /// `detail` is what the model reads to decide its next move, so it carries
