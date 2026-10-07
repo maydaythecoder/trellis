@@ -2974,7 +2974,7 @@ fn rpc_get_state_tier_after_a_hosted_run_is_tier_1_from_the_protocol() {
     rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
     rpc.wait_idle();
     let after = state(&mut rpc, "s");
-    assert_eq!(after["tier"], "tier 1, native tool calls", "{after}");
+    assert_eq!(after["tier"], "1, native tool calls", "{after}");
     rpc.finish();
     assert_eq!(server.join().unwrap().len(), 1);
 }
@@ -3061,7 +3061,7 @@ fn rpc_get_state_tier_after_a_colibri_refusal_is_the_refusal_the_run_decided() {
     rpc.wait_idle();
     let after = state(&mut rpc, "s");
     assert_eq!(
-        after["tier"], "tier 1 unavailable: colibri glm-5.2 refuses tools",
+        after["tier"], "1, unavailable: colibri glm-5.2 refuses tools",
         "{after}"
     );
     rpc.finish();

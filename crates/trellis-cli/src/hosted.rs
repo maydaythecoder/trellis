@@ -515,21 +515,23 @@ pub(crate) enum ColibriTier {
 }
 
 /// The status bar's label for a hosted spec whose tier is not colibri's.
-pub(crate) const NATIVE_LABEL: &str = "tier 1, native tool calls";
+pub(crate) const NATIVE_LABEL: &str = "1, native tool calls";
 
 impl ColibriTier {
     /// The tier label the TUI's status bar shows and rpc's `get_state`
-    /// carries. A served id passes through [`plain`] here, before it leaves
+    /// carries, in the vocabulary `client_contract.json` documents (#519):
+    /// the tier number first, never the word `tier`, which the bar writes.
+    /// A served id passes through [`plain`] here, before it leaves
     /// trellis-cli.
     pub(crate) fn label(&self) -> String {
         match self {
             ColibriTier::NotColibri => NATIVE_LABEL.to_string(),
-            ColibriTier::Probed { id } => format!("tier 1, colibri {}, tools probed", plain(id)),
+            ColibriTier::Probed { id } => format!("1, colibri {}, tools probed", plain(id)),
             ColibriTier::Assumed { id, .. } => {
-                format!("tier 1, colibri {}, tools assumed", plain(id))
+                format!("1, colibri {}, tools assumed", plain(id))
             }
             ColibriTier::Refused { id, .. } => {
-                format!("tier 1 unavailable: colibri {} refuses tools", plain(id))
+                format!("1, unavailable: colibri {} refuses tools", plain(id))
             }
         }
     }
