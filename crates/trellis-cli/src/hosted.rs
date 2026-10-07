@@ -132,8 +132,9 @@ pub(crate) fn resolve_with(
             let p = cfg.provider(name)?;
             let protocol = Protocol::parse_config(&p.protocol).ok_or_else(|| {
                 anyhow!(
-                    "[[providers]] `{name}` has protocol = \"{}\"; expected openai or anthropic",
-                    p.protocol
+                    "[[providers]] `{}` has protocol = \"{}\"; expected openai or anthropic",
+                    plain(name),
+                    plain(&p.protocol)
                 )
             })?;
             let key_env = if p.key_env.is_empty() {
@@ -192,7 +193,7 @@ fn allowed(
             "refused before any request: {subject} names the \
              endpoint `{}`, which is not an http(s) URL trellis can check against the \
              hosts you send {} to (ADR 0024 §3)",
-            r.base,
+            plain(&r.base),
             r.key_env
         );
     };
@@ -225,6 +226,9 @@ fn allowed(
          ANTHROPIC_API_KEY), an entry in your own [[providers]]{file}, or a spec you \
          pass with --model.{local} Nothing was snapshotted: the run did not start.",
         key = r.key_env,
+        // Compared raw above, escaped only here: the authority is the
+        // repository's text, and `split_authority` keeps any byte in a host.
+        origin = plain(&origin),
         file = cfg
             .provenance
             .file
@@ -355,7 +359,13 @@ pub(crate) fn build(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<Hos
     // reached a provider some other way. Registering twice is harmless.
     trellis_core::secrets::register_key_vars([&r.key_env]);
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
-        .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
+        // The client's refusals quote the base, which may be the repository's.
+        .map_err(|e| {
+            anyhow!(
+                "{}\n\nNothing was snapshotted: the run did not start.",
+                plain(&e.to_string())
+            )
+        })?
         .with_thinking(cfg.thinking()?)
         .with_colibri_profile(colibri)
         // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
@@ -404,7 +414,7 @@ pub(crate) fn doctor(r: &Resolved, read: bool) -> (String, String, Vec<String>) 
     let runtime = format!(
         "{} at {}{}",
         r.protocol.describe(),
-        r.base,
+        plain(&r.base),
         r.provider
             .as_ref()
             .map(|p| format!(" ([[providers]] `{p}`)"))
@@ -482,7 +492,7 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
         Ok(Identity::Unauthorized { status }) => anyhow::bail!(
             "{} answered HTTP {status} when asked whether it is colibri (GET /v1/models), {}. \
              Every model request of this run would be refused the same way. {NOT_STARTED}",
-            r.base,
+            plain(&r.base),
             match &key {
                 Some(_) => format!("sent with the key from {}", r.key_env),
                 None => format!("and no key was sent ({} is not set)", r.key_env),
@@ -498,7 +508,7 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
         Err(RuntimeError::Timeout(d)) => anyhow::bail!(
             "{} accepted the connection but did not answer GET /v1/models within {} s. \
              {NOT_STARTED}",
-            r.base,
+            plain(&r.base),
             d.as_secs()
         ),
         // Not answers `identify` gives for a base `build` accepted; TRELLIS's
@@ -507,7 +517,7 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
             e @ (RuntimeError::Config(_)
             | RuntimeError::Auth { .. }
             | RuntimeError::ContextOverflow(_)),
-        ) => anyhow::bail!("{e}\n\n{NOT_STARTED}"),
+        ) => anyhow::bail!("{}\n\n{NOT_STARTED}", plain(&e.to_string())),
     };
     // Compared as sent, escaped only for display: an escaped id must not
     // match one holding the byte it spells.
@@ -516,7 +526,7 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
             "colibri at {} serves `{}`, and the spec names `{}`: colibri answers 404 to a \
              request naming any other id (ADR 0047 decision 4). Name `{0}` in the spec. \
              {NOT_STARTED}",
-            r.base,
+            plain(&r.base),
             plain(&id),
             plain(&r.model)
         );
@@ -527,7 +537,9 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
     let probe = match cached {
         Some(p) => p,
         None => {
-            let p = colibri::probe_tools(&r.base, &id, key.as_ref()).await?;
+            let p = colibri::probe_tools(&r.base, &id, key.as_ref())
+                .await
+                .map_err(|e| anyhow!("{}", plain(&e.to_string())))?;
             if let Ok(mut m) = probed().lock() {
                 m.insert(memo, p.clone());
             }
@@ -545,8 +557,10 @@ pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
              template cannot render them, so tier 1 cannot run against it (ADR 0047 decision \
              4).{fallback} Tier 4 runs without tools or a chat template, the reply validated \
              after: --model vllm:{origin}#{id}.{keyed} {NOT_STARTED}",
-            r.base,
+            plain(&r.base),
             id = plain(&id),
+            // The memo key above stays raw; this is the display.
+            origin = plain(&origin),
             // Only where colibri's own message names it: Inkling has none.
             fallback = if fallback_named {
                 " colibri's message names COLI_TOOL_FALLBACK=1: restarted with it, colibri \
