@@ -8,34 +8,16 @@ released is in `docs/BUILD_SYSTEM.md`, under "Branches".
 
 ## [Unreleased]
 
-On `dev` or `audit`, not yet on `main` (at `fbda2c0`).
-
-- **Models.** Identify and probe a loopback colibri endpoint before a run's
-  snapshot (#268), and turn the colibri request profile on in `trellis run`
-  and `trellis ask` once identified (#270).
-- **Interfaces.** The TUI budget line shows each turn's tokens per second and
-  queue wait (#257). The run banner escapes the model spec and other
-  configured text (#492). The desktop gains a pure reducer from `trellis rpc`
-  frames to its run panes (#299).
-- **Measurement.** `run_floor.py` records model-call time and bytes per token
-  without a runtime (#258), and takes a model timeout flag with a harness
-  wait that covers it (#273).
-- **Docs.** Two stale lines after #266 and #267 (#484); ADR 0021 row 12.3
-  says doctor's loopback read is on request (#322).
-- **Release.** Version 0.1.0 for every crate, this changelog, and a
-  `publish` job in `release.yml` that creates a GitHub release from a `v*`
-  tag only when the tagged commit is on `main` and the binary reports the
-  tag's version (#386).
-
 ## [0.1.0]
 
-What `main` holds at `fbda2c0` (2026-10-06): PR #1 (the v0.1 resolver, agent
-loop, rollback, governance, trail and resume, plus the capabilities inherited
-from pi, Apex and Paperclip under ADRs 0021-0026), the four squashed drain
-runs (PRs #155, #188, #193, #214; tagged `v0.1` at `747df54`), and dev-to-main
-batches 1-20. `v0.1` predates this version scheme: the workspace said 0.0.1
-then, and `release.yml`'s `publish` job would refuse it. What is and is not
-done, item by item, is in `docs/STATUS.md`.
+What `main` holds when the owner tags it `v0.1.0`: PR #1 (the v0.1 resolver,
+agent loop, rollback, governance, trail and resume, plus the capabilities
+inherited from pi, Apex and Paperclip under ADRs 0021-0026), the four
+squashed drain runs (PRs #155, #188, #193, #214; tagged `v0.1` at
+`747df54`), and dev-to-main batches 1-23, the last of which carries #495 and
+this entry (#386). `v0.1` predates this version scheme: the workspace said
+0.0.1 then, and `release.yml`'s `publish` job would refuse it. What is and is
+not done, item by item, is in `docs/STATUS.md`.
 
 ### Runs and the agent loop
 
@@ -67,7 +49,10 @@ done, item by item, is in `docs/STATUS.md`.
 - colibri as a tier-1 runtime over openai-chat (ADR 0047, #251, #252): its
   `/v1/models` and `/health` reader (#261), a tools probe (#262), a request
   profile (#263), queue-wait and model-time fields (#255, #256), and its
-  served model, slots and memory tiers in `trellis doctor` (#267).
+  served model, slots and memory tiers in `trellis doctor` (#267). A
+  loopback hosted endpoint is identified, and its tools probed if it is
+  colibri, before a run's snapshot (#268); the request profile is then on in
+  `trellis run` and `trellis ask`, other request bodies unchanged (#270).
 - `[model] timeout_s`, read from config and applied to every model request
   (#264-#266).
 - Hosted transport: `Retry-After` as an HTTP date (#149), `HTTPS_PROXY` and
@@ -130,17 +115,34 @@ done, item by item, is in `docs/STATUS.md`.
   `--web` (#373); a start screen outside a repository (#372); subcommands
   matched without regard to case (#370).
 - `trellis tui`: `@` file search (#52), a budget line with the run's ceiling
-  and real elapsed time (#243), a transcript that follows its end (#244).
+  and real elapsed time (#243) and each turn's tokens per second (queue wait
+  excluded) and queue wait (#257), a transcript that follows its end (#244).
+  The run banner escapes the model spec and other configured text (#492).
   `trellis session`: `/name`, `/copy` (#109) and per-model tokens in
   `/status` (#318).
 - `trellis rpc`: read-only `get_codebase`, `get_radius`, `get_queue`,
   `vault_search`, `vault_graph` (#292-#295), `get_session_stats` and
   `get_last_assistant_text` (#319); the fields the desktop reads held by
-  tests (#291).
+  tests (#291). A `prompt` sent right after `run_end` is accepted rather
+  than refused as a run in progress (#495); #319's stats test no longer
+  sends its next prompt before the last run's thread has exited.
 - The desktop (ADR 0048, #285): its own workspace, a child module reading
-  `get_state` (#287), its static page and icons (#288).
+  `get_state` (#287), its static page and icons (#288), and a pure reducer
+  from `trellis rpc` frames to its run panes, whose `view` events the core
+  prints (#299). Partial: there is no window yet (#289), and the child's
+  stderr and delivering `view` events to the page wait for #296.
 - `trellis-tickets`: `triage`, `ready`, `new`, `sweep`, `scan` and `index`
   (ADR 0040, #77-#81).
+
+### Measurement and docs
+
+- `run_floor.py` records each turn's model-call time from the run's log
+  (#258) and takes `--model-timeout-s` with a harness wait that covers it
+  (#273); `bytes_per_token.py --no-runtime-log` reports a run with no
+  runtime request log, such as colibri's (#258).
+- ADR 0021 gains rows for pi 1.0.2's new capabilities, and row 12.3 says
+  doctor's loopback read is on request (#322); stale lines after #441,
+  #319, #467, #482, #483, #266 and #267 brought up to date (#484).
 
 ### Build, CI and security
 
@@ -158,3 +160,7 @@ done, item by item, is in `docs/STATUS.md`.
   (#206, #208, #423); drain audited before each merge (#213, #233); scripts
   that move the CI runners to low-privilege accounts (#219).
 - Line-by-line review of the whole repository (#391-#422, #429).
+- Release: version 0.1.0 for every crate and the desktop, this changelog,
+  and a `publish` job in `release.yml` that creates a GitHub release from a
+  `v*` tag only when the tagged commit is on `main` and the binary reports
+  the tag's version (#386).
