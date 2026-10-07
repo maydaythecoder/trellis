@@ -924,6 +924,17 @@ fn run_body(
     // it. Rebuilt rather than switched on, since the driver holds its client;
     // `--image` is carried over, and nothing else has been set on it yet.
     if let Some(r) = &colibri {
+        // The image was loaded against the hosted budget, before `preflight`
+        // could say colibri; checked again against colibri's (decision 6),
+        // still before the snapshot, so an image every request would carry
+        // over budget is refused here (#527). The same rule as the driver's
+        // budget, so an explicit `[model] context_bytes` still decides.
+        image_input::fits(
+            &images,
+            hosted::hosted_context_bytes(r, &cfg, true)?,
+            ", an identified colibri endpoint's default (ADR 0047 decision 6) when \
+             neither of these is set",
+        )?;
         driver = Driver::Hosted(Box::new(
             hosted::build(r, &cfg, true)?.with_images(images.images.clone()),
         ));
