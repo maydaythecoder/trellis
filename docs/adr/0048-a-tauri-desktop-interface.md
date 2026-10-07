@@ -53,6 +53,9 @@ From one file only, it spawns `trellis --root <repo> rpc`,
 `trellis --root <repo> --json log --limit <n>` and `trellis --version`. It
 never reads trellis's human text (stderr) as data: what it shows comes from
 JSON on stdout.
+*Amended 2026-10-06 (#500), proposed by ADR 0052, pending acceptance:* a
+`trellis rpc` client may show trellis's stderr to the user in a pane capped
+in size, as human text. It still never reads stderr as data.
 
 ### 3. Children, environment and keys
 
@@ -79,6 +82,11 @@ reaches the DOM through `textContent` or `createElement` (ADR 0007, S10). The
 CSP has no `'unsafe-inline'`, no `'unsafe-eval'` and no network origin. The
 window's capability is `core:event:allow-listen`, `core:event:allow-unlisten`
 and the app's own commands.
+*Amended 2026-10-06 (#500), proposed by ADR 0052, pending acceptance:* the
+Go toolchain is an accepted cost, for `tui/` only (the Go TUI, a second
+`trellis rpc` client), pinned by a go.dev tarball and its SHA-256. This
+narrows the Context's refusal of a toolchain on every build machine to
+JavaScript: Node, npm and a bundler are still refused, here and in `tui/`.
 
 ### 6. The client contract
 

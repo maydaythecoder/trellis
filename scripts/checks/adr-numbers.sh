@@ -22,6 +22,7 @@ HELD="
 0047 colibri-as-a-model-runtime COL-01a
 0048 a-tauri-desktop-interface DESK-01
 0049 model-writes-stay-out-of-the-vault APEX-08
+0052 two-rpc-clients-and-go-for-the-tui #500
 "
 
 usage() {
