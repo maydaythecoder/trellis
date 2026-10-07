@@ -305,6 +305,17 @@ struct Ran {
 /// `trellis run` in `d`, with `--model spec` when given, no provider key in
 /// the environment but `key` as `COLI_API_KEY`, and `extra` arguments.
 fn run(d: &Path, spec: Option<&str>, key: Option<&str>, extra: &[&str]) -> Ran {
+    run_with(d, spec, key, extra, &[])
+}
+
+/// [`run`], with `after` passed to `run` itself (`--image <path>`).
+fn run_with(
+    d: &Path,
+    spec: Option<&str>,
+    key: Option<&str>,
+    extra: &[&str],
+    after: &[&str],
+) -> Ran {
     let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
     c.arg("--root").arg(d);
     c.args(extra);
@@ -312,6 +323,7 @@ fn run(d: &Path, spec: Option<&str>, key: Option<&str>, extra: &[&str]) -> Ran {
     if let Some(s) = spec {
         c.args(["--model", s]);
     }
+    c.args(after);
     c.current_dir(d)
         .env("NO_COLOR", "1")
         .env("TRELLIS_CONFIG_DIR", user_dir(d))
@@ -754,6 +766,44 @@ fn colibri_profile_a_run_against_a_vllm_owned_list_sends_neither_key() {
     for b in &bodies {
         assert!(has_neither(b), "{b}");
     }
+}
+
+#[test]
+fn colibri_image_over_budget_is_refused_before_the_snapshot_and_no_chat_is_sent() {
+    // The risk (#527): an image checked only against the 400,000-byte hosted
+    // budget, before `preflight` identifies colibri, so one between 25,088
+    // and 400,000 bytes passes and every request then goes over colibri's
+    // budget. 100,000 bytes is 133,336 of base64.
+    let (base, log) = stub(
+        reply("200 OK", &models_colibri("glm-5.2")),
+        reply("200 OK", TOOLS_ACCEPTED),
+    );
+    let d = repo("image-over-budget", "", "");
+    // Outside the repository, so nothing needs committing.
+    let img = d.with_extension("big.gif");
+    let mut bytes = b"GIF89a".to_vec();
+    bytes.resize(100_000, 0);
+    std::fs::write(&img, &bytes).unwrap();
+    let r = run_with(
+        &d,
+        Some(&format!("openai-chat:{base}/v1#glm-5.2")),
+        None,
+        &[],
+        &["--image", &img.to_string_lossy()],
+    );
+    refused(&d, &r);
+    assert!(
+        r.all.contains("25088 bytes") && r.all.contains("[model] context_bytes"),
+        "names the budget and the setting: {}",
+        r.all
+    );
+    assert!(
+        requests(&log).iter().any(|s| is_models_get(&s.raw)),
+        "colibri was identified: {}",
+        r.all
+    );
+    assert!(chat_bodies(&log).is_empty(), "no chat request: {}", r.all);
+    let _ = std::fs::remove_file(&img);
 }
 
 /// What the classifier reads as an answer, so no run follows it.

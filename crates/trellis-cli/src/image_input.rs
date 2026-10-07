@@ -46,17 +46,26 @@ pub(crate) fn load(root: &Path, paths: &[PathBuf], budget: usize) -> Result<Load
             .push(trellis_trail::Input::hashed("image", &name, &bytes));
         out.images.push(image);
     }
-    let total: usize = out.images.iter().map(Image::base64_len).sum();
+    fits(&out, budget, "")?;
+    Ok(out)
+}
+
+/// Counts the base64 of `loaded` against `budget`. `whose` follows the
+/// budget in the refusal, naming where it came from: `run` checks again
+/// once `preflight` has identified colibri, whose default is smaller than
+/// the hosted one (ADR 0047 decision 6, #527).
+pub(crate) fn fits(loaded: &Loaded, budget: usize, whose: &str) -> Result<()> {
+    let total: usize = loaded.images.iter().map(Image::base64_len).sum();
     if total > budget {
         bail!(
             "--image: the images are {total} bytes as base64, the form they are sent in, \
-             and this run's context budget is {budget} bytes ([model] context_bytes, or the model's \
+             and this run's context budget is {budget} bytes{whose} ([model] context_bytes, or the model's \
              [[providers]] input_bytes when that is smaller). Attach a smaller image, \
              or raise context_bytes in your user config. \
              Nothing was snapshotted: the run did not start."
         );
     }
-    Ok(out)
+    Ok(())
 }
 
 /// One line per image for the run's output: what the trail records.

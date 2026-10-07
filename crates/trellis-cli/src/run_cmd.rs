@@ -840,7 +840,9 @@ fn run_body(
         // spec, the config and the environment, and `refuse_unless_hosted`
         // above means it names a hosted model.
         let budget = match hosted::resolve_from(&spec, &cfg, model_from_user, model_source)? {
-            Some(r) => hosted::hosted_context_bytes(&r, &cfg)?,
+            // Not yet identified as colibri: `preflight` reads the endpoint
+            // below, so this is the hosted budget (ADR 0047 decision 6).
+            Some(r) => hosted::hosted_context_bytes(&r, &cfg, false)?,
             None => anyhow::bail!(
                 "--image: `{model_spec}` passed the hosted-model check but does not \
                  resolve to a hosted model; nothing was snapshotted"
@@ -926,6 +928,17 @@ fn run_body(
     // it. Rebuilt rather than switched on, since the driver holds its client;
     // `--image` is carried over, and nothing else has been set on it yet.
     if let Some(r) = &colibri {
+        // The image was loaded against the hosted budget, before `preflight`
+        // could say colibri; checked again against colibri's (decision 6),
+        // still before the snapshot, so an image every request would carry
+        // over budget is refused here (#527). The same rule as the driver's
+        // budget, so an explicit `[model] context_bytes` still decides.
+        image_input::fits(
+            &images,
+            hosted::hosted_context_bytes(r, &cfg, true)?,
+            ", an identified colibri endpoint's default (ADR 0047 decision 6) when \
+             neither of these is set",
+        )?;
         driver = Driver::Hosted(Box::new(
             hosted::build(r, &cfg, true)?.with_images(images.images.clone()),
         ));
