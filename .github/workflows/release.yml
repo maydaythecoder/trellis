@@ -12,6 +12,11 @@ name: Release
 # packaging can be exercised before it is needed rather than discovered
 # broken at the moment someone wants a release. A tag builds Linux and
 # Windows; `workflow_dispatch` adds macOS (see the matrix, #381).
+#
+# A `v*` tag also publishes: the `publish` job turns the tag's artefacts into
+# a GitHub release, and only for a commit already on `main` (#386). It is the
+# one job here that can write to the repository; the procedure that leads to
+# the tag is in docs/BUILD_SYSTEM.md, "Branches".
 on:
   push:
     tags: ["v*"]
@@ -102,3 +107,99 @@ jobs:
           name: trellis-${{ matrix.target }}
           path: dist/trellis-${{ matrix.target }}/
           if-no-files-found: error
+
+  # Turns a tag's artefacts into a GitHub release, so a release outlives the
+  # 90 days an uploaded artifact is kept (#386). A tag push only:
+  # `workflow_dispatch` has no tag to release. It runs after every leg of
+  # `build` has passed, and refuses before writing anything unless the tagged
+  # commit is already on `main` (ADR 0051: `main` is what ships, and the owner
+  # moves it) and the Linux binary reports the tag's version, so a tag pushed
+  # on `dev`, or one that does not match Cargo.toml, publishes nothing.
+  publish:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Downloads, checksums and one API call; nothing is compiled here.
+    timeout-minutes: 15
+    # The only job with write access, and only to contents: `gh release
+    # create` needs it. The workflow default above stays read-only for
+    # `build`, which runs the code under test.
+    permissions:
+      contents: write
+    steps:
+      # Full history so `origin/main` is present for the ancestry check:
+      # with the token not persisted, a later `git fetch` could not
+      # authenticate, and nothing here pushes.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # The tag name reaches the shell through env, never through an
+      # expression in `run:`, and is held to vX.Y.Z before anything uses it.
+      - name: The tag is vX.Y.Z and its commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::refusing to publish: tag '$TAG' is not vX.Y.Z"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::refusing to publish: $TAG ($(git rev-parse HEAD)) is not on main"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: trellis-*
+          path: artifacts
+
+      # The binary that ships answers for the version, not the manifest: the
+      # same --version `build` ran, compared with the tag this time. The
+      # artifact upload drops the execute bit, so it is put back first.
+      - name: trellis --version equals the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bin=artifacts/trellis-x86_64-unknown-linux-gnu/trellis
+          chmod +x "$bin"
+          got=$("$bin" --version)
+          want="trellis ${TAG#v}"
+          if [ "$got" != "$want" ]; then
+            echo "::error::refusing to publish: the binary says '$got', the tag wants '$want'"
+            exit 1
+          fi
+
+      # One archive per target, and one SHA256SUMS over the archives, so a
+      # download can be checked before it is unpacked (each archive keeps the
+      # per-binary SHA256SUMS `build` wrote inside it).
+      - name: Archive and checksum
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for dir in artifacts/trellis-*/; do
+            name=$(basename "$dir")
+            case "$name" in
+              *-windows-*) (cd artifacts && zip -qr "../release/$name.zip" "$name") ;;
+              *) tar -C artifacts -czf "release/$name.tar.gz" "$name" ;;
+            esac
+          done
+          (cd release && sha256sum -- * > SHA256SUMS)
+          cat release/SHA256SUMS
+
+      # --verify-tag: the release attaches to the tag that was pushed and
+      # never creates one. The token goes to gh through env only.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" release/* \
+            --verify-tag \
+            --title "$TAG" \
+            --notes "What $TAG contains is under its heading in CHANGELOG.md."
