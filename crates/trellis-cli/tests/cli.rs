@@ -4050,6 +4050,38 @@ fn doctor_reports_one_slot_as_single_stream_and_two_as_measured_concurrency() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn banner_escapes_esc_and_a_c1_control_in_the_repository_model_spec() {
+    // #492. The risk: a cloned repository chooses `[model] spec`, and the
+    // banner's `model:` line echoed its model id raw, so ESC or a C1 CSI in
+    // it could repaint the line a person reads before the run starts. TOML
+    // decodes `\u001b` and `\u009b` to the real characters, which a command
+    // line cannot be relied on to carry.
+    let d = repo("banner-escapes-spec");
+    let base = llamacpp_with_slots(1).replace("llamacpp:", "");
+    std::fs::create_dir_all(d.join(".trellis")).unwrap();
+    std::fs::write(
+        d.join(".trellis/config.toml"),
+        format!("[model]\nspec = \"openai-chat:{base}/v1#glm\\u001b[2J\\u009b31m\"\n"),
+    )
+    .unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-qm", "spec with controls"]);
+    let out = run(&d, &["run", "make greet louder"]);
+    let said = stdout(&out);
+    let model = said
+        .lines()
+        .find(|l| l.starts_with("model:"))
+        .unwrap_or_else(|| panic!("no model: line in {}", combined(&out)));
+    assert!(
+        model.contains("model glm\\u{1b}[2J\\u{9b}31m,"),
+        "{model:?}"
+    );
+    assert!(!said.contains('\x1b'), "{said:?}");
+    assert!(!said.contains('\u{9b}'), "{said:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ---------------------------------------------------------------------------
 // #248, pass 3: `trellis vault`
 // ---------------------------------------------------------------------------

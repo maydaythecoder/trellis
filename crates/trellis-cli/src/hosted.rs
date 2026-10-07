@@ -3,13 +3,22 @@
 //! it, and how compaction is reported.
 //!
 //! Kept out of `main.rs` so the key's path through the binary is one file:
-//! it is read from the environment inside `HostedClient::new`, and nothing
-//! here or in the caller ever holds it.
+//! it is read from the environment inside `HostedClient::new`, and, for the
+//! reads that ask a loopback endpoint whether it is colibri (ADR 0047), by
+//! `colibri_key` here, under the same rule and held only for those reads
+//! (the run's `preflight`, `doctor`'s, and `ask`'s identification). No other
+//! caller holds it.
 
 use crate::config::RepoConfig;
+use crate::plain;
 use anyhow::{Result, anyhow};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use trellis_loop::{Compacted, HostedModel, RequestedCompaction};
-use trellis_model::{AdapterTier, HostedClient, ModelSpec, Protocol, Thinking};
+use trellis_model::colibri::{self, Identity, ToolsProbe};
+use trellis_model::{
+    AdapterTier, ApiKey, HostedClient, ModelSpec, Protocol, RuntimeError, Thinking,
+};
 
 /// A hosted spec with its provider resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,13 +346,18 @@ pub(crate) fn hosted_context_bytes(r: &Resolved, cfg: &RepoConfig) -> Result<usi
 
 /// The tier-1 driver. Fails, before any snapshot, on a missing key, a
 /// plain-http remote, or a build without TLS.
-pub(crate) fn build(r: &Resolved, cfg: &RepoConfig) -> Result<HostedModel> {
+///
+/// `colibri` sends colibri's request profile (ADR 0047 decision 5), and is
+/// true only for an endpoint [`preflight`] identified as colibri: every
+/// other endpoint's body stays byte for byte as it was.
+pub(crate) fn build(r: &Resolved, cfg: &RepoConfig, colibri: bool) -> Result<HostedModel> {
     // `main` registers every configured `key_env`; this covers a caller that
     // reached a provider some other way. Registering twice is harmless.
     trellis_core::secrets::register_key_vars([&r.key_env]);
     let client = HostedClient::new(r.protocol, &r.base, &r.model, &r.key_env)
         .map_err(|e| anyhow!("{e}\n\nNothing was snapshotted: the run did not start."))?
         .with_thinking(cfg.thinking()?)
+        .with_colibri_profile(colibri)
         // ADR 0047 decision 9: `[model] timeout_s` bounds each request.
         .with_timeout(cfg.model_timeout());
     let budget = hosted_context_bytes(r, cfg)?;
@@ -424,6 +438,132 @@ pub(crate) fn doctor(r: &Resolved, read: bool) -> (String, String, Vec<String>) 
         );
     }
     (format!("{} (named in the spec)", r.model), runtime, notes)
+}
+
+/// The key a read of `r`'s colibri carries: the one the tier-1 client reads
+/// for `r` (`HostedClient::new`), so none when its variable is unset.
+/// `doctor` and the run both ask through this, so identifying colibri never
+/// changes where a key goes (ADR 0024 §3, ADR 0047 decision 3).
+pub(crate) fn colibri_key(r: &Resolved) -> Option<ApiKey> {
+    ApiKey::from_env(&r.key_env)
+}
+
+/// Each tools probe's answer, by origin and served id: ADR 0047 decision 4
+/// sends it at most once per pair in a process, and a TUI or session runs
+/// many times in one.
+fn probed() -> &'static Mutex<HashMap<(String, String), ToolsProbe>> {
+    static P: OnceLock<Mutex<HashMap<(String, String), ToolsProbe>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+/// A run's checks of a loopback hosted endpoint, before its snapshot (ADR
+/// 0047 decisions 3 and 4): is it colibri, does it serve the spec's model,
+/// and does that model's template take tools.
+///
+/// `Ok(None)` when the base is not this machine (nothing is read) or the
+/// server is not colibri: the run goes on as it always has. `Ok(Some(_))` is
+/// the run's `runtime:` line for an identified colibri, and is returned for
+/// nothing else, so it is also the identification the request profile is
+/// turned on by (decision 5). `Err` stops the run before its snapshot. Every
+/// read is bounded by `colibri::READ_TIMEOUT`, and every string the server
+/// supplied passes through [`plain`].
+pub(crate) async fn preflight(r: &Resolved) -> Result<Option<String>> {
+    const NOT_STARTED: &str = "Nothing was snapshotted: the run did not start.";
+    let key = colibri_key(r);
+    let id = match colibri::identify(&r.base, key.as_ref()).await {
+        Ok(Identity::Identified { id }) => id,
+        // Remote endpoints are never read; a server that is not colibri, or
+        // answers the read as one that is not (a 404, a 405, a 5xx, a body
+        // that is not a JSON model list), is run as today: refusing it would
+        // stop runs that work now.
+        Ok(Identity::NotLoopback | Identity::NotColibri { .. } | Identity::Absent { .. })
+        | Err(RuntimeError::Http { .. } | RuntimeError::Shape(_)) => return Ok(None),
+        // Status and variable only: the body is the server's.
+        Ok(Identity::Unauthorized { status }) => anyhow::bail!(
+            "{} answered HTTP {status} when asked whether it is colibri (GET /v1/models), {}. \
+             Every model request of this run would be refused the same way. {NOT_STARTED}",
+            r.base,
+            match &key {
+                Some(_) => format!("sent with the key from {}", r.key_env),
+                None => format!("and no key was sent ({} is not set)", r.key_env),
+            }
+        ),
+        // The pre-snapshot reachability check hosted specs lacked (ADR 0047
+        // decision 4). The text is the transport's, but a broken reply can
+        // quote the server's status line.
+        Err(e @ RuntimeError::Connect { .. }) => anyhow::bail!(
+            "{}\n\n{NOT_STARTED} Start the server, or point at a different one with --model.",
+            plain(&e.to_string())
+        ),
+        Err(RuntimeError::Timeout(d)) => anyhow::bail!(
+            "{} accepted the connection but did not answer GET /v1/models within {} s. \
+             {NOT_STARTED}",
+            r.base,
+            d.as_secs()
+        ),
+        // Not answers `identify` gives for a base `build` accepted; TRELLIS's
+        // own words, refused rather than guessed past.
+        Err(
+            e @ (RuntimeError::Config(_)
+            | RuntimeError::Auth { .. }
+            | RuntimeError::ContextOverflow(_)),
+        ) => anyhow::bail!("{e}\n\n{NOT_STARTED}"),
+    };
+    // Compared as sent, escaped only for display: an escaped id must not
+    // match one holding the byte it spells.
+    if id != r.model {
+        anyhow::bail!(
+            "colibri at {} serves `{}`, and the spec names `{}`: colibri answers 404 to a \
+             request naming any other id (ADR 0047 decision 4). Name `{0}` in the spec. \
+             {NOT_STARTED}",
+            r.base,
+            plain(&id),
+            plain(&r.model)
+        );
+    }
+    let origin = origin_of(&r.base).unwrap_or_else(|| r.base.clone());
+    let memo = (origin.clone(), id.clone());
+    let cached = probed().lock().ok().and_then(|m| m.get(&memo).cloned());
+    let probe = match cached {
+        Some(p) => p,
+        None => {
+            let p = colibri::probe_tools(&r.base, &id, key.as_ref()).await?;
+            if let Ok(mut m) = probed().lock() {
+                m.insert(memo, p.clone());
+            }
+            p
+        }
+    };
+    match probe {
+        ToolsProbe::Accepted => Ok(Some(format!("colibri, model {}, tools probed", plain(&id)))),
+        ToolsProbe::NotVerified { reason } => Ok(Some(format!(
+            "colibri, model {}, tools not verified: {reason}",
+            plain(&id)
+        ))),
+        ToolsProbe::Refused { fallback_named } => anyhow::bail!(
+            "colibri at {} refused tools for `{id}` (HTTP 400, param `tools`): this model's chat \
+             template cannot render them, so tier 1 cannot run against it (ADR 0047 decision \
+             4).{fallback} Tier 4 runs without tools or a chat template, the reply validated \
+             after: --model vllm:{origin}#{id}.{keyed} {NOT_STARTED}",
+            r.base,
+            id = plain(&id),
+            // Only where colibri's own message names it: Inkling has none.
+            fallback = if fallback_named {
+                " colibri's message names COLI_TOOL_FALLBACK=1: restarted with it, colibri \
+                 renders tools as text."
+            } else {
+                ""
+            },
+            keyed = match &key {
+                Some(_) => format!(
+                    " This run sent the key from {}, and a vllm: spec sends none, so tier 4 \
+                     needs a colibri started without a key.",
+                    r.key_env
+                ),
+                None => String::new(),
+            },
+        ),
+    }
 }
 
 /// The run's `context:` line for compaction, when there was any.
@@ -823,7 +963,7 @@ mod tests {
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: None,
         };
-        let Err(e) = build(&r, &RepoConfig::default()) else {
+        let Err(e) = build(&r, &RepoConfig::default(), false) else {
             panic!("a missing key must refuse");
         };
         let e = e.to_string();
@@ -997,7 +1137,7 @@ mod tests {
             key_env: "TRELLIS_TEST_KEY_THAT_IS_NEVER_SET".into(),
             provider: provider.map(str::to_string),
         };
-        let mut m = build(&r, cfg).unwrap();
+        let mut m = build(&r, cfg, false).unwrap();
         let checks = trellis_checks::CheckConfig {
             typecheck: if cfg!(windows) {
                 vec!["cmd".into(), "/C".into(), "exit 0".into()]

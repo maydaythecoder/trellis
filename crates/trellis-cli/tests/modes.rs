@@ -717,6 +717,23 @@ impl Rpc {
         }
     }
 
+    /// Waits, bounded, until `get_state` says no run is in flight. `run_end`
+    /// is framed from inside the run's thread, which still has its tail to
+    /// do, so a `prompt` sent on reading it can be refused as one too many.
+    fn wait_idle(&mut self) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        for i in 0.. {
+            let id = format!("idle-{i}");
+            self.send(serde_json::json!({"id": id, "type": "get_state"}));
+            let s = self.next(|v| v["id"] == id.as_str());
+            if s["data"]["running"] == false {
+                return;
+            }
+            assert!(std::time::Instant::now() < until, "still running: {s}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Closes stdin, waits for the process, and returns every record.
     fn finish(mut self) -> Vec<Value> {
         drop(self.stdin.take());
@@ -1852,6 +1869,7 @@ fn rpc_get_session_stats_counts_each_model_s_tokens_from_the_trails_apart() {
         );
         let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == id);
         assert!(end["run_id"].is_string(), "a trail was written: {end}");
+        rpc.wait_idle();
     }
     rpc.send(serde_json::json!({"id": "s1", "type": "get_session_stats"}));
     let got = rpc.next(|v| v["id"] == "s1");
@@ -1962,6 +1980,7 @@ fn rpc_get_last_assistant_text_is_the_last_done_summary_as_data() {
         serde_json::json!({"text": hostile}),
         "the summary, byte for byte, as a string"
     );
+    rpc.wait_idle();
 
     // Stopped at its question: it never reaches `done`.
     rpc.send(
@@ -1977,6 +1996,7 @@ fn rpc_get_last_assistant_text_is_the_last_done_summary_as_data() {
         serde_json::json!({"text": hostile}),
         "an aborted run leaves the last summary as it was"
     );
+    rpc.wait_idle();
 
     rpc.send(
         serde_json::json!({"id": "p3", "type": "prompt", "task": "change f",
