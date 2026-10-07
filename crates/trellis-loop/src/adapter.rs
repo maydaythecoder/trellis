@@ -698,7 +698,8 @@ impl RuntimeModel {
 
 /// The completion prompt with the observations of the `elided` oldest turns
 /// replaced by one line each (ADR 0024 §5). With `elided == 0` this is the
-/// prompt every measurement in this file was taken with, byte for byte.
+/// prompt every measurement in this file was taken with, byte for byte,
+/// except each step's `called:` line, which since #541 is the call's JSON.
 fn completion_prompt(t: &Transcript, elided: usize) -> String {
     completion_prompt_within(t, elided, None)
 }
@@ -794,8 +795,17 @@ fn completion_prompt_within(t: &Transcript, elided: usize, newest_cap: Option<us
 
 /// The line that opens step `i` in the completion prompt: the call as made.
 /// Never elided, so it is part of what a budget must hold whatever else goes.
+///
+/// Shown as the JSON the model emits, never as `{:?}`: Debug printed the
+/// enum variant (`RunChecks { .. }`), and #144's qwen3:8b run called
+/// `Edit` and `RunChecks` in 8 of its 14 format failures, copying the
+/// history it was shown (#541).
 fn step_header(i: usize, turn: &crate::agent::Turn) -> String {
-    format!("--- step {} ---\ncalled: {:?}\n", i + 1, turn.call)
+    format!(
+        "--- step {} ---\ncalled: {}\n",
+        i + 1,
+        crate::registry::call_json(&turn.call)
+    )
 }
 
 /// How many bytes the newest observation may take so the completion prompt
@@ -2179,6 +2189,85 @@ mod tests {
             !sent.contains("oneOf"),
             "tier 4 sends no schema — that is what makes it tier 4: {sent}"
         );
+    }
+
+    /// Whether `word` occurs in `text` as a whole identifier, so `Edit`
+    /// is not found inside `Edited` and `Ls` not inside `Lsp`.
+    fn has_word(text: &str, word: &str) -> bool {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        text.match_indices(word).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + word.len()..].chars().next();
+            !before.is_some_and(ident) && !after.is_some_and(ident)
+        })
+    }
+
+    #[tokio::test]
+    async fn prompt_names_tools_as_they_are_called_after_a_turn_and_a_format_retry() {
+        // #144's qwen3:8b floor run: 8 of 14 format failures called `Edit` or
+        // `RunChecks`, the names of the loop's own enum variants. The step
+        // history rendered each call with `{:?}`, so after one turn the
+        // prompt read `called: RunChecks { paths: [..], kinds: [Typecheck] }`
+        // and the model copied what it was shown. Every name the model reads
+        // must be the one it has to call.
+        let call = ToolCall::RunChecks {
+            paths: vec!["src/app/config.py".into()],
+            kinds: vec![trellis_checks::CheckKind::Typecheck],
+        };
+        let mut t = one_turn("a type check is failing in src/app/config.py; fix it");
+        t.turns.push(crate::agent::Turn {
+            call,
+            observation: "Typecheck: FAILED\ncommand: mypy src/app/config.py\n\
+                          src/app/config.py:37: error: Incompatible return value type"
+                .into(),
+            verdict_passed: Some(false),
+            check_kind: Some("Typecheck".into()),
+            prompt_bytes: None,
+            radius_counts: None,
+            radius_summarised: None,
+            human: None,
+            may_have_changed_tree: false,
+            changed: Vec::new(),
+        });
+
+        // The first reply names a tool the run does not have, which is the
+        // format failure the floor run hit; the retry is answered.
+        let unknown = r#"{"choices":[{"text":"{\"tool\":\"Edit\",\"path\":\"a.py\",\"old\":\"x\",\"new\":\"y\"}"}],"usage":{"completion_tokens":20}}"#;
+        let good = r#"{"choices":[{"text":"{\"tool\":\"done\",\"summary\":\"ok\"}"}],"usage":{"completion_tokens":5}}"#;
+        let (base, handle) = replaying_stub(vec![unknown, good]).await;
+        let client = RuntimeClient::new(&base, Dialect::VllmOpenAi, None).unwrap();
+        let mut m = RuntimeModel::unconstrained(client);
+        let step = m.next_step(&t).await.expect("the retry succeeds");
+        assert!(matches!(step, Step::Done { .. }), "{step:?}");
+
+        let bodies = handle.await.unwrap();
+        assert_eq!(bodies.len(), 2, "one request, then one format retry");
+        for body in &bodies {
+            let json = body.split("\r\n\r\n").nth(1).expect("a body");
+            let sent: serde_json::Value = serde_json::from_str(json).expect("JSON");
+            let prompt = sent["prompt"].as_str().expect("a completion prompt");
+
+            for name in crate::registry::BUILTIN_TOOLS.iter().chain(&["done"]) {
+                let camel: String = name
+                    .split('_')
+                    .map(|w| w[..1].to_ascii_uppercase() + &w[1..])
+                    .collect();
+                assert!(
+                    !has_word(prompt, &camel),
+                    "the model is shown `{camel}` but must call `{name}`:\n{prompt}"
+                );
+            }
+            // A prompt that dropped the step history would pass the check
+            // above; the turn must be there, under the name it is called by.
+            let history = prompt
+                .split_once("--- step 1 ---")
+                .expect("the turn is in the prompt")
+                .1;
+            assert!(
+                history.contains(r#""tool":"run_checks""#),
+                "the turn is shown as the call the model would make:\n{prompt}"
+            );
+        }
     }
 }
 
