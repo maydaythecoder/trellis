@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "run_id": "20261007-153823-354-a-type-check-is-failing-in-src-poetry-config-dic",
+  "task": "a type check is failing in src/poetry/config/dict_config_source.py; fix it",
+  "base_commit": "333d181227d6b42863165cf47d95952586fad80a",
+  "started_at": "2026-10-07T15:38:23Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [
+      "src/poetry/config/dict_config_source.py"
+    ],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      },
+      {
+        "kind": "Typecheck",
+        "passed": true
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9766,
+      "peak_prompt_bytes": 12478,
+      "turns_measured": 4
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/dict_config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/dict_config_source.py",
+        "outcome": "error: edit anchor not found in src/poetry/config/dict_config_source.py. `old` must be text copied from the file, not r…",
+        "wrote": false
+      },
+      {
+        "turn": 3,
+        "tool": "edit",
+        "target": "src/poetry/config/dict_config_source.py",
+        "outcome": "edited src/poetry/config/dict_config_source.py (applied: true, bytes 979..1003)",
+        "wrote": true
+      },
+      {
+        "turn": 4,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/dict_config_source.py",
+        "outcome": "Typecheck: passed",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 2152,
+    "prompt_tokens": 15244
+  },
+  "factual_sha256": "7b1bef871bce185af862975bff32162ab003b3f63a120f0b1384883520186236",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "run_id": "20261007-153430-948-a-type-check-is-failing-in-src-poetry-config-con",
+  "task": "a type check is failing in src/poetry/config/config_source.py; fix it",
+  "base_commit": "a60aee28d990fb8273a8573a08d7b4cc658bef04",
+  "started_at": "2026-10-07T15:34:30Z",
+  "provenance": {
+    "trellis_version": "0.1.0",
+    "model": "vllm:http://127.0.0.1:11434#qwen3:8b",
+    "tier": null
+  },
+  "factual": {
+    "proposed": [],
+    "radius": {
+      "reached_resolved": 0,
+      "reached_ambiguous": 0,
+      "widest_unbound_in_touched_files": 0,
+      "radius_queries": 0
+    },
+    "checks": [],
+    "check_outcomes": [
+      {
+        "kind": "Typecheck",
+        "passed": false
+      }
+    ],
+    "approved_by": "None",
+    "mode_counts": {
+      "verified": 0,
+      "reviewed": 0
+    },
+    "context": {
+      "first_prompt_bytes": 9761,
+      "peak_prompt_bytes": 10299,
+      "turns_measured": 2
+    },
+    "actions": [
+      {
+        "turn": 1,
+        "tool": "run_checks",
+        "target": "Typecheck on src/poetry/config/config_source.py",
+        "outcome": "Typecheck: FAILED",
+        "wrote": false
+      },
+      {
+        "turn": 2,
+        "tool": "edit",
+        "target": "src/poetry/config/config_source.py",
+        "outcome": "error: edit anchor not found in src/poetry/config/config_source.py. `old` must be text copied from the file, not recons…",
+        "wrote": false
+      }
+    ],
+    "control": "auto",
+    "tokens": 12050,
+    "prompt_tokens": 21330
+  },
+  "factual_sha256": "93d2afea372445d9ff59d41fd055c3b075a43fc0fb5059183f3198c350f88aab",
+  "judgment": {
+    "tech_debt_projection": null,
+    "rationale": null
+  }
+}
