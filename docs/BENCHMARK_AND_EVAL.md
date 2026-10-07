@@ -591,6 +591,7 @@ question.
 | Qwen2.5-Coder-3B-Instruct Q4_K_M, candle CPU, tier 2 | with the no-progress stop | **0 / 17** | 14 | 3 | 0 | ~150 |
 | `qwen2.5:3b` Q4_K_M, Ollama 0.34.2, `/v1/completions` | debug build at `6a2c6b9`: #229's chunked-reply decode and #228's 14,336-byte prompt budget | **0 / 20** | 16 | 2 | 2 | 15.1 |
 | `qwen3:8b` Q4_K_M, Ollama 0.15.6 (server), `/v1/completions`, tier 4 | release build at `a9d32c9`, budget 8 iterations / 1800 s | **5 / 20** | 0 | 0 | 14 | 158.2 |
+| the same, re-measured (#545) | release build at `10fae8a` (with #541, #544, #547), budget 8 iterations / 1800 s | **5 / 20** | 4 | 2 | 6 | 123.8 |
 
 The Coder-3B row is 17 tasks, not 20: the host stopped the job for memory pressure
 with three outstanding. See §5.6. `no-progress` did not exist when the first
@@ -622,8 +623,20 @@ so that one is stated here. It is t03, and its outcome was set by the
 runtime, not the model: Ollama answered `HTTP 500 … CUDA error`. Its median is
 the report's `wall_clock_s.median` (the upper middle value, as for the rows
 above); the conventional median of the 20 `seconds` is 154.05. It is the
-first report in this table with a `comparable` block, and the only one with
-`model_ms` figures (median 9,800 ms, p90 30,586 ms, over 68 timed turns).
+first report in this table with a `comparable` block, and the only one
+before #545's re-run with `model_ms` figures (median 9,800 ms, p90 30,586 ms,
+over 68 timed turns).
+
+The re-measured `qwen3:8b` row is `docs/bench/floor-qwen3-8b-ollama-r2.json`
+and its directory (#545), compared with the first in §5.7. Its 20 tasks are 5
+`repaired`, 4 `no-progress`, 2 `budget-exhausted`, 6 `format-failure` and 3
+`no-recovery`, the last not in the table: t04, whose outcome the runtime set
+(Ollama answered `HTTP 500 … CUDA error`, as for t03 in the first run), and
+t06 and t16, where the model called `done` without a passing check. Its
+median is the report's `wall_clock_s.median`; the conventional median of the
+20 `seconds` is 122.55. `model_ms`: median 11,800 ms, p90 32,198 ms, over 100
+timed turns. Seconds compare only within a row: the two `qwen3:8b` rows ran
+different binaries.
 
 The Ollama row is `docs/bench/floor-qwen2.5-3b-q4km-ollama-20260930-budget/`
 and its `.json` report (#228, c049a0d): the re-run §5.9 called for of the
@@ -935,7 +948,7 @@ decoding.** Three points below it and one that repairs tasks:
 | Qwen2.5-0.5B-Instruct Q4_K_M | 0 / 20 | Schema-valid nonsense: placeholders as anchors, the path in every field |
 | Qwen2.5-Coder-3B-Instruct Q4_K_M | 0 / 17 | Sound edits aimed at a path it cannot spell |
 | `qwen2.5:3b` Q4_K_M, Ollama 0.34.2 | 0 / 20 | Not characterised: §5.4's per-call audit does not cover this run. 16 of 20 ended on the no-progress stop (§5.2) |
-| `qwen3:8b` Q4_K_M, Ollama 0.15.6, tier 4 | **5 / 20** | Tool-call format: 14 of 20 ended with no valid tool call after the adapter's retries (below) |
+| `qwen3:8b` Q4_K_M, Ollama 0.15.6, tier 4 | **5 / 20**, and 5 / 20 again re-measured (#545) | Tool-call format: 14 of 20 ended with no valid tool call after the adapter's retries; 6 of 20 when re-measured after #541 and #544 (below) |
 
 Until #144 three failing points bounded the floor from below and did not say
 where it is. `qwen3:8b` is the first configuration that repairs a task, so for
@@ -1002,6 +1015,62 @@ and does not isolate the cause any more than that did.
 `errors_after` never exceeded `errors_before`: no task was made worse.
 Not covered by §5.4's per-call audit (metric 3), which has not been run over
 these trails. Metric 6 now has a configuration that repairs at low fill.
+
+#### The same configuration re-measured after #541 and #544 (#545)
+
+#144's run was taken while the runtime prompt's step history showed calls in
+Rust Debug form (`called: RunChecks { ... }`, fixed by #541) and check kinds
+as `Typecheck` (fixed by #544 and #547). #545 re-ran the same measurement
+with those fixes in. Report `docs/bench/floor-qwen3-8b-ollama-r2.json`; logs,
+`--log-json` files and trails in `docs/bench/floor-qwen3-8b-ollama-r2/`.
+
+| | |
+|---|---|
+| Same as the first run | model `qwen3:8b`, manifest digest `500a1f067a9f…`, weights blob `sha256-a3de86cd…8e686f`, **Q4_K_M** (`ollama show`, `/api/show`); Ollama server **0.15.6** at `/api/version` (CLI 0.34.2); `ollama ps` during the run `100% GPU`, `CONTEXT 4096`; doctor `tier: 4, ValidateAndRetry`, schema ignored; mypy 2.3.1; `python` 3.11.15; task file `tasks_sha256 32c9a6be…`; default budget (8 iterations, 1800 s, no `--model-timeout-s`); 1 user skill in the `repo:` line |
+| Corpus | the CRLF poetry 2.5.0 tree, copied fresh from the operator's `.bench/poetry-2.5.0` (the copy carried that tree's `.mypy_cache/` and `.trellis/index.bin`, both ignored by the corpus's `.gitignore`) |
+| Harness | `run_floor.py` at commit **`10fae8a`**, release `trellis.exe` built `--locked` at that commit, SHA-256 `bf170b48…19acb82` (the report's `comparable.trellis_sha256`) |
+| Date | 2026-10-07, 20 of 20 tasks, 3,642.9 s total |
+
+`compare_floor.py` accepts the pair (exit 0: task file, checker, budget and
+limit equal; only the binary differs) and prints:
+
+```
+repaired          5 / 20    5 / 20
+budget-exhausted  0         2
+format-failure    14        6
+no-progress       0         4
+no-recovery       1         3
+```
+
+**Repaired did not change: 5 of 20, the same five tasks** (t01, t05, t08,
+t10, t13), each again a failing `run_checks`, one or two `edit`s and a
+passing `run_checks` in 3 or 4 iterations (30.9–62.4 s). **Format failures fell
+from 14 to 6, and no failure called an unknown tool.** In the first run the
+last problem was an unknown tool (`Edit`, `RunChecks`) in 8 of the 14, and 10
+of the 20 logs show one at some retry; here `grep -l "unknown tool"` over the
+20 logs finds none, and none has the `"called": …` object (the first run's
+t02 did, and 9 of its logs record "a tool call needs a string `tool` field";
+this run's, 0). The last problem in the six:
+
+| Last problem | Tasks |
+|---|---|
+| `edit` with a wrong argument: missing `path`, or `code` / `file` in its place | 3: t00, t07, t09 |
+| empty reply after 16,384 tokens of reasoning | 2: t11, t18 |
+| `done` with `message` in place of `summary` | 1: t14 |
+
+The tasks the fewer format failures freed did not become repairs: they ended
+on the no-progress stop (t02, t03, t12, t15), the iteration ceiling (t17,
+t19), or a `done` without a passing check (t06, t16). t04 ended on the
+runtime's `HTTP 500 … CUDA error`, as t03 did in the first run. Every task's
+first call was again a valid `run_checks`, and `errors_after` never exceeded
+`errors_before`.
+
+What this does and does not show: the unknown-tool failures were gone in the
+run with the prompt naming tools and kinds as they are sent, which is
+consistent with #541's diagnosis. It is one run against one, and the binary
+differs by more than those fixes (`a9d32c9` to `10fae8a`), so it is not an
+isolation of the cause. The floor result for this configuration is unchanged
+at 5 of 20.
 
 What the first two do establish is that the two failures are **different in kind**,
 which a single measurement could not have shown. The 0.5B cannot form a useful
