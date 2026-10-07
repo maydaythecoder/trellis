@@ -77,3 +77,24 @@ fn colibri_guide_offers_inkling_no_tool_fallback() {
         rows[0]
     );
 }
+
+#[test]
+fn colibri_guide_weights_section_names_colibris_own_fetch_and_verify_commands() {
+    // The risk: `trellis model` and `trellis model pull <family>` send a
+    // colibri user to this guide for weights (#279, #535), and the guide
+    // never says how to get them. Read from the `## Weights` heading to the
+    // next `## `, so a mention elsewhere in the file does not satisfy it.
+    let text = guide();
+    let start = text
+        .find("\n## Weights\n")
+        .expect("the guide has a `## Weights` section");
+    let body = &text[start + 1..];
+    let end = body[3..].find("\n## ").map_or(body.len(), |i| i + 3);
+    let section = &body[..end];
+    for needle in ["coli convert", "coli mirror verify"] {
+        assert!(
+            section.contains(needle),
+            "the Weights section must name `{needle}`:\n{section}"
+        );
+    }
+}
