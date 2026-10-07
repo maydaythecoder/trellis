@@ -908,7 +908,11 @@ fn run_body(
                     // reports it (#269).
                     record_tier(extras, tier.label());
                     match hosted::preflight(&r, &tier)? {
-                        Some(line) => (Some(line), Some(r)),
+                        Some(line) => {
+                            // Logged, not recorded: ADR 0047 decision 13.
+                            probe_rt.block_on(hosted::self_report(&r, &tier));
+                            (Some(line), Some(r))
+                        }
                         None => (None, None),
                     }
                 }
