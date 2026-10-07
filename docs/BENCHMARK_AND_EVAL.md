@@ -1045,6 +1045,7 @@ records:
 | `floor-qwen2.5-coder-3b-q4km` | 18 (t00–t17) | **0** of 18; t18 and t19 **unknown** | t18 and t19 have no log (`skipped` in the report) |
 | `floor-qwen2.5-3b-q4km-ollama-20260930` | 20 (t00–t19) | **6** | t09, t11, t12, t13, t17, t18 |
 | `floor-qwen2.5-3b-q4km-ollama-20260930-budget` | 20 (t00–t19) | **0** | — |
+| `floor-qwen3-8b-ollama` | 20 (t00–t19) | **0** | — |
 
 Method:
 
@@ -1093,8 +1094,19 @@ Method:
   change. #170's figures stand as the record of that run, whose six
   `no-recovery` outcomes were set by the client. The re-run is its own §5.2
   row.
+- **`floor-qwen3-8b-ollama` (#144, c7a3097) has no client-set run.** Its
+  binary, a release build at a9d32c9, includes 4f612eb. Run at c7a3097 over
+  the files as committed there, the same `grep -l -E` pattern over its 20
+  logs, its 20 trails and `floor-qwen3-8b-ollama.json` lists nothing.
+  `grep -l -E 'runtime call failed|response is not JSON|not the expected shape'`
+  over the same files lists only t03.log, whose run ended on `runtime call
+  failed: runtime returned HTTP 500` with a `CUDA error` body: the report's one
+  `no-recovery`, set by the runtime, not by the chunked-reply bug.
+  `grep -l 'the model could not continue'` lists 15 logs: t03 and the
+  report's 14 `format-failure`s, each `no valid tool call after 4 attempts`,
+  which are model output.
 
-The four runs in §5.2 (three configurations), and the per-call audit in §5.4,
+The five runs in §5.2 (four configurations), and the per-call audit in §5.4,
 rest on logs with no client-set run, so nothing in §5.2 through §5.8 changes.
 
 ### Exit criteria for v0.1

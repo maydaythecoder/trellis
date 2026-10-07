@@ -792,6 +792,53 @@ fn doctor_reports_a_missing_test_suite_as_the_grounding_problem_it_is() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn doctor_floor_line_states_four_configurations_and_the_tier_4_result() {
+    // #542. The risk: the line a person reads before trusting a local model
+    // keeps saying every measured configuration failed after #144 measured
+    // one that repairs 5 of 20 at tier 4, so doctor contradicts its own
+    // evidence. Both branches print the line: without --model, and with a
+    // runtime that cannot be reached (a port bound and released is closed).
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let d = repo("doctor-floor-line");
+    let spec = format!("llamacpp:http://{addr}");
+    for args in [vec!["doctor"], vec!["doctor", "--model", &spec]] {
+        let out = run(&d, &args);
+        let s = stdout(&out);
+        // The line wraps, so take `floor:` and its indented continuation.
+        let block: Vec<&str> = s
+            .lines()
+            .skip_while(|l| !l.starts_with("floor:"))
+            .enumerate()
+            .take_while(|(i, l)| *i == 0 || l.starts_with(' '))
+            .map(|(_, l)| l.trim())
+            .collect();
+        assert!(!block.is_empty(), "no floor line\n{}", combined(&out));
+        let floor = block.join(" ");
+        let lower = floor.to_lowercase();
+        assert!(lower.contains("four configurations"), "{args:?}: {floor}");
+        assert!(
+            lower.contains("located only at tier 4"),
+            "{args:?}: {floor}"
+        );
+        assert!(
+            floor.contains("qwen3:8b Q4_K_M via ollama repaired 5/20"),
+            "{args:?}: {floor}"
+        );
+        assert!(
+            floor.contains("BENCHMARK_AND_EVAL.md §5.7"),
+            "{args:?}: {floor}"
+        );
+        assert!(!lower.contains("all failed"), "{args:?}: {floor}");
+        assert!(!lower.contains("all below"), "{args:?}: {floor}");
+        assert!(!lower.contains("three configurations"), "{args:?}: {floor}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ---------------------------------------------------------------------------
 // init, and the repository gate
 // ---------------------------------------------------------------------------
