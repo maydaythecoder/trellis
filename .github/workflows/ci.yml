@@ -93,20 +93,24 @@ jobs:
   # desktop/ is its own Cargo workspace with its own lock (ADR 0048), so
   # nothing in `test` builds, lints or tests it (#384). Both platforms, as
   # `test` runs: the binary its tests spawn is `trellis.exe` on Windows and
-  # `trellis` on Linux, and when Tauri arrives (#289) the shell builds
-  # against WebView2 and MSVC on Windows and WebKitGTK on Linux (#297).
+  # `trellis` on Linux, and the Tauri shell (#289) builds against WebView2
+  # and MSVC on Windows and WebKitGTK on Linux (#297).
   #
-  # Not here yet: Tauri's Linux prerequisites (`libwebkit2gtk-4.1-dev` among
-  # them). The desktop has no Tauri dependency until #289, so nothing would
-  # build against them, and an install step on the self-hosted Linux runner
-  # changes the owner's machine; #289 adds it with the dependency.
+  # Tauri's Linux prerequisites are the runner's, not this job's: the owner
+  # installs them as root on the self-hosted runner, and the job never runs
+  # apt there (owner decision 2026-10-06). It checks for them instead.
+  #
+  # A cold Tauri build is long, and both self-hosted runners share one host,
+  # so the job builds on two jobs and is given 120 minutes (#289).
   desktop:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ fromJSON(matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || '"windows-latest"') || (vars.LINUX_RUNNER || '"ubuntu-latest"')) }}
-    timeout-minutes: 45
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -116,6 +120,14 @@ jobs:
         with:
           toolchain: "1.93.0"
           components: rustfmt, clippy
+
+      - name: WebKitGTK present (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if ! pkg-config --exists webkit2gtk-4.1; then
+            echo "::error::webkit2gtk-4.1 not found: install libwebkit2gtk-4.1-dev, libxdo-dev and pkg-config on this runner (as root, once; this job never runs apt)"
+            exit 1
+          fi
 
       # GitHub-hosted only: on a self-hosted runner its cache is remote and its
       # post-job cleanup of $CARGO_HOME/bin deleted the owner's toolchain (#158).
