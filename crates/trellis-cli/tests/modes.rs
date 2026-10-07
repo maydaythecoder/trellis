@@ -719,7 +719,8 @@ impl Rpc {
 
     /// Waits, bounded, until `get_state` says no run is in flight. `run_end`
     /// is framed from inside the run's thread, which still has its tail to
-    /// do, so a `prompt` sent on reading it can be refused as one too many.
+    /// do. A `prompt` sent on reading it waits that out (#495); this is for
+    /// a test that wants the server idle before it goes on.
     fn wait_idle(&mut self) {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
         for i in 0.. {
@@ -895,6 +896,48 @@ fn rpc_steer_follow_ups_start_as_new_prompts_after_run_end_in_order() {
     assert_eq!(task("p"), "change f");
     assert_eq!(task("u1"), "second task");
     assert_eq!(task("u2"), "third task");
+}
+
+#[test]
+fn rpc_a_prompt_right_after_run_end_is_accepted_and_runs() {
+    // The risk: `run_end` is framed from inside the run's thread, which
+    // still has its tail to do, and a client that sends the next `prompt`
+    // on reading it (as ADR 0025 §5's "run_end says how it finished"
+    // invites, and the desktop does) was refused as a run in progress.
+    // The seam holds that tail open, as a loaded machine does.
+    let f = fixture("rpc-prompt-after-end");
+    let mut cmd = trellis(&f);
+    cmd.env("TRELLIS_TEST_RPC_CLEANUP_DELAY_MS", "1500");
+    let mut rpc = Rpc::start(cmd);
+    rpc.send(
+        serde_json::json!({"id": "p", "type": "prompt", "task": "change f",
+                                "model": f.spec}),
+    );
+    rpc.next(|v| v["type"] == "run_end" && v["id"] == "p");
+    rpc.send(
+        serde_json::json!({"id": "q", "type": "prompt", "task": "change f again",
+                                "model": f.spec}),
+    );
+    let q = rpc.next(|v| v["type"] == "response" && v["id"] == "q");
+    assert_eq!(q["success"], true, "{q}");
+    let end = rpc.next(|v| v["type"] == "run_end" && v["id"] == "q");
+    assert_eq!(end["outcome"], "not_converged", "{end}");
+    let rs = rpc.finish();
+    let frames: Vec<(&str, &str)> = rs
+        .iter()
+        .filter(|r| r["type"] == "run_start" || r["type"] == "run_end")
+        .map(|r| (r["type"].as_str().unwrap(), r["id"].as_str().unwrap_or("")))
+        .collect();
+    assert_eq!(
+        frames,
+        [
+            ("run_start", "p"),
+            ("run_end", "p"),
+            ("run_start", "q"),
+            ("run_end", "q"),
+        ],
+        "{rs:?}"
+    );
 }
 
 #[test]
