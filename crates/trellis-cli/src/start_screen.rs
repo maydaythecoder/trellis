@@ -164,7 +164,7 @@ pub(crate) fn screen(
     if at_home {
         writeln!(
             out,
-            "  `git init` is not offered in your home directory: a repository there would take in every file under it."
+            "  This is your home directory, so `git init` is not offered: a repository there would take in every file under it."
         )?;
     } else {
         writeln!(out, "  i. run `git init` here, in {here}")?;
@@ -513,7 +513,7 @@ y
         assert!(!home.path().join(".git").exists(), "{shown}");
         assert!(!shown.contains("i. run `git init`"), "{shown}");
         assert!(
-            shown.contains("`git init` is not offered in your home directory"),
+            shown.contains("This is your home directory, so `git init` is not offered"),
             "{shown}"
         );
         assert!(shown.contains("That is not one of the choices."), "{shown}");
