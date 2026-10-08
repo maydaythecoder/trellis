@@ -55,6 +55,17 @@ prints the overview and falls back to the start screen, then the TUI. With
 no terminal, behaviour is unchanged. The 2026-10-06 handoff line above is
 restated for `--tui` and `trellis tui` only: they, not bare `trellis`, hand
 off to `trellis-tui` at parity. Accepted, not built (#561).
+*As built 2026-10-07 (#374):* `trellis --dsk` starts `trellis-desktop`
+from beside `current_exe()` only, never from PATH, detached (no standard
+streams; on Windows its own process group with no console, on Unix
+`process_group(0)`; no job object) and returns once it has started. It
+passes `--trellis <current_exe>`, and `--root` only for `--root` given or a
+root found; outside a repository it starts the desktop with no root rather
+than refusing. The environment passes unchanged (ADR 0048 section 3). On
+Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY` set it starts nothing
+and says so. Not found, it names the path it looked at and both
+`cargo install --locked --path crates/trellis-cli` and `cargo install
+--locked --path desktop`.
 
 ### 2. A first run with no model
 

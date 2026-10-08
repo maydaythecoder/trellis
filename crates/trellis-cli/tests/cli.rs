@@ -3885,18 +3885,53 @@ fn trellis_out(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn interface_flag_desktop_and_web_say_they_are_not_built() {
-    // ADR 0050 section 1: the flags parse, and until their tickets land each
+fn interface_flag_web_says_it_is_not_built() {
+    // ADR 0050 section 1: the flag parses, and until its ticket lands it
     // says so instead of appearing to start something.
-    for (flag, what) in [("--dsk", "desktop"), ("--web", "web view")] {
-        let out = trellis_out(&[flag]);
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "{flag} succeeded");
-        assert!(
-            err.contains(&format!("the {what} is not built yet")),
-            "{flag}: {err}"
-        );
-    }
+    let out = trellis_out(&["--web"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "--web succeeded");
+    assert!(err.contains("the web view is not built yet"), "{err}");
+}
+
+#[test]
+fn interface_flag_dsk_with_no_desktop_beside_trellis_says_where_it_looked() {
+    // ADR 0050 section 1 (#374): the desktop is looked for beside the
+    // running trellis only. The risk: a `trellis-desktop` on PATH started
+    // instead, or a refusal that does not say what to install. A copy of
+    // the binary in a fresh directory, so a desktop built beside the real
+    // one cannot change the answer.
+    let exe_name = format!("trellis{}", std::env::consts::EXE_SUFFIX);
+    let desktop_name = format!("trellis-desktop{}", std::env::consts::EXE_SUFFIX);
+    let bin = tempfile::tempdir().unwrap();
+    let on_path = tempfile::tempdir().unwrap();
+    let exe = bin.path().join(&exe_name);
+    std::fs::copy(env!("CARGO_BIN_EXE_trellis"), &exe).unwrap();
+    std::fs::write(on_path.path().join(&desktop_name), b"").unwrap();
+    let out = Command::new(&exe)
+        .arg("--dsk")
+        .current_dir(bin.path())
+        .env("PATH", on_path.path())
+        // On Linux the display check comes first; nothing is started here.
+        .env("DISPLAY", ":0")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "--dsk succeeded: {err}");
+    assert!(err.contains(&desktop_name), "{err}");
+    assert!(err.contains("looked for"), "{err}");
+    assert!(
+        !err.contains(&on_path.path().display().to_string()),
+        "{err}"
+    );
+    assert!(
+        err.contains("cargo install --locked --path crates/trellis-cli"),
+        "{err}"
+    );
+    assert!(
+        err.contains("cargo install --locked --path desktop"),
+        "{err}"
+    );
 }
 
 #[test]
