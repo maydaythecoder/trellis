@@ -80,6 +80,8 @@ its child receives is what the desktop was given. The owner's condition,
 recorded on #564: after launch the desktop asks which model to use and keeps
 prompt input disabled until one is chosen (section 5, amended). The test's
 exemption is built; the launch is not (#374).
+*As built 2026-10-07 (#374):* the launch is built, for `trellis --dsk`
+(ADR 0050 section 1, as built), as that marked spawn in `launch.rs`.
 
 ### 4. Hosted model specs
 
