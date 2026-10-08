@@ -38,6 +38,22 @@ ratatui TUI at parity. It is **Proposed**, pending the owner's acceptance on
 #500, and nothing in it is built: the ratatui TUI is still the one that ships.
 MISSION.md goal 8 reads "Not delivered".
 
+*As built 2026-10-07 (#558, #560, #374, #561):* the Tauri desktop
+(`desktop/`) now starts from the command line. `trellis overview` (and
+`--json overview`) prints, with or without a repository, the recent
+repositories with each one's last outcome and, inside one, its last run, its
+codebase from a current index only, and its board, with PR and CI state from
+the user's own `gh` when it is installed and logged in (ADR 0050 section 3).
+`trellis --dsk` starts `trellis-desktop` from beside the `trellis` binary,
+detached, with its environment unchanged: the one key-exempt launch
+`INTERFACE_LAUNCHES` allows so far (ADR 0052). Bare `trellis` at a terminal
+now starts the desktop and prints the overview; with no desktop installed, no
+display or a failed start, it says so on stderr, prints the overview and falls
+back to the start screen and the TUI. `--tui` and `trellis tui` keep the TUI
+(ADR 0050 section 1). Not built: the desktop drawing the overview (#562),
+its model prompt before input (#564), the web view, and the handoff to the
+Go TUI (#514).
+
 ## The measurement (resolves S1's reach; S16 fired, then averted)
 
 Benchmark: poetry 2.5.0 sdist, SHA-256 in `01-v0.1-measure.md` §2.
@@ -949,6 +965,11 @@ done.
   after that document was written. Recorded as a deviation rather than
   quietly resolved: the roadmap says one thing and the repository now does
   another, and a reader should not have to discover that by running it.
+
+  *2026-10-07 (#561):* bare `trellis` at a terminal now starts the desktop
+  and prints the overview instead; the TUI is what `--tui`, `trellis tui`
+  and the fallback with no desktop or display open (ADR 0050 section 1, as
+  built). The paragraph below records how it stood before.
 
   **It is now what bare `trellis` opens**, which widens the deviation rather
   than narrowing it, and is also at the owner's instruction. The line session
