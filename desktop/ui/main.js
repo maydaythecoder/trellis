@@ -11,36 +11,29 @@
 
 const REQUEST_ID = "desktop-1";
 
-// No core code emits rpc-frame yet (DESK-01d adds it), so this accepts
-// either shape it may choose: the parsed object, or the JSON line read from
-// trellis's stdout. Anything that is neither is not a frame.
-function asFrame(payload) {
-  if (typeof payload === "string") {
-    try {
-      return JSON.parse(payload);
-    } catch {
-      return null;
-    }
-  }
-  return payload;
-}
-
 async function main() {
   const tauri = window.__TAURI__;
   const out = document.getElementById("state");
 
   // The listener is registered, and awaited, before the request is sent, so
-  // the reply cannot arrive before anything is listening for it.
+  // the reply cannot arrive before anything is listening for it. The core
+  // emits each rpc-frame as the parsed JSON object trellis printed.
   await tauri.event.listen("rpc-frame", (event) => {
-    const frame = asFrame(event.payload);
+    const frame = event.payload;
     if (frame !== null && typeof frame === "object" && frame.id === REQUEST_ID) {
       out.textContent = JSON.stringify(frame, null, 2);
     }
   });
 
-  await tauri.core.invoke("rpc_send", {
-    line: { id: REQUEST_ID, type: "get_state" },
-  });
+  // A refusal is the core's reason there is nothing to show: no repository
+  // was found and how to name one, or trellis could not be started.
+  try {
+    await tauri.core.invoke("rpc_send", {
+      line: { id: REQUEST_ID, type: "get_state" },
+    });
+  } catch (err) {
+    out.textContent = String(err);
+  }
 }
 
 if (document.readyState === "loading") {
