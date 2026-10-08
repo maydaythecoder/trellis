@@ -67,6 +67,16 @@ Any language but Python. Repos without a test suite. Cross-repo analysis. Any
 surface beyond the CLI. Any networked component. Multi-user anything. Running
 while the machine is asleep.
 
+*2026-10-07 (#557), "Cross-repo analysis" read by the owner's decision of
+2026-10-07:* the non-goal does not cover listing recent repositories with
+each one's last outcome, which `trellis overview` and the desktop show as a
+launcher list (ADR 0021 rows 44–47). Accepted, not built (#558).
+
+*2026-10-07 (#557), "Any networked component" read by the owner's decision
+of 2026-10-07:* the board may start the user's own `gh` CLI, read-only, for
+PR and CI state; trellis makes no network request of its own (ADR 0021 row
+12.3 and PC-126). Accepted, not built (#558).
+
 ---
 
 ## Part 2 — Two constraints that are not negotiable
