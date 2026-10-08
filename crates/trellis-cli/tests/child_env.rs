@@ -555,6 +555,66 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The interface binaries whose launch passes trellis's environment
+/// unchanged, because each starts its own `trellis rpc`, which needs the
+/// user's key variables for a hosted model the user chose (ADR 0052's
+/// 2026-10-07 amendments, ADR 0048 section 3). Every other child is
+/// scrubbed. A spawn uses the exemption by carrying `// key-exempt: <binary>`
+/// on its `Command::new(` line, in `LAUNCH_FILE` only, once per binary, so
+/// a third exemption is an edit here and to the ADRs, not a comment.
+const INTERFACE_LAUNCHES: [&str; 2] = ["trellis-tui", "trellis-desktop"];
+/// The one file whose spawns may carry the marker, relative to `crates/`.
+const LAUNCH_FILE: &str = "trellis-cli/src/launch.rs";
+
+/// The binary a `// key-exempt: <binary>` marker on `line` names.
+fn exempt_binary(line: &str) -> Option<&str> {
+    let (_, rest) = line.split_once("// key-exempt:")?;
+    rest.split_whitespace().next()
+}
+
+/// Scans `files`, each a path relative to `crates/` (with `/`) and its
+/// text, for `Command::new(` outside test modules. Returns how many spawn
+/// sites it saw and, for each one that neither removes the key variables
+/// nor uses the interface exemption as `INTERFACE_LAUNCHES` allows, a line
+/// saying where and why.
+fn unscrubbed_spawns(files: &[(&str, &str)]) -> (usize, Vec<String>) {
+    let mut seen = 0;
+    let mut bare = Vec::new();
+    let mut exempted: Vec<&str> = Vec::new();
+    for &(path, text) in files {
+        let all: Vec<&str> = text.lines().collect();
+        for (i, line) in non_test_lines(text) {
+            if !line.contains("Command::new(") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            seen += 1;
+            // The scrub may wrap the constructor or follow the builder
+            // calls that configure it, before the spawn.
+            let window = &all[i..(i + 16).min(all.len())];
+            if window
+                .iter()
+                .any(|l| l.contains("secrets::scrub(") || l.contains("scrub_keys("))
+            {
+                continue;
+            }
+            let why = match exempt_binary(line) {
+                None => "removes no key variable",
+                Some(_) if path != LAUNCH_FILE => "is marked key-exempt outside the launch file",
+                Some(b) if !INTERFACE_LAUNCHES.contains(&b) => {
+                    "is marked key-exempt for a binary INTERFACE_LAUNCHES does not list"
+                }
+                Some(b) if exempted.contains(&b) => "exempts a binary already exempted once",
+                Some(b) => {
+                    exempted.push(b);
+                    continue;
+                }
+            };
+            bare.push(format!("{path}:{}: {} ({why})", i + 1, line.trim()));
+        }
+    }
+    (seen, bare)
+}
+
 #[test]
 fn every_process_spawn_in_the_workspace_removes_the_key_variables() {
     // The tests above prove the spawn kinds that exist today. This one
@@ -573,27 +633,19 @@ fn every_process_spawn_in_the_workspace_removes_the_key_variables() {
         let n = p.file_name().unwrap().to_string_lossy();
         n == "tests.rs" || n.ends_with("_tests.rs") || n == "testutil.rs"
     };
-    let mut seen = 0;
-    let mut bare = Vec::new();
-    for f in files.iter().filter(|f| !test_file(f)) {
-        let text = std::fs::read_to_string(f).unwrap();
-        let all: Vec<&str> = text.lines().collect();
-        for (i, line) in non_test_lines(&text) {
-            if !line.contains("Command::new(") || line.trim_start().starts_with("//") {
-                continue;
-            }
-            seen += 1;
-            // The scrub may wrap the constructor or follow the builder
-            // calls that configure it, before the spawn.
-            let window = &all[i..(i + 16).min(all.len())];
-            if !window
-                .iter()
-                .any(|l| l.contains("secrets::scrub(") || l.contains("scrub_keys("))
-            {
-                bare.push(format!("{}:{}: {}", f.display(), i + 1, line.trim()));
-            }
-        }
-    }
+    let texts: Vec<(String, String)> = files
+        .iter()
+        .filter(|f| !test_file(f))
+        .map(|f| {
+            let rel = f.strip_prefix(crates).unwrap();
+            (
+                rel.to_string_lossy().replace('\\', "/"),
+                std::fs::read_to_string(f).unwrap(),
+            )
+        })
+        .collect();
+    let texts: Vec<(&str, &str)> = texts.iter().map(|(p, t)| (&**p, &**t)).collect();
+    let (seen, bare) = unscrubbed_spawns(&texts);
     assert!(
         seen >= 10,
         "the scan found only {seen} spawn sites; it is not reading the source"
@@ -603,4 +655,69 @@ fn every_process_spawn_in_the_workspace_removes_the_key_variables() {
         "spawns that do not remove the key variables (ADR 0024 §3):\n{}",
         bare.join("\n")
     );
+}
+
+/// A launch file whose one spawn passes the environment to `binary`.
+fn marked_spawn(binary: &str) -> String {
+    format!(
+        "pub fn launch(p: &Path) {{\n    let _ = Command::new(p).status(); // key-exempt: {binary}\n}}\n"
+    )
+}
+
+#[test]
+fn child_env_interface_launches_are_the_tui_and_the_desktop() {
+    // The risk: a launch added to the list in passing, which hands the
+    // user's keys to one more program with no owner decision behind it.
+    assert_eq!(INTERFACE_LAUNCHES.len(), 2);
+    assert_eq!(INTERFACE_LAUNCHES, ["trellis-tui", "trellis-desktop"]);
+}
+
+#[test]
+fn child_env_interface_a_marked_spawn_of_each_listed_binary_passes_in_the_launch_file() {
+    // The exemption works where it is meant to, so the refusals below are
+    // refusals of what they name and not of every marked spawn.
+    for b in INTERFACE_LAUNCHES {
+        let text = marked_spawn(b);
+        let (seen, bare) = unscrubbed_spawns(&[(LAUNCH_FILE, &text)]);
+        assert_eq!((seen, bare), (1, Vec::<String>::new()), "{b}");
+    }
+    let tui = marked_spawn("trellis-tui");
+    let desktop = marked_spawn("trellis-desktop");
+    let (seen, bare) = unscrubbed_spawns(&[(LAUNCH_FILE, &format!("{tui}{desktop}"))]);
+    assert_eq!((seen, bare), (2, Vec::<String>::new()));
+}
+
+#[test]
+fn child_env_interface_a_marked_spawn_naming_an_unlisted_binary_fails() {
+    // The risk: a marker is a comment anyone can write, so a spawn in the
+    // launch file could name any program and pass the keys to it.
+    let text = marked_spawn("trellis-web");
+    let (seen, bare) = unscrubbed_spawns(&[(LAUNCH_FILE, &text)]);
+    assert_eq!(seen, 1);
+    assert_eq!(bare.len(), 1, "{bare:?}");
+    assert!(bare[0].contains("does not list"), "{bare:?}");
+}
+
+#[test]
+fn child_env_interface_a_marked_desktop_spawn_outside_the_launch_file_fails() {
+    // The risk: the marker copied into any other file, which turns one
+    // reviewed launch into an exemption anywhere in shipped code.
+    let text = marked_spawn("trellis-desktop");
+    for path in ["trellis-cli/src/rpc.rs", "trellis-loop/src/launch.rs"] {
+        let (seen, bare) = unscrubbed_spawns(&[(path, &text)]);
+        assert_eq!(seen, 1, "{path}");
+        assert_eq!(bare.len(), 1, "{path}: {bare:?}");
+        assert!(bare[0].contains("outside the launch file"), "{bare:?}");
+    }
+}
+
+#[test]
+fn child_env_interface_a_binary_exempted_twice_fails() {
+    // The risk: a second unscrubbed spawn of a listed binary, which the
+    // ADRs never decided on, passing under the first one's marker.
+    let once = marked_spawn("trellis-desktop");
+    let (seen, bare) = unscrubbed_spawns(&[(LAUNCH_FILE, &format!("{once}{once}"))]);
+    assert_eq!(seen, 2);
+    assert_eq!(bare.len(), 1, "{bare:?}");
+    assert!(bare[0].contains("already exempted"), "{bare:?}");
 }

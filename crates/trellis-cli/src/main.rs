@@ -22,6 +22,7 @@ mod liveness;
 mod log_cmd;
 mod models_cmd;
 mod orchestrate;
+mod overview;
 mod process_agent;
 mod run_cmd;
 mod services;
@@ -318,6 +319,13 @@ enum Command {
         actions: bool,
     },
 
+    /// Recent repositories' last outcomes and, inside one, its last run,
+    /// codebase and board, printed once. Reads only; never indexes.
+    ///
+    /// Runs with or without a repository (ADR 0050 §3). `--json` prints the
+    /// same as one object (ADR 0025 §4).
+    Overview,
+
     /// What past runs did to a symbol or file, from the committed trail.
     ///
     /// The test of whether the trail is worth writing: if this cannot answer
@@ -515,10 +523,12 @@ fn main() -> Result<()> {
     if cli.json
         && !matches!(
             cli.command,
-            Some(Command::Run { .. } | Command::Work(_) | Command::Log { .. })
+            Some(Command::Run { .. } | Command::Work(_) | Command::Log { .. } | Command::Overview)
         )
     {
-        anyhow::bail!("--json applies to `run`, `work` and `log`; `rpc` always writes JSON");
+        anyhow::bail!(
+            "--json applies to `run`, `work`, `log` and `overview`; `rpc` always writes JSON"
+        );
     }
     output::set_json(cli.json || is_rpc);
     // Per-layer filters rather than one global one: the stdout event layer
@@ -526,7 +536,11 @@ fn main() -> Result<()> {
     // change what a machine reader receives. `RUST_LOG` still governs the
     // human stream and `--log-json`, exactly as before.
     use tracing_subscriber::Layer;
-    let stdout_json = output::json().then(|| {
+    //
+    // Not for `overview`: its stdout is one JSON object, which an event line
+    // beside it would turn into something no client can parse.
+    let is_overview = matches!(cli.command, Some(Command::Overview));
+    let stdout_json = (output::json() && !is_overview).then(|| {
         tracing_subscriber::fmt::layer()
             .json()
             .with_ansi(false)
@@ -564,9 +578,11 @@ fn main() -> Result<()> {
     // it creates a vault, possibly before there is a repository to hold it.
     // Every other `vault` action still reads one.
     // `install` joins them too: packages are user state (ADR 0039).
+    // `overview` too: outside a repository it prints the recent list, and
+    // reads nothing under the directory it fell back to (ADR 0050 §3).
     let needs_repo = !matches!(
         cli.command,
-        Some(Command::Init | Command::Model { .. } | Command::Install { .. })
+        Some(Command::Init | Command::Model { .. } | Command::Install { .. } | Command::Overview)
     ) && !matches!(&cli.command, Some(Command::Vault(a)) if a.is_init());
     // Read once, so the start screen and the interface decide from the same
     // three facts (`bare_route`).
@@ -622,7 +638,11 @@ fn main() -> Result<()> {
     // starts. Before any command runs, so no spawn precedes it. A config that
     // does not load registers nothing here; the command reports that itself,
     // and the two built-in key variables are removed regardless.
-    if let Ok(cfg) = config::RepoConfig::load(&root) {
+    //
+    // An overview whose root has no `.git` has no root at all, so its
+    // config is not read either (ADR 0050 §3); it starts no child there.
+    let unrooted_overview = is_overview && !root.join(".git").exists();
+    if !unrooted_overview && let Ok(cfg) = config::RepoConfig::load(&root) {
         trellis_core::secrets::register_key_vars(
             cfg.providers.iter().flatten().map(|p| p.key_env.as_str()),
         );
@@ -780,6 +800,7 @@ fn main() -> Result<()> {
             output::log_json(&root, limit, &mut std::io::stdout())
         }
         Command::Log { limit, actions } => cmd_log(&root, limit, actions),
+        Command::Overview => overview::run(&root, output::json(), &mut std::io::stdout().lock()),
         Command::Why { symbol } => cmd_why(&root, &symbol),
         // Takes no root at all: models are user state, not repository state.
         // The exemption that makes this reachable outside a repository is in

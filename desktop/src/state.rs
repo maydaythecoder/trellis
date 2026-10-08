@@ -35,9 +35,11 @@ pub enum Pane {
     Approvals,
     Running,
     Outcome,
+    /// The adapter tier the last `get_state` reply reported.
+    Tier,
 }
 
-const PANES: [Pane; 9] = [
+const PANES: [Pane; 10] = [
     Pane::Transcript,
     Pane::Actions,
     Pane::Edits,
@@ -47,10 +49,13 @@ const PANES: [Pane; 9] = [
     Pane::Approvals,
     Pane::Running,
     Pane::Outcome,
+    Pane::Tier,
 ];
 
 /// The panes a run starts afresh: everything but the transcript, which,
-/// as the TUI's, carries on across runs within its cap.
+/// as the TUI's, carries on across runs within its cap, and the tier, which
+/// only a `get_state` reply sets: the view shows the tier trellis last
+/// reported, and a run's own start reports none.
 const RUN_PANES: [Pane; 8] = [
     Pane::Actions,
     Pane::Edits,
@@ -74,6 +79,7 @@ impl Pane {
             Pane::Approvals => "approvals",
             Pane::Running => "running",
             Pane::Outcome => "outcome",
+            Pane::Tier => "tier",
         }
     }
 
@@ -102,6 +108,11 @@ impl Changed {
 
     pub fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// Every pane: what a page that has seen nothing yet needs.
+    pub fn everything() -> Self {
+        Self::of(&PANES)
     }
 }
 
@@ -188,6 +199,9 @@ pub struct DesktopState {
     running: bool,
     /// The last run's `run_end`, as trellis sent it.
     outcome: Option<RunEnd>,
+    /// `get_state`'s `tier`, as trellis labels it; `None` while it is null
+    /// (no run has decided one) or not yet asked for. Never guessed.
+    tier: Option<String>,
 }
 
 impl DesktopState {
@@ -225,8 +239,17 @@ impl DesktopState {
             }
             Frame::Response(r) => {
                 // A refused command is said in the transcript; a successful
-                // answer changes no run pane.
-                if r.success == Some(false) {
+                // answer changes no run pane but the tier a `get_state`
+                // reports.
+                if r.success == Some(true) && r.command.as_deref() == Some("get_state") {
+                    self.tier = r
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("tier"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    Changed::of(&[Pane::Tier])
+                } else if r.success == Some(false) {
                     let command = r.command.as_deref().unwrap_or("command");
                     self.push_line(match r.error {
                         Some(e) => format!("· {command} refused: {e}"),
@@ -245,11 +268,27 @@ impl DesktopState {
                 Changed::of(&[Pane::Approvals])
             }
             Frame::Ignored => Changed::default(),
-            Frame::Unparsed(line) => {
+            // Both are text, and the transcript is the capped pane that
+            // shows text as it came.
+            Frame::Unparsed(line) | Frame::Human(line) => {
                 self.push_line(line);
                 Changed::of(&[Pane::Transcript])
             }
         }
+    }
+
+    /// The child has exited: no run is in flight any more, and nobody is
+    /// left to answer a question it asked.
+    pub fn child_exited(&mut self) -> Changed {
+        self.running = false;
+        self.approvals.clear();
+        Changed::of(&[Pane::Running, Pane::Approvals])
+    }
+
+    /// Whether a run is in flight, from `run_start` to `run_end` or the
+    /// child's exit.
+    pub fn running(&self) -> bool {
+        self.running
     }
 
     /// Clears the whole view, transcript included: colibri's New chat and
@@ -324,6 +363,7 @@ impl DesktopState {
                     .collect(),
             ),
             Pane::Running => json!(self.running),
+            Pane::Tier => json!(self.tier),
             Pane::Outcome => match &self.outcome {
                 Some(e) => json!({
                     "outcome": e.outcome,
@@ -938,6 +978,41 @@ mod tests {
         );
         assert!(c.has(Pane::Approvals));
         assert_eq!(all(&s)["approvals"], json!([]));
+    }
+
+    #[test]
+    fn get_state_tier_reaches_the_view() {
+        // The risk: the run view shows no tier, or one the core guessed
+        // from the model spec, when trellis reported its own (#269).
+        let mut s = DesktopState::default();
+        let reply = |tier: Value| {
+            json!({"type": "response", "command": "get_state", "success": true,
+                   "id": "desktop-1", "data": {"running": false, "tier": tier}})
+            .to_string()
+        };
+        let c = feed(&mut s, &reply(json!("2, native tool calls")));
+        assert_eq!(c, Changed::of(&[Pane::Tier]));
+        assert_eq!(all(&s)["tier"], "2, native tool calls");
+        // A run's start does not clear it: only trellis's next answer does.
+        feed(&mut s, &run_start("p"));
+        assert_eq!(all(&s)["tier"], "2, native tool calls");
+        // null is reported as null, not as the last tier or a guess.
+        assert_eq!(
+            feed(&mut s, &reply(Value::Null)),
+            Changed::of(&[Pane::Tier])
+        );
+        assert_eq!(all(&s)["tier"], Value::Null);
+        // Another command's answer, or a refused get_state, is no tier.
+        feed(&mut s, &reply(json!("scripted")));
+        let other = json!({"type": "response", "command": "get_messages", "success": true,
+                           "id": "x", "data": {"tier": "4"}})
+        .to_string();
+        assert!(feed(&mut s, &other).is_empty());
+        let refused = json!({"type": "response", "command": "get_state", "success": false,
+                             "id": "x", "error": "busy"})
+        .to_string();
+        assert!(!feed(&mut s, &refused).has(Pane::Tier));
+        assert_eq!(all(&s)["tier"], "scripted");
     }
 
     #[test]

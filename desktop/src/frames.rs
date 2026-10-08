@@ -1,6 +1,7 @@
 //! One line from the `trellis rpc` child, typed (ADR 0025 §5, ADR 0048 §6).
 //!
-//! The child's stdout carries two shapes. Framing records (`run_start`,
+//! A stderr line is [`Frame::Human`] whatever it holds. The child's stdout
+//! carries two shapes. Framing records (`run_start`,
 //! `run_end`, `response`, `approval_request`) have a top-level `type`. The
 //! loop's own events are `tracing` JSON lines, `{"fields": {"message": ..},
 //! ..}`, told apart by `fields.message`, as the contract tests in
@@ -36,6 +37,9 @@ pub enum Frame {
     Ignored,
     /// A stdout line that is not a JSON object, kept as text.
     Unparsed(String),
+    /// A stderr line: trellis's human text, shown as text and never read
+    /// as data (ADR 0048 section 2, amended by ADR 0052).
+    Human(String),
 }
 
 /// A `turn` event. `turn` and `call` are what make an event a turn, the
