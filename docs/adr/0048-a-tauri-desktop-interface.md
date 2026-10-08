@@ -67,6 +67,19 @@ It never kills a trellis child: it sends `quit` and waits (ADR 0025 §5). It
 adds nothing to a child's environment and reads no key variable (ADR 0010,
 ADR 0024 §3). Only test code sets `TRELLIS_CONFIG_DIR`, so tests never read
 the developer's own config.
+*Amended 2026-10-07 (#560), owner-approved (G7, 2026-10-07):* `trellis`
+starts `trellis-desktop` with its environment unchanged, as it starts
+`trellis-tui` (ADR 0052, amendment of 2026-10-07), because the desktop's own
+`trellis rpc` child needs the user's key variables for a hosted model the
+user chose. That launch is one of the two `INTERFACE_LAUNCHES` held by
+`crates/trellis-cli/tests/child_env.rs`: it may sit only in
+`crates/trellis-cli/src/launch.rs`, marked `// key-exempt: trellis-desktop`,
+once. Every other child trellis starts stays scrubbed. The desktop itself
+still adds nothing to a child's environment and reads no key variable; what
+its child receives is what the desktop was given. The owner's condition,
+recorded on #564: after launch the desktop asks which model to use and keeps
+prompt input disabled until one is chosen (section 5, amended). The test's
+exemption is built; the launch is not (#374).
 
 ### 4. Hosted model specs
 
