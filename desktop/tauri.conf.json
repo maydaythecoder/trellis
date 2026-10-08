@@ -22,12 +22,15 @@
       "capabilities": [
         {
           "identifier": "main",
-          "description": "The main window: listen for the core's events and send it one rpc line.",
+          "description": "The main window: listen for the core's events and call its four commands.",
           "windows": ["main"],
           "permissions": [
             "core:event:allow-listen",
             "core:event:allow-unlisten",
-            "allow-rpc-send"
+            "allow-rpc-send",
+            "allow-get-trails",
+            "allow-open-repository",
+            "allow-get-overview"
           ]
         }
       ]
