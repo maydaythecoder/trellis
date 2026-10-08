@@ -1,0 +1,12 @@
+# cargo-mutants configuration, read from here by every `cargo mutants` run in
+# this workspace, .github/workflows/mutants.yml's included.
+
+# Mutants that cannot change behaviour, each with why. A line here is a claim
+# that the mutant is equivalent, not that its test is hard to write.
+exclude_re = [
+    # crates/trellis-cli/src/config.rs, `RepoConfig::budget`: deleting the
+    # `"local"` arm sends "local" to the `_ => b.regime` arm, which keeps the
+    # default, and `Budget::default().regime` is `CostRegime::Local`
+    # (crates/trellis-loop/src/budget.rs:48). Both arms give `Local` (#556).
+    'delete match arm "local" in RepoConfig::budget',
+]

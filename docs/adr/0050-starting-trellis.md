@@ -85,6 +85,12 @@ cache is current, and is otherwise reported as not indexed or stale, never
 built or saved. A root with no `.git` entry (the `current_dir()` fallback
 from a home directory) is treated as no root, and nothing under it is read,
 so the reason `root_from` refuses stands. Accepted, not built (#558).
+*As built 2026-10-07 (#555):* a root is recorded only from an interface
+start (bare `trellis`, `trellis tui`, `--tui`, `--dsk`), never from another
+command, and never when it is under the temporary directory. In the home
+directory the screen does not offer `git init`, and says why. With nothing
+listed, it says whether trellis never opened a repository or every one it
+opened is gone.
 
 ### 4. Case in subcommand names
 
