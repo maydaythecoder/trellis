@@ -97,6 +97,42 @@ pub fn all(root: &Path) -> Vec<Entry> {
         .collect()
 }
 
+/// The newest trail under `<root>/.trellis/runs`, with its integrity, read
+/// with a single read of one file.
+///
+/// Unlike [`all`], a newest trail that will not parse is an error, not
+/// skipped: an overview that passed over it would show an older run as the
+/// last one. Nothing is logged here, so a caller printing one JSON object on
+/// stdout decides what to say about it. `Ok(None)` when there is no trail.
+pub fn latest_entry(root: &Path) -> std::io::Result<Option<Entry>> {
+    let dir = root.join(".trellis").join("runs");
+    let Ok(read) = std::fs::read_dir(&dir) else {
+        return Ok(None);
+    };
+    // Names begin with a sortable UTC timestamp, so the greatest is newest.
+    let Some(path) = read
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .max()
+    else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&path)?;
+    let trail = UntrustedTrail::from_json(&text).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {e}", path.display()),
+        )
+    })?;
+    let integrity = trail.integrity(&text);
+    Ok(Some(Entry {
+        path,
+        trail,
+        integrity,
+    }))
+}
+
 /// Trails whose run touched a file, or whose task mentions a symbol.
 ///
 /// Two ways in, because a user asking "why does this look like this" has a
@@ -275,6 +311,46 @@ mod tests {
         assert_eq!(
             all[0].trail.task, "new",
             "newest first, so `log` reads top-down"
+        );
+    }
+
+    #[test]
+    fn latest_entry_is_the_newest_trail_and_none_without_one() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(latest_entry(d.path()).unwrap().is_none(), "no runs dir");
+        write(
+            d.path(),
+            "20260920-000000-000-new.json",
+            &trail_json("new", "b.py", false),
+        );
+        write(
+            d.path(),
+            "20260101-000000-000-old.json",
+            &trail_json("old", "a.py", true),
+        );
+        write(d.path(), "notes.txt", "not a trail");
+        let e = latest_entry(d.path()).unwrap().expect("a trail");
+        assert_eq!(e.trail.task, "new");
+        assert_eq!(e.outcome(), "not converged");
+        assert_eq!(e.integrity, Integrity::Unrecorded);
+    }
+
+    #[test]
+    fn latest_entry_is_an_error_when_the_newest_trail_is_corrupt() {
+        // Skipping it, as `all` does, would report the older run as the
+        // last one.
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "20260101-000000-000-old.json",
+            &trail_json("old", "a.py", true),
+        );
+        write(d.path(), "20260920-000000-000-new.json", "{ not json");
+        let e = latest_entry(d.path()).err().expect("an error");
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            e.to_string().contains("20260920-000000-000-new.json"),
+            "{e}"
         );
     }
 
