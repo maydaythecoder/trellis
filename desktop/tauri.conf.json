@@ -10,6 +10,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "TRELLIS",
         "width": 1280,
         "height": 820,
@@ -18,16 +19,20 @@
       }
     ],
     "security": {
+      "freezePrototype": true,
       "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
       "capabilities": [
         {
           "identifier": "main",
-          "description": "The main window: listen for the core's events and send it one rpc line.",
+          "description": "The main window: listen for the core's events and call its four commands.",
           "windows": ["main"],
           "permissions": [
             "core:event:allow-listen",
             "core:event:allow-unlisten",
-            "allow-rpc-send"
+            "allow-rpc-send",
+            "allow-get-trails",
+            "allow-open-repository",
+            "allow-get-overview"
           ]
         }
       ]

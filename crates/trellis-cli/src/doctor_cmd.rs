@@ -69,8 +69,13 @@ fn codebase_graph(root: &Path) -> trellis_index::ModuleGraph {
 /// separate counts with no denominator beside them (CLAUDE.md rule 3).
 /// Module names are whole: cutting them to a column is the drawing's.
 pub(crate) fn codebase_json(root: &Path, limit: usize) -> serde_json::Value {
+    graph_json(&codebase_graph(root), limit)
+}
+
+/// `codebase_json`'s shape for a graph already in hand: the overview's,
+/// from a cached index it must not rebuild (#558).
+pub(crate) fn graph_json(g: &trellis_index::ModuleGraph, limit: usize) -> serde_json::Value {
     use crate::index_cmd::MAX_EDGES_DRAWN;
-    let g = codebase_graph(root);
     let modules: Vec<serde_json::Value> = g
         .nodes
         .iter()
@@ -645,6 +650,14 @@ pub(crate) fn cmd_doctor(root: &Path, model_spec: Option<&str>, from_user: bool)
     {
         *l = t;
     }
+    // `Probe::report` can only say "no coverage plugin", which would claim
+    // an answer to a question that was never asked (#572).
+    if !is_pytest(&cfg.tests)
+        && let Some(v) = &probe.tests
+        && let Some(l) = lines.iter_mut().find(|l| l.starts_with("tests:"))
+    {
+        *l = format!("tests:      {v}; coverage: not probed (the tests command is not pytest)");
+    }
     for line in lines {
         println!("{line}");
     }
@@ -917,7 +930,39 @@ fn version_of(cmd: &[String]) -> Option<String> {
 /// product turns on, and with no coverage data nothing can populate
 /// `Verified` — a user reading `0 verified` should know whether that is a
 /// result or a missing tool.
+///
+/// Only pytest is asked (#572). The probe appends `--help`, which is not a
+/// read-only question to an arbitrary program: `git --version --help` opens
+/// Git's HTML help in a browser on Windows. Any other command answers false
+/// without being run, and `doctor` says it was not probed.
 fn coverage_available(tests: &[String]) -> bool {
+    is_pytest(tests) && help_mentions_cov(tests)
+}
+
+/// Whether `tests` runs pytest: a program named `pytest`, `py.test` or
+/// `pytest-3`, or a Python interpreter (`python`, `python3`, `py`) given
+/// `-m pytest`, after any interpreter flags such as `py -3`.
+fn is_pytest(tests: &[String]) -> bool {
+    let Some((program, rest)) = tests.split_first() else {
+        return false;
+    };
+    let Some(name) = Path::new(program).file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    match name {
+        "pytest" | "py.test" | "pytest-3" => true,
+        "python" | "python3" | "py" => {
+            let mut args = rest.iter().skip_while(|a| a.starts_with('-') && *a != "-m");
+            args.next().is_some_and(|a| a == "-m") && args.next().is_some_and(|a| a == "pytest")
+        }
+        _ => false,
+    }
+}
+
+/// Runs `tests --help` and reads whether it offers `--cov`.
+fn help_mentions_cov(tests: &[String]) -> bool {
     let Some((program, pre)) = tests.split_first() else {
         return false;
     };
@@ -1282,8 +1327,43 @@ mod doctor_tests {
                 vec!["sh".into(), "-c".into(), format!("echo {text}")]
             }
         };
-        assert!(coverage_available(&runner("--cov=PATH")));
-        assert!(!coverage_available(&runner("no plugin here")));
+        assert!(help_mentions_cov(&runner("--cov=PATH")));
+        assert!(!help_mentions_cov(&runner("no plugin here")));
+    }
+
+    #[test]
+    fn doctor_coverage_probe_asks_only_pytest() {
+        // #572. The risk: appending `--help` to a program that is not pytest,
+        // which for `git --version` opens a browser on Windows. Each spelling
+        // of pytest is still probed; anything else is not.
+        let cmd = |s: &str| -> Vec<String> { s.split(' ').map(String::from).collect() };
+        for yes in [
+            "pytest",
+            "py.test",
+            "pytest-3",
+            "/usr/bin/pytest",
+            "pytest.exe",
+            "python -m pytest",
+            "python3 -m pytest -q",
+            "py -3 -m pytest",
+            "/opt/venv/bin/python -m pytest",
+        ] {
+            assert!(is_pytest(&cmd(yes)), "{yes} is pytest");
+        }
+        for no in [
+            "git --version",
+            "python",
+            "python -m mypy",
+            "python script.py -m pytest",
+            "py -3",
+            "pytest-runner",
+            "sh -c pytest",
+        ] {
+            assert!(!is_pytest(&cmd(no)), "{no} is not pytest");
+        }
+        assert!(!is_pytest(&[]));
+        // Answered without a spawn: `git --version --help` is never run.
+        assert!(!coverage_available(&cmd("git --version")));
     }
 }
 
