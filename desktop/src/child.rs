@@ -10,18 +10,32 @@
 //! unchanged and nothing here reads a key variable (ADR 0010, ADR 0024 §3);
 //! only test code points `TRELLIS_CONFIG_DIR` elsewhere, so a test never
 //! reads the developer's own configuration.
+//!
+//! On Windows the child is started with `CREATE_NO_WINDOW`: the desktop is a
+//! windowed program with no console, and without the flag Windows gives the
+//! console program it starts a console window of its own (#289).
 
 use serde_json::Value;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
+/// `CREATE_NO_WINDOW`, a Windows process-creation flag, set through std's
+/// safe `CommandExt::creation_flags`.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// A running `trellis rpc` child.
 pub struct Child {
     process: std::process::Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// `None` once [`take_stdout`](Self::take_stdout) has handed it to a
+    /// reader, so one thread reads while `rpc_send` writes.
+    stdout: Option<Stdout>,
 }
+
+/// The child's stdout, read one line at a time.
+pub struct Stdout(BufReader<ChildStdout>);
 
 impl Child {
     /// Starts `<trellis> --root <repo> rpc` in `repo`.
@@ -55,6 +69,8 @@ impl Child {
             // Inherited, not piped: it is never read (ADR 0048 §2), and an
             // unread pipe fills and blocks the child's next write.
             .stderr(Stdio::inherit());
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut c, CREATE_NO_WINDOW);
         adjust(&mut c);
         let mut process = c.spawn()?;
         let stdin = process
@@ -68,8 +84,13 @@ impl Child {
         Ok(Self {
             process,
             stdin,
-            stdout: BufReader::new(stdout),
+            stdout: Some(Stdout(BufReader::new(stdout))),
         })
+    }
+
+    /// The child's stdout, once: a second call returns `None`.
+    pub fn take_stdout(&mut self) -> Option<Stdout> {
+        self.stdout.take()
     }
 
     /// Writes one command as one line.
@@ -80,12 +101,21 @@ impl Child {
         self.stdin.flush()
     }
 
+    /// Asks the child to quit and waits for it. Never a kill (section 9).
+    pub fn shutdown(mut self) -> io::Result<ExitStatus> {
+        self.send(&serde_json::json!({"type": "quit", "id": "desktop-quit"}))?;
+        drop(self.stdin);
+        self.process.wait()
+    }
+}
+
+impl Stdout {
     /// The next line of stdout, as text, `None` at end of output. It is
     /// not parsed here: a line that is not JSON is still the child's
     /// output, and `frames.rs` keeps it as text rather than failing on it.
     pub fn next_line(&mut self) -> io::Result<Option<String>> {
         let mut line = String::new();
-        if self.stdout.read_line(&mut line)? == 0 {
+        if self.0.read_line(&mut line)? == 0 {
             return Ok(None);
         }
         Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
@@ -93,7 +123,9 @@ impl Child {
 
     /// Reads lines until the `response` carrying `id`, handing every line,
     /// the response included, to `each` on the way, so the events that come
-    /// before it are seen and not dropped.
+    /// before it are seen and not dropped. The window reads every line
+    /// itself (`main.rs`); a test waits for one answer with this.
+    #[cfg(test)]
     pub fn response_to(&mut self, id: &str, mut each: impl FnMut(&str)) -> io::Result<Value> {
         while let Some(line) = self.next_line()? {
             each(&line);
@@ -107,13 +139,6 @@ impl Child {
         Err(io::Error::other(format!(
             "trellis rpc ended before answering {id}"
         )))
-    }
-
-    /// Asks the child to quit and waits for it. Never a kill (section 9).
-    pub fn shutdown(mut self) -> io::Result<ExitStatus> {
-        self.send(&serde_json::json!({"type": "quit", "id": "desktop-quit"}))?;
-        drop(self.stdin);
-        self.process.wait()
     }
 }
 
@@ -165,7 +190,11 @@ mod tests {
         child
             .send(&serde_json::json!({"id": "desktop-1", "type": "get_state"}))
             .unwrap();
-        let reply = child.response_to("desktop-1", |_| {}).unwrap();
+        let reply = child
+            .take_stdout()
+            .unwrap()
+            .response_to("desktop-1", |_| {})
+            .unwrap();
         assert_eq!(reply["type"], "response", "{reply}");
         assert_eq!(reply["command"], "get_state", "{reply}");
         assert_eq!(reply["success"], true, "{reply}");

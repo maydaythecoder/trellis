@@ -120,6 +120,12 @@ and what would end it, as the root file's `RUSTSEC-2023-0089` entry does. A
 `vulnerability` advisory is never ignored: there is no `audit.toml`, so
 `cargo audit` fails on one until a lock update, in its own commit, clears it.
 The root `deny.toml` is unchanged.
+*Amended 2026-10-07 (#289), owner-directed:* `desktop/deny.toml` may also
+hold one per-crate exception for `Apache-2.0 WITH LLVM-exception`, for
+`target-lexicon` only: a build-time, Linux-only dependency reached through
+`cfg-expr` <- `system-deps` <- the gtk 0.18 `-sys` crates' build scripts,
+never linked into the binary. It applies to the desktop workspace only; the
+root `deny.toml` is unchanged.
 
 ### 8. The product interface and what it may show
 
