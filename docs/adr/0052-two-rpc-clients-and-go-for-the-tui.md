@@ -210,3 +210,9 @@ ADR is accepted. `∥` marks tickets that can run in parallel.
 ## Amendment 2026-10-07: keys for the TUI's own rpc child (#514)
 
 TRELLIS scrubs provider-key variables from every child it starts (`tests/child_env.rs`), but `trellis-tui` starts its own `trellis rpc`, which needs the user's keys for hosted models. Owner decision (#514): the handoff from `trellis` to the sibling `trellis-tui` passes the environment unchanged, as one named exception held by a test. Every other child stays scrubbed.
+
+## Amendment 2026-10-07: handoff targets, the desktop's environment, and G7 approvals (#557)
+
+Owner decision, 2026-10-07: bare `trellis` at a terminal opens the desktop and prints the overview (ADR 0050 section 1, amended 2026-10-07). Decision 2.2 and section 7's handoff therefore apply to `--tui` and `trellis tui` only: they, not bare `trellis`, hand off to `trellis-tui` at parity, with the ratatui fallback (#514). The amendment above names `trellis-tui` as the one launch that passes the environment unchanged; the desktop's own `trellis rpc` child needs the user's key variables for a hosted model the user chose, so the launch of `trellis-desktop` is to be the second, held by the same counted test. Accepted, not built (#560). Every other child stays scrubbed.
+
+G7 record: the owner approved #289 and #296, each with the scope added to it on 2026-10-07, and #560 and #561, on 2026-10-07.
