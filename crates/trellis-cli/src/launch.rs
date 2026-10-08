@@ -48,8 +48,52 @@ fn not_found(tried: &[PathBuf]) -> String {
     )
 }
 
+/// How every line bare `trellis` prints instead of starting the desktop
+/// ends: what it does next (ADR 0050 section 1, #561).
+const FALLING_BACK: &str = "falling back to the terminal";
+
+/// [`not_found`] on one line, for bare `trellis`, where the overview and
+/// the terminal interface follow it and a paragraph would scroll away.
+fn not_found_line(tried: &[PathBuf]) -> String {
+    let places: Vec<String> = tried.iter().map(|p| p.display().to_string()).collect();
+    format!(
+        "the desktop is not installed beside this trellis (looked for {}); install both with \
+         `cargo install --locked --path crates/trellis-cli` and \
+         `cargo install --locked --path desktop`; {FALLING_BACK}",
+        places.join(", ")
+    )
+}
+
+/// Whether there is a display to open the desktop on: on Linux, `DISPLAY`
+/// or `WAYLAND_DISPLAY`; elsewhere there always is.
+pub(crate) fn display() -> bool {
+    !cfg!(target_os = "linux")
+        || display_present(
+            std::env::var_os("DISPLAY").as_deref(),
+            std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        )
+}
+
+/// Bare `trellis` at a terminal (ADR 0050 section 1, as built 2026-10-07,
+/// #561): starts `found` detached, as `--dsk` does, or returns the one line
+/// saying why it did not, for the caller to print before falling back.
+pub(crate) fn launch_bare(
+    found: &Result<PathBuf, Vec<PathBuf>>,
+    display: bool,
+    trellis: &Path,
+    root: Option<&Path>,
+) -> Result<(), String> {
+    if !display {
+        return Err(format!(
+            "no display to open the desktop on: neither DISPLAY nor WAYLAND_DISPLAY is set; \
+             {FALLING_BACK}"
+        ));
+    }
+    let desktop = found.as_ref().map_err(|tried| not_found_line(tried))?;
+    spawn_desktop(desktop, trellis, root).map_err(|e| format!("{e:#}; {FALLING_BACK}"))
+}
+
 /// Whether a Linux desktop session is there to show a window on.
-#[cfg(any(target_os = "linux", test))]
 fn display_present(display: Option<&std::ffi::OsStr>, wayland: Option<&std::ffi::OsStr>) -> bool {
     display.is_some_and(|v| !v.is_empty()) || wayland.is_some_and(|v| !v.is_empty())
 }
@@ -240,5 +284,87 @@ mod tests {
             args_written(without.path()),
             ["--trellis", "trellis-under-test"]
         );
+    }
+
+    #[test]
+    fn launch_bare_passes_the_trellis_and_the_root_it_found() {
+        // The risk: bare `trellis` in a repository opening a window on no
+        // repository, or one that runs some other trellis.
+        let d = tempfile::tempdir().unwrap();
+        let exe = fake_exe(d.path());
+        let repo = d.path().join("repo");
+        let found = Ok(stub_desktop(d.path()));
+        launch_bare(&found, true, &exe, Some(&repo)).unwrap();
+        assert_eq!(
+            args_written(d.path()),
+            [
+                "--trellis".to_string(),
+                exe.display().to_string(),
+                "--root".to_string(),
+                repo.display().to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn launch_bare_with_no_root_passes_no_root() {
+        // The risk: outside a repository, a `--root` naming the directory
+        // trellis fell back to, which the desktop would then read.
+        let d = tempfile::tempdir().unwrap();
+        let exe = fake_exe(d.path());
+        let found = Ok(stub_desktop(d.path()));
+        launch_bare(&found, true, &exe, None).unwrap();
+        assert_eq!(
+            args_written(d.path()),
+            ["--trellis".to_string(), exe.display().to_string()]
+        );
+    }
+
+    #[test]
+    fn launch_bare_not_found_is_one_line_naming_where_and_both_commands() {
+        // The risk: a fallback that scrolls away above the overview, or that
+        // leaves someone guessing what to install.
+        let d = tempfile::tempdir().unwrap();
+        let exe = fake_exe(d.path());
+        let said = launch_bare(&find_desktop(&exe), true, &exe, None).unwrap_err();
+        assert!(!said.contains('\n'), "{said}");
+        assert!(
+            said.contains(&d.path().join(DESKTOP).display().to_string()),
+            "{said}"
+        );
+        assert!(
+            said.contains("cargo install --locked --path crates/trellis-cli"),
+            "{said}"
+        );
+        assert!(
+            said.contains("cargo install --locked --path desktop"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn launch_bare_with_no_display_starts_nothing_and_says_so() {
+        // The risk: a spawn on a headless Linux box, the stub's argv file
+        // proving it ran when it must not have.
+        let d = tempfile::tempdir().unwrap();
+        let exe = fake_exe(d.path());
+        let found = Ok(stub_desktop(d.path()));
+        let said = launch_bare(&found, false, &exe, None).unwrap_err();
+        assert!(!said.contains('\n'), "{said}");
+        assert!(said.contains("DISPLAY"), "{said}");
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!d.path().join("args.txt").exists());
+    }
+
+    #[test]
+    fn launch_bare_spawn_failure_is_one_line() {
+        // The risk: a desktop that is there but cannot start (not an
+        // executable) ending bare `trellis` instead of falling back.
+        let d = tempfile::tempdir().unwrap();
+        let exe = fake_exe(d.path());
+        let broken = d.path().join("not-a-directory").join(DESKTOP);
+        let said = launch_bare(&Ok(broken.clone()), true, &exe, None).unwrap_err();
+        assert!(!said.contains('\n'), "{said}");
+        assert!(said.contains(&broken.display().to_string()), "{said}");
     }
 }
