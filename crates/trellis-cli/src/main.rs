@@ -583,7 +583,16 @@ fn main() -> Result<()> {
     // or a `--root` naming a plain tree is not offered back later. A list
     // that cannot be written costs the next start screen a line, not this
     // command its run.
-    if root.join(".git").exists()
+    //
+    // Only from an interface start (bare `trellis`, `--tui`, `--dsk`, which
+    // parse with no subcommand, and `trellis tui`): the list is where a
+    // person opened trellis, and a script running `trellis index` across
+    // checkouts is not that. Never a root under the temporary directory,
+    // whose fixtures and scratch checkouts are gone within minutes (#555).
+    let interface_start = matches!(cli.command, None | Some(Command::Tui { .. }));
+    if interface_start
+        && root.join(".git").exists()
+        && !start_screen::is_temporary(&root, &std::env::temp_dir())
         && let Some(file) = start_screen::file()
         && let Err(e) = start_screen::record(&file, &root)
     {
