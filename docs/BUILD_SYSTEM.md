@@ -372,7 +372,7 @@ scripts/mutate-by-crate.sh` uses: `-p <crate> --test-workspace true
 a pull request. It uses the same runner variables as `ci.yml` and the same
 pins: action SHAs, toolchain 1.93.0, cargo-mutants 27.1.0 installed with
 `--locked`, and `--locked` on every cargo command it runs. It uploads
-`mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n]`,
+`mutants.out/` as the artifact `mutants-<crate>-<os>-<commit>[-shard-k-of-n][-file-<stem>]`,
 kept for 30 days. The job limit is 360 minutes, GitHub's limit for hosted
 runners. A shard that reaches the step's 345-minute limit still uploads the
 outcomes it has.
@@ -385,6 +385,7 @@ when the runners are idle: the Linux leg holds the runner `ci.yml` needs.
 gh workflow run mutants.yml -f crate=trellis-cli                      # whole crate, one job
 gh workflow run mutants.yml --ref dev -f crate=trellis-cli -f shard=0/10
 gh workflow run mutants.yml -f crate=trellis-cli -f os=windows -f shard=0/10
+gh workflow run mutants.yml -f crate=trellis-cli -f os=linux -f file=<path>   # one file's mutants, unsharded
 gh run list --workflow mutants.yml
 gh run download <run-id>                                              # mutants-…/caught.txt, missed.txt, timeout.txt, unviable.txt
 ```
@@ -396,6 +397,13 @@ all in 6 hours. Dispatch shard `0/10` first and read its wall time, then size
 shards do not split the mutants between them. Dispatch the next shard after
 the previous one finishes. A job that waits more than 24 hours for a
 self-hosted runner is cancelled.
+
+The optional `file` input (#556) passes `-f <path>` to cargo-mutants, so only
+that source file's mutants run, e.g. `-f file=crates/trellis-cli/src/main.rs`.
+Use it to check one change, the kills a ticket claims for one file, or one
+file's survivors, without a crate-wide sharded run: one file's mutants fit in
+one job, so leave `shard` empty. The path must be a relative path that exists
+at the dispatched commit, with no `..`; the inputs step refuses anything else.
 
 `os=linux` (the default) reaches the `#[cfg(unix)]` code. The 22 `not
 examined (#248)` lines need it. `os=windows` is the host #248's survivor
