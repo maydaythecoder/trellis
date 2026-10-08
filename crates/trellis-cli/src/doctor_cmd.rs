@@ -69,8 +69,13 @@ fn codebase_graph(root: &Path) -> trellis_index::ModuleGraph {
 /// separate counts with no denominator beside them (CLAUDE.md rule 3).
 /// Module names are whole: cutting them to a column is the drawing's.
 pub(crate) fn codebase_json(root: &Path, limit: usize) -> serde_json::Value {
+    graph_json(&codebase_graph(root), limit)
+}
+
+/// `codebase_json`'s shape for a graph already in hand: the overview's,
+/// from a cached index it must not rebuild (#558).
+pub(crate) fn graph_json(g: &trellis_index::ModuleGraph, limit: usize) -> serde_json::Value {
     use crate::index_cmd::MAX_EDGES_DRAWN;
-    let g = codebase_graph(root);
     let modules: Vec<serde_json::Value> = g
         .nodes
         .iter()
