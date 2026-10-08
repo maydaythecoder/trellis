@@ -3729,6 +3729,87 @@ fn start_screen_is_for_bare_trellis_only_and_run_still_refuses() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// `trellis <args>` in `root`, with `user` as the user config directory and,
+/// when given, `temp` as the temporary directory the binary sees.
+fn run_recording(root: &Path, user: &Path, temp: Option<&Path>, args: &[&str]) -> Output {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    c.args(args)
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("TRELLIS_CONFIG_DIR", user);
+    if let Some(t) = temp {
+        // `std::env::temp_dir` reads TMPDIR on Unix and TMP, then TEMP, on
+        // Windows.
+        c.env("TMPDIR", t).env("TMP", t).env("TEMP", t);
+    }
+    c.output().unwrap()
+}
+
+/// The repositories `user/recent.json` lists, resolved, so a link in the
+/// temporary directory's path does not decide a comparison.
+fn recorded(user: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(user.join("recent.json")) else {
+        return Vec::new();
+    };
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let p = PathBuf::from(p.as_str().unwrap());
+            std::fs::canonicalize(&p).unwrap_or(p)
+        })
+        .collect()
+}
+
+#[test]
+fn start_screen_home_a_root_under_the_temp_directory_is_not_recorded() {
+    // The risk (the owner's first run): test fixtures and scratch checkouts
+    // under the temporary directory fill the start screen's list, and are
+    // gone by the time the person sees it.
+    let d = repo("home-temp-root");
+    let user = scratch("home-temp-root-user");
+    let out = run_recording(&d, &user, None, &[]);
+    assert!(
+        recorded(&user).is_empty(),
+        "{}
+{:?}",
+        combined(&out),
+        std::fs::read_to_string(user.join("recent.json"))
+    );
+    for p in [&d, &user] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[test]
+fn start_screen_home_index_does_not_record_while_bare_trellis_does() {
+    // The risk: every command records its root, so a script running
+    // `trellis index` over many checkouts decides what the start screen
+    // offers. Only an interface start is a person opening trellis. The
+    // binary is given another temporary directory, so the repository is
+    // outside the one it skips.
+    let d = repo("home-index");
+    let user = scratch("home-index-user");
+    let temp = scratch("home-index-temp");
+    let want = std::fs::canonicalize(&d).unwrap();
+
+    let out = run_recording(&d, &user, Some(&temp), &["index"]);
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        !recorded(&user).contains(&want),
+        "index recorded its root: {}",
+        combined(&out)
+    );
+
+    let out = run_recording(&d, &user, Some(&temp), &[]);
+    assert_eq!(recorded(&user), vec![want], "{}", combined(&out));
+    for p in [&d, &user, &temp] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
 fn trellis_out(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args(args)
