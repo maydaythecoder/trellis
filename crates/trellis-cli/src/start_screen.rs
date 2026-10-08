@@ -4,7 +4,8 @@
 //! used to refuse with "cannot determine the repository root", and the
 //! person had to know where to go next. This lists the repositories trellis
 //! last resolved a root in, takes a typed path inside a repository, and
-//! offers `git init` in the current directory.
+//! offers `git init` in the current directory unless that is the home
+//! directory.
 //! Every other command keeps the refusal: nothing here walks a tree that is
 //! not a repository, and the reason `root_from` refuses (a home directory
 //! indexed by accident) stands.
@@ -97,15 +98,28 @@ pub(crate) fn record(file: &Path, root: &Path) -> Result<()> {
     })
 }
 
-/// The recorded repositories that still are one, newest first. A path whose
-/// `.git` is gone is dropped here; nothing else on disk is read.
-pub(crate) fn listed(file: &Path) -> Result<Vec<PathBuf>> {
-    Ok(read(file)?
-        .into_iter()
+/// The recorded repositories that still are one, newest first, and whether
+/// the file named any repository at all. A path whose `.git` is gone is
+/// dropped here; nothing else on disk is read.
+pub(crate) fn listed(file: &Path) -> Result<(Vec<PathBuf>, bool)> {
+    let entries = read(file)?;
+    let live = entries
+        .iter()
         .map(PathBuf::from)
         .filter(|p| is_repository(p))
         .take(MAX)
-        .collect())
+        .collect();
+    Ok((live, !entries.is_empty()))
+}
+
+/// Whether `root` is under `temp`, the temporary directory. Test fixtures
+/// and scratch checkouts live there and are deleted within minutes, so
+/// recording them only fills the list with entries that are soon gone.
+/// Compared as given and resolved, since a temporary directory is often
+/// named through a link (`/tmp`, a short Windows name).
+pub(crate) fn is_temporary(root: &Path, temp: &Path) -> bool {
+    let resolved = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    root.starts_with(temp) || resolved(root).starts_with(resolved(temp))
 }
 
 /// What `record` keeps and `listed` shows: an absolute path with a `.git`.
@@ -116,16 +130,30 @@ fn is_repository(p: &Path) -> bool {
 /// The screen: `recent` numbered, a typed path, then the `git init` offer
 /// for `cwd`. Returns the root to open, or `None` when the person quits (`q`
 /// or end of input). `git init` runs only after an explicit `y`.
+///
+/// `recorded` is whether the list named any repository at all, so an empty
+/// `recent` can say whether trellis never opened one or every one it opened
+/// is gone. `home` is the user's home directory, a parameter so tests pass a
+/// temporary one: there `git init` is not offered, since a repository in a
+/// home directory takes in everything under it.
 pub(crate) fn screen(
     recent: &[PathBuf],
+    recorded: bool,
     cwd: &Path,
+    home: Option<&Path>,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<Option<PathBuf>> {
     let here = plain(&cwd.display().to_string());
+    let at_home = home.is_some_and(|h| same_dir(cwd, h));
     writeln!(out, "{here} is not inside a git repository.")?;
-    if recent.is_empty() {
-        writeln!(out, "No repository has been opened with trellis yet.")?;
+    if recent.is_empty() && recorded {
+        writeln!(
+            out,
+            "Every repository trellis opened before is gone: none still has a .git."
+        )?;
+    } else if recent.is_empty() {
+        writeln!(out, "trellis has not opened any repository yet.")?;
     } else {
         writeln!(out, "Repositories trellis opened recently:")?;
         for (i, r) in recent.iter().enumerate() {
@@ -133,20 +161,32 @@ pub(crate) fn screen(
         }
     }
     writeln!(out, "  or type the path of a repository")?;
-    writeln!(out, "  i. run `git init` here, in {here}")?;
+    if at_home {
+        writeln!(
+            out,
+            "  This is your home directory, so `git init` is not offered: a repository there would take in every file under it."
+        )?;
+    } else {
+        writeln!(out, "  i. run `git init` here, in {here}")?;
+    }
     let numbers = match recent.len() {
         0 => String::new(),
         1 => "1, ".to_string(),
         n => format!("1 to {n}, "),
     };
+    let init_choice = if at_home { "" } else { "i, " };
     loop {
-        write!(out, "Choose {numbers}a path, i, or q to quit: ")?;
+        write!(out, "Choose {numbers}a path, {init_choice}or q to quit: ")?;
         out.flush()?;
         let Some(t) = answer(input)? else {
             return Ok(None);
         };
         if t.eq_ignore_ascii_case("q") {
             return Ok(None);
+        }
+        if t.eq_ignore_ascii_case("i") && at_home {
+            writeln!(out, "That is not one of the choices.")?;
+            continue;
         }
         if t.eq_ignore_ascii_case("i") {
             write!(out, "Create a git repository in {here}? [y/N] ")?;
@@ -164,7 +204,7 @@ pub(crate) fn screen(
             Ok(_) => writeln!(out, "That is not one of the choices.")?,
             Err(_) if t.is_empty() => writeln!(out, "That is not one of the choices.")?,
             Err(_) => {
-                let path = typed(&t, cwd, home().as_deref());
+                let path = typed(&t, cwd, home);
                 let shown = plain(&path.display().to_string());
                 if !path.exists() {
                     writeln!(out, "{shown} does not exist.")?;
@@ -210,6 +250,12 @@ fn home() -> Option<PathBuf> {
     }
 }
 
+/// Whether `a` and `b` name one directory, compared as given and resolved.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let resolved = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    a == b || resolved(a) == resolved(b)
+}
+
 /// One trimmed line, or `None` at end of input.
 fn answer(input: &mut dyn BufRead) -> Result<Option<String>> {
     let mut line = String::new();
@@ -242,14 +288,21 @@ fn init(dir: &Path) -> Result<()> {
 pub(crate) fn offer() -> Result<Option<PathBuf>> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let mut err = std::io::stderr();
-    let recent = match file().map(|f| listed(&f)).transpose() {
+    let (recent, recorded) = match file().map(|f| listed(&f)).transpose() {
         Ok(r) => r.unwrap_or_default(),
         Err(e) => {
             writeln!(err, "recent repositories not shown: {e:#}")?;
-            Vec::new()
+            (Vec::new(), false)
         }
     };
-    screen(&recent, &cwd, &mut std::io::stdin().lock(), &mut err)
+    screen(
+        &recent,
+        recorded,
+        &cwd,
+        home().as_deref(),
+        &mut std::io::stdin().lock(),
+        &mut err,
+    )
 }
 
 #[cfg(test)]
@@ -283,18 +336,26 @@ mod tests {
             .iter()
             .map(|&i| repos[i].clone())
             .collect();
-        assert_eq!(listed(&file).unwrap(), want);
+        assert_eq!(listed(&file).unwrap().0, want);
         assert_eq!(read(&file).unwrap().len(), MAX);
 
         // A repository that no longer exists is dropped when listed.
         std::fs::remove_dir_all(&repos[11]).unwrap();
         let mut gone = want.clone();
         gone.retain(|p| *p != repos[11]);
-        assert_eq!(listed(&file).unwrap(), gone);
+        assert_eq!(listed(&file).unwrap().0, gone);
 
         // The screen numbers them in that order, and a number opens one.
         let mut shown = Vec::new();
-        let chosen = screen(&gone, base.path(), &mut "2\n".as_bytes(), &mut shown).unwrap();
+        let chosen = screen(
+            &gone,
+            true,
+            base.path(),
+            None,
+            &mut "2\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
         assert_eq!(chosen, Some(repos[10].clone()));
         let shown = String::from_utf8(shown).unwrap();
         assert!(
@@ -310,7 +371,15 @@ mod tests {
         for input in ["i\n\n", "i\nn\n", "i\nyes please\n", "i\n", "q\n", ""] {
             let cwd = tempfile::tempdir().unwrap();
             let mut shown = Vec::new();
-            let got = screen(&[], cwd.path(), &mut input.as_bytes(), &mut shown).unwrap();
+            let got = screen(
+                &[],
+                false,
+                cwd.path(),
+                None,
+                &mut input.as_bytes(),
+                &mut shown,
+            )
+            .unwrap();
             assert_eq!(got, None, "{input:?}");
             assert!(
                 !cwd.path().join(".git").exists(),
@@ -319,7 +388,15 @@ mod tests {
             );
         }
         let cwd = tempfile::tempdir().unwrap();
-        let got = screen(&[], cwd.path(), &mut "i\ny\n".as_bytes(), &mut Vec::new()).unwrap();
+        let got = screen(
+            &[],
+            false,
+            cwd.path(),
+            None,
+            &mut "i\ny\n".as_bytes(),
+            &mut Vec::new(),
+        )
+        .unwrap();
         assert_eq!(got.as_deref(), Some(cwd.path()));
         assert!(cwd.path().join(".git").exists());
     }
@@ -345,7 +422,7 @@ mod tests {
         }
         let new = repo_at(base.path(), "new");
         record(&file, &new).unwrap();
-        assert_eq!(listed(&file).unwrap(), vec![new, repos[0].clone()]);
+        assert_eq!(listed(&file).unwrap().0, vec![new, repos[0].clone()]);
     }
 
     #[test]
@@ -372,7 +449,15 @@ mod tests {
 
         let input = format!("{}\n{}\n", outside.display(), deep.display());
         let mut shown = Vec::new();
-        let got = screen(&[], base.path(), &mut input.as_bytes(), &mut shown).unwrap();
+        let got = screen(
+            &[],
+            false,
+            base.path(),
+            None,
+            &mut input.as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
         assert_eq!(got, Some(repo));
         let shown = String::from_utf8(shown).unwrap();
         assert!(
@@ -402,6 +487,88 @@ mod tests {
         assert_eq!(typed("a/~", cwd, Some(home)), cwd.join("a/~"));
         assert_eq!(typed("~x", cwd, Some(home)), cwd.join("~x"));
         assert_eq!(typed("~/a", cwd, None), cwd.join("~/a"));
+    }
+
+    #[test]
+    fn start_screen_home_no_git_init_offer_in_the_home_directory() {
+        // The risk (the owner's first run): bare `trellis` in the home
+        // directory offers `git init` there, and one `i`, `y` makes every
+        // file under it part of a repository.
+        let home = tempfile::tempdir().unwrap();
+        let mut shown = Vec::new();
+        let got = screen(
+            &[],
+            false,
+            home.path(),
+            Some(home.path()),
+            &mut "i
+y
+"
+            .as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        let shown = String::from_utf8(shown).unwrap();
+        assert_eq!(got, None, "{shown}");
+        assert!(!home.path().join(".git").exists(), "{shown}");
+        assert!(!shown.contains("i. run `git init`"), "{shown}");
+        assert!(
+            shown.contains("This is your home directory, so `git init` is not offered"),
+            "{shown}"
+        );
+        assert!(shown.contains("That is not one of the choices."), "{shown}");
+
+        // Anywhere else, the offer stands.
+        let cwd = tempfile::tempdir().unwrap();
+        let mut shown = Vec::new();
+        screen(
+            &[],
+            false,
+            cwd.path(),
+            Some(home.path()),
+            &mut "q
+"
+            .as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(shown.contains("i. run `git init`"), "{shown}");
+    }
+
+    #[test]
+    fn start_screen_home_says_when_every_listed_repository_is_gone() {
+        // The risk: a person whose repositories were all deleted or moved is
+        // told trellis never opened one, and goes looking for a list that
+        // was there.
+        let cwd = tempfile::tempdir().unwrap();
+        let said = |recorded: bool| {
+            let mut shown = Vec::new();
+            screen(
+                &[],
+                recorded,
+                cwd.path(),
+                None,
+                &mut "q
+"
+                .as_bytes(),
+                &mut shown,
+            )
+            .unwrap();
+            String::from_utf8(shown).unwrap()
+        };
+        let gone = said(true);
+        assert!(
+            gone.contains("Every repository trellis opened before is gone"),
+            "{gone}"
+        );
+        assert!(!gone.contains("has not opened any repository"), "{gone}");
+        let never = said(false);
+        assert!(
+            never.contains("trellis has not opened any repository yet."),
+            "{never}"
+        );
+        assert!(!never.contains("is gone"), "{never}");
     }
 
     #[test]
