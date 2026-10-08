@@ -83,6 +83,14 @@ exceptions = [
     # option-ext 0.2 <- dirs-sys 0.5 <- dirs 7 <- tauri 2.12, tauri-build
     # 2.7 and wry 0.57: Tauri's lookup of the platform's app directories.
     { crate = "option-ext", allow = ["MPL-2.0"] },
+    # Apache-2.0 WITH LLVM-exception (ADR 0048 section 7, amended
+    # 2026-10-07 by the owner, #289): Apache-2.0 less an attribution
+    # requirement. target-lexicon 0.12.16 <- cfg-expr 0.15.8 <- system-deps
+    # 6.2.2 <- (build) atk-sys, gdk-sys, webkit2gtk-sys and the other gtk
+    # 0.18 -sys crates <- gtk 0.18 <- tauri 2.12 (x86_64-unknown-linux-gnu
+    # only). Build-time only, never linked. Ends when Tauri's Linux backend
+    # leaves gtk 0.18's system-deps 6.
+    { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
 # desktop-only: end
 ]
 
