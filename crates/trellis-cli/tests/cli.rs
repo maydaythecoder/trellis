@@ -4599,7 +4599,7 @@ const GH_OK: Gh = Gh::Stub {
               if \"%1\"==\"pr\" type \"{dir}\\pr.json\"\r\n\
               if \"%1\"==\"run\" type \"{dir}\\run.json\"\r\n",
     unix: "#!/bin/sh\npwd > '{dir}/cwd.txt'\n\
-           case \"$1\" in pr) cat '{dir}/pr.json';; run) cat '{dir}/run.json';; esac\n",
+           case \"$1\" in pr) /bin/cat '{dir}/pr.json';; run) /bin/cat '{dir}/run.json';; esac\n",
 };
 
 /// PATH without any directory holding a `gh`, so `git` is still found.
@@ -4612,6 +4612,41 @@ fn path_without_gh() -> Vec<PathBuf> {
                 .any(|n| d.join(n).is_file())
         })
         .collect()
+}
+
+/// On Unix `gh` often shares `/usr/bin` with `git` and `kill`, so leaving
+/// out the directories that hold a `gh` loses them too: the queue needs
+/// `git`, and a timed-out `gh`'s group is killed with `kill`. A directory
+/// holding only wrappers that run the real ones puts them back; the stubs
+/// name `/bin/cat` and `/bin/sleep` for the same reason. `None` on Windows,
+/// where `gh` has a directory of its own.
+fn tools_beside_gh(name: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    let kept = path_without_gh();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dir = scratch(&format!("{name}-tools"));
+    for tool in ["git", "kill"] {
+        if kept.iter().any(|d| d.join(tool).is_file()) {
+            continue;
+        }
+        let Some(real) = std::env::split_paths(&path)
+            .map(|d| d.join(tool))
+            .find(|p| p.is_file())
+        else {
+            continue;
+        };
+        let p = dir.join(tool);
+        let body = format!("#!/bin/sh\nexec '{}' \"$@\"\n", real.display());
+        std::fs::write(&p, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    Some(dir)
 }
 
 /// `scratch`'s path for `name`, without emptying it.
@@ -4656,6 +4691,9 @@ fn gh_stub(name: &str, windows: &str, unix: &str) -> PathBuf {
 /// `gh` that `gh` names on PATH.
 fn overview_in(name: &str, cwd: &Path, user: &Path, gh: Gh, args: &[&str]) -> Output {
     let mut dirs = path_without_gh();
+    if let Some(tools) = tools_beside_gh(name) {
+        dirs.insert(0, tools);
+    }
     if let Gh::Stub { windows, unix } = gh {
         dirs.insert(0, gh_stub(name, windows, unix));
     }
@@ -5117,7 +5155,7 @@ fn overview_gives_up_on_a_gh_that_runs_past_its_bound() {
     let user = scratch("overview-gh-slow-user");
     let gh = Gh::Stub {
         windows: "@echo off\r\nping -n 60 127.0.0.1 >nul\r\n",
-        unix: "#!/bin/sh\nsleep 60\n",
+        unix: "#!/bin/sh\n/bin/sleep 60\n",
     };
     let started = std::time::Instant::now();
     let args = ["--json", "overview"];
