@@ -793,6 +793,73 @@ fn doctor_reports_a_missing_test_suite_as_the_grounding_problem_it_is() {
 }
 
 #[test]
+fn doctor_coverage_probe_never_appends_help_to_a_tests_command_that_is_not_pytest() {
+    // #572. The risk: doctor appending `--help` to whatever the tests command
+    // is. Fixtures configure `git --version`, and `git --version --help`
+    // opens Git's HTML help in a browser on Windows, once per doctor run. A
+    // stub first on PATH records every argv it is given; doctor must run it
+    // (for the version) and never with `--help`.
+    let bin = scratch("doctor-coverage-probe-bin");
+    let log = bin.join("calls.log");
+    let stub = if cfg!(windows) {
+        let p = bin.join("trellis-stub-runner.cmd");
+        std::fs::write(
+            &p,
+            "@echo off\r\necho %*>>\"%~dp0calls.log\"\r\necho stub-runner 1.0\r\n",
+        )
+        .unwrap();
+        "trellis-stub-runner.cmd"
+    } else {
+        let p = bin.join("trellis-stub-runner");
+        std::fs::write(
+            &p,
+            "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.log\"\necho stub-runner 1.0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        "trellis-stub-runner"
+    };
+    let d = repo_with_checks("doctor-coverage-probe", "git", stub);
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .arg("doctor")
+        .current_dir(&d)
+        .env("NO_COLOR", "1")
+        .env(
+            "TRELLIS_CONFIG_DIR",
+            std::env::temp_dir().join("trellis-tests-no-user-config"),
+        )
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", combined(&out));
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("--version"),
+        "the stub was never run, so this test proves nothing:\n{calls}\n{}",
+        combined(&out)
+    );
+    assert!(
+        !calls.contains("--help"),
+        "doctor appended --help to a command that is not pytest:\n{calls}"
+    );
+    let s = stdout(&out);
+    assert!(
+        s.contains("coverage: not probed (the tests command is not pytest)"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
 fn doctor_floor_line_states_four_configurations_and_the_tier_4_result() {
     // #542. The risk: the line a person reads before trusting a local model
     // keeps saying every measured configuration failed after #144 measured
