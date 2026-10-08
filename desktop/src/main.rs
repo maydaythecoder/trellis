@@ -23,13 +23,14 @@
 mod child;
 mod commands;
 mod frames;
+mod lockdown;
 mod state;
 
 use commands::Core;
 use std::path::PathBuf;
 use std::sync::{Arc, Once};
-use tauri::Manager;
-use tauri::webview::PageLoadEvent;
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
+use tauri::{Manager, WebviewWindowBuilder};
 
 const USAGE: &str = "usage: trellis-desktop [--root <repo>] [--trellis <path>]";
 
@@ -62,6 +63,27 @@ fn main() {
         .setup(move |app| {
             let core = Core::new(child::Trellis::new(trellis), Arc::new(app.handle().clone()));
             app.manage(core);
+            // The main window is built here rather than by Tauri from the
+            // config (`"create": false`), because only a builder takes the
+            // navigation and new-window handlers (`lockdown.rs`).
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .ok_or("tauri.conf.json has no window labelled main")?
+                .clone();
+            WebviewWindowBuilder::from_config(app, &config)?
+                .on_navigation(lockdown::navigation_allowed)
+                .on_new_window(|url, _features| {
+                    if lockdown::new_window_allowed(&url) {
+                        NewWindowResponse::Allow
+                    } else {
+                        NewWindowResponse::Deny
+                    }
+                })
+                .build()?;
             Ok(())
         })
         // The startup work waits for the page, so the events it emits find
@@ -132,8 +154,8 @@ mod tests {
     #[test]
     fn tauri_conf_has_one_window_no_dev_hooks_and_no_bundle() {
         // The risk: a dev server, a build hook or a bundle the ADR keeps
-        // out; a second window; a CSP that lets inline or remote script
-        // run; or a capability granting more than the page needs.
+        // out; a second window; or a command without its permission. The
+        // CSP and the capability's permissions are held in `lockdown.rs`.
         let conf: Value = serde_json::from_str(&manifest_file("tauri.conf.json")).unwrap();
         assert_eq!(conf["identifier"], "dev.trellis.desktop");
         assert_eq!(
@@ -156,33 +178,12 @@ mod tests {
             (w["minWidth"].as_u64(), w["minHeight"].as_u64()),
             (Some(860), Some(600))
         );
-        let security = &conf["app"]["security"];
-        assert_eq!(
-            security["csp"],
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
-             connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; \
-             form-action 'none'"
-        );
-        let caps = security["capabilities"].as_array().unwrap();
-        assert_eq!(caps.len(), 1, "one capability");
-        assert_eq!(caps[0]["windows"], json!(["main"]));
         // Each command a permission, and only the commands listed here.
         assert!(
             manifest_file("build.rs").contains(
                 r#"const COMMANDS: [&str; 4] = ["rpc_send", "get_trails", "open_repository", "get_overview"];"#
             ),
             "build.rs lists the four commands"
-        );
-        assert_eq!(
-            caps[0]["permissions"],
-            json!([
-                "core:event:allow-listen",
-                "core:event:allow-unlisten",
-                "allow-rpc-send",
-                "allow-get-trails",
-                "allow-open-repository",
-                "allow-get-overview"
-            ])
         );
     }
 
