@@ -59,7 +59,14 @@ in size, as human text. It still never reads stderr as data.
 *Amended 2026-10-07 (#557), owner-directed (the owner's decision of
 2026-10-07):* a fourth spawn, `trellis [--root <repo>] --json overview`
 (ADR 0050 section 3, amended), read as one JSON object on stdout, with
-`--root` only when the desktop has a root. Accepted, not built (#558, #296).
+`--root` only when the desktop has a root. Accepted; built 2026-10-07 (#558,
+#296).
+*As built 2026-10-07 (#558, #296):* `trellis overview` is ADR 0050 section
+3's, as built. The desktop's `child.rs` spawns it as `--root <repo> --json
+overview`, or `--json overview` in the current directory with no root, and
+parses stdout as one object; with no root the core emits it once at
+startup, and the page's `get_overview` command reads it on demand. Drawing
+it is #562's and not built.
 
 ### 3. Children, environment and keys
 
@@ -79,7 +86,8 @@ still adds nothing to a child's environment and reads no key variable; what
 its child receives is what the desktop was given. The owner's condition,
 recorded on #564: after launch the desktop asks which model to use and keeps
 prompt input disabled until one is chosen (section 5, amended). The test's
-exemption is built; the launch is not (#374).
+exemption is built (#560); the launch was not then, and is now (#374,
+below).
 *As built 2026-10-07 (#374):* the launch is built, for `trellis --dsk`
 (ADR 0050 section 1, as built), as that marked spawn in `launch.rs`.
 
@@ -156,7 +164,11 @@ rules in this section are unchanged.
 2026-10-07):* the desktop is the default surface of bare `trellis` (ADR
 0050 section 1, amended); the TUI stays the product interface under Q-19,
 under `--tui` and `trellis tui`, as the line above says. The desktop rules
-in this section are unchanged. Accepted, not built (#561).
+in this section are unchanged. Accepted; built 2026-10-07 (#561).
+*As built 2026-10-07 (#561):* bare `trellis` at a terminal starts the
+desktop through `--dsk`'s launcher and prints the overview (ADR 0050
+section 1, as built); `--tui` and `trellis tui` start the ratatui TUI, which
+stays the product interface until #514's handoff ships.
 
 ### 9. A desktop that exits mid-run
 
@@ -190,7 +202,16 @@ shows four read-only views, each from these sources:
   not logged in, the board says so.
 
 `get_codebase` and `get_radius` refuse a root with no `.git` entry. Nothing
-here writes. Accepted, not built (#558, #559, #296).
+here writes. Accepted; built in part 2026-10-07: `overview` and its
+`recent` and `gh` board state (#558) and the desktop's spawn of it (#296);
+not built: `path`, `blockers`, `parent` and the refusal (#559), and the
+drawn views (#562).
+*As built 2026-10-07 (#558):* the board's `gh` is the user's first `gh` on
+PATH, started through `secrets::scrub` with no token, read-only (`gh pr
+list --state open`, `gh run list -L 10`), each bounded to 10 seconds; when
+it is missing, not logged in, times out or fails, the overview's `pr_ci`
+says so as `{"available": false, "reason"}` (ADR 0050 section 3, as
+built).
 
 ## Alternatives rejected
 

@@ -195,7 +195,14 @@ The adapter's prompt opens with a role sentence, then a protocol:
   `work`, `log` and `overview`. `trellis [--root <repo>] --json overview`
   prints one JSON object, with C1 controls escaped as `log --json` escapes
   them, and runs with or without a repository (ADR 0050 section 3, amended).
-  Accepted, not built (#558).*
+  Accepted; built 2026-10-07 (#558).*
+- *As built 2026-10-07 (#558):* `trellis [--root <repo>] --json overview`
+  prints one object: `recent` always; `root`, `last_run`, `codebase` with
+  `codebase_reason`, and `board` with `tasks` and `pr_ci` only for a root
+  with a `.git` entry. The `overview` paths a client may rely on are listed in
+  `tests/client_contract.json`, held by
+  `client_contract_overview_lists_what_the_overview_object_carries` in
+  `tests/cli.rs`.
 
 ### 5. `trellis rpc`
 
@@ -777,7 +784,8 @@ on stderr.
   list`), with a bounded wait, and when `gh` is absent or not logged in the
   board says so. `get_codebase` and `get_radius` refuse a root with no
   `.git` entry. Accepted, not built (#559 for `path`, `blockers`, `parent`
-  and the refusal; #558 for `recent` and the `gh` state).*
+  and the refusal); built 2026-10-07 (#558 for `recent` and the `gh` state,
+  as §4's as-built line says).*
 
 ### 6. Session additions
 
